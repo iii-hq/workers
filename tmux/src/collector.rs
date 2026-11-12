@@ -19,7 +19,7 @@ use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
 use crate::install::installable;
 use crate::model::{
-    now_ms, AgentState, AgentStatus, ComposeRef, ComposeStack, Follow, Listener, Overview, Pane,
+    now_ms, AgentState, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane,
     PaneClaude, PaneRef, PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
 };
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
@@ -450,21 +450,7 @@ impl Collector {
         // tmux before 3.0 keeps the account marks per window (D4).
         let window_marks = tmux.as_ref().is_some_and(|tmux| tmux.pane_scope() == "-w");
         let claude = self.claude_states(&raw, &statuses, &records, &procs.table, window_marks);
-        let mut counts: HashMap<String, u32> = HashMap::new();
-        let mut following = 0;
-        for state in claude.values() {
-            if let Some(account) = state
-                .info
-                .account
-                .as_ref()
-                .filter(|_| state.claude_pid.is_some())
-            {
-                *counts.entry(account.clone()).or_default() += 1;
-            }
-            if state.info.follow == Follow::Global {
-                following += 1;
-            }
-        }
+        let counts = crate::accounts::panes::counts(&claude);
         let infos: HashMap<String, PaneClaude> = claude
             .iter()
             .map(|(id, state)| (id.clone(), state.info.clone()))
@@ -476,7 +462,7 @@ impl Collector {
         });
         // Sign-ins and profiles are read in the background (M2).
         self.accounts.load_soon().await;
-        let usage = self.accounts.snapshot(&counts, following);
+        let usage = self.accounts.snapshot(&counts);
         let sessions = build_sessions(
             &raw,
             &statuses,
@@ -553,7 +539,7 @@ impl Collector {
                 && claude_per_window
                     .get(pane.window_id.as_str())
                     .is_some_and(|panes| panes.len() > 1);
-            let Some(mut info) =
+            let Some((mut info, place)) =
                 pane_claude(&self.accounts, &registry, table, pane.pid, &marks, claude)
             else {
                 continue;
@@ -574,6 +560,7 @@ impl Collector {
                     info,
                     agent_state: agent.map(|a| a.state),
                     cwd: pane.cwd.clone(),
+                    place,
                     kind: claude_pid.and_then(|pid| {
                         crate::accounts::panes::move_kind(table, pane.pid, pid).ok()
                     }),

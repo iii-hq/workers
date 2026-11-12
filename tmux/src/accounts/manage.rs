@@ -1,7 +1,7 @@
 //! Adding, changing and removing accounts, and what signs one in
-//! (agent-accounts §3.4, D1, D2, D17).
+//! (agent-accounts §3.4, D1, D2, D17, G2, G10).
 
-use super::launch::{login_command, Target};
+use super::launch::login_command;
 use super::paths::ClaudePaths;
 use super::registry::{self, Entry, Registry};
 use super::{shared, Accounts, DEFAULT};
@@ -95,11 +95,6 @@ impl Accounts {
         let groups = shared
             .map(|groups| shared::validate_groups(&groups))
             .transpose()?;
-        if id == DEFAULT && groups.as_ref().is_some_and(|g| !g.is_empty()) {
-            return Err(
-                "The default account is ~/.claude itself: the others share its items.".into(),
-            );
-        }
         self.update_registry(|registry| {
             if !registry.has(id) {
                 return Err(no_account(id));
@@ -110,7 +105,7 @@ impl Accounts {
                 }
             }
             let entry = registry.get_mut(id).expect("checked above");
-            if let Some(groups) = groups.filter(|_| id != DEFAULT) {
+            if let Some(groups) = groups {
                 let dir = paths.account_dir(id);
                 let dropped: Vec<String> = entry
                     .shared
@@ -134,14 +129,15 @@ impl Accounts {
         })
     }
 
-    /// Take account `id` off the list. Never `default` nor the global one.
+    /// Take account `id` off the list. Never `default`, the global one nor
+    /// the one a switch waits to make global.
     /// Its panes keep running. With `delete_files` its folder goes too (only
     /// inside the accounts root, never what its links point at), refused
     /// while `running` Claude Code panes still run on it.
     pub fn remove(&self, id: &str, delete_files: bool, running: u32) -> Result<(), String> {
         let paths = self.paths_or_err()?;
         if id == DEFAULT {
-            return Err("The default account (~/.claude) can't be removed.".into());
+            return Err("The default account can't be removed.".into());
         }
         self.update_registry(|registry| {
             if !registry.has(id) {
@@ -149,6 +145,13 @@ impl Accounts {
             }
             if registry.global == id {
                 return Err("It is the global account: make another account global first.".into());
+            }
+            if registry
+                .pending_global
+                .as_ref()
+                .is_some_and(|pending| pending.account == id)
+            {
+                return Err("A switch waits to make it global: cancel it first.".into());
             }
             if delete_files && running > 0 {
                 let (panes, run, them) = if running == 1 {
@@ -171,32 +174,28 @@ impl Accounts {
         Ok(())
     }
 
-    /// The command that signs account `id` in; makes its folder again if it
-    /// went missing, and checks its links.
+    /// The command that signs account `id` in (G10): on the slot for the
+    /// global account (a sign-in to another account there is taken in, G6),
+    /// on its folder otherwise; makes its folder again if it went missing,
+    /// and checks its links.
     pub fn login_command(&self, id: &str) -> Result<String, String> {
         let paths = self.paths_or_err()?;
         let registry = self.registry();
         let entry = registry.get(id).ok_or_else(|| no_account(id))?;
-        if id != DEFAULT {
-            let dir = paths.account_dir(id);
-            registry::make_private_dir(&dir)?;
-            if let Err(error) = shared::link(&dir, &paths.claude_home, &entry.shared) {
-                tracing::warn!(account = %id, %error, "shared items not linked");
-            }
+        let dir = paths.account_dir(id);
+        registry::make_private_dir(&dir)?;
+        if let Err(error) = shared::link(&dir, &paths.claude_home, &entry.shared) {
+            tracing::warn!(account = %id, %error, "shared items not linked");
         }
         self.reread_credentials(id);
-        let target = Target::of(id, self.env_dir(id).as_deref())?;
-        Ok(login_command(&target))
+        Ok(login_command(&self.login_target(id)?))
     }
 
     /// "Not now" on suggestion `id`: no suggestion from that account for
     /// that reason (or a lower one) until its window resets (D14).
     pub fn dismiss(&self, id: &str) -> Result<(), String> {
         let now = now_ms();
-        let accounts = self
-            .snapshot(&std::collections::HashMap::new(), 0)
-            .claude
-            .accounts;
+        let accounts = self.snapshot(&super::PaneCounts::default()).claude.accounts;
         let dismissal = super::rules::dismissal(id, &accounts, now)?;
         self.update_registry(|registry| {
             registry
@@ -233,7 +232,7 @@ impl Accounts {
         }
         for entry in self.registry().accounts {
             let dir = paths.account_dir(&entry.id);
-            if entry.id == DEFAULT || entry.shared.is_empty() || !dir.is_dir() {
+            if entry.shared.is_empty() || !dir.is_dir() {
                 continue;
             }
             match shared::link(&dir, &paths.claude_home, &entry.shared) {
@@ -339,9 +338,11 @@ mod tests {
             .update("default", Some("Work"), Some("blue"), None)
             .unwrap();
         assert_eq!(accounts.registry().accounts[0].name, "Work");
-        assert!(accounts
+        // default has a folder of its own now (G2): what it shares changes.
+        accounts
             .update("default", None, None, Some(vec!["settings".into()]))
-            .is_err());
+            .unwrap();
+        assert_eq!(accounts.registry().accounts[0].shared, vec!["settings"]);
         assert!(accounts
             .update("default", Some("home"), None, None)
             .is_err());
@@ -384,9 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn login_commands_name_the_account_folder() {
+    fn login_commands_name_the_slot_or_the_account_folder() {
         let home = Home::new("login");
         let accounts = home.accounts();
+        // The global account signs in on the slot (G10).
         assert_eq!(
             accounts.login_command("default").unwrap(),
             "env -u CLAUDE_CONFIG_DIR claude auth login"

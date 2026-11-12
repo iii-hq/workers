@@ -350,24 +350,29 @@ pub struct Overview {
 
 // ── Claude Code accounts and agent usage ────────────────────────────────
 
-/// How a pane's Claude Code account is chosen.
+/// How a pane's Claude Code account is chosen (agent-accounts G12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Follow {
-    /// Started on the global account, and moves when it changes.
+    /// Runs on the global slot (`~/.claude`) and is not pinned, started by
+    /// the worker or by hand: it switches with the global account on its
+    /// next message.
     Global,
-    /// Stays on its account whatever the global one is.
+    /// Pinned to an account: on its folder, or on the slot while that
+    /// account is global (it restarts on its folder when the global one
+    /// changes).
     Pinned,
-    /// Claude Code was started by hand in a shell: no mark.
+    /// Started by hand on an account's folder (`CLAUDE_CONFIG_DIR` set): no mark.
     Manual,
 }
 
 /// The Claude Code account of one pane (agent-accounts D4, D5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PaneClaude {
-    /// Id of the account the running Claude Code uses, read from its
-    /// `CLAUDE_CONFIG_DIR`. Null when that folder is no registered account
-    /// (see `config_dir`) or Claude Code is not running.
+    /// Id of the account the running Claude Code uses: the global account
+    /// on the slot (`~/.claude`), else the account whose folder its
+    /// `CLAUDE_CONFIG_DIR` names. Null when that folder is no registered
+    /// account (see `config_dir`) or Claude Code is not running.
     #[serde(default)]
     pub account: Option<String>,
     /// The config folder the running Claude Code uses, `~` for the home
@@ -376,7 +381,7 @@ pub struct PaneClaude {
     pub config_dir: Option<String>,
     /// `global`, `pinned` or `manual`.
     pub follow: Follow,
-    /// The account the pane moves to when its turn ends.
+    /// The account the pane moves to when its turn ends (`global`: the slot).
     #[serde(default)]
     pub pending: Option<String>,
     /// Claude Code runs without permission prompts
@@ -460,20 +465,22 @@ pub struct ClaudeUsage {
     pub error: Option<String>,
 }
 
-/// A Claude Code account (agent-accounts D1): one config folder.
+/// A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the
+/// global slot while it is global and in its own folder otherwise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaudeAccount {
-    /// `default` for `~/.claude`, else a slug of its first name.
+    /// `default` for the sign-in `~/.claude` had when accounts began, else
+    /// a slug of its first name.
     pub id: String,
     /// The name people gave it.
     pub name: String,
     /// `blue`, `green`, `violet`, `orange` or `pink`.
     pub color: String,
-    /// Its config folder, absolute.
+    /// Its folder, absolute: `<accounts root>/<id>`.
     pub dir: String,
-    /// Its config folder with `~` for the home folder.
+    /// Its folder with `~` for the home folder.
     pub dir_display: String,
-    /// It is the built-in account (`~/.claude`, `CLAUDE_CONFIG_DIR` unset).
+    /// Its id is `default`.
     pub is_default: bool,
     /// The signed-in email.
     #[serde(default)]
@@ -491,10 +498,11 @@ pub struct ClaudeAccount {
     pub signed_in: bool,
     /// Its sign-in expired; running Claude Code there renews it.
     pub token_expired: bool,
-    /// The groups it shares with `~/.claude`: `settings`, `extensions`,
-    /// `plugins`, `conversations`.
+    /// The groups its folder shares with `~/.claude`: `settings`,
+    /// `extensions`, `plugins`, `conversations`.
     pub shared: Vec<String>,
-    /// Claude Code panes running on it now.
+    /// Claude Code panes using it now (for the global account, every pane
+    /// on the slot, its followers included).
     pub panes: u32,
     /// The latest usage reading.
     #[serde(default)]
@@ -539,8 +547,6 @@ pub struct SwitchRules {
     pub at: Threshold,
     /// Also act when the 5-hour window reaches 100 %.
     pub five_hour: bool,
-    /// A switch also moves the idle windows that follow the global account.
-    pub move_idle: bool,
     /// After switching away by itself, switch back once that account's window resets.
     pub back_after_reset: bool,
     /// Accounts to try first, in order; then the one with most room this week.
@@ -553,7 +559,6 @@ impl Default for SwitchRules {
             mode: RulesMode::Suggest,
             at: Threshold::Week90,
             five_hour: false,
-            move_idle: true,
             back_after_reset: false,
             order: Vec::new(),
         }
@@ -571,7 +576,8 @@ pub struct Suggestion {
     pub to: String,
     /// `week_80`, `week_90`, `limit` or `five_hour`.
     pub reason: String,
-    /// Claude Code panes that follow the global account.
+    /// Claude Code panes on the slot that are not pinned: they switch with
+    /// the global account.
     pub following: u32,
     /// When the reason was first seen.
     pub at_ms: u64,
@@ -585,14 +591,24 @@ pub struct AccountSwitch {
     /// The global account after.
     pub to: String,
     /// `week_80`, `week_90`, `limit`, `five_hour` or `back` for an
-    /// automatic switch; null when someone switched.
+    /// automatic switch; `login` (someone signed in to a known account with
+    /// `/login`), `login_new` (to a new one, added then), `upgrade` (the
+    /// worker took the slot's sign-in for global when it was updated); null
+    /// when someone switched.
     #[serde(default)]
     pub reason: Option<String>,
     /// The worker switched by itself (rules mode `switch`).
     pub auto: bool,
-    /// Panes moved at once.
-    pub moved: Vec<String>,
-    /// Panes that move when their turn ends.
+    /// Claude Code panes on the slot that switched with it, on their next
+    /// message.
+    #[serde(default)]
+    pub following: u32,
+    /// Pinned panes restarted: the new global account's (now on the slot)
+    /// and the old one's (now on its folder).
+    #[serde(default, alias = "moved")]
+    pub restarted: Vec<String>,
+    /// Panes pinned to the old global account that restart on its folder
+    /// when their turn ends.
     pub after_turn: Vec<String>,
     /// When it happened.
     pub at_ms: u64,
@@ -609,7 +625,8 @@ pub struct ClaudeSnapshot {
     pub available: bool,
     /// The accounts registry exists (an account was added or a setting saved).
     pub managed: bool,
-    /// Id of the global account: what plain `claude` uses in new windows.
+    /// Id of the global account: the sign-in of the slot (`~/.claude`), what
+    /// plain `claude` uses anywhere.
     pub global: String,
     /// The worker runs as root, where Claude Code refuses `--dangerously-skip-permissions`.
     pub runs_as_root: bool,
@@ -623,6 +640,28 @@ pub struct ClaudeSnapshot {
     /// The latest change of the global account.
     #[serde(default)]
     pub last_switch: Option<AccountSwitch>,
+    /// A switch of the global account that waits for windows on the new
+    /// account's folder to finish their turn.
+    #[serde(default)]
+    pub pending_global: Option<PendingGlobal>,
+    /// How long a running Claude Code may take to notice a switch, in
+    /// seconds: 0 on Linux (its next message), 30 on macOS (the Keychain).
+    #[serde(default)]
+    pub switch_delay_s: u32,
+}
+
+/// A switch of the global account waiting for windows to finish their turn
+/// (agent-accounts G4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingGlobal {
+    /// The account becoming global.
+    pub account: String,
+    /// `person` or `rule`.
+    pub by: String,
+    /// The Claude Code panes on its folder still working or waiting.
+    pub waiting_for: Vec<String>,
+    /// When it was asked for.
+    pub at_ms: u64,
 }
 
 /// Codex's credits.

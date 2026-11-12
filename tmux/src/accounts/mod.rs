@@ -2,18 +2,23 @@
 //! (agent-accounts, D1–D19 of the brief; the README's "Claude Code
 //! accounts" section is the user-facing account of it).
 //!
-//! One account is one Claude Code config folder (D1). The registry
-//! (`accounts.json`, D2) names them, says which one is global (what plain
-//! `claude` gets in new tmux windows, through tmux's global environment, D3)
-//! and holds the rules for the global account (D14). Usage readings come
-//! from Claude Code's usage endpoint per account (D10–D12) and from what
-//! Codex records (D13); they are cached in the worker's cache folder, never
-//! with a token.
+//! One account is one Claude Code sign-in (G1, G2). The global account's
+//! sign-in is in the global slot, `~/.claude` (what plain `claude` uses
+//! anywhere); every other account's is in its own folder under the
+//! accounts root. Switching the global account swaps sign-ins between the
+//! slot and the folders (G3, `slot`), so every Claude Code on the slot goes
+//! on with the new account at its next message. The registry
+//! (`accounts.json`, D2) names the accounts, says which one is global and
+//! holds the rules for it (D14). Usage readings come from Claude Code's
+//! usage endpoint per account (D10–D12, from where its sign-in is now, G9)
+//! and from what Codex records (D13); they are cached in the worker's cache
+//! folder, never with a token.
 
 pub mod codex;
 pub mod credentials;
 pub mod daemon;
 pub mod launch;
+pub mod lockdir;
 pub mod manage;
 pub mod moves;
 pub mod panes;
@@ -21,6 +26,8 @@ pub mod paths;
 pub mod registry;
 pub mod rules;
 pub mod shared;
+pub mod slot;
+pub mod switch;
 pub mod time;
 pub mod tmux_env;
 pub mod usage;
@@ -31,14 +38,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use crate::model::{now_ms, ClaudeAccount, ClaudeSnapshot, CodexUsage, UsageSnapshot};
+use crate::model::{
+    now_ms, ClaudeAccount, ClaudeSnapshot, CodexUsage, PendingGlobal, UsageSnapshot,
+};
 use credentials::{Credentials, Profile, SecretStore};
 use paths::ClaudePaths;
 use registry::{Registry, Store};
 use sha2::{Digest, Sha256};
 use usage::{CacheFile, Reading, UsageClient};
 
-/// The built-in account: `~/.claude`, `CLAUDE_CONFIG_DIR` unset.
+/// The account whose sign-in `~/.claude` had when accounts began (G2).
 pub const DEFAULT: &str = "default";
 /// What a pane that follows the global account is marked with (D4).
 pub const GLOBAL: &str = "global";
@@ -69,6 +78,8 @@ fn stamp(path: &Path) -> Stamp {
 
 /// The sign-in last read for an account.
 struct CachedCredentials {
+    /// Where it was read: the slot (it was global) or its folder.
+    on_slot: bool,
     /// Its `.credentials.json` and `.claude.json` when it was read.
     stamps: (Stamp, Stamp),
     read_at_ms: u64,
@@ -81,6 +92,7 @@ struct CachedCredentials {
 
 /// The `.claude.json` last read for an account.
 struct CachedProfile {
+    on_slot: bool,
     stamp: Stamp,
     value: Option<Profile>,
 }
@@ -103,6 +115,27 @@ struct State {
     first_seen: HashMap<String, u64>,
     /// When the last load finished; 0 before the first.
     loaded_at_ms: u64,
+}
+
+/// What the snapshot needs to know of the panes.
+#[derive(Debug, Clone, Default)]
+pub struct PaneCounts {
+    /// Claude Code panes using each account now (the slot's: the global's).
+    pub per_account: HashMap<String, u32>,
+    /// Claude Code panes on the slot that are not pinned.
+    pub following: u32,
+    /// The Claude Code panes on each account's folder that are working or
+    /// waiting (what a switch to it waits for, G4).
+    pub busy_on_folder: HashMap<String, Vec<String>>,
+}
+
+/// The swap this worker made last, for a session that writes the old
+/// account's profile back right after it (G3 step 8).
+#[derive(Debug, Clone)]
+struct RecentSwap {
+    from: String,
+    to: String,
+    at: std::time::Instant,
 }
 
 /// One account as the snapshot needs it.
@@ -138,6 +171,16 @@ pub struct Accounts {
     waiting: Mutex<HashMap<String, Option<u32>>>,
     /// Why the last move of a pane failed, by pane id.
     move_errors: Mutex<HashMap<String, String>>,
+    /// One switch of the global account at a time.
+    pub swap_gate: tokio::sync::Mutex<()>,
+    /// A swap runs now (the slot's `.claude.json` changes under it).
+    swapping: AtomicBool,
+    /// `~/.claude.json` as last looked at for a sign-in by hand (G6).
+    slot_stamp: Mutex<Option<Stamp>>,
+    recent_swap: Mutex<Option<RecentSwap>>,
+    /// The Claude Code processes a switch that waits (G4) waits for, as
+    /// last seen; `None` when not known.
+    global_waiting: Mutex<Option<Vec<Option<u32>>>>,
 }
 
 impl Accounts {
@@ -215,7 +258,24 @@ impl Accounts {
             pending: AtomicBool::new(true),
             waiting: Mutex::new(HashMap::new()),
             move_errors: Mutex::new(HashMap::new()),
+            swap_gate: tokio::sync::Mutex::new(()),
+            swapping: AtomicBool::new(false),
+            slot_stamp: Mutex::new(None),
+            recent_swap: Mutex::new(None),
+            global_waiting: Mutex::new(None),
         }
+    }
+
+    /// The slot and the folders, with this platform's store.
+    pub fn stores(&self) -> Option<slot::Stores<'_>> {
+        self.paths
+            .as_ref()
+            .map(|paths| slot::Stores::new(paths, self.secrets.as_ref()))
+    }
+
+    /// How long a running Claude Code may take to notice a switch (G12).
+    pub fn switch_delay_s(&self) -> u32 {
+        self.secrets.delay_s()
     }
 
     pub fn paths(&self) -> Option<&ClaudePaths> {
@@ -280,7 +340,10 @@ impl Accounts {
         };
         let lock = registry::FileLock::take_async(&Store::lock_path(&file)).await?;
         match self.store().as_mut() {
-            Some(store) => store.update_locked(&lock, change),
+            Some(store) => store.update_locked(&lock, |registry, generation| {
+                self.bring_to_slot(registry);
+                change(registry, generation)
+            }),
             None => Err("This computer's user has no home folder for Claude Code accounts.".into()),
         }
     }
@@ -298,34 +361,126 @@ impl Accounts {
         };
         let lock = registry::FileLock::take(&Store::lock_path(&file))?;
         match self.store().as_mut() {
-            Some(store) => store.update_locked(&lock, change),
+            Some(store) => store.update_locked(&lock, |registry, generation| {
+                self.bring_to_slot(registry);
+                change(registry, generation)
+            }),
             None => Err("This computer's user has no home folder for Claude Code accounts.".into()),
         }
     }
 
-    /// The `CLAUDE_CONFIG_DIR` account `id` runs with (`None` for default).
-    pub fn env_dir(&self, id: &str) -> Option<String> {
-        if id == DEFAULT {
-            return None;
+    /// A registry about to be written, brought to the global slot (G11):
+    /// one of 0.3.0 (no `slot_version`) takes the account whose sign-in the
+    /// slot holds for global (`last_switch` reason `upgrade` when that
+    /// changes it), and `default` gets its folder, sharing everything. A new
+    /// registry gets `default`'s folder too, with the slot's record.
+    fn bring_to_slot(&self, registry: &mut Registry) {
+        let Some(stores) = self.stores() else {
+            return;
+        };
+        if registry.slot_version < registry::SLOT_VERSION {
+            let slot_uuid = stores.uuid(&slot::Place::Slot);
+            let holder = slot_uuid.as_ref().and_then(|uuid| {
+                registry
+                    .accounts
+                    .iter()
+                    .filter(|entry| entry.id != DEFAULT)
+                    .find(|entry| {
+                        stores.uuid(&slot::Place::Folder(entry.id.clone())).as_ref() == Some(uuid)
+                    })
+                    .map(|entry| entry.id.clone())
+            });
+            let global = holder.unwrap_or_else(|| DEFAULT.to_string());
+            if registry.global != global {
+                tracing::info!(from = %registry.global, to = %global, "the global account is the slot's sign-in now");
+                registry.last_switch = Some(crate::model::AccountSwitch {
+                    from: registry.global.clone(),
+                    to: global.clone(),
+                    reason: Some("upgrade".into()),
+                    auto: false,
+                    following: 0,
+                    restarted: Vec::new(),
+                    after_turn: Vec::new(),
+                    at_ms: now_ms(),
+                    back_at_ms: None,
+                });
+                registry.global = global;
+            }
+            if let Some(entry) = registry.get_mut(DEFAULT) {
+                if entry.shared.is_empty() {
+                    entry.shared = shared::GROUPS.iter().map(|g| g.to_string()).collect();
+                }
+            }
+            registry.slot_version = registry::SLOT_VERSION;
         }
+        let dir = stores.paths.account_dir(DEFAULT);
+        if !dir.is_dir() {
+            let groups = registry
+                .get(DEFAULT)
+                .map(|entry| entry.shared.clone())
+                .unwrap_or_default();
+            // The slot's record is default's only while default is global.
+            let identity = registry.global == DEFAULT;
+            if let Err(error) = slot::seed_folder(stores.paths, DEFAULT, &groups, identity) {
+                tracing::warn!(%error, "the default account's folder was not made");
+            }
+        }
+    }
+
+    /// `accounts.json` is one of 0.3.0 (G11), or the default account's
+    /// folder is missing: [`Accounts::upgrade`] has work to do.
+    pub fn needs_upgrade(&self) -> bool {
+        let Some(paths) = self.paths.as_ref() else {
+            return false;
+        };
+        self.managed()
+            && (self.registry().slot_version < registry::SLOT_VERSION
+                || !paths.account_dir(DEFAULT).is_dir())
+    }
+
+    /// Bring `accounts.json` to the slot (G11) by writing it.
+    pub fn upgrade(&self) -> Result<(), String> {
+        self.update_registry(|_| Ok(()))
+    }
+
+    /// The `CLAUDE_CONFIG_DIR` of account `id`'s folder (G5).
+    pub fn env_dir(&self, id: &str) -> Option<String> {
         self.paths
             .as_ref()
             .map(|paths| paths.account_dir(id).to_string_lossy().into_owned())
     }
 
-    /// The account whose folder is `dir`: `default` for `~/.claude`, a
-    /// registered id, else `None` (D5).
-    pub fn account_of_dir(&self, registry: &Registry, dir: &Path) -> Option<String> {
+    /// Where account `id`'s sign-in is now: the slot for the global one.
+    pub fn place_of(registry: &Registry, id: &str) -> slot::Place {
+        if registry.global == id {
+            slot::Place::Slot
+        } else {
+            slot::Place::Folder(id.to_string())
+        }
+    }
+
+    /// Where a Claude Code whose config folder is `dir` runs: the slot, a
+    /// registered account's folder, else `None`.
+    pub fn place_of_dir(&self, registry: &Registry, dir: &Path) -> Option<slot::Place> {
         let paths = self.paths.as_ref()?;
-        if paths.is_default_dir(dir) {
-            return Some(DEFAULT.to_string());
+        if paths.is_slot_dir(dir) {
+            return Some(slot::Place::Slot);
         }
         registry
             .accounts
             .iter()
-            .filter(|entry| entry.id != DEFAULT)
             .find(|entry| paths::same_dir(dir, &paths.account_dir(&entry.id)))
-            .map(|entry| entry.id.clone())
+            .map(|entry| slot::Place::Folder(entry.id.clone()))
+    }
+
+    /// The account a Claude Code whose config folder is `dir` uses: the
+    /// global one on the slot, a registered id on its folder, else `None`
+    /// (D5, G12).
+    pub fn account_of_dir(&self, registry: &Registry, dir: &Path) -> Option<String> {
+        match self.place_of_dir(registry, dir)? {
+            slot::Place::Slot => Some(registry.global.clone()),
+            slot::Place::Folder(id) => Some(id),
+        }
     }
 
     /// A look found a pane with a pending move, or the worker started:
@@ -338,6 +493,22 @@ impl Accounts {
     /// the flag.
     pub fn take_pending(&self) -> bool {
         self.pending.swap(false, Ordering::Relaxed)
+    }
+
+    /// The Claude Code processes the switch that waits waits for (G4).
+    pub fn note_global_waiting(&self, pids: Option<Vec<Option<u32>>>) {
+        *self
+            .global_waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = pids;
+    }
+
+    /// See [`Accounts::note_global_waiting`].
+    pub fn global_waiting(&self) -> Option<Vec<Option<u32>>> {
+        self.global_waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// `pane`'s move waits for its turn; `claude_pid` runs there.
@@ -513,18 +684,21 @@ impl Accounts {
         let now = now_ms();
         let (known_credentials, known_profiles, codex_due, available_due) = {
             let state = self.lock();
-            let credentials: HashMap<String, ((Stamp, Stamp), u64, bool)> = state
+            let credentials: HashMap<String, (bool, (Stamp, Stamp), u64, bool)> = state
                 .credentials
                 .iter()
                 .map(|(id, cached)| {
                     let reread = cached.reread_since.is_some();
-                    (id.clone(), (cached.stamps, cached.read_at_ms, reread))
+                    (
+                        id.clone(),
+                        (cached.on_slot, cached.stamps, cached.read_at_ms, reread),
+                    )
                 })
                 .collect();
-            let profiles: HashMap<String, Stamp> = state
+            let profiles: HashMap<String, (bool, Stamp)> = state
                 .profiles
                 .iter()
-                .map(|(id, cached)| (id.clone(), cached.stamp))
+                .map(|(id, cached)| (id.clone(), (cached.on_slot, cached.stamp)))
                 .collect();
             let codex_due = only.is_none()
                 && state
@@ -540,34 +714,45 @@ impl Accounts {
         let mut credentials = Vec::new();
         let mut profiles = Vec::new();
         let wanted = |id: &str| only.is_none_or(|ids| ids.iter().any(|wanted| wanted == id));
+        let stores = slot::Stores::new(&paths, self.secrets.as_ref());
         for entry in registry.accounts.iter().filter(|entry| wanted(&entry.id)) {
-            let dir = paths.account_dir(&entry.id);
-            let json = paths.account_json(&entry.id);
-            let stamps = (stamp(&dir.join(".credentials.json")), stamp(&json));
-            let fresh = known_credentials
-                .get(&entry.id)
-                .is_some_and(|(seen, at, reread)| {
-                    !reread
-                        && *seen == stamps
-                        && (!self.keychain || now.saturating_sub(*at) < KEYCHAIN_TTL_MS)
-                });
+            // From where its sign-in is now (G9): the slot for the global.
+            let place = Self::place_of(&registry, &entry.id);
+            let on_slot = place == slot::Place::Slot;
+            let dir = stores.dir(&place);
+            let json = stores.json(&place);
+            let stamps = (
+                stamp(&dir.join(credentials::CREDENTIALS_FILE)),
+                stamp(&json),
+            );
+            let fresh =
+                known_credentials
+                    .get(&entry.id)
+                    .is_some_and(|(was_on_slot, seen, at, reread)| {
+                        !reread
+                            && *was_on_slot == on_slot
+                            && *seen == stamps
+                            && (!self.keychain || now.saturating_sub(*at) < KEYCHAIN_TTL_MS)
+                    });
             if !fresh {
-                let value = self.secrets.read(&dir, self.env_dir(&entry.id).as_deref());
-                credentials.push((entry.id.clone(), stamps, value));
+                let value = stores
+                    .read(&place)
+                    .map(|raw| raw.as_ref().map(credentials::credentials_of));
+                credentials.push((entry.id.clone(), on_slot, stamps, value));
             }
             let profile_stamp = stamps.1;
-            if known_profiles.get(&entry.id) != Some(&profile_stamp) {
+            if known_profiles.get(&entry.id) != Some(&(on_slot, profile_stamp)) {
                 let value = profile_stamp
                     .and_then(|_| std::fs::read_to_string(&json).ok())
                     .and_then(|text| credentials::parse_profile(&text));
-                profiles.push((entry.id.clone(), profile_stamp, value));
+                profiles.push((entry.id.clone(), on_slot, profile_stamp, value));
             }
         }
         let codex = codex_due.then(|| codex::read(&paths.codex_home));
         let available = available_due.then(|| Self::claude_on_path() || paths.claude_home.is_dir());
 
         let mut state = self.lock();
-        for (id, stamps, value) in credentials {
+        for (id, on_slot, stamps, value) in credentials {
             let digest = value
                 .as_ref()
                 .ok()
@@ -595,6 +780,7 @@ impl Accounts {
             state.credentials.insert(
                 id,
                 CachedCredentials {
+                    on_slot,
                     stamps,
                     read_at_ms: now,
                     value,
@@ -602,8 +788,15 @@ impl Accounts {
                 },
             );
         }
-        for (id, stamp, value) in profiles {
-            state.profiles.insert(id, CachedProfile { stamp, value });
+        for (id, on_slot, stamp, value) in profiles {
+            state.profiles.insert(
+                id,
+                CachedProfile {
+                    on_slot,
+                    stamp,
+                    value,
+                },
+            );
         }
         if let Some(codex) = codex {
             state.codex = Some((now, codex));
@@ -714,9 +907,8 @@ impl Accounts {
     }
 
     /// The usage part of the feed, from what was last loaded (no file is
-    /// read here). `panes` counts the Claude Code panes running on each
-    /// account; `following`, those that follow the global one.
-    pub fn snapshot(&self, panes: &HashMap<String, u32>, following: u32) -> UsageSnapshot {
+    /// read here), with what `panes` says of the Claude Code panes.
+    pub fn snapshot(&self, panes: &PaneCounts) -> UsageSnapshot {
         let now = now_ms();
         let managed = self.managed();
         let registry = self.registry();
@@ -769,7 +961,13 @@ impl Accounts {
                         _ => reading.error.clone(),
                     };
                 }
-                let dir = paths.account_dir(&entry.id);
+                // Its folder (G12); without `accounts.json` there is no
+                // folder, and the one account is the slot.
+                let dir = if managed {
+                    paths.account_dir(&entry.id)
+                } else {
+                    paths.claude_home.clone()
+                };
                 accounts.push(ClaudeAccount {
                     id: entry.id.clone(),
                     name: entry.name.clone(),
@@ -787,14 +985,32 @@ impl Accounts {
                     signed_in,
                     token_expired: signed_in && token_expired,
                     shared: entry.shared.clone(),
-                    panes: panes.get(&entry.id).copied().unwrap_or(0),
+                    panes: panes.per_account.get(&entry.id).copied().unwrap_or(0),
                     usage,
                 });
             }
         }
         let rules = registry.rules.clone();
-        let suggestion =
-            rules::suggestion(&registry, &accounts, following, now, &mut state.first_seen);
+        let suggestion = rules::suggestion(
+            &registry,
+            &accounts,
+            panes.following,
+            now,
+            &mut state.first_seen,
+        );
+        let pending_global = registry
+            .pending_global
+            .as_ref()
+            .map(|pending| PendingGlobal {
+                account: pending.account.clone(),
+                by: pending.by.clone(),
+                waiting_for: panes
+                    .busy_on_folder
+                    .get(&pending.account)
+                    .cloned()
+                    .unwrap_or_default(),
+                at_ms: pending.at_ms,
+            });
         UsageSnapshot {
             claude: ClaudeSnapshot {
                 available,
@@ -805,6 +1021,8 @@ impl Accounts {
                 rules,
                 suggestion,
                 last_switch: registry.last_switch.clone(),
+                pending_global,
+                switch_delay_s: self.switch_delay_s(),
             },
             codex,
             generated_at_ms: now,
@@ -989,7 +1207,11 @@ mod tests {
         )
         .unwrap();
         let accounts = home.accounts();
-        let snapshot = accounts.snapshot(&HashMap::from([("default".into(), 2)]), 2);
+        let snapshot = accounts.snapshot(&PaneCounts {
+            per_account: HashMap::from([("default".into(), 2)]),
+            following: 2,
+            ..PaneCounts::default()
+        });
         assert!(accounts.can_fetch());
         assert_eq!(accounts.usage_origin(), Some("http://127.0.0.1:9"));
         let claude = snapshot.claude;
@@ -1044,7 +1266,11 @@ mod tests {
             accounts.account_of_dir(&registry, Path::new("/elsewhere")),
             None
         );
-        assert_eq!(accounts.env_dir("default"), None);
+        assert_eq!(
+            accounts.env_dir("default").as_deref(),
+            Some(home.paths.account_dir("default").to_string_lossy().as_ref()),
+            "every account has a folder (G2)"
+        );
         assert_eq!(
             accounts.env_dir("personal").as_deref(),
             Some(personal.to_string_lossy().as_ref())
@@ -1060,7 +1286,7 @@ mod tests {
         home.sign_in(&home.paths.claude_home, "demo-work", 1_000);
         let accounts = home.accounts();
         assert!(!accounts.refresh(None, true).await, "nothing was asked");
-        let snapshot = accounts.snapshot(&HashMap::new(), 0);
+        let snapshot = accounts.snapshot(&PaneCounts::default());
         let work = &snapshot.claude.accounts[0];
         assert!(work.signed_in && work.token_expired);
     }
@@ -1126,9 +1352,22 @@ mod tests {
     struct CountingStore(Arc<AtomicU64>);
 
     impl SecretStore for CountingStore {
-        fn read(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Credentials>, String> {
+        fn read_raw(
+            &self,
+            dir: &Path,
+            env_dir: Option<&str>,
+        ) -> Result<Option<credentials::Raw>, String> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            credentials::FileStore.read(dir, env_dir)
+            credentials::FileStore.read_raw(dir, env_dir)
+        }
+
+        fn write_raw(
+            &self,
+            dir: &Path,
+            env_dir: Option<&str>,
+            value: &credentials::Raw,
+        ) -> Result<(), String> {
+            credentials::FileStore.write_raw(dir, env_dir, value)
         }
     }
 
@@ -1149,11 +1388,11 @@ mod tests {
             0,
             "no Keychain while nobody watches"
         );
-        assert!(!accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        assert!(!accounts.snapshot(&PaneCounts::default()).claude.accounts[0].signed_in);
         accounts.mark_watched();
         accounts.load_soon().await;
         assert_eq!(asked.load(Ordering::SeqCst), 1);
-        assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        assert!(accounts.snapshot(&PaneCounts::default()).claude.accounts[0].signed_in);
     }
 
     #[tokio::test]
@@ -1214,14 +1453,14 @@ mod tests {
     fn the_snapshot_reads_nothing_itself() {
         let home = Home::new("cached");
         let accounts = home.accounts();
-        assert!(!accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        assert!(!accounts.snapshot(&PaneCounts::default()).claude.accounts[0].signed_in);
         home.sign_in(&home.paths.claude_home, "demo-work", now_ms() + 3_600_000);
         assert!(
-            !accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in,
+            !accounts.snapshot(&PaneCounts::default()).claude.accounts[0].signed_in,
             "not loaded yet"
         );
         accounts.load_blocking();
-        assert!(accounts.snapshot(&HashMap::new(), 0).claude.accounts[0].signed_in);
+        assert!(accounts.snapshot(&PaneCounts::default()).claude.accounts[0].signed_in);
     }
 
     #[test]

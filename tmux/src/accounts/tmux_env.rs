@@ -1,51 +1,25 @@
-//! The global account in tmux's global environment (agent-accounts D3):
-//! plain `claude` started in a new tmux window gets `CLAUDE_CONFIG_DIR` from
-//! there, so the worker keeps it in step with `accounts.json`: the global
-//! account's folder, or unset for `default`. Without `accounts.json` the
-//! worker leaves the variable alone. Shells already running keep the
-//! environment they started with.
+//! `CLAUDE_CONFIG_DIR` in tmux's environments. The worker no longer keeps
+//! the global account there (agent-accounts G1: D3 is gone): plain `claude`
+//! runs on the slot. What is left:
+//!
+//! - a new pane on the slot runs `env -u CLAUDE_CONFIG_DIR claude` when
+//!   its session's or tmux's global environment sets the variable (G5);
+//! - once, after an update from 0.3.0 (G11), the folder 0.3.0 put in tmux's
+//!   global environment is taken out: the only time the worker touches it.
 
-use super::{Accounts, DEFAULT};
+use std::path::Path;
+
 use crate::tmux_cli::{Tmux, TmuxError};
 
 pub const VAR: &str = "CLAUDE_CONFIG_DIR";
 
-/// The value `show-environment -g CLAUDE_CONFIG_DIR` printed: `None` when
+/// The value `show-environment [-g] CLAUDE_CONFIG_DIR` printed: `None` when
 /// unset or marked removed (`-CLAUDE_CONFIG_DIR`).
 pub fn parse_shown(output: &str) -> Option<String> {
     let line = output.lines().next()?.trim_end_matches('\r');
     line.strip_prefix(VAR)?
         .strip_prefix('=')
         .map(str::to_string)
-}
-
-impl Accounts {
-    /// What tmux's global `CLAUDE_CONFIG_DIR` should be: `Some(None)` for
-    /// unset, `Some(Some(dir))`, or `None` to leave it alone (no registry).
-    pub fn wanted_global_env(&self) -> Option<Option<String>> {
-        if !self.managed() {
-            return None;
-        }
-        let global = self.registry().global;
-        if global == DEFAULT {
-            Some(None)
-        } else {
-            self.env_dir(&global).map(Some)
-        }
-    }
-}
-
-/// The tmux command that makes the global environment say `wanted`.
-pub fn set_args(wanted: Option<&str>) -> Vec<String> {
-    match wanted {
-        Some(dir) => vec![
-            "set-environment".into(),
-            "-g".into(),
-            VAR.into(),
-            dir.into(),
-        ],
-        None => vec!["set-environment".into(), "-gu".into(), VAR.into()],
-    }
 }
 
 /// The `CLAUDE_CONFIG_DIR` of `pane`'s session when it has one of its own,
@@ -71,24 +45,48 @@ pub async fn session_value(tmux: &Tmux, pane: &str) -> Result<Option<Option<Stri
     }
 }
 
-/// Bring tmux's global environment in step with the registry. Returns
-/// whether it changed anything; no tmux server is nothing to do.
-pub async fn reconcile(tmux: &Tmux, accounts: &Accounts) -> Result<bool, String> {
-    let Some(wanted) = accounts.wanted_global_env() else {
+/// tmux's global `CLAUDE_CONFIG_DIR`, `None` when unset or no server runs.
+pub async fn global_value(tmux: &Tmux) -> Result<Option<String>, String> {
+    match tmux.run(["show-environment", "-g", VAR]).await {
+        Ok(output) => Ok(parse_shown(&output)),
+        Err(TmuxError::NoServer) => Ok(None),
+        Err(TmuxError::Failed(message)) if message.contains("unknown variable") => Ok(None),
+        Err(error) => Err(error.sentence()),
+    }
+}
+
+/// Whether a new process in `pane`'s session gets `CLAUDE_CONFIG_DIR` from
+/// tmux: its session's own value, else the global one.
+pub async fn pane_sets_var(tmux: &Tmux, pane: &str) -> Result<bool, String> {
+    Ok(match session_value(tmux, pane).await? {
+        Some(own) => own.is_some(),
+        None => global_value(tmux).await?.is_some(),
+    })
+}
+
+/// Whether `value` names a folder inside `root` (one 0.3.0 set).
+pub fn is_under(value: &str, root: &Path) -> bool {
+    let path = Path::new(value);
+    path.is_absolute()
+        && path
+            .components()
+            .collect::<std::path::PathBuf>()
+            .starts_with(root.components().collect::<std::path::PathBuf>())
+}
+
+/// G11: take out of tmux's global environment the account folder 0.3.0 put
+/// there (a folder inside the accounts `root`); anything else stays.
+/// Returns whether it changed anything.
+pub async fn unset_old_global(tmux: &Tmux, root: &Path) -> Result<bool, String> {
+    let Some(value) = global_value(tmux).await? else {
         return Ok(false);
     };
-    let current = match tmux.run(["show-environment", "-g", VAR]).await {
-        Ok(output) => parse_shown(&output),
-        Err(TmuxError::NoServer) => return Ok(false),
-        Err(TmuxError::Failed(message)) if message.contains("unknown variable") => None,
-        Err(error) => return Err(error.sentence()),
-    };
-    if current == wanted {
+    if !is_under(&value, root) {
         return Ok(false);
     }
-    match tmux.run(set_args(wanted.as_deref())).await {
+    match tmux.run(["set-environment", "-gu", VAR]).await {
         Ok(_) => {
-            tracing::info!(global = ?wanted, "tmux global CLAUDE_CONFIG_DIR set");
+            tracing::info!(was = %value, "tmux global CLAUDE_CONFIG_DIR of 0.3.0 removed");
             Ok(true)
         }
         Err(TmuxError::NoServer) => Ok(false),
@@ -98,7 +96,6 @@ pub async fn reconcile(tmux: &Tmux, accounts: &Accounts) -> Result<bool, String>
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::Home;
     use super::*;
 
     #[test]
@@ -113,27 +110,21 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_says_what_the_environment_holds() {
-        let home = Home::new("env");
-        let accounts = home.accounts();
-        assert_eq!(accounts.wanted_global_env(), None, "no registry: hands off");
-        let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
-        assert_eq!(accounts.wanted_global_env(), Some(None));
-        accounts
-            .update_registry(|registry| {
-                registry.global = id.clone();
-                Ok(())
-            })
-            .unwrap();
-        let dir = home.paths.account_dir(&id).to_string_lossy().into_owned();
-        assert_eq!(accounts.wanted_global_env(), Some(Some(dir.clone())));
-        assert_eq!(
-            set_args(Some(&dir)),
-            vec!["set-environment", "-g", "CLAUDE_CONFIG_DIR", dir.as_str()]
-        );
-        assert_eq!(
-            set_args(None),
-            vec!["set-environment", "-gu", "CLAUDE_CONFIG_DIR"]
-        );
+    fn only_folders_under_the_root_are_0_3_0_s() {
+        let root = Path::new("/home/dev/.local/share/iii/claude-accounts");
+        assert!(is_under(
+            "/home/dev/.local/share/iii/claude-accounts/black-trench",
+            root
+        ));
+        assert!(is_under(
+            "/home/dev/.local/share/iii/claude-accounts/./x/",
+            root
+        ));
+        assert!(!is_under("/home/dev/.claude-work", root));
+        assert!(!is_under(
+            "/home/dev/.local/share/iii/claude-accounts-other/x",
+            root
+        ));
+        assert!(!is_under("relative/claude-accounts/x", root));
     }
 }

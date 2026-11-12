@@ -1,11 +1,12 @@
 //! Where Claude Code accounts, their sign-ins and Codex's records live.
 //!
-//! The built-in account `default` is `~/.claude` with `~/.claude.json` next
-//! to it, and Claude Code runs there with `CLAUDE_CONFIG_DIR` unset
-//! (agent-accounts D1): set to `~/.claude`, Claude Code would keep its
-//! `.claude.json` inside the folder and, on macOS, look for its sign-in under
-//! another Keychain name. Every other account is a folder of its own under
-//! the accounts root, whose `.claude.json` is inside it.
+//! The global slot (agent-accounts G1) is `~/.claude` with `~/.claude.json`
+//! next to it: Claude Code runs there with `CLAUDE_CONFIG_DIR` unset (set to
+//! `~/.claude`, it would keep its `.claude.json` inside the folder and, on
+//! macOS, look for its sign-in under another Keychain name). Every account,
+//! `default` included, has a folder of its own under the accounts root
+//! (G2), whose `.claude.json` is inside it: it holds the account's sign-in
+//! while another account is global.
 //!
 //! For tests and demos (the README's "For tests and demos"):
 //! `III_CLAUDE_HOME` replaces `~/.claude`, and the default account's
@@ -25,9 +26,9 @@ pub const ANTHROPIC_API: &str = "https://api.anthropic.com";
 pub struct ClaudePaths {
     /// The home folder, for `~` in what people read.
     pub home: PathBuf,
-    /// The default account's folder: `~/.claude`.
+    /// The global slot: `~/.claude`.
     pub claude_home: PathBuf,
-    /// The default account's `.claude.json`: `~/.claude.json`.
+    /// The slot's `.claude.json`: `~/.claude.json`.
     pub default_json: PathBuf,
     /// Where added accounts live; `accounts.json` is in it.
     pub root: PathBuf,
@@ -92,22 +93,14 @@ impl ClaudePaths {
         self.root.join("accounts.json")
     }
 
-    /// The config folder of account `id`.
+    /// The folder of account `id` (`default` too): `<root>/<id>` (G2).
     pub fn account_dir(&self, id: &str) -> PathBuf {
-        if id == super::DEFAULT {
-            self.claude_home.clone()
-        } else {
-            self.root.join(id)
-        }
+        self.root.join(id)
     }
 
-    /// The `.claude.json` of account `id`.
+    /// The `.claude.json` of account `id`'s folder.
     pub fn account_json(&self, id: &str) -> PathBuf {
-        if id == super::DEFAULT {
-            self.default_json.clone()
-        } else {
-            self.root.join(id).join(".claude.json")
-        }
+        self.root.join(id).join(".claude.json")
     }
 
     /// `path` with the home folder as `~`.
@@ -120,8 +113,8 @@ impl ClaudePaths {
     }
 
     /// Whether `path` (a process's `CLAUDE_CONFIG_DIR`, or its default) is
-    /// the default account: `~/.claude`, with or without a trailing slash.
-    pub fn is_default_dir(&self, path: &Path) -> bool {
+    /// the global slot: `~/.claude`, with or without a trailing slash.
+    pub fn is_slot_dir(&self, path: &Path) -> bool {
         same_dir(path, &self.claude_home)
     }
 }
@@ -197,7 +190,10 @@ mod tests {
             Some(Path::new("/home/dev/.cache/iii/tmux/usage.json"))
         );
         assert_eq!(p.usage_origin, ANTHROPIC_API);
-        assert_eq!(p.account_dir("default"), Path::new("/home/dev/.claude"));
+        assert_eq!(
+            p.account_dir("default"),
+            Path::new("/home/dev/.local/share/iii/claude-accounts/default")
+        );
         assert_eq!(
             p.account_json("work"),
             Path::new("/home/dev/.local/share/iii/claude-accounts/work/.claude.json")
@@ -246,9 +242,9 @@ mod tests {
         assert_eq!(p.display(Path::new("/home/dev/.claude")), "~/.claude");
         assert_eq!(p.display(Path::new("/home/dev")), "~");
         assert_eq!(p.display(Path::new("/srv/x")), "/srv/x");
-        assert!(p.is_default_dir(Path::new("/home/dev/.claude/")));
-        assert!(p.is_default_dir(Path::new("/home/dev/./.claude")));
-        assert!(!p.is_default_dir(Path::new("/home/dev/.claude-work")));
+        assert!(p.is_slot_dir(Path::new("/home/dev/.claude/")));
+        assert!(p.is_slot_dir(Path::new("/home/dev/./.claude")));
+        assert!(!p.is_slot_dir(Path::new("/home/dev/.claude-work")));
     }
 
     #[test]

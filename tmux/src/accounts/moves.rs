@@ -15,8 +15,12 @@
 //!   once the shell has the terminal back, it gets the command typed (`C-e`
 //!   `C-u` to clear the line, the command, Enter). If the shell doesn't
 //!   take the terminal back, nothing is typed. It is always the explicit
-//!   form there (`env CLAUDE_CONFIG_DIR=…`): the shell kept the environment
-//!   it started with (D3).
+//!   form (`env -u CLAUDE_CONFIG_DIR` for the slot, `env
+//!   CLAUDE_CONFIG_DIR=…` for a folder): the shell kept the environment it
+//!   started with.
+//! - A switch of the global account (`switch`) stops pinned panes before
+//!   it swaps the sign-ins and starts them after ([`stop`],
+//!   [`Stopped::start`]).
 //! - When the conversation can't be copied (the other account has a longer
 //!   copy of it, say), Claude Code starts again where it was, resuming the
 //!   same conversation, and the move fails.
@@ -39,7 +43,8 @@ use std::time::{Duration, Instant};
 use super::launch::{MARK_ACCOUNT, MARK_PENDING, MARK_SKIP};
 use super::panes::{MoveKind, PaneState, NOT_RUNNING, NO_SESSION};
 use super::registry::{self, Registry};
-use super::{tmux_env, Accounts, GLOBAL};
+use super::slot::Place;
+use super::{Accounts, GLOBAL};
 use crate::tmux_cli::Tmux;
 
 /// How long Claude Code gets to end on SIGTERM.
@@ -79,14 +84,44 @@ pub enum Plan {
         to: String,
         state: &'static str,
     },
-    /// Move it now (it is idle).
-    Now { mark: String, to: String },
-    /// Move it once its turn ends.
-    AfterTurn { mark: String, to: String },
+    /// Move it now (it is idle) to `place`.
+    Now {
+        mark: String,
+        to: String,
+        place: Place,
+    },
+    /// Move it to `place` once its turn ends.
+    AfterTurn {
+        mark: String,
+        to: String,
+        place: Place,
+    },
+}
+
+/// Where a pane marked `mark` (`global` or an id) runs, with `registry`
+/// naming the global account: the slot for `global` and the global
+/// account's id, the account's folder otherwise (G5).
+pub fn place_for(mark: &str, registry: &Registry) -> Place {
+    if mark == GLOBAL || mark == registry.global {
+        Place::Slot
+    } else {
+        Place::Folder(mark.to_string())
+    }
+}
+
+/// The account a pane marked `mark` uses.
+fn account_for(mark: &str, registry: &Registry) -> String {
+    if mark == GLOBAL {
+        registry.global.clone()
+    } else {
+        mark.to_string()
+    }
 }
 
 /// The plan for `want` (`global` or an id) on `pane`, `registry` naming
-/// the accounts and the global one.
+/// the accounts and the global one (G12): `global` runs on the slot and
+/// follows; the global account's id pins the pane there (on the slot,
+/// without a restart); another id runs on that account's folder.
 pub fn plan(pane: &PaneState, registry: &Registry, want: &str) -> Result<Plan, String> {
     let want = want.trim();
     if want != GLOBAL && !registry.has(want) {
@@ -96,11 +131,8 @@ pub fn plan(pane: &PaneState, registry: &Registry, want: &str) -> Result<Plan, S
         return Err(super::panes::SHARED_MARKS.to_string());
     }
     let mark = want.to_string();
-    let to = if want == GLOBAL {
-        registry.global.clone()
-    } else {
-        mark.clone()
-    };
+    let to = account_for(want, registry);
+    let place = place_for(want, registry);
     let settled = |pending_cancelled: bool| {
         let state = if pending_cancelled {
             "cancelled"
@@ -115,23 +147,19 @@ pub fn plan(pane: &PaneState, registry: &Registry, want: &str) -> Result<Plan, S
             state,
         }
     };
-    if pane.claude_pid.is_none() {
+    if !pane.running() {
         return Ok(settled(false));
     }
-    if pane.info.account.as_deref() == Some(to.as_str()) {
+    if pane.place.as_ref() == Some(&place) {
         return Ok(settled(pane.marks.pending.is_some()));
     }
     if !pane.info.movable || pane.kind.is_none() {
-        return Err(pane
-            .info
-            .not_movable_reason
-            .clone()
-            .unwrap_or_else(|| "Claude Code in this pane can't be moved.".to_string()));
+        return Err(pane.why_not_movable());
     }
     Ok(if pane.idle() {
-        Plan::Now { mark, to }
+        Plan::Now { mark, to, place }
     } else {
-        Plan::AfterTurn { mark, to }
+        Plan::AfterTurn { mark, to, place }
     })
 }
 
@@ -488,61 +516,60 @@ async fn share(
         .map_err(|error| format!("The worker failed to copy the conversation ({error})."))?
 }
 
-/// Move `pane` (as a fresh collection saw it) to account `to` now, marking
-/// it `mark` (`global` or `to`). The caller checked it is movable; whether
-/// it is still idle is checked here, right before Claude Code is stopped
-/// ([`NOT_IDLE`] when it is not, with nothing changed).
-pub async fn move_now(
-    tmux: &Tmux,
-    accounts: &Accounts,
-    pane: &PaneState,
-    to: &str,
-    mark: &str,
-) -> Result<(), String> {
+/// A Claude Code the worker stopped (D6), whose pane waits for the
+/// command that starts it again: [`Stopped::start`] with a new one, or
+/// [`Stopped::start_where_it_was`]. No other move of the pane happens until
+/// then.
+pub struct Stopped {
+    _guard: MoveGuard,
+    pub pane_id: String,
+    kind: MoveKind,
+    /// The tmux command that puts remain-on-exit back (a respawned pane).
+    restore: Vec<String>,
+    /// The pane's folder, as a tmux format literal.
+    cwd: String,
+    pub session: String,
+    pub record: crate::activity::ClaudeRecord,
+    pub skip: bool,
+    /// Where it ran.
+    pub from: Place,
+    /// What starts it there again.
+    stay: String,
+}
+
+/// Stop the Claude Code of `pane` (as a fresh collection saw it) for a
+/// move: looked at again right before the signal ([`NOT_IDLE`] when it is
+/// no longer idle, nothing changed), SIGTERM, then the pane dead (kept with
+/// remain-on-exit) or its shell back in front.
+pub async fn stop(tmux: &Tmux, accounts: &Accounts, pane: &PaneState) -> Result<Stopped, String> {
     let guard = accounts.moving.begin(&pane.pane_id).ok_or(BUSY)?;
-    let paths = accounts
-        .paths()
-        .cloned()
-        .ok_or_else(|| "No home folder for Claude Code accounts.".to_string())?;
     let claude_pid = pane.claude_pid.ok_or(NOT_RUNNING)?;
-    let kind = pane.kind.ok_or_else(|| {
-        pane.info
-            .not_movable_reason
-            .clone()
-            .unwrap_or_else(|| "Claude Code in this pane can't be moved.".to_string())
-    })?;
+    let kind = pane.kind.ok_or_else(|| pane.why_not_movable())?;
     let record = pane.record.clone().ok_or(NO_SESSION)?;
     let session = record.session_id.clone().ok_or(NO_SESSION)?;
     let from = pane
-        .info
-        .account
+        .place
         .clone()
         .ok_or("Claude Code runs on a folder that is no account here.")?;
     let skip = pane.info.skip_permissions;
-    if !accounts.is_signed_in(to) {
-        return Err(not_signed_in(accounts, to));
-    }
-
-    // The commands first, so nothing stops when they can't be built.
-    // Always on `to` by name, even for a pane that follows the global
-    // account: the conversation is copied to `to`, and another switch
-    // during the move (or a session's own CLAUDE_CONFIG_DIR) must not start
-    // it elsewhere. The mark says it follows the global account.
-    let launch = accounts.plan_launch(to, skip, Some(&session))?;
-    // Back where it was, should the conversation not reach `to`.
-    let stay = accounts.plan_launch(&from, skip, Some(&session))?;
+    // Back where it was, should anything after the stop fail.
+    let stay = accounts.restart_command(&from, skip, Some(&session))?;
     let cwd = record
         .cwd
         .clone()
         .filter(|cwd| Path::new(cwd).is_dir())
         .unwrap_or_else(|| pane.cwd.clone());
+    let cwd = crate::tmux_cli::format_literal(&cwd);
     let scope = tmux.pane_scope();
     let id = pane.pane_id.as_str();
-
+    let mut restore = Vec::new();
     match kind {
         MoveKind::Respawn => {
             let before = local_option(tmux, scope, id, "remain-on-exit").await?;
-            let restore = restore_option(scope, id, "remain-on-exit", before.as_deref());
+            restore = restore_option(scope, id, "remain-on-exit", before.as_deref())
+                .into_iter()
+                .map(str::to_string)
+                .collect();
             tmux.run(["set-option", scope, "-t", id, "remain-on-exit", "on"])
                 .await
                 .map_err(|error| error.sentence())?;
@@ -552,13 +579,12 @@ pub async fn move_now(
                 let _ = tmux.run(&restore).await;
                 return Err(error.to_string());
             }
-            tracing::info!(pane = %id, to, mark, "moving Claude Code to another account");
+            tracing::info!(pane = %id, "stopping Claude Code to move it");
             signal(claude_pid, libc::SIGTERM);
             let dead = wait_for(STOP_WAIT, || async {
                 pane_field(tmux, id, "#{pane_dead}").await.as_deref() == Ok("1")
             })
             .await;
-            let cwd = crate::tmux_cli::format_literal(&cwd);
             if !dead {
                 // SIGTERM was sent: the pane must not close when Claude
                 // Code ends at last. remain-on-exit stays on until then.
@@ -568,56 +594,15 @@ pub async fn move_now(
                     id.to_string(),
                     pane.pane_pid,
                     cwd,
-                    stay.command.clone(),
-                    restore.iter().map(|arg| arg.to_string()).collect(),
+                    stay,
+                    restore,
                 );
                 return Err(DID_NOT_STOP.to_string());
             }
-            let shared = share(&record, paths.account_dir(to), &session).await;
-            let mut commands = Vec::new();
-            match &shared {
-                Ok(_) => {
-                    commands.extend(mark_args(scope, id, mark, skip, None));
-                    commands.push(vec![
-                        "respawn-pane",
-                        "-t",
-                        id,
-                        "-c",
-                        cwd.as_str(),
-                        "--",
-                        launch.command.as_str(),
-                    ]);
-                }
-                // The conversation stays where it was, and so does Claude Code.
-                Err(_) => commands.push(vec![
-                    "respawn-pane",
-                    "-t",
-                    id,
-                    "-c",
-                    cwd.as_str(),
-                    "--",
-                    stay.command.as_str(),
-                ]),
-            }
-            let started = tmux.run(chain(commands)).await;
-            // On its own: an error in a command list stops the commands
-            // after it, which would leave remain-on-exit on.
-            if let Err(error) = tmux.run(&restore).await {
-                tracing::warn!(pane = %id, error = %error.sentence(), "remain-on-exit not put back");
-            }
-            if let Err(error) = shared {
-                return Err(format!("{error} Claude Code started again on its account."));
-            }
-            started.map_err(|error| {
-                format!(
-                    "Claude Code stopped but did not start again on the account: {}",
-                    error.sentence()
-                )
-            })?;
         }
         MoveKind::Shell => {
             check_still_idle(tmux, pane, claude_pid, &session).await?;
-            tracing::info!(pane = %id, to, mark, "moving Claude Code started in a shell");
+            tracing::info!(pane = %id, "stopping Claude Code started in a shell to move it");
             signal(claude_pid, libc::SIGTERM);
             let gone = wait_for(STOP_WAIT, || async { !alive(claude_pid) }).await;
             if !gone {
@@ -640,43 +625,135 @@ pub async fn move_now(
             if !back {
                 return Err(SHELL_NOT_BACK.to_string());
             }
-            let shared = share(&record, paths.account_dir(to), &session).await;
-            let mut commands = Vec::new();
-            let command = match &shared {
-                Ok(_) => {
-                    commands.extend(mark_args(scope, id, mark, skip, None));
-                    launch.command.as_str()
-                }
-                Err(_) => stay.command.as_str(),
-            };
-            commands.extend(shell_keys(id, command));
-            // The copy took a moment: the shell must still be the one in
-            // front, or the keys would go to whatever was started since.
-            let still_shell = pane_field(tmux, id, "#{pane_current_command}")
-                .await
-                .is_ok_and(|now| super::panes::is_shell_name(&now));
-            if !still_shell {
-                return Err(SHELL_NOT_BACK.to_string());
-            }
-            let typed = tmux.run(chain(commands)).await;
-            if let Err(error) = shared {
-                return Err(format!("{error} Claude Code started again on its account."));
-            }
-            typed.map_err(|error| {
-                format!(
-                    "Claude Code stopped but the shell did not get the command: {}",
-                    error.sentence()
-                )
-            })?;
         }
     }
-    // Another switch made a newer account global while this pane moved
-    // (its move of this pane was refused as busy): the pane follows that
-    // one too, once the pending round finds it idle.
-    if mark == GLOBAL {
+    Ok(Stopped {
+        _guard: guard,
+        pane_id: pane.pane_id.clone(),
+        kind,
+        restore,
+        cwd,
+        session,
+        record,
+        skip,
+        from,
+        stay,
+    })
+}
+
+impl Stopped {
+    /// Start Claude Code again with `command`, the pane marked `mark`
+    /// first (with no pending move) when given.
+    pub async fn start(self, tmux: &Tmux, command: &str, mark: Option<&str>) -> Result<(), String> {
+        let scope = tmux.pane_scope();
+        let id = self.pane_id.as_str();
+        let mut commands = Vec::new();
+        if let Some(mark) = mark {
+            commands.extend(mark_args(scope, id, mark, self.skip, None));
+        }
+        match self.kind {
+            MoveKind::Respawn => {
+                commands.push(vec![
+                    "respawn-pane",
+                    "-t",
+                    id,
+                    "-c",
+                    self.cwd.as_str(),
+                    "--",
+                    command,
+                ]);
+                let started = tmux.run(chain(commands)).await;
+                // On its own: an error in a command list stops the commands
+                // after it, which would leave remain-on-exit on.
+                if let Err(error) = tmux.run(&self.restore).await {
+                    tracing::warn!(pane = %id, error = %error.sentence(), "remain-on-exit not put back");
+                }
+                started.map(drop).map_err(|error| {
+                    format!(
+                        "Claude Code stopped but did not start again: {}",
+                        error.sentence()
+                    )
+                })
+            }
+            MoveKind::Shell => {
+                // The shell must still be the one in front, or the keys
+                // would go to whatever was started since.
+                let still_shell = pane_field(tmux, id, "#{pane_current_command}")
+                    .await
+                    .is_ok_and(|now| super::panes::is_shell_name(&now));
+                if !still_shell {
+                    return Err(SHELL_NOT_BACK.to_string());
+                }
+                commands.extend(shell_keys(id, command));
+                tmux.run(chain(commands)).await.map(drop).map_err(|error| {
+                    format!(
+                        "Claude Code stopped but the shell did not get the command: {}",
+                        error.sentence()
+                    )
+                })
+            }
+        }
+    }
+
+    /// Start Claude Code again where it ran, resuming its conversation,
+    /// its marks as they were.
+    pub async fn start_where_it_was(self, tmux: &Tmux) -> Result<(), String> {
+        let stay = self.stay.clone();
+        self.start(tmux, &stay, None).await
+    }
+
+    /// Make `place`'s folder see the conversation, off the async threads.
+    pub async fn share_with(&self, accounts: &Accounts, place: &Place) -> Result<bool, String> {
+        let stores = accounts
+            .stores()
+            .ok_or_else(|| "No home folder for Claude Code accounts.".to_string())?;
+        share(&self.record, stores.dir(place), &self.session).await
+    }
+}
+
+/// Move `pane` (as a fresh collection saw it) to `place` now, marking it
+/// `mark` (`global` or an id), for account `to`. The caller checked it is
+/// movable; whether it is still idle is checked here, right before Claude
+/// Code is stopped ([`NOT_IDLE`] when it is not, with nothing changed).
+pub async fn move_now(
+    tmux: &Tmux,
+    accounts: &Accounts,
+    pane: &PaneState,
+    to: &str,
+    mark: &str,
+    place: &Place,
+) -> Result<(), String> {
+    if !accounts.is_signed_in(to) {
+        return Err(not_signed_in(accounts, to));
+    }
+    // The command first, so nothing stops when it can't be built.
+    let session = pane
+        .record
+        .as_ref()
+        .and_then(|record| record.session_id.clone())
+        .ok_or(NO_SESSION)?;
+    let launch = accounts.restart_command(place, pane.info.skip_permissions, Some(&session))?;
+    let stopped = stop(tmux, accounts, pane).await?;
+    tracing::info!(pane = %pane.pane_id, to, mark, "moving Claude Code to another account");
+    match stopped.share_with(accounts, place).await {
+        Ok(_) => stopped.start(tmux, &launch, Some(mark)).await?,
+        // The conversation stays where it was, and so does Claude Code.
+        Err(error) => {
+            let started = stopped.start_where_it_was(tmux).await;
+            return Err(match started {
+                Ok(()) => format!("{error} Claude Code started again on its account."),
+                Err(start_error) => format!("{error} {start_error}"),
+            });
+        }
+    }
+    // Pinned to an account on the slot while another one was made global
+    // meanwhile: it goes on to its folder once the pending round finds it
+    // idle.
+    let id = pane.pane_id.as_str();
+    if *place == Place::Slot && mark != GLOBAL {
         let global = accounts.registry().global;
-        if global != to
-            && set_marks(tmux, id, GLOBAL, skip, Some(&global))
+        if global != mark
+            && set_marks(tmux, id, mark, pane.info.skip_permissions, Some(mark))
                 .await
                 .is_ok()
         {
@@ -684,7 +761,7 @@ pub async fn move_now(
         }
     }
     // Claude Code may renew `to`'s token: read it again on the next load,
-    // while `to` still counts as signed in for the next pane of a switch.
+    // while `to` still counts as signed in for the next pane.
     accounts.reread_credentials(to);
     accounts.clear_move_error(id);
     Ok(())
@@ -856,21 +933,23 @@ pub async fn apply(
             accounts.forget_waiting(&pane.pane_id);
             Ok(state)
         }
-        Plan::AfterTurn { mark, to } => {
+        Plan::AfterTurn { mark, to, .. } => {
             wait_for_turn(tmux, accounts, pane, mark, to).await?;
             Ok("after_turn")
         }
-        Plan::Now { mark, to } => match move_now(tmux, accounts, pane, to, mark).await {
-            Ok(()) => {
-                accounts.forget_waiting(&pane.pane_id);
-                Ok("moved")
+        Plan::Now { mark, to, place } => {
+            match move_now(tmux, accounts, pane, to, mark, place).await {
+                Ok(()) => {
+                    accounts.forget_waiting(&pane.pane_id);
+                    Ok("moved")
+                }
+                Err(error) if error == NOT_IDLE => {
+                    wait_for_turn(tmux, accounts, pane, mark, to).await?;
+                    Ok("after_turn")
+                }
+                Err(error) => Err(error),
             }
-            Err(error) if error == NOT_IDLE => {
-                wait_for_turn(tmux, accounts, pane, mark, to).await?;
-                Ok("after_turn")
-            }
-            Err(error) => Err(error),
-        },
+        }
     }
 }
 
@@ -879,11 +958,7 @@ pub async fn apply(
 pub fn pending_target(pane: &PaneState, registry: &Registry) -> Option<String> {
     let pending = pane.marks.pending.as_ref()?;
     let mark = pane.marks.account.as_ref().unwrap_or(pending);
-    Some(if mark == GLOBAL {
-        registry.global.clone()
-    } else {
-        mark.clone()
-    })
+    Some(account_for(mark, registry))
 }
 
 /// What to do about a pane carrying `@iii_claude_pending` (§3.7): `None`
@@ -901,18 +976,15 @@ pub fn pending_plan(
         .account
         .clone()
         .unwrap_or_else(|| pending.clone());
-    let to = if mark == GLOBAL {
-        registry.global.clone()
-    } else {
-        mark.clone()
-    };
+    let to = account_for(&mark, registry);
+    let place = place_for(&mark, registry);
     let settled = Plan::Marks {
         mark: mark.clone(),
         to: to.clone(),
         state: "cancelled",
     };
     // Gone, or it already runs there.
-    if pane.claude_pid.is_none() || pane.info.account.as_deref() == Some(to.as_str()) {
+    if !pane.running() || pane.place.as_ref() == Some(&place) {
         return Some(Ok(settled));
     }
     if !registry.has(&to) {
@@ -922,13 +994,11 @@ pub fn pending_plan(
         return Some(Err(super::panes::SHARED_MARKS.to_string()));
     }
     if !pane.info.movable || pane.kind.is_none() {
-        return Some(Err(pane.info.not_movable_reason.clone().unwrap_or_else(
-            || "Claude Code in this pane can't be moved.".to_string(),
-        )));
+        return Some(Err(pane.why_not_movable()));
     }
     if !pane.idle() {
         // The global account changed again while it waited: say where to.
-        return (pending != to).then_some(Ok(Plan::AfterTurn { mark, to }));
+        return (pending != to).then_some(Ok(Plan::AfterTurn { mark, to, place }));
     }
     if !signed_in(&to) {
         return Some(Err(format!(
@@ -936,245 +1006,14 @@ pub fn pending_plan(
             registry.get(&to).map_or(to.as_str(), |e| e.name.as_str())
         )));
     }
-    Some(Ok(Plan::Now { mark, to }))
+    Some(Ok(Plan::Now { mark, to, place }))
 }
 
-/// How panes that follow the global account go along when it changes (D8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SwitchMode {
-    /// Idle ones move now, working or waiting ones after their turn.
-    #[default]
-    IdleNowWorkingAfter,
-    /// They stay, pinned to the account they run on.
-    NewOnly,
-}
-
-/// Who switches the global account.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SwitchBy {
-    /// Someone, through `tmux::accounts::global`: noted in `last_switch`
-    /// (`auto: false`), and any switch back the rules had planned is off.
-    Person,
-    /// The rules (D14). They decided on the registry of `generation`; a
-    /// registry written since (someone switched, even back and forth) is
-    /// left alone. `record` becomes `last_switch` in the same write as the
-    /// switch, and gets the panes moved once they are.
-    Rules {
-        generation: u64,
-        record: crate::model::AccountSwitch,
-    },
-}
-
-/// The registry changed while the rules decided.
-pub const RULES_STALE: &str =
-    "The global account changed while the rules decided; nothing was switched.";
-
-/// What a switch of the global account did to the panes that follow it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Switched {
-    pub moved: Vec<String>,
-    pub after_turn: Vec<String>,
-    pub stayed: Vec<String>,
-    /// Another account was made global before every pane was looked at:
-    /// the panes left follow that one now, and were not touched.
-    pub superseded: bool,
-}
-
-/// Make `to` the global account (D3, D8): the registry, tmux's global
-/// environment, then the panes that follow it, as `mode` says. `panes` is a
-/// fresh collection; each pane is looked at again right before it moves,
-/// since every move before it can take seconds. `to` must be signed in.
-pub async fn switch_global(
-    tmux: &Tmux,
-    accounts: &Accounts,
-    panes: &std::collections::HashMap<String, PaneState>,
-    to: &str,
-    mode: SwitchMode,
-    by: SwitchBy,
-) -> Result<Switched, String> {
-    let to = to.trim();
-    if !accounts.registry().has(to) {
-        return Err(super::manage::no_account(to));
-    }
-    if !accounts.is_signed_in(to) {
-        return Err(not_signed_in(accounts, to));
-    }
-    let at_ms = crate::model::now_ms();
-    let written = accounts
-        .update_registry_at_async(|registry, generation| {
-            if !registry.has(to) {
-                return Err(super::manage::no_account(to));
-            }
-            let record = match &by {
-                // The same account again: nothing to note, but a switch back
-                // the rules planned is off all the same.
-                SwitchBy::Person if registry.global == to => {
-                    if let Some(last) = registry.last_switch.as_mut() {
-                        last.back_at_ms = None;
-                    }
-                    None
-                }
-                // The latest change of the global account, made by someone:
-                // the rules never undo it (no switch back).
-                SwitchBy::Person => Some(crate::model::AccountSwitch {
-                    from: registry.global.clone(),
-                    to: to.to_string(),
-                    reason: None,
-                    auto: false,
-                    moved: Vec::new(),
-                    after_turn: Vec::new(),
-                    at_ms,
-                    back_at_ms: None,
-                }),
-                SwitchBy::Rules {
-                    generation: decided_on,
-                    record,
-                } => {
-                    if generation != *decided_on {
-                        return Err(RULES_STALE.to_string());
-                    }
-                    Some(record.clone())
-                }
-            };
-            // With the switch itself: a person's switch after a rules' one
-            // always finds it, and replaces it with its own (no way back).
-            if let Some(record) = &record {
-                registry.last_switch = Some(record.clone());
-            }
-            registry.global = to.to_string();
-            Ok(record)
-        })
-        .await?;
-    if let Err(error) = tmux_env::reconcile(tmux, accounts).await {
-        tracing::warn!(%error, "tmux global CLAUDE_CONFIG_DIR not set");
-    }
-    let mut out = Switched::default();
-    let mut following: Vec<&PaneState> = panes
-        .values()
-        .filter(|pane| pane.marks.account.as_deref() == Some(GLOBAL))
-        .filter(|pane| pane.claude_pid.is_some())
-        .filter(|pane| pane.info.account.as_deref() != Some(to))
-        .collect();
-    following.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
-    for pane in following {
-        // Each move can take seconds: someone may have made another account
-        // global meanwhile, and the panes left follow that one now.
-        if accounts.registry().global != to {
-            tracing::info!(to, "the global account changed during the switch");
-            out.superseded = true;
-            break;
-        }
-        let id = pane.pane_id.clone();
-        // Pinned meanwhile: no longer this switch's pane.
-        match mark_now(tmux, &id).await {
-            Ok(Some(mark)) if mark == GLOBAL => {}
-            Ok(_) => continue,
-            Err(error) => {
-                accounts.note_move_error(&id, &error);
-                out.stayed.push(id);
-                continue;
-            }
-        }
-        accounts.clear_move_error(&id);
-        // One pane's failure is its own: the others still go, and the
-        // switch's bookkeeping below always runs.
-        match switch_pane(tmux, accounts, pane, to, mode).await {
-            Ok(Went::Moved) => out.moved.push(id),
-            Ok(Went::AfterTurn) => out.after_turn.push(id),
-            Ok(Went::Stayed) => out.stayed.push(id),
-            Err(error) => {
-                tracing::warn!(pane = %id, %error, "pane not moved");
-                accounts.note_move_error(&id, &error);
-                out.stayed.push(id);
-            }
-        }
-    }
-    if let Some(record) = &written {
-        note_switched_panes(accounts, record, &out).await;
-    }
-    Ok(out)
-}
-
-/// Where a pane that follows the global account went in a switch.
-enum Went {
-    Moved,
-    AfterTurn,
-    Stayed,
-}
-
-async fn switch_pane(
-    tmux: &Tmux,
-    accounts: &Accounts,
-    pane: &PaneState,
-    to: &str,
-    mode: SwitchMode,
-) -> Result<Went, String> {
-    let id = pane.pane_id.as_str();
-    match mode {
-        // Before tmux 3.0 the mark is the window's, shared with another
-        // Claude Code pane: it is left as it is.
-        SwitchMode::NewOnly if pane.marks_shared => Ok(Went::Stayed),
-        SwitchMode::NewOnly => {
-            // Pinned where it runs, so its chip never says the new one.
-            if let Some(current) = pane.info.account.as_deref() {
-                set_marks(tmux, id, current, pane.info.skip_permissions, None).await?;
-            }
-            Ok(Went::Stayed)
-        }
-        SwitchMode::IdleNowWorkingAfter => {
-            if pane.kind.is_none() || !pane.info.movable || pane.marks_shared {
-                Ok(Went::Stayed)
-            } else if pane.idle() {
-                match move_now(tmux, accounts, pane, to, GLOBAL).await {
-                    Ok(()) => Ok(Went::Moved),
-                    Err(error) if error == NOT_IDLE => {
-                        wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
-                        Ok(Went::AfterTurn)
-                    }
-                    Err(error) => Err(error),
-                }
-            } else {
-                wait_for_turn(tmux, accounts, pane, GLOBAL, to).await?;
-                Ok(Went::AfterTurn)
-            }
-        }
-    }
-}
-
-/// The panes a switch moved, in its `last_switch`, while that is still its
-/// record (a later switch leaves its own). Nothing else of it changes.
-async fn note_switched_panes(
-    accounts: &Accounts,
-    record: &crate::model::AccountSwitch,
-    out: &Switched,
-) {
-    let ours = |last: &crate::model::AccountSwitch| {
-        last.auto == record.auto
-            && last.at_ms == record.at_ms
-            && last.from == record.from
-            && last.to == record.to
-    };
-    if !accounts.registry().last_switch.as_ref().is_some_and(ours) {
-        return;
-    }
-    let noted = accounts
-        .update_registry_at_async(|registry, _| {
-            if let Some(last) = registry.last_switch.as_mut().filter(|last| ours(last)) {
-                last.moved = out.moved.clone();
-                last.after_turn = out.after_turn.clone();
-            }
-            Ok(())
-        })
-        .await;
-    if let Err(error) = noted {
-        tracing::warn!(%error, "the panes of the last switch not saved");
-    }
-}
-
-/// Move the idle Claude Code panes running on `from` to `to`, pinning them
+/// Move the idle Claude Code panes using `from` to `to`, pinning them
 /// there: those that follow the global account, are pinned to `from` or
-/// were started by hand; never those pinned elsewhere. A pane that began a
-/// turn meanwhile stays.
+/// were started by hand; never those pinned elsewhere. Each account's
+/// panes are where its sign-in is: the slot for the global one, its folder
+/// otherwise. A pane that began a turn meanwhile stays.
 pub async fn move_idle(
     tmux: &Tmux,
     accounts: &Accounts,
@@ -1194,16 +1033,16 @@ pub async fn move_idle(
     if !accounts.is_signed_in(to) {
         return Err(not_signed_in(accounts, to));
     }
+    let from_place = Accounts::place_of(&registry, from);
+    let to_place = Accounts::place_of(&registry, to);
     let mut candidates: Vec<&PaneState> = panes
         .values()
-        .filter(|pane| pane.claude_pid.is_some() && pane.info.account.as_deref() == Some(from))
+        .filter(|pane| pane.running() && pane.place.as_ref() == Some(&from_place))
         .filter(|pane| {
             matches!(pane.marks.account.as_deref(), None | Some(GLOBAL))
                 || pane.marks.account.as_deref() == Some(from)
         })
-        .filter(|pane| {
-            pane.idle() && pane.info.movable && pane.kind.is_some() && !pane.marks_shared
-        })
+        .filter(|pane| pane.idle() && pane.can_move())
         .collect();
     candidates.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
     let mut moved = Vec::new();
@@ -1218,7 +1057,7 @@ pub async fn move_idle(
                 continue;
             }
         }
-        match move_now(tmux, accounts, pane, to, to).await {
+        match move_now(tmux, accounts, pane, to, to, &to_place).await {
             Ok(()) => moved.push(pane.pane_id.clone()),
             Err(error) if error == NOT_IDLE => {}
             Err(error) => {
@@ -1237,7 +1076,14 @@ mod tests {
     use crate::activity::ClaudeRecord;
     use crate::model::{AgentState, Follow, PaneClaude};
 
+    /// A pane on `account`'s place in a registry whose global is `default`
+    /// unless the test says otherwise: `default` and `global` mean the slot.
     fn pane(account: &str, mark: Option<&str>, pending: Option<&str>, status: &str) -> PaneState {
+        let place = if account == "default" {
+            Place::Slot
+        } else {
+            Place::Folder(account.to_string())
+        };
         PaneState {
             pane_id: "%3".into(),
             pane_pid: 10,
@@ -1266,6 +1112,7 @@ mod tests {
             },
             agent_state: Some(AgentState::Idle),
             cwd: "/p".into(),
+            place: Some(place),
             kind: Some(MoveKind::Respawn),
             marks_shared: false,
         }
@@ -1321,7 +1168,8 @@ mod tests {
             .unwrap(),
             Plan::Now {
                 mark: "personal".into(),
-                to: "personal".into()
+                to: "personal".into(),
+                place: Place::Folder("personal".into())
             }
         );
         assert_eq!(
@@ -1333,7 +1181,8 @@ mod tests {
             .unwrap(),
             Plan::AfterTurn {
                 mark: "personal".into(),
-                to: "personal".into()
+                to: "personal".into(),
+                place: Place::Folder("personal".into())
             }
         );
         // `shell` (a background command) and `waiting` wait too.
@@ -1341,14 +1190,32 @@ mod tests {
             plan(&pane("default", None, None, "shell"), &reg, "side").unwrap(),
             Plan::AfterTurn { .. }
         ));
-        // Follow the global one from another account: a move.
+        // Follow the global one from another account: a move to the slot.
         assert_eq!(
             plan(&pane("side", Some("side"), None, "idle"), &reg, "global").unwrap(),
             Plan::Now {
                 mark: "global".into(),
-                to: "default".into()
+                to: "default".into(),
+                place: Place::Slot
             }
         );
+        // Pinned to the global account from a folder: on the slot, pinned.
+        assert_eq!(
+            plan(&pane("side", None, None, "idle"), &reg, "default").unwrap(),
+            Plan::Now {
+                mark: "default".into(),
+                to: "default".into(),
+                place: Place::Slot
+            }
+        );
+        // A pane on the slot pinned to the global account: marks only.
+        assert!(matches!(
+            plan(&pane("default", None, None, "busy"), &reg, "default").unwrap(),
+            Plan::Marks {
+                state: "pinned",
+                ..
+            }
+        ));
         // Cancel: back to the current account with a move pending.
         assert!(matches!(
             plan(
@@ -1383,38 +1250,50 @@ mod tests {
 
     #[test]
     fn pending_moves_wait_for_idle_and_follow_the_global() {
-        let reg = registry("personal");
+        let reg = registry("default");
         let all = |_: &str| true;
-        let busy = pane("default", Some("global"), Some("personal"), "busy");
+        // On the side folder, moving to the slot (following) after its turn.
+        let busy = pane("side", Some("global"), Some("default"), "busy");
         assert_eq!(pending_plan(&busy, &reg, all), None, "still working");
-        let idle = pane("default", Some("global"), Some("personal"), "idle");
+        let idle = pane("side", Some("global"), Some("default"), "idle");
         assert_eq!(
             pending_plan(&idle, &reg, all),
             Some(Ok(Plan::Now {
                 mark: "global".into(),
-                to: "personal".into()
+                to: "default".into(),
+                place: Place::Slot
             }))
         );
-        // The global one moved on to `side` meanwhile.
-        let reg_side = registry("side");
+        // The global one is `personal` now: still the slot, a new pending.
+        let reg_personal = registry("personal");
         assert_eq!(
-            pending_plan(&busy, &reg_side, all),
+            pending_plan(&busy, &reg_personal, all),
             Some(Ok(Plan::AfterTurn {
                 mark: "global".into(),
-                to: "side".into()
+                to: "personal".into(),
+                place: Place::Slot
+            }))
+        );
+        // Pinned to the old global on the slot (G4): its folder after the turn.
+        let pinned = pane("default", Some("default"), Some("default"), "idle");
+        assert_eq!(
+            pending_plan(&pinned, &reg_personal, all),
+            Some(Ok(Plan::Now {
+                mark: "default".into(),
+                to: "default".into(),
+                place: Place::Folder("default".into())
             }))
         );
         // And back to where it runs: nothing to move.
-        let reg_default = registry("default");
         assert!(matches!(
-            pending_plan(&busy, &reg_default, all),
+            pending_plan(&pinned, &reg, all),
             Some(Ok(Plan::Marks {
                 state: "cancelled",
                 ..
             }))
         ));
         assert_eq!(
-            pending_plan(&pane("default", Some("global"), None, "idle"), &reg, all),
+            pending_plan(&pane("side", Some("global"), None, "idle"), &reg, all),
             None
         );
         // Without a raw status it is not idle (D7), whatever the screen says.
@@ -1427,7 +1306,7 @@ mod tests {
     #[test]
     fn pending_moves_that_cant_happen_say_why() {
         let reg = registry("personal");
-        let idle = pane("default", Some("global"), Some("personal"), "idle");
+        let idle = pane("side", Some("global"), Some("personal"), "idle");
         // The target signed out meanwhile.
         let refused = pending_plan(&idle, &reg, |_| false).unwrap().unwrap_err();
         assert!(refused.contains("not signed in"), "{refused}");

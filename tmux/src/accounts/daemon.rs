@@ -1,8 +1,11 @@
 //! What the worker does about accounts on its own, with or without the app
-//! (agent-accounts D12, D14, §3.7): keeps the usage readings fresh while
-//! someone watches, reads the global account now and then while the rules
-//! are on and another signed-in account could take over (O1), runs the
-//! rules, and moves the panes whose move waited for the end of their turn.
+//! (agent-accounts D12, D14, §3.7, G4, G6, G7, G11): at start, finishes a
+//! swap a stopped worker left and brings a registry of 0.3.0 to the slot;
+//! keeps the usage readings fresh while someone watches, reads the global
+//! account now and then while the rules are on and another signed-in
+//! account could take over (O1), runs the rules, notices a sign-in by hand
+//! on the slot, finishes a switch that waited for windows, and moves the
+//! panes whose move waited for the end of their turn.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +26,7 @@ pub type Observed = Arc<dyn Fn() -> bool + Send + Sync>;
 pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observed) {
     tokio::spawn(async move {
         let accounts = collector.accounts().clone();
-        let relink = accounts.clone();
-        let _ = tokio::task::spawn_blocking(move || relink.relink_all()).await;
+        start(&collector, &accounts).await;
         // With accounts.json, one look at who is signed in, so the rules
         // know whether another account could take over (O1). Without it,
         // nothing is read until someone watches.
@@ -38,7 +40,45 @@ pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observe
     });
 }
 
-/// Moves the panes whose move waits for their turn to end (§3.7).
+/// Once at start: a swap a stopped worker left is finished (G7), a
+/// registry of 0.3.0 is brought to the slot with tmux (G11), shared items
+/// are linked again, and a sign-in by hand while the worker was away is
+/// taken in (G6).
+async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
+    match accounts.recover().await {
+        Ok(Some(journal)) => {
+            tracing::info!(from = %journal.from, to = %journal.to, "a stopped switch was finished")
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(error = %error.sentence(), "a stopped switch was not finished")
+        }
+    }
+    let upgrade = accounts.clone();
+    if tokio::task::spawn_blocking(move || upgrade.needs_upgrade())
+        .await
+        .unwrap_or(false)
+    {
+        // tmux first: should the worker stop in between, the next start
+        // does it again (the registry still says 0.3.0).
+        if let Ok(tmux) = collector.tmux().await {
+            let panes = collector.claude_panes(true).await;
+            super::switch::migrate_tmux(&tmux, accounts, &panes).await;
+        }
+        let upgrade = accounts.clone();
+        match tokio::task::spawn_blocking(move || upgrade.upgrade()).await {
+            Ok(Ok(())) => tracing::info!("accounts brought to the global slot"),
+            Ok(Err(error)) => tracing::warn!(%error, "accounts not brought to the global slot"),
+            Err(error) => tracing::warn!(%error, "accounts not brought to the global slot"),
+        }
+    }
+    let relink = accounts.clone();
+    let _ = tokio::task::spawn_blocking(move || relink.relink_all()).await;
+    accounts.watch_slot().await;
+}
+
+/// Moves the panes whose move waits for their turn to end (§3.7), finishes
+/// a switch that waits (G4) and notices a sign-in by hand (G6).
 pub fn spawn_pending(collector: Arc<Collector>, monitor: Arc<Monitor>) {
     tokio::spawn(async move {
         loop {
@@ -72,9 +112,14 @@ fn may_be_ready(claude_pid: Option<u32>) -> bool {
 /// and its pane says why (`move_error`).
 pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     let accounts: &Arc<Accounts> = collector.accounts();
+    // A sign-in by hand on the slot (G6): a stat, a read when it changed.
+    if accounts.watch_slot().await {
+        monitor.poke();
+    }
+    let global_due = global_may_be_ready(accounts).await;
     let discover = accounts.take_pending();
     let waiting = accounts.waiting();
-    if !discover && waiting.is_empty() {
+    if !discover && waiting.is_empty() && !global_due {
         return;
     }
     // A pane being moved (its Claude Code still ending late, say) is not
@@ -84,6 +129,7 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
         .filter(|(pane, _)| !accounts.moving.is_busy(pane))
         .collect();
     let ready = discover
+        || global_due
         || tokio::task::spawn_blocking(move || waiting.iter().any(|(_, pid)| may_be_ready(*pid)))
             .await
             .unwrap_or(true);
@@ -106,6 +152,10 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
             return;
         }
     };
+    let mut changed = false;
+    if global_due && super::switch::finish_pending(&tmux, accounts, &panes).await {
+        changed = true;
+    }
     for (pane, _) in accounts.waiting() {
         if panes
             .get(&pane)
@@ -115,6 +165,9 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
         }
     }
     if panes.values().all(|pane| pane.marks.pending.is_none()) {
+        if changed {
+            monitor.poke();
+        }
         return;
     }
     // Sign-ins are read only for the moves someone asked for that can
@@ -129,7 +182,6 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     targets.sort();
     targets.dedup();
     accounts.load_accounts_now(targets).await;
-    let mut changed = false;
     let mut ids: Vec<&String> = panes.keys().collect();
     ids.sort();
     for id in ids {
@@ -195,13 +247,6 @@ async fn tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>, observed: &Obs
     if observed() {
         accounts.mark_watched();
     }
-    // A tmux server started since (or a hand edit) gets the global account
-    // back in its environment (D3).
-    if let Ok(tmux) = collector.tmux().await {
-        if let Err(error) = super::tmux_env::reconcile(&tmux, accounts).await {
-            tracing::debug!(%error, "tmux global environment not checked");
-        }
-    }
     let now = now_ms();
     // Nothing local is read (sign-in files, the Keychain, Codex) unless
     // someone watches or another signed-in account could take over (O1).
@@ -249,7 +294,7 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
         return false;
     }
     accounts.load_now().await;
-    let mut snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
+    let mut snapshot = accounts.snapshot(&Default::default());
     // The global account runs low: the others are read (when due) to pick
     // the target (D12).
     let global_low = snapshot
@@ -261,7 +306,7 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
         .is_some();
     let read = global_low && accounts.refresh(None, false).await;
     if read {
-        snapshot = accounts.snapshot(&std::collections::HashMap::new(), 0);
+        snapshot = accounts.snapshot(&Default::default());
     }
     let now = now_ms();
     let Some(decision) = super::rules::decide(&registry, &snapshot.claude.accounts, now) else {
@@ -271,37 +316,66 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
         return read;
     };
     let panes = collector.claude_panes(true).await;
-    let mode = if registry.rules.move_idle {
-        super::moves::SwitchMode::IdleNowWorkingAfter
+    // Never an account with Claude Code working on its folder, or one that
+    // can't be restarted: the next one instead (G12).
+    let unready = super::switch::unready_targets(&panes);
+    let decision = if unready.contains(&decision.to) {
+        let ready: Vec<crate::model::ClaudeAccount> = snapshot
+            .claude
+            .accounts
+            .iter()
+            .filter(|account| account.id == registry.global || !unready.contains(&account.id))
+            .cloned()
+            .collect();
+        match super::rules::decide(&registry, &ready, now) {
+            Some(decision) => decision,
+            None => return read,
+        }
     } else {
-        super::moves::SwitchMode::NewOnly
+        decision
     };
     let from = registry.global.clone();
     tracing::info!(%from, to = %decision.to, reason = %decision.reason, "switching the global account");
-    let by = super::moves::SwitchBy::Rules {
+    let by = super::switch::By::Rules {
         generation,
         record: crate::model::AccountSwitch {
             from,
             to: decision.to.clone(),
             reason: Some(decision.reason.clone()),
             auto: true,
-            moved: Vec::new(),
+            following: 0,
+            restarted: Vec::new(),
             after_turn: Vec::new(),
             at_ms: now,
             back_at_ms: decision.back_at_ms,
         },
     };
-    match super::moves::switch_global(&tmux, accounts, &panes, &decision.to, mode, by).await {
+    match super::switch::make_global(&tmux, accounts, &panes, &decision.to, by).await {
         Ok(_) => true,
-        Err(error) if error == super::moves::RULES_STALE => {
+        Err(super::switch::SwitchError::Stale) => {
             tracing::info!(
                 "the registry changed while the rules decided; looked at again next time"
             );
             read
         }
         Err(error) => {
-            tracing::warn!(%error, "the global account was not switched");
+            tracing::warn!(error = %error.sentence(), "the global account was not switched");
             read
         }
     }
+}
+
+/// Whether a switch waits (G4) and may be ready: some Claude Code it waits
+/// for is gone or idle, or nothing is known of them (a worker started
+/// since). A small file read per pane, no collection.
+async fn global_may_be_ready(accounts: &Arc<Accounts>) -> bool {
+    if accounts.registry().pending_global.is_none() {
+        return false;
+    }
+    let Some(pids) = accounts.global_waiting() else {
+        return true;
+    };
+    tokio::task::spawn_blocking(move || pids.iter().all(|pid| may_be_ready(*pid)))
+        .await
+        .unwrap_or(true)
 }

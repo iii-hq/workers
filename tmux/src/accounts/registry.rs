@@ -1,6 +1,7 @@
 //! `accounts.json`: the accounts people added, the global one, the rules
-//! and what the rules last did (agent-accounts D2). Without the file there
-//! is one account, `default`, and it is global.
+//! and what the rules last did (agent-accounts D2), a switch that waits
+//! (G4) and the slot's version (G11). Without the file there is one
+//! account, `default`, and it is global.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ pub struct Entry {
     pub id: String,
     pub name: String,
     pub color: String,
-    /// Groups shared with `~/.claude` (never for `default`).
+    /// Groups its folder shares with `~/.claude`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared: Vec<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -33,6 +34,20 @@ pub struct Entry {
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
+
+/// A switch of the global account that waits for the windows on the new
+/// account's folder to finish their turn (G4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSwitch {
+    pub account: String,
+    /// `person` or `rule`.
+    pub by: String,
+    pub at_ms: u64,
+}
+
+/// What `slot_version` says once the registry was brought to the global
+/// slot (G11).
+pub const SLOT_VERSION: u32 = 2;
 
 /// A suggestion someone said "Not now" to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +77,17 @@ pub struct Registry {
     /// clock, still differ.
     #[serde(default)]
     pub revision: u64,
+    /// [`SLOT_VERSION`] once the global account is the slot's sign-in and
+    /// every account has a folder (G11); missing in a registry of 0.3.0.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub slot_version: u32,
+    /// A switch that waits for windows to finish their turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_global: Option<PendingSwitch>,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 fn version_one() -> u32 {
@@ -77,7 +103,10 @@ pub fn default_entry() -> Entry {
         id: DEFAULT.to_string(),
         name: "Claude Code".to_string(),
         color: "blue".to_string(),
-        shared: Vec::new(),
+        shared: super::shared::GROUPS
+            .iter()
+            .map(|g| g.to_string())
+            .collect(),
         created_at_ms: 0,
     }
 }
@@ -92,6 +121,8 @@ impl Default for Registry {
             dismissed: Vec::new(),
             last_switch: None,
             revision: 0,
+            slot_version: SLOT_VERSION,
+            pending_global: None,
         }
     }
 }
@@ -120,9 +151,15 @@ impl Registry {
             }
             None => self.accounts.insert(0, default_entry()),
         }
-        self.accounts[0].shared.clear();
         if !self.has(&self.global) {
             self.global = default_id();
+        }
+        if self
+            .pending_global
+            .as_ref()
+            .is_some_and(|pending| !self.has(&pending.account) || pending.account == self.global)
+        {
+            self.pending_global = None;
         }
         let ids: Vec<String> = self.accounts.iter().map(|e| e.id.clone()).collect();
         let mut order_seen = std::collections::HashSet::new();
@@ -558,7 +595,6 @@ mod tests {
         assert_eq!(registry.global, "default");
         assert_eq!(registry.rules.mode, RulesMode::Switch);
         assert_eq!(registry.rules.at, Threshold::Week90, "a partial rule set");
-        assert!(registry.rules.move_idle);
         assert_eq!(registry.rules.order, vec!["p"]);
     }
 

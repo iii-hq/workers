@@ -1,15 +1,19 @@
-//! The commands that start Claude Code on an account (agent-accounts §3.5,
-//! D3, D16), as tmux hands them to the pane's shell. The apps preview the
-//! same text, so the forms are fixed:
+//! The commands that start Claude Code on an account (agent-accounts G5,
+//! D16), as tmux hands them to the pane's shell. The apps preview the same
+//! text, so the forms are fixed:
 //!
-//! - global: `claude` (tmux's global environment says which folder, D3);
-//! - pinned `default`: `env -u CLAUDE_CONFIG_DIR claude`;
-//! - pinned other: `env CLAUDE_CONFIG_DIR=<abs dir> claude`;
+//! - global, and pinned to the account that is global now: on the slot,
+//!   `claude` (the worker runs `env -u CLAUDE_CONFIG_DIR claude` when the
+//!   session's or tmux's environment sets `CLAUDE_CONFIG_DIR`);
+//! - pinned to another account: `env CLAUDE_CONFIG_DIR=<abs folder> claude`;
 //!
 //! then ` --dangerously-skip-permissions` when skipping and
-//! ` --resume <id>` on a move.
+//! ` --resume <id>` on a move. A move to the slot is always
+//! `env -u CLAUDE_CONFIG_DIR claude …`: a shell keeps the environment it
+//! started with.
 
-use super::{Accounts, DEFAULT, GLOBAL};
+use super::slot::Place;
+use super::{Accounts, GLOBAL};
 
 /// The pane option naming a pane's account: `global` or an id (D4).
 pub const MARK_ACCOUNT: &str = "@iii_claude_account";
@@ -35,35 +39,23 @@ pub fn shell_quote(text: &str) -> String {
     }
 }
 
-/// How Claude Code is told which account to run on.
+/// How Claude Code is told where to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// Whatever tmux's global environment says (a pane that follows the
-    /// global account).
-    Global,
-    /// The default account: `CLAUDE_CONFIG_DIR` unset (D1).
-    Default,
-    /// Another account's folder, absolute.
+    /// Plain `claude`: the slot, as the environment has it.
+    Plain,
+    /// The slot, whatever the environment says: `CLAUDE_CONFIG_DIR` unset.
+    Slot,
+    /// An account's folder, absolute.
     Dir(String),
 }
 
 impl Target {
-    /// The target of `account` (`global`, `default` or an id) whose folder
-    /// is `dir` (for an id).
-    pub fn of(account: &str, dir: Option<&str>) -> Result<Self, String> {
-        match (account, dir) {
-            (GLOBAL, _) => Ok(Self::Global),
-            (DEFAULT, _) => Ok(Self::Default),
-            (_, Some(dir)) if dir.starts_with('/') => Ok(Self::Dir(dir.to_string())),
-            _ => Err(format!("The account \"{account}\" has no folder.")),
-        }
-    }
-
     /// The words before `claude`, if any.
     fn prefix(&self) -> Option<String> {
         match self {
-            Self::Global => None,
-            Self::Default => Some("env -u CLAUDE_CONFIG_DIR".to_string()),
+            Self::Plain => None,
+            Self::Slot => Some("env -u CLAUDE_CONFIG_DIR".to_string()),
             Self::Dir(dir) => Some(format!("env CLAUDE_CONFIG_DIR={}", shell_quote(dir))),
         }
     }
@@ -84,11 +76,11 @@ pub fn claude_command(target: &Target, skip_permissions: bool, resume: Option<&s
     words.join(" ")
 }
 
-/// The command that signs account `target` in (`claude auth login`). It
-/// never follows the global account: it signs in the one asked for.
+/// The command that signs in on `target` (`claude auth login`): the slot
+/// for the global account (G10), else the account's folder.
 pub fn login_command(target: &Target) -> String {
     let target = match target {
-        Target::Global => &Target::Default,
+        Target::Plain => &Target::Slot,
         other => other,
     };
     let mut words: Vec<String> = target.prefix().into_iter().collect();
@@ -99,11 +91,14 @@ pub fn login_command(target: &Target) -> String {
 /// A planned start of Claude Code: the command and the pane's marks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
-    /// What the pane runs (§3.5); the `runs` the create functions return.
+    /// What the pane runs (G5); the `runs` the create functions return.
     pub command: String,
     /// `global` or the account id, for [`MARK_ACCOUNT`].
     pub account: String,
     pub skip_permissions: bool,
+    /// It runs on the slot (plain `claude`).
+    pub on_slot: bool,
+    pub resume: Option<String>,
 }
 
 impl Launch {
@@ -115,6 +110,16 @@ impl Launch {
             marks.push((MARK_SKIP, "1"));
         }
         marks
+    }
+
+    /// The same start with `CLAUDE_CONFIG_DIR` unset outright: what a pane
+    /// on the slot runs when its environment sets the variable.
+    pub fn explicit(&self) -> String {
+        if self.on_slot {
+            claude_command(&Target::Slot, self.skip_permissions, self.resume.as_deref())
+        } else {
+            self.command.clone()
+        }
     }
 }
 
@@ -137,18 +142,60 @@ impl Accounts {
         root: bool,
     ) -> Result<Launch, String> {
         let account = account.trim();
-        if account != GLOBAL && !self.registry().has(account) {
+        let registry = self.registry();
+        if account != GLOBAL && !registry.has(account) {
             return Err(super::manage::no_account(account));
         }
         if skip_permissions && root {
             return Err(ROOT_SKIP.to_string());
         }
-        let target = Target::of(account, self.env_dir(account).as_deref())?;
+        let on_slot = account == GLOBAL || account == registry.global;
+        let target = if on_slot {
+            Target::Plain
+        } else {
+            self.folder_target(account)?
+        };
         Ok(Launch {
             command: claude_command(&target, skip_permissions, resume),
             account: account.to_string(),
             skip_permissions,
+            on_slot,
+            resume: resume.map(str::to_string),
         })
+    }
+
+    fn folder_target(&self, id: &str) -> Result<Target, String> {
+        match self.env_dir(id) {
+            Some(dir) if dir.starts_with('/') => Ok(Target::Dir(dir)),
+            _ => Err(format!("The account \"{id}\" has no folder.")),
+        }
+    }
+
+    /// The command that starts Claude Code again on `place` in a move: the
+    /// slot with `CLAUDE_CONFIG_DIR` unset outright, or a folder.
+    pub fn restart_command(
+        &self,
+        place: &Place,
+        skip_permissions: bool,
+        resume: Option<&str>,
+    ) -> Result<String, String> {
+        if skip_permissions && super::runs_as_root() {
+            return Err(ROOT_SKIP.to_string());
+        }
+        let target = match place {
+            Place::Slot => Target::Slot,
+            Place::Folder(id) => self.folder_target(id)?,
+        };
+        Ok(claude_command(&target, skip_permissions, resume))
+    }
+
+    /// The target `claude auth login` signs in on for account `id`.
+    pub fn login_target(&self, id: &str) -> Result<Target, String> {
+        if self.registry().global == id {
+            Ok(Target::Slot)
+        } else {
+            self.folder_target(id)
+        }
     }
 }
 
@@ -175,9 +222,9 @@ mod tests {
 
     #[test]
     fn launch_commands_have_the_three_forms() {
-        assert_eq!(claude_command(&Target::Global, false, None), "claude");
+        assert_eq!(claude_command(&Target::Plain, false, None), "claude");
         assert_eq!(
-            claude_command(&Target::Default, false, None),
+            claude_command(&Target::Slot, false, None),
             "env -u CLAUDE_CONFIG_DIR claude"
         );
         let personal = Target::Dir("/home/dev/.local/share/iii/claude-accounts/personal".into());
@@ -187,7 +234,7 @@ mod tests {
         );
         assert_eq!(
             claude_command(
-                &Target::Global,
+                &Target::Plain,
                 true,
                 Some("06342612-f016-4fc4-b1cc-3aa3fa41bfe8")
             ),
@@ -200,19 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn targets_come_from_accounts() {
-        assert_eq!(Target::of("global", None).unwrap(), Target::Global);
-        assert_eq!(Target::of("default", Some("/x")).unwrap(), Target::Default);
-        assert_eq!(
-            Target::of("personal", Some("/r/personal")).unwrap(),
-            Target::Dir("/r/personal".into())
-        );
-        assert!(Target::of("personal", None).is_err());
-        assert!(Target::of("personal", Some("relative")).is_err());
-    }
-
-    #[test]
-    fn launches_check_the_account_and_root() {
+    fn launches_follow_g5() {
         let home = super::super::test_support::Home::new("launch");
         let accounts = home.accounts();
         let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
@@ -233,13 +268,36 @@ mod tests {
             .plan_launch_as("global", false, None, true)
             .unwrap();
         assert_eq!(global.command, "claude");
+        assert_eq!(global.explicit(), "env -u CLAUDE_CONFIG_DIR claude");
         assert_eq!(global.marks(), vec![(MARK_ACCOUNT, "global")]);
+        // Pinned to the account that is global now: on the slot.
+        let default = accounts
+            .plan_launch_as("default", false, None, false)
+            .unwrap();
+        assert_eq!(default.command, "claude");
+        assert_eq!(default.marks(), vec![(MARK_ACCOUNT, "default")]);
+        accounts
+            .update_registry(|registry| {
+                registry.global = id.clone();
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(
             accounts
                 .plan_launch_as("default", false, None, false)
                 .unwrap()
                 .command,
-            "env -u CLAUDE_CONFIG_DIR claude"
+            format!(
+                "env CLAUDE_CONFIG_DIR={} claude",
+                home.paths.account_dir("default").display()
+            )
+        );
+        assert_eq!(
+            accounts
+                .plan_launch_as(&id, false, None, false)
+                .unwrap()
+                .command,
+            "claude"
         );
         assert_eq!(
             accounts.plan_launch_as("global", true, None, true),
@@ -248,16 +306,22 @@ mod tests {
         assert!(accounts
             .plan_launch_as("nobody", false, None, false)
             .is_err());
+        assert_eq!(
+            accounts
+                .restart_command(&Place::Slot, false, Some("s1"))
+                .unwrap(),
+            "env -u CLAUDE_CONFIG_DIR claude --resume s1"
+        );
     }
 
     #[test]
-    fn login_signs_in_the_account_asked_for() {
+    fn login_signs_in_on_the_slot_or_the_folder() {
         assert_eq!(
-            login_command(&Target::Default),
+            login_command(&Target::Slot),
             "env -u CLAUDE_CONFIG_DIR claude auth login"
         );
         assert_eq!(
-            login_command(&Target::Global),
+            login_command(&Target::Plain),
             "env -u CLAUDE_CONFIG_DIR claude auth login"
         );
         assert_eq!(

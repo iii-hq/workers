@@ -1,5 +1,7 @@
-//! A Claude Code account's sign-in and profile, read-only (agent-accounts
-//! D10, D11).
+//! A Claude Code account's sign-in and profile (agent-accounts D10, D11):
+//! read for the usage and the snapshot, and written only by a swap of the
+//! global account (G3), which moves a sign-in between stores and never
+//! changes a token.
 //!
 //! On Linux the sign-in is `<config>/.credentials.json`. On macOS it is in
 //! the login Keychain, as a generic password whose service is
@@ -45,14 +47,20 @@ impl std::fmt::Debug for Secret {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     pub token: Option<Secret>,
+    /// The refresh token: while it is there, Claude Code renews the access
+    /// token by itself (G9).
+    pub refresh: Option<Secret>,
     pub expires_at_ms: Option<u64>,
     pub subscription_type: Option<String>,
     pub rate_limit_tier: Option<String>,
 }
 
 impl Credentials {
+    /// A sign-in Claude Code can use: an access token, or a refresh token
+    /// that gets one (G9). A sign-in Claude Code cleared after a refusal
+    /// (`invalid_grant`) has neither.
     pub fn signed_in(&self) -> bool {
-        self.token.is_some()
+        self.token.is_some() || self.refresh.is_some()
     }
 
     /// The token expires within a minute (or did); it is not sent then.
@@ -72,6 +80,7 @@ struct CredentialsFile {
 #[serde(rename_all = "camelCase")]
 struct OauthEntry {
     access_token: Option<String>,
+    refresh_token: Option<String>,
     expires_at: Option<u64>,
     subscription_type: Option<String>,
     rate_limit_tier: Option<String>,
@@ -82,18 +91,52 @@ struct OauthEntry {
 pub fn parse_credentials(text: &str) -> Result<Credentials, String> {
     let file: CredentialsFile =
         serde_json::from_str(text).map_err(|_| "The sign-in can't be read.".to_string())?;
+    Ok(from_file(file))
+}
+
+/// [`parse_credentials`] of a store already read.
+pub fn credentials_of(raw: &Raw) -> Credentials {
+    serde_json::from_value::<CredentialsFile>(serde_json::Value::Object(raw.clone()))
+        .map(from_file)
+        .unwrap_or_default()
+}
+
+fn from_file(file: CredentialsFile) -> Credentials {
     let Some(oauth) = file.claude_ai_oauth else {
-        return Ok(Credentials::default());
+        return Credentials::default();
     };
-    Ok(Credentials {
+    Credentials {
         token: oauth
             .access_token
+            .filter(|token| !token.trim().is_empty())
+            .map(Secret::new),
+        refresh: oauth
+            .refresh_token
             .filter(|token| !token.trim().is_empty())
             .map(Secret::new),
         expires_at_ms: oauth.expires_at,
         subscription_type: oauth.subscription_type.filter(|s| !s.is_empty()),
         rate_limit_tier: oauth.rate_limit_tier.filter(|s| !s.is_empty()),
-    })
+    }
+}
+
+/// A whole sign-in store: `claudeAiOauth` (the Claude sign-in) and what
+/// else Claude Code keeps there (`mcpOAuth`, …).
+pub type Raw = serde_json::Map<String, serde_json::Value>;
+
+/// The key of the Claude sign-in in a store.
+pub const OAUTH_KEY: &str = "claudeAiOauth";
+
+/// The first 16 hex of the SHA-256 of `raw`'s refresh token, when it has
+/// one: what tells two chains apart without keeping a token (G7).
+pub fn chain_id(raw: Option<&Raw>) -> Option<String> {
+    let token = raw?
+        .get(OAUTH_KEY)?
+        .get("refreshToken")?
+        .as_str()
+        .filter(|token| !token.trim().is_empty())?;
+    let digest = Sha256::digest(token.as_bytes());
+    Some(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
 }
 
 /// The Keychain service Claude Code keeps an account's sign-in under:
@@ -166,33 +209,110 @@ pub fn keychain_account(user: Option<&str>) -> String {
     }
 }
 
-/// Where a sign-in is read from; a trait so tests never touch a Keychain.
+/// Where a sign-in is read from and written to; a trait so tests never
+/// touch a Keychain.
 pub trait SecretStore: Send + Sync {
-    /// The sign-in of the account in `dir`, `env_dir` being the
-    /// `CLAUDE_CONFIG_DIR` it runs with (`None` for the default). `Ok(None)`
-    /// when it has none. Blocking.
-    fn read(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Credentials>, String>;
+    /// The whole store of the account in `dir`, `env_dir` being the
+    /// `CLAUDE_CONFIG_DIR` it runs with (`None` for the global slot,
+    /// `~/.claude`). `Ok(None)` when it has none. Blocking.
+    fn read_raw(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Raw>, String>;
+
+    /// Replace the whole store with `value` (G3 steps 3–5). Blocking. Never
+    /// logs or returns what it holds.
+    fn write_raw(&self, dir: &Path, env_dir: Option<&str>, value: &Raw) -> Result<(), String>;
+
+    /// The sign-in of the account in `dir`. `Ok(None)` when it has none.
+    fn read(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Credentials>, String> {
+        Ok(self.read_raw(dir, env_dir)?.as_ref().map(credentials_of))
+    }
+
+    /// How long a running Claude Code may take to see a change of its store,
+    /// in seconds: 0 for a file (it looks on every request), 30 for the
+    /// Keychain (Claude Code keeps what it read for 30 seconds).
+    fn delay_s(&self) -> u32 {
+        0
+    }
 }
 
 /// `<dir>/.credentials.json`.
 pub struct FileStore;
 
 impl SecretStore for FileStore {
-    fn read(&self, dir: &Path, _env_dir: Option<&str>) -> Result<Option<Credentials>, String> {
-        read_file(&dir.join(".credentials.json"))
+    fn read_raw(&self, dir: &Path, _env_dir: Option<&str>) -> Result<Option<Raw>, String> {
+        read_file_raw(&dir.join(CREDENTIALS_FILE))
+    }
+
+    fn write_raw(&self, dir: &Path, _env_dir: Option<&str>, value: &Raw) -> Result<(), String> {
+        write_file_raw(&dir.join(CREDENTIALS_FILE), value)
     }
 }
 
-fn read_file(path: &Path) -> Result<Option<Credentials>, String> {
+/// The sign-in file's name in a config folder.
+pub const CREDENTIALS_FILE: &str = ".credentials.json";
+
+fn read_file_raw(path: &Path) -> Result<Option<Raw>, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse_credentials(&text).map(Some),
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| match value {
+                serde_json::Value::Object(map) => Some(Some(map)),
+                _ => None,
+            })
+            .ok_or_else(|| "The sign-in can't be read.".to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err("The sign-in can't be read.".to_string()),
     }
 }
 
-/// macOS: the login Keychain through `security`, then the file.
+/// Write a sign-in file as Claude Code does: a temporary file next to it
+/// (`O_EXCL`, `0600`), written, synced, renamed over it, then `chmod 0600`.
+/// A new file (new inode, new modification time): what running sessions
+/// look for on their next request.
+pub fn write_file_raw(path: &Path, value: &Raw) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let folder = path
+        .parent()
+        .ok_or_else(|| "A sign-in file needs a folder.".to_string())?;
+    super::registry::make_private_dir(folder)?;
+    let text =
+        serde_json::to_vec(value).map_err(|_| "The sign-in can't be written.".to_string())?;
+    let temp = folder.join(format!(
+        "{}.tmp.{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(CREDENTIALS_FILE),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(&text)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!(
+            "Could not save {} ({}).",
+            path.display(),
+            error.kind()
+        ));
+    }
+    Ok(())
+}
+
+/// macOS: the login Keychain through `security`, then the file (Claude
+/// Code's own order: the Keychain item, else `<dir>/.credentials.json`).
 pub struct KeychainStore {
+    /// `/usr/bin/security`; tests give a fake one, so no test ever asks
+    /// the real Keychain.
+    pub program: PathBuf,
     pub account: String,
 }
 
@@ -200,57 +320,142 @@ pub struct KeychainStore {
 const SECURITY_TIMEOUT: Duration = Duration::from_secs(5);
 /// `security`'s exit code for an item that is not there.
 const ITEM_NOT_FOUND: i32 = 44;
+/// The longest line `security -i` takes on its standard input (Claude Code
+/// 2.1.322 passes longer ones as arguments instead).
+const INTERACTIVE_MAX: usize = 4032;
+
+/// Run `security` with `args`, `input` on its standard input, within
+/// [`SECURITY_TIMEOUT`]. Returns its exit code and what it printed.
+fn run_security(
+    program: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+) -> Result<(Option<i32>, String), String> {
+    use std::io::{Read, Write};
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "The Keychain can't be reached.".to_string())?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // A failed write shows in the exit code.
+        let _ = stdin.write_all(input);
+    }
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > SECURITY_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The Keychain did not answer.".to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return Err("The Keychain can't be reached.".to_string()),
+        }
+    };
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    Ok((status.code(), stdout))
+}
+
+/// What `security -i` reads to store `secret` (hex) as the item of
+/// `account` and `service`, as Claude Code writes it.
+pub fn keychain_add_line(account: &str, service: &str, secret_hex: &str) -> String {
+    format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{secret_hex}\"\n")
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 impl SecretStore for KeychainStore {
-    fn read(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Credentials>, String> {
+    fn read_raw(&self, dir: &Path, env_dir: Option<&str>) -> Result<Option<Raw>, String> {
         let service = keychain_service(env_dir);
-        let mut child = std::process::Command::new("/usr/bin/security")
-            .args([
+        let (code, stdout) = run_security(
+            &self.program,
+            &[
                 "find-generic-password",
                 "-a",
                 &self.account,
                 "-w",
                 "-s",
                 &service,
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|_| "The Keychain can't be read.".to_string())?;
-        let started = std::time::Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if started.elapsed() > SECURITY_TIMEOUT => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("The Keychain did not answer.".to_string());
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => return Err("The Keychain can't be read.".to_string()),
-            }
+            ],
+            None,
+        )?;
+        match code {
+            Some(0) => match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+                Ok(serde_json::Value::Object(map)) => Ok(Some(map)),
+                _ => Err("The sign-in can't be read.".to_string()),
+            },
+            // Claude Code falls back to the file when the Keychain has none.
+            Some(ITEM_NOT_FOUND) => read_file_raw(&dir.join(CREDENTIALS_FILE)),
+            _ => Err("The Keychain refused to give the sign-in.".to_string()),
+        }
+    }
+
+    fn write_raw(&self, dir: &Path, env_dir: Option<&str>, value: &Raw) -> Result<(), String> {
+        let service = keychain_service(env_dir);
+        let json =
+            serde_json::to_vec(value).map_err(|_| "The sign-in can't be written.".to_string())?;
+        let secret = hex(&json);
+        let line = keychain_add_line(&self.account, &service, &secret);
+        // Claude Code's own way: the secret on standard input, never on the
+        // command line, unless it is longer than `security -i` takes; then
+        // it goes as arguments, as Claude Code passes it too.
+        let (code, _) = if line.len() <= INTERACTIVE_MAX {
+            run_security(&self.program, &["-i"], Some(line.as_bytes()))?
+        } else {
+            run_security(
+                &self.program,
+                &[
+                    "add-generic-password",
+                    "-U",
+                    "-a",
+                    &self.account,
+                    "-s",
+                    &service,
+                    "-X",
+                    &secret,
+                ],
+                None,
+            )?
         };
-        let mut stdout = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            use std::io::Read;
-            let _ = pipe.read_to_string(&mut stdout);
+        if code != Some(0) {
+            return Err("The Keychain refused to keep the sign-in.".to_string());
         }
-        if status.success() {
-            return parse_credentials(stdout.trim()).map(Some);
+        // A plaintext file next to the item is the store's fallback, and
+        // its modification time is what sessions watch while it exists: it
+        // gets the same change. None is ever made.
+        let file = dir.join(CREDENTIALS_FILE);
+        if std::fs::symlink_metadata(&file).is_ok() {
+            write_file_raw(&file, value)?;
         }
-        if status.code() == Some(ITEM_NOT_FOUND) {
-            // Claude Code falls back to the file when the Keychain refuses.
-            return read_file(&dir.join(".credentials.json"));
-        }
-        Err("The Keychain refused to give the sign-in.".to_string())
+        Ok(())
+    }
+
+    fn delay_s(&self) -> u32 {
+        30
     }
 }
+
+/// The real `security`.
+pub const SECURITY: &str = "/usr/bin/security";
 
 /// This platform's store.
 pub fn platform_store() -> Box<dyn SecretStore> {
     if cfg!(target_os = "macos") {
         Box::new(KeychainStore {
+            program: PathBuf::from(SECURITY),
             account: keychain_account(claude_user().as_deref()),
         })
     } else {
@@ -450,6 +655,144 @@ mod tests {
         std::fs::write(dir.join(".credentials.json"), FILE).unwrap();
         assert!(FileStore.read(&dir, None).unwrap().unwrap().signed_in());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_written_store_is_a_new_private_file_with_only_what_was_given() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir =
+            std::env::temp_dir().join(format!("tmux-creds-w-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CREDENTIALS_FILE);
+        std::fs::write(&path, FILE).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        let mut raw = FileStore.read_raw(&dir, None).unwrap().unwrap();
+        assert_eq!(chain_id(Some(&raw)).unwrap().len(), 16);
+        raw.insert(
+            OAUTH_KEY.into(),
+            serde_json::json!({"accessToken": "demo-b", "refreshToken": "rb", "expiresAt": 1}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        FileStore.write_raw(&dir, None, &raw).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_ne!(before.ino(), after.ino(), "a new file");
+        assert!(after.modified().unwrap() > before.modified().unwrap());
+        assert_eq!(after.permissions().mode() & 0o777, 0o600);
+        let back = FileStore.read_raw(&dir, None).unwrap().unwrap();
+        assert_eq!(
+            back["mcpOAuth"],
+            serde_json::json!({"x": {"accessToken": "other"}})
+        );
+        assert_eq!(back[OAUTH_KEY]["refreshToken"], "rb");
+        let leftovers = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
+        // A cleared sign-in (Claude Code after `invalid_grant`) is no sign-in.
+        let cleared = parse_credentials(
+            r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#,
+        )
+        .unwrap();
+        assert!(!cleared.signed_in());
+        assert!(chain_id(None).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The fake `security` of `tests/support`, in a folder of its own.
+    pub(crate) fn fake_security(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let program = dir.join("security");
+        std::fs::write(&program, include_str!("../../tests/support/fake-security")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        program
+    }
+
+    #[test]
+    fn the_keychain_store_goes_through_security_with_the_secret_on_stdin() {
+        let base =
+            std::env::temp_dir().join(format!("tmux-creds-k-{}", uuid::Uuid::new_v4().simple()));
+        let program = fake_security(&base.join("keychain"));
+        assert_ne!(program, Path::new(SECURITY));
+        let store = KeychainStore {
+            program: program.clone(),
+            account: "tester".into(),
+        };
+        let slot = base.join("home/.claude");
+        let folder = base.join("accounts/personal");
+        std::fs::create_dir_all(&slot).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        let env = folder.to_string_lossy().into_owned();
+        // Nothing in the Keychain, no file: no sign-in.
+        assert_eq!(store.read_raw(&slot, None).unwrap(), None);
+        // The file is the fallback.
+        std::fs::write(folder.join(CREDENTIALS_FILE), FILE).unwrap();
+        assert!(store
+            .read(&folder, Some(&env))
+            .unwrap()
+            .unwrap()
+            .signed_in());
+        let raw: Raw = serde_json::from_str(FILE).unwrap();
+        store.write_raw(&slot, None, &raw).unwrap();
+        assert!(
+            !slot.join(CREDENTIALS_FILE).exists(),
+            "no plaintext file is ever made"
+        );
+        assert_eq!(store.read_raw(&slot, None).unwrap().unwrap(), raw);
+        // A folder with a plaintext file gets the change there too.
+        let mut other = raw.clone();
+        other.remove(OAUTH_KEY);
+        store.write_raw(&folder, Some(&env), &other).unwrap();
+        assert_eq!(store.read_raw(&folder, Some(&env)).unwrap().unwrap(), other);
+        assert_eq!(
+            FileStore.read_raw(&folder, None).unwrap().unwrap(),
+            other,
+            "the fallback file follows"
+        );
+        let log = std::fs::read_to_string(base.join("keychain/calls.log")).unwrap();
+        assert!(
+            log.contains("add-stdin tester Claude Code-credentials\n"),
+            "{log}"
+        );
+        assert!(log.contains(&format!(
+            "add-stdin tester {}",
+            keychain_service(Some(&env))
+        )));
+        assert!(
+            !log.contains("add-argv"),
+            "the secret never went on argv: {log}"
+        );
+        assert!(!log.contains("demo-work"));
+        assert_eq!(store.delay_s(), 30);
+        assert_eq!(FileStore.delay_s(), 0);
+        // A Keychain that refuses: an error, nothing written.
+        let failing = std::process::Command::new(&program)
+            .args([
+                "add-generic-password",
+                "-U",
+                "-a",
+                "x",
+                "-s",
+                "y",
+                "-X",
+                "00",
+            ])
+            .env("FAKE_SECURITY_FAIL", "1")
+            .status()
+            .unwrap();
+        assert_eq!(failing.code(), Some(36));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_add_line_is_claude_code_s() {
+        assert_eq!(
+            keychain_add_line("me", "Claude Code-credentials", "7b7d"),
+            "add-generic-password -U -a \"me\" -s \"Claude Code-credentials\" -X \"7b7d\"\n"
+        );
     }
 
     #[test]
