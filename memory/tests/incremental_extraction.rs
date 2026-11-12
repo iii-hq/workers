@@ -110,7 +110,7 @@ fn thousand_entry_prefix_reads_only_thirty_new_entries() {
     );
     assert_eq!(transport.returned, 30);
     let Outcome::Complete(delta) = read.outcome() else {
-        panic!("delta completo esperado")
+        panic!("expected a complete delta")
     };
     assert_eq!(delta.entries.len(), 30);
     assert_eq!(delta.watermark, "delta-29");
@@ -153,7 +153,7 @@ fn more_than_thousand_new_entries_keep_every_page_and_prefix() {
         .iter()
         .all(|request| request.get("until").is_none() && request.get("from_entry_id").is_none()));
     let Outcome::Complete(delta) = read.outcome() else {
-        panic!("delta completo esperado")
+        panic!("expected a complete delta")
     };
     assert_eq!(delta.entries.len(), 1230);
     assert_eq!(delta.entries[0].entry_id, "new-0");
@@ -178,7 +178,7 @@ fn opaque_ids_keep_server_order_and_inclusive_client_cut() {
     let mut read = reader(Some("middle-anchor"), Some("0-end"));
     transport.drive(&mut read);
     let Outcome::Complete(delta) = read.outcome() else {
-        panic!("corte completo esperado")
+        panic!("expected a complete cut")
     };
     assert_eq!(
         delta
@@ -1027,7 +1027,7 @@ mod productive {
                 result
             })
             .await
-            .expect("fixture limitada");
+            .expect("bounded fixture");
             self.assert_rpc_scope();
             result
         }
@@ -1052,7 +1052,7 @@ mod productive {
                             | "memory::on-item-changed"
                             | "memory::on-bank-changed"
                     ),
-                    "RPC inesperado: {id}"
+                    "unexpected RPC: {id}"
                 );
                 if matches!(id.as_str(), "session::get" | "session::messages") {
                     assert_eq!(data["session_id"], "incremental-fixture");
@@ -1396,7 +1396,7 @@ mod productive {
                 "invocation_failed",
                 "session/invalid_cursor: anchor not on path",
             ))]),
-            // Prefixo exato, mas code de outro produtor.
+            // Exact prefix, but another producer's code.
             VecDeque::from([Err((
                 "invocation_error",
                 "handler error: session/invalid_cursor: anchor not on path",
@@ -1406,7 +1406,7 @@ mod productive {
                 "invocation_failed",
                 "handler error: temporary: session/invalid_cursor: anchor",
             ))]),
-            // Outro erro do handler de session-manager.
+            // Another session-manager handler error.
             VecDeque::from([Err((
                 "invocation_failed",
                 "handler error: session/storage: unavailable",
@@ -2294,7 +2294,6 @@ mod productive {
         assert_eq!(s.count("router::complete"), 1);
         assert_eq!(s.count("memory::on-item-changed"), 1);
         assert_eq!(s.count("state::set"), 2);
-        assert_eq!(s.requests().last().unwrap()["after_entry_id"], "first-end");
     }
 
     #[tokio::test]
@@ -2445,8 +2444,77 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn public_fetch_byte_limits_preserve_recovery_and_allow_attested_retry() {
-        const TEXT: usize = 1024 * 1024;
+    async fn a_dead_lettered_or_edited_run_never_stops_the_turns_after_it() {
+        for edited in [false, true] {
+            let mut path = vec![
+                message("anchor", ""),
+                message(
+                    "first-user",
+                    "Amber instruments require copper calibration.",
+                ),
+                stamped("first-end", "first-turn", "private", true),
+            ];
+            let texts: Vec<String> = (0..130)
+                .map(|i| format!("Synthetic fixture fact number {i} holds."))
+                .collect();
+            for (i, text) in texts.iter().enumerate() {
+                path.push(message(&format!("user-{i}"), text));
+                path.push(stamped(
+                    &format!("end-{i}"),
+                    &format!("turn-{i}"),
+                    "private",
+                    true,
+                ));
+            }
+            let mut items: VecDeque<Value> = texts.iter().map(|text| fact(text)).collect();
+            items.push_front(json!([]));
+            let stack = Boundary::new(Script {
+                path,
+                cursor: Some("anchor".into()),
+                persistent_cursor: true,
+                model_failures: 3,
+                model_items: items,
+                ..Script::default()
+            })
+            .await;
+            let mut owner = job("first-end");
+            owner.turn_id = Some("first-turn".into());
+            // A provider outage outlasts the owner's retries: dead-lettered.
+            for _ in 0..3 {
+                assert!(stack.run(&owner).await.is_err());
+            }
+            if edited {
+                stack.script.lock().unwrap().path[1] =
+                    message("first-user", "Edited: amber instruments need copper.");
+            }
+            for i in 0..130 {
+                let mut turn = job(&format!("end-{i}"));
+                turn.turn_id = Some(format!("turn-{i}"));
+                stack.run(&turn).await.unwrap();
+                let ranges = stack
+                    .deps
+                    .store()
+                    .await
+                    .extraction_ranges("incremental-fixture")
+                    .unwrap();
+                assert!(ranges.is_empty(), "turn {i}: {ranges:?}");
+            }
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-129"}));
+            assert_eq!(stack.log_records("private").len(), 130);
+            // Three failures, the dead-lettered run once, then every turn.
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 134);
+            assert!(stack
+                .deps
+                .store()
+                .await
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn public_fetch_identifier_bounds_preserve_recovery_and_allow_attested_retry() {
         for root_recovery in [false, true] {
             let first = "Amber instruments require copper calibration.";
             let second = "Birch archives retain monthly invoices.";
@@ -2492,13 +2560,9 @@ mod productive {
                 files
             };
             let before = snapshot();
+            // Identifiers past their bound fail the read before any effect;
+            // sizes never do (see large_sources_never_stop_extraction).
             let mut cases = Vec::<Vec<Value>>::new();
-            cases.push(vec![
-                json!({"messages":[message("end", &"x".repeat(TEXT + 1))]}),
-            ]);
-            let mut metadata = message("end", "safe");
-            metadata["unknown"] = json!("x".repeat(175 * 1024));
-            cases.push(vec![json!({"messages":[metadata]})]);
             cases.push(vec![
                 json!({"messages":[message(&"i".repeat(257), "safe")]}),
             ]);
@@ -2508,18 +2572,6 @@ mod productive {
             let mut origin = message("end", "safe");
             origin["origin"] = json!({"turn_id":"t".repeat(257)});
             cases.push(vec![json!({"messages":[origin]})]);
-            let mut separated = message("end", "");
-            separated["message"]["content"] = json!([
-                {"type":"text","text":"x".repeat(TEXT)}, {"type":"text","text":""}]);
-            cases.push(vec![json!({"messages":[separated]})]);
-            cases.push(
-                (0..8)
-                    .map(|n| {
-                        json!({"messages":[message(&format!("page-item-{n}"), &"x".repeat(TEXT))],
-                "next_cursor":format!("page/{}",n+1)})
-                    })
-                    .collect(),
-            );
             for pages in cases {
                 {
                     let mut script = stack.script.lock().unwrap();
@@ -2566,6 +2618,73 @@ mod productive {
             assert_eq!(stack.log_records("private")[0], original[0]);
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn large_sources_never_stop_extraction() {
+        // A tool call of 1.2 MB in each reply (a delta over 4 MiB) and a
+        // request over 1 MiB of text: the request's run is quarantined, the
+        // rest is extracted, and the cursor reaches the last turn.
+        let reply = |id: &str, turn: &str| {
+            let mut item = stamped(id, turn, "private", true);
+            item["message"]["content"] = json!([
+                {"type":"text","text":"Done."},
+                {"type":"function_call","id":"call","name":"write","arguments":"x".repeat(1_200_000)}
+            ]);
+            item
+        };
+        let first = "Amber instruments require copper calibration.";
+        let last = "Birch archives retain monthly invoices.";
+        for root in [false, true] {
+            let stack = Boundary::new(Script {
+                path: vec![
+                    message("anchor", ""),
+                    message("u0", first),
+                    reply("a0", "t0"),
+                    message("u1", &"y".repeat(1_100_000)),
+                    reply("a1", "t1"),
+                    message("u2", last),
+                    reply("a2", "t2"),
+                    reply("a3", "t2"),
+                ],
+                cursor: Some("anchor".into()),
+                model_items: VecDeque::from([fact(first), fact(last)]),
+                ..Script::default()
+            })
+            .await;
+            if root {
+                stack
+                    .script
+                    .lock()
+                    .unwrap()
+                    .pages
+                    .push_back(Err(SDK_INVALID_CURSOR));
+            }
+            let mut input = job("a3");
+            input.turn_id = Some("t2".into());
+            stack.run(&input).await.unwrap();
+            assert_eq!(
+                stack.script.lock().unwrap().cursor.as_deref(),
+                Some("a3"),
+                "root {root}"
+            );
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 2);
+            let ranges = stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap();
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].pending.version, 2);
+            assert_eq!(ranges[0].pending.entries[0].0, "u1");
+            let texts: Vec<_> = stack
+                .log_records("private")
+                .into_iter()
+                .map(|r| r.text)
+                .collect();
+            assert_eq!(texts, [first, last]);
         }
     }
 
@@ -2869,11 +2988,8 @@ mod productive {
         .await;
         let mut input = job("end");
         input.turn_id = Some("new-turn".into());
-        assert!(stack
-            .run(&input)
-            .await
-            .unwrap_err()
-            .contains("source policy boundary missing"));
+        // A request with no reply yet waits for the pass that reads its end.
+        stack.run(&input).await.unwrap();
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 0);
         assert_eq!(s.count("state::set"), 0);
@@ -2881,9 +2997,18 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn unknown_prefix_suffix_and_gaps_fail_before_any_effect_after_restart() {
-        for position in ["prefix", "gap", "suffix", "requests", "turn", "conflict"] {
+    async fn unknown_policy_and_unattributed_entries_pass_unextracted_after_restart() {
+        // The second element: whether the turn's own request reaches the model.
+        for (position, asked) in [
+            ("prefix", true),
+            ("gap", false),
+            ("suffix", true),
+            ("requests", true),
+            ("turn", false),
+            ("conflict", false),
+        ] {
             let text = "Amber instruments require copper calibration.";
+            let answered = "The turn answered this later request.";
             let unknown = || {
                 let mut item = message("unknown", "OFF_UNKNOWN_MUST_NOT_REACH_MODEL");
                 item["message"]["role"] = json!("assistant");
@@ -2899,10 +3024,7 @@ mod productive {
                 path.push(unknown());
             }
             if position == "requests" {
-                path.push(message(
-                    "unbound",
-                    "Unconfirmed request must not inherit ON.",
-                ));
+                path.push(message("unbound", answered));
             }
             if position == "turn" {
                 path[1]["origin"] = json!({"turn_id":"unconfirmed-off"});
@@ -2919,19 +3041,25 @@ mod productive {
                 cursor: Some("anchor".into()),
                 persistent_cursor: true,
                 observe_events: true,
+                model_items: VecDeque::from([json!([])]),
                 ..Script::default()
             })
             .await
             .restart()
             .await;
-            let mut input = job(if position == "suffix" {
+            let until = if position == "suffix" {
                 "unknown"
             } else {
                 "end"
-            });
+            };
+            let mut input = job(until);
             input.turn_id = Some("on".into());
-            assert!(stack.run(&input).await.is_err(), "{position}");
-            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+            stack.run(&input).await.unwrap();
+            assert_eq!(
+                stack.disk_cursor(),
+                json!({"last_entry_id":until}),
+                "{position}"
+            );
             assert_eq!(stack.commits(), 0);
             assert!(stack
                 .deps
@@ -2941,10 +3069,19 @@ mod productive {
                 .unwrap()
                 .is_none());
             let s = stack.script.lock().unwrap();
-            assert_eq!(s.count("router::complete"), 0);
-            assert_eq!(s.count("state::set"), 0);
-            assert_eq!(s.count("memory::on-item-changed"), 0);
-            assert_eq!(s.count("memory::on-bank-changed"), 0);
+            assert_eq!(
+                s.count("router::complete"),
+                usize::from(asked),
+                "{position}"
+            );
+            assert!(s.inputs().iter().all(|i| !i.contains("OFF_UNKNOWN")));
+            if position == "requests" {
+                // The earlier request failed before a reply: never this turn's.
+                assert!(s.inputs()[0].contains(answered));
+                assert!(!s.inputs()[0].contains(text));
+            } else if asked {
+                assert!(s.inputs()[0].contains(text));
+            }
         }
     }
 
@@ -2952,24 +3089,23 @@ mod productive {
     async fn failed_turn_without_assistant_cannot_inherit_later_turn_policy_or_bank() {
         // Direct send uses opaque e_ IDs, not just queued e_q_ identities.
         // Neither session metadata nor the next assistant proves the first
-        // request's turn policy; retain it for a trusted producer receipt.
+        // request's turn policy: it passes unextracted, never into this turn.
+        let later = "Later request belongs to the turn that answered it.";
         for (bank, enabled) in [("private", true), ("other", true), ("private", false)] {
             let stack = Boundary::new(Script {
                 path: vec![
                     message("anchor", ""),
                     message(
                         "e_earlier_direct",
-                        "Earlier request requires its own extraction policy.",
+                        "EARLIER_FAILED_REQUEST requires its own extraction policy.",
                     ),
-                    message(
-                        "e_later_direct",
-                        "Later request must never own the earlier request.",
-                    ),
+                    message("e_later_direct", later),
                     stamped("end", "later", bank, enabled),
                 ],
                 cursor: Some("anchor".into()),
                 persistent_cursor: true,
                 observe_events: true,
+                model_items: VecDeque::from([fact(later)]),
                 ..Script::default()
             })
             .await
@@ -2980,20 +3116,13 @@ mod productive {
             input.turn_id = Some("later".into());
             input.bank = Some(bank.into());
             input.skip = !enabled;
-            assert!(stack
-                .run(&input)
-                .await
-                .unwrap_err()
-                .contains("unbound request gap"));
+            stack.run(&input).await.unwrap();
             let stack = stack.restart().await;
-            assert!(stack
-                .run(&input)
-                .await
-                .unwrap_err()
-                .contains("unbound request gap"));
-            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-            assert!(stack.log_records("private").is_empty());
-            assert!(stack.log_records("other").is_empty());
+            stack.run(&input).await.unwrap();
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+            let records = stack.log_records(bank);
+            assert_eq!(records.len(), usize::from(enabled));
+            assert!(records.iter().all(|r| r.text == later));
             assert!(stack
                 .deps
                 .store()
@@ -3003,10 +3132,9 @@ mod productive {
                 .is_none());
             let script = stack.script.lock().unwrap();
             assert_eq!(script.path, original_path);
+            // The restart cleared the first run's calls; the rerun is a no-op.
             assert_eq!(script.count("router::complete"), 0);
             assert_eq!(script.count("state::set"), 0);
-            assert_eq!(script.count("memory::on-item-changed"), 0);
-            assert_eq!(script.count("memory::on-bank-changed"), 0);
         }
     }
 
@@ -3183,7 +3311,7 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn pending_correct_job_recovers_before_later_different_bank_after_restart() {
+    async fn later_job_recovers_an_earlier_turns_saved_run_under_that_turns_bank() {
         let first = "Amber instruments require copper calibration.";
         let second = "Birch archives retain monthly invoices.";
         let stack = Boundary::new(Script {
@@ -3211,14 +3339,8 @@ mod productive {
         let mut later = job("end");
         later.turn_id = Some("second-turn".into());
         later.bank = Some("other".into());
-        assert!(stack.run(&later).await.is_err());
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
-        assert_eq!(stack.script.lock().unwrap().count("state::set"), 0);
-        stack.run(&first_job).await.unwrap();
-        let stack = stack.restart().await;
-        stack.run(&later).await.unwrap();
-        stack.run(&first_job).await.unwrap();
+        // The later job finishes the earlier turn's saved run first, from its
+        // saved decision and under its own bank, then runs its own.
         stack.run(&later).await.unwrap();
         assert_eq!(stack.log_records("private"), original);
         let other = stack.log_records("other");
@@ -3227,16 +3349,26 @@ mod productive {
         assert_eq!(other[0].revision, 0);
         assert_eq!(other[0].corroboration, 0);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 1);
+            assert_eq!(s.count("memory::on-item-changed"), 1);
+            assert_eq!(s.count("state::set"), 2);
+            assert!(s.inputs()[0].contains(second));
+            assert!(!s.inputs()[0].contains(first));
+        }
+        let stack = stack.restart().await;
+        stack.run(&first_job).await.unwrap();
+        stack.run(&later).await.unwrap();
+        assert_eq!(stack.log_records("private"), original);
+        assert_eq!(stack.log_records("other"), other);
         let s = stack.script.lock().unwrap();
-        assert_eq!(s.count("router::complete"), 1);
-        assert_eq!(s.count("memory::on-item-changed"), 1);
-        assert_eq!(s.count("state::set"), 1);
-        assert!(s.inputs()[0].contains(second));
-        assert!(!s.inputs()[0].contains(first));
+        assert_eq!(s.count("router::complete"), 0);
+        assert_eq!(s.count("state::set"), 0);
     }
 
     #[tokio::test]
-    async fn exhausted_owner_retains_exact_source_while_off_and_later_own_turn_progress_across_restart(
+    async fn exhausted_owner_run_waits_through_off_and_the_next_eligible_job_runs_it_across_restart(
     ) {
         for later_bank in ["private", "other"] {
             let first = "ORIGINAL_SOURCE_CANARY copper calibration remains mandatory.";
@@ -3256,7 +3388,7 @@ mod productive {
                 persistent_cursor: true,
                 observe_events: true,
                 model_failures: 3,
-                model_items: VecDeque::from([fact(second), fact(first)]),
+                model_items: VecDeque::from([fact(first), fact(second)]),
                 ..Script::default()
             })
             .await;
@@ -3280,6 +3412,8 @@ mod productive {
             assert_eq!(saved["attempts"], 3);
             assert_eq!(saved["entries"][0][2], first);
             let stack = stack.restart().await;
+            // An OFF job never runs eligible text: it keeps the run and the
+            // cursor before it, for the next eligible job.
             let mut off = job("off-end");
             off.turn_id = Some("off-turn".into());
             off.skip = true;
@@ -3306,36 +3440,12 @@ mod productive {
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
             assert_eq!(stack.script.lock().unwrap().count("state::set"), 0);
             let stack = stack.restart().await;
+            // The next eligible job runs the exhausted run under its own
+            // turn's bank, passes the OFF turn and runs its own.
             let mut later = job("later-end");
             later.turn_id = Some("later-turn".into());
             later.bank = Some(later_bank.into());
             stack.run(&later).await.unwrap();
-            stack.run(&later).await.unwrap();
-            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-            assert_eq!(stack.log_records(later_bank).len(), 1);
-            assert_eq!(stack.log_records(later_bank)[0].text, second);
-            let ranges = stack
-                .deps
-                .store()
-                .await
-                .extraction_ranges("incremental-fixture")
-                .unwrap();
-            assert_eq!(ranges.len(), 2);
-            assert_eq!(ranges.iter().filter(|r| r.completed).count(), 1);
-            {
-                let s = stack.script.lock().unwrap();
-                assert_eq!(s.path, path);
-                assert_eq!(s.count("router::complete"), 1);
-                assert_eq!(s.count("memory::on-item-changed"), 1);
-                assert_eq!(s.count("memory::on-bank-changed"), 1);
-                assert_eq!(s.count("state::set"), 0);
-                assert!(s.inputs()[0].contains(second));
-                assert!(!s.inputs()[0].contains("ORIGINAL_SOURCE_CANARY"));
-                assert!(!s.inputs()[0].contains("OFF_SOURCE_CANARY"));
-            }
-            let stack = stack.restart().await;
-            stack.run(&first_job).await.unwrap();
-            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"first-end"}));
             stack.run(&later).await.unwrap();
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"later-end"}));
             assert!(stack
@@ -3345,17 +3455,28 @@ mod productive {
                 .extraction_ranges("incremental-fixture")
                 .unwrap()
                 .is_empty());
-            let records = stack.log_records("private");
-            assert_eq!(records.len(), if later_bank == "private" { 2 } else { 1 });
-            assert!(records
+            let private = stack.log_records("private");
+            assert!(private
                 .iter()
                 .any(|r| r.text == first && r.revision == 0 && r.corroboration == 0));
+            assert_eq!(private.len(), if later_bank == "private" { 2 } else { 1 });
+            assert_eq!(stack.log_records(later_bank).last().unwrap().text, second);
+            {
+                let s = stack.script.lock().unwrap();
+                assert_eq!(s.path, path);
+                assert_eq!(s.count("router::complete"), 2);
+                assert_eq!(s.count("memory::on-item-changed"), 2);
+                assert!(s.inputs()[0].contains(first));
+                assert!(!s.inputs()[0].contains(second));
+                assert!(s.inputs()[1].contains(second));
+                assert!(s.inputs().iter().all(|i| !i.contains("OFF_SOURCE_CANARY")));
+            }
+            // The exhausted turn's own job, redelivered, finds nothing left.
+            let stack = stack.restart().await;
+            stack.run(&first_job).await.unwrap();
             let s = stack.script.lock().unwrap();
-            assert_eq!(s.path, path);
-            assert_eq!(s.count("router::complete"), 1);
-            assert_eq!(s.count("memory::on-item-changed"), 1);
-            assert_eq!(s.count("state::set"), 3);
-            assert!(s.inputs().iter().all(|i| !i.contains("OFF_SOURCE_CANARY")));
+            assert_eq!(s.count("router::complete"), 0);
+            assert_eq!(s.count("state::set"), 0);
         }
     }
 
@@ -3502,15 +3623,17 @@ mod productive {
             .pending_extraction("incremental-fixture")
             .unwrap();
         let stack = stack.restart().await;
+        // Nothing after the legacy run is stamped: no later job may run the
+        // old run under its own bank, so they all wait.
         for bank in ["private", "other"] {
             let mut later = job("end");
             later.bank = Some(bank.into());
-            assert!(stack.run(&later).await.is_err());
+            stack.run(&later).await.unwrap();
         }
         let mut off = job("end");
         off.skip = true;
         off.bank = None;
-        assert!(stack.run(&off).await.is_err());
+        stack.run(&off).await.unwrap();
         assert_eq!(
             stack
                 .deps
@@ -3520,13 +3643,6 @@ mod productive {
                 .unwrap(),
             pending
         );
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
         assert!(stack.log_records("private").is_empty());
         assert!(stack.log_records("other").is_empty());
@@ -3542,17 +3658,6 @@ mod productive {
             }
         }
         let stack = stack.restart().await;
-        assert!(stack.run(&job("end")).await.is_err());
-        assert_eq!(
-            stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap(),
-            pending
-        );
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
         stack
             .script
             .lock()
@@ -3560,7 +3665,7 @@ mod productive {
             .model_items
             .push_back(json!([]));
         // Replace only the previously unknown suffix with its own real stamp.
-        // The old original range stays quarantined while this owning turn runs.
+        // The legacy request has no stamped turn: it passes unextracted.
         stack.script.lock().unwrap().path = vec![
             message("anchor", ""),
             message(
@@ -3578,16 +3683,21 @@ mod productive {
         later.bank = Some("other".into());
         stack.run(&later).await.unwrap();
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-        let ranges = stack
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        assert!(stack
             .deps
             .store()
             .await
             .extraction_ranges("incremental-fixture")
-            .unwrap();
-        let original = memory::store::PendingExtraction::parse(pending.unwrap()).unwrap();
-        assert_eq!(ranges[0].pending, original);
-        assert!(!ranges[0].completed);
+            .unwrap()
+            .is_empty());
+        assert!(stack
+            .deps
+            .store()
+            .await
+            .pending_extraction("incremental-fixture")
+            .unwrap()
+            .is_none());
         assert!(stack
             .script
             .lock()
@@ -3618,7 +3728,7 @@ mod productive {
             persistent_cursor: true,
             observe_events: true,
             model_failures: 3,
-            model_items: VecDeque::from(vec![json!([]); 5]),
+            model_items: VecDeque::from(vec![json!([]); 6]),
             ..Script::default()
         })
         .await;
@@ -3649,42 +3759,51 @@ mod productive {
         let mut later = job("end");
         later.turn_id = Some("later-turn".into());
         later.bank = Some("other".into());
+        // The exhausted run goes first, under its own bank, then three of the
+        // later turn's five runs: four calls, then a retry.
         assert!(stack
             .run(&later)
             .await
             .unwrap_err()
             .contains("remaining runs"));
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-        let stack = stack.restart().await;
-        stack.run(&later).await.unwrap();
-        stack.run(&later).await.unwrap();
-        let ranges = stack
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 4);
+            assert!(s.inputs()[0].contains("RETAINED_PREFIX_CANARY"));
+            assert!(s.inputs()[1..]
+                .iter()
+                .all(|input| !input.contains("RETAINED_PREFIX_CANARY")));
+        }
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"new-32"}));
+        assert!(stack
             .deps
             .store()
             .await
             .extraction_ranges("incremental-fixture")
-            .unwrap();
-        assert_eq!(ranges.len(), 6);
-        assert_eq!(ranges[0].pending, pending);
-        assert!(!ranges[0].completed);
-        assert_eq!(ranges.iter().filter(|r| r.completed).count(), 5);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+            .unwrap()
+            .is_empty());
+        let stack = stack.restart().await;
+        stack.run(&later).await.unwrap();
+        stack.run(&later).await.unwrap();
+        assert!(stack
+            .deps
+            .store()
+            .await
+            .extraction_ranges("incremental-fixture")
+            .unwrap()
+            .is_empty());
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         assert!(stack.log_records("private").is_empty());
         assert!(stack.log_records("other").is_empty());
         let s = stack.script.lock().unwrap();
-        assert_eq!(s.count("router::complete"), 1);
+        assert_eq!(s.count("router::complete"), 2);
         assert_eq!(s.count("memory::on-item-changed"), 0);
         assert_eq!(s.count("memory::on-bank-changed"), 0);
-        assert_eq!(s.count("state::set"), 0);
-        assert!(s
-            .inputs()
-            .iter()
-            .all(|input| !input.contains("RETAINED_PREFIX_CANARY")));
+        assert_eq!(s.count("state::set"), 2);
     }
 
     #[tokio::test]
-    async fn raw_source_edit_hidden_by_redaction_is_quarantined_without_blocking_later_turn() {
+    async fn raw_source_edit_hidden_by_redaction_runs_as_edited_without_blocking_later_turn() {
         let key = |letter: &str| format!("sk-ant-api03-{}", letter.repeat(40));
         let original = format!("Copper calibration is mandatory; pasted key {}", key("a"));
         let edited = format!("Copper calibration is mandatory; pasted key {}", key("b"));
@@ -3705,7 +3824,7 @@ mod productive {
             persistent_cursor: true,
             observe_events: true,
             model_failures: 3,
-            model_items: VecDeque::from([fact(later_text)]),
+            model_items: VecDeque::from([json!([]), fact(later_text)]),
             ..Script::default()
         })
         .await;
@@ -3729,31 +3848,28 @@ mod productive {
         let mut later = job("end");
         later.turn_id = Some("new-turn".into());
         later.bank = Some("other".into());
+        // The saved run no longer matches the raw source: it is dropped, and
+        // the edited run runs as the path holds it now.
         stack.run(&later).await.unwrap();
-        let ranges = stack
+        assert!(stack
             .deps
             .store()
             .await
             .extraction_ranges("incremental-fixture")
-            .unwrap();
-        assert_eq!(serde_json::to_value(&ranges[0].pending).unwrap(), saved);
-        assert!(!ranges[0].completed);
+            .unwrap()
+            .is_empty());
         assert_eq!(stack.log_records("other")[0].text, later_text);
         assert_eq!(stack.log_records("other").len(), 1);
         assert!(stack.log_records("private").is_empty());
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 2);
+            assert!(s.inputs()[0].contains("Copper calibration is mandatory"));
+            assert!(s.inputs().iter().all(|i| !i.contains(&key("b"))));
+        }
         let stack = stack.restart().await;
-        assert!(stack.run(&owner).await.is_err());
-        assert_eq!(
-            stack
-                .deps
-                .store()
-                .await
-                .extraction_ranges("incremental-fixture")
-                .unwrap(),
-            ranges
-        );
-        assert!(stack.log_records("private").is_empty());
+        stack.run(&owner).await.unwrap();
         let s = stack.script.lock().unwrap();
         for function in [
             "router::complete",
@@ -3826,6 +3942,13 @@ mod productive {
         for mutation in ["text", "timestamp", "policy", "unknown-policy"] {
             let old = "ORIGINAL_RETAINED_CANARY requires copper calibration.";
             let new = "Birch archives retain monthly invoices.";
+            // A changed source runs again as it is now; a changed policy
+            // passes it unextracted.
+            let reruns = matches!(mutation, "text" | "timestamp");
+            let mut items = VecDeque::from([fact(new)]);
+            if reruns {
+                items.push_front(json!([]));
+            }
             let stack = Boundary::new(Script {
                 path: vec![
                     message("anchor", ""),
@@ -3838,7 +3961,7 @@ mod productive {
                 persistent_cursor: true,
                 observe_events: true,
                 model_failures: 3,
-                model_items: VecDeque::from([fact(new)]),
+                model_items: items,
                 ..Script::default()
             })
             .await;
@@ -3847,13 +3970,6 @@ mod productive {
             for _ in 0..3 {
                 assert!(stack.run(&owner).await.is_err());
             }
-            let saved = stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .unwrap();
             {
                 let mut s = stack.script.lock().unwrap();
                 match mutation {
@@ -3870,29 +3986,26 @@ mod productive {
             later.turn_id = Some("new-turn".into());
             later.bank = Some("other".into());
             stack.run(&later).await.unwrap();
-            let ranges = stack
+            assert!(stack
                 .deps
                 .store()
                 .await
                 .extraction_ranges("incremental-fixture")
-                .unwrap();
-            assert_eq!(serde_json::to_value(&ranges[0].pending).unwrap(), saved);
-            assert!(!ranges[0].completed);
-            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+                .unwrap()
+                .is_empty());
+            assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
             assert!(stack.log_records("private").is_empty());
             assert_eq!(stack.log_records("other").len(), 1);
             assert_eq!(stack.log_records("other")[0].text, new);
+            {
+                let s = stack.script.lock().unwrap();
+                assert_eq!(s.count("router::complete"), 1 + usize::from(reruns));
+                if mutation != "timestamp" {
+                    assert!(s.inputs().iter().all(|i| !i.contains("ORIGINAL_RETAINED")));
+                }
+            }
             let stack = stack.restart().await;
-            assert!(stack.run(&owner).await.is_err());
-            assert_eq!(
-                stack
-                    .deps
-                    .store()
-                    .await
-                    .extraction_ranges("incremental-fixture")
-                    .unwrap(),
-                ranges
-            );
+            stack.run(&owner).await.unwrap();
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
             assert_eq!(
                 stack
@@ -3950,20 +4063,30 @@ mod productive {
         let mut later = job("end");
         later.turn_id = Some("later-turn".into());
         later.bank = Some("other".into());
+        // The dead-lettered run finishes from its receipts: no model call and
+        // no second event for it; then the later turn runs.
         stack.run(&later).await.unwrap();
         assert_eq!(stack.log_records("private"), original);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
+        assert_eq!(stack.log_records("other").len(), 1);
+        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 1);
+            assert!(s.inputs()[0].contains(second));
+            assert!(!s.inputs()[0].contains("ORIGINAL_PUBLISHED_CANARY"));
+            assert_eq!(s.count("memory::on-item-changed"), 1);
+            assert_eq!(s.count("state::set"), 2);
+        }
         let stack = stack.restart().await;
         stack.run(&first_job).await.unwrap();
         stack.run(&later).await.unwrap();
         assert_eq!(stack.log_records("private"), original);
         assert_eq!(stack.log_records("other").len(), 1);
-        assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 0);
         assert_eq!(s.count("memory::on-item-changed"), 0);
         assert_eq!(s.count("memory::on-bank-changed"), 0);
-        assert_eq!(s.count("state::set"), 2);
+        assert_eq!(s.count("state::set"), 0);
     }
 
     #[tokio::test]
@@ -3983,7 +4106,7 @@ mod productive {
             persistent_cursor: true,
             observe_events: true,
             model_failures: 3,
-            model_items: VecDeque::from([fact(second), fact(first)]),
+            model_items: VecDeque::from([fact(first), fact(second)]),
             ..Script::default()
         })
         .await;
@@ -3995,9 +4118,9 @@ mod productive {
         let mut later = job("end");
         later.turn_id = Some("later-turn".into());
         later.bank = Some("other".into());
-        stack.run(&later).await.unwrap();
+        // The exhausted run completes, but its cursor confirmation fails.
         stack.script.lock().unwrap().state_write_error = true;
-        assert!(stack.run(&owner).await.unwrap_err().contains("state::set"));
+        assert!(stack.run(&later).await.unwrap_err().contains("state::set"));
         let records = stack.log_records("private");
         assert_eq!(records.len(), 1);
         let ranges = stack
@@ -4006,8 +4129,8 @@ mod productive {
             .await
             .extraction_ranges("incremental-fixture")
             .unwrap();
-        assert_eq!(ranges.len(), 2);
-        assert!(ranges.iter().all(|r| r.completed));
+        assert_eq!(ranges.len(), 1);
+        assert!(ranges[0].completed);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
         stack.script.lock().unwrap().state_write_error = false;
         let stack = stack.restart().await;
@@ -4023,17 +4146,17 @@ mod productive {
             .unwrap()
             .is_empty());
         let s = stack.script.lock().unwrap();
-        assert_eq!(s.count("router::complete"), 0);
+        // Only the later turn asks the model: the completed run is not replayed.
+        assert_eq!(s.count("router::complete"), 1);
+        assert!(s.inputs()[0].contains(second));
         assert_eq!(s.count("state::set"), 2);
-        assert_eq!(s.count("memory::on-item-changed"), 0);
-        assert_eq!(s.count("memory::on-bank-changed"), 0);
+        assert_eq!(s.count("memory::on-item-changed"), 1);
     }
 
     #[tokio::test]
-    async fn quarantined_range_requires_unchanged_source_policy_and_cannot_authorize_a_wrong_callback(
-    ) {
-        for mutation in ["text", "policy", "bank", "turn"] {
-            let first = "ORIGINAL_QUARANTINE_CANARY requires copper calibration.";
+    async fn exhausted_run_cannot_be_published_by_a_wrong_callback() {
+        for mutation in ["bank", "turn", "skip"] {
+            let first = "ORIGINAL_EXHAUSTED_CANARY requires copper calibration.";
             let second = "Birch archives retain monthly invoices.";
             let stack = Boundary::new(Script {
                 path: vec![
@@ -4047,7 +4170,6 @@ mod productive {
                 persistent_cursor: true,
                 observe_events: true,
                 model_failures: 3,
-                model_items: VecDeque::from([fact(second)]),
                 ..Script::default()
             })
             .await;
@@ -4056,40 +4178,32 @@ mod productive {
             for _ in 0..3 {
                 assert!(stack.run(&owner).await.is_err());
             }
-            let mut later = job("end");
-            later.turn_id = Some("later-turn".into());
-            later.bank = Some("other".into());
-            stack.run(&later).await.unwrap();
-            let ranges = stack
+            let pending = stack
                 .deps
                 .store()
                 .await
-                .extraction_ranges("incremental-fixture")
+                .pending_extraction("incremental-fixture")
                 .unwrap();
-            let records = stack.log_records("other");
-            {
-                let mut s = stack.script.lock().unwrap();
-                match mutation {
-                    "text" => {
-                        s.path[1] = message("first-user", "Changed text with the same opaque id")
-                    }
-                    "policy" => s.path[2]["origin"]["memory_extraction"] = json!(false),
-                    "bank" => later.bank = Some("private".into()),
-                    _ => later.turn_id = Some("wrong-turn".into()),
-                }
+            let mut later = job("end");
+            later.turn_id = Some("later-turn".into());
+            later.bank = Some("other".into());
+            match mutation {
+                "bank" => later.bank = Some("private".into()),
+                "turn" => later.turn_id = Some("wrong-turn".into()),
+                _ => later.skip = true,
             }
             let stack = stack.restart().await;
-            assert!(stack.run(&later).await.is_err());
+            assert!(stack.run(&later).await.is_err(), "{mutation}");
             assert_eq!(
                 stack
                     .deps
                     .store()
                     .await
-                    .extraction_ranges("incremental-fixture")
+                    .pending_extraction("incremental-fixture")
                     .unwrap(),
-                ranges
+                pending
             );
-            assert_eq!(stack.log_records("other"), records);
+            assert!(stack.log_records("other").is_empty());
             assert!(stack.log_records("private").is_empty());
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
             let s = stack.script.lock().unwrap();

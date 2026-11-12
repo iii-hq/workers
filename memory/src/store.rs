@@ -1065,6 +1065,24 @@ impl Store {
         remove_if_exists(&self.extraction_plan_path(&pending.source_key(session)))
     }
 
+    /// Drop a range that can never run as recorded (its source left the
+    /// path or changed), with its plan.
+    pub fn forget_extraction_range(
+        &self,
+        session: &str,
+        pending: &PendingExtraction,
+    ) -> Result<(), MemoryError> {
+        extraction_identifier(session)?;
+        let _lock = extraction_lock();
+        let mut ranges = self.extraction_ranges_unlocked(session)?;
+        let before = ranges.len();
+        ranges.retain(|range| !range.pending.same_source(pending));
+        if ranges.len() != before {
+            self.write_ranges(session, ranges)?;
+        }
+        remove_if_exists(&self.extraction_plan_path(&pending.source_key(session)))
+    }
+
     /// Delete every `.extraction` record `stale` selects by its parsed key and
     /// its value. A rare path (session delete, bank trash): it scans.
     fn purge_extraction(

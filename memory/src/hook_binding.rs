@@ -181,13 +181,6 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                         delivery.status.as_deref(),
                         Some("completed" | "cancelled" | "failed")
                     );
-                let owner = if correlated && terminal {
-                    deps.hook_binding
-                        .authenticates_completion(&deps.iii, invocation.as_ref())
-                        .await
-                } else {
-                    None
-                };
                 // Same authoritative own SessionMeta lookup used by extraction;
                 // parent links, caller role and input kind never select eligibility.
                 let meta = crate::scope::session_meta(&deps.iii, input.session_id.clone()).await;
@@ -208,13 +201,14 @@ pub fn register_turn_completed(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
                     if let Some(turn) = input.turn_id.as_deref() {
                         crate::scope::take_turn_bank(turn);
                     }
-                    if owner.is_some()
+                    if correlated
+                        && terminal
                         && meta["session_id"] == input.session_id
                         && deps
                             .hook_binding
                             .authenticates_completion(&deps.iii, invocation.as_ref())
                             .await
-                            == owner
+                            .is_some()
                     {
                         deps.emitter
                             .extraction_skipped(
@@ -244,12 +238,18 @@ pub fn register_pre_generate(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let invocation = iii_sdk::current_invocation();
             let deps = deps.clone();
             async move {
-                // Authenticated once per delivery: only then can its history
-                // reach the ledger. A failed import keeps earlier evidence.
-                if deps
-                    .hook_binding
-                    .authenticates(&deps.iii, invocation.as_ref())
-                    .await
+                // Authenticated once per delivery, and only when it carries
+                // history: only then can that history reach the ledger. A
+                // failed import keeps earlier evidence.
+                let carries_history = input
+                    .recall_context
+                    .as_ref()
+                    .is_some_and(|context| context.get("extraction_history").is_some());
+                if carries_history
+                    && deps
+                        .hook_binding
+                        .authenticates(&deps.iii, invocation.as_ref())
+                        .await
                 {
                     let import = tokio::time::timeout(
                         std::time::Duration::from_millis(1500),

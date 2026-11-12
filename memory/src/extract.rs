@@ -1048,10 +1048,10 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .map(PendingExtraction::parse)
         .transpose()
         .map_err(|e| e.to_string())?;
-    // Retry count selects retention scheduling only, never source authority.
-    let terminal = saved.as_ref().is_some_and(|p| {
-        p.attempts >= 3
-            && p.entries.last().map(|e| e.0.as_str()) != job.until.as_deref()
+    // A run another job left in flight (its job failed or died): the
+    // retained pass runs it under its own recorded scope.
+    let orphaned = saved.as_ref().is_some_and(|p| {
+        p.entries.last().map(|e| e.0.as_str()) != job.until.as_deref()
             && p.entries.last().map(|e| e.0.as_str()) != since.as_deref()
     });
     let mut intervals = match authenticated_intervals(
@@ -1060,11 +1060,11 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         job,
         resolved.as_ref(),
         &history,
-        (&cfg.default_bank, !terminal && retained.is_empty()),
+        (&cfg.default_bank, !orphaned && retained.is_empty()),
     ) {
         Ok(intervals) => intervals,
         Err(error) => {
-            if !terminal && retained.is_empty() {
+            if !orphaned && retained.is_empty() {
                 return Err(error);
             }
             // A malformed old policy can quarantine only an already saved
@@ -1107,13 +1107,9 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 && entries.iter().any(|e| e.0 == row.attestation.entry_id)
         })
     });
-    let oversized = intervals.iter().any(|(_, _, entries)| {
-        entries
-            .iter()
-            .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
-    });
-    if !retained.is_empty() || terminal || deleted_interval || authenticated_cut || oversized {
-        return retained_pass(deps, &cfg, job, resolved.as_ref(), intervals, saved).await;
+    let quarantined = intervals.iter().any(|(_, _, entries)| oversized(entries));
+    if !retained.is_empty() || orphaned || deleted_interval || authenticated_cut || quarantined {
+        return retained_pass(deps, &cfg, job, intervals, saved).await;
     }
     if job.skip && intervals.iter().any(|(scope, _, _)| scope.is_some()) {
         // OFF may acknowledge only OFF text; leave older eligible text for
@@ -1126,11 +1122,11 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
             derived: pending.derived,
             agent: pending.agent.clone(),
         };
-        if job.skip || resolved.as_ref() != Some(&scope) {
-            return Err("pending extraction requires eligible matching job bank".into());
-        }
         let end = pending.entries.last().map(|e| e.0.clone());
         if since != end {
+            if job.skip || resolved.as_ref() != Some(&scope) {
+                return Err("pending extraction requires eligible matching job bank".into());
+            }
             let current = intervals
                 .iter()
                 .find_map(|(current_scope, turn, entries)| {
@@ -1340,89 +1336,83 @@ fn stamped_intervals(
     job: &ExtractJobInput,
     fallback: Option<&crate::scope::Resolved>,
 ) -> Result<PolicyIntervals, String> {
+    let origin_of = |id: &str| {
+        source
+            .iter()
+            .find(|item| item["entry_id"].as_str() == Some(id))
+            .and_then(|item| item.get("origin"))
+    };
     let mut intervals = Vec::new();
     let mut pending = Vec::new();
-    let mut turn_policies = HashMap::new();
     for entry in entries {
-        let item = source
-            .iter()
-            .find(|item| item["entry_id"].as_str() == Some(entry.0.as_str()));
-        let origin = item.and_then(|item| item.get("origin"));
-        let policy = origin
-            .and_then(|origin| origin.get("memory_extraction"))
-            .and_then(Value::as_bool);
         let boundary = entry.1 == "assistant";
-        if boundary && policy.is_none() {
-            return Err("extraction pending: source policy boundary missing".into());
-        }
+        let origin = origin_of(&entry.0);
         pending.push(entry);
-        if boundary {
-            let turn = origin
-                .and_then(|o| o.get("turn_id"))
-                .and_then(Value::as_str)
-                .ok_or("extraction policy missing source turn")?;
-            if pending
-                .last()
-                .is_some_and(|e| Some(e.0.as_str()) == job.until.as_deref())
-                && job
-                    .turn_id
-                    .as_deref()
-                    .is_some_and(|job_turn| job_turn != turn)
-            {
-                return Err("extraction job/source turn mismatch".into());
-            }
-            // Harness send writes unbound user requests; each assistant has
-            // producer turn identity. One opening request is attributable,
-            // never an unknown assistant/prefix or multiple unbound requests.
-            let mut unbound_users = 0;
-            for captured in &pending {
-                let captured_origin = source
-                    .iter()
-                    .find(|item| item["entry_id"].as_str() == Some(captured.0.as_str()))
-                    .and_then(|item| item.get("origin"));
-                match captured_origin.and_then(|o| o["turn_id"].as_str()) {
-                    Some(source_turn) if source_turn != turn => {
-                        return Err("extraction source policy turn gap".into());
-                    }
-                    None if captured.1 == "user" => unbound_users += 1,
-                    _ => {}
-                }
-            }
-            if unbound_users > 1 {
-                return Err("extraction source policy unbound request gap".into());
-            }
-            let scope = if policy == Some(false) {
-                None
-            } else {
-                let turn = origin
-                    .unwrap()
-                    .get("turn_id")
-                    .and_then(Value::as_str)
-                    .ok_or("extraction policy missing source turn")?;
-                Some(
-                    crate::scope::stamped_bank(&json!({"messages":[item.unwrap()]}), turn)
-                        .ok_or("extraction policy missing source bank")?,
-                )
-            };
-            if let Some(previous) = turn_policies.insert(turn.to_string(), scope.clone()) {
-                if previous != scope {
-                    return Err("extraction source policy changed within turn".into());
-                }
-            }
-            if pending
-                .last()
-                .is_some_and(|e| Some(e.0.as_str()) == job.until.as_deref())
-                && (scope.as_ref() != fallback || job.skip != scope.is_none())
-            {
-                return Err("extraction job/source policy mismatch".into());
-            }
-            intervals.push((scope, Some(turn.to_string()), std::mem::take(&mut pending)));
+        if !boundary {
+            continue;
         }
+        let turn = origin
+            .and_then(|o| o.get("turn_id"))
+            .and_then(Value::as_str);
+        // `Some(None)` is a stamped OFF step, `None` a policy nobody knows.
+        let scope = match (
+            origin
+                .and_then(|o| o.get("memory_extraction"))
+                .and_then(Value::as_bool),
+            turn,
+        ) {
+            (Some(false), Some(_)) => Some(None),
+            (Some(true), Some(turn)) => {
+                crate::scope::stamped_bank(&json!({"messages":[{"origin":origin}]}), turn).map(Some)
+            }
+            _ => None,
+        };
+        let (Some(scope), Some(turn)) = (scope, turn) else {
+            // The hook missed this step (a timeout, a restart) or it predates
+            // the stamp: unknown is OFF, and the cursor passes it unextracted.
+            intervals.push((None, turn.map(str::to_string), std::mem::take(&mut pending)));
+            continue;
+        };
+        let ends_job = pending
+            .last()
+            .is_some_and(|e| Some(e.0.as_str()) == job.until.as_deref());
+        if ends_job && job.turn_id.as_deref().is_some_and(|t| t != turn) {
+            return Err("extraction job/source turn mismatch".into());
+        }
+        if ends_job && (scope.as_ref() != fallback || job.skip != scope.is_none()) {
+            return Err("extraction job/source policy mismatch".into());
+        }
+        // Harness send writes user requests unbound. The turn keeps its one
+        // opening request; earlier ones (a turn that failed before a reply)
+        // and another turn's entries close unextracted.
+        let mut cut = pending.len();
+        let mut request = false;
+        while cut > 0 {
+            let captured = &pending[cut - 1];
+            match origin_of(&captured.0).and_then(|o| o["turn_id"].as_str()) {
+                Some(other) if other != turn => break,
+                None if captured.1 == "user" && request => break,
+                None if captured.1 == "user" => request = true,
+                _ => {}
+            }
+            cut -= 1;
+        }
+        if cut > 0 {
+            intervals.push((None, None, pending.drain(..cut).collect()));
+        }
+        intervals.push((scope, Some(turn.to_string()), std::mem::take(&mut pending)));
     }
-    if !pending.is_empty() {
-        return Err("extraction pending: source policy boundary missing".into());
-    }
+    // Entries after the last boundary wait for the pass that reads their end.
     Ok(intervals)
+}
+
+/// Source too large to retain as text: an entry over the text bound, or a
+/// run over the retention budget. It is kept as digests, never extracted.
+fn oversized(entries: &[Entry]) -> bool {
+    entries
+        .iter()
+        .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
+        || PendingExtraction::entries_bytes(entries).is_err()
 }
 
 fn capture_run(
@@ -1430,13 +1420,9 @@ fn capture_run(
     turn: Option<&str>,
     entries: &[Entry],
 ) -> Result<PendingExtraction, String> {
-    if entries
-        .iter()
-        .any(|e| e.2.len() > crate::extraction_proof::TEXT_BYTES)
-    {
+    if oversized(entries) {
         // A full digest is provenance, never a model decision or an extracted
-        // prefix. Version 2 is a durable unprocessed gap; only later disjoint,
-        // independently authenticated jobs may proceed around it.
+        // prefix. Version 2 is never extracted, and the cursor passes it.
         let provenance: Vec<_> = entries
             .iter()
             .map(|(id, role, text, ts)| {
@@ -1448,11 +1434,12 @@ fn capture_run(
                 )
             })
             .collect();
+        // Digests fit unless the identifiers alone break the bound.
+        PendingExtraction::entries_bytes(&provenance).map_err(|e| e.to_string())?;
         let mut capture = capture_run(scope, turn, &provenance)?;
         capture.version = 2;
         return Ok(capture);
     }
-    PendingExtraction::entries_bytes(entries).map_err(|e| e.to_string())?;
     for id in std::iter::once(scope.bank.as_str())
         .chain(scope.agent.as_deref())
         .chain(turn)
@@ -1495,16 +1482,15 @@ fn range_on_path(range: &PendingExtraction, intervals: &PolicyIntervals) -> bool
     })
 }
 
-/// A retained interval waiting for its owner pins the shared cursor but not
-/// later, independently attested turns. Only their own matching callback can
-/// publish those turns; OFF and another bank never authorize an old model
-/// decision. An oversized source or a deleted bank is terminal: it never
-/// pins the cursor.
+/// Runs a pass over a session with retained ranges. Every run executes under
+/// the scope its own turn stamped, whichever job reaches it first; an OFF job
+/// leaves eligible runs to the next eligible one. A range the path no longer
+/// holds as recorded, an oversized source and a deleted bank never pin the
+/// cursor.
 async fn retained_pass(
     deps: &Deps,
     cfg: &WorkerConfig,
     job: &ExtractJobInput,
-    resolved: Option<&crate::scope::Resolved>,
     intervals: PolicyIntervals,
     pending: Option<PendingExtraction>,
 ) -> Result<bool, String> {
@@ -1514,14 +1500,13 @@ async fn retained_pass(
     let session = job.session_id.as_str();
     let store = deps.store().await;
     let retained = ext(deps, |s| s.extraction_ranges(session)).await?;
-    // A stale range fails closed locally, not as authority over the rest of
-    // the session. Preserve its original source and pin the shared cursor;
-    // independently attested, non-overlapping later intervals may still run.
-    let invalid: Vec<_> = retained
+    // Off the path as recorded (an edit, a fork, a changed policy, a later
+    // turn's run outside this span): it can never run as recorded, so it is
+    // forgotten and its entries run as the path holds them now.
+    let stale: Vec<_> = retained
         .iter()
         .map(|r| &r.pending)
         .chain(pending.iter())
-        // A quarantined record is terminal provenance, never a gap.
         .filter(|range| range.version != 2)
         .filter(|range| {
             let appears = intervals.iter().any(|(_, _, entries)| {
@@ -1537,54 +1522,24 @@ async fn retained_pass(
         })
         .cloned()
         .collect();
-    if invalid
-        .iter()
-        .any(|range| range.entries.last().map(|e| e.0.as_str()) == job.until.as_deref())
-    {
-        return Err("pending extraction source no longer on path or policy changed".into());
+    for range in &stale {
+        ext(deps, |s| s.forget_extraction_range(session, range)).await?;
     }
-    if !invalid.is_empty()
-        && retained.iter().any(|range| {
-            range.completed
-                && range.pending.entries.last().map(|e| e.0.as_str()) == job.until.as_deref()
-        })
-    {
-        return Err("completed extraction receipt requires unchanged source path".into());
-    }
-    let mut gap = invalid.iter().any(|range| {
-        !retained
-            .iter()
-            .any(|r| r.completed && r.pending.same_source(range))
-    });
-    let authorized_turn = intervals
-        .last()
-        .and_then(|(_, turn, entries)| {
-            entries
-                .last()
-                .filter(|e| Some(e.0.as_str()) == job.until.as_deref())
-                .and(turn.as_deref())
-        })
-        .map(str::to_string);
     if let Some(pending) = pending {
-        ext(deps, |s| s.retain_extraction_range(session, pending, false)).await?;
+        if !stale.contains(&pending) {
+            ext(deps, |s| s.retain_extraction_range(session, pending, false)).await?;
+        }
         // Receipt is durable first; a crash between these writes leaves both,
         // which is safe and merges by exact source on the next invocation.
         ext(deps, |s| s.set_pending_extraction(session, Value::Null)).await?;
     }
     let mut asked = false;
     let mut calls = 0;
-    let mut tail = false;
+    // Set once an OFF job leaves an eligible run behind: the cursor stays
+    // before it, for the next eligible job.
+    let mut gap = false;
     for (scope, turn, entries) in intervals {
         for run in pass_runs(entries, cfg.extraction_window) {
-            if invalid.iter().any(|range| {
-                range
-                    .entries
-                    .iter()
-                    .any(|old| run.iter().any(|e| e.0 == old.0))
-            }) {
-                gap = true;
-                continue;
-            }
             let Some(scope) = scope.as_ref() else {
                 if !gap {
                     if let Some(end) = run.last() {
@@ -1610,16 +1565,16 @@ async fn retained_pass(
                 continue;
             }
             let ranges = ext(deps, |s| s.extraction_ranges(session)).await?;
-            // A retained range over this run with other boundaries: never
-            // re-segment it.
-            if ranges.iter().any(|r| {
-                r.pending
-                    .entries
-                    .iter()
-                    .any(|e| run.iter().any(|p| p.0 == e.0))
-                    && !r.pending.same_source(&capture)
+            // A range over this run with other boundaries (an oversized
+            // message edited down, a run cut otherwise) can never complete.
+            for old in ranges.iter().filter(|r| {
+                !r.pending.same_source(&capture)
+                    && r.pending
+                        .entries
+                        .iter()
+                        .any(|e| run.iter().any(|p| p.0 == e.0))
             }) {
-                return Err("pending extraction range boundary changed".into());
+                ext(deps, |s| s.forget_extraction_range(session, &old.pending)).await?;
             }
             let completed = ranges
                 .iter()
@@ -1633,20 +1588,8 @@ async fn retained_pass(
                 }
                 continue;
             }
-            let stamped_owner = turn.is_some()
-                && authorized_turn == turn
-                && job
-                    .turn_id
-                    .as_ref()
-                    .is_none_or(|id| Some(id) == turn.as_ref());
-            // A job queued before jobs carried a turn id.
-            let unstamped_owner = turn.is_none()
-                && job.turn_id.is_none()
-                && run.last().map(|e| e.0.as_str()) == job.until.as_deref()
-                && ranges.iter().any(|r| r.pending.same_source(&capture));
-            let own = !job.skip && resolved == Some(scope) && (stamped_owner || unstamped_owner);
             if scope.bank != cfg.default_bank && store.is_deleted(&scope.bank) {
-                // No job can ever own it: close the run unextracted.
+                // Nothing may write to a deleted bank: close the run unextracted.
                 ext(deps, |s| {
                     s.retain_extraction_range(session, capture.clone(), true)
                 })
@@ -1659,11 +1602,13 @@ async fn retained_pass(
                 }
                 continue;
             }
-            if !own || calls >= PASS_CALLS {
-                ext(deps, |s| s.retain_extraction_range(session, capture, false)).await?;
+            if job.skip {
                 gap = true;
-                tail |= own && calls >= PASS_CALLS;
                 continue;
+            }
+            if calls >= PASS_CALLS {
+                // The queue retries the job from the last confirmed run.
+                return Err("extraction pending: remaining runs require retry".into());
             }
             calls += 1;
             ext(deps, |s| {
@@ -1685,16 +1630,11 @@ async fn retained_pass(
             })
             .await?;
             ext(deps, |s| s.set_pending_extraction(session, Value::Null)).await?;
-            if !gap {
-                if let Some(end) = run.last() {
-                    cursor_set(&deps.iii, session, &end.0).await?;
-                }
-                ext(deps, |s| s.acknowledge_extraction_range(session, &capture)).await?;
+            if let Some(end) = run.last() {
+                cursor_set(&deps.iii, session, &end.0).await?;
             }
+            ext(deps, |s| s.acknowledge_extraction_range(session, &capture)).await?;
         }
-    }
-    if tail {
-        return Err("extraction pending: remaining runs require retry".into());
     }
     Ok(asked)
 }
@@ -2468,7 +2408,6 @@ async fn fetch_span(
             return Err("extraction source identifier byte bound".into());
         }
     }
-    let mut path_bytes = 0;
     if since.is_some() && until.is_some() {
         let mut reader = history::DeltaReader::new(
             session_id,
@@ -2482,7 +2421,7 @@ async fn fetch_span(
         while let Some(payload) = reader.next_request() {
             let reply = messages_page(iii, payload).await;
             if let Ok(reply) = &reply {
-                crate::extraction_proof::source_page(reply, &mut path_bytes)?;
+                crate::extraction_proof::source_page(reply)?;
             }
             reader.accept(reply.map_err(|error| {
                 if invalid_history_cursor(&error) {
@@ -2562,7 +2501,6 @@ async fn fetch_root_span(
     until: Option<&str>,
     window: usize,
 ) -> Result<SourceSpan, String> {
-    let mut path_bytes = 0;
     let mut span = Span::new(since, until, window);
     let mut source_items = Vec::new();
     let mut cursor: Option<String> = None;
@@ -2580,7 +2518,7 @@ async fn fetch_root_span(
         let reply = messages_page(iii, payload)
             .await
             .map_err(|e| format!("session::messages: {e}"))?;
-        crate::extraction_proof::source_page(&reply, &mut path_bytes)?;
+        crate::extraction_proof::source_page(&reply)?;
         let items = reply
             .get("messages")
             .and_then(Value::as_array)
@@ -2623,6 +2561,13 @@ async fn fetch_root_span(
         }
         source_items.extend(items.iter().cloned());
         span.push(entries);
+        // The walk keeps only what the span keeps (its window), not the path.
+        let kept: HashSet<&str> = span.entries.iter().map(|e| e.0.as_str()).collect();
+        source_items.retain(|item| {
+            item["entry_id"]
+                .as_str()
+                .is_some_and(|id| kept.contains(id))
+        });
         if let Some(next) = next {
             cursor = Some(next);
             continue;
@@ -2874,7 +2819,7 @@ pub(crate) async fn messages_tail(iii: &IIIClient, session_id: &str) -> Option<V
         })
         .await
         .ok()?;
-    crate::extraction_proof::source_page(&reply, &mut 0).ok()?;
+    crate::extraction_proof::source_page(&reply).ok()?;
     Some(reply)
 }
 
@@ -2886,7 +2831,6 @@ pub(crate) async fn messages_tail(iii: &IIIClient, session_id: &str) -> Option<V
 /// what a person sends carries none. So is a workflow's reply, which
 /// `harness::send` delivers without one but under its own entry id.
 fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
-    crate::extraction_proof::source_bytes(item).ok()?;
     if item["entry_id"]
         .as_str()
         .is_some_and(|id| !crate::extraction_proof::bounded(id))
@@ -2906,7 +2850,8 @@ fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
         role => role,
     }
     .to_string();
-    let text = checked_content_text(message.get("content")).ok()?;
+    // Unbounded: a text over the retention bound becomes a quarantined run.
+    let text = content_text(message.get("content"));
     let ts = message
         .get("timestamp")
         .and_then(Value::as_u64)
@@ -2956,14 +2901,20 @@ pub(crate) fn clamp_char_boundary(s: &str, max: usize) -> usize {
 
 /// Concatenated text parts of one message's content array.
 pub fn content_text(content: Option<&Value>) -> String {
-    // This compatibility helper has no error channel; extraction uses the
-    // fallible helper and never certifies a rejected source as empty text.
-    checked_content_text(content).unwrap_or_default()
+    let Some(parts) = content.and_then(Value::as_array) else {
+        // Tolerate plain-string content from non-harness agents.
+        return content.and_then(Value::as_str).unwrap_or("").to_string();
+    };
+    parts
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
+/// [`content_text`] for a model reply, bounded before the join.
 fn checked_content_text(content: Option<&Value>) -> Result<String, String> {
-    // Source envelopes are bounded before this join; model replies remain
-    // separately bounded by their caller.
     let size = crate::extraction_proof::content_bytes(content)?;
     let mut text = String::with_capacity(size);
     let Some(parts) = content.and_then(Value::as_array) else {

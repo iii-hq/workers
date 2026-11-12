@@ -517,36 +517,27 @@ async fn authenticated_failed_request_recovers_original_bank_after_restart_and_e
             continue;
         }
         result.unwrap();
-        // Later job never extracts old ON into new-bank; it pins that gap.
         let prompts = stack.fixture.lock().unwrap().prompts.clone();
-        assert_eq!(prompts.len(), 1);
-        assert!(!prompts[0].contains(text));
         if policy == "on" {
-            assert!(stack.fixture.lock().unwrap().cursor.is_null());
-            let mut wrong_job: memory::hooks::ExtractJobInput =
-                serde_json::from_value(queued[0].clone()).unwrap();
-            wrong_job.bank = Some("wrong-bank".into());
-            let before = stack.fixture.lock().unwrap().prompts.len();
-            assert!(memory::extract::try_run(&stack.deps, &wrong_job)
-                .await
-                .is_err());
-            assert_eq!(stack.fixture.lock().unwrap().prompts.len(), before);
-            assert!(stack.fixture.lock().unwrap().cursor.is_null());
-            let old_job = serde_json::from_value(queued[0].clone()).unwrap();
-            memory::extract::try_run(&stack.deps, &old_job)
-                .await
-                .unwrap();
-            memory::extract::try_run(&stack.deps, &next_job)
-                .await
-                .unwrap();
+            // The later job runs the failed request first, under the bank of
+            // the turn that failed, never under its own.
+            assert_eq!(prompts.len(), 2);
+            assert!(prompts[0].contains(text));
+            assert!(!prompts[1].contains(text));
             let bank = stack.deps.store().await.bank("old-bank").await.unwrap();
             let (items, count) = bank.list(10, 0, false, None).await;
             assert_eq!(count, 1);
             assert_eq!(items[0].text, text);
+            // The failed turn's own job, delivered late, finds nothing left.
+            let old_job = serde_json::from_value(queued[0].clone()).unwrap();
+            memory::extract::try_run(&stack.deps, &old_job)
+                .await
+                .unwrap();
             assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 2);
         } else {
+            assert_eq!(prompts.len(), 1);
+            assert!(!prompts[0].contains(text));
             assert!(!dir.path().join("old-bank/memories.jsonl").exists());
-            assert_eq!(stack.fixture.lock().unwrap().prompts.len(), 1);
         }
         assert_eq!(
             stack.fixture.lock().unwrap().cursor,

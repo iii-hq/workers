@@ -112,7 +112,6 @@ impl Stack {
             let _ = ready.send(());
             let mut seq = 0;
             let mut pending = std::collections::HashMap::new();
-            let mut rotated = false;
             loop {
                 tokio::select! {
                     delivery = rx.recv() => {
@@ -156,9 +155,8 @@ impl Stack {
                                     "engine::functions::info" if mode == "public-source" => json!({"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default","worker_name":"source-host","private":false}),
                                     "engine::functions::info" if mode == "wrong-source" => json!({"function_id":hook_binding::SOURCE,"namespace":"default","worker_name":"source-host","private":true}),
                                     "engine::functions::info" => json!({"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default","worker_name":"source-host","private":true}),
-                                    "engine::workers::info" => json!({"worker":{"id":if rotated {"owner-two"} else {"owner-one"},"namespace":"default","status":if mode == "stale-owner" {"disconnected"} else {"connected"}},"functions":[{"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default"}]}),
+                                    "engine::workers::info" => json!({"worker":{"id":"owner-one","namespace":"default","status":if mode == "stale-owner" {"disconnected"} else {"connected"}},"functions":[{"function_id":hook_binding::COMPLETION_SOURCE,"namespace":"default"}]}),
                                     "session::get" => {
-                                        rotated = mode == "rotation";
                                         match mode.as_str() {
                                             "missing" => Value::Null,
                                             "unknown" => meta(json!("future-kind")),
@@ -326,8 +324,8 @@ async fn authenticated_nonuser_emits_operational_only_private_typed_event() {
         r.calls
     );
     assert_eq!(r.count("session::get"), 1);
-    assert_eq!(r.count("engine::functions::info"), 2);
-    assert_eq!(r.count("engine::workers::info"), 2);
+    assert_eq!(r.count("engine::functions::info"), 1);
+    assert_eq!(r.count("engine::workers::info"), 1);
     assert_eq!(r.count(events::ON_EXTRACTION_DECISION_FN), 1);
     // Raw replayable envelope separates SDK metadata from the completion payload.
     println!(
@@ -398,7 +396,6 @@ async fn untrusted_stale_unknown_and_nonterminal_deliveries_never_prove_skip() {
         "wrong-callback-source",
         "forged-engine-name",
         "transport-error",
-        "rotation",
         "stale-owner",
         "missing",
         "unknown",
@@ -537,8 +534,9 @@ async fn eligible_registered_calls_keep_completed_cancelled_failed_queue_backcom
                     "{kind}/{status}/{binding}"
                 );
                 assert_eq!(r.count("session::get"), 1);
-                assert_eq!(r.count("engine::functions::info"), usize::from(binding));
-                assert_eq!(r.count("engine::workers::info"), usize::from(binding));
+                // A user session's completion never needs the owner lookup.
+                assert_eq!(r.count("engine::functions::info"), 0);
+                assert_eq!(r.count("engine::workers::info"), 0);
                 assert_eq!(r.count("router::complete"), 0);
                 println!(
                     "eligible_kind={kind}; status={status}; binding={binding}; counters={}",

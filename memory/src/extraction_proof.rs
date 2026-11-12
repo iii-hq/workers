@@ -250,15 +250,10 @@ pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
     Ok(bytes)
 }
 
-/// Validate the borrowed SDK reply before DeltaReader or root recovery can
-/// clone IDs, pagination, envelopes or content. SDK network decode is earlier.
-pub(crate) fn source_page(reply: &Value, total: &mut usize) -> Result<(), String> {
-    for (key, value) in reply.as_object().ok_or("history page schema")? {
-        charge(total, key.len() * 6 + 4, PATH_BYTES)?;
-        if key != "messages" {
-            charge(total, value_bytes(value, PATH_BYTES)?, PATH_BYTES)?;
-        }
-    }
+/// Validate the identifiers of a borrowed SDK reply before DeltaReader or
+/// root recovery clone them. Sizes are not capped here: an entry too large to
+/// retain becomes a quarantined run, never a failed read.
+pub(crate) fn source_page(reply: &Value) -> Result<(), String> {
     if let Some(cursor) = reply.get("next_cursor").and_then(Value::as_str) {
         if !bounded(cursor) {
             return Err("history cursor byte bound".into());
@@ -269,7 +264,6 @@ pub(crate) fn source_page(reply: &Value, total: &mut usize) -> Result<(), String
         .filter(|items| items.len() <= 100)
         .ok_or("history page bound")?;
     for item in items {
-        charge(total, source_bytes(item)?, PATH_BYTES)?;
         if !item["entry_id"].as_str().is_some_and(bounded) {
             return Err("history entry id byte bound".into());
         }
@@ -284,7 +278,6 @@ pub(crate) fn source_page(reply: &Value, total: &mut usize) -> Result<(), String
                 return Err("history origin byte bound".into());
             }
         }
-        content_bytes(item.pointer("/message/content"))?;
     }
     Ok(())
 }
@@ -354,9 +347,9 @@ pub(crate) async fn import(deps: &Deps, input: &PreGenerateInput) -> Result<(), 
             .as_array()
             .filter(|e| e.len() <= 100)
             .ok_or("history path schema")?;
-        source_page(&reply, &mut path_bytes)?;
+        source_page(&reply)?;
         for item in entries {
-            source_bytes(item)?;
+            charge(&mut path_bytes, source_bytes(item)?, PATH_BYTES)?;
             join_text(item.pointer("/message/content"))?;
             let id = item["entry_id"]
                 .as_str()
