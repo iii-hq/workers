@@ -171,9 +171,9 @@ fn world(name: &str) -> World {
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nPATH='{}'\nexport PATH\nexec '{}' \"$@\"\n",
-            path,
-            real_tmux.display()
+            "#!/bin/sh\nPATH={}\nexport PATH\nexec {} \"$@\"\n",
+            sh_quote(&path),
+            sh_quote(&real_tmux.to_string_lossy())
         ),
     )
     .unwrap();
@@ -313,16 +313,23 @@ async fn claude_starts_on_the_account_asked_for() {
     assert_eq!(personal.id, "personal");
     let personal_dir = w.paths.account_dir("personal");
 
-    // Pinned to an account, skipping permission prompts.
-    let pinned = windows::create(&w.ctx, window("pinned", claude("personal", true)))
+    // Pinned to an account, skipping permission prompts (refused as root,
+    // where Claude Code refuses it: then without).
+    let skip = can_skip(&w).await;
+    let pinned = windows::create(&w.ctx, window("pinned", claude("personal", skip)))
         .await
         .unwrap();
     assert_eq!(
         pinned.runs.as_deref(),
         Some(
             format!(
-                "env CLAUDE_CONFIG_DIR={} claude --dangerously-skip-permissions",
-                personal_dir.display()
+                "env CLAUDE_CONFIG_DIR={} claude{}",
+                personal_dir.display(),
+                if skip {
+                    " --dangerously-skip-permissions"
+                } else {
+                    ""
+                }
             )
             .as_str()
         )
@@ -330,7 +337,7 @@ async fn claude_starts_on_the_account_asked_for() {
     let info = w.claude(&pinned.pane_id).await;
     assert_eq!(info.account.as_deref(), Some("personal"));
     assert_eq!(info.follow, Follow::Pinned);
-    assert!(info.skip_permissions);
+    assert_eq!(info.skip_permissions, skip);
     assert!(info.movable, "{info:?}");
     assert_eq!(
         w.tmux_out(&[
@@ -340,7 +347,7 @@ async fn claude_starts_on_the_account_asked_for() {
             &pinned.pane_id,
             "#{@iii_claude_account}:#{@iii_skip_permissions}"
         ]),
-        "personal:1"
+        if skip { "personal:1" } else { "personal:" }
     );
     // Its conversation went to the account's folder, which shares
     // `projects/` with ~/.claude.
@@ -424,6 +431,43 @@ async fn claude_starts_on_the_account_asked_for() {
     let info = w.claude(&plain.pane_id).await;
     assert_eq!(info.account.as_deref(), Some("default"));
 
+    // A session's own CLAUDE_CONFIG_DIR wins over the global one in tmux: a
+    // window there that follows the global account names it outright.
+    let personal_text = personal_dir.to_string_lossy().into_owned();
+    w.tmux(&[
+        "set-environment",
+        "-t",
+        "base",
+        "CLAUDE_CONFIG_DIR",
+        &personal_text,
+    ]);
+    let named = windows::create(&w.ctx, window("named", claude("global", false)))
+        .await
+        .unwrap();
+    assert_eq!(
+        named.runs.as_deref(),
+        Some("env -u CLAUDE_CONFIG_DIR claude")
+    );
+    let info = w.claude(&named.pane_id).await;
+    assert_eq!(info.account.as_deref(), Some("default"));
+    assert_eq!(info.follow, Follow::Global);
+    w.tmux(&["set-environment", "-u", "-t", "base", "CLAUDE_CONFIG_DIR"]);
+
+    // A folder is deleted only when nothing can still need it: never while
+    // a pane is being moved.
+    let moving = w.accounts().moving.begin("%999").unwrap();
+    let refused = account_fns::remove(
+        &w.ctx,
+        account_fns::RemoveAccountInput {
+            account: "personal".into(),
+            delete_files: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("being moved"), "{refused}");
+    drop(moving);
+
     // Refusals.
     let mut both = window("both", claude("global", false));
     both.command = Some("htop".into());
@@ -433,6 +477,11 @@ async fn claude_starts_on_the_account_asked_for() {
         .await
         .unwrap_err();
     assert!(error.contains("nobody"), "{error}");
+}
+
+/// `text` as one shell word, whatever it holds.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 fn which(program: &str) -> PathBuf {
@@ -510,6 +559,19 @@ impl World {
     }
 }
 
+/// Whether panes may skip permission prompts here: never as root, where
+/// creating one is refused (checked).
+async fn can_skip(w: &World) -> bool {
+    if !tmux::accounts::runs_as_root() {
+        return true;
+    }
+    let refused = windows::create(&w.ctx, window("root", claude("global", true)))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("root"), "{refused}");
+    false
+}
+
 async fn pane_account(w: &World, pane: &str, account: &str) -> panes::PaneAccountOutput {
     panes::account(
         &w.ctx,
@@ -553,7 +615,8 @@ async fn panes_move_between_accounts_between_turns() {
 
     // An idle pane that follows the global account moves at once, and
     // resumes its conversation there.
-    let a = windows::create(&w.ctx, window("a", claude("global", true)))
+    let skip = can_skip(&w).await;
+    let a = windows::create(&w.ctx, window("a", claude("global", skip)))
         .await
         .unwrap()
         .pane_id;
@@ -570,7 +633,7 @@ async fn panes_move_between_accounts_between_turns() {
         Some(session.as_str()),
         "resumed"
     );
-    assert!(after.skip_permissions, "skip kept");
+    assert_eq!(after.skip_permissions, skip, "skip kept");
     assert!(walk(&personal_dir.join("projects"))
         .iter()
         .any(|path| path.ends_with(format!("{session}.jsonl"))));
@@ -580,9 +643,10 @@ async fn panes_move_between_accounts_between_turns() {
     } else {
         "-p"
     };
+    // Put back as it was: off, as the window was made.
     assert_eq!(
         w.tmux_out(&["show-options", scope, "-v", "-t", &a, "remain-on-exit"]),
-        "",
+        "off",
         "remain-on-exit put back"
     );
 
@@ -797,7 +861,8 @@ async fn rules_suggest_switch_and_switch_back() {
     )
     .await
     .unwrap();
-    let reset_at = now_ms() + 4_000;
+    // Room for a slow machine to get through the steps before the reset.
+    let reset_at = now_ms() + 10_000;
     signed_in_with_usage(&w.paths.claude_home, &w.paths.default_json, 95.0, reset_at);
     signed_in_with_usage(
         &w.paths.account_dir("personal"),
@@ -919,7 +984,7 @@ async fn a_person_switching_calls_off_the_switch_back() {
         .await
         .unwrap();
     }
-    let reset_at = now_ms() + 2_000;
+    let reset_at = now_ms() + 8_000;
     signed_in_with_usage(&w.paths.claude_home, &w.paths.default_json, 95.0, reset_at);
     for id in ["personal", "side"] {
         signed_in_with_usage(
@@ -1206,7 +1271,7 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
     assert_eq!(back.session_id.as_deref(), Some(session.as_str()));
     assert!(w.screen(&a).contains("Resumed on the default account"));
     eventually("remain-on-exit put back", || async {
-        remain().is_empty().then_some(())
+        (remain() == "off").then_some(())
     })
     .await;
     // The shell has its terminal back; nothing was typed into it.
@@ -1354,7 +1419,30 @@ async fn panes_that_went_along_once_go_along_again() {
     w.pending_tick().await;
     for pane in [&a, &b] {
         assert_eq!(w.settled_on(pane, "personal").await.follow, Follow::Global);
+        // Restarted on the account the conversation was copied to, by name.
+        let started = w.tmux_out(&["display", "-p", "-t", pane, "#{pane_start_command}"]);
+        assert!(
+            started.contains(&format!(
+                "CLAUDE_CONFIG_DIR={}",
+                w.paths.account_dir("personal").display()
+            )),
+            "{started}"
+        );
     }
+    // Someone switched: noted for the apps, with what moved.
+    let last = account_fns::list(&w.ctx, EmptyInput {})
+        .await
+        .unwrap()
+        .last_switch
+        .expect("last switch");
+    assert_eq!(
+        (last.from.as_str(), last.to.as_str(), last.auto, last.reason),
+        ("default", "personal", false, None)
+    );
+    assert_eq!(
+        (last.moved.clone(), last.after_turn.clone()),
+        (vec![a.clone()], vec![b.clone()])
+    );
 
     // Back: both idle, both go, one after the other.
     let switched = global("default").await.unwrap();

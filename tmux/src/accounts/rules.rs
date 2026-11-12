@@ -212,7 +212,9 @@ pub fn decide(registry: &Registry, accounts: &[ClaudeAccount], now_ms: u64) -> O
     // a switch someone made since cleared `back_at_ms` (and the global
     // account must still be the one the rules switched to).
     if let Some(last) = registry.last_switch.as_ref() {
-        let back_due = last.auto
+        // Turned off since: the switch back it planned is off too.
+        let back_due = rules.back_after_reset
+            && last.auto
             && last.reason.as_deref() != Some("back")
             && registry.global == last.to
             && last.back_at_ms.is_some_and(|at| now_ms >= at);
@@ -488,6 +490,10 @@ mod tests {
             account("personal", Some(12.0), None),
         ];
         assert_eq!(decide(&registry, &reset, 9_500).unwrap().to, "default");
+        // Turned off since the switch: no going back.
+        registry.rules.back_after_reset = false;
+        assert!(decide(&registry, &reset, 9_500).is_none());
+        registry.rules.back_after_reset = true;
         // Suggest mode never switches back either.
         registry.rules.mode = RulesMode::Suggest;
         assert!(decide(&registry, &reset, 9_500).is_none());

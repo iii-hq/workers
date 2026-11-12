@@ -515,6 +515,9 @@ pub struct RawClient {
 pub struct RawServer {
     pub socket_path: String,
     pub pid: u32,
+    /// The running server's version (`#{version}`), which can be older than
+    /// the client's `-V` after an upgrade; empty when it doesn't say.
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -584,7 +587,7 @@ pub fn list_all_args() -> Vec<String> {
         ],
     );
     let client = format('C', &["#{client_tty}", "#{session_id}", "#{client_pid}"]);
-    let server = format('X', &["#{socket_path}", "#{pid}"]);
+    let server = format('X', &["#{socket_path}", "#{pid}", "#{version}"]);
     [
         vec!["list-sessions".into(), "-F".into(), session],
         vec![
@@ -685,11 +688,12 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                 }
             }
             Some('X') => {
-                let f: Vec<&str> = rest.splitn(2, SEP).collect();
-                if f.len() == 2 {
+                let f: Vec<&str> = rest.splitn(3, SEP).collect();
+                if f.len() >= 2 {
                     snapshot.server = Some(RawServer {
                         socket_path: f[0].to_string(),
                         pid: number(f[1]),
+                        version: f.get(2).map(|v| v.trim().to_string()).unwrap_or_default(),
                     });
                 }
             }
@@ -888,11 +892,13 @@ mod tests {
                 ],
             ),
             line('C', &["/dev/pts/3", "$1", "999"]),
-            line('X', &["/tmp/tmux-1000/default", "41901"]),
+            line('X', &["/tmp/tmux-1000/default", "41901", "2.9"]),
             "garbage".to_string(),
         ]
         .join("\n");
         let snapshot = parse_list_all(&output);
+        let server = snapshot.server.as_ref().unwrap();
+        assert_eq!((server.pid, server.version.as_str()), (41901, "2.9"));
         assert_eq!(snapshot.sessions[0].name, "my sess");
         assert_eq!(snapshot.sessions[0].attached, 2);
         assert_eq!(snapshot.windows[0].name, "claude code");

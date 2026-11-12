@@ -141,9 +141,15 @@ pub async fn create(ctx: &Ctx, input: CreateSessionInput) -> Result<CreatedSessi
     ctx.monitor.poke();
     let mut created = parse_created(&output)?;
     if let Some(launch) = launch {
-        super::accounts::start_claude(ctx, &tmux, &created.pane_id, &launch, input.remain_on_exit)
-            .await?;
-        created.runs = Some(launch.command);
+        let runs = super::accounts::start_claude(
+            ctx,
+            &tmux,
+            &created.pane_id,
+            &launch,
+            input.remain_on_exit,
+        )
+        .await?;
+        created.runs = Some(runs);
     } else if input.remain_on_exit {
         tmux.keep_when_done(&created.pane_id, input.command.as_deref())
             .await?;

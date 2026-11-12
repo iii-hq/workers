@@ -127,27 +127,58 @@ pub(super) fn plan(
 
 /// Start `launch` in new pane `pane` (running [`HOLD`]): tmux's global
 /// environment first for a pane that follows the global account (D3), then
-/// its marks and remain-on-exit, then Claude Code.
+/// its marks and remain-on-exit, then Claude Code. Returns the command it
+/// runs (`runs`). On failure the pane is gone.
 pub(super) async fn start_claude(
     ctx: &Ctx,
     tmux: &Tmux,
     pane: &str,
     launch: &Launch,
     remain_on_exit: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
+    let mut command = launch.command.clone();
     if launch.account == GLOBAL {
-        if let Err(error) = tmux_env::reconcile(tmux, ctx.collector.accounts()).await {
-            // The pane's account is read from its process (D5), so it never
-            // shows the wrong one.
-            tracing::warn!(%error, "tmux global CLAUDE_CONFIG_DIR not set");
+        match global_command(ctx, tmux, pane, launch).await {
+            Ok(Some(named)) => command = named,
+            Ok(None) => {}
+            Err(error) => {
+                // Plain `claude` would start on whatever tmux holds now.
+                let _ = tmux.run(["kill-pane", "-t", pane]).await;
+                return Err(format!(
+                    "Claude Code was not started: the global account could not be set in tmux ({error})."
+                ));
+            }
         }
     }
     let mut options = launch.marks();
-    if remain_on_exit {
-        options.push(("remain-on-exit", "on"));
+    // Off unless asked for, whatever tmux's own default says.
+    options.push(("remain-on-exit", if remain_on_exit { "on" } else { "off" }));
+    tmux.start_with_options(pane, &options, Some(&command))
+        .await?;
+    Ok(command)
+}
+
+/// For a pane that follows the global account: tmux's global environment
+/// brought in step, then the command to run instead of plain `claude`
+/// when the pane's session sets a `CLAUDE_CONFIG_DIR` of its own (tmux
+/// gives it precedence): the global account named outright there.
+async fn global_command(
+    ctx: &Ctx,
+    tmux: &Tmux,
+    pane: &str,
+    launch: &Launch,
+) -> Result<Option<String>, String> {
+    let accounts = ctx.collector.accounts();
+    tmux_env::reconcile(tmux, accounts).await?;
+    let Some(wanted) = accounts.wanted_global_env() else {
+        return Ok(None);
+    };
+    match tmux_env::session_value(tmux, pane).await? {
+        Some(own) if own != wanted => accounts
+            .plan_launch(&accounts.registry().global, launch.skip_permissions, None)
+            .map(|named| Some(named.command)),
+        _ => Ok(None),
     }
-    tmux.start_with_options(pane, &options, Some(&launch.command))
-        .await
 }
 
 /// How panes that follow the global account go along (D8).
@@ -222,7 +253,9 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
     ctx.monitor.poke();
     let switched = switched?;
     Ok(GlobalOutput {
-        global: input.account.trim().to_string(),
+        // The global account now: another switch may have come after this
+        // one before every pane was looked at.
+        global: ctx.collector.accounts().registry().global,
         moved: switched.moved,
         after_turn: switched.after_turn,
         stayed: switched.stayed,
@@ -375,14 +408,32 @@ pub async fn update(ctx: &Ctx, input: UpdateAccountInput) -> Result<AccountOutpu
 }
 
 pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput, String> {
-    let running = ctx
-        .collector
-        .claude_panes(true)
-        .await
-        .values()
-        .filter(|pane| pane.claude_pid.is_some())
-        .filter(|pane| pane.info.account.as_deref() == Some(input.account.as_str()))
-        .count() as u32;
+    let running = if input.delete_files {
+        // Its folder goes only on a look that saw every pane: a failed one
+        // is no proof that nothing runs on it.
+        let panes = ctx
+            .collector
+            .claude_panes_checked()
+            .await
+            .map_err(|error| {
+                format!("The panes could not be looked at ({error}); the folder was kept.")
+            })?;
+        // A move stops Claude Code before it copies the conversation: for
+        // that moment its pane runs nothing, yet the folder is needed.
+        if ctx.collector.accounts().moving.any() {
+            return Err(
+                "A Claude Code pane is being moved; delete the folder once that is over."
+                    .to_string(),
+            );
+        }
+        panes
+            .values()
+            .filter(|pane| pane.claude_pid.is_some())
+            .filter(|pane| pane.info.account.as_deref() == Some(input.account.as_str()))
+            .count() as u32
+    } else {
+        0
+    };
     let accounts = ctx.collector.accounts().clone();
     blocking(move || accounts.remove(&input.account, input.delete_files, running)).await?;
     ctx.monitor.poke();

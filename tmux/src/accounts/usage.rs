@@ -308,8 +308,12 @@ impl Reading {
             .as_ref()
             .is_none_or(|ours| cached.as_of_ms > ours.as_of_ms);
         if newer {
+            // A failure since that reading still stands (and still says
+            // why the next attempt waits).
+            if cached.as_of_ms >= self.attempted_at_ms {
+                self.error = None;
+            }
             self.usage = Some(cached);
-            self.error = None;
         }
     }
 }
@@ -425,8 +429,13 @@ mod tests {
             reading.usage.as_ref().unwrap().week.is_some(),
             "older loses"
         );
+        // Newer than ours but older than the failure: the failure stands.
+        reading.adopt(parse_usage(&value, 2_500));
+        assert_eq!(reading.usage.as_ref().unwrap().as_of_ms, 2_500);
+        assert!(reading.error.is_some(), "the failure since stands");
         reading.adopt(parse_usage(&serde_json::json!({}), 9_000));
         assert_eq!(reading.usage.as_ref().unwrap().as_of_ms, 9_000);
+        assert!(reading.error.is_none());
     }
 
     #[tokio::test]

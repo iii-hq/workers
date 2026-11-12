@@ -48,6 +48,29 @@ pub fn set_args(wanted: Option<&str>) -> Vec<String> {
     }
 }
 
+/// The `CLAUDE_CONFIG_DIR` of `pane`'s session when it has one of its own,
+/// which tmux gives new panes there instead of the global one:
+/// `Some(Some(dir))`, `Some(None)` when the session removes it, `None` when
+/// the session has none of its own.
+pub async fn session_value(tmux: &Tmux, pane: &str) -> Result<Option<Option<String>>, String> {
+    match tmux.run(["show-environment", "-t", pane, VAR]).await {
+        Ok(output) => {
+            let line = output
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('\r');
+            if line == format!("-{VAR}") {
+                Ok(Some(None))
+            } else {
+                Ok(parse_shown(&output).map(Some))
+            }
+        }
+        Err(TmuxError::Failed(message)) if message.contains("unknown variable") => Ok(None),
+        Err(error) => Err(error.sentence()),
+    }
+}
+
 /// Bring tmux's global environment in step with the registry. Returns
 /// whether it changed anything; no tmux server is nothing to do.
 pub async fn reconcile(tmux: &Tmux, accounts: &Accounts) -> Result<bool, String> {

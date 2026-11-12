@@ -338,7 +338,8 @@ refreshes or signs out by itself.
 the global one. Claude Code panes on it keep running. `delete_files: true`
 deletes its folder too, only when it is a real folder directly inside the
 accounts folder (a link is never followed out of it), and is refused while
-Claude Code runs on it.
+Claude Code runs on it, while any pane is being moved, or when tmux could not
+list its panes.
 
 ### The global account
 
@@ -346,7 +347,13 @@ The global account lives in tmux's global environment: the worker runs
 `set-environment -g CLAUDE_CONFIG_DIR <folder>` (`-gu` for `default`) when it
 starts, when the global account changes and every 15 seconds after that, so a
 tmux server started later gets it too. Every window tmux opens from then on
-inherits it; shells already open keep the environment they started with.
+inherits it; shells already open keep the environment they started with. A
+session that sets a `CLAUDE_CONFIG_DIR` of its own (`set-environment -t`, or
+`update-environment`) keeps it: tmux gives a session's value precedence, and
+the worker never changes a session's environment. There, plain `claude`
+typed in a new window runs on the session's account (and its pane shows
+that account); a window the worker starts on the global account names that
+account outright instead (see below).
 
 Once `accounts.json` exists, the worker owns tmux's global `CLAUDE_CONFIG_DIR`:
 a value set in `tmux.conf` or by hand is replaced within 15 seconds by the
@@ -372,6 +379,12 @@ the pane, and answers it as `runs`:
 | `default`, pinned | `env -u CLAUDE_CONFIG_DIR claude` |
 | any other, pinned | `env CLAUDE_CONFIG_DIR=<folder> claude` |
 
+For `global`, tmux's global environment is brought in step first; when that
+fails, nothing starts and the call fails (the pane is closed). In a session
+with a `CLAUDE_CONFIG_DIR` of its own, `global` runs the global account's
+pinned command (still marked `global`), and `runs` says so. The pane's
+`remain-on-exit` is set as asked, on or off.
+
 `skip_permissions: true` adds `--dangerously-skip-permissions`: Claude Code
 then runs commands and changes files without asking. It is never on unless
 asked, and is refused when the worker runs as root, where Claude Code refuses
@@ -386,8 +399,9 @@ Each pane running Claude Code has a
 `claude` object in `tmux::sessions::list`: the `account` its process uses (read
 from that process's `CLAUDE_CONFIG_DIR`, so a `claude` started by hand counts
 too), `config_dir`, `follow` (`global`, `pinned`, or `manual` when unmarked),
-`pending`, `skip_permissions` (the flag, `--permission-mode
-bypassPermissions` or the mark), `session_id`, `movable` with
+`pending`, `skip_permissions` (the process's own arguments:
+`--dangerously-skip-permissions` or `--permission-mode bypassPermissions`;
+a mark left from an earlier process in the pane never counts), `session_id`, `movable` with
 `not_movable_reason` when it is false, and `move_error` when its last move
 failed (cleared by its next account change).
 
@@ -418,11 +432,20 @@ account, which must be signed in, the pane moves:
    Code starts again on the account it ran on, resuming the conversation, and
    the move fails.
 4. Claude Code starts again on the target account with `--resume <session>`
-   (and `--dangerously-skip-permissions` again when it had it). A pane the
-   worker started is respawned in place. Claude Code started by hand in a
+   (and `--dangerously-skip-permissions` again when it had it), always with
+   that account named in the command, also for a pane that follows the
+   global account (its mark says it follows): the conversation was copied
+   there. A pane the worker started is respawned in place. Claude Code started by hand in a
    shell is started again by typing into that shell (`C-e`, `C-u`, the
    command, Enter), only once the shell has the terminal back within 3
-   seconds; otherwise nothing is typed and the move fails.
+   seconds and still has it right before typing; otherwise nothing is typed
+   and the move fails. A shell started with `-c` (also `-lc`, `-ec`,
+   `--command`) runs one command and ends: its pane is respawned instead.
+
+Another switch of the global account while a pane moves can't move that
+pane (it is busy); once its move is over, the pane gets a pending move to
+the newer global account. While a pane moves, a change of its account
+(`tmux::panes::account`) answers "This pane is being moved already.".
 
 A pane moves only when Claude Code's own status is `idle`. Working, waiting
 for a permission answer, running a background command or with no status, it
@@ -430,7 +453,9 @@ answers `after_turn`: the pending mark is set, and the worker moves it within
 2 seconds of its turn ending, also after a worker restart (the mark is
 tmux's). A waiting move that can no longer happen (its account was removed
 or signed out, the pane can't move) is dropped and the pane says why in
-`move_error`. Choosing the account it runs on changes no process and cancels
+`move_error`. Each waiting move is looked at again right before it runs: one
+cancelled or changed meanwhile is left to the next round, and a round whose
+look at tmux failed changes nothing. Choosing the account it runs on changes no process and cancels
 a waiting move (`cancelled`).
 
 `tmux::accounts::move_idle` moves every idle pane on account `from` to `to`
@@ -492,9 +517,10 @@ from that account for that reason until its window resets or it runs lower
 (week 80 % → 90 % → 5-hour window full → week limit). With `mode: switch` the
 worker switches by itself, the app open or not, moving the idle panes that
 follow along when `move_idle` is on, and leaves `last_switch` (`auto: true`)
-for the app; `back_after_reset` (in mode `switch` only) switches back once
-the old account's window resets, unless someone made another account global
-since. A switch of the rules happens only on the `accounts.json` they
+for the app; `back_after_reset` (in mode `switch` only, and while it stays
+on) switches back once the old account's window resets, unless someone made
+another account global since. A switch someone makes leaves `last_switch`
+too, with `auto: false` and no `reason`. A switch of the rules happens only on the `accounts.json` they
 decided on (any change written meanwhile, even back to the same global
 account, drops it until the next look), and any switch stops moving panes
 once another account is made global. Until changed, the rules suggest at `week_90`, with `move_idle` on;

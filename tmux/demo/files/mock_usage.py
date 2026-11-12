@@ -18,7 +18,11 @@ import json
 import os
 import sys
 import urllib.request
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# One /set at a time: each reads, changes and writes the whole state file.
+STATE_LOCK = threading.Lock()
 
 STATE = os.path.expanduser("~/demo/usage.json")
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -148,10 +152,11 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         token = body.pop("token")
-        state = load()
-        entry = state.setdefault(token, dict(DEFAULTS["*"]))
-        entry.update(body)
-        save(state)
+        with STATE_LOCK:
+            state = load()
+            entry = state.setdefault(token, dict(DEFAULTS["*"]))
+            entry.update(body)
+            save(state)
         self.send(200, {token: entry})
 
 

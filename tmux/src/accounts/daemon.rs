@@ -94,8 +94,18 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
         accounts.note_pending();
         return;
     };
-    // A fresh look notes again the panes that still carry the mark.
-    let panes = collector.claude_panes(true).await;
+    // A fresh look notes again the panes that still carry the mark. One
+    // that failed says nothing about them: they keep waiting.
+    let panes = match collector.claude_panes_checked().await {
+        Ok(panes) => panes,
+        Err(error) => {
+            tracing::debug!(%error, "pending moves not looked at");
+            if discover {
+                accounts.note_pending();
+            }
+            return;
+        }
+    };
     for (pane, _) in accounts.waiting() {
         if panes
             .get(&pane)
@@ -124,6 +134,18 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     ids.sort();
     for id in ids {
         let pane = &panes[id];
+        if pane.marks.pending.is_none() {
+            continue;
+        }
+        // Each move before this one can take seconds: someone may have
+        // cancelled or changed this pane's move, or switched the global
+        // account, meanwhile. A request no longer as it was is left to the
+        // next round, which sees it as it is now.
+        match super::moves::marks_now(&tmux, id).await {
+            Ok(now) if now.account == pane.marks.account && now.pending == pane.marks.pending => {}
+            _ => continue,
+        }
+        let registry = accounts.registry();
         let Some(plan) =
             super::moves::pending_plan(pane, &registry, |to| accounts.is_signed_in(to))
         else {

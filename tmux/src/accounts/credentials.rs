@@ -111,8 +111,47 @@ pub fn keychain_service(config_dir_env: Option<&str>) -> String {
     }
 }
 
-/// The Keychain account Claude Code uses: `$USER`, or the login name, or
-/// `claude-code-user` when that has other characters than `[A-Za-z0-9._-]`.
+/// The user name Claude Code gives the Keychain: `$USER` when set and not
+/// empty, else this process's user's login name (`process.env.USER ||
+/// os.userInfo().username` in Claude Code 2.1.322): a worker started
+/// without `USER` (launchd) still finds the sign-in.
+pub fn claude_user() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .filter(|user| !user.is_empty())
+        .or_else(login_name)
+}
+
+/// The login name of this process's (effective) user, from the user
+/// database.
+fn login_name() -> Option<String> {
+    let mut buf: Vec<libc::c_char> = vec![0; 4096];
+    // SAFETY: an all-zero passwd is a valid value for getpwuid_r to fill.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: getpwuid_r fills `pwd`, with its strings in `buf` (of the
+    // length given), and points `found` at `pwd`, or leaves it null.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || pwd.pw_name.is_null() {
+        return None;
+    }
+    // SAFETY: `pw_name` points at a NUL-terminated string inside `buf`,
+    // which lives until the end of this function.
+    let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
+    name.to_str().ok().map(str::to_string)
+}
+
+/// The Keychain account Claude Code uses for `user` ([`claude_user`]), or
+/// `claude-code-user` when there is none or it has other characters than
+/// `[A-Za-z0-9._-]`.
 pub fn keychain_account(user: Option<&str>) -> String {
     match user {
         Some(user)
@@ -212,7 +251,7 @@ impl SecretStore for KeychainStore {
 pub fn platform_store() -> Box<dyn SecretStore> {
     if cfg!(target_os = "macos") {
         Box::new(KeychainStore {
-            account: keychain_account(std::env::var("USER").ok().as_deref()),
+            account: keychain_account(claude_user().as_deref()),
         })
     } else {
         Box::new(FileStore)
@@ -389,6 +428,17 @@ mod tests {
         assert_eq!(keychain_account(Some("sergio")), "sergio");
         assert_eq!(keychain_account(Some("José")), "claude-code-user");
         assert_eq!(keychain_account(None), "claude-code-user");
+    }
+
+    #[test]
+    fn the_login_name_is_this_user_s() {
+        let expected = std::process::Command::new("id")
+            .arg("-un")
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+        assert_eq!(login_name(), expected);
     }
 
     #[test]

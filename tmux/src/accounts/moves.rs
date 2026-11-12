@@ -282,6 +282,11 @@ impl Moving {
             .contains(pane)
     }
 
+    /// Whether any pane is being moved now (a late stop included).
+    pub fn any(&self) -> bool {
+        !self.0.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+    }
+
     pub fn begin(&self, pane: &str) -> Option<MoveGuard> {
         let mut set = self.0.lock().unwrap_or_else(|p| p.into_inner());
         set.insert(pane.to_string()).then(|| MoveGuard {
@@ -519,18 +524,13 @@ pub async fn move_now(
     }
 
     // The commands first, so nothing stops when they can't be built.
-    let launch_account = if kind == MoveKind::Respawn && mark == GLOBAL {
-        GLOBAL
-    } else {
-        to
-    };
-    let launch = accounts.plan_launch(launch_account, skip, Some(&session))?;
-    let explicit = accounts.plan_launch(to, skip, Some(&session))?;
+    // Always on `to` by name, even for a pane that follows the global
+    // account: the conversation is copied to `to`, and another switch
+    // during the move (or a session's own CLAUDE_CONFIG_DIR) must not start
+    // it elsewhere. The mark says it follows the global account.
+    let launch = accounts.plan_launch(to, skip, Some(&session))?;
     // Back where it was, should the conversation not reach `to`.
     let stay = accounts.plan_launch(&from, skip, Some(&session))?;
-    if launch_account == GLOBAL {
-        tmux_env::reconcile(tmux, accounts).await?;
-    }
     let cwd = record
         .cwd
         .clone()
@@ -645,11 +645,19 @@ pub async fn move_now(
             let command = match &shared {
                 Ok(_) => {
                     commands.extend(mark_args(scope, id, mark, skip, None));
-                    explicit.command.as_str()
+                    launch.command.as_str()
                 }
                 Err(_) => stay.command.as_str(),
             };
             commands.extend(shell_keys(id, command));
+            // The copy took a moment: the shell must still be the one in
+            // front, or the keys would go to whatever was started since.
+            let still_shell = pane_field(tmux, id, "#{pane_current_command}")
+                .await
+                .is_ok_and(|now| super::panes::is_shell_name(&now));
+            if !still_shell {
+                return Err(SHELL_NOT_BACK.to_string());
+            }
             let typed = tmux.run(chain(commands)).await;
             if let Err(error) = shared {
                 return Err(format!("{error} Claude Code started again on its account."));
@@ -660,6 +668,19 @@ pub async fn move_now(
                     error.sentence()
                 )
             })?;
+        }
+    }
+    // Another switch made a newer account global while this pane moved
+    // (its move of this pane was refused as busy): the pane follows that
+    // one too, once the pending round finds it idle.
+    if mark == GLOBAL {
+        let global = accounts.registry().global;
+        if global != to
+            && set_marks(tmux, id, GLOBAL, skip, Some(&global))
+                .await
+                .is_ok()
+        {
+            accounts.note_pending();
         }
     }
     // Claude Code may renew `to`'s token: read it again on the next load,
@@ -673,7 +694,8 @@ pub async fn move_now(
 /// time. Once it does (the pane dead, still the same pane program), it
 /// starts again with `stay` (its own account, resuming its conversation);
 /// then `restore` puts remain-on-exit back. A pane respawned meanwhile only
-/// gets remain-on-exit back; a pane closed needs nothing. Watched for
+/// gets remain-on-exit back; a pane closed needs nothing, and a pane with
+/// this id on a tmux server started since is left alone. Watched for
 /// [`LATE_STOP_WAIT`] at most.
 fn after_late_stop(
     guard: MoveGuard,
@@ -688,10 +710,13 @@ fn after_late_stop(
         // No other move of this pane until this one is over.
         let _guard = guard;
         let deadline = Instant::now() + LATE_STOP_WAIT;
+        // The server this move ran on: a pane with this id on another one (a
+        // tmux server started since) is not this move's to touch.
+        let server = tmux.run(["display-message", "-p", "#{pid}"]).await.ok();
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let fields = match tmux
-                .pane_fields(&pane, &["#{pane_pid}", "#{pane_dead}"])
+                .pane_fields(&pane, &["#{pane_pid}", "#{pane_dead}", "#{pid}"])
                 .await
             {
                 Ok(fields) => fields,
@@ -704,11 +729,20 @@ fn after_late_stop(
             };
             let pid = fields.first().map(String::as_str).unwrap_or_default();
             let dead = fields.get(1).map(String::as_str) == Some("1");
+            let same_server = server
+                .as_deref()
+                .is_none_or(|server| Some(server.trim()) == fields.get(2).map(String::as_str));
+            if !same_server {
+                return;
+            }
             // tmux 3.8 clears a dead pane's pid; before, it keeps the last.
             let same = pid == pane_pid.to_string() || (dead && pid.is_empty());
             if !same {
-                // Respawned by someone else, or another pane with this id
-                // (a new tmux server): not this move's to touch.
+                // Respawned by someone else: nothing more to start, but
+                // remain-on-exit was this move's, and goes back.
+                if let Err(error) = tmux.run(&restore).await {
+                    tracing::warn!(%pane, error = %error.sentence(), "remain-on-exit not put back");
+                }
                 return;
             }
             if dead {
@@ -760,6 +794,26 @@ async fn mark_now(tmux: &Tmux, pane: &str) -> Result<Option<String>, String> {
         .filter(|value| !value.is_empty()))
 }
 
+/// `pane`'s marks now, read afresh (see [`mark_now`]).
+pub async fn marks_now(tmux: &Tmux, pane: &str) -> Result<super::panes::Marks, String> {
+    let fields = tmux
+        .pane_fields(
+            pane,
+            &[
+                "#{@iii_claude_account}",
+                "#{@iii_skip_permissions}",
+                "#{@iii_claude_pending}",
+            ],
+        )
+        .await?;
+    let field = |at: usize| fields.get(at).map(String::as_str).unwrap_or_default();
+    Ok(super::panes::Marks::from_raw(
+        field(0),
+        field(1).trim() == "1",
+        field(2),
+    ))
+}
+
 /// Mark `pane` to move to `to` once its turn ends.
 async fn wait_for_turn(
     tmux: &Tmux,
@@ -790,6 +844,11 @@ pub async fn apply(
     plan: &Plan,
 ) -> Result<&'static str, String> {
     let skip = pane.info.skip_permissions;
+    // A move under way sets the marks itself when it ends: a change now
+    // would be overwritten, or the move would go on to where it was going.
+    if accounts.moving.is_busy(&pane.pane_id) {
+        return Err(BUSY.to_string());
+    }
     accounts.clear_move_error(&pane.pane_id);
     match plan {
         Plan::Marks { mark, state, .. } => {
@@ -893,8 +952,8 @@ pub enum SwitchMode {
 /// Who switches the global account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchBy {
-    /// Someone, through `tmux::accounts::global`: any switch back the rules
-    /// had planned is off.
+    /// Someone, through `tmux::accounts::global`: noted in `last_switch`
+    /// (`auto: false`), and any switch back the rules had planned is off.
     Person,
     /// The rules (D14). They decided on the registry of `generation`; a
     /// registry written since (someone switched, even back and forth) is
@@ -940,18 +999,33 @@ pub async fn switch_global(
     if !accounts.is_signed_in(to) {
         return Err(not_signed_in(accounts, to));
     }
-    accounts
+    let at_ms = crate::model::now_ms();
+    let written = accounts
         .update_registry_at_async(|registry, generation| {
             if !registry.has(to) {
                 return Err(super::manage::no_account(to));
             }
-            match &by {
-                SwitchBy::Person => {
-                    // A choice someone made is never undone by the rules.
+            let record = match &by {
+                // The same account again: nothing to note, but a switch back
+                // the rules planned is off all the same.
+                SwitchBy::Person if registry.global == to => {
                     if let Some(last) = registry.last_switch.as_mut() {
                         last.back_at_ms = None;
                     }
+                    None
                 }
+                // The latest change of the global account, made by someone:
+                // the rules never undo it (no switch back).
+                SwitchBy::Person => Some(crate::model::AccountSwitch {
+                    from: registry.global.clone(),
+                    to: to.to_string(),
+                    reason: None,
+                    auto: false,
+                    moved: Vec::new(),
+                    after_turn: Vec::new(),
+                    at_ms,
+                    back_at_ms: None,
+                }),
                 SwitchBy::Rules {
                     generation: decided_on,
                     record,
@@ -959,13 +1033,16 @@ pub async fn switch_global(
                     if generation != *decided_on {
                         return Err(RULES_STALE.to_string());
                     }
-                    // With the switch itself: a person's switch after it always
-                    // finds it, and calls off its switch back.
-                    registry.last_switch = Some(record.clone());
+                    Some(record.clone())
                 }
+            };
+            // With the switch itself: a person's switch after a rules' one
+            // always finds it, and replaces it with its own (no way back).
+            if let Some(record) = &record {
+                registry.last_switch = Some(record.clone());
             }
             registry.global = to.to_string();
-            Ok(())
+            Ok(record)
         })
         .await?;
     if let Err(error) = tmux_env::reconcile(tmux, accounts).await {
@@ -1012,7 +1089,7 @@ pub async fn switch_global(
             }
         }
     }
-    if let SwitchBy::Rules { record, .. } = &by {
+    if let Some(record) = &written {
         note_switched_panes(accounts, record, &out).await;
     }
     Ok(out)
@@ -1064,16 +1141,18 @@ async fn switch_pane(
     }
 }
 
-/// The panes a switch of the rules moved, in its `last_switch`, while that
-/// is still its record (a later switch leaves its own). Nothing else of it
-/// changes: a person's switch may have called off its switch back.
+/// The panes a switch moved, in its `last_switch`, while that is still its
+/// record (a later switch leaves its own). Nothing else of it changes.
 async fn note_switched_panes(
     accounts: &Accounts,
     record: &crate::model::AccountSwitch,
     out: &Switched,
 ) {
     let ours = |last: &crate::model::AccountSwitch| {
-        last.auto && last.at_ms == record.at_ms && last.from == record.from && last.to == record.to
+        last.auto == record.auto
+            && last.at_ms == record.at_ms
+            && last.from == record.from
+            && last.to == record.to
     };
     if !accounts.registry().last_switch.as_ref().is_some_and(ours) {
         return;

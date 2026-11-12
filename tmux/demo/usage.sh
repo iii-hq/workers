@@ -7,5 +7,8 @@
 # tmux::usage::read refresh: true); restart the container to read at once.
 set -euo pipefail
 port=${1:?engine port}; shift
-mock=${MOCK_PORT:-$((port + 10000))}
-docker exec -u dev -e MOCK_PORT="$mock" "acct-demo-$port" python3 /opt/demo/mock_usage.py "$@"
+# The container knows its mock's port (run.sh set it); MOCK_PORT here
+# overrides it only when given.
+override=()
+[[ -n ${MOCK_PORT:-} ]] && override=(-e "MOCK_PORT=$MOCK_PORT")
+docker exec -u dev ${override[@]+"${override[@]}"} "acct-demo-$port" python3 /opt/demo/mock_usage.py "$@"

@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- **The running tmux server decides what a command may use.** After tmux was upgraded with
+  its server still running, the worker went by the new client's version (`tmux -V`) for what
+  the old server accepts; it now goes by the server's own (`#{version}`) once it has looked.
 - **Names are taken as written.** tmux 2.7 and later expand formats in session and window
   names, so a `#` in a name given to `tmux::sessions::create`, `tmux::windows::create` or a
   rename came out changed, and `#(…)` ran that command on the tmux server; `#` is now doubled
@@ -66,7 +69,10 @@
   environment (`CLAUDE_CONFIG_DIR`), so plain `claude` in a new window runs on it, and moves
   the panes that follow it: idle ones at once, working ones once their turn ends, or none
   (`new_only`). Once `accounts.json` exists the worker keeps that variable in step; without
-  it the worker never touches it.
+  it the worker never touches it. A session with a `CLAUDE_CONFIG_DIR` of its own keeps it
+  (tmux gives it precedence); windows the worker starts there on the global account name
+  that account outright. Every change of the global account is in `last_switch` (`auto:
+  false` when someone made it).
 - **Claude Code on an account from create.** `tmux::windows::create` and
   `tmux::sessions::create` take `claude: { account, skip_permissions }` instead of
   `command`, build the command (`claude`, `env -u CLAUDE_CONFIG_DIR claude`, `env

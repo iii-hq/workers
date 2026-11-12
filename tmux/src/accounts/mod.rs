@@ -841,18 +841,19 @@ impl Accounts {
                 if credentials.expired(now) || reading.rejected || !reading.due(now, force) {
                     continue;
                 }
-                asks.push((entry.id.clone(), entry.created_at_ms, token));
+                let digest: [u8; 32] = Sha256::digest(token.expose().as_bytes()).into();
+                asks.push((entry.id.clone(), entry.created_at_ms, token, digest));
             }
         }
         if asks.is_empty() {
             return false;
         }
         let mut tasks = tokio::task::JoinSet::new();
-        for (id, created_at_ms, token) in asks {
+        for (id, created_at_ms, token, digest) in asks {
             let client = client.clone();
             tasks.spawn(async move {
                 let outcome = client.fetch(&token).await;
-                (id, created_at_ms, outcome)
+                (id, created_at_ms, digest, outcome)
             });
         }
         let mut results = Vec::new();
@@ -867,8 +868,14 @@ impl Accounts {
         let registry = self.registry();
         let readings = {
             let mut state = self.lock();
-            for (id, created_at_ms, outcome) in results {
+            for (id, created_at_ms, digest, outcome) in results {
                 if registry.get(&id).map(|entry| entry.created_at_ms) != Some(created_at_ms) {
+                    continue;
+                }
+                // Signed in again while it was asked: an answer about the
+                // old token (a late 401 above all) says nothing of the new
+                // one, which the next round asks about.
+                if state.token_digests.get(&id) != Some(&digest) {
                     continue;
                 }
                 if let Err(error) = &outcome {
@@ -909,6 +916,11 @@ pub(crate) mod test_support {
 
     impl Home {
         pub fn new(name: &str) -> Self {
+            Self::with_usage_url(name, "http://127.0.0.1:9")
+        }
+
+        /// A home whose usage endpoint is `url` (a test's own server).
+        pub fn with_usage_url(name: &str, url: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "tmux-acct-{name}-{}",
                 uuid::Uuid::new_v4().simple()
@@ -925,7 +937,7 @@ pub(crate) mod test_support {
                     "III_CLAUDE_ACCOUNTS_DIR",
                     dir.join("accounts").to_string_lossy().into_owned(),
                 ),
-                ("III_CLAUDE_USAGE_URL", "http://127.0.0.1:9".to_string()),
+                ("III_CLAUDE_USAGE_URL", url.to_string()),
             ]);
             let paths = ClaudePaths::from_vars(|key| vars.get(key).cloned(), false).unwrap();
             Self { dir, paths }
@@ -1237,6 +1249,50 @@ mod tests {
             .home
             .starts_with(std::env::temp_dir()));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_late_refusal_of_an_old_token_leaves_the_new_one_alone() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let home = Arc::new(Home::with_usage_url("late-401", &url));
+        home.sign_in(&home.paths.claude_home, "demo-old", now_ms() + 3_600_000);
+        let accounts = home.accounts();
+        let (server_home, server_accounts) = (home.clone(), accounts.clone());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            // Signed in again while the old token was being asked about.
+            server_home.sign_in(
+                &server_home.paths.claude_home,
+                "demo-new-token",
+                now_ms() + 3_600_000,
+            );
+            tokio::task::spawn_blocking(move || server_accounts.load_blocking())
+                .await
+                .unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        accounts.refresh(None, false).await;
+        server.await.unwrap();
+        assert!(
+            !accounts.views().1[0].token_expired,
+            "the 401 was about the old token"
+        );
     }
 
     #[tokio::test]

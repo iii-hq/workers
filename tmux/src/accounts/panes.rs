@@ -69,9 +69,39 @@ fn is_shell(proc: &ProcInfo) -> bool {
     proc.names().any(is_shell_name)
 }
 
-/// A shell started with `-c` runs one command and ends with it.
+/// A shell started with `-c` runs one command and ends with it: `-c`
+/// alone, among other short options (`-lc`, `-ec`) or fish's `--command`.
+/// Only the options before the first operand count; what follows is the
+/// command, or a script and its own arguments.
 fn runs_one_command(proc: &ProcInfo) -> bool {
-    proc.argv.iter().skip(1).any(|arg| arg == "-c")
+    let mut args = proc.argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        let arg = arg.as_str();
+        if arg == "--command" || arg.starts_with("--command=") {
+            return true;
+        }
+        if arg == "--" {
+            return false;
+        }
+        if arg.starts_with("--") {
+            continue;
+        }
+        let Some(letters) = arg.strip_prefix('-').or_else(|| arg.strip_prefix('+')) else {
+            return false;
+        };
+        if letters.is_empty() {
+            return false;
+        }
+        if arg.starts_with('-') && letters.contains('c') {
+            return true;
+        }
+        // `-o pipefail`, `-eo pipefail`, `-O extglob`: the next word is
+        // the option's value.
+        if letters.ends_with(['o', 'O']) {
+            args.next();
+        }
+    }
+    false
 }
 
 /// How Claude Code process `claude_pid` in the pane whose program is
@@ -199,7 +229,10 @@ pub fn pane_claude(
         config_dir: config_dir.map(|dir| display(accounts, dir)),
         follow: marks.follow(),
         pending: marks.pending.clone(),
-        skip_permissions: marks.skip || skips_permissions(argv),
+        // From the process alone: a mark left by an earlier Claude Code in
+        // this pane (respawned since with a plain command) must never make
+        // a move start this one without permission prompts.
+        skip_permissions: skips_permissions(argv),
         session_id,
         movable: movable.is_ok(),
         not_movable_reason: movable.err().map(str::to_string),
@@ -239,6 +272,18 @@ mod tests {
             // A shell that kept `-c`.
             proc(30, 1, "fish", &["fish", "-c", "env X=1 claude"]),
             proc(31, 30, "claude", &["claude"]),
+            // `-c` among other options: runs one command, then ends.
+            proc(32, 1, "bash", &["bash", "-lc", "claude; echo done"]),
+            proc(33, 32, "claude", &["claude"]),
+            proc(34, 1, "bash", &["bash", "-o", "pipefail", "-ec", "claude"]),
+            proc(35, 34, "claude", &["claude"]),
+            proc(36, 1, "fish", &["fish", "--command=claude"]),
+            proc(37, 36, "claude", &["claude"]),
+            // A login shell, and a script's own `-c` after its name.
+            proc(38, 1, "bash", &["bash", "-l"]),
+            proc(39, 38, "claude", &["claude"]),
+            proc(43, 1, "bash", &["bash", "run.sh", "-c"]),
+            proc(44, 43, "claude", &["claude"]),
             // Over ssh.
             proc(40, 1, "zsh", &["-zsh"]),
             proc(41, 40, "ssh", &["ssh", "box"]),
@@ -250,8 +295,44 @@ mod tests {
         assert_eq!(move_kind(&table, 10, 10), Ok(MoveKind::Respawn));
         assert_eq!(move_kind(&table, 20, 21), Ok(MoveKind::Shell));
         assert_eq!(move_kind(&table, 30, 31), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 32, 33), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 34, 35), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 36, 37), Ok(MoveKind::Respawn));
+        assert_eq!(move_kind(&table, 38, 39), Ok(MoveKind::Shell));
+        assert_eq!(move_kind(&table, 43, 44), Ok(MoveKind::Shell));
         assert_eq!(move_kind(&table, 40, 42), Err(NESTED));
         assert_eq!(move_kind(&table, 50, 51), Err(NESTED));
+    }
+
+    #[test]
+    fn an_old_skip_mark_never_skips_for_another_process() {
+        let home = super::super::test_support::Home::new("skip-mark");
+        let accounts = home.accounts();
+        let registry = accounts.registry();
+        let table = ProcTable::from_procs([
+            // Respawned with a plain command since the mark was set.
+            proc(10, 1, "claude", &["claude"]),
+            proc(
+                20,
+                1,
+                "claude",
+                &["claude", "--dangerously-skip-permissions"],
+            ),
+        ]);
+        let marks = Marks::from_raw("global", true, "");
+        let info = |pid: u32| {
+            pane_claude(
+                &accounts,
+                &registry,
+                &table,
+                pid,
+                &marks,
+                Some(ClaudeProc { pid, record: None }),
+            )
+            .unwrap()
+        };
+        assert!(!info(10).skip_permissions);
+        assert!(info(20).skip_permissions);
     }
 
     #[test]

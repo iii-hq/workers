@@ -16,10 +16,15 @@ if [[ ! -f /home/dev/demo/.set-up ]]; then
   touch /home/dev/demo/.set-up
 fi
 python3 /opt/demo/mock_usage.py serve --port "$MOCK_PORT" >/home/dev/demo/mock.log 2>&1 &
+mock_up=0
 for _ in $(seq 1 50); do
-  curl -s -o /dev/null "http://127.0.0.1:${MOCK_PORT}/state" && break
+  curl -sf -o /dev/null "http://127.0.0.1:${MOCK_PORT}/state" && { mock_up=1; break; }
   sleep 0.1
 done
+if [[ $mock_up != 1 ]]; then
+  echo "the mock usage endpoint did not start on :${MOCK_PORT}; see /home/dev/demo/mock.log" >&2
+  exit 1
+fi
 # A neutral prompt for every shell the worker starts.
 cat >/home/dev/.bashrc <<'RC'
 PS1='\[\e[2m\]\w\[\e[0m\] $ '
