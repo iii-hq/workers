@@ -35,8 +35,10 @@ Release Control reads that manifest, publishes the exact Registry version,
 moves the requested channel by compare-and-swap, creates the versioned GitHub
 release pointing at the same assets and tags the image; nothing is rebuilt. It
 spreads the descriptor's `registry_projection` (worker name, type, description,
-license, tags, dependencies, config, experimental flag, README, skills, and
-`iii_engine_version` when set) into the Registry's `POST /publish`. After each
+license, tags, dependencies, config, experimental flag, README, and
+`iii_engine_version` when set) into the Registry's `POST /publish`. The
+projection's `skills` are left out of that request; the Registry attaches them
+to the version through `POST /w/<worker>/skills`. After each
 GitHub release it creates,
 [`sync-manifest-versions.yml`](../../.github/workflows/sync-manifest-versions.yml)
 writes every worker's highest published version back into its package manifests
