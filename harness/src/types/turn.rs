@@ -373,8 +373,9 @@ pub struct TurnRecord {
     pub turn_id: String,
     pub session_id: String,
     /// Resolved from Harness-owned delivery receipts on the active path,
-    /// not writer-supplied transcript origin or options metadata.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// not writer-supplied transcript origin or options metadata. Each step
+    /// resolves it again, and it holds the user's text, so it is never stored.
+    #[serde(skip)]
     pub recall_context: Option<Value>,
     pub status: TurnStatus,
     /// Monotonic step counter; guards against stale/duplicate dequeues.
@@ -528,7 +529,6 @@ impl TurnRecord {
         self.calls.retain(|_, c| {
             c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
         });
-        self.recall_context = None;
         self.failed_calls.clear();
         self.watermark_entry_id = None;
         self.stream_request_id = None;

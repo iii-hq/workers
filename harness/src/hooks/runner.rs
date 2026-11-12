@@ -144,7 +144,7 @@ pub enum PostCallOutcome {
 }
 
 impl HookRegistry {
-    fn envelope(&self, point: HookPoint, record: &TurnRecord, step: u64) -> Value {
+    pub(super) fn envelope(&self, point: HookPoint, record: &TurnRecord, step: u64) -> Value {
         let mut v = serde_json::json!({
             "point": point.input_name(),
             "session_id": record.session_id,
@@ -152,14 +152,14 @@ impl HookRegistry {
             "step": step,
             "depth": record.depth,
         });
-        if let Some(context) = &record.recall_context {
-            let mut context = context.clone();
-            // Interrupted/older records may already contain a cached history;
-            // never treat that public snapshot as fresh private proof.
-            if let Some(context) = context.as_object_mut() {
-                context.remove("extraction_history");
-            }
-            v["recall_context"] = context;
+        // Only the Memory hook reads recall provenance; the query holds the
+        // user's text, so the other points never carry it.
+        if let Some(context) = record
+            .recall_context
+            .as_ref()
+            .filter(|_| point == HookPoint::PreGenerate)
+        {
+            v["recall_context"] = context.clone();
         }
         if let Some(m) = &record.options.metadata {
             v["metadata"] = m.clone();

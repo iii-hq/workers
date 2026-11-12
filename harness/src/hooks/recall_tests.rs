@@ -269,7 +269,7 @@ impl Stack {
             .unwrap()
     }
     async fn context(&self, session: &str) -> Value {
-        let mut r = self.record(session).await;
+        let r = self.record(session).await;
         let entries = self
             .deps
             .session()
@@ -277,12 +277,7 @@ impl Stack {
             .messages_strict(session)
             .await
             .unwrap();
-        r.recall_context = resolve(&self.deps, &r, &entries).await;
-        // Exercise the production dehydrator/hydrator, not raw state parsing.
-        crate::state::put_turn(&self.deps.iii, &r, 1000)
-            .await
-            .unwrap();
-        self.record(session).await.recall_context.unwrap()
+        resolve(&self.deps, &r, &entries).await.unwrap()
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1396,6 +1391,34 @@ async fn recall_ledger_burst_of_concurrent_notifications_keeps_every_receipt() {
     let mut expected = ids.clone();
     expected.sort();
     assert_eq!(stored, expected);
+}
+
+/// The recall query holds the user's own text: only the pre_generate input
+/// carries it, and the stored turn record never does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_context_reaches_only_pre_generate_and_is_never_stored() {
+    let stack = Stack::new().await;
+    let mut record = crate::types::turn::tests::record();
+    record.recall_context = Some(json!({"version":1,"session_id":record.session_id,
+        "turn_id":record.turn_id,"query":{"text":"Private recall request"}}));
+    for point in crate::hooks::HookPoint::all() {
+        let input = stack.deps.hooks.envelope(point, &record, 0);
+        assert_eq!(
+            input.get("recall_context").is_some(),
+            point == crate::hooks::HookPoint::PreGenerate,
+            "{point:?}"
+        );
+    }
+    crate::state::put_turn(&stack.deps.iii, &record, 1000)
+        .await
+        .unwrap();
+    let stored = stack
+        .data
+        .lock()
+        .unwrap()
+        .get(crate::state::TURN_SCOPE, &record.session_id);
+    assert_eq!(stored["turn_id"], record.turn_id);
+    assert!(!stored.to_string().contains("Private recall request"));
 }
 
 #[path = "extraction_provenance_tests.rs"]
