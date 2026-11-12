@@ -44,6 +44,7 @@ const FILES = [
   '.claude-plugin/plugin.json',
   '.mcp.json',
   'README.md',
+  'agents/iii.md',
   'commands/profile.md',
   'commands/skills.md',
   'hooks/hooks.json',

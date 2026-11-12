@@ -9,6 +9,7 @@
 
 import { hostname } from 'node:os';
 import { type IIIClient, registerWorker } from 'iii-sdk';
+import { type Bus, clientBus } from './bus.js';
 import { type Resolved, resolveEngine } from './engine.js';
 
 const CALL_TIMEOUT_MS = 15_000;
@@ -76,6 +77,11 @@ export class Directory {
   /** Where the plugin is (or would be) connected, for `iii_status`. */
   status(): { engine: Resolved | null; state: string } {
     return { engine: this.engine, state: this.client?.getConnectionState() ?? 'disconnected' };
+  }
+
+  /** The live connection as a `Bus`, for iii_call / iii_observe. */
+  async bus(): Promise<Bus> {
+    return clientBus(await this.ready());
   }
 
   /** Resolve and connect now, without making a call. */

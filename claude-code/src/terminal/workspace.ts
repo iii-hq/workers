@@ -8,6 +8,7 @@
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
 import { installOnHost } from '../iii-plugin/install.js';
+import { III_AGENT } from '../iii-plugin/mode.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
@@ -84,7 +85,10 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
-  const args = plugin ? [...config.args, '--plugin-dir', plugin] : config.args;
+  const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
+  // iii mode: the session runs as the plugin's `iii` agent, unless the
+  // operator configured an agent of their own.
+  if (plugin && !config.args.includes('--agent')) args.push('--agent', III_AGENT);
   return { ...base, args, executable, detail, bridge, plugin };
 }
 

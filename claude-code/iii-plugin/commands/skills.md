@@ -25,3 +25,9 @@ equally, list them and stop.
 2. Follow the skill for the rest of this conversation. Confirm in one line
    which skill is loaded.
 3. If a task was given, start it now. Otherwise wait for the next message.
+
+While you work, act on the engine with `iii_call` (any function id, with a
+payload) instead of the `iii` CLI, and react to it with `iii_observe` (then
+`iii_events`, and `iii_unobserve` when done) instead of polling. Where a
+profile or skill says `agent_call` or `harness::observe`, use `iii_call` and
+`iii_observe`.

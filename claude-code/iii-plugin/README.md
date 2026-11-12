@@ -43,10 +43,48 @@ engine appears from the next session on.
 
 ## Tools
 
-The `iii` MCP server gives the agent `iii_status`, `iii_list_agents`,
-`iii_get_agent`, `iii_list_skills` and `iii_get_skill`, and every skill as an
-`iii-skill://<id>` resource. Everything is read live; the connection opens on
-first use, so `claude` starts cleanly before the engine does.
+The `iii` MCP server gives the agent the engine itself, through `iii-sdk`:
+
+| Tool | What it does |
+| --- | --- |
+| `iii_call` | Call any function by id with a JSON payload (`void: true` for fire-and-forget). |
+| `iii_observe` | Observe a function (with `filters`, `capture`, `args`, `max_events`, `expires_in_ms`); returns an `observer_id`. |
+| `iii_events` | Read and remove the buffered events of one observer, or all, oldest first. |
+| `iii_observers` | This session's observers, with buffered / received / dropped counts. |
+| `iii_unobserve` | Remove an observer. |
+| `iii_status` | Which engine the plugin is attached to, and how it was found. |
+| `iii_list_agents`, `iii_get_agent`, `iii_list_skills`, `iii_get_skill` | Profiles and skills. |
+
+Claude Code cannot be woken by an MCP server mid-turn, so observed
+invocations are **buffered** in the plugin process (500 per observer, oldest
+dropped first) and read with `iii_events`. Observers belong to the session:
+they are removed when it ends. Each session registers its own private sink
+function (`iii-plugin-<host>-<pid>::observed`) to receive them.
+
+Every skill is also an `iii-skill://<id>` resource. Everything is read live;
+the connection opens on first use, so `claude` starts cleanly before the
+engine does.
+
+## iii mode
+
+Claude Code has no plugin-defined permission modes, so the iii mode is the
+plugin's `iii` agent plus a hook, on top of whichever built-in mode is active:
+
+- **The `iii:iii` agent** (`agents/iii.md`) makes the whole session work
+  through the engine: find a function, read its contract, `iii_call` it,
+  `iii_observe` instead of polling. The worker starts every session with
+  `--agent iii:iii` (an operator-configured `--agent` wins); standalone, run
+  `claude --plugin-dir ... --agent iii:iii`.
+- **Read-only tools are pre-approved** by a PreToolUse hook: status, profiles,
+  skills, `iii_events`, `iii_observers`, `iii_unobserve`. `iii_call` and
+  `iii_observe` are never pre-approved: they can do anything on the bus, so
+  they stay with the session's permission mode (and, for a headless turn, the
+  worker's approval gate).
+
+The MCP server's instructions and every `/iii:*` command carry the same rule:
+`iii_call` instead of the `iii` CLI, `iii_observe` instead of polling, and
+`agent_call` / `harness::observe` in harness-written profiles mean `iii_call` /
+`iii_observe` here.
 
 ## Finding the engine
 

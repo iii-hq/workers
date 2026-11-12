@@ -14,6 +14,7 @@ import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
 import { installLocal } from './iii-plugin/install.js';
+import { III_AGENT } from './iii-plugin/mode.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -320,7 +321,9 @@ async function runReserved(
   if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
   const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
   const options: Options = {
-    ...(plugins.length ? { plugins } : {}),
+    // iii mode: the turn runs as the plugin's `iii` agent. A caller's raw
+    // `options.agent` still wins, since raw options spread over these.
+    ...(plugins.length ? { plugins, agent: III_AGENT } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.cwd ? { cwd: record.cwd } : {}),
     ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),

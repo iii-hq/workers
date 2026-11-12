@@ -165,7 +165,8 @@ describe('preparing the terminal host', () => {
     expect(files[`${dir}/hooks/hooks.json`]).not.toContain(' sync ');
 
     // And the session is told to load it.
-    expect(prepared.args).toEqual([...DEFAULTS.args, '--plugin-dir', dir]);
+    // And the session is started in iii mode: the plugin's `iii` agent.
+    expect(prepared.args).toEqual([...DEFAULTS.args, '--plugin-dir', dir, '--agent', 'iii:iii']);
     expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
 
     // `.claude/settings.json` is the operator's file and is never written.
@@ -268,6 +269,20 @@ describe('preparing the terminal host', () => {
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
     expect(prepared.bridge).toBe('/usr/bin/iii');
     expect(prepared.detail).toBe('');
+  });
+
+  it('keeps an --agent the operator configured instead of iii mode', async () => {
+    const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: ['--agent', 'mine'] });
+    expect(prepared.args.filter((a) => a === '--agent')).toHaveLength(1);
+    expect(prepared.args).toContain('mine');
+    expect(prepared.args).not.toContain('iii:iii');
+  });
+
+  it('starts no iii mode when the workspace is not set up (no plugin)', async () => {
+    const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS, setup_workspace: false });
+    expect(prepared.args).not.toContain('--agent');
   });
 
   it('uses the configured workspace as given', async () => {
