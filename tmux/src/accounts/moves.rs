@@ -46,6 +46,7 @@ use super::registry::{self, Registry};
 use super::slot::Place;
 use super::{Accounts, GLOBAL};
 use crate::tmux_cli::Tmux;
+use std::sync::Arc;
 
 /// How long Claude Code gets to end on SIGTERM.
 pub const STOP_WAIT: Duration = Duration::from_secs(10);
@@ -69,6 +70,9 @@ pub const NOT_SAME_PROCESS: &str =
     "Claude Code's session record can't be matched to its process; it was left as it was.";
 pub const SHELL_NOT_BACK: &str =
     "Claude Code stopped, but its shell did not take the terminal back, so nothing was typed.";
+/// A pane in copy mode would take the keys typed into its shell.
+pub const IN_MODE: &str =
+    "The pane is in copy mode; leave it (q), then try again. Claude Code was left running.";
 pub const NEWER_COPY: &str =
     "The other account has a longer copy of this conversation; it was not overwritten.";
 /// How long a shell gets to take the terminal back after Claude Code ends.
@@ -537,11 +541,28 @@ pub struct Stopped {
     stay: String,
 }
 
+/// What a Claude Code that ended late needs to start again where its
+/// account is by then ([`after_late_stop`]).
+struct Late {
+    accounts: Arc<Accounts>,
+    pane: String,
+    /// `global`, or the account it runs as: its pin, or its folder's.
+    runs_as: String,
+    from: Place,
+    skip: bool,
+    session: String,
+    record: crate::activity::ClaudeRecord,
+}
+
 /// Stop the Claude Code of `pane` (as a fresh collection saw it) for a
 /// move: looked at again right before the signal ([`NOT_IDLE`] when it is
 /// no longer idle, nothing changed), SIGTERM, then the pane dead (kept with
 /// remain-on-exit) or its shell back in front.
-pub async fn stop(tmux: &Tmux, accounts: &Accounts, pane: &PaneState) -> Result<Stopped, String> {
+pub async fn stop(
+    tmux: &Tmux,
+    accounts: &Arc<Accounts>,
+    pane: &PaneState,
+) -> Result<Stopped, String> {
     let guard = accounts.moving.begin(&pane.pane_id).ok_or(BUSY)?;
     let claude_pid = pane.claude_pid.ok_or(NOT_RUNNING)?;
     let kind = pane.kind.ok_or_else(|| pane.why_not_movable())?;
@@ -588,13 +609,25 @@ pub async fn stop(tmux: &Tmux, accounts: &Accounts, pane: &PaneState) -> Result<
             if !dead {
                 // SIGTERM was sent: the pane must not close when Claude
                 // Code ends at last. remain-on-exit stays on until then.
+                let runs_as = match &from {
+                    Place::Slot => pane.marks.pinned().unwrap_or(GLOBAL).to_string(),
+                    Place::Folder(id) => id.clone(),
+                };
                 after_late_stop(
                     guard,
                     tmux.clone(),
                     id.to_string(),
                     pane.pane_pid,
                     cwd,
-                    stay,
+                    Late {
+                        accounts: accounts.clone(),
+                        pane: id.to_string(),
+                        runs_as,
+                        from,
+                        skip,
+                        session,
+                        record,
+                    },
                     restore,
                 );
                 return Err(DID_NOT_STOP.to_string());
@@ -602,6 +635,11 @@ pub async fn stop(tmux: &Tmux, accounts: &Accounts, pane: &PaneState) -> Result<
         }
         MoveKind::Shell => {
             check_still_idle(tmux, pane, claude_pid, &session).await?;
+            // What can be told before the signal: keys typed into a pane in
+            // copy mode would go to copy mode, not the shell.
+            if pane_field(tmux, id, "#{pane_in_mode}").await.as_deref() == Ok("1") {
+                return Err(IN_MODE.to_string());
+            }
             tracing::info!(pane = %id, "stopping Claude Code started in a shell to move it");
             signal(claude_pid, libc::SIGTERM);
             let gone = wait_for(STOP_WAIT, || async { !alive(claude_pid) }).await;
@@ -614,17 +652,9 @@ pub async fn stop(tmux: &Tmux, accounts: &Accounts, pane: &PaneState) -> Result<
                 });
                 return Err(DID_NOT_STOP_SHELL.to_string());
             }
-            // The shell takes the terminal back as soon as its job ends;
-            // typing before it has would go to something else.
-            let back = wait_for(SHELL_WAIT, || async {
-                pane_field(tmux, id, "#{pane_current_command}")
-                    .await
-                    .is_ok_and(|now| super::panes::is_shell_name(&now))
-            })
-            .await;
-            if !back {
-                return Err(SHELL_NOT_BACK.to_string());
-            }
+            // Claude Code has ended, so its account's folder is free: what
+            // follows is the start, which waits for the shell to take the
+            // terminal back ([`Stopped::start`]).
         }
     }
     Ok(Stopped {
@@ -676,12 +706,26 @@ impl Stopped {
                 })
             }
             MoveKind::Shell => {
-                // The shell must still be the one in front, or the keys
-                // would go to whatever was started since.
-                let still_shell = pane_field(tmux, id, "#{pane_current_command}")
-                    .await
-                    .is_ok_and(|now| super::panes::is_shell_name(&now));
-                if !still_shell {
+                // The shell takes the terminal back as soon as its job ends,
+                // and must be the one in front (not in copy mode), or the
+                // keys would go to whatever was started since.
+                let ready = wait_for(SHELL_WAIT, || async {
+                    let fields = tmux
+                        .pane_fields(id, &["#{pane_current_command}", "#{pane_in_mode}"])
+                        .await
+                        .unwrap_or_default();
+                    fields
+                        .first()
+                        .is_some_and(|now| super::panes::is_shell_name(now))
+                        && fields.get(1).map(String::as_str) != Some("1")
+                })
+                .await;
+                if !ready {
+                    // Marked as a start would have marked it, so the pane
+                    // still shows, with why nothing runs in it.
+                    if !commands.is_empty() {
+                        let _ = tmux.run(chain(commands)).await;
+                    }
                     return Err(SHELL_NOT_BACK.to_string());
                 }
                 commands.extend(shell_keys(id, command));
@@ -691,6 +735,16 @@ impl Stopped {
                         error.sentence()
                     )
                 })
+            }
+        }
+    }
+
+    /// Leave the pane without Claude Code: its shell, or the pane dead
+    /// with remain-on-exit as it was.
+    pub async fn leave(self, tmux: &Tmux) {
+        if matches!(self.kind, MoveKind::Respawn) {
+            if let Err(error) = tmux.run(&self.restore).await {
+                tracing::warn!(pane = %self.pane_id, error = %error.sentence(), "remain-on-exit not put back");
             }
         }
     }
@@ -717,7 +771,7 @@ impl Stopped {
 /// Code is stopped ([`NOT_IDLE`] when it is not, with nothing changed).
 pub async fn move_now(
     tmux: &Tmux,
-    accounts: &Accounts,
+    accounts: &Arc<Accounts>,
     pane: &PaneState,
     to: &str,
     mark: &str,
@@ -769,18 +823,21 @@ pub async fn move_now(
 
 /// Claude Code in respawned pane `pane` got SIGTERM but did not end in
 /// time. Once it does (the pane dead, still the same pane program), it
-/// starts again with `stay` (its own account, resuming its conversation);
-/// then `restore` puts remain-on-exit back. A pane respawned meanwhile only
-/// gets remain-on-exit back; a pane closed needs nothing, and a pane with
-/// this id on a tmux server started since is left alone. Watched for
-/// [`LATE_STOP_WAIT`] at most.
+/// starts again where its account is by then, resuming its conversation:
+/// a switch of the global account may have run meanwhile, so a pane
+/// pinned to the old global account goes to its folder, and one on the new
+/// one's folder to the slot (pinned to it). Then `restore` puts
+/// remain-on-exit back. A pane respawned meanwhile only gets remain-on-exit
+/// back; a pane closed needs nothing, and a pane with this id on a tmux
+/// server started since is left alone. Watched for [`LATE_STOP_WAIT`] at
+/// most.
 fn after_late_stop(
     guard: MoveGuard,
     tmux: Tmux,
     pane: String,
     pane_pid: u32,
     cwd: String,
-    stay: String,
+    late: Late,
     restore: Vec<String>,
 ) {
     tokio::spawn(async move {
@@ -823,21 +880,37 @@ fn after_late_stop(
                 return;
             }
             if dead {
-                let respawn = [
-                    "respawn-pane",
-                    "-t",
-                    pane.as_str(),
-                    "-c",
-                    cwd.as_str(),
-                    "--",
-                    stay.as_str(),
-                ];
-                match tmux.run(respawn).await {
-                    Ok(_) => {
-                        tracing::info!(%pane, "Claude Code ended late; started again on its account")
+                // Where its account is once no swap is under way: a swap
+                // that runs now moves sign-ins between the folders.
+                let _gate = late.accounts.swap_gate.lock().await;
+                match late.command().await {
+                    Ok((command, mark)) => {
+                        let scope = tmux.pane_scope();
+                        let mut commands = Vec::new();
+                        if let Some(mark) = mark.as_deref() {
+                            commands.extend(mark_args(scope, &pane, mark, late.skip, None));
+                        }
+                        commands.push(vec![
+                            "respawn-pane",
+                            "-t",
+                            pane.as_str(),
+                            "-c",
+                            cwd.as_str(),
+                            "--",
+                            command.as_str(),
+                        ]);
+                        match tmux.run(chain(commands)).await {
+                            Ok(_) => {
+                                tracing::info!(%pane, "Claude Code ended late; started again on its account")
+                            }
+                            Err(error) => {
+                                tracing::warn!(%pane, error = %error.sentence(), "Claude Code ended late and was not started again")
+                            }
+                        }
                     }
                     Err(error) => {
-                        tracing::warn!(%pane, error = %error.sentence(), "Claude Code ended late and was not started again")
+                        tracing::warn!(%pane, %error, "Claude Code ended late and was not started again");
+                        late.accounts.note_move_error(&pane, &error);
                     }
                 }
             } else if Instant::now() < deadline {
@@ -850,6 +923,42 @@ fn after_late_stop(
         }
     });
 }
+
+impl Late {
+    /// The command that starts it again where its account is now, and the
+    /// mark it gets when that is somewhere else than where it ran (pinned
+    /// to the account it ran as). Its conversation is resumed when that
+    /// place can see it, else a new one starts.
+    async fn command(&self) -> Result<(String, Option<String>), String> {
+        let registry = self.accounts.registry();
+        let place = place_for(&self.runs_as, &registry);
+        let moved = place != self.from;
+        let resume = if moved {
+            let stores = self.accounts.stores().ok_or(NO_HOME)?;
+            match share(&self.record, stores.dir(&place), &self.session).await {
+                Ok(_) => true,
+                Err(why) => {
+                    self.accounts.note_move_error(
+                        &self.pane,
+                        &format!("{why} Claude Code started again on its account with a new conversation."),
+                    );
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        let command = self.accounts.restart_command(
+            &place,
+            self.skip,
+            resume.then_some(self.session.as_str()),
+        )?;
+        let mark = (moved && self.runs_as != GLOBAL).then(|| self.runs_as.clone());
+        Ok((command, mark))
+    }
+}
+
+const NO_HOME: &str = "No home folder for Claude Code accounts.";
 
 /// "<name> is not signed in", for account `id`.
 pub fn not_signed_in(accounts: &Accounts, id: &str) -> String {
@@ -916,7 +1025,7 @@ async fn wait_for_turn(
 /// (`after_turn`).
 pub async fn apply(
     tmux: &Tmux,
-    accounts: &Accounts,
+    accounts: &Arc<Accounts>,
     pane: &PaneState,
     plan: &Plan,
 ) -> Result<&'static str, String> {
@@ -1016,7 +1125,7 @@ pub fn pending_plan(
 /// otherwise. A pane that began a turn meanwhile stays.
 pub async fn move_idle(
     tmux: &Tmux,
-    accounts: &Accounts,
+    accounts: &Arc<Accounts>,
     panes: &std::collections::HashMap<String, PaneState>,
     from: &str,
     to: &str,

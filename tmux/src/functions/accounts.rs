@@ -107,22 +107,25 @@ fn global_account() -> String {
     GLOBAL.to_string()
 }
 
-/// The launch `claude` asks for; never together with `command`.
-pub(super) fn plan(
-    ctx: &Ctx,
+/// The launch `claude` asks for; never together with `command`. It comes
+/// with the swap gate, held until Claude Code has started: a switch would
+/// move the sign-in out of the folder it starts on.
+pub(super) async fn plan<'a>(
+    ctx: &'a Ctx,
     claude: Option<&ClaudeLaunchInput>,
     command: Option<&str>,
-) -> Result<Option<Launch>, String> {
+) -> Result<Option<(Launch, tokio::sync::MutexGuard<'a, ()>)>, String> {
     let Some(claude) = claude else {
         return Ok(None);
     };
     if command.is_some() {
         return Err("Give either command or claude, not both.".to_string());
     }
-    ctx.collector
-        .accounts()
+    let accounts = ctx.collector.accounts();
+    let gate = accounts.swap_gate.lock().await;
+    accounts
         .plan_launch(&claude.account, claude.skip_permissions, None)
-        .map(Some)
+        .map(|launch| Some((launch, gate)))
 }
 
 /// Start `launch` in new pane `pane` (running [`HOLD`]): its marks and
@@ -200,10 +203,13 @@ pub struct MoveIdleOutput {
 }
 
 pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
-    use crate::accounts::switch::{make_global, By};
+    use crate::accounts::switch::{switch_locked, By};
     let tmux = ctx.tmux().await?;
+    // One switch or move at a time, and the panes as they are once it is
+    // this one's turn.
+    let gate = ctx.collector.accounts().swap_gate.lock().await;
     let panes = ctx.collector.claude_panes(true).await;
-    let switched = make_global(
+    let switched = switch_locked(
         &tmux,
         ctx.collector.accounts(),
         &panes,
@@ -211,6 +217,7 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
         By::Person,
     )
     .await;
+    drop(gate);
     ctx.monitor.poke();
     let outcome = switched.map_err(|error| error.to_wire())?;
     Ok(GlobalOutput {
@@ -229,6 +236,8 @@ pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, Strin
 
 pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput, String> {
     let tmux = ctx.tmux().await?;
+    // Never during a switch: it moves sign-ins between the folders.
+    let gate = ctx.collector.accounts().swap_gate.lock().await;
     let panes = ctx.collector.claude_panes(true).await;
     ctx.collector
         .accounts()
@@ -242,6 +251,7 @@ pub async fn move_idle(ctx: &Ctx, input: MoveIdleInput) -> Result<MoveIdleOutput
         input.to.trim(),
     )
     .await;
+    drop(gate);
     ctx.monitor.poke();
     Ok(MoveIdleOutput { moved: moved? })
 }
@@ -367,6 +377,8 @@ pub async fn update(ctx: &Ctx, input: UpdateAccountInput) -> Result<AccountOutpu
 }
 
 pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput, String> {
+    // Not while a switch runs: it could be making this account global.
+    let gate = ctx.collector.accounts().swap_gate.lock().await;
     let running = if input.delete_files {
         // Its folder goes only on a look that saw every pane: a failed one
         // is no proof that nothing runs on it.
@@ -394,12 +406,18 @@ pub async fn remove(ctx: &Ctx, input: RemoveAccountInput) -> Result<EmptyOutput,
         0
     };
     let accounts = ctx.collector.accounts().clone();
-    blocking(move || accounts.remove(&input.account, input.delete_files, running)).await?;
+    let removed =
+        blocking(move || accounts.remove(&input.account, input.delete_files, running)).await;
+    drop(gate);
+    removed?;
     ctx.monitor.poke();
     Ok(EmptyOutput {})
 }
 
 pub async fn login(ctx: &Ctx, input: LoginInput) -> Result<LoginWindow, String> {
+    // Where it signs in (`~/.claude` or the folder) is decided and started
+    // with no switch half-way.
+    let _gate = ctx.collector.accounts().swap_gate.lock().await;
     let accounts = ctx.collector.accounts().clone();
     let id = input.account.clone();
     let command = blocking(move || accounts.login_command(&id)).await?;

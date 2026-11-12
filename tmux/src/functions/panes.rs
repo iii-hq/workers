@@ -466,6 +466,9 @@ pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOu
     use crate::accounts::moves;
     let pane = pane_arg(&input.pane)?;
     let tmux = ctx.tmux().await?;
+    // Never during a switch (it moves sign-ins between the folders), and
+    // planned on the panes as they are once it is over.
+    let gate = ctx.collector.accounts().swap_gate.lock().await;
     let panes = ctx.collector.claude_panes(true).await;
     let state = panes.get(pane).ok_or_else(|| {
         format!("Claude Code is not running in pane {pane}, and it has no account.")
@@ -481,6 +484,7 @@ pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOu
         }
     }
     let done = moves::apply(&tmux, accounts, state, &plan).await;
+    drop(gate);
     ctx.monitor.poke();
     let state = match done? {
         "following" => PaneAccountState::Following,

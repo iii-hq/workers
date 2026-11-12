@@ -45,6 +45,8 @@ pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observe
 /// are linked again, and a sign-in by hand while the worker was away is
 /// taken in (G6).
 pub async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
+    // Nothing switches, recovers or moves a pane meanwhile.
+    let _gate = accounts.swap_gate.lock().await;
     match accounts.recover().await {
         Ok(Some(journal)) => {
             tracing::info!(from = %journal.from, to = %journal.to, "a stopped switch was finished")
@@ -112,14 +114,35 @@ fn may_be_ready(claude_pid: Option<u32>) -> bool {
 /// and its pane says why (`move_error`).
 pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     let accounts: &Arc<Accounts> = collector.accounts();
+    // One at a time with the switches and the moves someone asked for: a
+    // look in the middle of one would see the stores half-way. Busy now,
+    // the next tick looks.
+    let Ok(_gate) = accounts.swap_gate.try_lock() else {
+        return;
+    };
+    // A swap whose write failed after the new account's chain reached the
+    // slot (G7): settled as soon as the stores allow it.
+    if accounts.has_journal() {
+        match accounts.recover().await {
+            Ok(Some(journal)) => {
+                tracing::info!(from = %journal.from, to = %journal.to, "a switch left half-way was finished");
+                monitor.poke();
+            }
+            Ok(None) => monitor.poke(),
+            Err(error) => {
+                tracing::debug!(error = %error.sentence(), "a switch left half-way is not settled yet")
+            }
+        }
+    }
     // A sign-in by hand on the slot (G6): a stat, a read when it changed.
     if accounts.watch_slot().await {
         monitor.poke();
     }
+    let release = accounts.login_release_due();
     let global_due = global_may_be_ready(accounts).await;
     let discover = accounts.take_pending();
     let waiting = accounts.waiting();
-    if !discover && waiting.is_empty() && !global_due {
+    if !discover && waiting.is_empty() && !global_due && !release {
         return;
     }
     // A pane being moved (its Claude Code still ending late, say) is not
@@ -130,6 +153,7 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
         .collect();
     let ready = discover
         || global_due
+        || release
         || tokio::task::spawn_blocking(move || waiting.iter().any(|(_, pid)| may_be_ready(*pid)))
             .await
             .unwrap_or(true);
@@ -142,7 +166,7 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
     };
     // A fresh look notes again the panes that still carry the mark. One
     // that failed says nothing about them: they keep waiting.
-    let panes = match collector.claude_panes_checked().await {
+    let mut panes = match collector.claude_panes_checked().await {
         Ok(panes) => panes,
         Err(error) => {
             tracing::debug!(%error, "pending moves not looked at");
@@ -153,6 +177,11 @@ pub async fn pending_tick(collector: &Arc<Collector>, monitor: &Arc<Monitor>) {
         }
     };
     let mut changed = false;
+    let released = super::switch::after_login(&tmux, accounts, &panes).await;
+    if !released.is_empty() {
+        panes = super::switch::as_followers(&panes, &released);
+        changed = true;
+    }
     if global_due && super::switch::finish_pending(&tmux, accounts, &panes).await {
         changed = true;
     }
@@ -315,6 +344,8 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
     let Ok(tmux) = collector.tmux().await else {
         return read;
     };
+    // The panes as they are under the gate, which the switch holds on.
+    let _gate = accounts.swap_gate.lock().await;
     let panes = collector.claude_panes(true).await;
     // Never an account with Claude Code working on its folder, or one that
     // can't be restarted: the next one instead (G12).
@@ -350,7 +381,7 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
             back_at_ms: decision.back_at_ms,
         },
     };
-    match super::switch::make_global(&tmux, accounts, &panes, &decision.to, by).await {
+    match super::switch::switch_locked(&tmux, accounts, &panes, &decision.to, by).await {
         Ok(_) => true,
         Err(super::switch::SwitchError::Stale) => {
             tracing::info!(
@@ -369,7 +400,11 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
 /// for is gone or idle, or nothing is known of them (a worker started
 /// since). A small file read per pane, no collection.
 async fn global_may_be_ready(accounts: &Arc<Accounts>) -> bool {
-    if accounts.registry().pending_global.is_none() {
+    let Some(pending) = accounts.registry().pending_global else {
+        return false;
+    };
+    // After a failure that may pass, not before its next try is due.
+    if !accounts.pending_try_due(&pending) {
         return false;
     }
     let Some(pids) = accounts.global_waiting() else {

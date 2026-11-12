@@ -1125,6 +1125,12 @@ async fn a_sign_in_by_hand_on_the_slot_makes_it_global() {
         .unwrap()
         .pane_id;
     w.claude(&a).await;
+    // Pinned to Work, the global account: on ~/.claude.
+    let d = windows::create(&w.ctx, window("d", claude("default", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&d).await;
     w.pending_tick().await;
     assert_eq!(w.accounts().registry().global, "default");
 
@@ -1147,6 +1153,20 @@ async fn a_sign_in_by_hand_on_the_slot_makes_it_global() {
         ("default", "personal", Some("login"), false)
     );
     assert_eq!(w.ask(&a, "who").await, "personal");
+    // d runs as Personal on ~/.claude, and Work is signed out (its sign-in
+    // was there): it follows the global account now, counted with a.
+    let info = eventually("d follows", || async {
+        w.pane(&d)
+            .await?
+            .claude
+            .filter(|claude| claude.follow == Follow::Global)
+    })
+    .await;
+    assert_eq!(info.account.as_deref(), Some("personal"));
+    assert_eq!(w.mark(&d), "global");
+    let last = w.accounts().registry().last_switch.unwrap();
+    assert!(last.following >= 2, "{last:?}");
+    assert_eq!(w.ask(&d, "who").await, "personal");
     // Work's sign-in was in ~/.claude: /login replaced it.
     let listed = account_fns::list(&w.ctx, EmptyInput {}).await.unwrap();
     assert!(
@@ -1867,13 +1887,10 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
             },
         )
     };
-    let (respawned, typed) =
-        tokio::join!(move_to_personal(a.clone()), move_to_personal(shell.clone()));
+    // One move at a time (the swap gate): the pane the worker started
+    // first, then the shell.
+    let respawned = move_to_personal(a.clone()).await;
     assert_eq!(respawned.unwrap_err(), tmux::accounts::moves::DID_NOT_STOP);
-    assert_eq!(
-        typed.unwrap_err(),
-        tmux::accounts::moves::DID_NOT_STOP_SHELL
-    );
     let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
         "-w"
     } else {
@@ -1881,15 +1898,12 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
     };
     let remain = || w.tmux_out(&["show-options", scope, "-v", "-t", &a, "remain-on-exit"]);
     assert_eq!(remain(), "on", "kept while Claude Code still ends");
-    // No other move (no second SIGTERM) while they still end.
-    for pane in [&a, &shell] {
-        let again = move_to_personal(pane.clone()).await.unwrap_err();
-        assert_eq!(
-            again,
-            tmux::accounts::moves::BUSY,
-            "{pane}: no other move meanwhile"
-        );
-    }
+    // No other move (no second SIGTERM) while it still ends.
+    assert_eq!(
+        move_to_personal(a.clone()).await.unwrap_err(),
+        tmux::accounts::moves::BUSY,
+        "no other move meanwhile"
+    );
     // Once it ends, the pane stays and Claude Code starts again where it
     // was, resuming its conversation; remain-on-exit goes back as it was.
     let back = eventually("Claude Code back where it was", || async {
@@ -1906,6 +1920,17 @@ async fn claude_slow_to_stop_comes_back_on_its_account() {
         (remain() == "off").then_some(())
     })
     .await;
+
+    let typed = move_to_personal(shell.clone()).await;
+    assert_eq!(
+        typed.unwrap_err(),
+        tmux::accounts::moves::DID_NOT_STOP_SHELL
+    );
+    assert_eq!(
+        move_to_personal(shell.clone()).await.unwrap_err(),
+        tmux::accounts::moves::BUSY,
+        "no other move meanwhile"
+    );
     // The shell has its terminal back; nothing was typed into it.
     eventually("the shell's Claude Code ended", || async {
         let gone = w
@@ -2024,4 +2049,312 @@ async fn panes_that_went_along_once_go_along_again() {
     for pane in &both {
         assert_eq!(w.settled_on(pane, "personal").await.follow, Follow::Pinned);
     }
+}
+
+/// A pane pinned to the global account that can't be moved (Claude Code
+/// inside another program) stays on ~/.claude through a switch, so it runs
+/// as the new account: it follows that account from then on, and says why.
+#[tokio::test]
+async fn a_pinned_pane_that_cant_move_follows_the_new_account() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("unmovable");
+    w.with_accounts(&["Personal"], None).await;
+    let fake = w.sandbox.dir.join("bin/claude");
+    let nested = windows::create(
+        &w.ctx,
+        windows::CreateWindowInput {
+            command: Some(format!(
+                "python3 -c 'import subprocess,sys; sys.exit(subprocess.call([\"{}\"]))'",
+                fake.display()
+            )),
+            ..window("nested", None)
+        },
+    )
+    .await
+    .unwrap()
+    .pane_id;
+    let info = w.claude(&nested).await;
+    assert_eq!(info.account.as_deref(), Some("default"));
+    assert!(!info.movable, "{info:?}");
+    let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
+        "-w"
+    } else {
+        "-p"
+    };
+    w.tmux(&[
+        "set-option",
+        scope,
+        "-t",
+        &nested,
+        "@iii_claude_account",
+        "default",
+    ]);
+    eventually("pinned to Work", || async {
+        w.pane(&nested)
+            .await?
+            .claude
+            .filter(|claude| claude.follow == Follow::Pinned)
+    })
+    .await;
+
+    let switched = w.global("personal").await.unwrap();
+    assert_eq!(switched.following, 1, "{switched:?}");
+    assert!(switched.restarted.is_empty(), "{switched:?}");
+    let info = eventually("it follows Personal", || async {
+        w.pane(&nested)
+            .await?
+            .claude
+            .filter(|claude| claude.follow == Follow::Global)
+    })
+    .await;
+    assert_eq!(info.account.as_deref(), Some("personal"));
+    let why = info.move_error.expect("it says why");
+    assert!(
+        why.contains("no longer global") && why.contains("follows the global account (Personal)"),
+        "{why}"
+    );
+    assert_eq!(w.mark(&nested), "global");
+    assert_eq!(w.ask(&nested, "who").await, "personal");
+    let last = w.accounts().registry().last_switch.unwrap();
+    assert_eq!(last.following, 1);
+}
+
+/// A pane pinned to the global account whose Claude Code takes longer than
+/// ten seconds to stop starts again where its account is after the switch:
+/// that account's folder, not ~/.claude, which holds the new one.
+#[tokio::test]
+async fn a_pinned_pane_slow_to_stop_comes_back_on_its_folder() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("late-pinned");
+    w.with_accounts(&["Personal"], Some(vec![])).await;
+    let q = windows::create(&w.ctx, window("q", claude("default", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    let session = w.claude(&q).await.session_id.unwrap();
+    let pid = w.claude_pid(&q).await;
+    std::fs::write(w.sandbox.dir.join(format!("state/{pid}.linger")), "14").unwrap();
+
+    let switched = w.global("personal").await.unwrap();
+    assert!(switched.restarted.is_empty(), "{switched:?}");
+    assert_eq!(w.accounts().registry().global, "personal");
+    let info = w.settled_on(&q, "default").await;
+    assert_eq!(info.follow, Follow::Pinned);
+    assert_eq!(info.session_id.as_deref(), Some(session.as_str()));
+    let started = w.start_command(&q);
+    assert!(
+        started.contains(&format!(
+            "CLAUDE_CONFIG_DIR={}",
+            w.paths.account_dir("default").display()
+        )),
+        "{started}"
+    );
+    assert_eq!(w.ask(&q, "who").await, "work");
+}
+
+/// A pane on the new account's folder whose conversation can't be made
+/// visible on ~/.claude starts there anyway, with a new conversation, and
+/// says so: never again on its folder, whose sign-in went to ~/.claude.
+#[tokio::test]
+async fn a_pane_whose_conversation_cant_follow_starts_a_new_one() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("no-share");
+    w.with_accounts(&["Personal"], Some(vec![])).await;
+    let p = windows::create(&w.ctx, window("p", claude("personal", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    let session = w.claude(&p).await.session_id.unwrap();
+    // A longer copy of that conversation on ~/.claude, which a move never
+    // overwrites.
+    let source = walk(&w.paths.account_dir("personal").join("projects"))
+        .into_iter()
+        .find(|file| file.file_name().and_then(|n| n.to_str()) == Some(&format!("{session}.jsonl")))
+        .expect("its transcript");
+    let project = source.parent().unwrap().file_name().unwrap();
+    let target = w
+        .paths
+        .claude_home
+        .join("projects")
+        .join(project)
+        .join(format!("{session}.jsonl"));
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    let mut longer = std::fs::read_to_string(&source).unwrap();
+    longer.push_str(&"{\"type\":\"padding\"}\n".repeat(400));
+    std::fs::write(&target, longer).unwrap();
+
+    let switched = w.global("personal").await.unwrap();
+    assert_eq!(switched.restarted, vec![p.clone()], "{switched:?}");
+    let info = w.settled_on_slot(&p, "personal").await;
+    assert_ne!(info.session_id.as_deref(), Some(session.as_str()));
+    let why = info.move_error.expect("it says why");
+    assert!(
+        why.contains(tmux::accounts::moves::NEWER_COPY) && why.contains("new conversation"),
+        "{why}"
+    );
+    assert!(!w.start_command(&p).contains("--resume"));
+    assert_eq!(w.ask(&p, "who").await, "personal");
+}
+
+/// Claude Code started by hand on the new account's folder whose shell
+/// does not take the terminal back once it stops: the switch goes on (that
+/// folder is free), and the pane says it was stopped and not started again.
+#[tokio::test]
+async fn a_shell_that_does_not_come_back_does_not_block_the_switch() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("shell-gone");
+    w.with_accounts(&["Personal"], None).await;
+    let shell = windows::create(&w.ctx, window("shell", None))
+        .await
+        .unwrap()
+        .pane_id;
+    let typed = format!(
+        "env CLAUDE_CONFIG_DIR={} claude; sleep 30",
+        w.paths.account_dir("personal").display()
+    );
+    w.tmux(&["send-keys", "-t", &shell, "-l", &typed]);
+    w.tmux(&["send-keys", "-t", &shell, "Enter"]);
+    let info = w.claude(&shell).await;
+    assert_eq!(info.account.as_deref(), Some("personal"));
+    assert!(info.movable, "{info:?}");
+
+    let switched = w.global("personal").await.unwrap();
+    assert_eq!(switched.state, account_fns::GlobalState::Switched);
+    assert!(switched.restarted.is_empty(), "{switched:?}");
+    assert_eq!(w.accounts().registry().global, "personal");
+    let info = w.pane(&shell).await.unwrap().claude.expect("still shown");
+    assert_eq!(
+        info.move_error.as_deref(),
+        Some(tmux::accounts::moves::SHELL_NOT_BACK)
+    );
+    assert!(!w.screen(&shell).contains("Resumed"));
+}
+
+/// Moves, removals and new Claude Code panes wait while a switch runs
+/// (the swap gate): none of them acts on the stores half-way.
+#[tokio::test]
+async fn moves_removals_and_starts_wait_for_a_running_switch() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("gate");
+    w.with_accounts(&["Personal", "Side"], None).await;
+    let a = windows::create(&w.ctx, window("a", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&a).await;
+    let short = Duration::from_millis(800);
+    let gate = w.accounts().swap_gate.lock().await;
+    let account = panes::account(
+        &w.ctx,
+        panes::PaneAccountInput {
+            pane: a.clone(),
+            account: "global".into(),
+        },
+    );
+    assert!(tokio::time::timeout(short, account).await.is_err());
+    let idle = account_fns::move_idle(
+        &w.ctx,
+        account_fns::MoveIdleInput {
+            from: "side".into(),
+            to: "personal".into(),
+        },
+    );
+    assert!(tokio::time::timeout(short, idle).await.is_err());
+    let remove = account_fns::remove(
+        &w.ctx,
+        account_fns::RemoveAccountInput {
+            account: "side".into(),
+            delete_files: false,
+        },
+    );
+    assert!(tokio::time::timeout(short, remove).await.is_err());
+    let start = windows::create(&w.ctx, window("b", claude("personal", false)));
+    assert!(tokio::time::timeout(short, start).await.is_err());
+    assert!(w.accounts().registry().has("side"));
+    drop(gate);
+    assert_eq!(
+        pane_account(&w, &a, "global").await.state,
+        panes::PaneAccountState::Following
+    );
+    account_fns::remove(
+        &w.ctx,
+        account_fns::RemoveAccountInput {
+            account: "side".into(),
+            delete_files: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!w.accounts().registry().has("side"));
+}
+
+/// Before tmux 3.0 a pane's marks are its window's: a shell beside a Claude
+/// Code pane carries that pane's marks, and must neither be moved nor drop
+/// the move that pane waits for.
+#[tokio::test]
+async fn a_shell_beside_claude_leaves_its_move_alone() {
+    if !available() {
+        eprintln!("tmux or python3 not installed; skipping");
+        return;
+    }
+    let w = world("shared-shell");
+    w.with_accounts(&["Personal"], None).await;
+    let a = windows::create(&w.ctx, window("a", claude("global", false)))
+        .await
+        .unwrap()
+        .pane_id;
+    w.claude(&a).await;
+    let split = std::process::Command::new(w.sandbox.dir.join("tmux"))
+        .args([
+            "-L",
+            &w.sandbox.socket,
+            "split-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])
+        .args(["-t", &a, "/bin/sh"])
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .output()
+        .unwrap();
+    let b = String::from_utf8_lossy(&split.stdout).trim().to_string();
+    assert!(b.starts_with('%'), "{split:?}");
+    w.set_state(&a, "working").await;
+    let asked = pane_account(&w, &a, "personal").await;
+    assert_eq!(asked.state, panes::PaneAccountState::AfterTurn);
+    let refused = panes::account(
+        &w.ctx,
+        panes::PaneAccountInput {
+            pane: b.clone(),
+            account: "global".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("not running"), "{refused}");
+    for _ in 0..2 {
+        w.pending_tick().await;
+    }
+    let info = w.pane(&a).await.unwrap().claude.unwrap();
+    assert_eq!(info.pending.as_deref(), Some("personal"), "{info:?}");
+    w.set_state(&a, "idle").await;
+    w.pending_tick().await;
+    w.settled_on(&a, "personal").await;
 }

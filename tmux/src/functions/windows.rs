@@ -258,7 +258,8 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
         None => "#{session_path}".to_string(),
     };
     args.extend(["-c".into(), cwd]);
-    let launch = super::accounts::plan(ctx, input.claude.as_ref(), input.command.as_deref())?;
+    let launch =
+        super::accounts::plan(ctx, input.claude.as_ref(), input.command.as_deref()).await?;
     if launch.is_some() {
         args.extend(["--".into(), HOLD.to_string()]);
     } else if let Some(command) = input.command.as_deref() {
@@ -269,7 +270,7 @@ pub async fn create(ctx: &Ctx, input: CreateWindowInput) -> Result<CreatedWindow
     let output = tmux.run(&args).await.map_err(|error| error.sentence())?;
     ctx.monitor.poke();
     let mut created = parse_created(&output)?;
-    if let Some(launch) = launch {
+    if let Some((launch, _gate)) = launch {
         let runs =
             super::accounts::start_claude(&tmux, &created.pane_id, &launch, input.remain_on_exit)
                 .await?;

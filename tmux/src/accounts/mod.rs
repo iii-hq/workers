@@ -192,6 +192,20 @@ pub struct Accounts {
     /// The Claude Code processes a switch that waits (G4) waits for, as
     /// last seen; `None` when not known.
     global_waiting: Mutex<Option<Vec<Option<u32>>>>,
+    /// The account that was global before a sign-in by hand on the slot
+    /// (G6), until its pinned panes follow the new one.
+    login_release: Mutex<Option<String>>,
+    /// The tries of the switch that waits, after failures that may pass.
+    pending_retry: Mutex<Option<PendingRetry>>,
+}
+
+/// See [`Accounts::pending_retry`].
+#[derive(Debug, Clone)]
+struct PendingRetry {
+    account: String,
+    at_ms: u64,
+    tries: u32,
+    next: std::time::Instant,
 }
 
 impl Accounts {
@@ -274,6 +288,8 @@ impl Accounts {
             slot_stamp: Mutex::new(None),
             recent_swap: Mutex::new(None),
             global_waiting: Mutex::new(None),
+            login_release: Mutex::new(None),
+            pending_retry: Mutex::new(None),
         }
     }
 

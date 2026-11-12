@@ -531,6 +531,16 @@ impl Collector {
                 Some(_) => continue,
                 None => None,
             };
+            // Before tmux 3.0 a pane's marks are its window's: another pane
+            // in a window that runs Claude Code has that one's marks, not
+            // marks of its own, and is left out (a move asked on it, or
+            // its look at a pending move, would act on the other pane).
+            if window_marks
+                && claude.is_none()
+                && claude_per_window.contains_key(pane.window_id.as_str())
+            {
+                continue;
+            }
             let claude_pid = claude.as_ref().map(|c| c.pid);
             if marks.pending.is_some() {
                 self.accounts.note_waiting(&pane.id, claude_pid);

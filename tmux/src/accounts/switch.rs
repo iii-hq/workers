@@ -43,8 +43,10 @@ pub enum By {
         generation: u64,
         record: AccountSwitch,
     },
-    /// The worker, finishing a switch that waited (`person` or `rule`).
-    Pending(String),
+    /// The worker, finishing the switch that waited (`by`: `person` or
+    /// `rule`) since `at_ms`: it goes on only while `pending_global` is
+    /// still that very one.
+    Pending { by: String, at_ms: u64 },
 }
 
 impl By {
@@ -52,7 +54,7 @@ impl By {
         match self {
             Self::Person => "person".into(),
             Self::Rules { .. } => "rule".into(),
-            Self::Pending(by) => by.clone(),
+            Self::Pending { by, .. } => by.clone(),
         }
     }
 }
@@ -236,6 +238,30 @@ impl Accounts {
         done
     }
 
+    /// The account a sign-in by hand signed out, once (see `after_login`).
+    fn take_login_release(&self) -> Option<String> {
+        self.login_release
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    /// Whether a sign-in by hand left panes to follow the new global
+    /// account (`after_login`).
+    pub fn login_release_due(&self) -> bool {
+        self.login_release
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    /// Whether a swap left its journal (one that could not be settled
+    /// yet, or one running now).
+    pub fn has_journal(&self) -> bool {
+        self.stores()
+            .is_some_and(|stores| stores.read_journal().is_some())
+    }
+
     /// [`Accounts::recover_blocking`] off the async threads.
     pub async fn recover(self: &Arc<Self>) -> Result<Option<Journal>, SwapError> {
         let this = self.clone();
@@ -374,6 +400,11 @@ impl Accounts {
                 self.reread_credentials(&from);
                 let global = self.registry().global;
                 self.reread_credentials(&global);
+                if global != from {
+                    // Its pinned panes on the slot follow the new account
+                    // (`after_login`): it is signed out now.
+                    *self.login_release.lock().unwrap_or_else(|p| p.into_inner()) = Some(from);
+                }
                 true
             }
             Err(error) => {
@@ -510,7 +541,8 @@ fn login_record(from: &str, to: &str, reason: &str, at_ms: u64) -> AccountSwitch
     }
 }
 
-/// Put the stopped panes back where they were.
+/// Put the stopped panes back where they were: the swap did not happen,
+/// so each one's account is still where it ran.
 async fn put_back(tmux: &Tmux, accounts: &Accounts, stopped: Vec<Stopped>) {
     for pane in stopped {
         let id = pane.pane_id.clone();
@@ -519,6 +551,92 @@ async fn put_back(tmux: &Tmux, accounts: &Accounts, stopped: Vec<Stopped>) {
             accounts.note_move_error(&id, &error);
         }
     }
+}
+
+/// A name for account `id` in a sentence.
+fn name_of(accounts: &Accounts, id: &str) -> String {
+    accounts
+        .registry()
+        .get(id)
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// After a sign-in by hand on the slot (G6), the panes there pinned to the
+/// account that was global: it is signed out now (its only sign-in was the
+/// slot's, G2), so they can't go to its folder. They follow the global
+/// account instead, and `last_switch.following` counts them with the
+/// others. Returns the panes changed.
+pub async fn after_login(
+    tmux: &Tmux,
+    accounts: &Accounts,
+    panes: &HashMap<String, PaneState>,
+) -> Vec<String> {
+    let Some(old) = accounts.take_login_release() else {
+        return Vec::new();
+    };
+    let mut pinned: Vec<&PaneState> = panes
+        .values()
+        .filter(|pane| pane.running() && pane.place == Some(Place::Slot))
+        .filter(|pane| pane.marks.pinned() == Some(old.as_str()))
+        .collect();
+    pinned.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
+    let mut released = Vec::new();
+    for pane in pinned {
+        if accounts.moving.is_busy(&pane.pane_id) {
+            continue;
+        }
+        match moves::set_marks(
+            tmux,
+            &pane.pane_id,
+            super::GLOBAL,
+            pane.info.skip_permissions,
+            None,
+        )
+        .await
+        {
+            Ok(()) => {
+                accounts.forget_waiting(&pane.pane_id);
+                released.push(pane.pane_id.clone());
+            }
+            Err(error) => accounts.note_move_error(&pane.pane_id, &error),
+        }
+    }
+    let following = panes
+        .values()
+        .filter(|pane| pane.running() && pane.place == Some(Place::Slot))
+        .filter(|pane| pane.marks.pinned().is_none() || released.contains(&pane.pane_id))
+        .count() as u32;
+    let _ = accounts
+        .update_registry_at_async(move |registry, _| {
+            if let Some(last) = registry.last_switch.as_mut().filter(|last| {
+                last.from == old && matches!(last.reason.as_deref(), Some("login" | "login_new"))
+            }) {
+                last.following = following;
+            }
+            Ok(())
+        })
+        .await;
+    if !released.is_empty() {
+        tracing::info!(panes = ?released, "pinned to the account signed out by a sign-in by hand: they follow now");
+    }
+    released
+}
+
+/// `panes` with `released` following the global account (their marks as
+/// [`after_login`] left them).
+pub fn as_followers(
+    panes: &HashMap<String, PaneState>,
+    released: &[String],
+) -> HashMap<String, PaneState> {
+    let mut panes = panes.clone();
+    for id in released {
+        if let Some(pane) = panes.get_mut(id) {
+            pane.marks.account = Some(super::GLOBAL.to_string());
+            pane.marks.pending = None;
+        }
+    }
+    panes
 }
 
 /// Make `to` the global account (G3, G4). `panes` is a fresh collection.
@@ -530,8 +648,20 @@ pub async fn make_global(
     to: &str,
     by: By,
 ) -> Result<Outcome, SwitchError> {
-    let to = to.trim().to_string();
     let _gate = accounts.swap_gate.lock().await;
+    switch_locked(tmux, accounts, panes, to, by).await
+}
+
+/// [`make_global`] for a caller that holds `swap_gate` already, with
+/// `panes` collected under it.
+pub async fn switch_locked(
+    tmux: &Tmux,
+    accounts: &Arc<Accounts>,
+    panes: &HashMap<String, PaneState>,
+    to: &str,
+    by: By,
+) -> Result<Outcome, SwitchError> {
+    let to = to.trim().to_string();
     match accounts.recover().await {
         Ok(_) => {}
         Err(SwapError::Busy) => return Err(SwitchError::Busy),
@@ -540,18 +670,38 @@ pub async fn make_global(
     // Someone may have signed in by hand: the global account is whoever
     // the slot holds (G6), before anything is decided.
     accounts.watch_slot().await;
+    let released = after_login(tmux, accounts, panes).await;
+    let owned;
+    let panes = if released.is_empty() {
+        panes
+    } else {
+        owned = as_followers(panes, &released);
+        &owned
+    };
+    if accounts.has_journal() {
+        // A swap left half-way that could not be settled yet.
+        return Err(SwitchError::Busy);
+    }
     let (registry, generation) = accounts.registry_at();
     if !registry.has(&to) {
         return Err(SwitchError::Failed(super::manage::no_account(&to)));
     }
-    if let By::Rules {
-        generation: decided_on,
-        ..
-    } = &by
-    {
-        if generation != *decided_on {
-            return Err(SwitchError::Stale);
+    match &by {
+        By::Rules {
+            generation: decided_on,
+            ..
+        } if generation != *decided_on => return Err(SwitchError::Stale),
+        // The switch that waited goes on only as it was asked: someone may
+        // have picked another account or called it off meanwhile.
+        By::Pending { at_ms, .. }
+            if !registry
+                .pending_global
+                .as_ref()
+                .is_some_and(|pending| pending.account == to && pending.at_ms == *at_ms) =>
+        {
+            return Err(SwitchError::Stale)
         }
+        _ => {}
     }
     let from = registry.global.clone();
     let sorted = sort_panes(panes, &from, &to);
@@ -628,16 +778,22 @@ pub async fn make_global(
                     return wait(accounts, &registry, &to, &by, vec![*pane], sorted.following)
                         .await;
                 }
+                // These pass: a switch that waits tries again.
+                if [moves::DID_NOT_STOP, moves::BUSY, moves::IN_MODE].contains(&error.as_str()) {
+                    return Err(SwitchError::Failed(error));
+                }
                 return Err(SwitchError::Blocked(vec![pane.pane_id.clone()], error));
             }
         }
     }
     let mut stopped_from = Vec::new();
     let mut after_turn = Vec::new();
+    // Pinned to the old account but can't be moved to its folder: they go
+    // on with the new account on the slot, so they follow it from now on.
+    let mut stay_on_slot: Vec<(&PaneState, String)> = Vec::new();
     for pane in &sorted.pinned_from {
         if !pane.can_move() {
-            // It goes on with the new account on the slot.
-            accounts.note_move_error(&pane.pane_id, &pane.why_not_movable());
+            stay_on_slot.push((pane, pane.why_not_movable()));
             continue;
         }
         if !pane.idle() {
@@ -647,10 +803,16 @@ pub async fn make_global(
         match moves::stop(tmux, accounts, pane).await {
             Ok(stopped) => stopped_from.push(stopped),
             Err(error) if error == NOT_IDLE => after_turn.push(*pane),
-            Err(error) => accounts.note_move_error(&pane.pane_id, &error),
+            // Started again once it has ended, or once its other move is
+            // over, where its account is by then.
+            Err(error) if error == moves::DID_NOT_STOP || error == moves::BUSY => {
+                accounts.note_move_error(&pane.pane_id, &error)
+            }
+            Err(error) => stay_on_slot.push((pane, error)),
         }
     }
-    let restarted: Vec<String> = stopped_to
+    let following = sorted.following + stay_on_slot.len() as u32;
+    let planned: Vec<String> = stopped_to
         .iter()
         .chain(stopped_from.iter())
         .map(|stopped| stopped.pane_id.clone())
@@ -658,18 +820,18 @@ pub async fn make_global(
     let at_ms = now_ms();
     let record = match &by {
         By::Rules { record, .. } => AccountSwitch {
-            following: sorted.following,
-            restarted: restarted.clone(),
+            following,
+            restarted: planned.clone(),
             after_turn: after_turn.iter().map(|p| p.pane_id.clone()).collect(),
             ..record.clone()
         },
-        By::Person | By::Pending(_) => AccountSwitch {
+        By::Person | By::Pending { .. } => AccountSwitch {
             from: from.clone(),
             to: to.clone(),
             reason: None,
             auto: by.word() == "rule",
-            following: sorted.following,
-            restarted: restarted.clone(),
+            following,
+            restarted: planned.clone(),
             after_turn: after_turn.iter().map(|p| p.pane_id.clone()).collect(),
             at_ms,
             back_at_ms: None,
@@ -700,25 +862,54 @@ pub async fn make_global(
         .map_err(|error| SwapError::Failed(format!("The worker failed ({error}).")))
         .and_then(|done| done)
     };
-    if let Err(error) = swapped {
-        put_back(tmux, accounts, stopped_to).await;
-        put_back(tmux, accounts, stopped_from).await;
-        if let SwapError::Identity(_) = error {
-            accounts.watch_slot().await;
+    let failed = match swapped {
+        Ok(()) => None,
+        Err(error) => {
+            // The new account's chain in the slot already (a later step
+            // failed): finished now when it can be, else on the next look.
+            // Its panes belong on the slot either way, never on its folder,
+            // whose chain is in the slot too.
+            let this = accounts.clone();
+            let x_in_slot = tokio::task::spawn_blocking(move || {
+                this.stores()
+                    .is_some_and(|stores| slot::holds_new_chain(&stores))
+            })
+            .await
+            .unwrap_or(false);
+            if !x_in_slot {
+                put_back(tmux, accounts, stopped_to).await;
+                put_back(tmux, accounts, stopped_from).await;
+                if let SwapError::Identity(_) = error {
+                    accounts.watch_slot().await;
+                }
+                return Err(SwitchError::from_swap(error, accounts, &to));
+            }
+            match accounts.recover().await {
+                Ok(Some(_)) => None,
+                _ => Some(SwitchError::from_swap(error, accounts, &to)),
+            }
         }
-        return Err(SwitchError::from_swap(error, accounts, &to));
+    };
+    if failed.is_none() {
+        tracing::info!(%from, %to, by = %by.word(), "the global account switched");
     }
-    tracing::info!(%from, %to, by = %by.word(), "the global account switched");
     accounts.reread_credentials(&from);
     accounts.reread_credentials(&to);
     // The new account's panes, on the slot now, still pinned to it.
+    let mut restarted = Vec::new();
     for stopped in stopped_to {
-        restart(tmux, accounts, stopped, &Place::Slot, &to).await;
+        let id = stopped.pane_id.clone();
+        if restart(tmux, accounts, stopped, &Place::Slot, &to).await {
+            restarted.push(id);
+        }
     }
     // The old account's pinned panes, on its folder now.
     let from_folder = Place::Folder(from.clone());
     for stopped in stopped_from {
-        restart(tmux, accounts, stopped, &from_folder, &from).await;
+        let id = stopped.pane_id.clone();
+        if restart(tmux, accounts, stopped, &from_folder, &from).await {
+            restarted.push(id);
+        }
     }
     let mut waiting = Vec::new();
     for pane in after_turn {
@@ -731,40 +922,86 @@ pub async fn make_global(
             Err(error) => accounts.note_move_error(&id, &error),
         }
     }
+    let (from_name, to_name) = (name_of(accounts, &from), name_of(accounts, &to));
+    for (pane, why) in stay_on_slot {
+        let id = pane.pane_id.clone();
+        let note = format!(
+            "{from_name} is no longer global and this Claude Code could not be moved to its folder ({why}); it follows the global account ({to_name}) now."
+        );
+        match moves::set_marks(tmux, &id, super::GLOBAL, pane.info.skip_permissions, None).await {
+            Ok(()) => {
+                accounts.forget_waiting(&id);
+                accounts.note_move_error(&id, &note);
+            }
+            Err(error) => accounts.note_move_error(&id, &format!("{note} {error}")),
+        }
+    }
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    if restarted.len() != planned.len() {
+        let started = restarted.clone();
+        let _ = accounts
+            .update_registry_at_async(move |registry, _| {
+                if let Some(last) = registry.last_switch.as_mut() {
+                    last.restarted = started;
+                }
+                Ok(())
+            })
+            .await;
+    }
     Ok(Outcome {
         global: to,
         waiting: false,
-        following: sorted.following,
+        following,
         restarted,
         after_turn: waiting,
         waiting_for: Vec::new(),
     })
 }
 
-/// Start a stopped pane again on `place`, pinned to `account`, its
-/// conversation made visible there; where it was when that fails.
-async fn restart(tmux: &Tmux, accounts: &Accounts, stopped: Stopped, place: &Place, account: &str) {
+/// Start a stopped pane again on `place`, where its account is after the
+/// swap, pinned to `account`: never where it ran, whose sign-in moved. Its
+/// conversation is resumed when `place` can see it; otherwise a new one
+/// starts there and its `move_error` says so. Returns whether it started.
+async fn restart(
+    tmux: &Tmux,
+    accounts: &Accounts,
+    stopped: Stopped,
+    place: &Place,
+    account: &str,
+) -> bool {
     let id = stopped.pane_id.clone();
-    let command = match accounts.restart_command(place, stopped.skip, Some(&stopped.session)) {
+    let shared = stopped.share_with(accounts, place).await;
+    let resume = shared.is_ok().then(|| stopped.session.clone());
+    let command = match accounts.restart_command(place, stopped.skip, resume.as_deref()) {
         Ok(command) => command,
         Err(error) => {
+            let error =
+                format!("Claude Code was stopped for the switch and not started again: {error}");
+            tracing::warn!(pane = %id, %error, "pane not started again after the switch");
             accounts.note_move_error(&id, &error);
-            let _ = stopped.start_where_it_was(tmux).await;
-            return;
+            stopped.leave(tmux).await;
+            return false;
         }
     };
-    let started = match stopped.share_with(accounts, place).await {
-        Ok(_) => stopped.start(tmux, &command, Some(account)).await,
-        Err(error) => {
-            let _ = stopped.start_where_it_was(tmux).await;
-            Err(error)
+    match stopped.start(tmux, &command, Some(account)).await {
+        Ok(()) => {
+            match shared {
+                Ok(_) => accounts.clear_move_error(&id),
+                Err(why) => accounts.note_move_error(
+                    &id,
+                    &format!(
+                        "{why} Claude Code started again on its account with a new conversation."
+                    ),
+                ),
+            }
+            true
         }
-    };
-    match started {
-        Ok(()) => accounts.clear_move_error(&id),
         Err(error) => {
             tracing::warn!(pane = %id, %error, "pane not started again after the switch");
             accounts.note_move_error(&id, &error);
+            false
         }
     }
 }
@@ -788,11 +1025,7 @@ async fn wait(
         account: to.to_string(),
         by: by.word(),
         at_ms: match by {
-            By::Pending(_) => registry
-                .pending_global
-                .as_ref()
-                .map(|pending| pending.at_ms)
-                .unwrap_or_else(now_ms),
+            By::Pending { at_ms, .. } => *at_ms,
             _ => now_ms(),
         },
     };
@@ -814,10 +1047,60 @@ async fn wait(
     })
 }
 
+/// How many times a switch that waited is tried again after a failure that
+/// may pass (a lock Claude Code holds, a write that failed) before it is
+/// called off, and how long apart (times the tries so far).
+const PENDING_TRIES: u32 = 5;
+#[cfg(not(test))]
+const PENDING_RETRY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const PENDING_RETRY_EVERY: std::time::Duration = std::time::Duration::ZERO;
+
+impl Accounts {
+    /// Whether the switch that waits may be tried now: never tried, or its
+    /// next try is due.
+    pub(crate) fn pending_try_due(&self, pending: &PendingSwitch) -> bool {
+        let retry = self.pending_retry.lock().unwrap_or_else(|p| p.into_inner());
+        match retry.as_ref() {
+            Some(retry) if retry.account == pending.account && retry.at_ms == pending.at_ms => {
+                std::time::Instant::now() >= retry.next
+            }
+            _ => true,
+        }
+    }
+
+    /// A try of the switch that waits failed in a way that may pass:
+    /// whether it is tried again (later), or has had its tries.
+    fn pending_try_failed(&self, pending: &PendingSwitch) -> bool {
+        let mut retry = self.pending_retry.lock().unwrap_or_else(|p| p.into_inner());
+        let tries = match retry.as_ref() {
+            Some(retry) if retry.account == pending.account && retry.at_ms == pending.at_ms => {
+                retry.tries + 1
+            }
+            _ => 1,
+        };
+        *retry = Some(super::PendingRetry {
+            account: pending.account.clone(),
+            at_ms: pending.at_ms,
+            tries,
+            next: std::time::Instant::now() + PENDING_RETRY_EVERY * tries,
+        });
+        tries < PENDING_TRIES
+    }
+
+    fn forget_pending_tries(&self) {
+        *self.pending_retry.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+}
+
 /// The worker's side of a switch that waits (G4): once every Claude Code
-/// on the new account's folder is idle, the switch happens. One that can't
-/// be restarted, or an account no longer signed in, calls it off (each pane
-/// in the way says why). Returns whether anything changed.
+/// on the new account's folder is idle, the switch happens. Called with
+/// `swap_gate` held. A failure that may pass (a lock Claude Code holds, a
+/// write that failed) is tried again a few times; one that can't (the
+/// account signed out or removed, a pane that can't be restarted, Claude
+/// Code's owner gate) calls the switch off, and the panes it waited for
+/// (and any in the way) say why in `move_error`. Returns whether anything
+/// changed.
 pub async fn finish_pending(
     tmux: &Tmux,
     accounts: &Arc<Accounts>,
@@ -826,8 +1109,12 @@ pub async fn finish_pending(
     let registry = accounts.registry();
     let Some(pending) = registry.pending_global.clone() else {
         accounts.note_global_waiting(None);
+        accounts.forget_pending_tries();
         return false;
     };
+    if !accounts.pending_try_due(&pending) {
+        return false;
+    }
     let sorted = sort_panes(panes, &registry.global, &pending.account);
     let busy: Vec<Option<u32>> = sorted
         .on_to
@@ -839,45 +1126,80 @@ pub async fn finish_pending(
         accounts.note_global_waiting(Some(busy));
         return false;
     }
-    match make_global(
+    let waited_for: Vec<String> = sorted.on_to.iter().map(|p| p.pane_id.clone()).collect();
+    match switch_locked(
         tmux,
         accounts,
         panes,
         &pending.account,
-        By::Pending(pending.by.clone()),
+        By::Pending {
+            by: pending.by.clone(),
+            at_ms: pending.at_ms,
+        },
     )
     .await
     {
         Ok(outcome) => {
             if !outcome.waiting {
                 accounts.note_global_waiting(None);
+                accounts.forget_pending_tries();
             }
             !outcome.waiting
         }
-        Err(error) => {
-            tracing::warn!(account = %pending.account, error = %error.sentence(), "the switch that waited was called off");
-            if let SwitchError::Blocked(panes, _) = &error {
-                for pane in panes {
-                    accounts.note_move_error(pane, &error.sentence());
-                }
-            }
-            let calls_off = !matches!(error, SwitchError::Busy);
-            if calls_off {
+        // Changed or called off meanwhile (or finished by the recovery of
+        // a swap left half-way): the next look sees it as it is.
+        Err(SwitchError::Stale) => {
+            let gone = accounts.registry().pending_global.is_none();
+            if gone {
                 accounts.note_global_waiting(None);
-                let _ = accounts
+                accounts.forget_pending_tries();
+            }
+            gone
+        }
+        Err(error) => {
+            let calls_off = match &error {
+                SwitchError::NotSignedIn(_)
+                | SwitchError::Blocked(..)
+                | SwitchError::OwnerCheckOn => true,
+                SwitchError::Failed(_) if !accounts.registry().has(&pending.account) => true,
+                SwitchError::Busy | SwitchError::Failed(_) => {
+                    !accounts.pending_try_failed(&pending)
+                }
+                SwitchError::Stale => false,
+            };
+            if !calls_off {
+                tracing::info!(account = %pending.account, error = %error.sentence(), "the switch that waits is tried again");
+                return false;
+            }
+            tracing::warn!(account = %pending.account, error = %error.sentence(), "the switch that waited was called off");
+            let why = format!(
+                "The switch to {} was called off: {}",
+                name_of(accounts, &pending.account),
+                error.sentence()
+            );
+            let mut on = waited_for;
+            if let SwitchError::Blocked(panes, _) = &error {
+                on.extend(panes.iter().cloned());
+            }
+            on.sort();
+            on.dedup();
+            for pane in &on {
+                accounts.note_move_error(pane, &why);
+            }
+            accounts.note_global_waiting(None);
+            accounts.forget_pending_tries();
+            let _ =
+                accounts
                     .update_registry_at_async(|registry, _| {
-                        if registry
-                            .pending_global
-                            .as_ref()
-                            .is_some_and(|p| p.account == pending.account)
-                        {
+                        if registry.pending_global.as_ref().is_some_and(|p| {
+                            p.account == pending.account && p.at_ms == pending.at_ms
+                        }) {
                             registry.pending_global = None;
                         }
                         Ok(())
                     })
                     .await;
-            }
-            calls_off
+            true
         }
     }
 }
@@ -1305,5 +1627,162 @@ mod tests {
             assert_eq!(wire["code"], code);
             assert!(wire.get("blocked_by").is_none());
         }
+    }
+
+    /// A tmux nothing here may call: these switches have no pane to stop.
+    fn no_tmux() -> Tmux {
+        Tmux {
+            path: "/nonexistent/tmux".into(),
+            socket: crate::tmux_cli::Socket::Name("iii-unit-never".into()),
+            timeout: std::time::Duration::from_secs(1),
+            version: String::new(),
+        }
+    }
+
+    fn wait_for_personal(accounts: &Accounts, at_ms: u64) {
+        accounts
+            .update_registry(|registry| {
+                registry.pending_global = Some(PendingSwitch {
+                    account: "personal".into(),
+                    by: "person".into(),
+                    at_ms,
+                });
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// A Claude Code on Personal's folder that can't be restarted.
+    fn unmovable_on_personal() -> HashMap<String, PaneState> {
+        use crate::model::{AgentState, Follow, PaneClaude};
+        let pane = PaneState {
+            pane_id: "%3".into(),
+            pane_pid: 10,
+            claude_pid: Some(11),
+            record: Some(crate::activity::ClaudeRecord {
+                config_dir: "/h/personal".into(),
+                session_id: Some("s1".into()),
+                status: Some("idle".into()),
+                cwd: Some("/p".into()),
+            }),
+            marks: Default::default(),
+            info: PaneClaude {
+                account: Some("personal".into()),
+                config_dir: None,
+                follow: Follow::Manual,
+                pending: None,
+                skip_permissions: false,
+                session_id: Some("s1".into()),
+                movable: false,
+                not_movable_reason: Some(super::super::panes::NESTED.into()),
+                move_error: None,
+            },
+            agent_state: Some(AgentState::Idle),
+            cwd: "/p".into(),
+            place: Some(Place::Folder("personal".into())),
+            kind: None,
+            marks_shared: false,
+        };
+        HashMap::from([("%3".to_string(), pane)])
+    }
+
+    #[tokio::test]
+    async fn a_waiting_switch_goes_on_only_as_it_was_asked() {
+        let (_home, accounts) = managed("pending-same");
+        wait_for_personal(&accounts, 7);
+        // Another request since (another time): this one is not it.
+        let other = By::Pending {
+            by: "person".into(),
+            at_ms: 8,
+        };
+        let stale = switch_locked(&no_tmux(), &accounts, &HashMap::new(), "personal", other).await;
+        assert_eq!(stale, Err(SwitchError::Stale));
+        assert_eq!(accounts.registry().global, "default");
+        // Called off meanwhile: not it either.
+        let asked = By::Pending {
+            by: "person".into(),
+            at_ms: 7,
+        };
+        accounts
+            .update_registry(|registry| {
+                registry.pending_global = None;
+                Ok(())
+            })
+            .unwrap();
+        let stale = switch_locked(
+            &no_tmux(),
+            &accounts,
+            &HashMap::new(),
+            "personal",
+            asked.clone(),
+        )
+        .await;
+        assert_eq!(stale, Err(SwitchError::Stale));
+        // As it was asked: it goes on.
+        wait_for_personal(&accounts, 7);
+        let done = switch_locked(&no_tmux(), &accounts, &HashMap::new(), "personal", asked).await;
+        assert_eq!(done.unwrap().global, "personal");
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "personal");
+        assert!(registry.pending_global.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_waiting_switch_is_tried_again_after_a_failure_that_may_pass() {
+        let (home, accounts) = managed("pending-retry");
+        wait_for_personal(&accounts, 7);
+        // The journal can't be written (a folder in its place): the swap
+        // fails before it touches anything.
+        let journal = home.paths.root.join(slot::JOURNAL);
+        std::fs::create_dir_all(&journal).unwrap();
+        let panes = HashMap::new();
+        assert!(!finish_pending(&no_tmux(), &accounts, &panes).await);
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "default");
+        assert!(registry.pending_global.is_some(), "kept for the next try");
+        // It passed: the next try switches.
+        std::fs::remove_dir(&journal).unwrap();
+        assert!(finish_pending(&no_tmux(), &accounts, &panes).await);
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "personal");
+        assert!(registry.pending_global.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_waiting_switch_is_called_off_after_its_tries() {
+        let (home, accounts) = managed("pending-tries");
+        wait_for_personal(&accounts, 7);
+        std::fs::create_dir_all(home.paths.root.join(slot::JOURNAL)).unwrap();
+        let panes = HashMap::new();
+        for _ in 1..PENDING_TRIES {
+            assert!(!finish_pending(&no_tmux(), &accounts, &panes).await);
+            assert!(accounts.registry().pending_global.is_some());
+        }
+        assert!(finish_pending(&no_tmux(), &accounts, &panes).await);
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "default");
+        assert!(registry.pending_global.is_none(), "called off");
+    }
+
+    #[tokio::test]
+    async fn a_waiting_switch_that_cant_happen_says_why_on_its_panes() {
+        let (home, accounts) = managed("pending-off");
+        wait_for_personal(&accounts, 7);
+        let panes = unmovable_on_personal();
+        assert!(finish_pending(&no_tmux(), &accounts, &panes).await);
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "default");
+        assert!(registry.pending_global.is_none(), "called off");
+        let alive = std::collections::HashSet::from(["%3"]);
+        let why = accounts.move_errors(&alive).remove("%3").unwrap();
+        assert!(
+            why.starts_with("The switch to Personal was called off: Claude Code in %3"),
+            "{why}"
+        );
+        // Signed out meanwhile: called off too, at once.
+        wait_for_personal(&accounts, 9);
+        std::fs::remove_file(home.paths.account_dir("personal").join(".credentials.json")).unwrap();
+        assert!(finish_pending(&no_tmux(), &accounts, &HashMap::new()).await);
+        assert!(accounts.registry().pending_global.is_none());
     }
 }
