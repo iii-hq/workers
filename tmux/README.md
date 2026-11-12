@@ -422,6 +422,14 @@ worker notices within about 2 seconds, makes a known account global
 (`last_switch.reason: "login"`) or adds an unknown one, named after its
 profile and sharing all four groups, and makes it global (`"login_new"`).
 Signing out there by hand leaves the global account as it is, signed out.
+A sign-in by hand replaces the global account's only copy of its sign-in
+(it lives in `~/.claude` while global), so the account that was global
+reads signed out until it signs in again; switching through
+`tmux::accounts::global` keeps both. For a minute after a switch, the old
+account's profile written back over the slot by a session that fetched it
+just before is put right, but only while the slot still holds the new
+account's sign-in (the one the switch wrote, or one Claude Code renewed it
+to); with any other sign-in it is a `/login` and handled as above.
 
 **From 0.3.0.** 0.3.0 kept the global account in tmux's global
 environment instead. The first start of this version takes the account

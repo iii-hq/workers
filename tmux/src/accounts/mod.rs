@@ -67,6 +67,13 @@ const AVAILABLE_TTL_MS: u64 = 60_000;
 /// How often the feed has sign-ins and profiles looked at again (in the
 /// background).
 const LOAD_EVERY_MS: u64 = 1_000;
+/// How long the old account's profile written back over the slot waits
+/// before it is put right, for a `/login` that writes the profile first to
+/// land its sign-in (P23).
+#[cfg(not(test))]
+const LOGIN_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+#[cfg(test)]
+const LOGIN_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 
 type Stamp = Option<(SystemTime, u64)>;
 
@@ -136,6 +143,9 @@ struct RecentSwap {
     from: String,
     to: String,
     at: std::time::Instant,
+    /// The chains (`chain_id`) seen in the slot since, all `to`'s: the one
+    /// the swap wrote, then any Claude Code renewed it to.
+    to_chains: Vec<String>,
 }
 
 /// One account as the snapshot needs it.
@@ -175,8 +185,9 @@ pub struct Accounts {
     pub swap_gate: tokio::sync::Mutex<()>,
     /// A swap runs now (the slot's `.claude.json` changes under it).
     swapping: AtomicBool,
-    /// `~/.claude.json` as last looked at for a sign-in by hand (G6).
-    slot_stamp: Mutex<Option<Stamp>>,
+    /// `~/.claude.json` and the slot's credentials file as last looked at
+    /// for a sign-in by hand (G6).
+    slot_stamp: Mutex<Option<(Stamp, Stamp)>>,
     recent_swap: Mutex<Option<RecentSwap>>,
     /// The Claude Code processes a switch that waits (G4) waits for, as
     /// last seen; `None` when not known.

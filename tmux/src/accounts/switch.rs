@@ -186,13 +186,14 @@ pub fn unready_targets(panes: &HashMap<String, PaneState>) -> std::collections::
 }
 
 impl Accounts {
-    /// Note a swap just made, for a session that writes the old account's
-    /// profile back (G3 step 8).
-    fn note_swap(&self, from: &str, to: &str) {
+    /// Note a swap just made, with the chain it wrote into the slot, for a
+    /// session that writes the old account's profile back (G3 step 8).
+    fn note_swap(&self, journal: &Journal) {
         *self.recent_swap.lock().unwrap_or_else(|p| p.into_inner()) = Some(RecentSwap {
-            from: from.to_string(),
-            to: to.to_string(),
+            from: journal.from.clone(),
+            to: journal.to.clone(),
             at: std::time::Instant::now(),
+            to_chains: journal.x_rt.iter().cloned().collect(),
         });
     }
 
@@ -205,7 +206,19 @@ impl Accounts {
             }
             registry.pending_global = None;
             Ok(())
-        })
+        })?;
+        self.note_swap(journal);
+        Ok(())
+    }
+
+    /// The swap made last, while a session may still write the old
+    /// profile back over it.
+    fn recent_swap(&self) -> Option<RecentSwap> {
+        self.recent_swap
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .filter(|recent| recent.at.elapsed() < slot::WRITE_BACK_WINDOW)
     }
 
     /// Finish a swap a stopped worker left (G7). Blocking.
@@ -217,7 +230,6 @@ impl Accounts {
         let done = slot::recover(&stores, &|journal| self.commit_swap(journal));
         self.swapping.store(false, Ordering::SeqCst);
         if let Ok(Some(journal)) = &done {
-            self.note_swap(&journal.from, &journal.to);
             self.reread_credentials(&journal.from);
             self.reread_credentials(&journal.to);
         }
@@ -259,10 +271,25 @@ impl Accounts {
         {
             return false;
         }
-        let now_stamp = super::stamp(&stores.paths.default_json);
+        // Both files: a sign-in by hand rewrites them, and a renewal the
+        // credentials alone (noted below for a swap just made).
+        let now_stamp = (
+            super::stamp(&stores.paths.default_json),
+            super::stamp(
+                &stores
+                    .paths
+                    .claude_home
+                    .join(super::credentials::CREDENTIALS_FILE),
+            ),
+        );
         {
             let mut seen = self.slot_stamp.lock().unwrap_or_else(|p| p.into_inner());
             if seen.as_ref() == Some(&now_stamp) {
+                drop(seen);
+                // On macOS the slot's sign-in is in the Keychain, whose
+                // renewals change no file: right after a swap its chain is
+                // looked at anyway.
+                self.note_renewal(&stores);
                 return false;
             }
             *seen = Some(now_stamp);
@@ -275,22 +302,32 @@ impl Accounts {
         let registry = self.registry();
         let global_uuid = stores.uuid(&Place::Folder(registry.global.clone()));
         if global_uuid.as_deref() == Some(slot_uuid.as_str()) {
+            self.note_renewal(&stores);
             return false;
         }
-        let recent = self
-            .recent_swap
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        if let Some(recent) = recent.filter(|recent| {
-            recent.at.elapsed() < slot::WRITE_BACK_WINDOW && recent.to == registry.global
-        }) {
+        if let Some(recent) = self
+            .recent_swap()
+            .filter(|recent| recent.to == registry.global)
+        {
             if stores.uuid(&Place::Folder(recent.from.clone())).as_deref() == Some(&slot_uuid) {
-                tracing::info!(from = %recent.from, to = %recent.to, "a session wrote the old account's profile back; the new one is put back");
-                if let Err(error) = slot::swap_records(&stores, &recent.from, &recent.to, false) {
-                    tracing::warn!(error = %error.sentence(), "the new account's profile was not put back");
+                // The old account's profile over the chain the swap wrote (or
+                // one it was renewed to): a session that fetched the profile
+                // just before wrote it back. Over another chain: someone
+                // signed in to the old account by hand (G6, P23). `/login`
+                // writes the profile before the sign-in, so the chain is
+                // read again once that had time to land.
+                let stale = self.slot_chain_is(&stores, &recent.to_chains) && {
+                    std::thread::sleep(super::LOGIN_SETTLE);
+                    self.slot_chain_is(&stores, &recent.to_chains)
+                };
+                if stale {
+                    tracing::info!(from = %recent.from, to = %recent.to, "a session wrote the old account's profile back; the new one is put back");
+                    if let Err(error) = slot::swap_records(&stores, &recent.from, &recent.to, false)
+                    {
+                        tracing::warn!(error = %error.sentence(), "the new account's profile was not put back");
+                    }
+                    return false;
                 }
-                return false;
             }
         }
         let known = registry
@@ -320,6 +357,8 @@ impl Accounts {
         }
         let at_ms = now_ms();
         let from = registry.global.clone();
+        // A sign-in by hand ends the swap's watch for a write-back.
+        *self.recent_swap.lock().unwrap_or_else(|p| p.into_inner()) = None;
         let changed = match known {
             Some(id) => self.update_registry(|registry| {
                 tracing::info!(account = %id, "signed in by hand on the slot: it is global now");
@@ -408,6 +447,47 @@ impl Accounts {
     }
 
     /// [`Accounts::watch_slot_blocking`] off the async threads.
+    /// Whether the slot's sign-in is one of `chains`; unreadable counts as
+    /// yes (the write-back changes no sign-in), signed out as no.
+    fn slot_chain_is(&self, stores: &slot::Stores<'_>, chains: &[String]) -> bool {
+        match stores.read(&Place::Slot) {
+            Ok(raw) => super::credentials::chain_id(raw.as_ref())
+                .is_some_and(|chain| chains.contains(&chain)),
+            Err(_) => true,
+        }
+    }
+
+    /// Right after a swap, a chain Claude Code renewed in the slot is still
+    /// the new account's: noted while the slot has its profile, so the old
+    /// profile written back over it is told from a sign-in by hand (P23).
+    fn note_renewal(&self, stores: &slot::Stores<'_>) {
+        let Some(recent) = self.recent_swap() else {
+            return;
+        };
+        let Some(slot_uuid) = stores.uuid(&Place::Slot) else {
+            return;
+        };
+        if stores.uuid(&Place::Folder(recent.to.clone())).as_deref() != Some(slot_uuid.as_str()) {
+            return;
+        }
+        let Ok(Some(chain)) = stores
+            .read(&Place::Slot)
+            .map(|raw| super::credentials::chain_id(raw.as_ref()))
+        else {
+            return;
+        };
+        let mut kept = self.recent_swap.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(kept) = kept
+            .as_mut()
+            .filter(|kept| kept.to == recent.to && kept.at == recent.at)
+        {
+            if !kept.to_chains.contains(&chain) {
+                tracing::info!(account = %kept.to, "the new global account's sign-in was renewed");
+                kept.to_chains.push(chain);
+            }
+        }
+    }
+
     pub async fn watch_slot(self: &Arc<Self>) -> bool {
         let this = self.clone();
         tokio::task::spawn_blocking(move || this.watch_slot_blocking())
@@ -629,7 +709,6 @@ pub async fn make_global(
         return Err(SwitchError::from_swap(error, accounts, &to));
     }
     tracing::info!(%from, %to, by = %by.word(), "the global account switched");
-    accounts.note_swap(&from, &to);
     accounts.reread_credentials(&from);
     accounts.reread_credentials(&to);
     // The new account's panes, on the slot now, still pinned to it.
@@ -996,10 +1075,39 @@ mod tests {
             Crash::None,
         )
         .unwrap();
-        accounts.note_swap("default", "personal");
         assert_eq!(accounts.registry().global, "personal");
         assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-personal"));
         // A session that fetched Work's profile right before writes it back.
+        write_back_work(&home);
+        look_again(&accounts);
+        assert!(!accounts.watch_slot_blocking(), "no sign-in by hand");
+        assert_eq!(accounts.registry().global, "personal");
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-personal"));
+        assert_eq!(
+            slot_chain(&home),
+            chain_of("personal"),
+            "Personal's sign-in"
+        );
+    }
+
+    /// Default (Work) swapped out for Personal, as `make_global` does.
+    fn swapped_to_personal(name: &str) -> (Home, Arc<Accounts>) {
+        let (home, accounts) = managed(name);
+        slot::swap(
+            &accounts.stores().unwrap(),
+            "default",
+            "personal",
+            None,
+            &|journal| accounts.commit_swap(journal),
+            Crash::None,
+        )
+        .unwrap();
+        (home, accounts)
+    }
+
+    /// Work's profile written over the slot's, as a stale session or the
+    /// first step of a `/login` to Work leaves it.
+    fn write_back_work(home: &Home) {
         let mut config = slot::read_config(&home.paths.default_json)
             .unwrap()
             .unwrap();
@@ -1008,10 +1116,81 @@ mod tests {
             record("uuid-work", "Work", "work@x.dev"),
         );
         write(&home.paths.default_json, &Value::Object(config));
-        look_again(&accounts);
+    }
+
+    fn slot_chain(home: &Home) -> Option<String> {
+        let raw: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.paths.claude_home.join(".credentials.json")).unwrap(),
+        )
+        .unwrap();
+        super::super::credentials::chain_id(raw.as_object())
+    }
+
+    fn chain_of(token: &str) -> Option<String> {
+        super::super::credentials::chain_id(chain(token).as_object())
+    }
+
+    #[test]
+    fn the_old_profile_over_a_renewed_sign_in_is_put_right_too() {
+        let (home, accounts) = swapped_to_personal("p23-renewed");
+        // Claude Code renews Personal's sign-in in the slot; the worker
+        // sees it on its next look.
+        write(
+            &home.paths.claude_home.join(".credentials.json"),
+            &chain("personal-renewed"),
+        );
+        assert!(!accounts.watch_slot_blocking());
+        write_back_work(&home);
         assert!(!accounts.watch_slot_blocking(), "no sign-in by hand");
         assert_eq!(accounts.registry().global, "personal");
+        let stores = accounts.stores().unwrap();
         assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-personal"));
+    }
+
+    /// P23: `/login` back to Work within the minute after the swap. Its
+    /// new chain with Work's profile is a sign-in by hand (G6), never a
+    /// write-back: Work becomes global and the slot keeps Work's profile.
+    #[test]
+    fn a_sign_in_by_hand_to_the_old_account_right_after_a_swap_makes_it_global() {
+        let (home, accounts) = swapped_to_personal("p23-login");
+        write(
+            &home.paths.claude_home.join(".credentials.json"),
+            &chain("work-again"),
+        );
+        write_back_work(&home);
+        assert!(accounts.watch_slot_blocking());
+        let registry = accounts.registry();
+        assert_eq!(registry.global, "default");
+        assert_eq!(
+            registry.last_switch.as_ref().unwrap().reason.as_deref(),
+            Some("login")
+        );
+        let stores = accounts.stores().unwrap();
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-work"));
+        assert_eq!(slot_chain(&home), chain_of("work-again"));
+        // Nothing to put right afterwards either.
+        assert!(!accounts.watch_slot_blocking());
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-work"));
+    }
+
+    /// `/login` writes the profile before the sign-in: a look in between
+    /// sees Work's profile over Personal's chain, and waits for the
+    /// sign-in to land before it puts anything back.
+    #[test]
+    fn a_sign_in_by_hand_seen_halfway_is_not_put_right() {
+        let (home, accounts) = swapped_to_personal("p23-halfway");
+        write_back_work(&home);
+        let credentials = home.paths.claude_home.join(".credentials.json");
+        let login = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            write(&credentials, &chain("work-again"));
+        });
+        assert!(accounts.watch_slot_blocking());
+        login.join().unwrap();
+        assert_eq!(accounts.registry().global, "default");
+        let stores = accounts.stores().unwrap();
+        assert_eq!(stores.uuid(&Place::Slot).as_deref(), Some("uuid-work"));
+        assert_eq!(slot_chain(&home), chain_of("work-again"));
     }
 
     #[test]

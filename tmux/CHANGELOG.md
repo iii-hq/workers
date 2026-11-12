@@ -76,7 +76,9 @@
   windows pinned to the old one on its folder; while one pinned to the new account is in a
   turn, the switch waits (`pending_global`) and the worker finishes it. A swap stopped
   half-way is finished when the worker starts again (`swap.json`, without tokens). Signing
-  in by hand on `~/.claude` (`/login`) makes that account global, adding it when it is new.
+  in by hand on `~/.claude` (`/login`) makes that account global, adding it when it is new,
+  even right after a switch (the old account's sign-in, not only its profile, tells it from a
+  session writing the old profile back); the account that was global then reads signed out.
   Every change of the global account is in `last_switch` (`auto: false` when someone made
   it). The worker never touches tmux's environment, except once: a build of this branch
   before this change kept the global account in tmux's global `CLAUDE_CONFIG_DIR`, and the
