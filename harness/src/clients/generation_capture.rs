@@ -182,7 +182,11 @@ pub(crate) fn bind_summary(
             {
                 return None;
             }
-            allowed.push(prior.lines.iter().map(|line| line.sha256.clone()).collect());
+            // Groups were certified one by one; replay each contiguous run on its
+            // own, or summary text between two groups breaks the window.
+            for run in prior.lines.chunk_by(|a, b| b.line == a.line + 1) {
+                allowed.push(run.iter().map(|line| line.sha256.clone()).collect());
+            }
             result.inputs.extend(prior.inputs.iter().cloned());
         } else if origin.summarized_indices.is_none() {
             return None;

@@ -826,6 +826,72 @@ fn synthetic_memory_native_ledger_equality_eviction_and_fresh_authority() {
     .unwrap();
 }
 
+#[test]
+fn summary_replay_keeps_certified_groups_split_by_unrelated_text() {
+    struct Isolated;
+    impl Drop for Isolated {
+        fn drop(&mut self) {
+            TEST_SLOT_LEDGER.with(|l| *l.borrow_mut() = None);
+            TEST_SUMMARY_LEDGER.with(|l| *l.borrow_mut() = None);
+        }
+    }
+    TEST_SLOT_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
+    TEST_SUMMARY_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
+    let _isolated = Isolated;
+    let session = "split-groups-session";
+    let candidate: Vec<(String, crate::types::AgentMessage)> =
+        ["alpha fact\nbeta fact", "gamma fact"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let value =
+                    json!({"role":"user", "timestamp":0, "content":[{"type":"text","text":text}]});
+                let entry_id = format!("split-entry-{i}");
+                remember(
+                    session,
+                    &SourceSlot {
+                        message_index: i,
+                        entry_id: entry_id.clone(),
+                        observer_id: "split-observer".into(),
+                        append_ordinal: i,
+                        message_sha256: message_digest(&value).unwrap(),
+                        source: "fresh_memory".into(),
+                    },
+                );
+                (entry_id, serde_json::from_value(value).unwrap())
+            })
+            .collect();
+    // Both Memory inputs appear verbatim, with a line of the summary's own between.
+    let text = "alpha fact\nbeta fact\nThe user moved on.\ngamma fact";
+    let origin = AssemblySummary {
+        assembly_id: "split-assembly".into(),
+        summarized_indices: Some(vec![0, 1]),
+        span: SummarySpan {
+            byte_start: 0,
+            byte_end: text.len(),
+            summary_sha256: raw_digest(text),
+            system_sha256: raw_digest(text),
+        },
+    };
+    let lines = |witness: &SummaryWitness| witness.lines.iter().map(|l| l.line).collect::<Vec<_>>();
+    let witness = bind_summary(session, &origin, text, &candidate, None).unwrap();
+    assert_eq!(lines(&witness), [0, 1, 3]);
+    remember_summary(session, "split-summary", &witness);
+    // A later step renders the same summary with nothing newly summarized.
+    let mut replay = origin.clone();
+    replay.summarized_indices = None;
+    let replayed = bind_summary(
+        session,
+        &replay,
+        text,
+        &[],
+        Some(("split-summary", &origin.span.summary_sha256)),
+    )
+    .expect("the replayed summary keeps its certificate");
+    assert_eq!(lines(&replayed), [0, 1, 3]);
+    assert_eq!(replayed.inputs.len(), 2);
+}
+
 #[tokio::test]
 async fn synthetic_memory_summary_native_fixtures() {
     // The tracked fixture is regenerated separately with the real Context API.
