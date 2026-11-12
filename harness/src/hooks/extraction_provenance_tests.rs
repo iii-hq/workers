@@ -620,11 +620,11 @@ async fn first_ack_cannot_be_copied_to_a_later_source_in_the_same_turn() {
     );
 }
 
-/// Per-step cost of the Memory hook: one registry lookup per chain, no
+/// Per-step cost of the Memory hook: one registry lookup per turn, no
 /// transcript read (the step's entries are handed in), one acknowledgement per
 /// turn and no durable flush.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_memory_hook_step_lists_once_reads_no_transcript_and_acks_once() {
+async fn a_memory_hook_turn_lists_once_reads_no_transcript_and_acks_once() {
     let stack = Stack::with_target("memory::hook::pre-generate").await;
     let record = delivered(&stack, "s", "opaque-a", "Cost request").await;
     let entries = transcript(&stack, "s").await;
@@ -644,7 +644,11 @@ async fn a_memory_hook_step_lists_once_reads_no_transcript_and_acks_once() {
         let calls = stack.data.lock().unwrap().calls.clone();
         let count = |id: &str| calls.iter().filter(|(f, _)| f == id).count();
         assert_eq!(count("memory::hook::pre-generate"), 1, "step {step}");
-        assert_eq!(count("engine::functions::list"), 1, "step {step}");
+        assert_eq!(
+            count("engine::functions::list"),
+            usize::from(step == 0),
+            "step {step}"
+        );
         assert_eq!(count("session::messages"), 0, "step {step}");
         let cas: Vec<_> = calls
             .iter()
@@ -655,6 +659,84 @@ async fn a_memory_hook_step_lists_once_reads_no_transcript_and_acks_once() {
     }
     let ledger = stack.data.lock().unwrap().get(SCOPE, "s");
     assert_eq!(ledger[0]["extraction"].as_array().unwrap().len(), 1);
+}
+
+/// A failed Memory call (a restart, or a worker taking its name over) drops the
+/// ownership the turn proved; a refused ownership is never remembered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_memory_call_makes_the_next_step_ask_the_registry_again() {
+    let stack = Stack::with_target("memory::hook::pre-generate").await;
+    let record = delivered(&stack, "s", "opaque-a", "Restart request").await;
+    let entries = transcript(&stack, "s").await;
+    stack.data.lock().unwrap().memory_response = json!({"decision":"continue"});
+    let step = |n: u64| {
+        stack.data.lock().unwrap().calls.clear();
+        stack
+            .deps
+            .hooks
+            .run_pre_generate(&record, n, None, &[], 0, &[], &entries)
+    };
+    let lists = || {
+        let calls = stack.data.lock().unwrap().calls.clone();
+        calls
+            .iter()
+            .filter(|(f, _)| f == "engine::functions::list")
+            .count()
+    };
+    let projected = || {
+        stack.data.lock().unwrap().hooks.last().unwrap()["recall_context"]
+            .get("extraction_history")
+            .is_some()
+    };
+    step(0).await;
+    assert_eq!((lists(), projected()), (1, true));
+    stack.data.lock().unwrap().memory_fails = true;
+    let failed = step(1).await;
+    assert!(matches!(
+        failed,
+        crate::hooks::runner::PreGenerateOutcome::Deny(_)
+    ));
+    assert_eq!(lists(), 0, "still proven when the call was made");
+    stack.data.lock().unwrap().memory_fails = false;
+    stack.data.lock().unwrap().memory_owner = false;
+    for n in 2..4 {
+        step(n).await;
+        assert_eq!((lists(), projected()), (1, false), "step {n}");
+    }
+}
+
+/// A degraded state worker costs the Memory hook at most one more of its
+/// timeouts: the history read and the acknowledgement share that bound, and
+/// generation goes on without the proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_recall_ledger_holds_the_memory_hook_one_timeout_at_most() {
+    let stack = Stack::with_target("memory::hook::pre-generate").await;
+    let record = delivered(&stack, "s", "opaque-a", "Stalled request").await;
+    let entries = transcript(&stack, "s").await;
+    stack.data.lock().unwrap().memory_response = json!({"decision":"continue",
+        "annotations":{"memory_extraction":true,"memory_bank":"a"}});
+    stack.data.lock().unwrap().ledger_stalls = true;
+    let started = std::time::Instant::now();
+    let outcome = stack
+        .deps
+        .hooks
+        .run_pre_generate(&record, 0, None, &[], 0, &[], &entries)
+        .await;
+    let held = started.elapsed();
+    assert!(matches!(
+        outcome,
+        crate::hooks::runner::PreGenerateOutcome::Continue { .. }
+    ));
+    // The observer's timeout_ms is 1000; Memory itself answers at once.
+    assert!(
+        held < std::time::Duration::from_millis(1_500),
+        "held {held:?}"
+    );
+    let last = stack.data.lock().unwrap().hooks.last().unwrap().clone();
+    assert!(last["recall_context"].get("extraction_history").is_none());
+    assert!(stack.data.lock().unwrap().get(SCOPE, "s")[0]["extraction"]
+        .as_array()
+        .is_none_or(Vec::is_empty));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

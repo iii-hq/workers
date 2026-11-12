@@ -536,6 +536,35 @@ async fn a_step_ending_the_turn_writes_no_live_phase_after_its_projection() {
     );
 }
 
+/// Recall provenance is read only for a pre_generate observer the step calls:
+/// a stack without one reads no ledger. (The step goes on to run a call: a
+/// finishing step also stamps the turn's extraction boundary, once per turn.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_without_a_called_pre_generate_observer_reads_no_recall_ledger() {
+    let ledger_reads = |calls: &[(String, Value)]| {
+        calls
+            .iter()
+            .filter(|(f, data)| {
+                f.ends_with("state::get") && data["scope"] == crate::hooks::recall::SCOPE
+            })
+            .count()
+    };
+    let reply = || hold_reply()["message"].clone();
+    let (result, calls, _) = generate(reply()).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert_eq!(ledger_reads(&calls), 0, "{calls:?}");
+
+    let gate = json!({"harness::hook::on-pre-generate": {"decision": "continue"}});
+    let (result, calls, _) = generate_observed(reply(), gate).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert!(phases(&calls).contains(&"harness::hook::on-pre-generate"));
+    assert_eq!(
+        ledger_reads(&calls),
+        1,
+        "the called observer gets the source"
+    );
+}
+
 /// A stop mid-generation still runs the post_generate hooks: writing the next
 /// phase over its `stopping` ack would show the stop as not taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

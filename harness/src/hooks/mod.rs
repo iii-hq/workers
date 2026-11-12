@@ -346,6 +346,15 @@ pub fn ordered(mut bindings: Vec<HookBinding>) -> Vec<HookBinding> {
     bindings
 }
 
+/// Whether a pre_generate chain for `session_id` may call one of `bindings`'
+/// targets: one without a static `inject_prompt` whose `sessions` globs select
+/// the session. Filters need the assembled input, so a filtered one counts.
+pub(crate) fn pre_generate_calls_a_target(bindings: &[HookBinding], session_id: &str) -> bool {
+    bindings.iter().any(|binding| {
+        binding.inject_prompt.is_none() && runner::sessions_match(binding, session_id)
+    })
+}
+
 /// Whether any of `bindings` targets `target_function_id` and consults on
 /// calls of `function_id`.
 pub fn has_function_binding(
@@ -370,6 +379,8 @@ pub struct HookRegistry {
     /// (the observer is disposed with the old connection; nothing re-creates
     /// it). Persist to state if that bites.
     owned: Arc<Mutex<HashMap<String, (String, ObserverHandle)>>>,
+    /// Memory hook ownership the registry confirmed for a running turn.
+    memory_owner: runner::MemoryOwnership,
 }
 
 impl HookRegistry {
@@ -409,6 +420,7 @@ impl HookRegistry {
         HookRegistry {
             iii,
             owned: Arc::new(Mutex::new(HashMap::new())),
+            memory_owner: runner::MemoryOwnership::default(),
         }
     }
 
@@ -650,6 +662,19 @@ mod tests {
             filesystem_boundary(&watch, "fp::batch"),
             FilesystemBoundary::Workspace
         );
+    }
+
+    #[test]
+    fn only_a_called_pre_generate_observer_counts_as_called() {
+        let point = HookPoint::PreGenerate;
+        let injection = binding(point, "fp", "fp::guide", json!({ "inject_prompt": "g" }));
+        let scoped = binding(point, "m", "m::hook", json!({ "sessions": ["other-*"] }));
+        assert!(!pre_generate_calls_a_target(&[], "s"));
+        assert!(!pre_generate_calls_a_target(
+            &[injection, scoped.clone()],
+            "s"
+        ));
+        assert!(pre_generate_calls_a_target(&[scoped], "other-1"));
     }
 
     #[test]

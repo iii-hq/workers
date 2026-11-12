@@ -13,6 +13,9 @@ struct Data {
     hooks: Vec<Value>,
     memory_response: Value,
     memory_owner: bool,
+    memory_fails: bool,
+    /// The recall ledger's reads never answer: a degraded state worker.
+    ledger_stalls: bool,
     extraction_cas_conflicts: usize,
 }
 impl Data {
@@ -94,6 +97,9 @@ impl Data {
             "state::claim-namespace" => Ok(json!({"claimed":true})),
             "memory::hook::pre-generate" => {
                 self.hooks.push(p.clone());
+                if self.memory_fails {
+                    return Err("memory restarting".into());
+                }
                 Ok(self.memory_response.clone())
             }
             "offline::capture" => {
@@ -174,6 +180,12 @@ impl Stack {
                     continue;
                 }
                 let function = request["function_id"].as_str().unwrap();
+                if function.ends_with("state::get")
+                    && request["data"]["scope"] == SCOPE
+                    && shared.lock().unwrap().ledger_stalls
+                {
+                    continue;
+                }
                 let result =
                     shared
                         .lock()

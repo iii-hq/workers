@@ -220,6 +220,17 @@ pub(super) async fn acknowledge_extraction(
     ))
 }
 
+/// What [`acknowledge_extraction`] reads of a hook input: never the prompt,
+/// the messages or the tools a pre_generate input carries.
+pub(super) fn acknowledgement_input(input: &Value) -> Value {
+    let context = &input["recall_context"];
+    json!({
+        "point": input["point"], "session_id": input["session_id"], "turn_id": input["turn_id"],
+        "recall_context": {"version": context["version"], "session_id": context["session_id"],
+            "turn_id": context["turn_id"], "source": context["source"], "query": context["query"]},
+    })
+}
+
 /// Terminal boundaries are recorded from the finalizer, never an event payload.
 /// A turn that never received a Memory acknowledgement has no eligible proof.
 /// A boundary is written once, except that an unfinished exchange may later be
@@ -742,6 +753,23 @@ mod tests {
             .unwrap()
             .get("derived")
             .is_none());
+    }
+    #[test]
+    fn acknowledgement_input_keeps_what_the_ack_reads_and_drops_the_prompt() {
+        let context = json!({"version":1,"session_id":"s","turn_id":"t",
+            "source":{"kind":"direct","entry_id":"e"},"query":{"entry_id":"e","text":"q"},
+            "continuation":null,"extraction_history":{"rows":[]}});
+        let input = json!({"point":"pre_generate","session_id":"s","turn_id":"t","step":3,
+            "recall_context":context,"generate":{"messages":["the whole prompt"]}});
+        let ack = acknowledgement_input(&input);
+        assert!(ack.get("generate").is_none());
+        assert!(ack["recall_context"].get("extraction_history").is_none());
+        for key in ["point", "session_id", "turn_id"] {
+            assert_eq!(ack[key], input[key]);
+        }
+        for key in ["version", "session_id", "turn_id", "source", "query"] {
+            assert_eq!(ack["recall_context"][key], context[key]);
+        }
     }
     #[test]
     fn recall_provenance_query_bounds_unicode_without_splitting_codepoints() {

@@ -636,7 +636,15 @@ async fn generate_step(
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
-    record.recall_context = crate::hooks::recall::resolve(deps, &record, &entries).await;
+    // Only a pre_generate observer the step calls reads recall provenance: a
+    // stack without one reads no ledger.
+    let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
+    record.recall_context =
+        if crate::hooks::pre_generate_calls_a_target(&pre_generate, &record.session_id) {
+            crate::hooks::recall::resolve(deps, &record, &entries).await
+        } else {
+            None
+        };
     // The previous step's watermark marks which entries arrived while that
     // step was generating (the window moves them past the reply they
     // interrupted — see crate::window::build). The new watermark is
@@ -708,7 +716,6 @@ async fn generate_step(
     // pre_generate chain never calls an observer with a static contribution;
     // the injections are the ones whose `sessions` globs and filters select
     // this turn. They join the stable prefix, ahead of the per-session aid.
-    let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
     let static_injections = deps
         .hooks
         .static_injections(&deps.hooks.static_injection_input(&record, payload.step));

@@ -11,8 +11,8 @@
 //! recorded into the written entry's `origin` via the returned annotations.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use globset::{Glob, GlobSetBuilder};
@@ -200,7 +200,8 @@ impl HookRegistry {
     }
 
     /// [`Self::call_point`] for the turn loop's pre_generate call, which hands
-    /// the Memory hook the transcript the step already loaded.
+    /// the Memory hook the transcript the step already loaded and the Memory
+    /// ownership its turn already proved.
     async fn call_point_with(
         &self,
         point: HookPoint,
@@ -222,8 +223,9 @@ impl HookRegistry {
         let observers = self.iii.observers(function_id);
         // The span the engine used to open for the call: it groups the
         // observers' calls in the turn's waterfall.
+        let trusted = trusted_entries.map(|entries| (entries, &self.memory_owner));
         let chain = iii_helpers::observability::run_in_span(function_id, None, || {
-            deliver_outcome(self.iii.clone(), point, call, observers, trusted_entries)
+            deliver_outcome(self.iii.clone(), point, call, observers, trusted)
         });
         let failure =
             match tokio::time::timeout(Duration::from_millis(CHAIN_TIMEOUT_MS), chain).await {
@@ -474,10 +476,11 @@ pub(crate) trait HookInvoker: Send + Sync {
 struct ThroughObservers<'a> {
     iii: Arc<IIIClient>,
     observers: HashMap<String, Observer>,
-    /// The transcript the turn loop loaded for this step. Set only by
+    /// The transcript the turn loop loaded for this step, and the Memory
+    /// ownership its turn proved. Set only by
     /// [`HookRegistry::run_pre_generate`], never by the public deliver hook:
     /// externally delivered hook calls can never project or record proof.
-    trusted_entries: Option<&'a [LoadedEntry]>,
+    trusted: Option<(&'a [LoadedEntry], &'a MemoryOwnership)>,
     /// Registry ownership of the Memory hook, asked at most once per chain.
     memory_owned: tokio::sync::OnceCell<bool>,
 }
@@ -486,12 +489,12 @@ impl<'a> ThroughObservers<'a> {
     fn new(
         iii: Arc<IIIClient>,
         observers: HashMap<String, Observer>,
-        trusted_entries: Option<&'a [LoadedEntry]>,
+        trusted: Option<(&'a [LoadedEntry], &'a MemoryOwnership)>,
     ) -> Self {
         Self {
             iii,
             observers,
-            trusted_entries,
+            trusted,
             memory_owned: tokio::sync::OnceCell::new(),
         }
     }
@@ -499,8 +502,13 @@ impl<'a> ThroughObservers<'a> {
     /// The step's transcript when this call is the trusted turn's call of the
     /// Memory pre_generate hook, owned by the registered Memory worker. A target
     /// name alone does not authenticate the source of a call.
-    async fn memory_call(&self, binding: &HookBinding, point: &str) -> Option<&'a [LoadedEntry]> {
-        let entries = self.trusted_entries?;
+    async fn memory_call(
+        &self,
+        binding: &HookBinding,
+        point: &str,
+        payload: &Value,
+    ) -> Option<&'a [LoadedEntry]> {
+        let (entries, proven) = self.trusted?;
         if point != "pre_generate"
             || binding.target != MEMORY_PRE_GENERATE
             || !self.observers.contains_key(&binding.observer_id)
@@ -509,10 +517,70 @@ impl<'a> ThroughObservers<'a> {
         }
         let owned = self
             .memory_owned
-            .get_or_init(|| memory_target_owned(&self.iii, binding.timeout_ms))
+            .get_or_init(|| async {
+                let turn = turn_key(payload);
+                if proven.holds(&turn, &binding.observer_id) {
+                    return true;
+                }
+                let owned = memory_target_owned(&self.iii, binding.timeout_ms).await;
+                if owned {
+                    proven.prove(turn, &binding.observer_id);
+                }
+                owned
+            })
             .await;
         owned.then_some(entries)
     }
+}
+
+/// How long a turn trusts the Memory ownership it proved before asking the
+/// registry again: bounds a takeover that keeps Memory's observer id.
+const MEMORY_OWNER_TTL: Duration = Duration::from_secs(30);
+
+/// Memory hook ownership the registry confirmed, per turn and observer, so a
+/// turn's later steps skip the lookup. Only a confirmed answer is kept (a
+/// refused or failed lookup is asked again by the next chain), and a failed
+/// Memory call forgets it: a restarted or replaced Memory is asked again.
+#[derive(Clone, Default)]
+pub(crate) struct MemoryOwnership(Arc<Mutex<HashMap<TurnKey, (String, Instant)>>>);
+
+/// A turn as its hook input names it: `(session_id, turn_id)`.
+type TurnKey = (String, String);
+
+impl MemoryOwnership {
+    fn holds(&self, turn: &TurnKey, observer_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(turn)
+            .is_some_and(|(id, at)| id == observer_id && at.elapsed() < MEMORY_OWNER_TTL)
+    }
+
+    fn prove(&self, turn: TurnKey, observer_id: &str) {
+        let mut proven = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        proven.retain(|_, (_, at)| at.elapsed() < MEMORY_OWNER_TTL);
+        proven.insert(turn, (observer_id.to_owned(), Instant::now()));
+    }
+
+    fn forget(&self, turn: &TurnKey) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(turn);
+    }
+}
+
+fn turn_key(input: &Value) -> TurnKey {
+    let field = |key: &str| input[key].as_str().unwrap_or_default().to_owned();
+    (field("session_id"), field("turn_id"))
+}
+
+/// `fut` within what is left of `budget`, which is charged the time it took.
+async fn spend<T>(budget: &mut Duration, fut: impl std::future::Future<Output = T>) -> Option<T> {
+    let started = Instant::now();
+    let out = tokio::time::timeout(*budget, fut).await.ok();
+    *budget = budget.saturating_sub(started.elapsed());
+    out
 }
 
 #[async_trait]
@@ -525,7 +593,7 @@ impl HookInvoker for ThroughObservers<'_> {
     ) -> (Result<Value, String>, Option<AppendSource>) {
         let capture = capture_mode() == CaptureMode::SyntheticIsolation
             && binding.observer_id.len() <= 256
-            && self.memory_call(binding, point).await.is_some();
+            && self.memory_call(binding, point, &payload).await.is_some();
         let receipt_input = capture.then(|| payload.clone());
         let result = self.invoke_value(binding, point, payload).await;
         let source = (capture && result.is_ok()).then(|| AppendSource {
@@ -555,17 +623,25 @@ impl HookInvoker for ThroughObservers<'_> {
         {
             context.remove("extraction_history");
         }
-        let memory_entries = self.memory_call(binding, point).await;
+        // The registry lookup, the ledger read and the acknowledgement share
+        // one timeout: a degraded state discards proof, never holds the step
+        // for more than one timeout on top of the Memory call.
+        let mut budget = Duration::from_millis(binding.timeout_ms);
+        let memory_entries = spend(&mut budget, self.memory_call(binding, point, &payload))
+            .await
+            .flatten();
         if let Some(entries) = memory_entries {
-            super::recall::project_extraction_history(
+            let history = super::recall::project_extraction_history(
                 &self.iii,
                 &mut payload,
                 entries,
                 binding.timeout_ms,
-            )
-            .await;
+            );
+            spend(&mut budget, history).await;
         }
-        let source_input = memory_entries.map(|entries| (payload.clone(), entries));
+        let turn = turn_key(&payload);
+        let source_input =
+            memory_entries.map(|entries| (super::recall::acknowledgement_input(&payload), entries));
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
         let request = CallRequest::observer(observer, payload)
             .timeout(Duration::from_millis(binding.timeout_ms));
@@ -578,22 +654,32 @@ impl HookInvoker for ThroughObservers<'_> {
         match bounded {
             Ok(Ok(value)) => {
                 if let Some((input, entries)) = source_input {
-                    if let Err(error) = super::recall::acknowledge_extraction(
+                    let ack = super::recall::acknowledge_extraction(
                         &self.iii,
                         &input,
                         &value,
                         entries,
                         binding.timeout_ms,
-                    )
-                    .await
-                    {
-                        tracing::warn!(%error, "Memory acknowledgement provenance unavailable");
+                    );
+                    match spend(&mut budget, ack).await {
+                        Some(Ok(())) => {}
+                        Some(Err(error)) => {
+                            tracing::warn!(%error, "Memory acknowledgement provenance unavailable")
+                        }
+                        None => tracing::warn!("Memory acknowledgement timed out; proof discarded"),
                     }
                 }
                 Ok(value)
             }
-            Ok(Err(e)) => Err(format!("hook {} failed: {e}", binding.target)),
-            Err(_) => Err(format!("hook {} timed out", binding.target)),
+            failed => {
+                if let (Some(_), Some((_, proven))) = (memory_entries, self.trusted) {
+                    proven.forget(&turn);
+                }
+                Err(match failed {
+                    Ok(Err(e)) => format!("hook {} failed: {e}", binding.target),
+                    _ => format!("hook {} timed out", binding.target),
+                })
+            }
         }
     }
 }
@@ -625,6 +711,7 @@ pub(crate) async fn test_memory_invocation(
         return;
     }
     let binding = HookBinding::from_observer(point, &observers[0]).unwrap();
+    let proven = MemoryOwnership::default();
     let invoker = ThroughObservers::new(
         iii,
         if absent_binding {
@@ -635,7 +722,7 @@ pub(crate) async fn test_memory_invocation(
                 .map(|o| (o.id().to_owned(), o))
                 .collect()
         },
-        Some(&[]),
+        Some((&[], &proven)),
     );
     let _ = invoker
         .invoke_with_source(&binding, point.input_name(), input)
@@ -690,7 +777,7 @@ async fn deliver_outcome(
     point: HookPoint,
     call: Call,
     observers: Vec<Observer>,
-    trusted_entries: Option<&[LoadedEntry]>,
+    trusted: Option<(&[LoadedEntry], &MemoryOwnership)>,
 ) -> HookChainOutcome {
     let matched: Vec<Observer> = observers
         .into_iter()
@@ -714,7 +801,7 @@ async fn deliver_outcome(
             .into_iter()
             .map(|obs| (obs.id().to_string(), obs))
             .collect(),
-        trusted_entries,
+        trusted,
     );
     run_chain(point, &invoker, bindings, call.input).await
 }
