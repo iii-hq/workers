@@ -166,6 +166,7 @@ def test_a_traces_ui_change_rebuilds_ade(
         "packages/console-ui/format.mjs",
         "biome.json",
         "ade/web/src/lib/icon-size-conformance.test.ts",
+        "ade/web/vite.config.ts",
         "pnpm-lock.yaml",
     ],
 )

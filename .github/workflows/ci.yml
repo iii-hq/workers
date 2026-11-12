@@ -1010,11 +1010,15 @@ jobs:
       - name: ADE selection scan over the package
         working-directory: ade/web
         # Only the case that lists the package's files: the file's other cases
-        # cover other workers.
+        # cover other workers. `-t` matching nothing exits 0, so the step
+        # requires that one case to have run and passed.
         run: |
           set -euo pipefail
-          test -f src/lib/selection-conformance.test.ts
-          pnpm exec vitest run src/lib/selection-conformance.test.ts -t 'keeps selected native Console labels'
+          report="$RUNNER_TEMP/selection-scan.json"
+          pnpm exec vitest run src/lib/selection-conformance.test.ts \
+            -t 'keeps selected native Console labels' \
+            --reporter=default --reporter=json --outputFile.json="$report"
+          jq -e '.numPassedTests == 1' "$report"
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always

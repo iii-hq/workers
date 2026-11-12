@@ -135,7 +135,8 @@ SHARED_TEST_SUPPORT = {
 # Shared JS packages (packages/<dir>/) whose code ends up INSIDE a worker's
 # binary: the worker's build.rs builds a sub-project that bundles the package
 # (packages/native-ui → <worker>/native-ui/dist/native.js, embedded with
-# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed). A source change there fans out, like a crate's, to every
+# include_str!; packages/traces-ui → ade/web/dist, embedded by rust-embed).
+# A source change there fans out, like a crate's, to every
 # worker with a sub-project whose package.json depends on the package (found
 # by name, so a new native app needs no edit here). packages/console-ui is
 # deliberately absent: worker UIs keep it external (the console serves the
@@ -158,10 +159,11 @@ NATIVE_UI_INFRA_PATHS = {
 # The traces-ui job (ci.yml) runs the @iii-dev/traces-ui package's own
 # biome, typecheck, tests and build, and the ADE design scans that cover it.
 # It runs when the package, the console-ui helpers it imports, the root
-# biome config its own extends, the ADE design scans it runs, the root pnpm
-# workspace or this CI changes (the same infra paths as native-ui).
+# biome config its own extends, the ADE design scans it runs (and the
+# vitest setup they run under), the root pnpm workspace or this CI changes
+# (the same infra paths as native-ui).
 TRACES_UI_PREFIXES = ("packages/traces-ui/", "packages/console-ui/")
-TRACES_UI_PATHS = {"biome.json"}
+TRACES_UI_PATHS = {"biome.json", "ade/web/package.json", "ade/web/vite.config.ts"}
 TRACES_UI_SCANS = "ade/web/src/lib/"
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
