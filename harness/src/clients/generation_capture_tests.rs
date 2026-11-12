@@ -861,11 +861,9 @@ fn summary_replay_keeps_certified_groups_split_by_unrelated_text() {
                 (entry_id, serde_json::from_value(value).unwrap())
             })
             .collect();
-    // Both Memory inputs appear verbatim, with a line of the summary's own between.
-    let text = "alpha fact\nbeta fact\nThe user moved on.\ngamma fact";
-    let origin = AssemblySummary {
+    let summary = |text: &str, summarized_indices| AssemblySummary {
         assembly_id: "split-assembly".into(),
-        summarized_indices: Some(vec![0, 1]),
+        summarized_indices,
         span: SummarySpan {
             byte_start: 0,
             byte_end: text.len(),
@@ -873,23 +871,75 @@ fn summary_replay_keeps_certified_groups_split_by_unrelated_text() {
             system_sha256: raw_digest(text),
         },
     };
+    let certify = |text: &str| {
+        bind_summary(
+            session,
+            &summary(text, Some(vec![0, 1])),
+            text,
+            &candidate,
+            None,
+        )
+    };
+    // A later step renders `text` with nothing newly summarized, replaying the
+    // witness stored for the earlier summary `prior`.
+    let replay = |entry: &str, prior: &str, text: &str| {
+        let digest = raw_digest(prior);
+        bind_summary(
+            session,
+            &summary(text, None),
+            text,
+            &[],
+            Some((entry, &digest)),
+        )
+    };
     let lines = |witness: &SummaryWitness| witness.lines.iter().map(|l| l.line).collect::<Vec<_>>();
-    let witness = bind_summary(session, &origin, text, &candidate, None).unwrap();
+    // Both Memory inputs appear verbatim, with a line of the summary's own between.
+    let text = "alpha fact\nbeta fact\nThe user moved on.\ngamma fact";
+    let witness = certify(text).unwrap();
     assert_eq!(lines(&witness), [0, 1, 3]);
     remember_summary(session, "split-summary", &witness);
-    // A later step renders the same summary with nothing newly summarized.
-    let mut replay = origin.clone();
-    replay.summarized_indices = None;
-    let replayed = bind_summary(
-        session,
-        &replay,
-        text,
-        &[],
-        Some(("split-summary", &origin.span.summary_sha256)),
-    )
-    .expect("the replayed summary keeps its certificate");
+    let replayed =
+        replay("split-summary", text, text).expect("the replayed summary keeps its certificate");
     assert_eq!(lines(&replayed), [0, 1, 3]);
     assert_eq!(replayed.inputs.len(), 2);
+
+    // Groups certified side by side stay separate groups when a later
+    // compaction puts unrelated text between them.
+    let adjacent = "alpha fact\nbeta fact\ngamma fact";
+    let adjacent_witness = certify(adjacent).unwrap();
+    assert_eq!(lines(&adjacent_witness), [0, 1, 2]);
+    remember_summary(session, "adjacent-summary", &adjacent_witness);
+    let replayed =
+        replay("adjacent-summary", adjacent, text).expect("adjacent groups still bind once split");
+    assert_eq!(lines(&replayed), [0, 1, 3]);
+    assert_eq!(replayed.inputs.len(), 2);
+    // A replay keeps the boundaries, so the next compaction can split them too.
+    let again = replay("adjacent-summary", adjacent, adjacent).unwrap();
+    remember_summary(session, "adjacent-again", &again);
+    assert_eq!(
+        lines(&replay("adjacent-again", adjacent, text).unwrap()),
+        [0, 1, 3]
+    );
+    // A group still binds only whole and in order: torn apart, only gamma binds.
+    let torn = "alpha fact\nThe user moved on.\nbeta fact\ngamma fact";
+    assert_eq!(
+        lines(&replay("adjacent-summary", adjacent, torn).unwrap()),
+        [3]
+    );
+
+    // A record without group boundaries (the emitted shape) replays its
+    // contiguous runs as before: split runs bind, adjacent groups are one run.
+    let old_shape = |witness: &SummaryWitness| -> SummaryWitness {
+        serde_json::from_value(serde_json::to_value(witness).unwrap()).unwrap()
+    };
+    remember_summary(session, "old-split", &old_shape(&witness));
+    assert_eq!(lines(&replay("old-split", text, text).unwrap()), [0, 1, 3]);
+    remember_summary(session, "old-adjacent", &old_shape(&adjacent_witness));
+    assert!(replay("old-adjacent", adjacent, text).is_none());
+    assert_eq!(
+        lines(&replay("old-adjacent", adjacent, adjacent).unwrap()),
+        [0, 1, 2]
+    );
 }
 
 #[tokio::test]
@@ -1676,6 +1726,7 @@ async fn actual_sdk_generation_v2_registration_requires_nullable_summary() {
             line: 0,
             sha256: line_digest(text).unwrap(),
         }],
+        groups: Vec::new(),
     });
     let with_summary = serde_json::to_value(event).unwrap();
     for id in [REQUEST, RESPONSE] {

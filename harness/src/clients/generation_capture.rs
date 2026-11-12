@@ -83,6 +83,10 @@ pub(crate) struct SummaryWitness {
     pub inputs: Vec<SourceSlot>,
     /// Only exact full lines of authenticated Memory inputs, in summary order.
     pub lines: Vec<LineWitness>,
+    /// Line digests of each certified group, replayed whole. In-process only;
+    /// a witness without them replays the contiguous runs of `lines`.
+    #[serde(skip)]
+    pub groups: Vec<Vec<String>>,
 }
 
 type SummaryLedger = std::collections::VecDeque<(String, String, SummaryWitness)>;
@@ -116,6 +120,7 @@ pub(crate) fn bind_summary(
         span: origin.span.clone(),
         inputs: Vec::new(),
         lines: Vec::new(),
+        groups: Vec::new(),
     };
     let mut allowed: Vec<Vec<String>> = Vec::new();
     if let Some(indices) = &origin.summarized_indices {
@@ -173,21 +178,23 @@ pub(crate) fn bind_summary(
             if result.inputs.len() + prior.inputs.len() > MAX_LINES {
                 return None;
             }
-            if allowed
-                .iter()
-                .map(Vec::len)
-                .sum::<usize>()
-                .saturating_add(prior.lines.len())
-                > MAX_LINES
-            {
+            // Replay each certified group on its own: a later compaction may put
+            // summary text between two groups that were once adjacent. A witness
+            // without group boundaries falls back to its contiguous runs.
+            let groups: Vec<Vec<String>> = if prior.groups.is_empty() {
+                prior
+                    .lines
+                    .chunk_by(|a, b| b.line == a.line + 1)
+                    .map(|run| run.iter().map(|line| line.sha256.clone()).collect())
+                    .collect()
+            } else {
+                prior.groups
+            };
+            if allowed.iter().chain(&groups).map(Vec::len).sum::<usize>() > MAX_LINES {
                 return None;
             }
-            // Groups were certified one by one; replay each contiguous run on its
-            // own, or summary text between two groups breaks the window.
-            for run in prior.lines.chunk_by(|a, b| b.line == a.line + 1) {
-                allowed.push(run.iter().map(|line| line.sha256.clone()).collect());
-            }
-            result.inputs.extend(prior.inputs.iter().cloned());
+            allowed.extend(groups);
+            result.inputs.extend(prior.inputs);
         } else if origin.summarized_indices.is_none() {
             return None;
         }
@@ -234,6 +241,7 @@ pub(crate) fn bind_summary(
                     sha256: digest.clone(),
                 });
             }
+            result.groups.push(source);
         }
     }
     if result.lines.is_empty() {
