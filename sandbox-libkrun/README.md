@@ -123,7 +123,8 @@ and in any case, including to guest root mounting the share again after the copy
 
 `iii sandbox run` presents a token scoped to its VM instead of the project token
 (HMAC-SHA256 keyed by the project token over `iii-sandbox/worker-scope/v1\0`
-followed by the VM's `state_key`, in lowercase hex), which gets S505 on any other VM. A VM started with a scoped token also has a lease: when its last
+followed by the VM's `state_key`, in lowercase hex), which gets S505 on any other VM,
+and on a build directory another VM recorded (see Builds). A VM started with a scoped token also has a lease: when its last
 log follower is gone and no client reattaches within 45 s, the adapter stops it
 (SIGTERM, then SIGKILL after 10 s). VMs started with the project token have no
 lease, because Compose supervises them itself.
@@ -138,13 +139,20 @@ a build and keeps quiet about it.
 
 - **`worker::build`** boots a build VM on the cached base image (pulling it when
   missing) with a fresh upper, copies the worker's code into `/workspace` (a
-  bundle's whole package; a `path://` worker's code without the dependency dirs,
-  `.build/`, `.workers/` and `.iii`), and runs `scripts.setup` and
+  bundle's whole package; a `path://` worker's code without the dependency dirs
+  and `.iii`, where Compose keeps its package copies and builds), and runs
+  `scripts.setup` and
   `scripts.install` there with the request's `env` only. When the script exits
   0, iii-init writes the merged root, without `/proc`, `/sys`, `/dev`, `/run`,
   `/tmp`, `/opt/iii` and `/mnt/host-src`, and the host turns it into
-  `<output_dir>/image.erofs`, then `image.id`, each through a temporary file
-  and a rename. The build streams its output into `logs` and writes a
+  `<output_dir>/image.erofs` and `image.id`. Both are written and flushed as
+  temporary files; then the previous `image.id` is removed, the image renamed
+  into place and the new `image.id` last, with the directory flushed between
+  the steps. A crash, a failed flush or a failed rename between the two
+  renames leaves an image without an id, which a start refuses with S508 until
+  the next build (0.4.0 renamed the new image beside the previous id, which a
+  start accepted). This assumes one writer per `output_dir` at a time (see
+  Known limits). The build streams its output into `logs` and writes a
   one-byte binary frame there at least every 5 s; when the channel closes or a
   write fails, it stops the build VM, deletes the temporary image, keeps the
   previous pair and frees the key. One build per `state_key` runs at a time
@@ -155,6 +163,23 @@ a build and keeps quiet about it.
   `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
   the overlay's lower, without setup or install. A `path://` worker's code
   still syncs in live; a bundle's is in the image.
+- **A scoped token's build directory.** From 0.4.1 a VM's build directory is
+  the last `output_dir` or `build_dir` its scoped token presented, recorded in
+  `~/.iii/sandbox/workers/<vm_id>/build-dir` with a MAC of the project token.
+  On a directory another VM of the same project token recorded, a scoped token
+  gets S505 before anything is created or written there and before `image.id`
+  is read: the token Compose hands one container can neither replace nor boot
+  an image in a directory another container's VM recorded. The message names
+  that VM's record and the way out: destroy that VM, or delete that file.
+  Another directory moves the VM there and releases the one it leaves, as the
+  VM's own `worker::destroy` does. Two paths are one directory when they are
+  equal or, both existing, share device and inode (a bind mount, another case
+  on a case-insensitive volume). A record another project token wrote counts
+  for nothing. Claims hold an flock on `~/.iii/sandbox/workers` itself, so two
+  adapter processes never give one directory to two VMs where the filesystem
+  can lock a directory; elsewhere (NFS) a warning says so, and claims are
+  serialized within one adapter process only. The check reads no directory
+  name; the project token is not checked.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
   `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
@@ -170,8 +195,9 @@ a build and keeps quiet about it.
   build put there is never overwritten by the host's.
   - Dependency, cache, build-output, VCS and editor dirs match at any depth:
     among them `node_modules`, `.venv`, `venv`, `vendor`, `target`, `dist`,
-    `__pycache__`, `.tox`, `.gradle`, `.git`, and Compose's `.build` and
-    `.workers`.
+    `__pycache__`, `.tox`, `.gradle`, `.git`, `.build` and `.workers`.
+    Compose keeps its package copies and builds under `.iii`
+    (`.iii/workers/<c>`, `.iii/build/<c>`), which the copy leaves out as well.
   - `build`, `out`, `obj`, `coverage` and `deps`, which projects also use for
     source below the root, match only as a directory at the worker's root:
     `src/pkg/build/` is code and syncs, and so does a root `build` script.
@@ -225,6 +251,40 @@ Two races of a build are accepted:
   its build id. A caller that gave up (its `build.json` still names the older
   build) then gets S508 on its next start, and builds again.
 
+A scoped token takes any build directory that no VM of the same project token
+has recorded now:
+
+- the directory of a destroyed VM whose build directory stayed (`iii sandbox
+  destroy`), until a VM records it again;
+- the new path after Compose moved a container's directory, until that
+  container's next build or start records it;
+- every build directory of another Compose namespace: a container's build
+  directory sits beside the compose file in every namespace, and each namespace
+  has its own project token, whose records count for nothing to the other;
+- on a filesystem that cannot flush a directory, a directory whose record a
+  power failure lost (elsewhere the record is flushed).
+
+The container that owns such a directory then gets S505 there until the other
+VM is destroyed or its record deleted. Compose builds or starts each container
+as it comes up, which records its directory.
+
+A new state directory brings a new `state.json` and a new project token: the
+old VMs' records stop counting, and nothing gets S505. A VM whose `state_key`
+changes while its project token survives leaves its record behind: the same
+`state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`, or
+state moved or copied together with its token to another
+`III_COMPOSE_STATE_DIR`, while the compose file, and so the container's build
+directory, stays where it is. The new VM then gets S505 on its own build
+directory, and the message names the way out: destroy the old VM, or delete its
+`build-dir`. Moving or copying the whole project changes the build directory
+too, and nothing gets S505.
+
+Publishing an image assumes one writer per `output_dir` at a time. One VM
+builds once at a time (S509), but nothing serializes two VMs that share a
+directory: two Compose namespaces building one container at once can leave one
+build's image beside the other's id, so a start boots the wrong image or gets
+S508.
+
 The boot cleanup of `/workspace` trusts a manifest line only when it is one
 plain name, but busybox tar (alpine images) prints names raw. A name that holds
 a newline followed by `./` (`a<newline>./b`) prints as two lines that each look
@@ -234,8 +294,9 @@ names, so it never happens with it.
 
 `.iii` is hidden by name, so `III_COMPOSE_STATE_DIR` pointing at another name
 inside a worker's directory puts the token in that guest. The name hides the whole
-directory, so a VM also misses anything else a project keeps there, such as
-`.iii/project.ini`.
+directory, so a VM also misses anything else a project keeps there: `.iii/project.ini`,
+and Compose's package copies and builds (`.iii/workers/<c>`, `.iii/build/<c>`), which
+no guest needs.
 
 `data/` is not hidden. A managed engine keeps its trace store there, so a VM whose
 directory contains it can read the traced payloads, and the token too when an older

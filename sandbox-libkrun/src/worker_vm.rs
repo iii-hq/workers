@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::IIIClient;
 use iii_sdk::channels::ChannelWriter;
 use nix::sys::signal::{Signal, kill};
@@ -75,6 +76,12 @@ const BUILD_MODE_SEAL: &str = "build-mode";
 /// dir: a 0.26 overlay disk (`root/upper.ext4`) and a legacy rootfs clone (`root/`).
 const PRE_BUILD_DISK: &str = "upper.ext4.pre-build";
 const PRE_BUILD_ROOT: &str = "root.pre-build";
+/// `<vm_id>/build-dir`, beside `root/` and out of the guest's reach: the build
+/// directory the VM's scoped token claimed (see `claim_build_dir`).
+const BUILD_DIR_RECORD: &str = "build-dir";
+/// What the MAC of a `build-dir` record covers first, so it can never equal
+/// another MAC of the project token over the same bytes.
+const BUILD_DIR_DOMAIN: &[u8] = b"iii-sandbox/build-dir/v1\0";
 /// A build's scratch dir in `<vm_id>/`: `build-<pid>-<seq>`.
 const BUILD_SCRATCH_PREFIX: &str = "build-";
 /// A build writes to its `logs` channel at least this often, a one-byte binary
@@ -114,6 +121,9 @@ pub struct WorkerVms {
     builds: Mutex<HashSet<String>>,
     /// Names each build's scratch dir and temporary files.
     build_seq: AtomicU64,
+    /// Held while a scoped token claims a build directory, so two VMs never
+    /// claim the same one.
+    claims: Mutex<()>,
     /// How long a VM a scoped `start` booted may go without a log follower before
     /// it is stopped. A field so tests can shorten it.
     pub lease_grace: Duration,
@@ -172,6 +182,7 @@ impl WorkerVms {
             destroyed: Mutex::default(),
             builds: Mutex::default(),
             build_seq: AtomicU64::new(0),
+            claims: Mutex::default(),
             lease_grace: LEASE_GRACE,
         }
     }
@@ -238,7 +249,7 @@ impl WorkerVms {
             Some(_) if !crate::cli::overlay::overlay_active() => {
                 return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
             }
-            Some(build) => Some(self.admit_build(build)?),
+            Some(build) => Some(self.admit_build(&req.auth, &req.state_key, build)?),
             None => None,
         };
         let id = vm_id(&req.state_key);
@@ -309,9 +320,17 @@ impl WorkerVms {
     }
 
     /// The image a start of `build` boots: S508 unless `build_dir/image.id` names
-    /// `build_id` and the image is there. The image is not hashed.
-    fn admit_build(&self, build: &WorkerBuildRef) -> Result<PathBuf, SandboxError> {
+    /// `build_id` and the image is there. The image is not hashed. A scoped
+    /// token boots no directory another VM recorded (S505, `claim_build_dir`),
+    /// checked before any id is read.
+    fn admit_build(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+    ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
+        self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
@@ -343,7 +362,8 @@ impl WorkerVms {
     /// `image.erofs`, then `image.id`. The output streams into `logs`, and the
     /// build ends with the reader of `logs`: a closed channel, or a write that
     /// fails, stops the build VM, drops the temporary image and frees the key.
-    /// S509 while another build of the key runs, S507 when a step fails.
+    /// S509 while another build of the key runs, S507 when a step fails, S505
+    /// when a scoped token names a directory another VM recorded (`claim_build_dir`).
     pub async fn build(
         &self,
         iii: &IIIClient,
@@ -355,12 +375,16 @@ impl WorkerVms {
         }
         let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
-        let out = self.admit_output(&req.output_dir)?;
-        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        let planned = self.plan_output(&req.output_dir)?;
         let id = vm_id(&req.state_key);
         // Dropped last of the locals below: the key is free only once the
         // writer stopped and the scratch dir is gone.
         let _held = self.hold_build(&id)?;
+        // Under the hold, so no `destroy` removes the claim while this build
+        // writes, and before the directory exists: a refused token creates nothing.
+        self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
+        let out = self.create_output(&planned, &req.output_dir)?;
+        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
         let vm_dir = self.base.join(&id);
         sweep_build_scratch(&vm_dir);
         sweep_image_partials(&out);
@@ -446,9 +470,12 @@ impl WorkerVms {
         self.builds.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `output_dir`, created if missing, once its nearest existing ancestor is
-    /// under the host roots; S501 otherwise.
-    fn admit_output(&self, output_dir: &str) -> Result<PathBuf, SandboxError> {
+    /// Where `output_dir` is, or will be once created: its nearest existing
+    /// ancestor, canonical and under the host roots, joined with the components
+    /// below it, which do not exist yet. Creates nothing. S501 for a relative
+    /// path, `.` or `..`, an ancestor outside the roots, or an existing
+    /// ancestor that is not a directory.
+    fn plan_output(&self, output_dir: &str) -> Result<PathBuf, SandboxError> {
         use std::path::Component;
         let path = Path::new(output_dir);
         if !path.is_absolute()
@@ -466,17 +493,106 @@ impl WorkerVms {
                 SandboxError::SourceRejected(format!("output_dir {output_dir} has no parent"))
             })?;
         }
-        self.admit(&existing.to_string_lossy())?;
-        std::fs::create_dir_all(path).map_err(|e| {
+        let below = path
+            .strip_prefix(existing)
+            .expect("an ancestor is a prefix of its path");
+        let existing = self.admit(existing)?;
+        // Refused now, so a claim never moves the VM's record for a create
+        // that must fail.
+        if !existing.is_dir() {
+            return Err(SandboxError::SourceRejected(
+                if below.as_os_str().is_empty() {
+                    format!("output_dir {output_dir} is not a directory")
+                } else {
+                    format!(
+                        "output_dir {output_dir} cannot be created: {} is not a directory",
+                        existing.display()
+                    )
+                },
+            ));
+        }
+        Ok(if below.as_os_str().is_empty() {
+            existing
+        } else {
+            existing.join(below)
+        })
+    }
+
+    /// Create the directory `plan_output` planned for `output_dir`: S501 unless
+    /// it is then that very directory, with no link put in its way since.
+    fn create_output(&self, planned: &Path, output_dir: &str) -> Result<PathBuf, SandboxError> {
+        std::fs::create_dir_all(planned).map_err(|e| {
             SandboxError::SourceRejected(format!("cannot create output_dir {output_dir}: {e}"))
         })?;
-        let dir = self.admit(output_dir)?;
-        if !dir.is_dir() {
+        let dir = self.admit(planned)?;
+        if dir != planned || !dir.is_dir() {
             return Err(SandboxError::SourceRejected(format!(
                 "output_dir {output_dir} is not a directory"
             )));
         }
         Ok(dir)
+    }
+
+    /// With a scoped token, `dir` (canonical, under the host roots, created or
+    /// not yet) must not be the build directory another VM of this project
+    /// recorded: a build writes there and a start boots from there only with
+    /// that VM's token or the project token, so the token Compose hands one
+    /// container cannot replace or boot an image another container's VM
+    /// recorded. S505 otherwise, naming the record and the way out.
+    ///
+    /// A VM's build directory is the last one its scoped token presented, as
+    /// `worker::build`'s `output_dir` or `worker::start`'s `build_dir`: another
+    /// one moves it there and releases the previous one, as the VM's own
+    /// `worker::destroy` would. The record, `<vm_id>/build-dir`, carries a MAC of
+    /// the project token: it outlives an adapter restart, and one another project
+    /// token wrote counts for nothing. Two paths name the same directory when
+    /// they are equal or, both existing, share device and inode, so a second
+    /// spelling (a bind mount, another case on a case-insensitive filesystem) is
+    /// still the other VM's. Nothing reads a directory's name.
+    ///
+    /// The check and the write hold the claims mutex and an flock on `<base>`,
+    /// so two claims of one directory, from two threads or two adapter
+    /// processes, never both succeed; on a filesystem that cannot lock a
+    /// directory, only the mutex, within this adapter process. The project token passes
+    /// and records nothing. `field` names the request field in errors.
+    fn claim_build_dir(
+        &self,
+        auth: &str,
+        state_key: &str,
+        dir: &Path,
+        field: &str,
+    ) -> Result<(), SandboxError> {
+        if self.is_project_token(auth) {
+            return Ok(());
+        }
+        // A scoped token that got here derives from a non-empty project token.
+        let token = self.token.as_deref().unwrap_or("");
+        let id = vm_id(state_key);
+        let _claims = self.claims.lock().unwrap_or_else(PoisonError::into_inner);
+        let _lock = lock_build_dirs(&self.base).map_err(SandboxError::FsIo)?;
+        let here = dir_identity(dir);
+        let mut own = None;
+        for (vm, recorded) in recorded_build_dirs(&self.base, token) {
+            if recorded != dir && (here.is_none() || dir_identity(&recorded) != here) {
+                continue;
+            }
+            if vm != id {
+                return Err(SandboxError::BuildDirRefused(format!(
+                    "{field} {} is the build directory of VM {vm}, recorded in {}, not of VM \
+                     {id}; destroy VM {vm}, or delete that file, to use it for VM {id}",
+                    dir.display(),
+                    self.base.join(&vm).join(BUILD_DIR_RECORD).display()
+                )));
+            }
+            own = Some(recorded);
+        }
+        if own.as_deref() == Some(dir) {
+            return Ok(());
+        }
+        // A first claim, a move from another directory, or a new spelling.
+        store_build_dir(&self.base, &id, state_key, dir, token).map_err(|e| {
+            SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
+        })
     }
 
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
@@ -829,8 +945,9 @@ impl WorkerVms {
     }
 
     /// `host_path`, canonicalized, if it lies under a canonicalized root.
-    fn admit(&self, host_path: &str) -> Result<PathBuf, SandboxError> {
-        if let Ok(path) = Path::new(host_path).canonicalize()
+    fn admit(&self, host_path: impl AsRef<Path>) -> Result<PathBuf, SandboxError> {
+        let host_path = host_path.as_ref();
+        if let Ok(path) = host_path.canonicalize()
             && self
                 .roots
                 .iter()
@@ -842,19 +959,22 @@ impl WorkerVms {
         if self.roots.is_empty() {
             return Err(SandboxError::SourceRejected(format!(
                 "no host roots are configured (III_SANDBOX_HOST_ROOTS is empty); \
-                 refusing host_path {host_path}"
+                 refusing host_path {}",
+                host_path.display()
             )));
         }
         let roots: Vec<_> = self.roots.iter().map(|r| r.display().to_string()).collect();
         let roots = roots.join(", ");
-        if let Err(e) = Path::new(host_path).canonicalize() {
+        if let Err(e) = host_path.canonicalize() {
             return Err(SandboxError::SourceRejected(format!(
-                "host_path {host_path} cannot be read ({e}); it must exist under the host \
-                 roots [{roots}] (III_SANDBOX_HOST_ROOTS)"
+                "host_path {} cannot be read ({e}); it must exist under the host roots \
+                 [{roots}] (III_SANDBOX_HOST_ROOTS)",
+                host_path.display()
             )));
         }
         Err(SandboxError::SourceRejected(format!(
-            "host_path {host_path} is outside the host roots [{roots}] (III_SANDBOX_HOST_ROOTS)"
+            "host_path {} is outside the host roots [{roots}] (III_SANDBOX_HOST_ROOTS)",
+            host_path.display()
         )))
     }
 }
@@ -1186,9 +1306,10 @@ struct ImageWrite {
 }
 
 impl ImageWrite {
-    /// Write `image.erofs` and `image.id` as temporary files, then rename them
-    /// into place, the image first. A build cancelled before the renames leaves
-    /// the previous pair; returns the build id.
+    /// Write `image.erofs` and `image.id` as temporary files, then put them in
+    /// place: the previous `image.id` goes, the image is renamed in, and its id
+    /// last ([`swap_image`], [`commit_image_id`]). A build cancelled before that
+    /// leaves the previous pair; returns the build id.
     fn write(self) -> Result<String, String> {
         let tmp_image = self.out.join(format!(".{IMAGE_FILE}.{}.partial", self.tag));
         let tmp_id = self
@@ -1220,6 +1341,10 @@ impl ImageWrite {
             &extra,
             &cancelled,
         )?;
+        // The image's bytes reach the disk before a rename can publish them.
+        File::open(&tmp_image)
+            .and_then(|image| image.sync_all())
+            .map_err(|e| format!("flush the image: {e}"))?;
         let build_id =
             sha256_file(&tmp_image, &cancelled).map_err(|e| format!("hash the image: {e}"))?;
         write_new_file(&tmp_id, format!("{build_id}\n").as_bytes())
@@ -1236,21 +1361,70 @@ impl ImageWrite {
         {
             return Err("cancelled".to_string());
         }
-        std::fs::rename(&tmp_image, self.out.join(IMAGE_FILE))
-            .map_err(|e| format!("rename the image into place: {e}"))?;
-        std::fs::rename(&tmp_id, self.out.join(IMAGE_ID_FILE))
-            .map_err(|e| format!("rename image.id into place: {e}"))?;
-        if let Ok(dir) = File::open(&self.out) {
-            let _ = dir.sync_all();
-        }
+        swap_image(&self.out, &tmp_image)?;
+        // A crash here leaves the new image without an id: S508 until a rebuild.
+        commit_image_id(&self.out, &tmp_id)?;
         Ok(build_id)
     }
+}
+
+/// The first of the two steps that put a written image in place: remove
+/// `out/image.id`, flush that removal to disk, rename `image` to
+/// `out/image.erofs`, and flush that too. Until [`commit_image_id`] renames the
+/// new id in, `out` holds an image and no id, which a start refuses with S508: a
+/// crash, a failed flush or a failed rename between the two steps leaves a
+/// rebuild to do, never the new image under the previous build's id. One
+/// writer per `output_dir` at a time is assumed: two builds of one VM are S509,
+/// and nothing serializes two VMs sharing a directory (README, Known limits).
+fn swap_image(out: &Path, image: &Path) -> Result<(), String> {
+    match std::fs::remove_file(out.join(IMAGE_ID_FILE)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(format!("remove the previous image.id: {e}"));
+        }
+        _ => {}
+    }
+    sync_dir(out).map_err(|e| format!("flush {}: {e}", out.display()))?;
+    std::fs::rename(image, out.join(IMAGE_FILE))
+        .map_err(|e| format!("rename the image into place: {e}"))?;
+    // So the id's rename can never reach the disk without the image's.
+    sync_dir(out).map_err(|e| format!("flush {}: {e}", out.display()))
+}
+
+/// The second step after [`swap_image`]: rename the image's id into place. The
+/// build is done then, so a failed last flush is not an error.
+fn commit_image_id(out: &Path, id: &Path) -> Result<(), String> {
+    std::fs::rename(id, out.join(IMAGE_ID_FILE))
+        .map_err(|e| format!("rename image.id into place: {e}"))?;
+    let _ = sync_dir(out);
+    Ok(())
+}
+
+/// Flush the entries of `dir` (a create, rename or removal in it) to disk. A
+/// filesystem that cannot flush a directory ([`flush_unsupported`]) gets a
+/// warning, not an error, as 0.4.0 did: the order of the operations still
+/// holds against a crash of this process, only not against a power failure.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    match File::open(dir)?.sync_all() {
+        Err(e) if flush_unsupported(&e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "this filesystem cannot flush a directory; going on without");
+            Ok(())
+        }
+        flushed => flushed,
+    }
+}
+
+/// EINVAL, ENOTSUP (EOPNOTSUPP) and EBADF from a directory's fsync: what
+/// filesystems that do not flush directories answer (some network and
+/// FAT-family volumes; `F_FULLFSYNC` on macOS).
+fn flush_unsupported(e: &io::Error) -> bool {
+    e.raw_os_error().is_some_and(|code| {
+        [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EBADF].contains(&code)
+    })
 }
 
 /// `sha256:<hex>` of a file's bytes; an error once `cancelled` returns true.
 fn sha256_file(path: &Path, cancelled: &dyn Fn() -> bool) -> io::Result<String> {
     let mut file = File::open(path)?;
-    file.sync_all()?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -1634,6 +1808,148 @@ fn stored_state_key(base: &Path, id: &str) -> Option<String> {
         .and_then(|mut file| file.read_to_string(&mut state_key))
         .ok()?;
     Some(state_key)
+}
+
+/// A `<vm_id>/build-dir` record: the build directory of the VM of `state_key`.
+#[derive(Serialize, Deserialize)]
+struct BuildDirRecord {
+    state_key: String,
+    dir: PathBuf,
+    /// Hex HMAC-SHA256 keyed by the project token, see `build_dir_mac`.
+    mac: String,
+}
+
+/// The MAC of a `build-dir` record: over [`BUILD_DIR_DOMAIN`], the state key's
+/// length and bytes, then the directory's bytes.
+fn build_dir_mac(token: &str, state_key: &str, dir: &Path) -> Hmac<Sha256> {
+    // HMAC takes a key of any length; only fixed-size MACs can refuse one.
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(token.as_bytes()).expect("HMAC accepts a key of any length");
+    mac.update(BUILD_DIR_DOMAIN);
+    mac.update(&(state_key.len() as u64).to_be_bytes());
+    mac.update(state_key.as_bytes());
+    mac.update(dir.as_os_str().as_encoded_bytes());
+    mac
+}
+
+/// The build directory `<base>/<id>/build-dir` records, when the record is whole,
+/// names a state key whose `vm_id` is `id`, and carries `token`'s MAC. As in
+/// `stored_state_key`, only an id `vm_id()` could have made reaches the path.
+fn read_build_dir(base: &Path, id: &str, token: &str) -> Option<PathBuf> {
+    if token.is_empty() || id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let file = open_private(&base.join(id).join(BUILD_DIR_RECORD), false).ok()?;
+    let record: BuildDirRecord = serde_json::from_reader(file.take(64 * 1024)).ok()?;
+    let tag = hex::decode(&record.mac).ok()?;
+    (vm_id(&record.state_key) == id
+        && build_dir_mac(token, &record.state_key, &record.dir)
+            .verify_slice(&tag)
+            .is_ok())
+    .then_some(record.dir)
+}
+
+/// Record `dir` as the build directory of VM `id` (`state_key`'s) in
+/// `<base>/<id>/build-dir`: a temp file flushed and renamed over the record, and
+/// the directories flushed, so a crash or a power failure leaves the previous
+/// record or this one, whole.
+fn store_build_dir(
+    base: &Path,
+    id: &str,
+    state_key: &str,
+    dir: &Path,
+    token: &str,
+) -> io::Result<()> {
+    let record = BuildDirRecord {
+        state_key: state_key.to_string(),
+        dir: dir.to_path_buf(),
+        mac: hex::encode(build_dir_mac(token, state_key, dir).finalize().into_bytes()),
+    };
+    // A directory whose path is not UTF-8 fails here, and is never claimed.
+    let data = serde_json::to_vec(&record)?;
+    let vm_dir = base.join(id);
+    std::fs::create_dir_all(&vm_dir)?;
+    sync_dir(base)?;
+    let tmp = vm_dir.join(format!("{BUILD_DIR_RECORD}.tmp"));
+    // A crash between the create and the rename leaves it behind.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&tmp)?;
+    file.write_all(&data)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, vm_dir.join(BUILD_DIR_RECORD))?;
+    sync_dir(&vm_dir)
+}
+
+/// Every build directory a VM of `token`'s project recorded under `base`, with
+/// its VM: the records `read_build_dir` accepts.
+fn recorded_build_dirs(base: &Path, token: &str) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.file_name().into_string().ok()?;
+            let dir = read_build_dir(base, &id, token)?;
+            Some((id, dir))
+        })
+        .collect()
+}
+
+/// A directory's identity, device and inode, when `path` is a directory now
+/// (not through a final symlink): two spellings of one directory share it.
+fn dir_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|m| m.is_dir())
+        .map(|m| (m.dev(), m.ino()))
+}
+
+/// Exclusive, blocking lock over the `build-dir` records of `base`, across
+/// threads and processes: an flock on the `base` directory itself, so no lock
+/// file outlives the last VM. Released when the handle drops or the process
+/// exits. `None` where the filesystem cannot lock a directory
+/// ([`lock_unsupported`], NFS among them): a warning, once, and the claims are
+/// then serialized within this adapter process only, by its mutex.
+fn lock_build_dirs(base: &Path) -> Result<Option<File>, String> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    std::fs::create_dir_all(base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let dir = File::open(base).map_err(|e| format!("open {}: {e}", base.display()))?;
+    match dir.lock() {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) if lock_unsupported(&e) => {
+            if !WARNED.swap(true, Ordering::SeqCst) {
+                tracing::warn!(dir = %base.display(), error = %e, "this filesystem cannot lock a directory; build-dir claims are serialized within this adapter process only");
+            }
+            Ok(None)
+        }
+        Err(e) => Err(format!("lock {}: {e}", base.display())),
+    }
+}
+
+/// ENOLCK, EBADF, ENOTSUP (EOPNOTSUPP) and EINVAL from an flock on a
+/// directory: what filesystems that cannot lock one answer (NFS emulates
+/// flock with POSIX locks, which a directory cannot hold).
+fn lock_unsupported(e: &io::Error) -> bool {
+    e.raw_os_error().is_some_and(|code| {
+        [
+            libc::ENOLCK,
+            libc::EBADF,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+        ]
+        .contains(&code)
+    })
 }
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
@@ -2355,7 +2671,7 @@ mod tests {
         std::os::unix::fs::symlink(t.join("real"), t.join("link")).unwrap();
         let vms = vms(t, Some("t"), vec![t.join("link")]);
         for path in [t.join("real/w"), t.join("link/w")] {
-            assert!(vms.admit(&path.display().to_string()).is_ok(), "{path:?}");
+            assert!(vms.admit(path.display().to_string()).is_ok(), "{path:?}");
         }
 
         // macOS: /tmp is a symlink to /private/tmp.
@@ -3116,16 +3432,24 @@ mod tests {
         let id = format!("sha256:{}", "a".repeat(64));
 
         // No image.id at all.
-        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        assert_eq!(
+            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
+            "S508"
+        );
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        assert_eq!(
+            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
+            "S508"
+        );
         // Another build's id.
         std::fs::write(
             dir.join(IMAGE_ID_FILE),
             format!("sha256:{}\n", "b".repeat(64)),
         )
         .unwrap();
-        let err = vms.admit_build(&build_ref(&dir, &id)).unwrap_err();
+        let err = vms
+            .admit_build("t", "k", &build_ref(&dir, &id))
+            .unwrap_err();
         assert_eq!(err.code().as_str(), "S508");
         assert!(err.to_string().contains(&"b".repeat(64)), "{err}");
         // A planted symlink is no id.
@@ -3133,18 +3457,27 @@ mod tests {
         let elsewhere = t.join("id");
         std::fs::write(&elsewhere, &id).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.join(IMAGE_ID_FILE)).unwrap();
-        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        assert_eq!(
+            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
+            "S508"
+        );
         std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
         // The matching id, but no image.
         std::fs::write(dir.join(IMAGE_ID_FILE), format!("{id}\n")).unwrap();
         std::fs::remove_file(dir.join(IMAGE_FILE)).unwrap();
-        assert_eq!(code(vms.admit_build(&build_ref(&dir, &id))), "S508");
+        assert_eq!(
+            code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
+            "S508"
+        );
         std::fs::write(dir.join(IMAGE_FILE), "image").unwrap();
-        let image = vms.admit_build(&build_ref(&dir, &id)).unwrap();
+        let image = vms.admit_build("t", "k", &build_ref(&dir, &id)).unwrap();
         assert_eq!(image, dir.canonicalize().unwrap().join(IMAGE_FILE));
         // Outside the host roots it is S501, before any id is read.
         let outside = vms_without_roots(t);
-        assert_eq!(code(outside.admit_build(&build_ref(&dir, &id))), "S501");
+        assert_eq!(
+            code(outside.admit_build("t", "k", &build_ref(&dir, &id))),
+            "S501"
+        );
     }
 
     fn vms_without_roots(t: &Path) -> WorkerVms {
@@ -3167,24 +3500,349 @@ mod tests {
         assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
     }
 
+    /// `plan_output` creates nothing and refuses what is not a directory under
+    /// the roots; `create_output` creates the planned directory, and refuses
+    /// one a link redirected since.
     #[test]
-    fn an_output_dir_is_created_under_the_host_roots_only() {
+    fn an_output_dir_is_planned_under_the_host_roots_and_created_after() {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let project = t.join("project");
         std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(t.join("elsewhere")).unwrap();
+        std::fs::write(project.join("file"), "").unwrap();
         let vms = vms(t, Some("t"), vec![project.clone()]);
         let out = project.join(".build/w");
-        let got = vms.admit_output(&out.display().to_string()).unwrap();
+        let planned = vms.plan_output(&out.display().to_string()).unwrap();
+        assert_eq!(planned, project.canonicalize().unwrap().join(".build/w"));
+        assert!(!project.join(".build").exists(), "a plan creates nothing");
+        let got = vms.create_output(&planned, "w").unwrap();
         assert_eq!(got, out.canonicalize().unwrap());
+        assert_eq!(vms.plan_output(&out.display().to_string()).unwrap(), got);
         for refused in [
             t.join("elsewhere/.build/w").display().to_string(),
             "relative/.build/w".to_string(),
             format!("{}/../escape", project.display()),
+            project.join("file").display().to_string(),
+            project.join("file/w").display().to_string(),
         ] {
-            assert_eq!(code(vms.admit_output(&refused)), "S501", "{refused}");
+            assert_eq!(code(vms.plan_output(&refused)), "S501", "{refused}");
         }
-        assert!(!t.join("elsewhere").exists() && !t.join("escape").exists());
+        assert!(!t.join("elsewhere/.build").exists() && !t.join("escape").exists());
+        // A link put in the planned path between the plan and the create.
+        let planned = vms
+            .plan_output(&project.join("late/w").display().to_string())
+            .unwrap();
+        std::os::unix::fs::symlink(t.join("elsewhere"), project.join("late")).unwrap();
+        assert_eq!(code(vms.create_output(&planned, "late/w")), "S501");
+    }
+
+    fn claim(vms: &WorkerVms, auth: &str, key: &str, dir: &Path) -> Result<(), SandboxError> {
+        vms.claim_build_dir(auth, key, dir, "output_dir")
+    }
+
+    /// `<t>/project/build/<name>` for each name, created and canonical.
+    fn build_dirs<const N: usize>(t: &Path, names: [&str; N]) -> [PathBuf; N] {
+        names.map(|name| {
+            let dir = t.join("project/build").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir.canonicalize().unwrap()
+        })
+    }
+
+    fn record_of(t: &Path, key: &str) -> PathBuf {
+        t.join("workers").join(vm_id(key)).join(BUILD_DIR_RECORD)
+    }
+
+    /// A scoped token never takes a directory another VM of the project
+    /// recorded: S505, naming the record and the way out. The project token is
+    /// never checked and records nothing.
+    #[test]
+    fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [dir_a, dir_b, dir_c] = build_dirs(t, ["a", "b", "c"]);
+        let [a, b, c, d, f] = ["a", "b", "c", "d", "f"].map(|key| scoped_auth_token("t", key));
+        let first = vms(t, Some("t"), vec![t.into()]);
+
+        claim(&first, &a, "a", &dir_a).unwrap();
+        claim(&first, &b, "b", &dir_b).unwrap();
+        claim(&first, &a, "a", &dir_a).unwrap();
+        let err = claim(&first, &a, "a", &dir_b).unwrap_err();
+        assert_eq!(err.code().as_str(), "S505", "{err}");
+        let message = err.to_string();
+        for part in [
+            vm_id("b"),
+            record_of(t, "b").display().to_string(),
+            "destroy VM".to_string(),
+            "delete that file".to_string(),
+        ] {
+            assert!(message.contains(&part), "{part}: {message}");
+        }
+        // C, which has recorded nothing, cannot take B's either.
+        assert_eq!(code(claim(&first, &c, "c", &dir_b)), "S505");
+        // The project token goes anywhere and records nothing.
+        claim(&first, "t", "a", &dir_b).unwrap();
+        claim(&first, "t", "c", &dir_c).unwrap();
+        assert!(!record_of(t, "c").exists());
+
+        // The records outlive the adapter process, private.
+        let again = vms(t, Some("t"), vec![t.into()]);
+        assert_eq!(code(claim(&again, &a, "a", &dir_b)), "S505");
+        let mode = std::fs::metadata(record_of(t, "a"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        // A destroyed VM's directory is free again.
+        assert!(again.destroy(destroy_req("t", "b")).unwrap().destroyed);
+        claim(&again, &d, "d", &dir_b).unwrap();
+
+        // A record the project token did not sign counts for nothing: under a
+        // new token nobody holds a directory, and a forged record holds none.
+        let rotated = vms(t, Some("u"), vec![t.into()]);
+        claim(&rotated, &scoped_auth_token("u", "c"), "c", &dir_a).unwrap();
+        store_build_dir(&t.join("workers"), &vm_id("e"), "e", &dir_c, "not-t").unwrap();
+        claim(&again, &f, "f", &dir_c).unwrap();
+    }
+
+    /// Another directory moves the VM there and frees the one it leaves, even
+    /// when that one stays on disk (Compose moved the container's build
+    /// directory and kept the old one).
+    #[test]
+    fn a_vm_moves_to_another_dir_and_releases_the_old_one() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [old, new] = build_dirs(t, ["old", "new"]);
+        let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        claim(&vms, &a, "a", &old).unwrap();
+        claim(&vms, &a, "a", &new).unwrap();
+        assert!(old.is_dir());
+        assert_eq!(
+            read_build_dir(&t.join("workers"), &vm_id("a"), "t"),
+            Some(new.clone())
+        );
+        claim(&vms, &b, "b", &old).unwrap();
+        assert_eq!(code(claim(&vms, &a, "a", &old)), "S505");
+        claim(&vms, &a, "a", &new).unwrap();
+    }
+
+    /// A second spelling of one directory, same device and inode, is still the
+    /// VM's that recorded it; the VM itself is recorded again under its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn another_spelling_of_a_recorded_dir_is_still_that_vms() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [dir_b] = build_dirs(t, ["b"]);
+        let alias = PathBuf::from(format!("/proc/self/root{}", dir_b.display()));
+        assert_ne!(alias, dir_b);
+        let base = t.join("workers");
+        store_build_dir(&base, &vm_id("b"), "b", &alias, "t").unwrap();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let a = scoped_auth_token("t", "a");
+        assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
+        let b = scoped_auth_token("t", "b");
+        claim(&vms, &b, "b", &dir_b).unwrap();
+        assert_eq!(read_build_dir(&base, &vm_id("b"), "t"), Some(dir_b.clone()));
+        assert_eq!(code(claim(&vms, &a, "a", &alias)), "S505");
+    }
+
+    /// A record counts only in its own VM's dir, and only as a regular file: a
+    /// valid record copied into another VM's dir, or a `build-dir` that is a
+    /// symlink to one, holds nothing, and a claim replaces the link itself.
+    #[test]
+    fn a_transplanted_or_linked_record_counts_for_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [dir_a, dir_b, dir_c, dir_x] = build_dirs(t, ["a", "b", "c", "x"]);
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|key| scoped_auth_token("t", key));
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let base = t.join("workers");
+
+        claim(&vms, &b, "b", &dir_b).unwrap();
+        std::fs::create_dir_all(base.join(vm_id("a"))).unwrap();
+        std::fs::copy(record_of(t, "b"), record_of(t, "a")).unwrap();
+        assert_eq!(read_build_dir(&base, &vm_id("a"), "t"), None);
+        // Read as VM a's, the copy would refuse B its own directory.
+        claim(&vms, &b, "b", &dir_b).unwrap();
+        assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
+        claim(&vms, &a, "a", &dir_a).unwrap();
+
+        // C's record, valid, moved out and linked back.
+        store_build_dir(&base, &vm_id("c"), "c", &dir_c, "t").unwrap();
+        let target = t.join("elsewhere-record");
+        std::fs::rename(record_of(t, "c"), &target).unwrap();
+        std::os::unix::fs::symlink(&target, record_of(t, "c")).unwrap();
+        let kept = std::fs::read(&target).unwrap();
+        assert_eq!(read_build_dir(&base, &vm_id("c"), "t"), None);
+        claim(&vms, &d, "d", &dir_c).unwrap();
+        claim(&vms, &c, "c", &dir_x).unwrap();
+        let record = std::fs::symlink_metadata(record_of(t, "c")).unwrap();
+        assert!(record.is_file(), "{record:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), kept);
+        assert_eq!(read_build_dir(&base, &vm_id("c"), "t"), Some(dir_x));
+    }
+
+    /// A scoped `worker::destroy` deletes its own VM's record only: another
+    /// VM's directory stays out of reach.
+    #[test]
+    fn a_scoped_destroy_frees_only_its_own_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
+        let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        claim(&vms, &a, "a", &dir_a).unwrap();
+        claim(&vms, &b, "b", &dir_b).unwrap();
+        assert!(vms.destroy(destroy_req(&a, "a")).unwrap().destroyed);
+        assert!(!record_of(t, "a").exists());
+        assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
+        claim(&vms, &a, "a", &dir_a).unwrap();
+        // Nothing of the claims, lock included, outlives the last VM.
+        for key in ["a", "b"] {
+            assert!(vms.destroy(destroy_req("t", key)).unwrap().destroyed);
+        }
+        assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
+    }
+
+    /// Two VMs claim one directory at once, through two adapters on one base
+    /// (two processes' worth: separate mutexes, one flock): one gets it, the
+    /// other S505, every time.
+    #[test]
+    fn two_claims_of_one_dir_at_once_give_it_to_one_vm() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let first = vms(t, Some("t"), vec![t.into()]);
+        let second = vms(t, Some("t"), vec![t.into()]);
+        for round in 0..25 {
+            let [dir] = build_dirs(t, [&format!("race-{round}")]);
+            let keys = [format!("x{round}"), format!("y{round}")];
+            let barrier = std::sync::Barrier::new(2);
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let racers: Vec<_> = [&first, &second]
+                    .into_iter()
+                    .zip(&keys)
+                    .map(|(vms, key)| {
+                        let (barrier, dir) = (&barrier, &dir);
+                        scope.spawn(move || {
+                            let token = scoped_auth_token("t", key);
+                            barrier.wait();
+                            claim(vms, &token, key, dir)
+                        })
+                    })
+                    .collect();
+                racers.into_iter().map(|r| r.join().unwrap()).collect()
+            });
+            let won = results.iter().filter(|r| r.is_ok()).count();
+            assert_eq!(won, 1, "round {round}: {results:?}");
+            for lost in results.iter().filter_map(|r| r.as_ref().err()) {
+                assert_eq!(lost.code().as_str(), "S505", "round {round}: {lost}");
+            }
+        }
+    }
+
+    /// `worker::start` takes `build_dir` through the same claim, before it
+    /// reads image.id: another VM's image is S505, whatever the id, and so is
+    /// any other path to it (a symlink, `..`).
+    #[test]
+    fn a_scoped_start_boots_no_other_vms_build_dir() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
+        let id = format!("sha256:{}", "a".repeat(64));
+        std::fs::write(dir_b.join(IMAGE_FILE), "image").unwrap();
+        std::fs::write(dir_b.join(IMAGE_ID_FILE), format!("{id}\n")).unwrap();
+        let link = t.join("link-to-b");
+        std::os::unix::fs::symlink(&dir_b, &link).unwrap();
+        let dotdot = PathBuf::from(format!("{}/../b", dir_a.display()));
+        let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+
+        vms.admit_build(&b, "b", &build_ref(&dir_b, &id)).unwrap();
+        for path in [&dir_b, &link, &dotdot] {
+            assert_eq!(
+                code(vms.admit_build(&a, "a", &build_ref(path, &id))),
+                "S505"
+            );
+        }
+        assert_eq!(
+            code(vms.admit_build(&a, "a", &build_ref(&dir_b, "sha256:00"))),
+            "S505"
+        );
+        // S508, not S505: its own directory got past the claim.
+        assert_eq!(
+            code(vms.admit_build(&a, "a", &build_ref(&dir_a, &id))),
+            "S508"
+        );
+        // The project token boots any directory under the roots, as before.
+        vms.admit_build("t", "a", &build_ref(&dir_b, &id)).unwrap();
+    }
+
+    /// `worker::build` claims `output_dir` under its key's hold, before it
+    /// creates it or reads the source: a refused token creates nothing, by any
+    /// path to the other VM's directory, even one that is gone from disk.
+    #[tokio::test]
+    async fn a_scoped_build_writes_no_other_vms_build_dir() {
+        if !crate::cli::overlay::overlay_active() {
+            eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let empty = t.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let iii = IIIClient::new("ws://127.0.0.1:9");
+        let build = |auth: &str, state_key: &str, out: &Path| {
+            vms.build(
+                &iii,
+                WorkerBuildRequest {
+                    auth: auth.to_string(),
+                    state_key: state_key.to_string(),
+                    worker_name: "w".to_string(),
+                    source: local(&empty),
+                    output_dir: out.display().to_string(),
+                    env: Default::default(),
+                    logs: StreamChannelRef {
+                        channel_id: "c".to_string(),
+                        access_key: "k".to_string(),
+                        direction: ChannelDirection::Write,
+                    },
+                },
+            )
+        };
+        let (out_a, out_b) = (t.join("project/a"), t.join("project/b"));
+        let link = t.join("project/link-to-b");
+        let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
+        // S501, not S505: past the claim, to the empty source.
+        assert_eq!(code(build(&b, "b", &out_b).await), "S501");
+        std::os::unix::fs::symlink(&out_b, &link).unwrap();
+        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
+        assert_eq!(code(build(&a, "a", &link).await), "S505");
+        // `..` is refused before any claim.
+        let dotdot = PathBuf::from(format!("{}/../b", out_a.display()));
+        assert_eq!(code(build(&a, "a", &dotdot).await), "S501");
+        assert!(!out_a.exists());
+        assert_eq!(std::fs::read_dir(&out_b).unwrap().count(), 0);
+        // B's directory, deleted, is still B's: A gets S505 and creates nothing.
+        std::fs::remove_dir(&out_b).unwrap();
+        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
+        assert!(!out_b.exists());
+        assert_eq!(code(build(&a, "a", &out_a).await), "S501");
+        assert!(out_a.is_dir());
+        // Under a file it cannot be created: refused at the plan, A keeps its record.
+        std::fs::write(t.join("project/file"), "").unwrap();
+        assert_eq!(
+            code(build(&a, "a", &t.join("project/file/w")).await),
+            "S501"
+        );
+        let own = read_build_dir(&t.join("workers"), &vm_id("a"), "t");
+        assert_eq!(own, Some(out_a.canonicalize().unwrap()));
+        assert_eq!(code(build("t", "a", &out_b).await), "S501");
     }
 
     /// What iii-init's export writes: "./" and a file.
@@ -3267,6 +3925,81 @@ mod tests {
         assert!(!t.join("spool").exists());
     }
 
+    /// A crash between the two renames, simulated by running the first step
+    /// alone: the new image is in place without an id, so a start of the
+    /// previous build or of the new one is S508, until a rebuild completes.
+    #[test]
+    fn a_crash_between_the_renames_leaves_no_id_and_a_start_gets_s508() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let (write, _) = image_write(t, "v1", BUILD_RUNNING);
+        let previous = write.write().unwrap();
+        let out = t.join("out");
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        vms.admit_build("t", "k", &build_ref(&out, &previous))
+            .unwrap();
+
+        // The next build's two temporary files, its first step, and the crash.
+        let image = out.join(format!(".{IMAGE_FILE}.v2.partial"));
+        let id = out.join(format!(".{IMAGE_ID_FILE}.v2.partial"));
+        std::fs::write(&image, "v2").unwrap();
+        let next = format!("sha256:{}", hex::encode(Sha256::digest(b"v2")));
+        std::fs::write(&id, format!("{next}\n")).unwrap();
+        swap_image(&out, &image).unwrap();
+
+        assert_eq!(std::fs::read(out.join(IMAGE_FILE)).unwrap(), b"v2");
+        assert_eq!(read_image_id(&out), None);
+        for build_id in [&previous, &next] {
+            let err = vms
+                .admit_build("t", "k", &build_ref(&out, build_id))
+                .unwrap_err();
+            assert_eq!(err.code().as_str(), "S508", "{err}");
+            assert!(err.to_string().contains("is missing; build again"), "{err}");
+        }
+
+        // A rebuild puts a whole pair back.
+        let (write, _) = image_write(t, "v3", BUILD_RUNNING);
+        let rebuilt = write.write().unwrap();
+        vms.admit_build("t", "k", &build_ref(&out, &rebuilt))
+            .unwrap();
+        assert_eq!(
+            code(vms.admit_build("t", "k", &build_ref(&out, &previous))),
+            "S508"
+        );
+    }
+
+    /// A filesystem that cannot flush a directory gets a warning, not a failed
+    /// build; an I/O error is still an error.
+    #[test]
+    fn a_directory_flush_the_filesystem_refuses_is_a_warning() {
+        for unsupported in [libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EBADF] {
+            assert!(flush_unsupported(&io::Error::from_raw_os_error(
+                unsupported
+            )));
+        }
+        for failed in [libc::EIO, libc::ENOSPC, libc::EACCES] {
+            assert!(!flush_unsupported(&io::Error::from_raw_os_error(failed)));
+        }
+    }
+
+    /// A filesystem that cannot lock a directory (NFS) leaves the claims to the
+    /// in-process mutex instead of failing them; other errors still fail.
+    #[test]
+    fn a_directory_lock_the_filesystem_refuses_falls_back_to_the_mutex() {
+        for unsupported in [
+            libc::ENOLCK,
+            libc::EBADF,
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+        ] {
+            assert!(lock_unsupported(&io::Error::from_raw_os_error(unsupported)));
+        }
+        for failed in [libc::EIO, libc::EACCES, libc::EINTR] {
+            assert!(!lock_unsupported(&io::Error::from_raw_os_error(failed)));
+        }
+    }
+
     /// The build's run is dropped once its image is renamed into place, before
     /// it saw its writer end: the cancel gets the writer's build id, so the
     /// build reports the image it installed.
@@ -3285,17 +4018,15 @@ mod tests {
             "the writer ended within one poll: {first:?}"
         );
         // The writer commits while the run is never polled again, as when the
-        // build's caller left: then the run goes.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !id_file.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the writer never committed"
-            );
+        // build's caller left: then the run goes. The writer flushes the image
+        // and the directory, which a loaded disk can take a while to do.
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        while !id_file.exists() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         drop(run);
         let written = cancel_writer(&slot, &state).await;
+        assert!(id_file.exists(), "the writer never committed: {written:?}");
         assert_eq!(state.load(Ordering::SeqCst), BUILD_COMMITTED);
         let id = written.expect("the writer was still in its slot").unwrap();
         assert_eq!(read_image_id(&t.join("out")), Some(id));

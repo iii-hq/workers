@@ -269,8 +269,9 @@ pub fn register_all(
             "Build the image of `state_key`'s VM into `output_dir` (image.erofs, then \
              image.id): a build VM on the base image runs scripts.setup and \
              scripts.install. The output streams into `logs`, and the build ends when its \
-             reader leaves. Needs the project token or the VM's scoped token; S509 while \
-             another build of the key runs, S507 when a step fails.",
+             reader leaves. Needs the project token or the VM's scoped token, which never \
+             writes a build directory another VM recorded (S505); S509 while another build of \
+             the key runs, S507 when a step fails.",
             {
                 let iii = iii.clone();
                 move |vms, req| {
@@ -284,8 +285,9 @@ pub fn register_all(
             vms.clone(),
             WORKER_START,
             "Boot the worker VM of `state_key` as its next instance; with `build`, the \
-             image worker::build wrote (S508 when image.id does not match). Needs the \
-             project token; S502 while that VM is preparing or running.",
+             image worker::build wrote (S508 when image.id does not match; a scoped token \
+             boots no build directory another VM recorded, S505). Needs the project token or the \
+             VM's scoped token; S502 while that VM is preparing or running.",
             |vms, req| async move { vms.start(req).await },
         ),
         register_worker_op(
