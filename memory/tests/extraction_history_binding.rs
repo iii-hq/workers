@@ -26,6 +26,8 @@ struct Fixture {
     reply: Option<Value>,
     gone: bool,
     kind: Option<&'static str>,
+    /// Owner lookups answered late, holding an import in flight.
+    delay_lookups: usize,
 }
 struct Stack {
     deps: Arc<Deps>,
@@ -71,6 +73,7 @@ impl Stack {
         }));
         let replies = fixture.clone();
         let (ready, wait) = oneshot::channel();
+        let (late_tx, mut late_rx) = mpsc::unbounded_channel::<String>();
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
@@ -80,6 +83,10 @@ impl Stack {
             let mut pending = std::collections::HashMap::new();
             loop {
                 tokio::select! {
+                    late = late_rx.recv() => {
+                        let Some(late) = late else { break; };
+                        socket.send(Message::Text(late.into())).await.unwrap();
+                    }
                     command = rx.recv() => {
                         let Some(command) = command else { break; };
                         if let Some(state) = command.input["fixture_state"].as_str() {
@@ -141,7 +148,22 @@ impl Stack {
                                     _ => Value::Null,
                                 };
                                 if !request["invocation_id"].is_null() {
-                                    socket.send(Message::Text(json!({"type":"invocationresult","invocation_id":request["invocation_id"],"function_id":function,"result":result}).to_string().into())).await.unwrap();
+                                    let reply = json!({"type":"invocationresult","invocation_id":request["invocation_id"],"function_id":function,"result":result}).to_string();
+                                    let late = function == "engine::workers::info" && {
+                                        let mut fixture = replies.lock().unwrap();
+                                        let late = fixture.delay_lookups > 0;
+                                        fixture.delay_lookups -= usize::from(late);
+                                        late
+                                    };
+                                    if late {
+                                        let late_tx = late_tx.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                            let _ = late_tx.send(reply);
+                                        });
+                                    } else {
+                                        socket.send(Message::Text(reply.into())).await.unwrap();
+                                    }
                                 }
                             }
                             _ => {}
@@ -192,6 +214,13 @@ impl Stack {
         }
     }
     async fn invoke(&self, input: Value, worker: &str, observer: Option<&str>) -> Value {
+        let response = self.deliver(input, worker, observer).await;
+        // The hook answers first; its history import runs in the background.
+        self.deps.hook_binding.import_settled().await;
+        response
+    }
+    /// The hook's answer, its background history import maybe still running.
+    async fn deliver(&self, input: Value, worker: &str, observer: Option<&str>) -> Value {
         let (answer, wait) = oneshot::channel();
         self.tx.send(Request { input,
             caller: json!({"worker_id":worker,"worker_name":"harness","parent":{"worker_id":"forged-parent"}}),
@@ -200,8 +229,6 @@ impl Stack {
             .await
             .unwrap()
             .unwrap();
-        // The hook answers first; its history import runs in the background.
-        self.deps.hook_binding.import_settled().await;
         assert!(response["error"].is_null(), "{response}");
         assert_eq!(response["result"]["decision"], "continue");
         response
@@ -1351,4 +1378,74 @@ async fn a_non_user_session_is_read_past_and_teaches_nothing() {
     assert_eq!(fixture.cursor["last_entry_id"], "opaque-entry");
     assert!(fixture.prompts.is_empty());
     assert!(!dir.path().join("main/memories.jsonl").exists());
+}
+
+/// `input`'s delivery, attested by and for another session.
+fn for_session(mut delivery: Value, session: &str) -> Value {
+    delivery["session_id"] = json!(session);
+    delivery["recall_context"]["session_id"] = json!(session);
+    delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["session_id"] =
+        json!(session);
+    delivery
+}
+
+#[tokio::test]
+async fn a_running_import_never_drops_another_sessions_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    // The first session's import is still authenticating when the second
+    // session's delivery arrives.
+    stack.fixture.lock().unwrap().delay_lookups = 1;
+    stack
+        .deliver(input("first"), "owner-one", Some(stack.handle.id()))
+        .await;
+    stack
+        .deliver(
+            for_session(input("second"), "other-session"),
+            "owner-one",
+            Some(stack.handle.id()),
+        )
+        .await;
+    stack.deps.hook_binding.import_settled().await;
+    let store = stack.deps.store().await;
+    for session in ["synthetic-session", "other-session"] {
+        let key = json!(["authenticated-history-v1", session]).to_string();
+        let rows = store.extraction_plan(&key).unwrap();
+        assert_eq!(
+            rows.and_then(|rows| rows.as_array().map(Vec::len)),
+            Some(1),
+            "{session}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_next_turns_job_waits_for_its_sessions_history_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let stack = Stack::new(dir.path()).await;
+    enable_extraction(&stack).await;
+    let text = "The user prefers copper instruments.";
+    let old = json!({"entry_id":"opaque-entry","message":{"role":"user","timestamp":1700000000000u64,"content":[{"type":"text","text":text}]}});
+    let job = next_turn(&stack, vec![old]);
+    let mut delivery = input("now");
+    delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["text_sha256"] =
+        json!("75a1e6098f1a3f42d47fb37d2f317b2b836b7798edbd06b88d37c0114b6ae438");
+    // The import is still authenticating when the next turn's job runs.
+    stack.fixture.lock().unwrap().delay_lookups = 1;
+    stack
+        .deliver(delivery, "owner-one", Some(stack.handle.id()))
+        .await;
+    memory::extract::try_run(&stack.deps, &job).await.unwrap();
+    // The failed request runs first, under the bank of the turn that failed.
+    let prompts = stack.fixture.lock().unwrap().prompts.clone();
+    assert_eq!(prompts.len(), 2);
+    assert!(prompts[0].contains(text));
+    let bank = stack.deps.store().await.bank("old-bank").await.unwrap();
+    let (items, count) = bank.list(10, 0, false, None).await;
+    assert_eq!(count, 1);
+    assert_eq!(items[0].text, text);
+    assert_eq!(
+        stack.fixture.lock().unwrap().cursor,
+        json!({"last_entry_id":"next-end"})
+    );
 }

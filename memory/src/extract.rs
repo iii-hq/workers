@@ -1053,6 +1053,8 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
     let source_entries = entries;
     // Only Memory's authenticated operational ledger can recover a missing
     // assistant boundary; neither queue JSON nor origin metadata can mint it.
+    // The import a step of this session started may still be writing it.
+    deps.hook_binding.session_import_settled(session_id).await;
     let history = ext(deps, |s| s.authenticated_history(session_id)).await?;
     let mut retained = ext(deps, |s| s.extraction_ranges(session_id)).await?;
     // Cursor confirmation can succeed before receipt compaction fails. Only

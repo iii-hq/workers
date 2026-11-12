@@ -5,6 +5,7 @@ use iii_sdk::{
     CallRequest, IIIClient, InvocationCtx, ObserverHandle, ObserverState, RegisterFunction,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub const SOURCE: &str = "harness::hook::on-pre-generate";
@@ -13,17 +14,36 @@ pub const SOURCE: &str = "harness::hook::on-pre-generate";
 #[derive(Default)]
 pub struct HookBinding {
     active: Mutex<Option<ObserverHandle>>,
-    /// The background history import. One at a time: every step delivers
-    /// the history again, so the next step retries a skipped delivery.
-    import: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The background history imports, by session. One per session at a
+    /// time: its every step delivers the history again, so the next step
+    /// retries a skipped delivery. Another session's import never skips it.
+    import: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 impl HookBinding {
     pub fn install(&self, handle: ObserverHandle) {
         *self.active.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
-    /// Wait for the background history import, if one runs.
+    /// Wait for every background history import.
     pub async fn import_settled(&self) {
-        let import = self.import.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let imports: Vec<_> = self
+            .import
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .map(|(_, import)| import)
+            .collect();
+        for import in imports {
+            let _ = import.await;
+        }
+    }
+    /// Wait for this session's history import, if one runs. It never takes
+    /// the session's extraction pass lock, so a pass may wait under it.
+    pub(crate) async fn session_import_settled(&self, session_id: &str) {
+        let import = self
+            .import
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         if let Some(import) = import {
             let _ = import.await;
         }
@@ -156,19 +176,21 @@ fn spawn_import(
     delivered: hooks::PreGenerateInput,
     rows: Vec<crate::extraction_proof::Row>,
 ) {
-    let mut slot = deps
+    let mut imports = deps
         .hook_binding
         .import
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().is_some_and(|import| !import.is_finished()) {
+    imports.retain(|_, import| !import.is_finished());
+    if imports.contains_key(&delivered.session_id) {
         return;
     }
+    let session_id = delivered.session_id.clone();
     let deps = deps.clone();
     // shortcut: a row the cursor already passed is dropped, not held, so each
     // later delivery of it walks the path again until the harness stops
     // sending it; remember dismissed rows if that shows in engine load.
-    *slot = Some(tokio::spawn(async move {
+    let import = tokio::spawn(async move {
         let store = deps.store().await;
         let stored =
             crate::store::run_blocking(|| store.authenticated_history(&delivered.session_id))
@@ -191,5 +213,6 @@ fn spawn_import(
         if let Err(error) = import {
             tracing::warn!(session_id = %delivered.session_id, %error, "extraction history import failed");
         }
-    }));
+    });
+    imports.insert(session_id, import);
 }
