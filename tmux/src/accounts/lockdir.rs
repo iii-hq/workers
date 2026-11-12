@@ -69,9 +69,12 @@ pub struct LockId {
 
 /// How long after the journal last noted a lock the worker may still touch
 /// it: a swap stops once it has held its locks for 8 seconds (the slot's
-/// `HOLD_BUDGET`). A directory someone made in its place after it went
-/// stale is at least the shortest stale period (10 s) younger than the
-/// worker's last touch.
+/// `HOLD_BUDGET`). A directory someone made in its place once it went
+/// stale, in the same inode or not, is younger than the worker's last
+/// touch by more than the lock's stale period: 15 s at the least for the
+/// locks a journal notes (the store lock), so 5 s clear of this window.
+/// One of the worker's touched later than that (a roll back past the
+/// budget) is waited out as stale instead.
 const OWN_TOUCHES: Duration = Duration::from_secs(10);
 
 fn since_epoch(at: std::io::Result<SystemTime>) -> Option<Duration> {
@@ -80,15 +83,36 @@ fn since_epoch(at: std::io::Result<SystemTime>) -> Option<Duration> {
 }
 
 fn identity(path: &Path) -> Option<LockId> {
-    use std::os::unix::fs::MetadataExt;
     let meta = std::fs::symlink_metadata(path).ok()?;
-    meta.is_dir().then(|| LockId {
+    meta.is_dir().then(|| id_of(path, &meta))
+}
+
+fn id_of(path: &Path, meta: &std::fs::Metadata) -> LockId {
+    use std::os::unix::fs::MetadataExt;
+    LockId {
         path: path.to_path_buf(),
         dev: meta.dev(),
         ino: meta.ino(),
         mtime_ms: since_epoch(meta.modified()).map_or(0, |at| at.as_millis() as u64),
         birth_ns: since_epoch(meta.created()).map(|at| at.as_nanos() as u64),
-    })
+    }
+}
+
+/// Whether `now` is still the very directory `then` was, untouched since.
+/// The device and inode alone don't tell: a file system may hand a freed
+/// inode number out again (ext4 often does, at once), so a lock removed
+/// and made again in the same place can have its predecessor's. Its
+/// modification time is new, though (a lock is judged stale, or noted as
+/// held, on the old one), and so is its birth time where the file system
+/// keeps one. Renaming a directory within its folder changes neither.
+fn same_dir(then: &LockId, now: &LockId) -> bool {
+    now.dev == then.dev
+        && now.ino == then.ino
+        && now.mtime_ms == then.mtime_ms
+        && match (then.birth_ns, now.birth_ns) {
+            (Some(then), Some(now)) => then == now,
+            _ => true,
+        }
 }
 
 /// The legacy lock of config folder `dir`: `realpath(dir) + ".lock"`
@@ -148,7 +172,7 @@ impl LockSet {
                             if age > stale {
                                 // proper-lockfile's own rule: a lock not
                                 // touched within its stale period is gone.
-                                match remove_stale(path, &meta) {
+                                match remove_stale(path, &id_of(path, &meta)) {
                                     Ok(()) => continue,
                                     // Waited for like a held lock, so a
                                     // folder that refuses never spins.
@@ -232,12 +256,13 @@ impl Drop for LockSet {
     }
 }
 
-/// Remove the stale lock at `path` (`meta` as it was looked at). It is
+/// Remove the stale lock at `path` (`seen` as it was looked at). It is
 /// first renamed to a name of its own, so a lock someone took between the
 /// look and the removal is never the one removed: when the directory
-/// renamed is not the one looked at, it goes back.
-fn remove_stale(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
+/// renamed is not the one looked at ([`same_dir`]: a new lock, maybe in
+/// the same inode, or the old one touched by its holder meanwhile), it
+/// goes back.
+fn remove_stale(path: &Path, seen: &LockId) -> Result<(), String> {
     let mut aside = path.as_os_str().to_owned();
     aside.push(format!(".stale-{}", uuid::Uuid::new_v4().simple()));
     let aside = PathBuf::from(aside);
@@ -252,8 +277,8 @@ fn remove_stale(path: &Path, meta: &std::fs::Metadata) -> Result<(), String> {
             ))
         }
     }
-    let same = std::fs::symlink_metadata(&aside)
-        .is_ok_and(|now| now.dev() == meta.dev() && now.ino() == meta.ino());
+    let same =
+        std::fs::symlink_metadata(&aside).is_ok_and(|now| same_dir(seen, &id_of(&aside, &now)));
     if !same {
         // Theirs, taken meanwhile: back where it was, unless a new one is
         // there already (never over it). Left aside, it goes once stale.
@@ -356,11 +381,12 @@ pub fn sweep_aside(lock: &Path, stale: Duration) {
     }
 }
 
-/// `rmdir`, only when the directory is still the one taken: a lock removed
-/// as stale and taken by someone else since is theirs.
+/// `rmdir`, only when the directory is still the one taken and last
+/// touched ([`same_dir`]): a lock removed as stale and taken by someone
+/// else since is theirs, in the same inode or not.
 fn release(id: &LockId) {
     match identity(&id.path) {
-        Some(now) if now.dev == id.dev && now.ino == id.ino => {
+        Some(now) if same_dir(id, &now) => {
             if let Err(error) = std::fs::remove_dir(&id.path) {
                 tracing::warn!(lock = %id.path.display(), %error, "lock not released");
             }
@@ -504,22 +530,152 @@ mod tests {
     fn a_stale_lock_is_moved_aside_before_it_goes() {
         let dir = temp("aside");
         let lock = dir.join(".oauth_refresh.lock");
+        let put_back = |seen: &LockId, why: &str| {
+            let before = identity(&lock).unwrap();
+            remove_stale(&lock, seen).unwrap();
+            assert_eq!(identity(&lock).as_ref(), Some(&before), "{why}: put back");
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "{why}");
+        };
         std::fs::create_dir(&lock).unwrap();
         age(&lock, REFRESH_STALE + Duration::from_secs(1));
-        let looked = std::fs::symlink_metadata(&lock).unwrap();
-        // Someone took a fresh lock between the look and the removal.
+        let looked = identity(&lock).unwrap();
+        // Between the look and the removal someone removed it as stale and
+        // took a fresh lock, which the file system gave the same inode (ext4
+        // often does; tmpfs doesn't, so it is set here on purpose).
         std::fs::remove_dir(&lock).unwrap();
         std::fs::create_dir(&lock).unwrap();
-        remove_stale(&lock, &looked).unwrap();
-        assert!(lock.is_dir(), "theirs is put back");
-        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
-        assert_eq!(left.len(), 1, "nothing left aside");
-        // The very one looked at goes.
+        let theirs = identity(&lock).unwrap();
+        let reused = LockId {
+            dev: theirs.dev,
+            ino: theirs.ino,
+            ..looked.clone()
+        };
+        put_back(&reused, "a new lock in the same inode");
+        // Where the file system keeps no birth time, the modification time
+        // alone tells them apart.
+        let reused = LockId {
+            birth_ns: None,
+            ..reused
+        };
+        put_back(&reused, "the same, without birth times");
+        // The holder touched it between the look and the removal: fresh
+        // again, so not stale.
         age(&lock, REFRESH_STALE + Duration::from_secs(1));
-        let looked = std::fs::symlink_metadata(&lock).unwrap();
+        let looked = identity(&lock).unwrap();
+        set_mtime(&lock, SystemTime::now()).unwrap();
+        put_back(&looked, "a lock touched meanwhile");
+        // The very one looked at goes (renaming it keeps its times).
+        age(&lock, REFRESH_STALE + Duration::from_secs(1));
+        let looked = identity(&lock).unwrap();
         remove_stale(&lock, &looked).unwrap();
         assert!(!lock.exists());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_directory_is_known_by_more_than_its_inode() {
+        let then = LockId {
+            path: "/h/.claude/.storage-write.lock".into(),
+            dev: 1,
+            ino: 7,
+            mtime_ms: 1_000_000,
+            birth_ns: Some(900_000_000_000),
+        };
+        assert!(same_dir(&then, &then.clone()));
+        // Its path is not part of it: moved aside, it is still the one.
+        assert!(same_dir(
+            &then,
+            &LockId {
+                path: "/h/.claude/.storage-write.lock.stale-x".into(),
+                ..then.clone()
+            }
+        ));
+        for (other, why) in [
+            (
+                LockId {
+                    ino: 8,
+                    ..then.clone()
+                },
+                "another inode",
+            ),
+            (
+                LockId {
+                    dev: 2,
+                    ..then.clone()
+                },
+                "another device",
+            ),
+            (
+                LockId {
+                    mtime_ms: 1_016_000,
+                    birth_ns: Some(916_000_000_000),
+                    ..then.clone()
+                },
+                "made again in the same inode",
+            ),
+            (
+                LockId {
+                    birth_ns: Some(900_000_000_001),
+                    ..then.clone()
+                },
+                "born at another time",
+            ),
+            (
+                LockId {
+                    mtime_ms: 1_000_001,
+                    ..then.clone()
+                },
+                "touched since",
+            ),
+            (
+                LockId {
+                    mtime_ms: 1_016_000,
+                    birth_ns: None,
+                    ..then.clone()
+                },
+                "no birth time, a new modification time",
+            ),
+        ] {
+            assert!(!same_dir(&then, &other), "{why}");
+        }
+        // Without a birth time on either side, the rest decides.
+        assert!(same_dir(
+            &then,
+            &LockId {
+                birth_ns: None,
+                ..then.clone()
+            }
+        ));
+    }
+
+    #[test]
+    fn release_spares_a_lock_made_again_in_the_same_inode() {
+        let dir = temp("release-reused");
+        let lock = dir.join(".storage-write.lock");
+        // The worker's lock went stale (the worker stopped, say), someone
+        // removed it and took theirs, in the same inode.
+        std::fs::create_dir(&lock).unwrap();
+        let theirs = identity(&lock).unwrap();
+        let held = LockId {
+            mtime_ms: theirs.mtime_ms - (STORAGE_STALE.as_millis() as u64 + 1_000),
+            birth_ns: theirs.birth_ns.map(|at| at - 16_000_000_000),
+            ..theirs.clone()
+        };
+        drop(LockSet {
+            held: vec![held.clone()],
+        });
+        assert_eq!(identity(&lock), Some(theirs.clone()), "theirs stays");
+        drop(LockSet {
+            held: vec![LockId {
+                birth_ns: None,
+                ..held
+            }],
+        });
+        assert_eq!(identity(&lock), Some(theirs.clone()), "theirs stays");
+        // Its own goes.
+        drop(LockSet { held: vec![theirs] });
+        assert!(!lock.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -627,12 +783,28 @@ mod tests {
             ..noted.clone()
         };
         assert!(is_own(&noted, &touched), "touched by the swap");
-        // Made by someone once the worker's had gone stale.
+        // Made by someone in the same inode once the worker's had gone
+        // stale: 15 s at the least after the worker's last touch, itself no
+        // earlier than the note.
         let theirs = LockId {
             mtime_ms: 1_000_000 + 15_000,
             ..noted.clone()
         };
         assert!(!is_own(&noted, &theirs));
+        assert!(!is_own(
+            &noted,
+            &LockId {
+                mtime_ms: 1_000_000 + OWN_TOUCHES.as_millis() as u64,
+                ..noted.clone()
+            }
+        ));
+        assert!(!is_own(
+            &noted,
+            &LockId {
+                mtime_ms: 1_000_000 - 1,
+                ..noted.clone()
+            }
+        ));
         assert!(!is_own(
             &noted,
             &LockId {

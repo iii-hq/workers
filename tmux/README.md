@@ -405,9 +405,13 @@ switch. The locks a stopped swap left are the worker's own when they are
 still the directories it made (device, inode and birth time, or, where the
 file system keeps no birth time, touched within its own swap): those go at
 once, and anything else is waited out as stale (up to 60 seconds). A stale
-lock is moved aside (`<lock>.stale-<id>`) before it is removed, and put back
-only where nothing new took its place; what was moved aside and left goes
-once stale, at start and before each lock is taken. One switch, recovery or
+lock is moved aside (`<lock>.stale-<id>`) before it is removed. What was
+moved goes back when it is not the lock judged stale (a new lock, even one
+given the same inode, has new modification and birth times; the old one
+may have been touched again), unless something new took its place; what
+was moved aside and left goes once stale, at start and before each lock is
+taken. The worker releases a lock only while it is still the one it
+touched last. One switch, recovery or
 move runs at a time, and a new Claude Code pane (`claude` on
 `tmux::windows::create`, `tmux::sessions::create`) waits for the one running
 too: nothing starts on a folder whose sign-in is moving, and nothing plans
