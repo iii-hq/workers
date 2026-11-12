@@ -1,57 +1,48 @@
 # Release artifact modes
 
-The Workers-owned compiler translates one private build entry plus its public
-manifest into an immutable release descriptor and independent build units.
-The release train consumes only that descriptor after prepare.
+The Workers-owned compiler,
+[`deployment_compiler.py`](../../.github/scripts/deployment_compiler.py),
+turns a worker's private build entry in
+[`.deploy/workers.yaml`](../../.deploy/workers.yaml) plus its public
+`iii.worker.yaml` into an immutable deployment descriptor with independent
+build units.
+[`deploy-descriptor-index.yml`](../../.github/workflows/deploy-descriptor-index.yml)
+compiles every worker at one source SHA. This repository builds and never
+publishes: Release Control publishes the built bytes. The operator procedure is
+[`../sops/release.md`](../sops/release.md).
 
-| `artifact.kind` | Prepared artifact | Publication |
+| `artifact.kind` | Built artifact | Where the bytes go |
 |---|---|---|
-| `rust-binary` | one deterministic `tar.gz` (`zip` on Windows) and checksum per target | GitHub Release URLs and digests keyed by Rust target |
-| `javascript-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
-| `python-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
-| `oci-image` | deterministic OCI-layout archive | digest-pinned GHCR image |
+| `rust-binary`, `go-binary` | one deterministic `tar.gz` per target (`zip` on Windows) | assets of the `build-<source_sha>` GitHub prerelease |
+| `javascript-bundle`, `python-bundle` | one deterministic `tar.gz` from explicit files | assets of the `build-<source_sha>` GitHub prerelease |
+| `oci-image` | one OCI layout per platform, built twice to prove it is reproducible | an OCI index pushed to `ghcr.io/<owner>/<worker>:build-<source_sha>` |
 
-Rust workers declare two target profiles: `candidate_targets` (the Unix
-matrix built for every release candidate) and `stable_targets` (the full set a
-finalized stable version ships, optionally adding `x86_64-pc-windows-msvc` for
-workers that opt in — absence must be justified with `windows_exception`).
-`candidate_targets` must be a subset of `stable_targets`; the stable-delta is
-built only at finalization by
-[`deploy-finalize.yml`](../../.github/workflows/deploy-finalize.yml), which
-reuses the rc bytes for everything else and assembles a stable inventory.
+Binary workers declare one `targets` list; the policy behind it lives in
+[`deployment_targets.py`](../../.github/scripts/deployment_targets.py). A
+worker without Windows targets must justify their absence with
+`windows_exception`, and declaring both fails compilation.
 
-[`deploy-prepare.yml`](../../.github/workflows/deploy-prepare.yml) builds one
-matrix job per descriptor build unit (the candidate profile). Embedded
-frontends are built once before the Rust target fan-out. Rust units share
-remote sccache objects by toolchain and target, but artifact bytes remain
-target-specific.
+[`build.yml`](../../.github/workflows/build.yml) builds one worker at one exact
+source SHA. It builds embedded `frontends` once, then runs one
+[`_deploy-build.yml`](../../.github/workflows/_deploy-build.yml) job per build
+unit. Rust units use a remote sccache keyed by toolchain and target when that
+backend is available, but artifact bytes remain target-specific. The build
+uploads each asset once (identical bytes are skipped, different bytes fail the
+job) and writes an attested `build-manifest` listing every asset's URL and
+SHA-256.
 
-[`deploy-publish.yml`](../../.github/workflows/deploy-publish.yml) publishes one
-exact immutable target version and assigns Registry `next` or `latest` with an
-idempotent compare-and-swap. The target version is selected by Release Control
-and is independent of package-manifest metadata. Promotion reuses prepared
-bytes without rebuilding. OCI immutable images and channel aliases are handled
-inside the same publish workflow.
-
-Registry publication projects the descriptor onto the current API. For a
-binary worker the request has this shape:
-
-```json
-{
-  "worker_name": "state",
-  "version": "0.22.3-rc.3",
-  "type": "binary",
-  "tag": "next",
-  "description": "...",
-  "license": "Apache-2.0",
-  "tags": [],
-  "dependencies": [],
-  "config": {},
-  "functions": [],
-  "repo": "https://github.com/iii-hq/workers",
-  "binaries": {}
-}
-```
+Release Control reads that manifest, publishes the exact Registry version,
+moves the requested channel by compare-and-swap, creates the versioned GitHub
+release pointing at the same assets and tags the image; nothing is rebuilt. It
+spreads the descriptor's `registry_projection` (worker name, type, description,
+license, tags, dependencies, config, experimental flag, README, and
+`iii_engine_version` when set) into the Registry's `POST /publish`. The
+projection's `skills` are left out of that request; the Registry attaches them
+to the version through `POST /w/<worker>/skills`. After each
+GitHub release it creates,
+[`sync-manifest-versions.yml`](../../.github/workflows/sync-manifest-versions.yml)
+writes every worker's highest published version back into its package manifests
+and lockfiles.
 
 ## Screenshots
 
@@ -74,10 +65,3 @@ The field's absence lets a version inherit the previous version's list, and
 
 Whatever its kind, a worker the Registry hides (`iii`: `GET /w/iii` answers
 404) may only list `[]`, since its screenshots could never be read back.
-
-Version publication never assigns a channel implicitly. Publish proves the
-exact version first and then moves the requested channel with the plan's CAS
-precondition through current Registry read surfaces.
-Descriptor-only fields such as `package_descriptor` and `descriptor_sha256`
-are never sent to the current Registry. Publish and verify never read the
-private catalog, public manifest, or package source.

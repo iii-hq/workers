@@ -24,7 +24,7 @@ These commands build local images. Publish both tags to an accessible registry b
 
 ## Publishing
 
-The [image publishing workflow](../../../../.github/workflows/docker-worker-images.yml) validates both targets on pull requests. Changes to these images or the workflow on `main` publish `latest` (runtime) and `builder` to Docker Hub for `linux/amd64` and `linux/arm64`. The workflow can also be run manually on `main`. Builds pull the current upstream base image.
+The [image publishing workflow](../../../.github/workflows/sandbox-libkrun-images.yml) runs only when dispatched manually. Each run builds and smoke-tests both targets; a run on `main` also publishes `latest` (runtime) and `builder` to Docker Hub for `linux/amd64` and `linux/arm64`. Builds pull the current upstream base image.
 
 ## Using the Builder Image
 

@@ -65,7 +65,7 @@ and the single most important thing it gives you.
 
 Lead with the user-facing value, not the implementation. If your worker
 ships with a sibling that most users will install too (e.g.
-[`skills`](skills) → [`mcp`](mcp)), name and link to the
+`skills` → [`mcp`](mcp)), name and link to the
 sibling in the same paragraph.
 
 ## Section: Install

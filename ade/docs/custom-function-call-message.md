@@ -9,13 +9,15 @@ and match the observed `functionId`, not `harness::observe`.
 
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
+> **Current layout.** The host component is now [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx), and families are dispatched through the ordered `FIRST_PARTY_RENDERERS` list in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx): runtime-injected renderers first, then first-party, then the JSON fallback. The `??` chains quoted below show the hand-wired dispatch that registry replaced.
+
 **Reference implementations** (four families are wired today):
 
 | Family | Module | Predicate | Notable |
 |--------|--------|-----------|---------|
 | `sandbox::*` | [`../web/src/components/chat/sandbox/`](../web/src/components/chat/sandbox) | `isSandboxFunction` | 15 tools, terminal + raw-json tabs, approval previews, shared error handling |
 | `engine::*::list` | [`../web/src/components/chat/engine/`](../web/src/components/chat/engine) | `isEngineListFunction` | read-only list/info views, no preview |
-| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / system prompts / agents / registry views |
+| `directory::*` | [`../../iii-directory/ui/src/function-call/`](../../iii-directory/ui/src/function-call) | `isDirectoryFunction` | skills / system prompts / agents / registry views; now injected UI shipped by the iii-directory worker |
 | `web::fetch` | [`../web/src/components/chat/web/`](../web/src/components/chat/web) | `isWebFunction` | single tool — smallest end-to-end example |
 
 > Starting a brand-new family? Copy [`web/`](../web/src/components/chat/web) for the smallest complete example, or [`sandbox/`](../web/src/components/chat/sandbox) for the full feature set (terminal chrome, error views, previews).
@@ -26,7 +28,7 @@ This is the end-to-end authoring guide: architecture, the message contract, the 
 
 ## 1. The principle: opt in, or fall back to JSON
 
-Every tool invocation becomes a `FunctionCallMessage` (see [`../web/src/types/chat.ts`](../web/src/types/chat.ts)). The host component [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx) (FCM) always renders the same chrome:
+Every tool invocation becomes a `FunctionCallMessage` (see [`../web/src/types/chat.ts`](../web/src/types/chat.ts)). The host component [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx) (FCM) always renders the same chrome:
 
 1. **Header** — status dot, `permission to run` / `running` / `ran`, the function id, and duration.
 2. **Body** — depends on lifecycle and whether a custom renderer returned a node.
@@ -43,7 +45,7 @@ FCM is the host; each function family is a small plugin module that exports a `T
 ```mermaid
 flowchart TB
   msg["FunctionCallMessage (functionId, input, output, flags)"]
-  host["FunctionCallMessage.tsx (host chrome)"]
+  host["FunctionCallCard.tsx (host chrome)"]
   label["FunctionIdLabel branch"]
   preview["customPreview = chained tryRenderPreview()"]
   terminal["customTerminal = chained tryRender()"]
@@ -61,7 +63,7 @@ flowchart TB
   families -->|"null"| json
 ```
 
-The exact dispatch in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx):
+The dispatch as it was hand-chained (now the ordered `FIRST_PARTY_RENDERERS` list in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx)):
 
 ```tsx
 const customPreview =
@@ -78,7 +80,7 @@ const customTerminal = !pending
   : null
 ```
 
-> **Note on scale.** Four families chained by hand is fine; it is explicit and tree-shakes cleanly. There is no plugin *registry* yet — see [Scale beyond hand-wiring](#11-scale-beyond-hand-wiring) for the refactor sketch if the chain grows unwieldy. Until then, follow the [minimal wiring](#7-wire-the-family-into-functioncallmessagetsx) below.
+> **Note on scale.** The renderer registry has replaced these hand-wired chains; follow [step 9](#9-register-the-family-in-renderer-registrytsx) to add a family.
 
 ---
 
@@ -330,49 +332,30 @@ if (running) {
 
 ---
 
-## 9. Wire the family into `FunctionCallMessage.tsx`
+## 9. Register the family in `renderer-registry.tsx`
 
-Three edits, all in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx). Add to the existing chains — order is priority (first non-null wins), so put your family wherever it should win ties (in practice families are disjoint, so order rarely matters).
-
-**1. Import** your `ToolView` and label:
+Add one entry to `FIRST_PARTY_RENDERERS` in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx). The card asks runtime-injected renderers first, then this list in order, then falls back to JSON; the first renderer whose `isMatch` claims the function id and returns a non-null node wins. Families are disjoint in practice, so order rarely matters.
 
 ```tsx
-import { MyFeatureFunctionIdLabel, MyFeatureToolView } from '@/components/chat/myfeature'
+import {
+  MyFeatureFunctionIdLabel,
+  MyFeatureToolView,
+} from '@/components/chat/myfeature'
+
+export const FIRST_PARTY_RENDERERS: readonly FunctionCallRenderer[] = [
+  // ...existing entries
+  {
+    id: 'first-party/myfeature',
+    isMatch: MyFeatureToolView.isMyFeatureFunction,
+    tryRender: MyFeatureToolView.tryRender, // settled call
+    tryRenderRunning: MyFeatureToolView.tryRenderRunning, // optional; tryRender is used when absent
+    tryRenderPreview: MyFeatureToolView.tryRenderPreview, // optional; shown while approval is pending
+    FunctionIdLabel: MyFeatureFunctionIdLabel, // header label
+  },
+]
 ```
 
-**2. Add a branch** to the header `FunctionIdLabel`:
-
-```tsx
-function FunctionIdLabel({ functionId }: { functionId: string }) {
-  if (DirectoryToolView.isDirectoryFunction(functionId)) return <DirectoryFunctionIdLabel functionId={functionId} />
-  if (EngineToolView.isEngineListFunction(functionId)) return <EngineFunctionIdLabel functionId={functionId} />
-  if (WebToolView.isWebFunction(functionId)) return <WebFunctionIdLabel functionId={functionId} />
-  if (SandboxToolView.isSandboxFunction(functionId)) return <SandboxFunctionIdLabel functionId={functionId} />
-  if (MyFeatureToolView.isMyFeatureFunction(functionId)) return <MyFeatureFunctionIdLabel functionId={functionId} />
-  return <span className="text-ink">{functionId}</span>
-}
-```
-
-**3. Add to the `customPreview` and `customTerminal` chains:**
-
-```tsx
-const customPreview =
-  SandboxToolView.tryRenderPreview(message) ??
-  EngineToolView.tryRenderPreview(message) ??
-  DirectoryToolView.tryRenderPreview(message) ??
-  WebToolView.tryRenderPreview(message) ??
-  MyFeatureToolView.tryRenderPreview(message)
-
-const customTerminal = !pending
-  ? (SandboxToolView.tryRender(message) ??
-    EngineToolView.tryRender(message) ??
-    DirectoryToolView.tryRender(message) ??
-    WebToolView.tryRender(message) ??
-    MyFeatureToolView.tryRender(message))
-  : null
-```
-
-Nothing else changes — `showRequestPaneAbove`, the `Tabs`, and the approve/deny bar are family-agnostic. The tab labels stay **terminal** / **raw json**; rename them only if "terminal" is wrong for your UX.
+`isMatch` gates every hook, so the `tryRender*` functions only see calls of your family. The full contract (including `tryRenderDisplay`, `metadata` and `redactRaw`) is `FunctionCallRenderer` in [`types/injectable-ui.ts`](../web/src/types/injectable-ui.ts). Nothing else changes: `showRequestPaneAbove` and the approve/deny bar are family-agnostic. A worker that ships its own console UI registers the same shape at runtime with `host.functionCalls.register` instead of editing this list.
 
 ---
 
@@ -489,14 +472,16 @@ Verify: `pnpm storybook` -> open the scenario under **Playground** -> send any m
 
 ## 11. `FunctionCallMessage` body logic (reference)
 
-Custom renderers interact with these derived flags in [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx):
+Custom renderers interact with these derived flags in [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx):
 
 ```tsx
 const hasCustomTerminal = customTerminal != null
-const showRequestPaneAbove =
-  !(pending && customPreview) &&
-  !(running && hasCustomTerminal) &&
-  !(!pending && !running && hasCustomTerminal)
+// The settled (done) body renders its own request/response panes.
+const showRequestPaneAbove = pending
+  ? !customPreview
+  : running
+    ? !hasCustomTerminal && streamingTail === undefined
+    : false
 ```
 
 Which resolve to:
@@ -506,37 +491,17 @@ Which resolve to:
 | Pending + preview | hidden | — | — |
 | Pending, no preview | shown | — | — |
 | Running + custom | hidden | custom | — |
-| Running, no custom | shown | response JSON | — |
+| Running, no custom | shown (hidden while arguments are still streaming) | response JSON | — |
 | Done + custom | hidden | — | Tabs: custom + raw json |
-| Done, no custom | shown | — | request + response JSON |
+| Done, no custom | hidden | — | request + response JSON |
 
-Approve / deny / always-allow are props on `FunctionCallMessage` (wired by [`FunctionCallGroup.tsx`](../web/src/components/chat/FunctionCallGroup.tsx) to `approval::resolve`). Custom modules never implement approval themselves.
+Approve / deny / always-allow are props on `FunctionCallMessage` (wired by [`Message.tsx`](../web/src/components/chat/Message.tsx) to `approval::resolve`). Custom modules never implement approval themselves.
 
 ---
 
 ## 12. Scale beyond hand-wiring
 
-Adding a sixth, seventh family to the `??` chains stays readable for a while, but eventually a registry is cleaner. This is **not implemented yet** — sketch only:
-
-```
-../web/src/components/chat/function-plugins/
-  types.ts      # FunctionCallRenderer interface
-  registry.ts   # ordered list of plugins
-  index.ts      # resolvePreview(message), resolveTerminal(message), resolveLabel(functionId)
-```
-
-```typescript
-export interface FunctionCallRenderer {
-  id: string
-  isMatch: (functionId: string) => boolean
-  tryRender: (message: FunctionCallMessage) => React.ReactNode | null
-  tryRenderPreview?: (message: FunctionCallMessage) => React.ReactNode | null
-  FunctionIdLabel?: (props: { functionId: string }) => React.ReactNode
-  primaryTabLabel?: string // default "terminal"
-}
-```
-
-FCM would collapse to `resolveTerminal(message)` / `resolvePreview(message)` over a registered list. Until that lands, follow the [minimal wiring](#9-wire-the-family-into-functioncallmessagetsx) in step 9.
+The registry this section used to sketch has landed. The renderer contract is `FunctionCallRenderer` in [`types/injectable-ui.ts`](../web/src/types/injectable-ui.ts), the ordered first-party list is `FIRST_PARTY_RENDERERS` in [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx), and renderers injected at runtime through `host.functionCalls.register` run ahead of it. Follow [step 9](#9-register-the-family-in-renderer-registrytsx) to add a family.
 
 ---
 
@@ -581,7 +546,7 @@ pnpm test -- src/components/chat/myfeature   # parsers + error cases
 pnpm typecheck
 pnpm exec biome check --write \
   src/components/chat/myfeature \
-  src/components/chat/FunctionCallMessage.tsx \
+  src/components/function-call/renderer-registry.tsx \
   src/components/chat/FunctionCallMessage.stories.tsx \
   src/stories/fixtures/myfeature-fixtures.ts \
   src/stories/playground/scenarios/myfeature-hero.ts \
@@ -594,7 +559,7 @@ pnpm storybook   # smoke: family gallery (toggle tabs) + your Playground scenari
 - [ ] Zod schema per request/response shape, non-strict, wire source documented.
 - [ ] One view per id; success + running + (optional) preview; `null` on parse failure.
 - [ ] Errors detected before success parsing.
-- [ ] Wired into all three FCM chains (label + preview + terminal).
+- [ ] Registered as one `FIRST_PARTY_RENDERERS` entry (label + preview + running + terminal hooks).
 - [ ] Fixture file + `FamilyGallery` story.
 - [ ] At least one Playground scenario registered.
 - [ ] `parsers.test.ts` covers raw + harness-wrapped + error payloads.
@@ -613,7 +578,7 @@ pnpm storybook   # smoke: family gallery (toggle tabs) + your Playground scenari
 | [`components/chat/FunctionCallMessage.stories.tsx`](../web/src/components/chat/FunctionCallMessage.stories.tsx) | Registers the `FamilyGallery` story |
 | [`stories/playground/scenarios/*.ts`](../web/src/stories/playground/scenarios) | Playground `ChatBackend` scenarios (required) |
 | [`stories/playground/scenarios/index.ts`](../web/src/stories/playground/scenarios/index.ts) | Scenario registry |
-| [`FunctionCallMessage.tsx`](../web/src/components/chat/FunctionCallMessage.tsx) | Host integration |
+| [`FunctionCallCard.tsx`](../web/src/components/function-call/FunctionCallCard.tsx), [`renderer-registry.tsx`](../web/src/components/function-call/renderer-registry.tsx) | Host integration |
 | [`PLAYGROUND.md`](../web/PLAYGROUND.md) | Streaming contract for scenarios |
 
 > An earlier, sandbox-only version of this guide lives at [`../web/docs/custom-function-components.md`](../web/docs/custom-function-components.md). This document is the current, multi-family source of truth.
