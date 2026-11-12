@@ -135,11 +135,71 @@ pub struct PreGenerateInput {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub generate: Option<GenerateInput>,
-    /// Delivery context the harness attaches to this hook call. Recall never
-    /// reads it (it reads the last user message): only its
-    /// `extraction_history` is imported, then dropped before the hook runs.
+    /// Delivery context the harness attaches to this hook call. Absent on a
+    /// harness that predates it: recall then reads the last user message.
+    /// Its `extraction_history` is imported, then dropped before the hook runs.
     #[serde(default)]
     pub recall_context: Option<Value>,
+}
+
+/// `recall_context`, version 1: which entry opened the turn, how it was
+/// delivered, and the text recall reads.
+#[derive(Deserialize)]
+struct RecallContext {
+    version: u64,
+    session_id: String,
+    turn_id: String,
+    source: RecallSource,
+    #[serde(default)]
+    query: Option<RecallQuery>,
+    /// An earlier user entry this one continues ("go on", "do it"): recall
+    /// reads its text, not the continuation's.
+    #[serde(default)]
+    continuation: Option<RecallQuery>,
+}
+
+#[derive(Deserialize)]
+struct RecallSource {
+    /// `direct`, `invoked-agent`, `notification` or `unknown`.
+    kind: String,
+    entry_id: String,
+}
+
+#[derive(Deserialize)]
+struct RecallQuery {
+    entry_id: String,
+    text: String,
+}
+
+/// What the turn's opening step recalls for; `None` recalls nothing (rules
+/// still go in). Without a delivery context, the last user message. With
+/// one, only a message the user or an invoking agent sent recalls, on the
+/// earlier message it continues when it names one; a notification, an
+/// unknown delivery or a context that does not match this turn recalls nothing.
+fn recall_query(input: &PreGenerateInput) -> Option<String> {
+    if input.step != 0 {
+        return None;
+    }
+    let Some(context) = &input.recall_context else {
+        return Some(last_user_text(input.generate.as_ref().map(|g| &g.messages)));
+    };
+    let context: RecallContext = serde_json::from_value(context.clone()).ok()?;
+    let valid = |q: &RecallQuery| !q.entry_id.is_empty() && !q.text.trim().is_empty();
+    if context.version != 1
+        || context.session_id != input.session_id
+        || Some(context.turn_id.as_str()) != input.turn_id.as_deref()
+        || !matches!(context.source.kind.as_str(), "direct" | "invoked-agent")
+    {
+        return None;
+    }
+    let current = context
+        .query
+        .filter(|q| valid(q) && q.entry_id == context.source.entry_id)?;
+    match context.continuation {
+        Some(prior) if valid(&prior) && prior.entry_id != current.entry_id => Some(prior.text),
+        Some(_) => None,
+        None => Some(current.text),
+    }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -321,10 +381,18 @@ pub async fn pre_generate(
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
-    let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
-    let query = (input.step == 0).then_some(query.as_str());
+    let query = recall_query(&input);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, &layers, query, &seen).await;
+    let injected = injection(
+        deps,
+        &cfg,
+        &bank_name,
+        &layers,
+        input.step == 0,
+        query.as_deref(),
+        &seen,
+    )
+    .await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -378,7 +446,8 @@ pub(crate) struct Injection {
     /// The memories the appended message carries, in order, with their
     /// recall score and the bank holding them.
     pub memories: Vec<(Memory, f32, String)>,
-    /// The appended `<memory>` message, when a memory fits the budget.
+    /// The appended `<memory>` message: the memories that fit the budget,
+    /// the rules reminder, or both.
     pub message: Option<String>,
     /// `none` (no recall ran), `bm25-entity`, or `bm25-entity-semantic`.
     pub retrieval: &'static str,
@@ -432,14 +501,16 @@ pub(crate) fn rules_section(
 /// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
 /// bank's name so two `learned` rules never read as one, and the memories
 /// of theirs it reads (`scope::layer_keeps`) in the same recall.
-/// `query` is the user message to recall for (`None`: no recall, as on a
-/// turn's later steps), `seen` the memory texts the window already carries
-/// ([`injected_in_window`]).
+/// `opening` is the turn's first step, the one that carries the rules
+/// reminder; `query` is the user message to recall for (`None`: no recall,
+/// as on a turn's later steps or a notification), `seen` the memory texts
+/// the window already carries ([`injected_in_window`]).
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
     layers: &[String],
+    opening: bool,
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
@@ -478,8 +549,8 @@ pub(crate) async fn injection(
     let query = query
         .filter(|q| !q.trim().is_empty())
         .map(crate::store::cap_query);
-    // On the turn's opening step, like recall: the message is persisted.
-    let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
+    // On the turn's opening step, recall or not: the message is persisted.
+    let reminder = opening.then(|| rules_reminder(&rules)).flatten();
     // The turn's bank whole, then the memories of each layer it reads.
     let sources: Vec<(&str, &Bank, bool)> = bank
         .as_deref()
@@ -757,7 +828,8 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// small for a z-score anchors on any meaning match), one line per fact,
 /// `limit` of them, or more for a list (every line on the same two or more
 /// question words, each leading with its own subject, or on the `user` of a
-/// question about what memory holds of the user: all its siblings come);
+/// question about what memory holds of the user: all its siblings come; a
+/// line kept only on the words outside a read slot takes no part in that);
 /// nothing when none has any.
 /// An older statement of a changed fact is never told: when it stands,
 /// the current statement takes its place, whatever the newer's own rank or
@@ -807,8 +879,13 @@ pub fn select(
         .filter(|(_, newer)| newer.is_none())
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
-    // Holds two of the question's words, or its one.
-    let on_words = |e: &Evidence| !e.matched.is_empty() && e.matched.len() >= e.terms.min(2);
+    // Holds two of the question's words, or its one; or two of those it uses
+    // outside its requested slot, or its one ("live" in "In which city do I
+    // live?": the answer need not say "city"). The slot only adds support.
+    let on =
+        |matched: &[String], terms: usize| !matched.is_empty() && matched.len() >= terms.min(2);
+    let on_words =
+        |e: &Evidence| on(&e.matched, e.terms) || on(e.relation_words(), e.relation_term_count());
     // Stands on its own evidence, whatever the turn's best.
     let alone = |e: &Evidence| {
         let words = e.matched.len();
@@ -896,11 +973,18 @@ pub fn select(
     // a list lost.
     let past = kept.split_off(limit.min(kept.len()));
     let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
-    let Some(first) = kept
-        .first()
-        .map(|(m, _)| ev(m))
-        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)))
-    else {
+    // On all the question's words: the slot widens admission, never the list.
+    // A line on the words outside the slot alone takes a place, not a say in it.
+    let outside_only =
+        |e: &Evidence| !on(&e.matched, e.terms) && on(e.relation_words(), e.relation_term_count());
+    let listed: Vec<&Memory> = kept
+        .iter()
+        .map(|(m, _)| m)
+        .filter(|m| !outside_only(ev(m)))
+        .collect();
+    let Some(first) = listed.first().map(|m| ev(m)).filter(|first| {
+        on(&first.matched, first.terms) && listed.iter().all(|m| same(ev(m), first))
+    }) else {
         return kept;
     };
     if first.matched == ["user"] && first.of_me {
@@ -909,7 +993,7 @@ pub fn select(
         // Each line's lead, once: a line with none, or a repeat, is no list.
         let mut leads = HashSet::new();
         let mut lead_once = |m: &Memory| extract::lead(&m.text).is_some_and(|l| leads.insert(l));
-        if kept.iter().all(|(m, _)| lead_once(m)) {
+        if listed.iter().all(|m| lead_once(m)) {
             let siblings: Vec<_> = past
                 .into_iter()
                 .filter(|(m, _)| same(ev(m), first) && lead_once(m))
@@ -2044,6 +2128,7 @@ Formal."
             &offline_cfg(3),
             "w-abc123",
             &["agent-x".to_string()],
+            true,
             Some("kiwi"),
             &HashSet::new(),
         )
@@ -2119,6 +2204,7 @@ Formal."
             &cfg,
             "w-abc123",
             &["agent-x".to_string()],
+            true,
             Some(query),
             &HashSet::new(),
         )
@@ -2139,6 +2225,7 @@ Formal."
             &cfg,
             "w-abc123",
             &layers,
+            true,
             Some(query),
             &HashSet::new(),
         )
@@ -2487,6 +2574,315 @@ Formal."
             .into_iter()
             .map(|(id, _)| id)
             .collect()
+    }
+
+    /// A bank of `(id, text, entities)`, stated in that order.
+    fn bank_of(rows: &[(&str, &str, &[&str])]) -> Vec<Memory> {
+        rows.iter()
+            .enumerate()
+            .map(|(n, (id, text, entities))| tagged(id, text, 1 + n as u64, entities))
+            .collect()
+    }
+
+    /// Recorded on the recall before the requested slot was read: the same
+    /// ids are told. No word of the question makes `user` a subject ("EU"),
+    /// and no word of it vetoes a fact the question shares two words with.
+    #[tokio::test]
+    async fn plain_questions_tell_what_they_told_before_the_slot_was_read() {
+        let cases: [(&str, Vec<Memory>, &[&str]); 4] = [
+            (
+                "Which EU region do we deploy to?",
+                bank_of(&[
+                    ("fp-name", "User is called Ana Souza.", &["user"]),
+                    ("fp-home", "User lives in Lisbon.", &["user"]),
+                    (
+                        "fp-region",
+                        "payments-api is deployed to the eu-west-1 region.",
+                        &["payments-api"],
+                    ),
+                ]),
+                &["fp-region"],
+            ),
+            (
+                "How do I prevent flaky tests in next week's release?",
+                bank_of(&[
+                    (
+                        "fp-flaky",
+                        "User quarantines flaky tests before every release.",
+                        &["user"],
+                    ),
+                    (
+                        "fp-dentist",
+                        "User has a dentist appointment next week.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-flaky", "fp-dentist"],
+            ),
+            (
+                "Where was I born?",
+                bank_of(&[
+                    (
+                        "fp-born",
+                        "User was born in Lisbon on 3 May 1990.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-born"],
+            ),
+            (
+                "Which framework do I usually use for my backend services?",
+                bank_of(&[
+                    (
+                        "fp-chi",
+                        "User writes most of her backend services in Go with chi.",
+                        &["user"],
+                    ),
+                    ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+                ]),
+                &["fp-chi"],
+            ),
+        ];
+        for (query, memories, before) in cases {
+            assert_eq!(told_ids(memories, query).await, before, "{query}");
+        }
+    }
+
+    /// A question whose slot is read ("in which repository") tells every
+    /// line it told before. The long ledger line stands only on two of the
+    /// question's words, one of them in the slot: counting the words outside
+    /// the slot alone would drop it.
+    #[tokio::test]
+    async fn a_read_slot_tells_no_fewer_lines() {
+        let query = "In which repository did I enable dependabot alerts?";
+        let words = crate::index::tokenize(query);
+        assert!(crate::query_projection::requested_slot(query, &words).is_some());
+        let memories = bank_of(&[
+            (
+                "fp-billing",
+                "Dependabot alerts are enabled in the billing repository.",
+                &["billing"],
+            ),
+            (
+                "fp-ledger",
+                "User turned on dependabot for the ledger repository after the spring audit, \
+                 beside branch protection, signed commits, two required reviews and a merge queue.",
+                &["user", "ledger"],
+            ),
+            (
+                "fp-notion",
+                "User keeps the repository list in Notion.",
+                &["user"],
+            ),
+            ("fp-alerts", "User mutes pager alerts at night.", &["user"]),
+            ("fp-coffee", "User drinks oat milk in coffee.", &["user"]),
+        ]);
+        // Recorded before the slot was read.
+        let before = ["fp-billing", "fp-ledger", "fp-alerts"];
+        let told = told_ids(memories, query).await;
+        assert!(
+            before.iter().all(|id| told.contains(&id.to_string())),
+            "{told:?}"
+        );
+    }
+
+    /// One word outside the slot is the question's whole relation: a line
+    /// holding it stands without repeating the slot's noun.
+    #[test]
+    fn a_line_on_the_one_word_outside_the_slot_stands() {
+        let e = Evidence {
+            matched: vec!["anchor".into()],
+            relation_matched: vec!["anchor".into()],
+            relation_terms: 1,
+            requested_slot: Some(0..3),
+            terms: 2,
+            lexical: 0.1,
+            relevance: 0.1,
+            ..Evidence::default()
+        };
+        assert_eq!(selected(vec![("fp-harbor", e.clone())], 6), ["fp-harbor"]);
+        // Unread, the same match is one of two words: it does not stand alone.
+        let unread = Evidence {
+            requested_slot: None,
+            ..e
+        };
+        assert!(selected(vec![("fp-harbor", unread)], 6).is_empty());
+    }
+
+    /// A list carries on past `recall_limit` only on two or more of the
+    /// question's words: lines that each share the one word outside the slot
+    /// stand, but they keep the count.
+    #[tokio::test]
+    async fn one_word_outside_the_slot_keeps_the_count() {
+        let query = "In which region do we deploy?";
+        let words = crate::index::tokenize(query);
+        assert!(crate::query_projection::requested_slot(query, &words).is_some());
+        let rows: Vec<(String, String)> = [
+            "payments", "search", "ledger", "billing", "invoices", "gateway", "reports", "mailer",
+        ]
+        .iter()
+        .map(|s| {
+            (
+                format!("fp-{s}"),
+                format!("{s}-api deploy needs a green build."),
+            )
+        })
+        .collect();
+        let rows: Vec<(&str, &str, &[&str])> = rows
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.as_str(), &[] as &[&str]))
+            .collect();
+        let told = told_ids(bank_of(&rows), query).await;
+        assert!(!told.is_empty() && told.len() <= 6, "{told:?}");
+    }
+
+    /// A line on the one word outside the slot takes a place in the count but
+    /// never cancels the list of lines on two of the question's words.
+    #[test]
+    fn a_line_on_the_word_outside_the_slot_leaves_the_list_alone() {
+        let slot = |matched: &[&str], relevance: f32| Evidence {
+            matched: matched.iter().map(|w| w.to_string()).collect(),
+            relation_matched: vec!["deploy".into()],
+            relation_terms: 1,
+            requested_slot: Some(0..3),
+            terms: 2,
+            lexical: relevance,
+            relevance,
+            ..Evidence::default()
+        };
+        let full = || slot(&["region", "deploy"], 1.0);
+        // Below the share of the best: it stands only on the slot's reading.
+        let outside = || slot(&["deploy"], 0.2);
+        let list = vec![
+            ("alpha", full()),
+            ("friday", outside()),
+            ("bravo", full()),
+            ("charlie", full()),
+        ];
+        assert_eq!(selected(list, 2), ["alpha", "friday", "bravo", "charlie"]);
+        let first = vec![("friday", outside()), ("alpha", full()), ("bravo", full())];
+        assert_eq!(selected(first, 2), ["friday", "alpha", "bravo"]);
+    }
+
+    fn hook_input(context: Option<Value>) -> PreGenerateInput {
+        serde_json::from_value(json!({
+            "session_id": "s1",
+            "turn_id": "t1",
+            "step": 0,
+            "generate": { "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "the transcript's question" }] },
+            ] },
+            "recall_context": context,
+        }))
+        .unwrap()
+    }
+
+    fn context(kind: &str, continuation: Option<(&str, &str)>) -> Value {
+        json!({
+            "version": 1,
+            "session_id": "s1",
+            "turn_id": "t1",
+            "source": { "kind": kind, "entry_id": "e2" },
+            "query": { "entry_id": "e2", "text": "go on" },
+            "continuation": continuation.map(|(id, text)| json!({ "entry_id": id, "text": text })),
+        })
+    }
+
+    #[test]
+    fn without_a_delivery_context_recall_reads_the_last_user_message() {
+        let input = hook_input(None);
+        assert_eq!(
+            recall_query(&input).as_deref(),
+            Some("the transcript's question")
+        );
+        let later = PreGenerateInput { step: 1, ..input };
+        assert_eq!(recall_query(&later), None);
+    }
+
+    #[test]
+    fn a_direct_or_invoked_message_recalls_on_its_own_text() {
+        for kind in ["direct", "invoked-agent"] {
+            let input = hook_input(Some(context(kind, None)));
+            assert_eq!(recall_query(&input).as_deref(), Some("go on"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_continuation_recalls_on_the_earlier_message() {
+        let input = hook_input(Some(context(
+            "direct",
+            Some(("e1", "which harbor does the ferry leave from?")),
+        )));
+        assert_eq!(
+            recall_query(&input).as_deref(),
+            Some("which harbor does the ferry leave from?")
+        );
+        // A continuation of itself, or of nothing, recalls nothing.
+        for prior in [("e2", "go on"), ("e1", "  "), ("", "text")] {
+            let input = hook_input(Some(context("direct", Some(prior))));
+            assert_eq!(recall_query(&input), None, "{prior:?}");
+        }
+    }
+
+    #[test]
+    fn a_notification_or_a_mismatched_context_recalls_nothing() {
+        for kind in ["notification", "unknown", "other"] {
+            assert_eq!(
+                recall_query(&hook_input(Some(context(kind, None)))),
+                None,
+                "{kind}"
+            );
+        }
+        for (key, value) in [
+            ("version", json!(2)),
+            ("session_id", json!("s9")),
+            ("turn_id", json!("t9")),
+            ("source", json!({ "kind": "direct", "entry_id": "e9" })),
+            ("query", Value::Null),
+        ] {
+            let mut ctx = context("direct", None);
+            ctx[key] = value;
+            assert_eq!(recall_query(&hook_input(Some(ctx))), None, "{key}");
+        }
+        assert_eq!(recall_query(&hook_input(Some(json!("direct")))), None);
+    }
+
+    #[tokio::test]
+    async fn a_notification_still_gets_the_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(6);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let (bank, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        bank.set_rule("style", "No em-dashes.").unwrap();
+        bank.commit(memory("fp-go", "the transcript's question is about go"))
+            .await
+            .unwrap();
+        let input = hook_input(Some(context("notification", None)));
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &[],
+            true,
+            recall_query(&input).as_deref(),
+            &HashSet::new(),
+        )
+        .await;
+        assert!(out.section.contains("No em-dashes."), "{}", out.section);
+        assert_eq!(out.rules, 1);
+        assert!(out.memories.is_empty());
+        assert_eq!(out.retrieval, "none");
+        // The reply still gets the per-turn reminder, with no memory lines.
+        let message = out.message.expect("the rules reminder");
+        assert!(message.contains(REMINDER_OPEN), "{message}");
+        assert!(!message.contains("transcript"), "{message}");
     }
 
     #[tokio::test]

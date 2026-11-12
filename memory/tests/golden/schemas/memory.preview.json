@@ -217,7 +217,7 @@
         "type": "array"
       },
       "message": {
-        "description": "The appended `<memory>` message body, verbatim; absent when no memory fits the budget.",
+        "description": "The appended `<memory>` message body, verbatim. With rules it can hold only the rules reminder while `memories` is empty; absent when neither a memory fits the budget nor a reminder applies.",
         "type": [
           "string",
           "null"

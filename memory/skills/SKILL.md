@@ -32,6 +32,8 @@ rule; point-in-time information belongs in memories.
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
   `memory::preview` shows exactly what a turn on that topic would be given.
+  A turn recalls on the user's message (or the earlier one it continues);
+  a notification turn recalls nothing, so call `memory::recall` when one needs it.
 - The user asks to fix or forget something — find it via recall/list, then
   `memory::update` (corrected text) or `memory::delete` (tombstone), and
   `memory::pin` to protect the corrected version.

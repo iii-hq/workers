@@ -76,6 +76,15 @@ pub struct Evidence {
     /// question of pronouns only ("who am I"), or of `MEMORY_VERBS` asked
     /// of "me" ("what do you remember about me").
     pub matched: Vec<String>,
+    /// The `matched` terms the question uses outside its requested slot
+    /// ("live" in "In which city do I live?"): read only when
+    /// `requested_slot` is known.
+    pub relation_matched: Vec<String>,
+    /// How many content terms the question uses outside its requested slot.
+    pub relation_terms: usize,
+    /// The query's requested slot ("in which city"), as a token span of
+    /// `index::tokenize(query)`; `None` when the query was not read.
+    pub requested_slot: Option<std::ops::Range<usize>>,
     /// How many content terms the question has.
     pub terms: usize,
     /// The question asks what memory holds of the user ("what do you
@@ -94,6 +103,28 @@ pub struct Evidence {
     pub z: Option<f32>,
     /// Whether the memory has a vector of the query's model at all.
     pub vector: bool,
+}
+
+impl Evidence {
+    /// The question words matched outside its requested slot: `matched`
+    /// when the query was not read.
+    pub(crate) fn relation_words(&self) -> &[String] {
+        if self.requested_slot.is_some() {
+            &self.relation_matched
+        } else {
+            &self.matched
+        }
+    }
+
+    /// How many words the question has outside its requested slot: `terms`
+    /// when the query was not read.
+    pub(crate) fn relation_term_count(&self) -> usize {
+        if self.requested_slot.is_some() {
+            self.relation_terms
+        } else {
+            self.terms
+        }
+    }
 }
 
 pub struct Store {
@@ -1921,6 +1952,22 @@ impl Bank {
             // A question of pronouns alone, or of what memory holds of them, is about the user.
             content = vec!["user"];
         }
+        // The content words used outside the requested slot ("in which city"):
+        // a word inside it names the answer's kind, which the answer need not repeat.
+        let slot = crate::query_projection::requested_slot(query, &words);
+        let relation: Vec<&str> = match &slot {
+            Some(slot) => content
+                .iter()
+                .copied()
+                .filter(|t| {
+                    words
+                        .iter()
+                        .enumerate()
+                        .any(|(i, w)| w == *t && !slot.contains(&i))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&query_tokens);
         // The BM25 index only holds LIVE records, so a history query must
@@ -1993,6 +2040,13 @@ impl Bank {
                         .filter(|t| inner.index.has(t, &f.id))
                         .map(|t| t.to_string())
                         .collect(),
+                    relation_matched: relation
+                        .iter()
+                        .filter(|t| inner.index.has(t, &f.id))
+                        .map(|t| t.to_string())
+                        .collect(),
+                    relation_terms: relation.len(),
+                    requested_slot: slot.clone(),
                     terms: content.len(),
                     of_me: expanded && of_me,
                     lexical: s / max_bm25,
@@ -2666,6 +2720,10 @@ mod tests {
         let (tokens, expanded) = query_tokens("does the user live in the US");
         assert_eq!(tokens, ["user", "live", "us"]);
         assert!(!expanded);
+        // Only English pronouns are the user: "EU" is a region, kept as a word.
+        let (tokens, expanded) = query_tokens("Which EU region do we deploy to?");
+        assert_eq!(tokens, ["eu", "region", "deploy"]);
+        assert!(!expanded);
         // An all-stopword query keeps its tokens rather than matching nothing.
         assert_eq!(query_tokens("what is it").0, ["what", "is", "it"]);
         // A pasted term counts once.
@@ -3049,6 +3107,32 @@ mod tests {
     ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
         bank.recall_evidence(query, None, "", 10, 30, false, 0.0)
             .await
+    }
+
+    #[tokio::test]
+    async fn a_read_slot_splits_the_question_words_it_holds_from_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = user_memory("The user would anchor the sailboat near the old harbor");
+        bank.commit(m.clone()).await.unwrap();
+
+        let (_, evidence) = evidence_for(&bank, "In which harbor do I anchor the sailboat?").await;
+        let e = &evidence[&m.id];
+        assert_eq!(e.requested_slot, Some(0..3), "in which harbor");
+        assert_eq!(e.matched, ["harbor", "anchor", "sailboat"]);
+        assert_eq!(
+            (e.relation_words(), e.relation_term_count()),
+            (&["anchor".to_string(), "sailboat".to_string()][..], 2)
+        );
+        // Unread, the relation is the whole question.
+        let (_, evidence) = evidence_for(&bank, "Which harbor do I anchor the sailboat in?").await;
+        let e = &evidence[&m.id];
+        assert_eq!(e.requested_slot, None);
+        assert_eq!(
+            (e.relation_words(), e.relation_term_count()),
+            (&e.matched[..], 3)
+        );
     }
 
     #[tokio::test]
