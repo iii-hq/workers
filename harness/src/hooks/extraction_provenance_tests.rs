@@ -514,8 +514,7 @@ async fn edit_purge_legacy_and_malformed_rows_never_inherit_policy() {
         &AgentMessage::user_text("Original request"),
         &edited,
     )
-    .await
-    .unwrap();
+    .await;
     stack.data.lock().unwrap().messages.get_mut("s").unwrap()[0]["message"] = json!(edited);
     acknowledge(
         &stack,

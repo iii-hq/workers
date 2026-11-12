@@ -942,7 +942,7 @@ pub async fn edit_queued(
     };
     let message = normalize_message(req.message)?;
     crate::hooks::recall::edit_direct(deps, &req.session_id, &row.entry_id, &row.message, &message)
-        .await?;
+        .await;
     row.message = message;
     // Same `id` → same state key → overwrite in place (position preserved).
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;

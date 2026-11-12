@@ -541,15 +541,17 @@ pub(crate) async fn record_delivery(
 /// An operator edit can refresh only an existing direct receipt matching the
 /// queued row's old text. Notification/agent/legacy rows never gain authority.
 /// A fork or a forged queued row cannot borrow another session's receipt.
+/// Never fails the edit: a receipt left unrefreshed no longer matches the row,
+/// so that turn's recall source resolves as unknown, as on the send path.
 pub(crate) async fn edit_direct(
     deps: &Deps,
     session: &str,
     entry: &str,
     old_message: &AgentMessage,
     new_message: &AgentMessage,
-) -> Result<(), HarnessError> {
+) {
     let timeout = deps.cfg().await.session_timeout_ms;
-    update_ledger(&deps.iii, session, timeout, |old| {
+    let refreshed = update_ledger(&deps.iii, session, timeout, |old| {
         let mut rows = ledger(old)?;
         let Some(r) = rows
             .iter_mut()
@@ -582,7 +584,10 @@ pub(crate) async fn edit_direct(
         // source edit must not let the same turn acknowledge a second policy.
         Ok(Some(serde_json::to_value(rows).expect("edit ledger")))
     })
-    .await
+    .await;
+    if let Err(error) = refreshed {
+        tracing::warn!(session, entry, %error, "recall receipt not refreshed; queued edit lands without recall authority");
+    }
 }
 
 /// Scoped lifecycle cleanup: no global scan, no transcript contents retained.

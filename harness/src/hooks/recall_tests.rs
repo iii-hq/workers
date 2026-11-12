@@ -597,16 +597,96 @@ async fn recall_authorized_direct_edit_preserves_channel_without_promoting_other
     crate::state::enqueue_message(&stack.deps.iii, &forged, 1000)
         .await
         .unwrap();
-    assert!(crate::functions::send::edit_queued(
+    let receipt = stack.data.lock().unwrap().get(SCOPE, "direct-edit");
+    assert!(edit_text(&stack, &forged, "Promote tamper").await);
+    assert_eq!(
+        stack.data.lock().unwrap().get(SCOPE, "direct-edit"),
+        receipt,
+        "a tampered row cannot refresh the receipt"
+    );
+    assert_eq!(
+        drained_context(&stack, "direct-edit").await["source"]["kind"],
+        "unknown"
+    );
+}
+
+async fn queued_direct(stack: &Stack, session: &str) -> crate::state::QueuedMessage {
+    stack
+        .reset_turn(session, crate::types::turn::TurnStatus::Running)
+        .await;
+    crate::functions::send::handle(&stack.deps, request(session, "Original direct query", None))
+        .await
+        .unwrap();
+    crate::state::list_queued(&stack.deps.iii, session, 1000)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+}
+
+async fn edit_text(stack: &Stack, row: &crate::state::QueuedMessage, text: &str) -> bool {
+    crate::functions::send::edit_queued(
         &stack.deps,
         crate::functions::send::EditQueuedRequest {
-            session_id: "direct-edit".into(),
-            entry_id: forged.entry_id,
-            message: crate::functions::send::MessageInput::Text("Promote tamper".into())
-        }
+            session_id: row.session_id.clone(),
+            entry_id: row.entry_id.clone(),
+            message: crate::functions::send::MessageInput::Text(text.into()),
+        },
     )
     .await
-    .is_err());
+    .unwrap()
+    .updated
+}
+
+/// The edited row drains; with the receipt left on the old text, the turn's
+/// recall source resolves as unknown.
+async fn drained_context(stack: &Stack, session: &str) -> Value {
+    crate::turn_loop::drain_queued(&stack.deps, &stack.deps.session().await, session)
+        .await
+        .unwrap();
+    stack.context(session).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_ledger_read_error_does_not_fail_a_queued_edit() {
+    let stack = Stack::new().await;
+    let row = queued_direct(&stack, "edit-stalled").await;
+    let receipt = stack.data.lock().unwrap().get(SCOPE, "edit-stalled");
+    stack.data.lock().unwrap().ledger_stalls = true;
+    assert!(edit_text(&stack, &row, "Edited while the ledger stalls").await);
+    stack.data.lock().unwrap().ledger_stalls = false;
+    assert_eq!(
+        stack.data.lock().unwrap().get(SCOPE, "edit-stalled"),
+        receipt
+    );
+    let context = drained_context(&stack, "edit-stalled").await;
+    assert_eq!(context["source"]["kind"], "unknown");
+    assert_eq!(context["query"]["text"], "Edited while the ledger stalls");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recall_diverged_receipt_does_not_block_a_later_queued_edit() {
+    let stack = Stack::new().await;
+    let row = queued_direct(&stack, "edit-diverged").await;
+    // An earlier edit refreshed the receipt, then its row rewrite failed.
+    edit_direct(
+        &stack.deps,
+        "edit-diverged",
+        &row.entry_id,
+        &row.message,
+        &AgentMessage::user_text("Lost edit"),
+    )
+    .await;
+    let diverged = stack.data.lock().unwrap().get(SCOPE, "edit-diverged");
+    assert!(edit_text(&stack, &row, "Third text").await);
+    assert_eq!(
+        stack.data.lock().unwrap().get(SCOPE, "edit-diverged"),
+        diverged,
+        "a receipt that no longer matches its row is never refreshed"
+    );
+    let context = drained_context(&stack, "edit-diverged").await;
+    assert_eq!(context["source"]["kind"], "unknown");
+    assert_eq!(context["query"]["text"], "Third text");
 }
 
 fn request(session: &str, text: &str, prior: Option<&str>) -> crate::functions::send::SendRequest {
