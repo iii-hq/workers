@@ -1016,7 +1016,7 @@ async fn console_terminal_is_a_live_tmux_client() {
         })
         .await
         .unwrap();
-    eventually("the echoed output", || async {
+    let output = || async {
         let replay = manager
             .replay(ReplayRequest {
                 terminal: reference.clone(),
@@ -1029,8 +1029,30 @@ async fn console_terminal_is_a_live_tmux_client() {
             .iter()
             .flat_map(|frame| BASE64.decode(&frame.data).unwrap())
             .collect();
-        String::from_utf8_lossy(&text)
-            .contains("hi-from-42")
+        Some(String::from_utf8_lossy(&text).into_owned())
+    };
+    eventually("the echoed output", || async {
+        output().await?.contains("hi-from-42").then_some(())
+    })
+    .await;
+
+    // An OSC 8 link a program prints reaches the page as OSC 8, not only as
+    // its text: tmux keeps it for a client that declares `hyperlinks`.
+    manager
+        .write(WriteRequest {
+            terminal: reference.clone(),
+            data: BASE64.encode(
+                "printf '\\033]8;;https://example.com/pr\\033\\\\pr-text\\033]8;;\\033\\\\\\n'\r",
+            ),
+        })
+        .await
+        .unwrap();
+    eventually("the OSC 8 link", || async {
+        // The typed command echoes `\033`, not ESC: only the link has ESC.
+        // tmux names the link (`id=tmux1`) and closes it where it likes.
+        output()
+            .await?
+            .contains(";https://example.com/pr\x1b\\pr-text")
             .then_some(())
     })
     .await;
