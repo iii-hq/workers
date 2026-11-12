@@ -51,3 +51,11 @@ tokio = { version = "1", features = ["test-util"] }
 # A scripted engine for tests/live_feed.rs; both are already in the graph through iii-sdk.
 futures-util = "0.3"
 tokio-tungstenite = "0.28"
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

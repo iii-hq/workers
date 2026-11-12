@@ -55,3 +55,11 @@ serial_test = "3"
 # the test can observe `set_parent`/`add_event` output on the HTTP span.
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

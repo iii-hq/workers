@@ -44,3 +44,11 @@ testkit = []
 # (which link the lib) so `cargo test` works without `--all-features`.
 approval-gate = { path = ".", features = ["testkit"] }
 harness = { path = "../harness" }
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
