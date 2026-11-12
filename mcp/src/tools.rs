@@ -2,10 +2,9 @@
 //!
 //! Direct port of `src/mcp/tools.ts`.
 
-use std::sync::Arc;
-
-use iii_sdk::{errors::Error, CallRequest, IIIClient};
 use serde_json::{json, Map, Value};
+
+use crate::bus::{Bus, BusError};
 
 use crate::config::McpConfig;
 
@@ -99,15 +98,8 @@ fn unwrap_function_list(raw: &Value) -> Vec<Map<String, Value>> {
     Vec::new()
 }
 
-pub async fn mcp_tools_list(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) -> Result<Value, Error> {
-    let raw = iii
-        .call(CallRequest {
-            function_id: ENGINE_LIST_FUNCTIONS.to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: None,
-        })
-        .await?;
+pub async fn mcp_tools_list<B: Bus>(bus: &B, cfg: &McpConfig) -> Result<Value, BusError> {
+    let raw = bus.call(ENGINE_LIST_FUNCTIONS, json!({}), None).await?;
     let functions = unwrap_function_list(&raw);
     let tools: Vec<Value> = functions
         .into_iter()
@@ -138,9 +130,9 @@ fn stringify_result(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
 }
 
-pub async fn mcp_tools_call(
-    iii: &Arc<IIIClient>,
-    cfg: &Arc<McpConfig>,
+pub async fn mcp_tools_call<B: Bus>(
+    bus: &B,
+    cfg: &McpConfig,
     params: &Value,
 ) -> Result<Value, McpToolsCallError> {
     let name = params
@@ -163,15 +155,7 @@ pub async fn mcp_tools_call(
         Some(v) if v.is_object() => v.clone(),
         _ => json!({}),
     };
-    match iii
-        .call(CallRequest {
-            function_id: function_id.clone(),
-            payload: arguments,
-            action: None,
-            timeout_ms: None,
-        })
-        .await
-    {
+    match bus.call(&function_id, arguments, None).await {
         Ok(result) => {
             let mut out = Map::new();
             out.insert(
@@ -211,6 +195,7 @@ impl std::error::Error for McpToolsCallError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn cfg() -> Arc<McpConfig> {
         Arc::new(McpConfig::default())
@@ -236,7 +221,7 @@ mod tests {
     fn hidden_prefix_filter_uses_config() {
         let c = cfg();
         assert!(is_hidden_function_id(&c, "engine::list"));
-        assert!(is_hidden_function_id(&c, "skills::register"));
+        assert!(is_hidden_function_id(&c, "state::set"));
         assert!(is_hidden_function_id(&c, "mcp::handler"));
         assert!(!is_hidden_function_id(&c, "resend::contacts::add"));
     }

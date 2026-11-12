@@ -1,9 +1,4 @@
-//! Step defs for `tests/features/resources.feature`.
-//!
-//! `resources/*` is delegated to the `skills` worker; when skills isn't
-//! registered against the engine the bridge falls through to empty
-//! payloads. These scenarios pin the empty-fallback envelope shapes so
-//! the bridge stays compatible with MCP clients on a clean engine.
+//! Steps for resources.feature: skills from iii-directory as `iii://<id>`.
 
 use cucumber::{then, when};
 use serde_json::json;

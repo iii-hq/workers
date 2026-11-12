@@ -1,18 +1,24 @@
-//! `mcp` binary entry. Connects to the iii engine, registers the
-//! [`mcp::handler`](mcp::functions::FUNCTION_ID) function, observes
-//! `http::on-request` with it for `POST <api_path>`, then sleeps on Ctrl+C.
+//! `mcp` binary entry. Connects to the iii engine (normally through
+//! rbac-proxy), refuses to start unless that connection is proxied or
+//! `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` is set, registers `mcp::handler`
+//! and `mcp::observed`, serves `POST`/`DELETE <api_path>`, reaps idle MCP
+//! sessions, then sleeps on Ctrl+C.
 //!
 //! All real logic lives under [`mcp`]; tests under `tests/` reuse the
 //! same modules to drive the bridge in-process.
 
 use anyhow::Result;
 use clap::Parser;
+use iii_mcp::bus::Bus;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
+use iii_mcp::engine::SdkEngine;
+use iii_mcp::rbac_guard::{self, Decision};
+use iii_mcp::sessions::{SessionLimits, Sessions};
 use iii_mcp::{config, functions, manifest};
 
 use crate::config::McpConfig;
@@ -75,36 +81,85 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
-    functions::register_all(&iii, &cfg);
+    // RBAC first: nothing is registered or served until the connection is
+    // known to be behind rbac-proxy (or the escape hatch is set).
+    let probe = Bus::call(
+        iii.as_ref(),
+        rbac_guard::SESSION_PROBE,
+        serde_json::json!({}),
+        Some(10_000),
+    )
+    .await
+    .map_err(|e| e.to_string());
+    let dangerous =
+        rbac_guard::parse_dangerous(std::env::var(rbac_guard::DANGEROUS_ENV).ok().as_deref());
+    let mode = match rbac_guard::decide(&rbac_guard::classify_probe(probe), dangerous, &cli.url) {
+        Decision::Refuse(message) => {
+            eprintln!("{message}");
+            iii.shutdown_async().await;
+            std::process::exit(1);
+        }
+        Decision::Start { mode, warnings } => {
+            for w in warnings {
+                tracing::warn!("{w}");
+                eprintln!("{w}");
+            }
+            mode
+        }
+    };
+    tracing::info!(rbac = ?mode, "rbac check passed");
 
-    // The route lives as long as the connection; dropping the handle keeps
-    // it. Report whether it became active without blocking startup.
-    let route = functions::observe_route(&iii, &cfg.api_path);
+    let sessions = Arc::new(Sessions::new(SessionLimits {
+        max_buffered: cfg.max_buffered_events,
+        idle_ttl: Duration::from_secs(cfg.session_idle_ttl_secs),
+    }));
+    let ctx = functions::Ctx::new(
+        SdkEngine {
+            client: iii.clone(),
+        },
+        cfg.clone(),
+        sessions.clone(),
+        Arc::new(mode),
+    );
+    functions::register_all(&iii, &ctx);
+
+    // The routes live as long as the connection; dropping the handles keeps
+    // them. Report whether they became active without blocking startup.
+    let routes = functions::observe_routes(&iii, &cfg.api_path);
     let api_path = cfg.api_path.clone();
     tokio::spawn(async move {
-        match tokio::time::timeout(Duration::from_secs(30), route.ready()).await {
-            Ok(Ok(())) => tracing::info!(
-                function_id = functions::FUNCTION_ID,
-                api_path = %api_path,
-                "http::on-request route active"
-            ),
-            Ok(Err(e)) => tracing::warn!(
-                error = %e,
-                function_id = functions::FUNCTION_ID,
-                api_path = %api_path,
-                "http::on-request route rejected"
-            ),
-            Err(_) => tracing::warn!(
-                function_id = functions::FUNCTION_ID,
-                api_path = %api_path,
-                "http::on-request route still pending after 30s; is the http worker running?"
-            ),
+        for route in routes {
+            match tokio::time::timeout(Duration::from_secs(30), route.ready()).await {
+                Ok(Ok(())) => {
+                    tracing::info!(api_path = %api_path, observer_id = %route.id(), "http::on-request route active")
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, api_path = %api_path, "http::on-request route rejected")
+                }
+                Err(_) => {
+                    tracing::warn!(api_path = %api_path, "http::on-request route still pending after 30s; is the http worker running?")
+                }
+            }
+        }
+    });
+
+    // Idle sessions lose their observers; check every minute.
+    let reaper = sessions.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let n = reaper.reap().await;
+            if n > 0 {
+                tracing::info!(sessions = n, "reaped idle MCP sessions");
+            }
         }
     });
 
     tracing::info!("mcp ready, waiting for invocations");
     tokio::signal::ctrl_c().await?;
     tracing::info!("mcp shutting down");
+    sessions.close_all().await;
     iii.shutdown_async().await;
     Ok(())
 }

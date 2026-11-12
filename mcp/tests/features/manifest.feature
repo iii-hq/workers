@@ -28,8 +28,6 @@ Feature: --manifest emits the registry payload
     And  the manifest's default hidden_prefixes contains "iii::"
     And  the manifest's default hidden_prefixes contains "mcp::"
     And  the manifest's default hidden_prefixes contains "a2a::"
-    And  the manifest's default hidden_prefixes contains "skills::"
-    And  the manifest's default hidden_prefixes contains "prompts::"
 
   Scenario: the manifest declares at least one supported target
     When I run `mcp --manifest`
