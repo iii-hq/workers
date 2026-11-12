@@ -44,7 +44,7 @@ pub fn spawn(collector: Arc<Collector>, monitor: Arc<Monitor>, observed: Observe
 /// registry of 0.3.0 is brought to the slot with tmux (G11), shared items
 /// are linked again, and a sign-in by hand while the worker was away is
 /// taken in (G6).
-async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
+pub async fn start(collector: &Arc<Collector>, accounts: &Arc<Accounts>) {
     match accounts.recover().await {
         Ok(Some(journal)) => {
             tracing::info!(from = %journal.from, to = %journal.to, "a stopped switch was finished")
