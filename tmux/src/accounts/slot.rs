@@ -58,6 +58,12 @@ pub const LOGIN_CACHE_KEYS: [&str; 18] = [
 pub const IDENTITY_KEY: &str = "oauthAccount";
 /// The journal's name in the accounts root.
 pub const JOURNAL: &str = "swap.json";
+/// `<root>/swap.lock`: held (`flock`) by the worker that swaps or settles
+/// a swap, for its whole run. Another worker process on the same accounts
+/// finds it taken and leaves that swap, its journal and its locks alone,
+/// which the gate inside one process can't tell it. The system lets go of
+/// it when its process ends, crashed or not.
+pub const SWAP_LOCK: &str = "swap.lock";
 /// The keys of a sign-in store that belong to the Anthropic account signed
 /// in there: Claude Code 2.1.322's logout removes exactly these (`E()` in
 /// its auth chunk) and revokes the three token chains among them
@@ -82,6 +88,11 @@ pub const HOLD_BUDGET: Duration = Duration::from_secs(8);
 /// What a swap that ran out of [`HOLD_BUDGET`] says.
 pub const TOO_SLOW: &str =
     "The sign-in store answered too slowly (is the Keychain locked?); try again.";
+
+/// [`SWAP_LOCK`] held, until dropped.
+pub struct SwapHold {
+    _file: std::fs::File,
+}
 
 /// Why a swap did not happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +224,38 @@ impl<'a> Stores<'a> {
     fn write(&self, place: &Place, raw: &Raw) -> Result<(), String> {
         self.secrets
             .write_raw(&self.dir(place), self.env_dir(place).as_deref(), raw)
+    }
+
+    /// Hold [`SWAP_LOCK`], or [`SwapError::Busy`] while another process
+    /// holds it.
+    pub fn hold_swap(&self) -> Result<SwapHold, SwapError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+        super::registry::make_private_dir(&self.paths.root).map_err(SwapError::Failed)?;
+        let path = self.paths.root.join(SWAP_LOCK);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| {
+                SwapError::Failed(format!("Could not open {} ({error}).", path.display()))
+            })?;
+        // SAFETY: `file` owns a valid descriptor for the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(SwapHold { _file: file });
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            Err(SwapError::Busy)
+        } else {
+            Err(SwapError::Failed(format!(
+                "Could not lock {} ({error}).",
+                path.display()
+            )))
+        }
     }
 
     fn journal_path(&self) -> PathBuf {
@@ -504,6 +547,8 @@ pub fn swap(
             "It is the global account already.".into(),
         ));
     }
+    // One swap at a time across processes too.
+    let _hold = stores.hold_swap()?;
     if stores.read_journal().is_some() {
         return Err(SwapError::Busy);
     }
@@ -914,6 +959,12 @@ pub fn recover(
     stores: &Stores<'_>,
     commit: &dyn Fn(&Journal) -> Result<(), String>,
 ) -> Result<Option<Journal>, SwapError> {
+    if stores.read_journal().is_none() {
+        return Ok(None);
+    }
+    // A journal is left half-way only once no process holds the swap lock:
+    // until then another worker's swap runs, and its locks are its own.
+    let _hold = stores.hold_swap()?;
     let Some(journal) = stores.read_journal() else {
         return Ok(None);
     };
@@ -1219,6 +1270,53 @@ mod tests {
         );
         assert_eq!(token_of(&paths.claude_home).as_deref(), Some("rt-g"));
         assert!(stores.read_journal().is_none());
+    }
+
+    #[test]
+    fn a_swap_another_worker_runs_is_left_alone() {
+        let home = Home::new("other-worker");
+        setup(&home);
+        let paths = &home.paths;
+        let stores = Stores {
+            paths,
+            secrets: &FileStore,
+            wait: Duration::from_millis(300),
+            budget: HOLD_BUDGET,
+        };
+        // Another worker process is half-way through a swap: its journal,
+        // its locks, and the swap lock it holds.
+        let theirs = stores.hold_swap().unwrap();
+        assert!(swap(
+            &stores,
+            "default",
+            "personal",
+            None,
+            &no_commit,
+            Crash::None
+        )
+        .is_err_and(|error| error == SwapError::Busy));
+        drop(theirs);
+        swap(
+            &stores,
+            "default",
+            "personal",
+            None,
+            &no_commit,
+            Crash::After(3),
+        )
+        .unwrap_err();
+        let theirs = stores.hold_swap().unwrap();
+        assert_eq!(recover(&stores, &no_commit), Err(SwapError::Busy));
+        assert!(stores.read_journal().is_some(), "its journal stays");
+        assert!(
+            paths.claude_home.join(".oauth_refresh.lock").is_dir(),
+            "its locks stay"
+        );
+        // Its process ended (crashed): the swap is settled.
+        drop(theirs);
+        assert!(recover(&stores, &no_commit).unwrap().is_some());
+        assert!(stores.read_journal().is_none());
+        assert!(!paths.claude_home.join(".oauth_refresh.lock").exists());
     }
 
     #[test]
