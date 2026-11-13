@@ -58,8 +58,34 @@
             },
             "type": "array"
           },
+          "llm_calls": {
+            "description": "Model call attempts by the judge and semantic tiers, failed ones included.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "llm_cost_usd": {
+            "description": "The router's cost in USD, summed over the calls the router priced; absent when none.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "llm_input_tokens": {
+            "description": "Prompt tokens the router reported, cached ones included.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "llm_merged": {
             "description": "Reorder groups merged after the LLM judge confirmed equivalence.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "llm_output_tokens": {
+            "description": "Output tokens the router reported.",
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"
@@ -97,7 +123,7 @@
             "type": "array"
           },
           "semantic_failed": {
-            "description": "New memories the judge could not decide even alone (a poison input); skipped past the cursor so they cannot wedge the tier.",
+            "description": "New memories the judge could not decide even alone while another reply of the pass parsed (a poison input); skipped past the cursor.",
             "items": {
               "type": "string"
             },
@@ -168,7 +194,7 @@
         "type": "object"
       },
       "SemanticAction": {
-        "description": "One applied semantic-tier decision as reported (and kept in `last_report`). Actions dropped by the pre-write freshness check are not listed; they count in `semantic_rejected` with a note.",
+        "description": "One applied semantic-tier decision as reported (and kept in the pass reports). Actions dropped by the pre-write freshness check are not listed; they count in `semantic_rejected` with a note.",
         "properties": {
           "keep_id": {
             "description": "Merge survivor / supersede replacement.",

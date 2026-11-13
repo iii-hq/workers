@@ -6,8 +6,10 @@
 //! record, candidates from the RAW lexical and semantic arms INTERLEAVED (a
 //! fused rank buries the twin); one LLM call per batch whose every action
 //! carries a reason; targets only from the record's own candidates; parse
-//! failures bisect the batch down to one record, and a record that still
-//! fails is skipped so it cannot wedge the tier. Inputs and candidates are
+//! failures bisect the batch down to one record. A record that still fails
+//! alone is skipped once another reply parses (a poison input); while none
+//! has, the cursor stays before it, and a second batch where no reply parses
+//! stops the tier (the judge itself is failing). Inputs and candidates are
 //! the same kind of record, so an update with new evidence becomes a merge
 //! (retire one, the survivor absorbs it) and a state change becomes a
 //! supersede (old -> new).
@@ -510,8 +512,8 @@ pub fn validate(
     verdict
 }
 
-/// One applied semantic-tier decision as reported (and kept in
-/// `last_report`). Actions dropped by the pre-write freshness check are not
+/// One applied semantic-tier decision as reported (and kept in the pass
+/// reports). Actions dropped by the pre-write freshness check are not
 /// listed; they count in `semantic_rejected` with a note.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SemanticAction {
@@ -532,6 +534,9 @@ pub struct SemanticOptions {
     pub batch: usize,
     pub candidates: usize,
     pub max_per_run: usize,
+    /// Model calls this bank may still make: the run's cap less what
+    /// earlier banks used.
+    pub max_llm_calls: usize,
 }
 
 fn cursor_key(bank: &str) -> String {
@@ -575,8 +580,12 @@ async fn still_as_seen<T: ConsolidationTransport + ?Sized>(
 }
 
 enum Step {
-    /// Batch fully judged and applied (or a lone poison record skipped).
-    Done,
+    /// The reply parsed and its actions were applied.
+    Parsed,
+    /// Nothing to judge: no model call.
+    Empty,
+    /// A lone record's reply did not parse.
+    Unparsed,
     /// Stop the tier for this bank; the cursor stays before this batch.
     Stop,
     /// Input-shaped failure on a multi-record batch: judge halves instead.
@@ -623,57 +632,83 @@ pub async fn run_semantic_tier<T: ConsolidationTransport + ?Sized>(
         .into_iter()
         .cloned()
         .collect();
-    let mut queue: VecDeque<Vec<MemoryRow>> = todo
-        .chunks(opts.batch.max(1))
-        .map(<[MemoryRow]>::to_vec)
-        .collect();
     let mut retired: HashSet<String> = HashSet::new();
     // A reinforced survivor changes: later actions, in this batch or a later
     // one (a pending record can be an earlier batch's candidate), expect the
     // snapshot memory returned, not the one read before.
     let mut written: BTreeMap<String, Value> = BTreeMap::new();
 
-    while let Some(group) = queue.pop_front() {
-        if *budget == 0 {
-            report
-                .notes
-                .push("semantic tier deferred: per-run supersede cap reached".into());
-            break;
-        }
-        match judge_group(
-            iii,
-            bank,
-            opts,
-            budget,
-            report,
-            &group,
-            &mut retired,
-            &mut written,
-        )
-        .await
-        {
-            Step::Done => {
-                if let Some(last) = group.last() {
-                    cursor = Cursor::of(last);
-                    if let Err(e) = crate::functions::state_set(
-                        iii,
-                        &cursor_key(bank),
-                        serde_json::to_value(&cursor).unwrap_or(Value::Null),
-                    )
-                    .await
-                    {
-                        report.notes.push(format!("semantic cursor not saved: {e}"));
-                        break;
-                    }
+    // Lone records whose reply never parsed. Once a reply parses the judge
+    // works, so they are poison: listed and passed. Until then the cursor
+    // stays before the first of them, and a second batch with failed replies
+    // and none parsed stops the tier: the judge itself is failing.
+    let mut unparsed: Vec<String> = Vec::new();
+    let mut parsed = false;
+    'tier: for batch in todo.chunks(opts.batch.max(1)) {
+        let held = unparsed.len();
+        let mut queue = VecDeque::from([batch.to_vec()]);
+        while let Some(group) = queue.pop_front() {
+            if *budget == 0 {
+                report
+                    .notes
+                    .push("semantic tier deferred: per-run supersede cap reached".into());
+                break 'tier;
+            }
+            if report.llm_calls >= opts.max_llm_calls {
+                report
+                    .notes
+                    .push("semantic tier deferred: per-run LLM call cap reached".into());
+                break 'tier;
+            }
+            match judge_group(
+                iii,
+                bank,
+                opts,
+                budget,
+                report,
+                &group,
+                &mut retired,
+                &mut written,
+            )
+            .await
+            {
+                Step::Parsed => parsed = true,
+                Step::Empty => {}
+                Step::Unparsed => unparsed.push(group[0].id.clone()),
+                Step::Stop => break 'tier,
+                Step::Split => {
+                    let (a, b) = group.split_at(group.len() / 2);
+                    queue.push_front(b.to_vec());
+                    queue.push_front(a.to_vec());
+                    continue;
                 }
             }
-            Step::Stop => break,
-            Step::Split => {
-                let (a, b) = group.split_at(group.len() / 2);
-                queue.push_front(b.to_vec());
-                queue.push_front(a.to_vec());
+            if !parsed && !unparsed.is_empty() {
+                continue;
+            }
+            report.semantic_failed.append(&mut unparsed);
+            if let Some(last) = group.last() {
+                cursor = Cursor::of(last);
+                if let Err(e) = crate::functions::state_set(
+                    iii,
+                    &cursor_key(bank),
+                    serde_json::to_value(&cursor).unwrap_or(Value::Null),
+                )
+                .await
+                {
+                    report.notes.push(format!("semantic cursor not saved: {e}"));
+                    break 'tier;
+                }
             }
         }
+        if held > 0 && unparsed.len() > held {
+            break;
+        }
+    }
+    if let Some(first) = unparsed.first() {
+        report.notes.push(format!(
+            "semantic tier stopped: no judge reply parsed; cursor held before `{first}`"
+        ));
     }
 }
 
@@ -710,10 +745,11 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
         items.push((row.clone(), candidates));
     }
     if items.iter().all(|(_, c)| c.is_empty()) {
-        return Step::Done;
+        return Step::Empty;
     }
 
     let batch = build_batch(&items);
+    report.llm_calls += 1;
     let result = iii
         .complete(
             &opts.model,
@@ -722,6 +758,9 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             MAX_OUTPUT_TOKENS,
         )
         .await;
+    if let Ok(reply) = &result {
+        crate::consolidate::tally_usage(report, &reply["usage"]);
+    }
     let parsed = match classify(&result) {
         Outcome::Reply(text) => parse_actions(&text).map_err(Outcome::InputShaped),
         other => Err(other),
@@ -733,10 +772,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             return Step::Stop;
         }
         Err(_) if group.len() > 1 => return Step::Split,
-        Err(_) => {
-            report.semantic_failed.push(group[0].id.clone());
-            return Step::Done;
-        }
+        Err(_) => return Step::Unparsed,
     };
 
     let verdict = validate(&actions, &batch, retired, *budget);
@@ -811,7 +847,7 @@ async fn judge_group<T: ConsolidationTransport + ?Sized>(
             .push("semantic tier deferred: per-run supersede cap reached".into());
         return Step::Stop;
     }
-    Step::Done
+    Step::Parsed
 }
 
 /// The snapshot a supersede is guarded with: what this batch read, unless an

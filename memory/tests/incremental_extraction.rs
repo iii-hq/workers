@@ -646,7 +646,8 @@ fn invalid_inputs_and_zero_bounds_never_issue_requests() {
 mod productive {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
-    use memory::{config::WorkerConfig, deps::Deps, hooks::ExtractJobInput};
+    use memory::{config::WorkerConfig, deps::Deps, extract::PassTally, hooks::ExtractJobInput};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     // The envelope the producer emits: the session worker returns
@@ -792,7 +793,7 @@ mod productive {
                     }
                     let items = self.model_items.pop_front().expect("unexpected model call");
                     Ok(
-                        json!({"message":{"role":"assistant","stop_reason":"stop","content":[{"type":"text","text":items.to_string()}]}}),
+                        json!({"message":{"role":"assistant","stop_reason":"stop","content":[{"type":"text","text":items.to_string()}]},"usage":{"input":100,"cache_read":20,"output":10}}),
                     )
                 }
                 _ => Err(("unexpected_rpc", "RPC denied by default")),
@@ -835,6 +836,15 @@ mod productive {
                 })
                 .collect()
         }
+    }
+    /// Every pass of this binary records into the one process-wide
+    /// `pass_health`: a test reading a pass's tally runs that pass alone.
+    static PASSES: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+    #[derive(Debug, PartialEq)]
+    struct Tallied {
+        /// Counted as a backlog left for the retry, not a failure.
+        pending: bool,
+        tally: PassTally,
     }
     struct Boundary {
         deps: Deps,
@@ -1015,6 +1025,25 @@ mod productive {
             assert_eq!(captured, correlation);
         }
         async fn run(&self, job: &ExtractJobInput) -> Result<(), String> {
+            let _shared = PASSES.read().await;
+            self.run_pass(job).await
+        }
+        /// The pass, run alone, and its tally: `None` when it was not counted.
+        async fn run_tallied(
+            &self,
+            job: &ExtractJobInput,
+        ) -> (Result<(), String>, Option<Tallied>) {
+            let _alone = PASSES.write().await;
+            let before = memory::extract::pass_health();
+            let result = self.run_pass(job).await;
+            let after = memory::extract::pass_health();
+            let tallied = (after.passes > before.passes).then_some(Tallied {
+                pending: after.pending > before.pending,
+                tally: after.last,
+            });
+            (result, tallied)
+        }
+        async fn run_pass(&self, job: &ExtractJobInput) -> Result<(), String> {
             let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 let result = memory::extract::try_run(&self.deps, job).await;
                 self.capture_barrier("run-terminal", job.until.as_deref())
@@ -1487,11 +1516,21 @@ mod productive {
             ..Script::default()
         })
         .await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("pending"));
+        let (result, tallied) = stack.run_tallied(&job("end")).await;
+        assert!(result.unwrap_err().contains("pending"));
+        assert_eq!(
+            tallied,
+            Some(Tallied {
+                pending: true,
+                tally: PassTally {
+                    calls: 4,
+                    input_tokens: 480,
+                    output_tokens: 40,
+                    created: 4,
+                    ..PassTally::default()
+                }
+            })
+        );
         {
             let s = stack.script.lock().unwrap();
             assert_eq!(s.count("router::complete"), 4);
@@ -1531,11 +1570,15 @@ mod productive {
             ..Script::default()
         })
         .await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("provider error"));
+        let (result, failed) = stack.run_tallied(&job("end")).await;
+        assert!(result.unwrap_err().contains("provider error"));
+        let call = |tally: PassTally| {
+            Some(Tallied {
+                pending: false,
+                tally: PassTally { calls: 1, ..tally },
+            })
+        };
+        assert_eq!(failed, call(PassTally::default()));
         {
             let s = stack.script.lock().unwrap();
             assert_eq!(s.requests().len(), 1);
@@ -1544,8 +1587,19 @@ mod productive {
             assert_eq!(s.cursor.as_deref(), Some("anchor"));
         }
         assert_eq!(stack.commits(), 0);
-        stack.run(&job("end")).await.unwrap();
-        stack.run(&job("end")).await.unwrap();
+        // The retry reads the saved pending run: its call and memory count.
+        let (result, retried) = stack.run_tallied(&job("end")).await;
+        result.unwrap();
+        let retry = PassTally {
+            input_tokens: 120,
+            output_tokens: 10,
+            created: 1,
+            ..PassTally::default()
+        };
+        assert_eq!(retried, call(retry));
+        let (result, duplicate) = stack.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert_eq!(duplicate, None, "never asked the model: not counted");
         {
             let s = stack.script.lock().unwrap();
             assert_eq!(s.requests().len(), 2);
@@ -1557,6 +1611,126 @@ mod productive {
         }
         assert_eq!(stack.commits(), 1);
         stack.assert_rpc_scope();
+    }
+
+    #[tokio::test]
+    async fn the_pass_tally_counts_each_memory_effect_and_drop() {
+        let amber = "Amber instruments require copper calibration.";
+        let cobalt = "Cobalt dispatch uses a northern warehouse.";
+        let silver = "Amber instruments now require silver calibration.";
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", &format!("{amber} {cobalt}")),
+                message("again", cobalt),
+                message("end", silver),
+            ],
+            cursor: Some("anchor".into()),
+            model_items: VecDeque::from([
+                json!([fact(amber)[0].clone(), fact(cobalt)[0].clone()]),
+                json!([fact(cobalt)[0].clone(), fact("ab")[0].clone()]),
+                json!([fact(cobalt)[0].clone(), {"text":silver,"entities":["fixture"],
+                    "scope":"project","kind":"memory","replaces":1}]),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        let one_call = PassTally {
+            calls: 1,
+            input_tokens: 120,
+            output_tokens: 10,
+            ..PassTally::default()
+        };
+        let counted = |tally| {
+            Some(Tallied {
+                pending: false,
+                tally,
+            })
+        };
+        let (result, created) = stack.run_tallied(&job("old")).await;
+        result.unwrap();
+        assert_eq!(
+            created,
+            counted(PassTally {
+                created: 2,
+                ..one_call.clone()
+            })
+        );
+        // Restated by the user: reinforced. Two characters: never written.
+        let (result, restated) = stack.run_tallied(&job("again")).await;
+        result.unwrap();
+        assert_eq!(
+            restated,
+            counted(PassTally {
+                reinforced: 1,
+                dropped: BTreeMap::from([("length", 1)]),
+                ..one_call.clone()
+            })
+        );
+        // Not restated: left as it is. The correction retires its target.
+        let (result, corrected) = stack.run_tallied(&job("end")).await;
+        result.unwrap();
+        assert!(stack.script.lock().unwrap().inputs()[2].contains(&format!("[1] {amber}")));
+        assert_eq!(
+            corrected,
+            counted(PassTally {
+                created: 1,
+                superseded: 1,
+                dropped: BTreeMap::from([("known", 1)]),
+                ..one_call
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replayed_plan_counts_its_drops_once() {
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", "old"),
+                message("end", "a durable synthetic line for extraction"),
+            ],
+            cursor: Some("anchor".into()),
+            state_write_error: true,
+            model_items: VecDeque::from([json!([
+                fact("ab")[0].clone(),
+                fact("Amber instruments require copper calibration.")[0].clone()
+            ])]),
+            ..Script::default()
+        })
+        .await;
+        // Every write landed but the cursor: the plan stays for the retry.
+        let (result, failed) = stack.run_tallied(&job("end")).await;
+        assert!(result.unwrap_err().contains("state::set"));
+        let tally = PassTally {
+            calls: 1,
+            input_tokens: 120,
+            output_tokens: 10,
+            created: 1,
+            ..PassTally::default()
+        };
+        assert_eq!(
+            failed,
+            Some(Tallied {
+                pending: false,
+                tally
+            })
+        );
+        stack.script.lock().unwrap().state_write_error = false;
+        let (result, replayed) = stack.run_tallied(&job("end")).await;
+        result.unwrap();
+        let tally = PassTally {
+            dropped: BTreeMap::from([("length", 1)]),
+            ..PassTally::default()
+        };
+        assert_eq!(
+            replayed,
+            Some(Tallied {
+                pending: false,
+                tally
+            })
+        );
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
+        assert_eq!(stack.commits(), 1);
     }
 
     #[tokio::test]
@@ -2031,7 +2205,7 @@ mod productive {
             ));
             stack.script.lock().unwrap().model_pause = Some(pause.clone());
             let input = job("end");
-            let work = stack.run(&input);
+            let work = stack.run_tallied(&input);
             let mutate = async {
                 tokio::time::timeout(std::time::Duration::from_secs(5), pause.0.acquire())
                     .await
@@ -2058,8 +2232,11 @@ mod productive {
                 pause.1.add_permits(1);
                 changed
             };
-            let (result, changed) = tokio::join!(work, mutate);
+            let ((result, tallied), changed) = tokio::join!(work, mutate);
             assert!(result.unwrap_err().contains("state::set"));
+            // The receipted conflict is counted by the pass that hit it,
+            // though the cursor write failed after it.
+            assert_eq!(tallied.unwrap().tally.dropped.get("conflict"), Some(&1));
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"old"}));
             let source =
                 json!(["incremental-fixture", "private", false, null, null, ["end"]]).to_string();
@@ -2759,7 +2936,8 @@ mod productive {
                 "bank" => invalid.bank = Some(huge),
                 _ => invalid.agent = Some(huge),
             }
-            assert!(memory::extract::try_run(&stack.deps, &invalid)
+            assert!(stack
+                .run(&invalid)
                 .await
                 .unwrap_err()
                 .contains("byte bound"));

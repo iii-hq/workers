@@ -37,6 +37,12 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_supersedes_per_run")]
     pub max_supersedes_per_run: usize,
 
+    /// Hard cap on `router::complete` calls in one pass, the judge and the
+    /// semantic tier together, across every bank (safety valve; the rest
+    /// waits for the next pass and the report says so). 0 = no model calls.
+    #[serde(default = "default_max_llm_calls_per_run")]
+    pub max_llm_calls_per_run: usize,
+
     /// Run the LLM-assisted tier after the deterministic pass: an
     /// `router::complete` judge confirms reorder merges and promotes
     /// standing instructions into the bank's `learned` rule. Off by
@@ -96,6 +102,9 @@ fn default_interval_hours() -> u64 {
     24
 }
 fn default_max_supersedes_per_run() -> usize {
+    200
+}
+fn default_max_llm_calls_per_run() -> usize {
     200
 }
 fn default_promote_threshold() -> u32 {
@@ -189,6 +198,7 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.interval_hours, 24);
         assert!(!cfg.dry_run);
+        assert_eq!(cfg.max_llm_calls_per_run, 200);
         // The semantic tier is on by default (fail-soft without a router).
         assert!(cfg.semantic_enabled);
     }

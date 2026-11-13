@@ -110,8 +110,9 @@ pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
     "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete \
      roundtrip, sibling reachability (router, session-manager, state), whether embeddings \
-     answer, and whether recent extraction passes failed. Reports degraded states explicitly, \
-     not a bare process-up health.";
+     answer, whether recent extraction passes failed, and what extraction spent (model calls, \
+     tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not \
+     a bare process-up health.";
 
 pub const RELOAD_ID: &str = "memory::reload";
 pub const RELOAD_DESC: &str =
