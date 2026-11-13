@@ -110,8 +110,11 @@ test('the address only travels over https, or plain http to this machine', () =>
     assert.ok(isSignupUrlAllowed(url), url)
   }
   for (const url of [
-    'http://iii.dev/api/subscribe',
+    'http://example.com/api/subscribe',
     'http://127.0.0.1.evil.example/x',
+    // Userinfo, not the host: the address would go to evil.example.
+    'http://localhost:80@evil.example/api/subscribe',
+    'http://127.0.0.1@evil.example/',
     'http://localhost.evil.example',
     'ftp://127.0.0.1',
     'not a url',

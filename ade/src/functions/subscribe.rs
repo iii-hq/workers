@@ -105,17 +105,17 @@ pub fn signup_url() -> Result<String, String> {
 
 /// An override that would send the address over plain HTTP is refused, not
 /// used. Plain HTTP to this machine is allowed, so a local stand-in for the
-/// list can be tested against; nothing leaves the machine.
+/// list can be tested against; nothing leaves the machine. The host is read
+/// from the parsed URL, so userinfo (`http://localhost:80@elsewhere/`) cannot
+/// pass for it.
 fn check_signup_url(url: &str) -> Result<(), String> {
-    const LOOPBACK: [&str; 3] = ["http://127.0.0.1", "http://localhost", "http://[::1]"];
-    let loopback = LOOPBACK.iter().any(|host| {
-        url.strip_prefix(host)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-    });
-    if url.starts_with("https://") || loopback {
-        Ok(())
-    } else {
-        Err("III_CONSOLE_SIGNUP_URL must be an https URL, or http to this machine".into())
+    let refused =
+        || "III_CONSOLE_SIGNUP_URL must be an https URL, or http to this machine".to_string();
+    let parsed = reqwest::Url::parse(url).map_err(|_| refused())?;
+    match (parsed.scheme(), parsed.host_str()) {
+        ("https", Some(_)) => Ok(()),
+        ("http", Some("127.0.0.1" | "localhost" | "[::1]")) => Ok(()),
+        _ => Err(refused()),
     }
 }
 
@@ -336,10 +336,14 @@ mod tests {
             assert_eq!(check_signup_url(url), Ok(()), "{url}");
         }
         for url in [
-            "http://iii.dev/api/subscribe",
+            "http://example.com/api/subscribe",
             "http://127.0.0.1.evil.example/x",
             "http://localhost.evil.example",
+            // Userinfo, not the host: the address would go to evil.example.
+            "http://localhost:80@evil.example/api/subscribe",
+            "http://127.0.0.1@evil.example/",
             "ftp://127.0.0.1",
+            "not a url",
         ] {
             assert!(check_signup_url(url).is_err(), "{url} should be refused");
         }

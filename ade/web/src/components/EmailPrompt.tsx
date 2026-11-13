@@ -87,9 +87,9 @@ export function EmailPrompt() {
         `[email-prompt] ${SUBSCRIBE_FN} answered: ${result?.outcome ?? 'no answer'}`,
       )
       if (result?.outcome === 'invalid_email') {
-        // The box stays open with the address intact so it can be corrected.
+        // The box stays open with the address intact so it can be corrected;
+        // the effect below puts the cursor back once the field is enabled.
         setError(INVALID_EMAIL)
-        inputRef.current?.focus()
       } else if (result?.subscribed) {
         // The list only sends updates once the address is confirmed from the
         // email it just sent, so say so before closing.
@@ -100,6 +100,12 @@ export function EmailPrompt() {
       }
     })()
   }
+
+  // A refused address sends the cursor back to it. This runs after the render
+  // that re-enables the field: focus() on a disabled input does nothing.
+  React.useEffect(() => {
+    if (error && !sending) inputRef.current?.focus()
+  }, [error, sending])
 
   /** Back to the address, kept as typed, to fix a typo the note revealed. */
   const changeAddress = () => {
