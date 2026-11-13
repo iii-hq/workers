@@ -610,6 +610,9 @@ pub struct ProxySession {
     pub context: Value,
     /// Private namespace prefix for this session's own registrations.
     pub function_registration_prefix: Option<String>,
+    /// Worker names this session may declare unchanged, matched exactly
+    /// ([`ProxySession::proxied_worker_name`]).
+    pub worker_names: Vec<String>,
 }
 
 impl ProxySession {
@@ -626,6 +629,7 @@ impl ProxySession {
             allow_function_registration: true,
             context: json!({}),
             function_registration_prefix: None,
+            worker_names: vec![],
         }
     }
 
@@ -649,7 +653,16 @@ impl ProxySession {
     /// session declaring the same name neither shuts it out nor takes its
     /// suspended observers. The `rbac-proxy:` start keeps proxied workers off
     /// the names of workers connected to the engine directly.
+    ///
+    /// A name the auth function listed in `worker_names` is the exception:
+    /// it reaches the engine as declared, so a supervisor that waits for the
+    /// worker by name (compose) sees it. The grant is the auth function's
+    /// decision: that worker shares its name, and its suspended observers,
+    /// with any other connection holding the name, proxied or direct.
     pub fn proxied_worker_name(&self, declared: &str) -> String {
+        if self.worker_names.iter().any(|granted| granted == declared) {
+            return declared.to_string();
+        }
         match &self.function_registration_prefix {
             Some(prefix) => format!("{WORKER_NAME_PREFIX}{prefix}::{declared}"),
             None => format!("{WORKER_NAME_PREFIX}{}:{declared}", self.session_id),
@@ -687,6 +700,10 @@ pub struct AuthResult {
     pub context: Value,
     #[serde(default)]
     pub function_registration_prefix: Option<String>,
+    /// Worker names the session may declare unchanged. Not in the engine's
+    /// `AuthResult`: the engine never renames a worker.
+    #[serde(default)]
+    pub worker_names: Vec<String>,
 }
 
 impl AuthResult {
@@ -700,6 +717,7 @@ impl AuthResult {
             allow_function_registration: self.allow_function_registration,
             context: self.context,
             function_registration_prefix: self.function_registration_prefix,
+            worker_names: self.worker_names,
         }
     }
 }
@@ -1063,6 +1081,65 @@ mod tests {
         assert!(r.allow_function_registration); // default true
         assert_eq!(r.context, json!({}));
         assert!(r.function_registration_prefix.is_none());
+        assert!(r.worker_names.is_empty());
+    }
+
+    #[test]
+    fn auth_result_reads_granted_worker_names_into_the_session() {
+        let r: AuthResult =
+            serde_json::from_value(json!({ "worker_names": ["mcp", "mcp-auth"] })).unwrap();
+        assert_eq!(r.worker_names, vec!["mcp", "mcp-auth"]);
+        let s = r.into_session("1.2.3.4".to_string());
+        assert_eq!(s.worker_names, vec!["mcp", "mcp-auth"]);
+    }
+
+    fn granted(prefix: Option<&str>, names: &[&str]) -> ProxySession {
+        ProxySession {
+            function_registration_prefix: prefix.map(str::to_string),
+            worker_names: names.iter().map(|n| n.to_string()).collect(),
+            ..ProxySession::permissive("1.2.3.4".to_string())
+        }
+    }
+
+    #[test]
+    fn a_granted_worker_name_reaches_the_engine_as_declared() {
+        for prefix in [None, Some("tenant1")] {
+            assert_eq!(granted(prefix, &["mcp"]).proxied_worker_name("mcp"), "mcp");
+        }
+    }
+
+    #[test]
+    fn a_name_the_auth_function_did_not_grant_is_still_pinned() {
+        let s = granted(None, &["mcp"]);
+        assert_eq!(
+            s.proxied_worker_name("queue"),
+            format!("rbac-proxy:{}:queue", s.session_id)
+        );
+        assert_eq!(
+            granted(Some("tenant1"), &["mcp"]).proxied_worker_name("queue"),
+            "rbac-proxy:tenant1::queue"
+        );
+    }
+
+    #[test]
+    fn granted_names_match_exactly() {
+        // No patterns, no case folding: a grant names one worker.
+        let s = granted(None, &["mcp"]);
+        for declared in ["MCP", "mcp ", "mcp-auth", "m", ""] {
+            assert!(s
+                .proxied_worker_name(declared)
+                .starts_with(WORKER_NAME_PREFIX));
+        }
+        assert!(granted(None, &["*"])
+            .proxied_worker_name("mcp")
+            .starts_with(WORKER_NAME_PREFIX));
+    }
+
+    #[test]
+    fn no_grant_is_the_permissive_default() {
+        assert!(ProxySession::permissive("1.2.3.4".to_string())
+            .worker_names
+            .is_empty());
     }
 
     #[tokio::test]
