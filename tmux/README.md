@@ -345,8 +345,9 @@ signs in, refreshes or signs out by itself.
 the global one, not one a switch waits to make global. Claude Code panes on
 its folder keep running. `delete_files: true` deletes its folder too, only
 when it is a real folder directly inside the accounts folder (a link is never
-followed out of it), and is refused while Claude Code runs on it, while any
-pane is being moved, or when tmux could not list its panes; it looks at the
+followed out of it), and is refused while Claude Code runs on it (a pane,
+or a sign-in from the app, until its Claude Code is gone), while any pane is
+being moved, or when tmux could not list its panes; it looks at the
 processes again first, never at a scan from a few seconds before.
 
 ### Signing in
@@ -362,7 +363,9 @@ that works on any device: the page ends showing a code, which the person
 copies back. A new `login_start` for the same account ends the one under
 way; of two started at once, the later one stays and the other answers
 `gone`. Claude Code runs in the worker's home folder, with the worker's
-`HOME`.
+`HOME`. While a switch of the global account is left half-way and not
+settled yet, no sign-in starts on `~/.claude` or on the two accounts it
+moves (`failed`, try again in a moment).
 
 `browser` says where a browser may open:
 
@@ -373,7 +376,8 @@ way; of two started at once, the later one stays and the other answers
   opens `url` wherever they are and pastes the code.
 - `host`: the browser of the computer the worker runs on, for someone
   sitting at it (the Mac app's "This Mac"). The link Claude Code opens goes
-  to the worker's own `$BROWSER`, else `open` (macOS) or `xdg-open`, and
+  to the worker's own `$BROWSER`, else `open` (macOS) or `xdg-open` (with
+  `DISPLAY` or `WAYLAND_DISPLAY` set, as Claude Code itself asks), and
   comes back as `browser_url`: it returns to Claude Code's listener on
   `127.0.0.1` and signs in by itself, with no code. `url` and a code work
   too. Only `login_start`'s answer carries `browser_url` (the list and the
@@ -386,20 +390,24 @@ lines); one without its two halves around `#` is refused as `invalid_code`
 before it reaches Claude Code, and the sign-in keeps waiting. It waits up to
 60 seconds for Claude Code and answers `{"state": "done", "account"}`, the
 account read again, or an error; of two calls at once, one types its code
-and the other waits for that outcome. `done` means the sign-in is where it
+and the other waits for that outcome. `done` means a new sign-in is where it
 belongs: in the account's folder, or on `~/.claude` and taken in as the
-global account; Claude Code saying it signed in without that is `failed`.
+global account (looked for three times, a second apart); Claude Code saying
+it signed in while the sign-in there is still the one from before is
+`failed`.
 Whoever signed in stands, even someone other than the email the page was
 filled with: `account` shows who. A code Anthropic refuses ends the sign-in
 (Claude Code exits): another `login_start` gives a new link, and only a code
 from that link works with it. `tmux::accounts::login_cancel` (`login_id`)
 ends one and answers `{}`, also when it is over or unknown. A sign-in not
-finished within 10 minutes ends as `expired`. While a code is being checked,
-Claude Code may be saving the sign-in, so neither the 10 minutes, a cancel
-nor `login_code` giving up stops it before 15 more seconds; its own outcome
-stands when it comes by then. Claude Code is stopped with SIGTERM, and with
-SIGKILL 3 seconds later if it is still there. Removing an account ends its
-sign-in.
+finished within 10 minutes ends as `expired`, and a code typed after that
+is `expired` too. While a code is being checked, Claude Code may be saving
+the sign-in, so neither the 10 minutes, a cancel nor `login_code` giving up
+stops it before 15 more seconds; its own outcome stands when it comes by
+then. With `host`, the 10 minutes running out gets the same 15 seconds: the
+person may have just come back from the page. Claude Code is stopped with
+SIGTERM, and with SIGKILL 3 seconds later if it is still there. Removing an
+account ends its sign-in.
 
 Errors come as one JSON object in the error's message, `{"code",
 "message"}`:
@@ -409,8 +417,8 @@ Errors come as one JSON object in the error's message, `{"code",
 | `invalid_code` | not shaped like a code; nothing typed, the sign-in keeps waiting |
 | `rejected` | Anthropic refused the code (Claude Code's own sentence); the sign-in is over |
 | `expired` | 10 minutes went by |
-| `gone` | cancelled, replaced by a newer `login_start` for the account (that start's own answer too), or unknown |
-| `failed` | Claude Code is not installed, could not start, printed no link within 45 seconds, ended without signing in (the person cancelled on the page: its sentence) or as if signed in with no sign-in to show; `host` with no browser to open |
+| `gone` | cancelled, replaced by a newer `login_start` for the account (that start's own answer too), the account removed, the worker stopping, or unknown; the message says which |
+| `failed` | Claude Code is not installed, could not start, printed no link within 45 seconds, ended without signing in (the person cancelled on the page: its sentence) or as if signed in with no new sign-in to show; `host` with no browser to open; a switch left half-way on the places it would sign in |
 
 `tmux::accounts::list` and the feed's `usage.claude` carry `logins`: the
 sign-ins under way and those that ended in the last minute, each with
@@ -422,7 +430,9 @@ account global ([below](#the-global-account)). While a sign-in runs on
 `~/.claude` or on an account's folder, `tmux::accounts::global` refuses to
 switch the global account away from or to the accounts it involves
 (`signing_in`), and the rules and a waiting switch go on once it is over:
-a swap would move sign-ins where Claude Code is about to save one.
+a swap would move sign-ins where Claude Code is about to save one. A
+cancelled sign-in counts until its Claude Code is gone (one checking a code
+gets its 15 seconds to save it).
 
 The code and the tokens are never logged, kept or answered; the worker's
 log shows a link without its `state`, `code_challenge` and `login_hint`, and

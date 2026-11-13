@@ -81,11 +81,15 @@
   with `"host"` it opens that computer's browser, whose return to Claude Code's loopback
   listener signs in with no code (`browser_url`, in `login_start`'s answer only). The
   sign-ins under way, and those that ended in the last minute, are in
-  `tmux::accounts::list` and the feed as `logins`; while one runs, the global account is
-  not switched away from or to the accounts it involves (`signing_in`). A code being
-  checked gets 15 seconds to finish before Claude Code is stopped, and `done` needs the
-  sign-in where it belongs. The code and the tokens are never logged or kept. This replaces `tmux::accounts::login`
-  (0.2.6 and 0.2.7), which opened a `login` window in a tmux session.
+  `tmux::accounts::list` and the feed as `logins`; while one runs (until its Claude Code
+  is gone), the global account is not switched away from or to the accounts it involves
+  (`signing_in`), none starts where a switch left half-way is being settled, and an
+  account's folder is not deleted under one. A code being checked (or, with `host`, a
+  return from the page as the 10 minutes run out) gets 15 seconds to finish before Claude
+  Code is stopped, and `done` needs a new sign-in where it belongs, not the one that was
+  there before. The code and the tokens are never logged or kept. This replaces
+  `tmux::accounts::login` (0.2.6 and 0.2.7), which opened a `login` window in a tmux
+  session.
 - **A global account, switched like `/login`.** The global account is the one signed in to
   `~/.claude`: every Claude Code that isn't pinned uses it, plain `claude` typed anywhere
   included. `tmux::accounts::global` swaps sign-ins between `~/.claude` and the accounts'
