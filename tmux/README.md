@@ -360,7 +360,9 @@ printed its sign-in link, with `login_id`, `account`, `url`, `expires_at_ms`,
 `browser`, and `email` and `browser_url` when there are. `url` is the link
 that works on any device: the page ends showing a code, which the person
 copies back. A new `login_start` for the same account ends the one under
-way.
+way; of two started at once, the later one stays and the other answers
+`gone`. Claude Code runs in the worker's home folder, with the worker's
+`HOME`.
 
 `browser` says where a browser may open:
 
@@ -374,18 +376,30 @@ way.
   to the worker's own `$BROWSER`, else `open` (macOS) or `xdg-open`, and
   comes back as `browser_url`: it returns to Claude Code's listener on
   `127.0.0.1` and signs in by itself, with no code. `url` and a code work
-  too.
+  too. Only `login_start`'s answer carries `browser_url` (the list and the
+  feed, which need no approval, never do), and `host` fails when nothing on
+  that computer opens a browser.
 
 `tmux::accounts::login_code` (`login_id`, `code`) types the code into that
 terminal. Whitespace anywhere in it is dropped (a code copied over two
 lines); one without its two halves around `#` is refused as `invalid_code`
 before it reaches Claude Code, and the sign-in keeps waiting. It waits up to
 60 seconds for Claude Code and answers `{"state": "done", "account"}`, the
-account read again, or an error. A code Anthropic refuses ends the sign-in
+account read again, or an error; of two calls at once, one types its code
+and the other waits for that outcome. `done` means the sign-in is where it
+belongs: in the account's folder, or on `~/.claude` and taken in as the
+global account; Claude Code saying it signed in without that is `failed`.
+Whoever signed in stands, even someone other than the email the page was
+filled with: `account` shows who. A code Anthropic refuses ends the sign-in
 (Claude Code exits): another `login_start` gives a new link, and only a code
 from that link works with it. `tmux::accounts::login_cancel` (`login_id`)
 ends one and answers `{}`, also when it is over or unknown. A sign-in not
-finished within 10 minutes ends as `expired`.
+finished within 10 minutes ends as `expired`. While a code is being checked,
+Claude Code may be saving the sign-in, so neither the 10 minutes, a cancel
+nor `login_code` giving up stops it before 15 more seconds; its own outcome
+stands when it comes by then. Claude Code is stopped with SIGTERM, and with
+SIGKILL 3 seconds later if it is still there. Removing an account ends its
+sign-in.
 
 Errors come as one JSON object in the error's message, `{"code",
 "message"}`:
@@ -395,16 +409,20 @@ Errors come as one JSON object in the error's message, `{"code",
 | `invalid_code` | not shaped like a code; nothing typed, the sign-in keeps waiting |
 | `rejected` | Anthropic refused the code (Claude Code's own sentence); the sign-in is over |
 | `expired` | 10 minutes went by |
-| `gone` | cancelled, replaced by a newer `login_start` for the account, or unknown |
-| `failed` | Claude Code is not installed, could not start, printed no link within 45 seconds, or ended without signing in (the person cancelled on the page: its sentence) |
+| `gone` | cancelled, replaced by a newer `login_start` for the account (that start's own answer too), or unknown |
+| `failed` | Claude Code is not installed, could not start, printed no link within 45 seconds, ended without signing in (the person cancelled on the page: its sentence) or as if signed in with no sign-in to show; `host` with no browser to open |
 
 `tmux::accounts::list` and the feed's `usage.claude` carry `logins`: the
 sign-ins under way and those that ended in the last minute, each with
 `login_id`, `account`, `state` (`waiting_code`, `checking`, `done`, `failed`
-or `expired`), `url`, `expires_at_ms`, `browser`, and `browser_url`, `email`
-and `error` when there are. A cancelled one leaves the list at once. A
-sign-in on `~/.claude` to someone else is a sign-in by hand there: it makes
-that account global ([below](#the-global-account)).
+or `expired`), `url`, `expires_at_ms`, `browser`, and `email` and `error`
+when there are. A cancelled one leaves the list at once. A sign-in on
+`~/.claude` to someone else is a sign-in by hand there: it makes that
+account global ([below](#the-global-account)). While a sign-in runs on
+`~/.claude` or on an account's folder, `tmux::accounts::global` refuses to
+switch the global account away from or to the accounts it involves
+(`signing_in`), and the rules and a waiting switch go on once it is over:
+a swap would move sign-ins where Claude Code is about to save one.
 
 The code and the tokens are never logged, kept or answered; the worker's
 log shows a link without its `state`, `code_challenge` and `login_hint`, and
@@ -520,7 +538,8 @@ snapshot). Pinned panes:
   new conversation and `move_error` says so; it never starts again on its
   folder, whose sign-in is in `~/.claude` now. A waiting switch that fails
   in a way that may pass (a lock Claude Code holds, a write that failed, a
-  Claude Code slow to stop) is tried again a few times over about a minute;
+  Claude Code slow to stop) is tried again a few times over about a minute,
+  and one that meets a sign-in from the app waits for it to end;
   one that can't happen (the account was signed out or removed, a pane
   can't be restarted, `owner_check_on`), or still fails after those tries,
   is called off: `pending_global` goes, and the panes it waited for (and
@@ -537,8 +556,9 @@ snapshot). Pinned panes:
 - Pinned to any other account: untouched.
 
 Errors come as one JSON object in the error's message, `{"code", "message",
-"blocked_by"?}`: `not_signed_in`, `busy`, `blocked`, `owner_check_on` or
-`failed`.
+"blocked_by"?}`: `not_signed_in`, `busy`, `blocked`, `owner_check_on`,
+`signing_in` (a sign-in from the app runs on `~/.claude` or on either
+account's folder) or `failed`.
 
 Someone signing in by hand on `~/.claude` (`/login`, or `claude auth login`
 without `CLAUDE_CONFIG_DIR`) changes the global account the same way: the
