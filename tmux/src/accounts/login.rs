@@ -52,6 +52,9 @@ const TAKE_IN_TRIES: u32 = 3;
 const NO_OPENER: &str = "No browser can be opened on this computer (no BROWSER, and no xdg-open with a display): sign in with browser \"none\" and open the link on any device.";
 /// How often the worker looks whether Claude Code ended.
 const REAP_EVERY: Duration = Duration::from_millis(50);
+/// How long, once Claude Code ended, the worker waits for the rest of what
+/// it printed (a process it left on its terminal would keep that open).
+const DRAIN_WAIT: Duration = Duration::from_secs(2);
 /// How long, with the browser on this computer, Claude Code may take to
 /// hand it its link once it printed the other.
 const BROWSER_NOTE_WAIT: Duration = Duration::from_secs(3);
@@ -400,6 +403,9 @@ struct Status {
 struct Output {
     bytes: Mutex<Vec<u8>>,
     changed: Notify,
+    /// The pty has nothing more to read: Claude Code (and anything it left
+    /// on its terminal) is gone, and all it printed is in `bytes`.
+    closed: AtomicBool,
 }
 
 impl Output {
@@ -418,6 +424,18 @@ impl Output {
     fn text_from(&self, at: usize) -> String {
         let bytes = self.bytes.lock().unwrap_or_else(|p| p.into_inner());
         String::from_utf8_lossy(&bytes[at.min(bytes.len())..]).into_owned()
+    }
+
+    /// Wait (at most `within`) for the last of what Claude Code printed,
+    /// once it ended: what it said decides how the login ends.
+    async fn drained(&self, within: Duration) {
+        let deadline = tokio::time::Instant::now() + within;
+        while !self.closed.load(Ordering::SeqCst) && tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                _ = self.changed.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
     }
 }
 
@@ -1363,6 +1381,8 @@ fn spawn(
                         Ok(n) => output.push(&chunk[..n]),
                     }
                 }
+                output.closed.store(true, Ordering::SeqCst);
+                output.changed.notify_one();
             })?;
     }
     let (exit_tx, exit) = watch::channel(None);
@@ -1421,7 +1441,7 @@ async fn wait_for_url(
         let ended = *exit.borrow_and_update();
         if let Some(status) = ended {
             // What it printed last may still be on its way.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            output.drained(DRAIN_WAIT).await;
             let text = output.text_from(0);
             return Err(login_error("failed", early_end(&text, status)));
         }
@@ -1460,7 +1480,7 @@ async fn supervise(login: Arc<Login>, accounts: Arc<Accounts>, poke: Poke) {
         let ended = *exit.borrow_and_update();
         if let Some(status) = ended {
             // Its last words may still be in the pty.
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            login.output.drained(DRAIN_WAIT).await;
             settle(&login, &accounts, status).await;
             break;
         }
