@@ -124,6 +124,9 @@ const (
 	wakeNode                     // the node's name or gateway changed
 )
 
+// AnyJSON is the request or response schema of a handler that ignores its payload or passes one through.
+const AnyJSON = `{"type":["object","array","string","number","integer","boolean","null"]}`
+
 // StatusChanged is the private function the worker calls with each new mesh::status answer; the Console observes it.
 const StatusChanged = "mesh::on-status-changed"
 
@@ -196,6 +199,7 @@ func StatusEvents(ctx context.Context, c *iii.Client, current func()) (emit func
 		return nil
 	})
 	if _, err = c.RegisterFunction(StatusChanged, iii.Identity, iii.RegisterFunctionOptions{Private: true, Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`),
+		RequestFormat: json.RawMessage(`{"type":"object"}`), ResponseFormat: json.RawMessage(`{"type":"object"}`),
 		Description: "Called by the mesh worker with its mesh::status answer when that answer changes."}); err != nil {
 		return nil, fmt.Errorf("register mesh status events: %w", err)
 	}
@@ -209,7 +213,7 @@ func StatusEvents(ctx context.Context, c *iii.Client, current func()) (emit func
 // observe turns the engine's events into wakes. No payload is read: each event only says what to read again.
 func (r *runner) observe(ctx context.Context) error {
 	local := r.o.Local
-	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
+	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`), RequestFormat: json.RawMessage(AnyJSON)}
 	emit, err := StatusEvents(ctx, local, func() {
 		r.force.Store(true)
 		r.changed()

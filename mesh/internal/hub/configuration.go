@@ -172,10 +172,12 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 		return err
 	}
 	// Only schedules the passes; the observed payload is never read.
+	ignored := internal
+	ignored.RequestFormat = json.RawMessage(meshclient.AnyJSON)
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-functions-change", func(context.Context, json.RawMessage) (ConfigChangeResult, error) {
 		h.functionsChanged()
 		return ConfigChangeResult{OK: true}, nil
-	}, internal); err != nil {
+	}, ignored); err != nil {
 		return err
 	}
 	if local {

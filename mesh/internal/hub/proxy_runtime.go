@@ -13,6 +13,8 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
 )
 
 func (h *Hub) proxyHealth() string {
@@ -162,9 +164,11 @@ func (h *Hub) registerProxyFunctions(ctx context.Context, url string) error {
 		return err
 	}
 	register := func(client *iii.Client) error {
+		forwarded := internal // the response is the called function's result, unchanged
+		forwarded.ResponseFormat = json.RawMessage(meshclient.AnyJSON)
 		if _, err := iii.RegisterFunctionTyped(client, "mesh::middleware", func(ctx context.Context, r MiddlewareRequest) (json.RawMessage, error) {
 			return h.middleware(ctx, client, r)
-		}, internal); err != nil {
+		}, forwarded); err != nil {
 			return err
 		}
 		_, err := iii.RegisterFunctionTyped(client, "mesh::on-observer-registration", h.ObserverHook, internal)
