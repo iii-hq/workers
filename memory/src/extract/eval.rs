@@ -1381,6 +1381,7 @@ async fn extraction_eval() {
                 case.id,
                 repository,
                 false,
+                &mut PassTally::default(),
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));

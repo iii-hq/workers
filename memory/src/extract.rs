@@ -27,13 +27,14 @@
 mod history;
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::WorkerConfig;
@@ -916,25 +917,97 @@ pub(crate) fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     passes.entry(session_id.to_string()).or_default().clone()
 }
 
+/// A pass that made its [`PASS_CALLS`] and left runs for the queue's retry.
+const PENDING: &str = "extraction pending: remaining runs require retry";
+
+/// What extraction spent and wrote: model calls, the usage the router
+/// reported for them, memory effects, and returned memories not written.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
+pub struct PassTally {
+    /// `router::complete` calls made, failed ones included.
+    pub calls: u64,
+    /// Prompt tokens the router reported, cached ones included.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// The router's own cost, summed over the calls that carried one;
+    /// absent when none did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    pub created: u64,
+    pub reinforced: u64,
+    pub superseded: u64,
+    /// Memories the model returned that were not written, by reason.
+    /// Rule items are not tallied.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dropped: BTreeMap<&'static str, u64>,
+}
+
+impl PassTally {
+    /// Adds a `router::complete` reply's `usage`; never prices a call.
+    fn add_usage(&mut self, reply: &Value) {
+        let usage = &reply["usage"];
+        let n = |key: &str| usage[key].as_u64().unwrap_or(0);
+        self.input_tokens += n("input") + n("cache_read") + n("cache_write");
+        self.output_tokens += n("output");
+        if let Some(cost) = usage["cost_usd"].as_f64() {
+            *self.cost_usd.get_or_insert(0.0) += cost;
+        }
+    }
+
+    fn drop_items(&mut self, why: &'static str, n: usize) {
+        if n > 0 {
+            *self.dropped.entry(why).or_default() += n as u64;
+        }
+    }
+
+    fn add(&mut self, other: &PassTally) {
+        self.calls += other.calls;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        if let Some(cost) = other.cost_usd {
+            *self.cost_usd.get_or_insert(0.0) += cost;
+        }
+        self.created += other.created;
+        self.reinforced += other.reinforced;
+        self.superseded += other.superseded;
+        for (why, n) in &other.dropped {
+            *self.dropped.entry(why).or_default() += n;
+        }
+    }
+}
+
 /// How passes have gone since boot, for `memory::doctor`: a pass that
 /// fails every time is otherwise only a log line.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
 pub struct PassHealth {
     pub passes: u64,
     /// Passes failed since the last one that succeeded.
     pub failed_in_a_row: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Passes that ended with runs left for the queue's retry: a backlog
+    /// draining, not a failure.
+    pub pending: u64,
+    /// The latest counted pass.
+    pub last: PassTally,
+    /// Every counted pass since boot.
+    pub total: PassTally,
 }
 
 impl PassHealth {
     /// `Ok(false)` is a pass that never asked the model: it says nothing
     /// about whether extraction works, so it is not counted.
-    fn record(&mut self, result: &Result<bool, String>) {
+    fn record(&mut self, result: &Result<bool, String>, tally: PassTally) {
         match result {
             Ok(false) => return,
             Ok(true) => {
                 self.failed_in_a_row = 0;
                 self.last_error = None;
+            }
+            Err(e) if e == PENDING => {
+                self.failed_in_a_row = 0;
+                self.last_error = None;
+                self.pending += 1;
             }
             Err(e) => {
                 self.failed_in_a_row += 1;
@@ -942,16 +1015,14 @@ impl PassHealth {
             }
         }
         self.passes += 1;
+        self.total.add(&tally);
+        self.last = tally;
     }
 }
 
 // ponytail: per process, like SESSION_PASSES; replicated, each replica's
 // doctor sees only its own passes.
-static PASS_HEALTH: Mutex<PassHealth> = Mutex::new(PassHealth {
-    passes: 0,
-    failed_in_a_row: 0,
-    last_error: None,
-});
+static PASS_HEALTH: LazyLock<Mutex<PassHealth>> = LazyLock::new(Mutex::default);
 
 pub fn pass_health() -> PassHealth {
     PASS_HEALTH
@@ -964,16 +1035,22 @@ pub fn pass_health() -> PassHealth {
 /// retries the same span: a failed session lookup included — skipping
 /// would lose the turn, guessing a bank would leak it.
 pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
-    let result = one_pass(deps, job).await;
+    // A failed pass still counts what it spent.
+    let mut tally = PassTally::default();
+    let result = one_pass(deps, job, &mut tally).await;
     PASS_HEALTH
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .record(&result);
+        .record(&result, tally);
     result.map(|_| ())
 }
 
 /// `Ok(true)` once the model was asked for the span's items.
-async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
+async fn one_pass(
+    deps: &Deps,
+    job: &ExtractJobInput,
+    tally: &mut PassTally,
+) -> Result<bool, String> {
     let session_id = job.session_id.as_str();
     for id in std::iter::once(session_id)
         .chain(job.until.as_deref())
@@ -1133,13 +1210,14 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         })
     });
     if !retained.is_empty() || orphaned || deleted_interval || authenticated_cut {
-        return retained_pass(deps, &cfg, job, intervals, saved).await;
+        return retained_pass(deps, &cfg, job, intervals, saved, tally).await;
     }
     if job.skip && intervals.iter().any(|(scope, _, _)| scope.is_some()) {
         // OFF may acknowledge only OFF text: eligible text waits for the
         // next eligible job, which the retained pass leaves it to.
-        return retained_pass(deps, &cfg, job, intervals, saved).await;
+        return retained_pass(deps, &cfg, job, intervals, saved, tally).await;
     }
+    let mut asked = false;
     if let Some(pending) = saved {
         let scope = crate::scope::Resolved {
             bank: pending.bank.clone(),
@@ -1165,15 +1243,16 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
             // Not this job's run as recorded (an edit, a changed policy or
             // bank): the retained pass drops it and runs the path as it is.
             let Some(current) = current else {
-                return retained_pass(deps, &cfg, job, intervals, Some(pending)).await;
+                return retained_pass(deps, &cfg, job, intervals, Some(pending), tally).await;
             };
-            read_run(
+            asked = read_run(
                 deps,
                 &cfg,
                 session_id,
                 pending.turn_id.as_deref(),
                 &scope,
                 current,
+                tally,
             )
             .await?;
             since = end;
@@ -1222,12 +1301,14 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         if calls == PASS_CALLS {
             // The queue retries the job from the last confirmed run. `until` is
             // never confirmed while a tail is unprocessed.
-            return Err("extraction pending: remaining runs require retry".into());
+            return Err(PENDING.into());
         }
-        calls += usize::from(read_run(deps, &cfg, session_id, turn.as_deref(), &scope, run).await?);
+        calls += usize::from(
+            read_run(deps, &cfg, session_id, turn.as_deref(), &scope, run, tally).await?,
+        );
         ext(deps, |s| s.set_pending_extraction(session_id, Value::Null)).await?;
     }
-    Ok(calls > 0)
+    Ok(asked || calls > 0)
 }
 
 /// Resolve source policy intervals before model runs, not queue arrival order.
@@ -1480,6 +1561,7 @@ async fn retained_pass(
     job: &ExtractJobInput,
     intervals: PolicyIntervals,
     pending: Option<PendingExtraction>,
+    tally: &mut PassTally,
 ) -> Result<bool, String> {
     if intervals.is_empty() {
         return Ok(false);
@@ -1578,7 +1660,7 @@ async fn retained_pass(
             }
             if calls >= PASS_CALLS {
                 // The queue retries the job from the last confirmed run.
-                return Err("extraction pending: remaining runs require retry".into());
+                return Err(PENDING.into());
             }
             ext(deps, |s| {
                 s.retain_extraction_range(session, capture.clone(), false)
@@ -1593,6 +1675,7 @@ async fn retained_pass(
                     scope,
                     run.clone(),
                     false,
+                    tally,
                 )
                 .await?,
             );
@@ -1637,8 +1720,12 @@ async fn read_run(
     turn_id: Option<&str>,
     resolved: &crate::scope::Resolved,
     entries: Vec<Entry>,
+    tally: &mut PassTally,
 ) -> Result<bool, String> {
-    execute_run(deps, cfg, session_id, turn_id, resolved, entries, true).await
+    execute_run(
+        deps, cfg, session_id, turn_id, resolved, entries, true, tally,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1650,6 +1737,7 @@ async fn execute_run(
     resolved: &crate::scope::Resolved,
     entries: Vec<Entry>,
     advance_cursor: bool,
+    tally: &mut PassTally,
 ) -> Result<bool, String> {
     let bank_name = resolved.bank.as_str();
     // Bound the serialized source-key material before json! copies any ID,
@@ -1805,6 +1893,7 @@ async fn execute_run(
             session_id,
             layer_name.is_some(),
             !instructions.is_empty(),
+            tally,
         )
         .await?;
         for item in &mut items {
@@ -1835,6 +1924,16 @@ async fn execute_run(
     // An agent item naming no listed agent has no bank to go to: never the
     // user's or the repository's in its place. Each item keeps its index in
     // the plan, which its receipt names: a dropped item never shifts the rest.
+    // A drop writes no receipt and a retry replays the plan, so drops join
+    // the tally only once the run settles.
+    let mut drops = PassTally::default();
+    drops.drop_items(
+        "unknown_agent",
+        items
+            .iter()
+            .filter(|i| !i.is_rule() && i.is_agent() && i.agent_in(&agents).is_none())
+            .count(),
+    );
     let items: Vec<(usize, ExtractedItem)> = items
         .into_iter()
         .enumerate()
@@ -1848,6 +1947,7 @@ async fn execute_run(
             }
             ext(deps, |s| s.delete_extraction_plan(&source)).await?;
         }
+        tally.add(&drops);
         return Ok(true);
     }
 
@@ -2018,6 +2118,10 @@ async fn execute_run(
     }
 
     let mut saved = 0usize;
+    drops.drop_items(
+        "over_cap",
+        items.len().saturating_sub(cfg.max_memories_per_turn),
+    );
     for (effect_index, mut item) in items.into_iter().take(cfg.max_memories_per_turn) {
         // Redact before the fingerprint and before normalization, like
         // memory::save.
@@ -2026,10 +2130,12 @@ async fn execute_run(
         crate::redact::drop_secrets(&mut item.tags);
         let text = item.text.as_str();
         if text.len() < 3 || text.len() > 500 {
+            drops.drop_items("length", 1);
             continue;
         }
         if crate::redact::reject_injection("extracted memory", text).is_err() {
             tracing::warn!("dropped an extracted memory: content rejected");
+            drops.drop_items("rejected", 1);
             continue;
         }
         let now = now_ms();
@@ -2059,6 +2165,7 @@ async fn execute_run(
             // A listed agent's memory is re-observed in its bank alone.
             Some(agent) => {
                 let Some((name, b)) = agent_at(agent) else {
+                    drops.drop_items("unknown_agent", 1);
                     continue;
                 };
                 let own = (name.as_str(), &**b);
@@ -2091,7 +2198,10 @@ async fn execute_run(
             Some(existing) => match reinforced(existing, text, &user_words, retires, now, said) {
                 Some((f, true)) => (f, Some(ItemEvent::Updated)),
                 Some((f, false)) => (f, None),
-                None => continue,
+                None => {
+                    drops.drop_items("known", 1);
+                    continue;
+                }
             },
             None => (
                 new_memory(item, session_id, newest_id.as_deref(), now, said),
@@ -2120,18 +2230,26 @@ async fn execute_run(
                 .await
                 .map_err(|e| format!("memory commit failed: {e}"))?
             else {
+                drops.drop_items("conflict", 1);
                 continue;
             };
             retired
         } else {
+            drops.drop_items("known", 1);
             None
         };
         if let Some(event) = event {
+            if event == ItemEvent::Created {
+                tally.created += 1;
+            } else {
+                tally.reinforced += 1;
+            }
             deps.emitter.item(event, at_name, &memory).await;
             touched.insert(at_name);
             saved += 1;
         }
         if let Some(retired) = retired {
+            tally.superseded += 1;
             deps.emitter
                 .item_with(
                     ItemEvent::Superseded,
@@ -2158,6 +2276,7 @@ async fn execute_run(
             crate::embed_client::spawn_backfill(deps, name);
         }
     }
+    tally.add(&drops);
     Ok(true)
 }
 
@@ -3037,7 +3156,9 @@ async fn extract_items(
     session_id: &str,
     repository: bool,
     instructions: bool,
+    tally: &mut PassTally,
 ) -> Result<Vec<ExtractedItem>, String> {
+    tally.calls += 1;
     let reply = iii
         .call(CallRequest {
             function_id: "router::complete".into(),
@@ -3056,6 +3177,8 @@ async fn extract_items(
         })
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
+    // Before parsing: a reply that fails to parse still spent its tokens.
+    tally.add_usage(&reply);
     reply_items(&reply, session_id)
 }
 
@@ -4897,20 +5020,27 @@ mod tests {
     #[test]
     fn a_success_ends_the_failure_streak() {
         let mut health = PassHealth::default();
-        health.record(&Err("router::complete: timeout".into()));
-        health.record(&Err("router::complete: timeout".into()));
+        health.record(
+            &Err("router::complete: timeout".into()),
+            PassTally::default(),
+        );
+        health.record(
+            &Err("router::complete: timeout".into()),
+            PassTally::default(),
+        );
         assert_eq!(health.failed_in_a_row, 2);
         assert_eq!(
             health.last_error.as_deref(),
             Some("router::complete: timeout")
         );
-        health.record(&Ok(true));
+        health.record(&Ok(true), PassTally::default());
         assert_eq!(
             health,
             PassHealth {
                 passes: 3,
                 failed_in_a_row: 0,
                 last_error: None,
+                ..PassHealth::default()
             }
         );
     }
@@ -4918,17 +5048,80 @@ mod tests {
     #[test]
     fn a_pass_that_never_asks_the_model_keeps_the_failure_streak() {
         let mut health = PassHealth::default();
-        health.record(&Err("router::complete: no provider".into()));
+        let failed = PassTally {
+            calls: 1,
+            ..PassTally::default()
+        };
+        health.record(&Err("router::complete: no provider".into()), failed.clone());
         // An automation session's turn, or a span under 20 characters.
-        health.record(&Ok(false));
+        health.record(&Ok(false), PassTally::default());
         assert_eq!(
             health,
             PassHealth {
                 passes: 1,
                 failed_in_a_row: 1,
                 last_error: Some("router::complete: no provider".into()),
+                last: failed.clone(),
+                total: failed,
+                ..PassHealth::default()
             }
         );
+    }
+
+    #[test]
+    fn a_pending_pass_is_backlog_not_a_failure() {
+        let mut health = PassHealth::default();
+        health.record(
+            &Err("router::complete: timeout".into()),
+            PassTally::default(),
+        );
+        let drained = PassTally {
+            calls: 4,
+            ..PassTally::default()
+        };
+        health.record(&Err(PENDING.into()), drained);
+        assert_eq!(health.failed_in_a_row, 0);
+        assert_eq!(health.last_error, None);
+        assert_eq!(health.pending, 1);
+        assert_eq!(health.passes, 2);
+        assert_eq!(health.total.calls, 4);
+        assert_eq!(health.last.calls, 4);
+    }
+
+    #[test]
+    fn the_tally_keeps_the_routers_usage_and_only_a_reported_cost() {
+        let mut tally = PassTally::default();
+        tally.add_usage(
+            &json!({"usage":{"input":100,"cache_read":40,"cache_write":10,"output":20}}),
+        );
+        assert_eq!((tally.input_tokens, tally.output_tokens), (150, 20));
+        assert_eq!(tally.cost_usd, None, "never priced by memory");
+        tally.add_usage(&json!({"usage":{"input":1,"output":2,"cost_usd":0.002}}));
+        assert_eq!(tally.cost_usd, Some(0.002));
+        tally.add_usage(&json!({"message":{}}));
+        assert_eq!(tally.cost_usd, Some(0.002));
+        assert_eq!((tally.input_tokens, tally.output_tokens), (151, 22));
+
+        tally.drop_items("known", 2);
+        tally.drop_items("known", 2);
+        tally.drop_items("length", 0);
+        assert_eq!(tally.dropped.get("known"), Some(&4));
+        assert!(!tally.dropped.contains_key("length"));
+
+        let mut total = PassTally {
+            calls: 1,
+            created: 2,
+            ..PassTally::default()
+        };
+        tally.calls = 3;
+        tally.superseded = 1;
+        total.add(&tally);
+        total.add(&tally);
+        assert_eq!(total.calls, 7);
+        assert_eq!((total.input_tokens, total.output_tokens), (302, 44));
+        assert_eq!(total.cost_usd, Some(0.004));
+        assert_eq!((total.created, total.superseded), (2, 2));
+        assert_eq!(total.dropped.get("known"), Some(&8));
     }
 
     #[test]

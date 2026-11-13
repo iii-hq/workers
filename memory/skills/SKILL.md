@@ -50,7 +50,8 @@ rule; point-in-time information belongs in memories.
   the user names another bank.
 - Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
   and names what is degraded: a sibling (router, session-manager, state),
-  embeddings, or extraction passes that keep failing.
+  embeddings, or extraction passes that keep failing. Its `extraction` reports
+  calls, tokens and cost since boot.
 
 ## Boundaries
 
@@ -99,7 +100,7 @@ rule; point-in-time information belongs in memories.
   pointer); the consolidation seam, agent-denied by default. `reinforce`
   makes it a merge; `reason` rides the `memory::on-item-changed` events.
 - `memory::doctor` — end-to-end self-test plus sibling, embeddings and
-  extraction health.
+  extraction health; `extraction` reports calls, tokens and cost since boot.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 
 ## Observing changes

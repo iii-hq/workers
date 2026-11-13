@@ -1214,6 +1214,13 @@ async fn a_default_bank_turn_goes_from_hook_to_job_and_is_extracted() {
         .await;
     let mut origin = hook["result"]["annotations"].clone();
     assert_eq!(origin["memory_bank"], "main");
+    assert_eq!(
+        (
+            &origin["memory_recall"],
+            &origin["memory_recall_skip_reason"]
+        ),
+        (&json!("skipped"), &json!("memories_off"))
+    );
     origin["turn_id"] = json!("default-turn");
     let text = "The user prefers copper instruments.";
     stack.fixture.lock().unwrap().path = vec![
@@ -1241,6 +1248,32 @@ async fn a_default_bank_turn_goes_from_hook_to_job_and_is_extracted() {
     assert_eq!(
         stack.fixture.lock().unwrap().cursor,
         json!({"last_entry_id":"default-end"})
+    );
+
+    // With injection on, the next turn recalls what this one taught; its
+    // later step does not.
+    let mut cfg = (*stack.deps.config().await).clone();
+    cfg.inject_memories = true;
+    *stack.deps.config.write().await = Arc::new(cfg);
+    let ask = |step: u64| {
+        json!({"session_id":"synthetic-session","turn_id":"recall-turn","step":step,
+            "generate":{"system_prompt":"base","messages":[{"role":"user",
+                "content":[{"type":"text","text":"Which copper instruments?"}]}]}})
+    };
+    let hook = stack
+        .invoke(ask(0), "owner-one", Some(stack.handle.id()))
+        .await;
+    let recalled = &hook["result"]["annotations"];
+    assert_eq!(recalled["memory_recall"], "hit", "{recalled}");
+    assert!(recalled.get("memory_recall_skip_reason").is_none());
+    assert!(recalled["memory_injected_chars"].as_u64().unwrap() > text.len() as u64);
+    let hook = stack
+        .invoke(ask(1), "owner-one", Some(stack.handle.id()))
+        .await;
+    let later = &hook["result"]["annotations"];
+    assert_eq!(
+        (&later["memory_recall"], &later["memory_recall_skip_reason"]),
+        (&json!("skipped"), &json!("later_step"))
     );
 }
 

@@ -1,5 +1,5 @@
 {
-  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete roundtrip, sibling reachability (router, session-manager, state), whether embeddings answer, and whether recent extraction passes failed. Reports degraded states explicitly, not a bare process-up health.",
+  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete roundtrip, sibling reachability (router, session-manager, state), whether embeddings answer, whether recent extraction passes failed, and what extraction spent (model calls, tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not a bare process-up health.",
   "function_id": "memory::doctor",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -27,6 +27,121 @@
           "ok"
         ],
         "type": "object"
+      },
+      "PassHealth": {
+        "description": "How passes have gone since boot, for `memory::doctor`: a pass that fails every time is otherwise only a log line.",
+        "properties": {
+          "failed_in_a_row": {
+            "description": "Passes failed since the last one that succeeded.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "last": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PassTally"
+              }
+            ],
+            "description": "The latest counted pass."
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pending": {
+            "description": "Passes that ended with runs left for the queue's retry: a backlog draining, not a failure.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PassTally"
+              }
+            ],
+            "description": "Every counted pass since boot."
+          }
+        },
+        "required": [
+          "failed_in_a_row",
+          "last",
+          "passes",
+          "pending",
+          "total"
+        ],
+        "type": "object"
+      },
+      "PassTally": {
+        "description": "What extraction spent and wrote: model calls, the usage the router reported for them, memory effects, and returned memories not written.",
+        "properties": {
+          "calls": {
+            "description": "`router::complete` calls made, failed ones included.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "cost_usd": {
+            "description": "The router's own cost, summed over the calls that carried one; absent when none did.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "created": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Memories the model returned that were not written, by reason. Rule items are not tallied.",
+            "type": "object"
+          },
+          "input_tokens": {
+            "description": "Prompt tokens the router reported, cached ones included.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "reinforced": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "superseded": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "created",
+          "input_tokens",
+          "output_tokens",
+          "reinforced",
+          "superseded"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -36,6 +151,14 @@
         },
         "type": "array"
       },
+      "extraction": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/PassHealth"
+          }
+        ],
+        "description": "Extraction passes since boot: how they went, what the model calls cost and what they wrote."
+      },
       "ok": {
         "description": "True only when every REQUIRED check passed (the store roundtrip; the rest are reported but advisory).",
         "type": "boolean"
@@ -43,6 +166,7 @@
     },
     "required": [
       "checks",
+      "extraction",
       "ok"
     ],
     "title": "DoctorResponse",

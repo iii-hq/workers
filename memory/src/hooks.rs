@@ -326,7 +326,7 @@ pub async fn pre_generate(
     // Persisted on the step's assistant entry: a turn this process never
     // saw (a restart) reads them back (`scope::stamped_bank`), and extraction
     // reads the policy from it. Stamped even with injection off, before every
-    // early return. A failed lookup stamps nothing: the turn's job resolves
+    // early return. A failed lookup stamps no policy: the turn's job resolves
     // the bank again, and retries, instead of reading the step as OFF.
     if let Ok(scope) = &resolved {
         annotations.insert(
@@ -352,6 +352,12 @@ pub async fn pre_generate(
         // Memory off is an empty section, told like any rules change: a
         // section this session already froze stays in its system prompt.
         apply_rules(&input, "", &mut mutations, &mut annotations);
+        stamp_recall(
+            &mut annotations,
+            &input,
+            &mutations,
+            ("skipped", Some("memories_off")),
+        );
         return Ok(HookResponse {
             decision: "continue".into(),
             mutations: Some(mutations),
@@ -364,12 +370,26 @@ pub async fn pre_generate(
         Ok(bank) => bank,
         Err(e) => {
             tracing::warn!(session_id = %input.session_id, error = %e, "bank lookup failed; injecting nothing new (scope-safe)");
-            return Ok(keep_told_section(&input));
+            let mut kept = keep_told_section(&input);
+            stamp_recall(
+                &mut annotations,
+                &input,
+                kept.mutations.as_ref().unwrap_or(&Mutations::default()),
+                ("skipped", Some("bank_lookup_failed")),
+            );
+            kept.annotations = Some(annotations);
+            return Ok(kept);
         }
     };
     let Some(scope) = bank_name else {
         // An invalid or deleted bank: no memory section applies.
         apply_rules(&input, "", &mut mutations, &mut annotations);
+        stamp_recall(
+            &mut annotations,
+            &input,
+            &mutations,
+            ("skipped", Some("no_bank")),
+        );
         return Ok(HookResponse {
             decision: "continue".into(),
             mutations: Some(mutations),
@@ -408,6 +428,7 @@ pub async fn pre_generate(
     if injected.retrieval == "bm25-entity-semantic" {
         annotations.insert("memory_retrieval".into(), json!(injected.retrieval));
     }
+    let outcome = recall_outcome(cfg.inject_memories, input.step, query.as_deref(), &injected);
     if let Some(body) = injected.message {
         let ids: Vec<&str> = injected
             .memories
@@ -426,12 +447,76 @@ pub async fn pre_generate(
             annotations.insert("memory_banks".into(), json!(banks));
         }
     }
+    stamp_recall(&mut annotations, &input, &mutations, outcome);
 
     Ok(HookResponse {
         decision: "continue".into(),
         mutations: Some(mutations),
         annotations: Some(annotations),
     })
+}
+
+/// The step's recall outcome: `hit` (memories went in), `miss` (recall
+/// ran, none did) or `skipped` with why it never ran.
+fn recall_outcome(
+    inject_memories: bool,
+    step: u64,
+    query: Option<&str>,
+    injected: &Injection,
+) -> (&'static str, Option<&'static str>) {
+    if injected.retrieval != "none" {
+        let outcome = if injected.memories.is_empty() {
+            "miss"
+        } else {
+            "hit"
+        };
+        return (outcome, None);
+    }
+    let why = if !inject_memories {
+        "memories_off"
+    } else if step != 0 {
+        "later_step"
+    } else if query.is_none_or(|q| q.trim().is_empty()) {
+        // A notification, an unknown delivery or a context mismatch.
+        "no_query"
+    } else {
+        // Neither the bank nor a layer it reads exists yet.
+        "bank_not_created"
+    };
+    ("skipped", Some(why))
+}
+
+/// Stamps the recall outcome and the characters memory put into the step:
+/// the system-prompt section past the base prompt, and every message it
+/// appended (recall, rules reminder, rules update).
+fn stamp_recall(
+    annotations: &mut Map<String, Value>,
+    input: &PreGenerateInput,
+    mutations: &Mutations,
+    (outcome, why): (&'static str, Option<&'static str>),
+) {
+    annotations.insert("memory_recall".into(), json!(outcome));
+    if let Some(why) = why {
+        annotations.insert("memory_recall_skip_reason".into(), json!(why));
+    }
+    let base = input
+        .generate
+        .as_ref()
+        .map_or(0, |g| g.system_prompt.chars().count());
+    let section = mutations
+        .system_prompt
+        .as_ref()
+        .map_or(0, |p| p.chars().count().saturating_sub(base));
+    let appended: usize = mutations
+        .append_messages
+        .iter()
+        .map(|m| {
+            crate::extract::content_text(m.get("content"))
+                .chars()
+                .count()
+        })
+        .sum();
+    annotations.insert("memory_injected_chars".into(), json!(section + appended));
 }
 
 /// What one turn on a bank is given. The hook and `memory::preview` both
@@ -4260,6 +4345,71 @@ Formal."
         assert_eq!(told.len(), TOLD_RULES_CAP);
         assert!(told.contains_key("s0"));
         assert!(!told.contains_key("s1"), "least recently used goes first");
+    }
+
+    #[test]
+    fn recall_outcome_says_hit_miss_or_why_it_was_skipped() {
+        let mut ran = Injection {
+            retrieval: "bm25-entity",
+            memories: vec![(memory("m1", "the user prefers tabs"), 1.0, "main".into())],
+            ..Injection::none()
+        };
+        assert_eq!(recall_outcome(true, 0, Some("tabs?"), &ran), ("hit", None));
+        ran.memories.clear();
+        assert_eq!(recall_outcome(true, 0, Some("tabs?"), &ran), ("miss", None));
+
+        let none = Injection::none();
+        let skipped = |why| ("skipped", Some(why));
+        assert_eq!(
+            recall_outcome(false, 0, Some("tabs?"), &none),
+            skipped("memories_off")
+        );
+        assert_eq!(
+            recall_outcome(true, 1, Some("tabs?"), &none),
+            skipped("later_step")
+        );
+        assert_eq!(recall_outcome(true, 0, None, &none), skipped("no_query"));
+        assert_eq!(
+            recall_outcome(true, 0, Some("  "), &none),
+            skipped("no_query")
+        );
+        assert_eq!(
+            recall_outcome(true, 0, Some("tabs?"), &none),
+            skipped("bank_not_created")
+        );
+    }
+
+    #[test]
+    fn stamp_recall_counts_the_section_and_the_appended_messages() {
+        let input: PreGenerateInput = serde_json::from_value(json!({
+            "session_id": "s", "generate": { "system_prompt": "base" },
+        }))
+        .unwrap();
+        let mutations = Mutations {
+            system_prompt: Some("base<sec>".into()),
+            append_messages: vec![user_text_message("héllo".into())],
+        };
+        let mut annotations = Map::new();
+        stamp_recall(
+            &mut annotations,
+            &input,
+            &mutations,
+            ("skipped", Some("no_bank")),
+        );
+        assert_eq!(annotations["memory_injected_chars"], 10);
+        assert_eq!(annotations["memory_recall"], "skipped");
+        assert_eq!(annotations["memory_recall_skip_reason"], "no_bank");
+
+        let mut annotations = Map::new();
+        stamp_recall(
+            &mut annotations,
+            &input,
+            &Mutations::default(),
+            ("hit", None),
+        );
+        assert_eq!(annotations["memory_recall"], "hit");
+        assert_eq!(annotations["memory_injected_chars"], 0);
+        assert!(!annotations.contains_key("memory_recall_skip_reason"));
     }
 
     #[test]

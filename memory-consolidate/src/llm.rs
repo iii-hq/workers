@@ -165,15 +165,16 @@ pub(crate) async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<S
         .ok_or_else(|| "no models in the router catalog".to_string())
 }
 
-/// One judge call for one bank. Fail-soft: any error returns the reason
-/// for the report; the deterministic pass already ran.
+/// One judge call for one bank, with the router's `usage` for the call.
+/// Fail-soft: any error returns the reason for the report; the
+/// deterministic pass already ran.
 pub async fn judge(
     iii: &IIIClient,
     configured_model: &str,
     prompt: String,
-) -> Result<JudgeReply, String> {
+) -> Result<(JudgeReply, Value), String> {
     let reply = complete(iii, configured_model, JUDGE_SYSTEM, prompt, 1_024).await?;
-    Ok(parse_reply(&reply_text(&reply)))
+    Ok((parse_reply(&reply_text(&reply)), reply["usage"].clone()))
 }
 
 /// One `router::complete` call with a static system prompt (cache-friendly)
