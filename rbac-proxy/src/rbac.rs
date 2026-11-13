@@ -49,6 +49,11 @@ pub struct RbacConfig {
     /// exposed if **any** filter matches.
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
+    /// Paths of the engine's worker port the proxy serves (`/`, `/otel`,
+    /// `/ws/channels/*`, ...); a path is served if **any** rule matches.
+    /// Empty, the default, serves nothing.
+    #[serde(default)]
+    pub expose_endpoints: Vec<crate::endpoints::EndpointFilter>,
     /// Called before a function is registered, with its `function_id`,
     /// `description`, `metadata`, `namespace`, `private`, `observable`,
     /// `args_format` (when set) and the session's `context`. An object answer
@@ -293,7 +298,7 @@ impl FunctionFilter {
 }
 
 /// VENDORED from rbac_config.rs.
-fn parse_match_pattern(s: &str) -> Option<String> {
+pub(crate) fn parse_match_pattern(s: &str) -> Option<String> {
     let trimmed = s.trim();
     if (trimmed.starts_with("match(\"") && trimmed.ends_with("\")"))
         || (trimmed.starts_with("match('") && trimmed.ends_with("')"))

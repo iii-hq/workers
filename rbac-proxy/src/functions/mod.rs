@@ -34,6 +34,12 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &ProxyState) {
                     port,
                     engine_url: redact_url(&cfg.engine_url),
                     rbac_enabled: cfg.rbac_enabled(),
+                    expose_endpoints: cfg
+                        .rbac
+                        .expose_endpoints
+                        .iter()
+                        .map(|rule| rule.pattern().to_string())
+                        .collect(),
                     active_connections: state.active.load(Ordering::Relaxed),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 })

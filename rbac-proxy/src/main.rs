@@ -109,6 +109,9 @@ async fn main() -> Result<()> {
         rbac_enabled = cfg.rbac_enabled(),
         "starting rbac-proxy"
     );
+    if let Some(warning) = rbac_proxy::endpoints::empty_warning(&cfg.rbac.expose_endpoints) {
+        tracing::warn!("{warning}");
+    }
 
     // 4. Build state + bind the public listener.
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));

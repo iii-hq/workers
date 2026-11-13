@@ -15,6 +15,7 @@
 pub mod channels;
 pub mod config;
 pub mod configuration;
+pub mod endpoints;
 pub mod engine_overrides;
 pub mod functions;
 pub mod interceptor;

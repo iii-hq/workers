@@ -18,9 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
@@ -31,17 +29,31 @@ use crate::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use crate::rbac;
 use crate::server::ProxyState;
 
-/// Axum handler for the worker-protocol route (`GET /`). Captures the upgrade
-/// request's headers, query, and peer address (for the auth function) before
-/// the upgrade, then hands the socket to [`handle_connection`].
-pub async fn ws_upgrade(
-    State(state): State<ProxyState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+/// Authenticate an exposed endpoint other than `/` and the channels
+/// (`/otel`) with the same auth function as `/`, then relay it to the engine
+/// as is. The engine does the same for `/otel` on its own RBAC port.
+pub async fn authenticated_relay(
+    client: WebSocket,
+    state: ProxyState,
+    peer: SocketAddr,
     uri: Uri,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_connection(socket, state, peer, uri, headers))
+) {
+    let cfg = state.config.read().await.clone();
+    if let Err(rej) = rbac::resolve_session(
+        &state.iii,
+        Some(&cfg.rbac),
+        headers_to_map(&headers),
+        query_to_multi_map(uri.query()),
+        peer.ip().to_string(),
+    )
+    .await
+    {
+        reject(client, &rej.code, &rej.message).await;
+        return;
+    }
+    let target = crate::endpoints::upstream_url(&cfg.engine_url, uri.path(), uri.query());
+    crate::channels::relay(client, target).await
 }
 
 /// Decrement the live-connection gauge when a connection ends.
@@ -52,7 +64,7 @@ impl Drop for ActiveGuard {
     }
 }
 
-async fn handle_connection(
+pub async fn handle_connection(
     client: WebSocket,
     state: ProxyState,
     peer: SocketAddr,
