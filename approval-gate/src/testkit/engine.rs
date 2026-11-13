@@ -6,7 +6,6 @@
 //! state worker of its own. Tests skip when either binary is unavailable and
 //! fail when both are there and the stack does not come up.
 
-use std::io::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,19 +23,29 @@ use crate::functions::{self, Deps};
 
 pub struct Engine {
     pub url: String,
-    child: std::process::Child,
-    state: Option<std::process::Child>,
+    children: Vec<std::process::Child>,
     dir: std::path::PathBuf,
+}
+
+fn stop_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // The engine launcher may fork; stop the isolated process group too.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        if let Some(mut state) = self.state.take() {
-            let _ = state.kill();
-            let _ = state.wait();
+        for child in self.children.iter_mut().rev() {
+            stop_child(child);
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -107,25 +116,83 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Start an isolated engine and the state worker on it. `None` when a binary
-/// is unavailable ([`stack_unavailable`] says which); panics when both are
-/// there and the stack does not answer within 30 s.
+fn worker_bin(env: &str, worker: &str) -> std::path::PathBuf {
+    std::env::var_os(env)
+        .map(|p| anchored(p.into()))
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(worker)
+                .join("target/debug")
+                .join(worker)
+        })
+}
+
+fn spawn_logged(
+    dir: &std::path::Path,
+    name: &str,
+    bin: &std::path::Path,
+    args: &[&str],
+) -> std::process::Child {
+    let log = std::fs::File::create(dir.join(format!("{name}.log"))).expect("create worker log");
+    let mut command = std::process::Command::new(bin);
+    command
+        .args(args)
+        .current_dir(dir)
+        // The engine and every SDK client write an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", dir)
+        .env("III_NAMESPACE", "default")
+        .env("III_COMPOSE_DIR", dir)
+        .stdout(log.try_clone().expect("clone log"))
+        .stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+        .spawn()
+        .unwrap_or_else(|e| panic!("start supplied {name} {}: {e}", bin.display()))
+}
+
+impl Engine {
+    fn diagnostics(&self) -> String {
+        ["engine", "state", "queue", "session-manager", "harness"]
+            .iter()
+            .map(|name| {
+                format!(
+                    "{name}: {}",
+                    std::fs::read_to_string(self.dir.join(format!("{name}.log")))
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assert_alive(&mut self) {
+        for child in &mut self.children {
+            if let Some(status) = child.try_wait().expect("check worker process") {
+                panic!(
+                    "supplied integration process exited {status}:\n{}",
+                    self.diagnostics()
+                );
+            }
+        }
+    }
+}
+
 pub async fn spawn_engine() -> Option<Engine> {
     let bin = engine_bin()?;
-    let state_bin = state_bin()?;
     let port = free_port();
     let dir = stack_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    // The configuration worker's fs adapter writes one YAML file per id
-    // under this directory; create it up front so register/get never race
-    // a missing path (approval-gate now treats configuration as a required
-    // boot dependency).
-    std::fs::create_dir_all(dir.join("configuration")).ok()?;
-
+    std::fs::create_dir_all(dir.join("configuration"))
+        .expect("create isolated configuration directory");
     let config = format!(
         r#"workers:
   - name: iii-worker-manager
     config:
+      host: 127.0.0.1
       port: {port}
   - name: configuration
     config:
@@ -135,113 +202,88 @@ pub async fn spawn_engine() -> Option<Engine> {
           directory: {dir}/configuration
       ttl_seconds: 0
 "#,
-        port = port,
-        dir = dir.display(),
+        dir = dir.display()
     );
     let config_path = dir.join("config.yaml");
-    std::fs::File::create(&config_path)
-        .and_then(|mut f| f.write_all(config.as_bytes()))
-        .expect("write the engine config");
-    // The state worker's seed: an in-memory kv store, gone with the stack.
-    let state_seed = dir.join("state.yaml");
+    std::fs::write(&config_path, config).expect("write engine configuration");
+    let child = spawn_logged(
+        &dir,
+        "engine",
+        &bin,
+        &[
+            "--no-update-check",
+            "--config",
+            config_path.to_str().unwrap(),
+        ],
+    );
+    let mut engine = Engine {
+        url: format!("ws://127.0.0.1:{port}"),
+        children: vec![child],
+        dir,
+    };
+    let probe = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    // Shuts the probe down on every exit, including a failed readiness check.
+    let _probe_guard = ClientGuard(Some(probe.clone()));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        engine.assert_alive();
+        if probe
+            .call(CallRequest {
+                function_id: "configuration::ensure".into(),
+                payload: json!({"id":"readiness_probe", "name":"Readiness", "description":"Test readiness", "schema":{}, "initial_value":{}}),
+                action: None,
+                timeout_ms: Some(500),
+            })
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "supplied engine failed readiness:\n{}",
+            engine.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let state_seed = engine.dir.join("state.yaml");
     std::fs::write(
         &state_seed,
         "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
     )
     .expect("write the state worker seed");
-
-    let child = std::process::Command::new(&bin)
-        .arg("--no-update-check")
-        .arg("--config")
-        .arg(&config_path)
-        .current_dir(&dir)
-        // The engine writes an `iii ps` marker under $HOME/.iii/run.
-        .env("HOME", &dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap_or_else(|e| panic!("spawn the engine {}: {e}", bin.display()));
-    let url = format!("ws://127.0.0.1:{port}");
-    let mut engine = Engine {
-        url: url.clone(),
-        child,
-        state: None,
-        dir: dir.clone(),
-    };
-
-    let probe = register_worker(&url, InitOptions::default());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    engine.children.push(spawn_logged(
+        &engine.dir,
+        "state",
+        &worker_bin("III_STATE_BIN", "state"),
+        &[
+            "--url",
+            &engine.url,
+            "--config",
+            state_seed.to_str().unwrap(),
+        ],
+    ));
     loop {
-        // The engine core must be up AND the configuration worker must be
-        // serving — approval-gate treats configuration as a required boot
-        // dependency, so a test that boots before it is ready would fail
-        // spuriously. Probe a dummy id and accept any response (including
-        // NOT_FOUND) as "the worker is up".
-        let core_ready = probe
+        engine.assert_alive();
+        if probe
             .call(CallRequest {
-                function_id: "engine::workers::list".into(),
-                payload: json!({}),
+                function_id: "state::get".into(),
+                payload: json!({"scope":"readiness", "key":"probe"}),
                 action: None,
-                timeout_ms: Some(1000),
+                timeout_ms: Some(500),
             })
             .await
-            .is_ok();
-        let ready = core_ready
-            && match probe
-                .call(CallRequest {
-                    function_id: "configuration::get".into(),
-                    payload: json!({ "id": "__readiness_probe__" }),
-                    action: None,
-                    timeout_ms: Some(1000),
-                })
-                .await
-            {
-                Ok(_) => true,
-                Err(e) => e.to_string().to_ascii_uppercase().contains("NOT_FOUND"),
-            };
-        if ready {
+            .is_ok()
+        {
             break;
         }
-        if Instant::now() >= deadline {
-            probe.shutdown();
-            panic!("the engine on {url} did not answer within 30 s");
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            Instant::now() < deadline,
+            "real state worker failed readiness:\n{}",
+            engine.diagnostics()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-
-    engine.state = Some(
-        std::process::Command::new(&state_bin)
-            .arg("--url")
-            .arg(&url)
-            .arg("--config")
-            .arg(&state_seed)
-            .current_dir(&dir)
-            // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
-            .env("HOME", &dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("spawn the state worker {}: {e}", state_bin.display())),
-    );
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while probe
-        .call(CallRequest {
-            function_id: "state::get".into(),
-            payload: json!({ "scope": "__readiness_probe__", "key": "__readiness_probe__" }),
-            action: None,
-            timeout_ms: Some(1000),
-        })
-        .await
-        .is_err()
-    {
-        if Instant::now() >= deadline {
-            probe.shutdown();
-            panic!("the state worker on {url} did not answer within 30 s");
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    probe.shutdown();
-
     Some(engine)
 }
 
@@ -381,18 +423,26 @@ pub struct TestStack {
     pub created: CallLog,
     /// `approval::on-pending-resolved` events, delivered as output.
     pub resolved: CallLog,
-    harness_child: Option<std::process::Child>,
+    _harness_workers: TestWorkers,
 }
 
 impl Drop for TestStack {
     fn drop(&mut self) {
-        if let Some(mut child) = self.harness_child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        // Joins the connection thread, which removes this client's `iii ps`
-        // marker from the test process's $HOME/.iii/run.
+        // Keep the worker lifetime tied to the whole stack, including when an
+        // async test captures only its public client field. Joins the
+        // connection thread, which removes this client's `iii ps` marker from
+        // the test process's $HOME/.iii/run.
         self.iii.shutdown();
+    }
+}
+
+#[derive(Default)]
+struct TestWorkers(Vec<std::process::Child>);
+impl Drop for TestWorkers {
+    fn drop(&mut self) {
+        for child in self.0.iter_mut().rev() {
+            stop_child(child);
+        }
     }
 }
 
@@ -407,26 +457,13 @@ impl Drop for ClientGuard {
     }
 }
 
-fn spawn_harness_worker(engine: &Engine) -> Option<std::process::Child> {
-    let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
-    std::process::Command::new(bin)
-        .arg("--url")
-        .arg(&engine.url)
-        // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
-        .env("HOME", &engine.dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
-}
-
-async fn wait_for_harness(iii: &IIIClient) -> bool {
+async fn wait_for_function(iii: &IIIClient, function_id: &str, payload: Value) -> bool {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if iii
             .call(CallRequest {
-                function_id: "harness::status".into(),
-                payload: json!({ "session_id": "__probe__" }),
+                function_id: function_id.into(),
+                payload: payload.clone(),
                 action: None,
                 timeout_ms: Some(500),
             })
@@ -516,21 +553,23 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         );
     }
 
-    iii.register_function(
-        "session::get",
-        RegisterFunction::new_async(move |req: Value| async move {
-            let session_id = req
-                .get("session_id")
-                .and_then(Value::as_str)
-                .unwrap_or("s_1");
-            Ok::<_, iii_sdk::errors::Error>(json!({ "meta": {
-                "session_id": session_id,
-                "title": "Integration session",
-                "description": "",
-                "metadata": { "owner": "u_1" }
-            }}))
-        }),
-    );
+    if !opts.real_harness {
+        iii.register_function(
+            "session::get",
+            RegisterFunction::new_async(move |req: Value| async move {
+                let session_id = req
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("s_1");
+                Ok::<_, iii_sdk::errors::Error>(json!({ "meta": {
+                    "session_id": session_id,
+                    "title": "Integration session",
+                    "description": "",
+                    "metadata": { "owner": "u_1" }
+                }}))
+            }),
+        );
+    }
 
     let created: CallLog = Arc::default();
     {
@@ -580,30 +619,61 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     // `configuration::on-updated` (mirrors the production boot order: last).
     configuration::observe_config_changes(&iii, config.clone());
 
-    let harness_child = opts
-        .real_harness
-        .then(|| spawn_harness_worker(engine).expect("spawn harness worker"));
-    // Built before the readiness checks, so a failed check reaps the child.
+    let mut harness_workers = TestWorkers::default();
+    if opts.real_harness {
+        harness_workers.0.push(spawn_logged(
+            &engine.dir,
+            "queue",
+            &worker_bin("III_QUEUE_BIN", "queue"),
+            &["--url", &engine.url],
+        ));
+        assert!(
+            wait_for_function(&iii, "engine::queue::list_topics", json!({})).await,
+            "queue worker did not become ready: {}",
+            engine.diagnostics()
+        );
+        harness_workers.0.push(spawn_logged(
+            &engine.dir,
+            "session-manager",
+            &worker_bin("III_SESSION_MANAGER_BIN", "session-manager"),
+            &["--url", &engine.url],
+        ));
+        assert!(
+            wait_for_function(&iii, "session::list", json!({})).await,
+            "session-manager worker did not become ready: {}",
+            engine.diagnostics()
+        );
+        let harness = std::env::var_os("CARGO_BIN_EXE_harness")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| worker_bin("III_HARNESS_BIN", "harness"));
+        harness_workers.0.push(spawn_logged(
+            &engine.dir,
+            "harness",
+            &harness,
+            &["--url", &engine.url],
+        ));
+        assert!(
+            wait_for_function(&iii, "harness::status", json!({"session_id":"__probe__"})).await,
+            "harness worker did not become ready: {}",
+            std::fs::read_to_string(engine.dir.join("harness.log")).unwrap_or_default()
+        );
+        // The gate's observer of `harness::hook::on-pre-call` stays pending
+        // until the harness registers its hook function.
+        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
+    }
+
+    // A failed step above unwinds through `guard` (client shut down) and
+    // `harness_workers` (children reaped); from here `TestStack` owns both.
     guard.0 = None;
-    let stack = TestStack {
+    TestStack {
         iii,
         deps,
         config,
         harness_calls,
         created,
         resolved,
-        harness_child,
-    };
-    if opts.real_harness {
-        assert!(
-            wait_for_harness(&stack.iii).await,
-            "harness worker did not become ready"
-        );
-        // The gate's observer of `harness::hook::on-pre-call` stays pending
-        // until the harness registers its hook function.
-        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
+        _harness_workers: harness_workers,
     }
-    stack
 }
 
 /// Wait (bounded) until an observer is active; panics with its state and
