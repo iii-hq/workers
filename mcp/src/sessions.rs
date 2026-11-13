@@ -7,8 +7,10 @@
 //! - **poll** (`iii_observe`): the engine sends them to the shared sink
 //!   (`mcp::observed`), which buffers them in the session until the client
 //!   reads them with `iii_observations_poll`;
-//! - **sse** (`iii_observations_sse`): through the sink, then pushed on the
-//!   session's `GET` SSE stream, held in the buffer while no stream is open;
+//! - **sse** (`iii_observations_sse`): through the sink, then written to the
+//!   session's `GET` SSE stream with an event id. They stay in the buffer
+//!   after that: a write the socket took is no proof the client got it, so a
+//!   reconnect with `Last-Event-ID` replays everything after that id;
 //! - **target** (`iii_observe` with `target_function_id`): the engine runs
 //!   that function for each one; nothing reaches the session.
 //!
@@ -109,6 +111,16 @@ impl Default for SessionLimits {
     }
 }
 
+/// What the session's SSE stream writes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamItem {
+    /// One observation; `id` is its SSE event id, unique within the session.
+    Observation { id: u64, observation: Value },
+    /// Observations after `after`, up to `through`, were dropped by the
+    /// buffer cap before this stream could send them.
+    Gap { after: u64, through: u64 },
+}
+
 /// How long an observe tool waits for the engine to activate an observer.
 /// An observer of a function nobody hosts yet stays `pending`, which is valid.
 const READY_WAIT: Duration = Duration::from_secs(5);
@@ -126,11 +138,16 @@ struct Session {
     last_seen: Instant,
     order: Vec<String>,
     observers: HashMap<String, Entry>,
-    /// Poll observations, and SSE ones waiting for a stream: (seq, observer id, observation).
+    /// Poll observations until polled, and SSE ones until the cap drops
+    /// them (for replay): (seq, observer id, observation).
     buffer: VecDeque<(u64, String, Value)>,
     /// Dropped since the last poll.
     dropped: u64,
-    stream: Option<mpsc::UnboundedSender<Value>>,
+    stream: Option<mpsc::UnboundedSender<StreamItem>>,
+    /// The highest SSE event id a stream wrote.
+    sent_through: u64,
+    /// The highest SSE event id the cap dropped.
+    sse_dropped_through: u64,
 }
 
 impl Session {
@@ -145,6 +162,15 @@ impl Session {
         self.observers
             .get(observer_id)
             .is_some_and(|e| e.delivery == Delivery::Sse)
+    }
+
+    /// Push to the open stream, if any; a closed one is forgotten.
+    fn push(&mut self, item: StreamItem) {
+        if let Some(stream) = &self.stream {
+            if stream.send(item).is_err() {
+                self.stream = None;
+            }
+        }
     }
 }
 
@@ -188,6 +214,8 @@ impl Sessions {
                 buffer: VecDeque::new(),
                 dropped: 0,
                 stream: None,
+                sent_through: 0,
+                sse_dropped_through: 0,
             },
         );
         Ok(id)
@@ -335,23 +363,25 @@ impl Sessions {
         let Some(entry) = session.observers.get_mut(&observer_id) else {
             return false;
         };
-        match entry.delivery {
+        let sse = match entry.delivery {
             Delivery::Target(_) => return false,
-            Delivery::Sse => {
-                entry.received += 1;
-                if let Some(stream) = &session.stream {
-                    if stream.send(observation.clone()).is_ok() {
-                        return true;
-                    }
-                    session.stream = None;
-                }
-            }
-            Delivery::Poll => entry.received += 1,
+            Delivery::Sse => true,
+            Delivery::Poll => false,
+        };
+        entry.received += 1;
+        if sse {
+            session.push(StreamItem::Observation {
+                id: seq,
+                observation: observation.clone(),
+            });
         }
         session.buffer.push_back((seq, observer_id, observation));
         while session.buffer.len() > max {
-            if let Some((_, id, _)) = session.buffer.pop_front() {
+            if let Some((dropped_seq, id, _)) = session.buffer.pop_front() {
                 session.dropped += 1;
+                if session.is_sse(&id) {
+                    session.sse_dropped_through = session.sse_dropped_through.max(dropped_seq);
+                }
                 if let Some(e) = session.observers.get_mut(&id) {
                     e.dropped += 1;
                 }
@@ -420,32 +450,49 @@ impl Sessions {
         Ok(json!({ "observations": observations, "remaining": remaining, "dropped": dropped }))
     }
 
-    /// Open the session's SSE stream: observations of its SSE observers go
-    /// to the returned receiver from now on, starting with those that were
-    /// waiting. A new stream replaces the previous one.
+    /// Open the session's SSE stream, replacing any open one. The backlog is
+    /// what the stream sends first: the SSE observations after
+    /// `last_event_id` (a reconnect's `Last-Event-ID`), or, without one,
+    /// those no stream wrote yet, led by a [`StreamItem::Gap`] when the cap
+    /// dropped some of them. Live observations follow on the receiver.
+    #[allow(clippy::type_complexity)]
     pub fn attach_stream(
         &self,
         session_id: &str,
-    ) -> Result<mpsc::UnboundedReceiver<Value>, String> {
+        last_event_id: Option<u64>,
+    ) -> Result<(Vec<StreamItem>, mpsc::UnboundedReceiver<StreamItem>), String> {
         let mut inner = self.inner.lock().unwrap();
         let session = inner
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         session.last_seen = Instant::now();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut kept = VecDeque::with_capacity(session.buffer.len());
-        let waiting: Vec<(u64, String, Value)> = session.buffer.drain(..).collect();
-        for item in waiting {
-            if session.is_sse(&item.1) {
-                let _ = tx.send(item.2);
-            } else {
-                kept.push_back(item);
+        let after = last_event_id.unwrap_or(session.sent_through);
+        let mut backlog = Vec::new();
+        if session.sse_dropped_through > after {
+            backlog.push(StreamItem::Gap {
+                after,
+                through: session.sse_dropped_through,
+            });
+        }
+        for (seq, id, observation) in &session.buffer {
+            if *seq > after && session.is_sse(id) {
+                backlog.push(StreamItem::Observation {
+                    id: *seq,
+                    observation: observation.clone(),
+                });
             }
         }
-        session.buffer = kept;
+        let (tx, rx) = mpsc::unbounded_channel();
         session.stream = Some(tx);
-        Ok(rx)
+        Ok((backlog, rx))
+    }
+
+    /// A stream wrote the observation with event id `id`.
+    pub fn mark_sent(&self, session_id: &str, id: u64) {
+        if let Some(session) = self.inner.lock().unwrap().sessions.get_mut(session_id) {
+            session.sent_through = session.sent_through.max(id);
+        }
     }
 
     pub fn list(&self, session_id: &str) -> Result<Vec<Value>, String> {
@@ -913,70 +960,170 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn sse_observations_go_to_the_attached_stream_not_the_buffer() {
-        let s = store();
-        let o = FakeObserve::default();
+    async fn sse_session(s: &Sessions, o: &FakeObserve) -> String {
         let sid = s.create().unwrap();
-        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
+        s.observe(o, &sid, req("a::b"), Delivery::Sse, SINK)
             .await
             .unwrap();
+        sid
+    }
+
+    fn inputs_of(items: &[StreamItem]) -> Vec<Value> {
+        items
+            .iter()
+            .map(|i| match i {
+                StreamItem::Observation { observation, .. } => observation["input"].clone(),
+                StreamItem::Gap { .. } => json!("gap"),
+            })
+            .collect()
+    }
+
+    fn ids_of(items: &[StreamItem]) -> Vec<u64> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                StreamItem::Observation { id, .. } => Some(*id),
+                StreamItem::Gap { .. } => None,
+            })
+            .collect()
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<StreamItem>) -> Vec<StreamItem> {
+        let mut out = vec![];
+        while let Ok(item) = rx.try_recv() {
+            out.push(item);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn sse_observations_go_live_to_the_stream_with_ids_and_stay_retained() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
         s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        let mut rx = s.attach_stream(&sid).unwrap();
+        let (backlog, mut rx) = s.attach_stream(&sid, None).unwrap();
+        assert!(backlog.is_empty());
         assert!(s.deliver(observation("obs-1", json!(1))));
         assert!(s.deliver(observation("obs-2", json!(2))));
-        assert_eq!(rx.try_recv().unwrap()["input"], 1);
-        assert!(rx.try_recv().is_err());
+        let live = drain(&mut rx);
+        assert_eq!(inputs_of(&live), vec![json!(1)]);
+        // Kept for a reconnect: delivery over the stream is not proof of receipt.
+        assert_eq!(s.list(&sid).unwrap()[0]["buffered"], 1);
         // Poll reads only poll observers.
         assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(2)]);
         assert!(s
             .poll(&sid, Some("obs-1"), 50)
             .unwrap_err()
             .contains("iii_observations_sse"));
-        assert_eq!(s.list(&sid).unwrap()[0]["received"], 1);
     }
 
     #[tokio::test]
-    async fn sse_observations_wait_for_a_stream_and_flush_in_order() {
+    async fn the_first_stream_starts_with_what_waited_for_it() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create().unwrap();
-        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
-            .await
-            .unwrap();
+        let sid = sse_session(&s, &o).await;
         s.deliver(observation("obs-1", json!(1)));
         s.deliver(observation("obs-1", json!(2)));
-        assert_eq!(s.list(&sid).unwrap()[0]["buffered"], 2);
-        let mut rx = s.attach_stream(&sid).unwrap();
-        assert_eq!(rx.try_recv().unwrap()["input"], 1);
-        assert_eq!(rx.try_recv().unwrap()["input"], 2);
-        assert_eq!(s.list(&sid).unwrap()[0]["buffered"], 0);
-        // The stream went away: observations wait again for the next one.
+        let (backlog, mut rx) = s.attach_stream(&sid, None).unwrap();
+        assert_eq!(inputs_of(&backlog), vec![json!(1), json!(2)]);
+        let ids = ids_of(&backlog);
+        assert!(ids[0] < ids[1]);
+        assert!(drain(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_with_last_event_id_replays_everything_after_it() {
+        // The client vanished after its socket took 1 and 2: the next write
+        // fails, but nothing is lost, because the reconnect replays.
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        s.deliver(observation("obs-1", json!(2)));
+        let written = drain(&mut rx);
+        for item in &written {
+            if let StreamItem::Observation { id, .. } = item {
+                s.mark_sent(&sid, *id);
+            }
+        }
         drop(rx);
         s.deliver(observation("obs-1", json!(3)));
-        let mut again = s.attach_stream(&sid).unwrap();
-        assert_eq!(again.try_recv().unwrap()["input"], 3);
+        let first = ids_of(&written)[0];
+        let (backlog, _rx) = s.attach_stream(&sid, Some(first)).unwrap();
+        assert_eq!(inputs_of(&backlog), vec![json!(2), json!(3)]);
+    }
+
+    #[tokio::test]
+    async fn a_stream_without_last_event_id_gets_only_what_was_never_written() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        let written = drain(&mut rx);
+        s.mark_sent(&sid, ids_of(&written)[0]);
+        s.deliver(observation("obs-1", json!(2))); // taken by no stream
+        drop(rx);
+        let (backlog, _rx) = s.attach_stream(&sid, None).unwrap();
+        assert_eq!(inputs_of(&backlog), vec![json!(2)]);
+    }
+
+    #[tokio::test]
+    async fn a_replay_past_what_is_retained_starts_with_the_gap() {
+        let s = Sessions::new(limits(16, 100, 2));
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        for i in 1..=3 {
+            s.deliver(observation("obs-1", json!(i)));
+        }
+        let (backlog, _rx) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert_eq!(inputs_of(&backlog), vec![json!("gap"), json!(2), json!(3)]);
+        let StreamItem::Gap { after, through } = &backlog[0] else {
+            panic!()
+        };
+        assert_eq!(*after, 0);
+        assert!(*through < ids_of(&backlog)[0]);
+        // Resuming inside what is retained has no gap.
+        let from = ids_of(&backlog)[0];
+        let (again, _rx) = s.attach_stream(&sid, Some(from)).unwrap();
+        assert_eq!(inputs_of(&again), vec![json!(3)]);
     }
 
     #[tokio::test]
     async fn a_new_stream_replaces_the_old_one() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create().unwrap();
-        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
-            .await
-            .unwrap();
-        let mut old = s.attach_stream(&sid).unwrap();
-        let mut new = s.attach_stream(&sid).unwrap();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut old) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut new) = s.attach_stream(&sid, None).unwrap();
         s.deliver(observation("obs-1", json!(1)));
-        assert!(old.try_recv().is_err());
-        assert_eq!(new.try_recv().unwrap()["input"], 1);
+        // The old stream's task sees its channel closed and ends.
+        assert!(matches!(
+            old.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        assert_eq!(inputs_of(&drain(&mut new)), vec![json!(1)]);
         assert!(s
-            .attach_stream("nope")
+            .attach_stream("nope", None)
             .unwrap_err()
             .contains("unknown session"));
+    }
+
+    #[tokio::test]
+    async fn ending_the_session_ends_its_stream() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.end(&sid).await);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 
     #[tokio::test]

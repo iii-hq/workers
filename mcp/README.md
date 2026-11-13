@@ -293,8 +293,14 @@ An observer delivers in one of three ways:
   `mcp::observed`, one sink for the worker, which routes it to its session by
   `observer_id`; the client reads it with `iii_observations_poll`;
 - **sse** (`iii_observations_sse`): through the same sink, then out on the
-  session's `GET /mcp` stream (an SSE response that stays open, with a
-  keepalive comment every 15 s); held in the session while no stream is open;
+  session's `GET /mcp` stream, each with an SSE event id. They stay in the
+  session after they are written, so a client that reconnects with
+  `Last-Event-ID` gets every observation after that id: a dropped connection
+  loses nothing. A `GET` without it gets only what no stream wrote yet.
+  Nothing is written on a schedule: a quiet stream is ended by the http
+  worker's idle timeout (`default_timeout`, 30 s), and the client reconnects.
+  If the cap dropped observations the client never got, the replay starts
+  with a `notifications/iii/observations_dropped` message naming the ids;
 - **target** (`iii_observe` with `target_function_id`): the engine runs that
   function with each observation; nothing reaches the session.
 

@@ -2,8 +2,9 @@
 //!
 //! - `mcp::handler` serves the MCP Streamable HTTP endpoint: it observes
 //!   `http::on-request` for `POST`, `GET` and `DELETE <api_path>`, runs
-//!   [`handle_http`], and streams the reply as one SSE event; a `GET` stays
-//!   open as the session's stream of SSE observations.
+//!   [`handle_http`], and writes the reply as one SSE event to the request's
+//!   `response` stream; a `GET` keeps it open as the session's resumable
+//!   stream of SSE observations.
 //! - `mcp::observed` is the target of every poll and SSE observer an MCP
 //!   session creates; it admits deliveries through [`sink_guard::admit`] and
 //!   hands them to [`Sessions::deliver`].
@@ -11,11 +12,7 @@
 use std::sync::Arc;
 
 use iii_helpers::observability::Logger;
-use iii_sdk::{
-    channels::{ChannelWriter, StreamChannelRef},
-    errors::Error,
-    IIIClient, ObserverHandle, RegisterFunction, Source,
-};
+use iii_sdk::{errors::Error, IIIClient, ObserverHandle, OutputStream, RegisterFunction, Source};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -24,15 +21,13 @@ use crate::engine::SdkEngine;
 use crate::handler::{handle_http, App, HttpReply};
 use crate::rbac_guard::RbacMode;
 use crate::sessions::Sessions;
+use crate::sessions::StreamItem;
 use crate::sink_guard;
-use crate::transport::{encode_sse_jsonrpc, encode_sse_observation, KEEPALIVE};
+use crate::transport::{encode_sse_gap, encode_sse_jsonrpc, encode_sse_observation};
 
 /// The methods the endpoint serves on `api_path`.
 pub const ROUTE_METHODS: [&str; 3] = ["POST", "GET", "DELETE"];
 
-/// How often an open `GET` stream gets a keepalive; below the http worker's
-/// default idle timeout (30 s).
-const KEEPALIVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub const FUNCTION_ID: &str = "mcp::handler";
 pub const SINK_FUNCTION_ID: &str = "mcp::observed";
@@ -73,7 +68,8 @@ struct McpRequest {
     headers: Value,
     #[serde(default)]
     body: Value,
-    response: StreamChannelRef,
+    /// The HTTP response: status and headers as messages, the body as bytes.
+    response: OutputStream,
 }
 
 fn default_method() -> String {
@@ -142,7 +138,7 @@ fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {
                 };
                 let reply =
                     handle_http(&app, &envelope.method, &envelope.headers, &envelope.body).await;
-                respond(&ctx, &envelope.response, reply).await
+                respond(&ctx, envelope.response, reply).await
             }
         })
         .request_format(schema_value::<McpRequest>())
@@ -177,12 +173,7 @@ fn register_sink(iii: &Arc<IIIClient>, ctx: &Ctx) {
     );
 }
 
-async fn respond(
-    ctx: &Ctx,
-    writer_ref: &StreamChannelRef,
-    reply: HttpReply,
-) -> Result<Value, Error> {
-    let writer = ChannelWriter::new(ctx.engine.client.address(), writer_ref);
+async fn respond(ctx: &Ctx, response: OutputStream, reply: HttpReply) -> Result<Value, Error> {
     let mut headers = json!({
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -196,59 +187,85 @@ async fn respond(
         json!({ "type": "set_headers", "headers": headers }),
     ];
     for frame in control {
-        if let Err(err) = writer.send_message(&frame.to_string()).await {
+        if let Err(err) = response.send(&frame).await {
             ctx.log.warn(
-                "mcp: failed to send SSE control frames",
-                Some(json!({ "error": err.to_string(), "status": reply.status, "channel_id": writer_ref.channel_id })),
+                "mcp: failed to send the response status and headers",
+                Some(json!({ "error": err.to_string(), "status": reply.status })),
             );
             return Ok(Value::Null);
         }
     }
-    if let Some(sid) = reply.stream.clone() {
-        return open_stream(ctx, writer, sid).await;
+    if let Some((session_id, last_event_id)) = reply.stream.clone() {
+        return open_stream(ctx, response, session_id, last_event_id);
     }
     if let Some(rpc) = &reply.rpc {
         let frame = encode_sse_jsonrpc(rpc);
-        if let Err(err) = writer.write(frame.as_bytes()).await {
+        if let Err(err) = response.write(frame.as_bytes()).await {
             ctx.log.warn(
-                "mcp: failed to write SSE body frame",
-                Some(json!({ "error": err.to_string(), "channel_id": writer_ref.channel_id })),
+                "mcp: failed to write the response body",
+                Some(json!({ "error": err.to_string() })),
             );
         }
     }
+    // Returning null ends the response.
     Ok(Value::Null)
 }
 
-/// Keep a `GET` response open as the session's stream: its SSE observers'
-/// observations, then a keepalive whenever it is quiet. The first write
-/// starts the http worker's streamed response; the loop then runs on its own
-/// task, so the invocation returns at once. It ends when the client goes
-/// away (a write fails), the session ends, or another `GET` replaces it.
-async fn open_stream(ctx: &Ctx, writer: ChannelWriter, session_id: String) -> Result<Value, Error> {
-    let mut rx = match ctx.sessions.attach_stream(&session_id) {
-        Ok(rx) => rx,
-        Err(_) => {
-            let _ = writer.close().await;
-            return Ok(Value::Null);
-        }
-    };
-    if writer.write(KEEPALIVE.as_bytes()).await.is_err() {
+/// Keep a `GET` response open as the session's SSE stream: first the
+/// backlog (what the client has not seen, after its `Last-Event-ID`), then
+/// each observation as it arrives. Nothing is written on a schedule. A write
+/// that fails means the client left: the task ends, and since observations
+/// stay in the session until the buffer cap drops them, the client's
+/// reconnect with `Last-Event-ID` gets everything it missed. The stream also
+/// ends when the session ends or another `GET` replaces it.
+fn open_stream(
+    ctx: &Ctx,
+    response: OutputStream,
+    session_id: String,
+    last_event_id: Option<u64>,
+) -> Result<Value, Error> {
+    let Ok((backlog, mut live)) = ctx.sessions.attach_stream(&session_id, last_event_id) else {
         return Ok(Value::Null);
-    }
+    };
+    response.keep_open();
+    response.bind(&ctx.engine.client);
+    let sessions = ctx.sessions.clone();
     tokio::spawn(async move {
-        loop {
-            let frame = match tokio::time::timeout(KEEPALIVE_EVERY, rx.recv()).await {
-                Ok(Some(observation)) => encode_sse_observation(&observation),
-                Ok(None) => break,
-                Err(_) => KEEPALIVE.to_string(),
-            };
-            if writer.write(frame.as_bytes()).await.is_err() {
-                break;
+        for item in backlog {
+            if !write_item(&response, &sessions, &session_id, item).await {
+                return;
             }
         }
-        let _ = writer.close().await;
+        while let Some(item) = live.recv().await {
+            if !write_item(&response, &sessions, &session_id, item).await {
+                return;
+            }
+        }
+        let _ = response.close().await;
     });
     Ok(Value::Null)
+}
+
+/// Write one stream item; `false` once the client is gone.
+async fn write_item(
+    response: &OutputStream,
+    sessions: &Sessions,
+    session_id: &str,
+    item: StreamItem,
+) -> bool {
+    let (frame, id) = match item {
+        StreamItem::Observation { id, observation } => {
+            (encode_sse_observation(id, &observation), Some(id))
+        }
+        StreamItem::Gap { after, through } => (encode_sse_gap(after, through), None),
+    };
+    if response.write(frame.as_bytes()).await.is_err() {
+        return false;
+    }
+    if let Some(id) = id {
+        sessions.mark_sent(session_id, id);
+    }
+    true
 }
 
 #[cfg(test)]

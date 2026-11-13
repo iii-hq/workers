@@ -43,8 +43,9 @@ pub struct HttpReply {
     pub rpc: Option<JsonRpcResponse>,
     /// Set when `initialize` opened a session: the `Mcp-Session-Id` header.
     pub session_id: Option<String>,
-    /// Set for a `GET`: keep the response open as this session's SSE stream.
-    pub stream: Option<String>,
+    /// Set for a `GET`: keep the response open as this session's SSE
+    /// stream, resuming after the `Last-Event-ID` when it sent one.
+    pub stream: Option<(String, Option<u64>)>,
 }
 
 impl HttpReply {
@@ -160,10 +161,22 @@ pub async fn handle_http<B: Bus + Observe>(
         };
     }
     if http_method.eq_ignore_ascii_case("GET") {
+        let last = match header(headers, "last-event-id").filter(|v| !v.is_empty()) {
+            None => None,
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    return refusal(
+                        400,
+                        "Bad Request: Last-Event-ID is not an event id from this server",
+                    )
+                }
+            },
+        };
         return match session_header {
             None => refusal(400, "Bad Request: GET needs an Mcp-Session-Id header"),
             Some(sid) if app.sessions.touch(&sid) => HttpReply {
-                stream: Some(sid),
+                stream: Some((sid, last)),
                 ..HttpReply::empty(200)
             },
             Some(_) => refusal(404, "Session not found: initialize again"),
@@ -568,7 +581,7 @@ mod tests {
         .await;
         assert_eq!(g.status, 200);
         assert!(g.rpc.is_none());
-        assert_eq!(g.stream.as_deref(), Some(sid.as_str()));
+        assert_eq!(g.stream, Some((sid.clone(), None)));
         let none = handle_http(&f.app(), "GET", &json!({}), &Value::Null).await;
         assert_eq!(none.status, 400);
         assert!(none.stream.is_none());
@@ -580,6 +593,37 @@ mod tests {
         )
         .await;
         assert_eq!(unknown.status, 404);
+    }
+
+    #[tokio::test]
+    async fn get_resumes_after_last_event_id() {
+        let f = Fixture::new(FakeBus::new());
+        let sid = f
+            .post(json!({}), rpc("initialize", json!({})))
+            .await
+            .session_id
+            .unwrap();
+        let g = handle_http(
+            &f.app(),
+            "GET",
+            &json!({ "mcp-session-id": sid, "Last-Event-ID": "42" }),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(g.status, 200);
+        assert_eq!(g.stream, Some((sid.clone(), Some(42))));
+        let bad = handle_http(
+            &f.app(),
+            "GET",
+            &json!({ "mcp-session-id": sid, "last-event-id": "abc" }),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(bad.status, 400);
+        assert!(rpc_error(&bad)["message"]
+            .as_str()
+            .unwrap()
+            .contains("Last-Event-ID"));
     }
 
     #[tokio::test]

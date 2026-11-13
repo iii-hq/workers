@@ -947,9 +947,8 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "100136ca50d80e9fc36d68e64524e7380f4a6d99e696d274879e6c8cc7efefb0"
+version = "0.26.1-rc.1"
+source = "git+https://github.com/iii-hq/iii?rev=e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a#e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a"
 dependencies = [
  "serde",
  "serde_json",
@@ -957,9 +956,8 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46fc050a119fa7cc342e10b6b83737d0a85828ecca2e3517dbfd3ebfe3e0ae17"
+version = "0.26.1-rc.1"
+source = "git+https://github.com/iii-hq/iii?rev=e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a#e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -978,12 +976,12 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c29ef3d5d399ad8d71a478ac75d617ce42604956e9aa5e1a79989b5291798d84"
+version = "0.26.1-rc.1"
+source = "git+https://github.com/iii-hq/iii?rev=e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a#e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "bytes",
  "futures-util",
  "hostname",
  "iii-filter",
@@ -1120,6 +1118,7 @@ dependencies = [
  "anyhow",
  "clap",
  "cucumber",
+ "futures",
  "iii-helpers",
  "iii-sdk",
  "regex",
@@ -1132,6 +1131,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "which",
 ]
 
 [[package]]
@@ -2530,6 +2530,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "which"
+version = "8.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81995fafaaaf6ae47a7d0cc83c67caf92aeb7e5331650ae6ff856f7c0c60c459"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
