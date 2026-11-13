@@ -987,6 +987,7 @@ mod tests {
             capability: None,
             dedup_key: None,
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         };
         let big = json!({ "blob": "x".repeat(20_000) });
@@ -1407,6 +1408,7 @@ mod tests {
             capability: None,
             dedup_key: Some(json!({ "function_id": function_id })),
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         }
     }

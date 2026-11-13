@@ -900,6 +900,7 @@ async fn arm_wake(stack: &Stack, id: &str, session_id: &str) {
         capability: None,
         dedup_key: None,
         fires: 0,
+        claimed_at: None,
         created_at: 0,
     };
     stack.deps.bindings().await.reserve(&binding).await.unwrap();

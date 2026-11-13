@@ -2809,14 +2809,14 @@ pub(crate) async fn advance(
 /// with its `turn_complete` watcher armed and completes non-terminally; the
 /// final compose turn (wake consumed, nothing re-armed) is terminal.
 /// Consumers finalize a logical exchange only on `terminal: true`.
-async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+async fn turn_is_terminal(deps: &Deps, record: &TurnRecord) -> bool {
     if matches!(
-        crate::functions::delete_session_tree::guard_owner(deps, session_id).await,
+        crate::functions::delete_session_tree::guard_owner(deps, &record.session_id).await,
         Ok(Some(_))
     ) {
         return true;
     }
-    !crate::bindings::session_expects_wake(deps, session_id).await
+    !crate::bindings::session_expects_wake(deps, &record.session_id, record.created_at).await
 }
 
 /// After the terminal `Completed` write, a failed deletion-guard lookup must
@@ -2887,7 +2887,7 @@ async fn finalize_completed(
     }
     let woke = woke || late;
     // One decision for the proof and the event: a wake can retire in between.
-    let terminal = !woke && turn_is_terminal(deps, &record.session_id).await;
+    let terminal = !woke && turn_is_terminal(deps, record).await;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     crate::session_status::project(session, record).await;
     deps.events
@@ -3139,7 +3139,7 @@ async fn finalize_failed(
     let presentation = failure_presentation(public_message, failure);
     let summary = presentation.summary;
     let detail = failure.detail.unwrap_or(public_message);
-    let terminal = !woke && turn_is_terminal(deps, &record.session_id).await;
+    let mut terminal = !woke && turn_is_terminal(deps, record).await;
     record.status = TurnStatus::Failed;
     record.exchange_finished = terminal;
     record.continues = woke;
@@ -3148,6 +3148,21 @@ async fn finalize_failed(
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    // Second sweep, as in `finalize_completed`: right after the terminal write
+    // and before the proof and the event, so both count a row enqueued between
+    // the first drain and that write.
+    let late = drain_queued_best_effort(deps, session, &record.session_id).await;
+    if late && !woke {
+        terminal = false;
+        record.exchange_finished = false;
+        record.continues = true;
+        // Best effort: failing the step here would skip the reseed below.
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(session_id = %record.session_id, %error, "could not mark the failed turn as continuing");
+        }
+    }
+    let woke = woke || late;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -3216,9 +3231,6 @@ async fn finalize_failed(
         )
         .await;
     }
-    // Second post-terminal sweep, as in `finalize_completed`: closes the
-    // enqueue-after-drain window against `try_enqueue`'s recheck.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // As in `finalize_completed`: a message that parked during the failing
     // turn's final step is genuine new input (a notification, a steer) and
     // deserves a turn, the same as an external send arriving at a failed
@@ -3364,7 +3376,7 @@ pub(crate) async fn finalize_cancelled(
     // send rather than auto-waking a turn they just cancelled.
     let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
+    let terminal = turn_is_terminal(deps, record).await;
     record.status = TurnStatus::Cancelled;
     record.exchange_finished = terminal;
     record.updated_at = AgentMessage::now_ms();

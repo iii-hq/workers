@@ -307,12 +307,13 @@ impl Scenario {
     }
 
     /// Declare that the FIRST `count` completions in the statuses list are
-    /// PARKED: the turn completed while its session still owned an armed
-    /// wake, so `harness::on-turn-completed` carried `terminal: false`. They
-    /// appear in the statuses list and in the traces, but the completion
-    /// waiter and the durable terminal check bind only to the remaining
-    /// terminal turns. The park-then-wake run (arm a once-wake, park, be
-    /// woken) is the shape that needs this.
+    /// PARKED: the turn ended while its session still owned an armed wake, or
+    /// its finalize drained a queued message and reseeded the session, so
+    /// `harness::on-turn-completed` carried `terminal: false`. They appear in
+    /// the statuses list and in the traces, but the completion waiter and the
+    /// durable terminal check bind only to the remaining terminal turns. The
+    /// park-then-wake run (arm a once-wake, park, be woken) and a failed turn
+    /// that reseeds a parked message are the shapes that need this.
     pub(super) fn parked_completions(mut self, count: usize) -> Self {
         self.parked_completions = count;
         self

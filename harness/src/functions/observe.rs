@@ -909,6 +909,7 @@ async fn handle(
         capability: caller.and_then(|c| c.functions.cloned()),
         dedup_key: Some(dedup),
         fires: 0,
+        claimed_at: None,
         created_at: crate::types::message::AgentMessage::now_ms(),
     };
     // Durable BEFORE the observer exists: a delivery that arrives before the
