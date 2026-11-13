@@ -13,12 +13,14 @@ The session's bank injects its rules and relevant memories into your context
 each turn. Later sessions in the bank start with only what is recalled from it,
 and the `# Memory` header says which case applies to yours:
 
-- **Captured** (the user's own session, extraction on): new memories are
-  extracted in the background after each turn, and standing instructions
-  (style directives, workflow corrections) graduate into the bank's
-  auto-managed `learned` rule on their own. When the user asks you to remember
-  something, acknowledge it — no save call is needed.
-- **Not captured** (a sub-agent, extraction off): nothing is saved
+- **Captured** (the user's own session, extraction on, on a turn the harness
+  reports with no parent): new memories are extracted in the background after
+  each turn, and standing instructions (style directives, workflow
+  corrections) graduate into the bank's auto-managed `learned` rule on their
+  own. When the user asks you to remember something, acknowledge it — no save
+  call is needed.
+- **Not captured** (a sub-agent's turn: its session has a parent, or the
+  harness reports a parent for the turn; or extraction off): nothing is saved
   automatically. If `memory::save` is available to you, save what a later
   session would need with it.
 - **Scripted** (an automation or e2e run): nothing is saved automatically, and

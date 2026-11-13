@@ -140,6 +140,13 @@ pub struct PreGenerateInput {
     /// Its `extraction_history` is imported, then dropped before the hook runs.
     #[serde(default)]
     pub recall_context: Option<Value>,
+    /// The turn's parent as `harness::on-turn-completed` will report it
+    /// ([`TurnCompletedInput`]). Absent on a top-level turn, and on a harness
+    /// that predates it: the session record alone then decides the header.
+    #[serde(default)]
+    pub parent: Option<Value>,
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
 }
 
 /// `recall_context`, version 1: which entry opened the turn, how it was
@@ -396,9 +403,10 @@ pub async fn pre_generate(
             annotations: Some(annotations),
         });
     };
-    // Which header this session gets. A failed lookup degrades like a failed
+    // Which header this turn gets. A failed lookup degrades like a failed
     // bank lookup: guessing would make a false promise or flip the header.
-    let capture = match turn_capture(deps, &cfg, &input.session_id).await {
+    let sub_agent = is_sub_agent(input.parent.as_ref(), input.parent_session_id.as_deref());
+    let capture = match turn_capture(deps, &cfg, &input.session_id, sub_agent).await {
         Ok(capture) => capture,
         Err(e) => {
             tracing::warn!(session_id = %input.session_id, error = %e, "session lookup failed; injecting nothing new");
@@ -1177,12 +1185,14 @@ pub(crate) fn remember_session(session_id: &str, meta: &Value) -> Capture {
     capture
 }
 
-/// This turn's [`Capture`]: its session's, with extraction off turning
-/// the user's own session into one that saves.
+/// This turn's [`Capture`]: its session's, with extraction off or a parent
+/// on the turn (`sub_agent`: what turn-end skips) turning the user's own
+/// session into one that saves.
 async fn turn_capture(
     deps: &Deps,
     cfg: &WorkerConfig,
     session_id: &str,
+    sub_agent: bool,
 ) -> Result<Capture, String> {
     let cached = SESSION_CAPTURE
         .lock()
@@ -1200,7 +1210,7 @@ async fn turn_capture(
         },
     };
     Ok(match session {
-        Capture::Extracted if !cfg.extraction_enabled => Capture::Save,
+        Capture::Extracted if !cfg.extraction_enabled || sub_agent => Capture::Save,
         capture => capture,
     })
 }
@@ -1349,7 +1359,9 @@ pub async fn turn_completed(
         .turn_id
         .as_deref()
         .and_then(crate::scope::take_turn_bank);
-    if input.session_id.is_empty() || is_sub_agent(&input) {
+    if input.session_id.is_empty()
+        || is_sub_agent(input.parent.as_ref(), input.parent_session_id.as_deref())
+    {
         return Ok(AckResponse { ok: true });
     }
     let (until, stamped) = match input.turn_id.as_deref() {
@@ -1388,8 +1400,10 @@ pub async fn turn_completed(
     Ok(AckResponse { ok: true })
 }
 
-fn is_sub_agent(input: &TurnCompletedInput) -> bool {
-    input.parent.is_some() || input.parent_session_id.is_some()
+/// A turn with a parent (live link or display parent) is a sub-agent's:
+/// turn-end never extracts it, and its header says so.
+fn is_sub_agent(parent: Option<&Value>, parent_session_id: Option<&str>) -> bool {
+    parent.is_some() || parent_session_id.is_some()
 }
 
 /// The extraction job for a finished turn, or none.
@@ -1408,7 +1422,9 @@ pub(crate) fn plan_extraction(
     until: Option<String>,
     enabled: bool,
 ) -> Option<ExtractJobInput> {
-    if input.session_id.is_empty() || is_sub_agent(input) {
+    if input.session_id.is_empty()
+        || is_sub_agent(input.parent.as_ref(), input.parent_session_id.as_deref())
+    {
         return None;
     }
     let bank = if enabled { bank } else { Some(None) };
@@ -2182,6 +2198,79 @@ mod tests {
         }
     }
 
+    /// A turn the harness reports with a parent is one turn-end skips, so
+    /// its header asks for a save even when its session's record has none.
+    #[tokio::test]
+    async fn a_turn_with_a_parent_is_told_what_turn_end_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(3)));
+        let bank = deps.config().await.default_bank.clone();
+        let step = |session: &str, turn: &str, lineage: &Value| {
+            let mut input = json!({ "session_id": session, "turn_id": turn, "step": 1 });
+            input
+                .as_object_mut()
+                .unwrap()
+                .extend(lineage.as_object().unwrap().clone());
+            crate::scope::remember_turn(turn, Some(crate::scope::Resolved::named(&bank)));
+            let deps = deps.clone();
+            async move {
+                let input: PreGenerateInput = serde_json::from_value(input).unwrap();
+                pre_generate(&deps, input).await.unwrap().mutations.unwrap()
+            }
+        };
+        let link = json!({ "session_id": "p", "turn_id": "pt", "function_call_id": "fc" });
+        for (i, (lineage, parent)) in [
+            (json!({}), false),
+            (json!({ "parent": null }), false),
+            (json!({ "parent": link }), true),
+            (json!({ "parent_session_id": "p" }), true),
+            (json!({ "parent": link, "parent_session_id": "p" }), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let session = format!("lineage-{i}");
+            let turn = format!("{session}-t");
+            remember_session(&session, &json!({ "kind": "user" }));
+            let prompt = step(&session, &turn, &lineage).await.system_prompt;
+            let mut completed = json!({ "session_id": session, "turn_id": turn });
+            completed
+                .as_object_mut()
+                .unwrap()
+                .extend(lineage.as_object().unwrap().clone());
+            let completed: TurnCompletedInput = serde_json::from_value(completed).unwrap();
+            let blog = Some(Some(crate::scope::Resolved::named(&bank)));
+            let skipped = plan_extraction(&completed, blog, Some("e".into()), true).is_none();
+            assert_eq!(skipped, parent, "{lineage}");
+            let capture = if skipped {
+                Capture::Save
+            } else {
+                Capture::Extracted
+            };
+            assert_eq!(prompt, Some(ambient_header(&bank, capture)), "{lineage}");
+        }
+
+        // A session told it is extracted, whose next turn carries a display
+        // parent: the frozen section stays and the change arrives as an update.
+        remember_session("lineage-flip", &json!({ "kind": "user" }));
+        let first = step("lineage-flip", "lineage-flip-t1", &json!({})).await;
+        let extracted = ambient_header(&bank, Capture::Extracted);
+        assert_eq!(first.system_prompt.as_ref(), Some(&extracted));
+        let next = step(
+            "lineage-flip",
+            "lineage-flip-t2",
+            &json!({ "parent_session_id": "p" }),
+        )
+        .await;
+        assert_eq!(next.system_prompt, Some(extracted));
+        assert_eq!(next.append_messages.len(), 1);
+        let update = crate::extract::content_text(next.append_messages[0].get("content"));
+        assert!(
+            update.contains(&ambient_header(&bank, Capture::Save)),
+            "{update}"
+        );
+    }
+
     #[tokio::test]
     async fn extraction_off_turns_the_users_own_session_into_one_that_saves() {
         let dir = tempfile::tempdir().unwrap();
@@ -2197,18 +2286,39 @@ mod tests {
                 .unwrap()
                 .insert(session.into(), capture);
             assert_eq!(
-                turn_capture(&deps, &config(true, true, true), session).await,
+                turn_capture(&deps, &config(true, true, true), session, false).await,
                 Ok(capture),
                 "{session}"
             );
         }
         let off = config(true, true, false);
-        assert_eq!(turn_capture(&deps, &off, "s-user").await, Ok(Capture::Save));
-        assert_eq!(turn_capture(&deps, &off, "s-sub").await, Ok(Capture::Save));
         assert_eq!(
-            turn_capture(&deps, &off, "s-auto").await,
+            turn_capture(&deps, &off, "s-user", false).await,
+            Ok(Capture::Save)
+        );
+        assert_eq!(
+            turn_capture(&deps, &off, "s-sub", false).await,
+            Ok(Capture::Save)
+        );
+        assert_eq!(
+            turn_capture(&deps, &off, "s-auto", false).await,
             Ok(Capture::Scripted),
             "a scripted run is never invited to save"
+        );
+        // A turn with a parent saves like extraction off does.
+        let on = config(true, true, true);
+        assert_eq!(
+            turn_capture(&deps, &on, "s-user", true).await,
+            Ok(Capture::Save)
+        );
+        assert_eq!(
+            turn_capture(&deps, &on, "s-sub", true).await,
+            Ok(Capture::Save)
+        );
+        assert_eq!(
+            turn_capture(&deps, &on, "s-auto", true).await,
+            Ok(Capture::Scripted),
+            "a scripted run stays scripted"
         );
     }
 

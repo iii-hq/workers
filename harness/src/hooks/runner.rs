@@ -161,6 +161,15 @@ impl HookRegistry {
         {
             v["recall_context"] = context.clone();
         }
+        // Memory's header must match what its turn-end does with
+        // `harness::on-turn-completed`: the same fields from the same record.
+        if point == HookPoint::PreGenerate {
+            crate::events::put_parent(
+                &mut v,
+                record.parent.as_ref(),
+                record.display_parent_session_id.as_deref(),
+            );
+        }
         if let Some(m) = &record.options.metadata {
             v["metadata"] = m.clone();
         }

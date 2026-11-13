@@ -130,6 +130,26 @@
           "tools"
         ],
         "type": "object"
+      },
+      "ParentLink": {
+        "description": "Sub-agent linkage recorded on a child turn (harness.md § Sub-agents).",
+        "properties": {
+          "function_call_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_call_id",
+          "session_id",
+          "turn_id"
+        ],
+        "type": "object"
       }
     },
     "description": "`harness::hook::on-pre-generate` input.",
@@ -145,6 +165,24 @@
       },
       "metadata": {
         "description": "The turn's `options.metadata`."
+      },
+      "parent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ParentLink"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The spawning call, on a sub-agent's turn; as `harness::on-turn-completed` reports it."
+      },
+      "parent_session_id": {
+        "description": "The session this turn's session is displayed under; as `harness::on-turn-completed` reports it.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "point": {
         "description": "The hook point: `pre_turn`, `pre_generate`, `post_generate`, `pre_call`, `post_call` or `post_turn`.",
@@ -216,6 +254,26 @@
           "tools"
         ],
         "type": "object"
+      },
+      "ParentLink": {
+        "description": "Sub-agent linkage recorded on a child turn (harness.md § Sub-agents).",
+        "properties": {
+          "function_call_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_call_id",
+          "session_id",
+          "turn_id"
+        ],
+        "type": "object"
       }
     },
     "description": "`harness::hook::on-pre-generate` input.",
@@ -231,6 +289,24 @@
       },
       "metadata": {
         "description": "The turn's `options.metadata`."
+      },
+      "parent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ParentLink"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The spawning call, on a sub-agent's turn; as `harness::on-turn-completed` reports it."
+      },
+      "parent_session_id": {
+        "description": "The session this turn's session is displayed under; as `harness::on-turn-completed` reports it.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "point": {
         "description": "The hook point: `pre_turn`, `pre_generate`, `post_generate`, `pre_call`, `post_call` or `post_turn`.",
