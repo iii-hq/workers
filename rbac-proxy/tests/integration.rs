@@ -434,7 +434,7 @@ async fn end_to_end_child() {
     //     the connection's namespace, so the engine answers at once.
     {
         let mut ws = raw_client(proxy_port).await;
-        ws.send(Message::Text(
+        ws.send(Message::text(
             json!({
                 "type": "invokefunction",
                 "function_id": "engine::workers::register",
@@ -531,7 +531,7 @@ async fn end_to_end_child() {
 
         let mut narrow = raw_client_with(proxy_port, "Bearer narrow").await;
         narrow
-            .send(Message::Text(
+            .send(Message::text(
                 json!({
                     "type": "reattach",
                     "previous_worker_id": registered["worker_id"],
@@ -620,7 +620,7 @@ async fn raw_client_with(proxy_port: u16, authorization: &str) -> RawClient {
 
 /// Send `frame` and return the first text frame `pick` accepts.
 async fn request(ws: &mut RawClient, frame: Value, pick: impl Fn(&Value) -> bool) -> Value {
-    ws.send(Message::Text(frame.to_string()))
+    ws.send(Message::text(frame.to_string()))
         .await
         .expect("send frame");
     timeout(Duration::from_secs(5), async {

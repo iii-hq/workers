@@ -31,19 +31,20 @@ uuid = { version = "1", features = ["v4", "serde"] }
 schemars = "0.8"
 
 # HTTP + WS proxy (the `ade` proxy stack, verbatim).
-axum = { version = "0.7", features = ["ws"] }
+# =0.8.8: last axum on tokio-tungstenite 0.28, the iii-sdk major; lift when iii-sdk moves to 0.29.
+axum = { version = "=0.8.8", features = ["ws"] }
 # The public listener is served over hyper directly, for a header deadline
 # (see server.rs `HEADER_READ_TIMEOUT`); both already come in through axum.
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 
 [dev-dependencies]
 serde_json = "1"
 which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 
 # Release profile for published binaries: thin LTO with one codegen unit runs

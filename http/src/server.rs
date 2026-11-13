@@ -266,7 +266,7 @@ pub struct MakeHotRouterService {
     pub router: HotRouter,
 }
 
-impl<'a> Service<IncomingStream<'a>> for MakeHotRouterService {
+impl<'a> Service<IncomingStream<'a, TcpListener>> for MakeHotRouterService {
     type Response = HotRouter;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -275,7 +275,7 @@ impl<'a> Service<IncomingStream<'a>> for MakeHotRouterService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _req: IncomingStream<'a>) -> Self::Future {
+    fn call(&mut self, _req: IncomingStream<'a, TcpListener>) -> Self::Future {
         let router = self.router.clone();
         Box::pin(async move { Ok(router) })
     }
