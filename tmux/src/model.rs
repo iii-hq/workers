@@ -648,6 +648,71 @@ pub struct ClaudeSnapshot {
     /// seconds: 0 on Linux (its next message), 30 on macOS (the Keychain).
     #[serde(default)]
     pub switch_delay_s: u32,
+    /// Sign-ins under way (`tmux::accounts::login_start`), and those that
+    /// ended in the last minute, oldest first.
+    #[serde(default)]
+    pub logins: Vec<ClaudeLogin>,
+}
+
+/// Who may open the sign-in page on the computer the worker runs on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginBrowser {
+    /// Nobody: Claude Code opens no browser; the link is shown elsewhere and
+    /// the code from the page is pasted back.
+    #[default]
+    None,
+    /// Claude Code opens the browser there, whose return to its local
+    /// listener finishes the sign-in with no code (the app runs on that
+    /// computer).
+    Host,
+}
+
+/// Where a sign-in is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginState {
+    /// Claude Code shows the link and waits for the code.
+    WaitingCode,
+    /// Claude Code is checking a code with Anthropic.
+    Checking,
+    /// Signed in.
+    Done,
+    /// It ended without a sign-in (`error` says why).
+    Failed,
+    /// The link's 10 minutes ran out; Claude Code was stopped.
+    Expired,
+}
+
+/// Why a sign-in failed, as `tmux::accounts::login_code` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LoginError {
+    /// `rejected` (Anthropic didn't accept the code; Claude Code ended),
+    /// `expired`, `gone` or `failed`.
+    pub code: String,
+    /// One sentence.
+    pub message: String,
+}
+
+/// A sign-in of a Claude Code account from the app (claude-login-ui).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeLogin {
+    /// Pass it to `tmux::accounts::login_code` and `login_cancel`.
+    pub login_id: String,
+    /// The account signing in.
+    pub account: String,
+    pub state: LoginState,
+    /// The sign-in page to open on any device: it shows the code to paste.
+    pub url: String,
+    /// When the link stops working and Claude Code is stopped.
+    pub expires_at_ms: u64,
+    pub browser: LoginBrowser,
+    /// The email the sign-in page is filled with (the account's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// With `failed` and `expired`: why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<LoginError>,
 }
 
 /// A switch of the global account waiting for windows to finish their turn

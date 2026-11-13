@@ -66,12 +66,30 @@
   windows and credits (from its newest session record). Readings stay at most 5 minutes old
   while someone watches; `refresh: true` reads again, at most once a minute per account.
   With nobody watching, it reads only when another signed-in account could take over.
-- **Claude Code accounts.** `tmux::accounts::list`, `add`, `login`, `update` and `remove`
+- **Claude Code accounts.** `tmux::accounts::list`, `add`, `update` and `remove`
   keep several Claude Code accounts, each with a folder of its own under
   `~/.local/share/iii/claude-accounts` (`default` included) that shares settings,
-  extensions, plugins and conversations with `~/.claude` through links, as chosen. `login`
-  opens a `login` window running `claude auth login` for the account: on its folder, or on
-  `~/.claude` for the global account.
+  extensions, plugins and conversations with `~/.claude` through links, as chosen.
+- **Signing an account in from the app.** `tmux::accounts::login_start` runs `claude auth
+  login` for an account (on its folder, or on `~/.claude` for the global account) in a
+  terminal of the worker's own that no tmux session shows, and answers the sign-in link;
+  `tmux::accounts::login_code` types the code the page showed and answers the account
+  signed in, or why not (`invalid_code` before Claude Code sees it, `rejected` with
+  Claude Code's own sentence, `expired` after 10 minutes, `gone`, `failed`);
+  `tmux::accounts::login_cancel` ends one. With `browser: "none"` (the default) Claude
+  Code gets the worker's own `BROWSER` and never opens a browser on the worker's computer;
+  with `"host"` it opens that computer's browser, whose return to Claude Code's loopback
+  listener signs in with no code (`browser_url`, in `login_start`'s answer only). The
+  sign-ins under way, and those that ended in the last minute, are in
+  `tmux::accounts::list` and the feed as `logins`; while one runs (until its Claude Code
+  is gone), the global account is not switched away from or to the accounts it involves
+  (`signing_in`), none starts where a switch left half-way is being settled, and an
+  account's folder is not deleted under one. A code being checked (or, with `host`, a
+  return from the page as the 10 minutes run out) gets 15 seconds to finish before Claude
+  Code is stopped, and `done` needs a new sign-in where it belongs, not the one that was
+  there before. The code and the tokens are never logged or kept. This replaces
+  `tmux::accounts::login` (0.2.6 and 0.2.7), which opened a `login` window in a tmux
+  session.
 - **A global account, switched like `/login`.** The global account is the one signed in to
   `~/.claude`: every Claude Code that isn't pinned uses it, plain `claude` typed anywhere
   included. `tmux::accounts::global` swaps sign-ins between `~/.claude` and the accounts'

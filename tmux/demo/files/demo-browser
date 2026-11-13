@@ -1,0 +1,6 @@
+#!/bin/sh
+# The demo container's "browser on this computer" (the worker's BROWSER), for
+# `browser: "host"`: it notes the link it was handed and opens nothing;
+# demo/login.sh <port> browser plays the person coming back from the page.
+mkdir -p /tmp/fake-claude
+printf '%s\n' "$1" >> /tmp/fake-claude/opened.log

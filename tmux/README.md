@@ -280,9 +280,10 @@ conversation.
 iii call tmux::usage::read                    # refresh=true reads again now
 iii call tmux::accounts::list
 
-# A second account, then sign it in from a window of session `work`
+# A second account, then sign it in: open the link it answers, paste the code the page shows
 iii call tmux::accounts::add name=Personal color=green
-iii call tmux::accounts::login account=personal session=work
+iii call tmux::accounts::login_start account=personal
+iii call tmux::accounts::login_code login_id=<login_id> 'code=<code#state>'
 
 # A window running Claude Code on that account, or following the global one
 iii call tmux::windows::create --json '{"session":"work","claude":{"account":"personal"}}'
@@ -336,21 +337,110 @@ worker starts and on each update or sign-in. `.credentials.json`,
 linked. `tmux::accounts::update` renames, recolours or changes the groups:
 dropping one removes only the worker's own links into `~/.claude`.
 
-`tmux::accounts::login` opens a window named `login` in `session` that runs
-`claude auth login`: on the account's folder (`env CLAUDE_CONFIG_DIR=<folder>
-claude auth login`), or on `~/.claude` for the global account (`env -u
-CLAUDE_CONFIG_DIR claude auth login`). Claude Code prints a sign-in link and
-waits for the code to be pasted, with or without a browser on the computer;
-the window closes when it is done. The worker never signs in, refreshes or
-signs out by itself.
+An account signs in through `tmux::accounts::login_start` and
+`tmux::accounts::login_code` ([Signing in](#signing-in)). The worker never
+signs in, refreshes or signs out by itself.
 
 `tmux::accounts::remove` takes an account off the list; not `default`, not
 the global one, not one a switch waits to make global. Claude Code panes on
 its folder keep running. `delete_files: true` deletes its folder too, only
 when it is a real folder directly inside the accounts folder (a link is never
-followed out of it), and is refused while Claude Code runs on it, while any
-pane is being moved, or when tmux could not list its panes; it looks at the
+followed out of it), and is refused while Claude Code runs on it (a pane,
+or a sign-in from the app, until its Claude Code is gone), while any pane is
+being moved, or when tmux could not list its panes; it looks at the
 processes again first, never at a scan from a few seconds before.
+
+### Signing in
+
+`tmux::accounts::login_start` (`account`, `browser`) runs `claude auth login`
+for an account in a terminal of the worker's own, which no tmux session
+shows: on the account's folder (`CLAUDE_CONFIG_DIR=<folder>`), or on
+`~/.claude` for the global account (without `CLAUDE_CONFIG_DIR`), with
+`--email` when the account's profile has one. It answers once Claude Code
+printed its sign-in link, with `login_id`, `account`, `url`, `expires_at_ms`,
+`browser`, and `email` and `browser_url` when there are. `url` is the link
+that works on any device: the page ends showing a code, which the person
+copies back. A new `login_start` for the same account ends the one under
+way; of two started at once, the later one stays and the other answers
+`gone`. Claude Code runs in the worker's home folder, with the worker's
+`HOME`. While a switch of the global account is left half-way and not
+settled yet, no sign-in starts on `~/.claude` or on the two accounts it
+moves (`failed`, try again in a moment).
+
+`browser` says where a browser may open:
+
+- `none` (the default): nowhere. Claude Code runs with the worker's own
+  `BROWSER`, a script in a temporary folder (0700) that notes the link and
+  opens nothing, and with that folder's `open` and `xdg-open` first on its
+  `PATH`, so it never opens a browser on the worker's computer. The person
+  opens `url` wherever they are and pastes the code.
+- `host`: the browser of the computer the worker runs on, for someone
+  sitting at it (the Mac app's "This Mac"). The link Claude Code opens goes
+  to the worker's own `$BROWSER`, else `open` (macOS) or `xdg-open` (with
+  `DISPLAY` or `WAYLAND_DISPLAY` set, as Claude Code itself asks), and
+  comes back as `browser_url`: it returns to Claude Code's listener on
+  `127.0.0.1` and signs in by itself, with no code. `url` and a code work
+  too. Only `login_start`'s answer carries `browser_url` (the list and the
+  feed, which need no approval, never do), and `host` fails when nothing on
+  that computer opens a browser.
+
+`tmux::accounts::login_code` (`login_id`, `code`) types the code into that
+terminal. Whitespace anywhere in it is dropped (a code copied over two
+lines); one without its two halves around `#` is refused as `invalid_code`
+before it reaches Claude Code, and the sign-in keeps waiting. It waits up to
+60 seconds for Claude Code and answers `{"state": "done", "account"}`, the
+account read again, or an error; of two calls at once, one types its code
+and the other waits for that outcome. `done` means a new sign-in is where it
+belongs: in the account's folder, or on `~/.claude` and taken in as the
+global account (looked for three times, a second apart); Claude Code saying
+it signed in while the sign-in there is still the one from before is
+`failed`.
+Whoever signed in stands, even someone other than the email the page was
+filled with: `account` shows who. A code Anthropic refuses ends the sign-in
+(Claude Code exits): another `login_start` gives a new link, and only a code
+from that link works with it. `tmux::accounts::login_cancel` (`login_id`)
+ends one and answers `{}`, also when it is over or unknown. A sign-in not
+finished within 10 minutes ends as `expired`, and a code typed after that
+is `expired` too. While a code is being checked, Claude Code may be saving
+the sign-in, so neither the 10 minutes, a cancel nor `login_code` giving up
+stops it before 15 more seconds; its own outcome stands when it comes by
+then. With `host`, the 10 minutes running out gets the same 15 seconds: the
+person may have just come back from the page. Claude Code is stopped with
+SIGTERM, and with SIGKILL 3 seconds later if it is still there. Removing an
+account ends its sign-in.
+
+Errors come as one JSON object in the error's message, `{"code",
+"message"}`:
+
+| `code` | When |
+|---|---|
+| `invalid_code` | not shaped like a code; nothing typed, the sign-in keeps waiting |
+| `rejected` | Anthropic refused the code (Claude Code's own sentence); the sign-in is over |
+| `expired` | 10 minutes went by |
+| `gone` | cancelled, replaced by a newer `login_start` for the account (that start's own answer too), the account removed, the worker stopping, or unknown; the message says which |
+| `failed` | Claude Code is not installed, could not start, printed no link within 45 seconds, ended without signing in (the person cancelled on the page: its sentence) or as if signed in with no new sign-in to show; `host` with no browser to open; a switch left half-way on the places it would sign in |
+
+`tmux::accounts::list` and the feed's `usage.claude` carry `logins`: the
+sign-ins under way and those that ended in the last minute, each with
+`login_id`, `account`, `state` (`waiting_code`, `checking`, `done`, `failed`
+or `expired`), `url`, `expires_at_ms`, `browser`, and `email` and `error`
+when there are. A cancelled one leaves the list at once. A sign-in on
+`~/.claude` to someone else is a sign-in by hand there: it makes that
+account global ([below](#the-global-account)). While a sign-in runs on
+`~/.claude` or on an account's folder, `tmux::accounts::global` refuses to
+switch the global account away from or to the accounts it involves
+(`signing_in`), and the rules and a waiting switch go on once it is over:
+a swap would move sign-ins where Claude Code is about to save one. A
+cancelled sign-in counts until its Claude Code is gone (one checking a code
+gets its 15 seconds to save it).
+
+The code and the tokens are never logged, kept or answered; the worker's
+log shows a link without its `state`, `code_challenge` and `login_hint`, and
+Claude Code's output stays in memory only while the sign-in runs. On macOS
+Claude Code keeps the sign-in in the login Keychain and, when that Keychain
+is locked, does not fall back to a file: the worker has to run in the
+person's logged-in session (a LaunchAgent, or a terminal there), not as a
+LaunchDaemon or from an ssh session, or the sign-in fails.
 
 ### The global account
 
@@ -458,7 +548,8 @@ snapshot). Pinned panes:
   new conversation and `move_error` says so; it never starts again on its
   folder, whose sign-in is in `~/.claude` now. A waiting switch that fails
   in a way that may pass (a lock Claude Code holds, a write that failed, a
-  Claude Code slow to stop) is tried again a few times over about a minute;
+  Claude Code slow to stop) is tried again a few times over about a minute,
+  and one that meets a sign-in from the app waits for it to end;
   one that can't happen (the account was signed out or removed, a pane
   can't be restarted, `owner_check_on`), or still fails after those tries,
   is called off: `pending_global` goes, and the panes it waited for (and
@@ -475,8 +566,9 @@ snapshot). Pinned panes:
 - Pinned to any other account: untouched.
 
 Errors come as one JSON object in the error's message, `{"code", "message",
-"blocked_by"?}`: `not_signed_in`, `busy`, `blocked`, `owner_check_on` or
-`failed`.
+"blocked_by"?}`: `not_signed_in`, `busy`, `blocked`, `owner_check_on`,
+`signing_in` (a sign-in from the app runs on `~/.claude` or on either
+account's folder) or `failed`.
 
 Someone signing in by hand on `~/.claude` (`/login`, or `claude auth login`
 without `CLAUDE_CONFIG_DIR`) changes the global account the same way: the
@@ -688,6 +780,7 @@ iii call tmux::accounts::dismiss suggestion=default:week_90:personal
 | `III_CLAUDE_HOME` | `~/.claude`, the global account's place; its `.claude.json` is then the one next to it, in its parent folder, as `~/.claude.json` is next to `~/.claude`. Claude Code started on it finds it through its own `HOME`: give the tmux server the `HOME` that holds it, or panes on the global account use that `HOME`'s `~/.claude` |
 | `III_CLAUDE_ACCOUNTS_DIR` | the accounts folder |
 | `III_CLAUDE_USAGE_URL` | `https://api.anthropic.com` for the usage endpoint; loopback addresses only, so a sign-in never goes to another host |
+| `III_CLAUDE_LOGIN_TTL_S` | the 10 minutes a sign-in may take (10 to 600 seconds) |
 | `CODEX_HOME` | `~/.codex` (Codex's own variable) |
 
 [`demo/`](demo/) runs this worker in a container of its own (its own tmux
@@ -697,7 +790,14 @@ endpoint) against an engine on the host: `demo/run.sh <engine-port>`, then
 `demo/state.sh` to make a fake Claude Code work, wait, go idle or hit its
 limit, and `demo/ask.sh` to send one a message: it reads its sign-in again,
 as Claude Code does, and answers with the account it used (`/login <id>`
-typed into it signs in as that account). Nothing in it reads the host's own Claude Code or Codex, and its
+typed into it signs in as that account). Its `claude auth login` behaves
+like Claude Code's: the code `demo-ok#<anything>` signs the account in as its
+own person (`demo-ok:<id>#…` as account `<id>`), any other code is refused
+and ends the sign-in, and `demo/login.sh <engine-port> browser
+[demo-ok|demo-ok:<id>|deny]` plays the browser on the worker's computer
+coming back to it (`deny`: the person cancelled on the page; the
+container's `BROWSER` only notes the link, so `browser: "host"` works there);
+`demo/run.sh <engine-port> --login-ttl <seconds>` shortens the 10 minutes. Nothing in it reads the host's own Claude Code or Codex, and its
 scripts that write files or call tmux refuse to run outside the container
 (they need `/.dockerenv` and `DEMO_CONTAINER=1`, which the image sets).
 

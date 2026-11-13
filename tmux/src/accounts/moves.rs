@@ -979,7 +979,7 @@ pub fn not_signed_in(accounts: &Accounts, id: &str) -> String {
         .get(id)
         .map(|entry| entry.name.clone())
         .unwrap_or_else(|| id.to_string());
-    format!("{name} is not signed in; sign it in first (tmux::accounts::login).")
+    format!("{name} is not signed in; sign it in first (tmux::accounts::login_start).")
 }
 
 /// `pane`'s account mark now (`None` unmarked), read afresh: a switch
@@ -1123,7 +1123,7 @@ pub fn pending_plan(
     }
     if !signed_in(&to) {
         return Some(Err(format!(
-            "{} is not signed in; sign it in first (tmux::accounts::login).",
+            "{} is not signed in; sign it in first (tmux::accounts::login_start).",
             registry.get(&to).map_or(to.as_str(), |e| e.name.as_str())
         )));
     }
