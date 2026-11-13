@@ -3,7 +3,8 @@
 //! demo kit's fake Claude Code (its `auth login` behaves like 2.1.323's) in
 //! a temporary home: never the developer's sign-in, browser or tmux. A
 //! browser is a trap script that notes the link it was handed.
-//! Skips when python3 is missing. Every scenario removes its folder.
+//! They need python3 (the fake is a Python script) and fail without it.
+//! Every scenario removes its folder.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +25,8 @@ struct World {
     dir: PathBuf,
     ctx: Ctx,
     paths: ClaudePaths,
+    /// What the fake needs in its environment.
+    env: Vec<(String, String)>,
 }
 
 impl Drop for World {
@@ -33,12 +36,14 @@ impl Drop for World {
     }
 }
 
-fn available() -> bool {
-    std::process::Command::new("python3")
+/// The fake Claude Code is a Python script: without python3 these tests
+/// can't say anything, so they fail rather than pass unchecked.
+fn need_python() {
+    let found = std::process::Command::new("python3")
         .arg("--version")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|output| output.status.success());
+    assert!(found, "these tests need python3 (the fake Claude Code)");
 }
 
 fn script(path: &Path, text: &str) {
@@ -50,6 +55,7 @@ fn script(path: &Path, text: &str) {
 /// A home with Work signed in to `~/.claude` and accounts `others` (ids)
 /// signed in on their folders, as the demo kit's people.
 async fn world(name: &str, others: &[&str]) -> World {
+    need_python();
     let dir = std::env::temp_dir().join(format!(
         "tmux-login-{name}-{}",
         uuid::Uuid::new_v4().simple()
@@ -115,7 +121,7 @@ async fn world(name: &str, others: &[&str]) -> World {
         claude: Some(bin.join("claude")),
         env: sandbox_env.clone(),
         opener: Some(bin.join("trap-browser")),
-        ttl_ms: None,
+        ..Runner::default()
     });
     let config = WorkerConfig {
         socket_name: Some(format!("iii-tmux-login-{}", uuid::Uuid::new_v4().simple())),
@@ -139,6 +145,7 @@ async fn world(name: &str, others: &[&str]) -> World {
             transcripts: Default::default(),
         },
         paths,
+        env: sandbox_env.clone(),
     };
     w.demo_sign_in(
         &w.paths.claude_home,
@@ -176,6 +183,27 @@ async fn world(name: &str, others: &[&str]) -> World {
 }
 
 impl World {
+    /// The fake and the trap browser as in [`world`], changed by `change`.
+    fn runner(&self, change: impl FnOnce(&mut Runner)) {
+        let mut runner = Runner {
+            claude: Some(self.dir.join("bin/claude")),
+            env: self.env.clone(),
+            opener: Some(self.dir.join("bin/trap-browser")),
+            ..Runner::default()
+        };
+        change(&mut runner);
+        self.ctx.collector.accounts().logins.set_runner(runner);
+    }
+
+    /// The fake's pid for the latest `auth login`.
+    fn fake_pid(&self) -> i32 {
+        std::fs::read_to_string(self.dir.join("state/auth-login.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
     /// What the fake's `auth login` leaves, through the demo kit itself.
     fn demo_sign_in(&self, dir: &Path, json: &Path, id: &str, env: &[(String, String)]) {
         let ran = std::process::Command::new("python3")
@@ -266,10 +294,6 @@ where
 /// refused before Claude Code sees it, then the code; the feed follows.
 #[tokio::test]
 async fn a_code_signs_an_account_in_on_its_folder() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("folder", &["personal"]).await;
     // Signed out first, as after an expired sign-in.
     std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
@@ -347,10 +371,6 @@ async fn a_code_signs_an_account_in_on_its_folder() {
 /// WD6: a wrong code ends Claude Code; the login is over (`rejected`).
 #[tokio::test]
 async fn a_wrong_code_is_rejected_and_ends_the_login() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("rejected", &["personal"]).await;
     let started = w.start("personal", None).await;
     let error = w
@@ -386,10 +406,6 @@ async fn a_wrong_code_is_rejected_and_ends_the_login() {
 /// stops a login, which leaves the feed; unknown logins are `gone`.
 #[tokio::test]
 async fn starting_again_or_cancelling_ends_the_login_under_way() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("cancel", &["personal", "side-project"]).await;
     let first = w.start("personal", None).await;
     let other = w.start("side-project", None).await;
@@ -439,6 +455,11 @@ async fn starting_again_or_cancelling_ends_the_login_under_way() {
         w.code("nope", "demo-ok#demo-state").await.unwrap_err()["code"],
         "gone"
     );
+    // Unknown comes first: no shape to check for a sign-in that isn't.
+    assert_eq!(
+        w.code("nope", "not a code").await.unwrap_err()["code"],
+        "gone"
+    );
     // The other account's login goes on.
     assert!(w.code(&other.login_id, "demo-ok#demo-state").await.is_ok());
 }
@@ -447,10 +468,6 @@ async fn starting_again_or_cancelling_ends_the_login_under_way() {
 /// return to Claude Code's loopback listener signs in with no code.
 #[tokio::test]
 async fn with_the_browser_here_the_return_signs_in_by_itself() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("host", &["personal"]).await;
     std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
     let started = w.start("personal", Some(LoginBrowser::Host)).await;
@@ -468,13 +485,13 @@ async fn with_the_browser_here_the_return_signs_in_by_itself() {
     })
     .await;
     assert_eq!(opened.trim(), browser_url);
-    assert_eq!(
-        w.login(&started.login_id)
-            .await
-            .unwrap()
-            .browser_url
-            .as_deref(),
-        Some(browser_url.as_str())
+    // Only the answer to login_start carries it: the list (read without
+    // approval) and the feed never do, since it signs in with no code.
+    let listed = serde_json::to_string(&w.logins().await).unwrap();
+    assert!(listed.contains(&started.login_id), "{listed}");
+    assert!(
+        !listed.contains("browser_url") && !listed.contains("localhost"),
+        "{listed}"
     );
     // What the browser does once the person signed in.
     let port: u16 = browser_url
@@ -504,7 +521,7 @@ async fn with_the_browser_here_the_return_signs_in_by_itself() {
             .filter(|l| l.state == LoginState::Done)
     })
     .await;
-    assert_eq!(entry.browser_url, None, "over: no link to open again");
+    assert_eq!(entry.error, None);
     assert_eq!(
         w.token_in(&w.paths.account_dir("personal")).as_deref(),
         Some("personal")
@@ -526,10 +543,6 @@ async fn with_the_browser_here_the_return_signs_in_by_itself() {
 /// signing in to another known account there makes that one global.
 #[tokio::test]
 async fn on_the_slot_a_sign_in_to_another_account_makes_it_global() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("slot", &["personal"]).await;
     assert_eq!(w.ctx.collector.accounts().registry().global, "default");
     let started = w.start("default", None).await;
@@ -563,26 +576,8 @@ async fn on_the_slot_a_sign_in_to_another_account_makes_it_global() {
 /// The link works for its time only; then Claude Code is stopped.
 #[tokio::test]
 async fn a_link_expires() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("expiry", &["personal"]).await;
-    w.ctx.collector.accounts().logins.set_runner(Runner {
-        claude: Some(w.dir.join("bin/claude")),
-        env: vec![
-            (
-                "FAKE_CLAUDE_SANDBOX".into(),
-                w.dir.to_string_lossy().into_owned(),
-            ),
-            (
-                "FAKE_CLAUDE_STATE_DIR".into(),
-                w.dir.join("state").to_string_lossy().into_owned(),
-            ),
-        ],
-        opener: Some(w.dir.join("bin/trap-browser")),
-        ttl_ms: Some(1_500),
-    });
+    w.runner(|runner| runner.ttl_ms = Some(2_000));
     let started = w.start("personal", None).await;
     let entry = eventually("expired", || async {
         w.login(&started.login_id)
@@ -590,22 +585,25 @@ async fn a_link_expires() {
             .filter(|l| l.state == LoginState::Expired)
     })
     .await;
-    assert_eq!(entry.error.unwrap().code, "expired");
-    assert_eq!(
-        w.code(&started.login_id, "demo-ok#demo-state")
-            .await
-            .unwrap_err()["code"],
-        "expired"
+    let error = entry.error.unwrap();
+    assert_eq!(error.code, "expired");
+    // The time it really had, not the usual 10 minutes.
+    assert!(
+        error.message.contains("after 2 seconds"),
+        "{}",
+        error.message
     );
+    let again = w
+        .code(&started.login_id, "demo-ok#demo-state")
+        .await
+        .unwrap_err();
+    assert_eq!(again["code"], "expired");
+    assert_eq!(again["message"], error.message.as_str());
 }
 
 /// An account nobody knows, or no Claude Code: one JSON error.
 #[tokio::test]
 async fn starting_fails_in_one_json_object() {
-    if !available() {
-        eprintln!("python3 not installed; skipping");
-        return;
-    }
     let w = world("fails", &[]).await;
     let error = account_fns::login_start(
         &w.ctx,
@@ -647,4 +645,179 @@ async fn starting_fails_in_one_json_object() {
             .contains("Error: something is off."),
         "{error}"
     );
+}
+
+/// Two starts for one account at once (two devices): one login stays, the
+/// later one; the other start answers `gone`. Neither leaves a Claude
+/// Code behind.
+#[tokio::test]
+async fn two_starts_at_once_leave_one_login() {
+    let w = world("race", &["personal"]).await;
+    for _ in 0..3 {
+        let start = || {
+            account_fns::login_start(
+                &w.ctx,
+                account_fns::LoginStartInput {
+                    account: "personal".into(),
+                    browser: None,
+                },
+            )
+        };
+        let (a, b) = tokio::join!(start(), start());
+        let won: Vec<&account_fns::LoginStartOutput> = [&a, &b]
+            .into_iter()
+            .filter_map(|r| r.as_ref().ok())
+            .collect();
+        assert_eq!(won.len(), 1, "{a:?} {b:?}");
+        let lost = [&a, &b].into_iter().find_map(|r| r.as_ref().err()).unwrap();
+        let lost: serde_json::Value = serde_json::from_str(lost).unwrap();
+        assert_eq!(lost["code"], "gone", "{lost}");
+        let live: Vec<ClaudeLogin> = w
+            .logins()
+            .await
+            .into_iter()
+            .filter(|l| l.account == "personal" && l.state == LoginState::WaitingCode)
+            .collect();
+        assert_eq!(live.len(), 1, "{live:?}");
+        assert_eq!(live[0].login_id, won[0].login_id);
+    }
+    // The one left signs in.
+    let id = w.logins().await.last().unwrap().login_id.clone();
+    assert!(w.code(&id, "demo-ok#demo-state").await.is_ok());
+}
+
+/// Two codes at once: one is typed, the other call waits for its outcome.
+#[tokio::test]
+async fn two_codes_at_once_get_one_outcome() {
+    let w = world("codes", &["personal"]).await;
+    let started = w.start("personal", None).await;
+    let (a, b) = tokio::join!(
+        w.code(&started.login_id, "AbCdEf123#xyz"),
+        w.code(&started.login_id, "demo-ok#demo-state")
+    );
+    let outcome = |r: &Result<account_fns::LoginCodeOutput, serde_json::Value>| match r {
+        Ok(done) => format!("done {}", done.account.id),
+        Err(error) => error["code"].as_str().unwrap().to_string(),
+    };
+    assert_eq!(outcome(&a), outcome(&b));
+}
+
+/// Claude Code saying it signed in proves nothing by itself: the sign-in
+/// has to be in the account's folder.
+#[tokio::test]
+async fn a_sign_in_that_did_not_land_fails() {
+    let w = world("hollow", &["personal"]).await;
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    let started = w.start("personal", None).await;
+    let error = w
+        .code(&started.login_id, "demo-hollow#demo-state")
+        .await
+        .unwrap_err();
+    assert_eq!(error["code"], "failed", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("holds no sign-in"),
+        "{error}"
+    );
+    assert_eq!(
+        w.login(&started.login_id).await.unwrap().state,
+        LoginState::Failed
+    );
+}
+
+/// A code Claude Code takes longer to check than `login_code` waits: it is
+/// not stopped mid-way, and its outcome stands.
+#[tokio::test]
+async fn a_slow_check_is_not_cut_off() {
+    let w = world("slow", &["personal"]).await;
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    w.runner(|runner| runner.code_wait = Some(Duration::from_secs(1)));
+    let started = w.start("personal", None).await;
+    let done = w
+        .code(&started.login_id, "demo-slow#demo-state")
+        .await
+        .unwrap();
+    assert_eq!(done.account.id, "personal");
+    assert!(done.account.signed_in);
+    assert_eq!(
+        w.token_in(&w.paths.account_dir("personal")).as_deref(),
+        Some("personal")
+    );
+}
+
+/// The link running out while a code is checked: the check finishes.
+#[tokio::test]
+async fn a_link_expiring_mid_check_lets_the_check_finish() {
+    let w = world("late", &["personal"]).await;
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    w.runner(|runner| runner.ttl_ms = Some(2_000));
+    let started = w.start("personal", None).await;
+    let done = w
+        .code(&started.login_id, "demo-slow#demo-state")
+        .await
+        .unwrap();
+    assert_eq!(done.account.id, "personal");
+    assert_eq!(
+        w.login(&started.login_id).await.unwrap().state,
+        LoginState::Done
+    );
+}
+
+/// Cancelled while a code is checked: the login is gone at once, and
+/// Claude Code still gets to save what it was saving.
+#[tokio::test]
+async fn cancelling_mid_check_does_not_cut_a_save_short() {
+    let w = world("cancel-check", &["personal"]).await;
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    let started = w.start("personal", None).await;
+    let (typed, ()) = tokio::join!(w.code(&started.login_id, "demo-slow#demo-state"), async {
+        eventually("checking", || async {
+            w.login(&started.login_id)
+                .await
+                .filter(|l| l.state == LoginState::Checking)
+        })
+        .await;
+        account_fns::login_cancel(
+            &w.ctx,
+            account_fns::LoginCancelInput {
+                login_id: started.login_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(w.login(&started.login_id).await.is_none());
+    });
+    assert_eq!(typed.unwrap_err()["code"], "gone");
+    eventually("the sign-in saved", || async {
+        w.token_in(&w.paths.account_dir("personal"))
+            .filter(|token| token == "personal")
+    })
+    .await;
+}
+
+/// A Claude Code that ignores SIGTERM is killed.
+#[tokio::test]
+async fn a_claude_code_deaf_to_sigterm_is_killed() {
+    let w = world("stubborn", &["personal"]).await;
+    w.runner(|runner| runner.env.push(("FAKE_CLAUDE_STUBBORN".into(), "1".into())));
+    let started = w.start("personal", None).await;
+    let pid = w.fake_pid();
+    let alive = |pid: i32| {
+        // SAFETY: signal 0 only asks whether the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    };
+    assert!(alive(pid));
+    account_fns::login_cancel(
+        &w.ctx,
+        account_fns::LoginCancelInput {
+            login_id: started.login_id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert!(alive(pid), "SIGTERM is ignored: it is still there");
+    eventually("killed", || async { (!alive(pid)).then_some(()) }).await;
 }

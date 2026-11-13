@@ -88,6 +88,9 @@ pub enum SwitchError {
     OwnerCheckOn,
     /// The registry changed while the rules decided.
     Stale,
+    /// A sign-in from the app runs where the switch would move sign-ins
+    /// (the slot, or the two accounts' folders): the account's name.
+    SigningIn(String),
     Failed(String),
 }
 
@@ -99,8 +102,8 @@ pub const RULES_STALE: &str =
     "The global account changed while the rules decided; nothing was switched.";
 
 impl SwitchError {
-    /// `not_signed_in`, `busy`, `blocked`, `owner_check_on`, `stale` or
-    /// `failed`.
+    /// `not_signed_in`, `busy`, `blocked`, `owner_check_on`, `stale`,
+    /// `signing_in` or `failed`.
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotSignedIn(_) => "not_signed_in",
@@ -108,6 +111,7 @@ impl SwitchError {
             Self::Blocked(..) => "blocked",
             Self::OwnerCheckOn => "owner_check_on",
             Self::Stale => "stale",
+            Self::SigningIn(_) => "signing_in",
             Self::Failed(_) => "failed",
         }
     }
@@ -122,6 +126,9 @@ impl SwitchError {
             ),
             Self::OwnerCheckOn => "This Claude Code version ties running sessions to their account, so switching would stop them.".into(),
             Self::Stale => RULES_STALE.into(),
+            Self::SigningIn(name) => format!(
+                "{name} is signing in; finish or cancel that sign-in, then switch."
+            ),
         }
     }
 
@@ -290,12 +297,32 @@ impl Accounts {
 
     /// Whether `id`'s folder holds a sign-in Claude Code can use, read now.
     fn folder_signed_in(&self, id: &str) -> bool {
+        self.place_signed_in(&Place::Folder(id.to_string()))
+    }
+
+    /// Whether `place` holds a sign-in Claude Code can use, read now.
+    pub(super) fn place_signed_in(&self, place: &Place) -> bool {
         self.stores()
-            .and_then(|stores| stores.read(&Place::Folder(id.to_string())).ok())
+            .and_then(|stores| stores.read(place).ok())
             .flatten()
             .as_ref()
             .map(super::credentials::credentials_of)
             .is_some_and(|credentials| credentials.signed_in())
+    }
+
+    /// Whether the registry names whoever is signed in to the slot as the
+    /// global account (always, without `accounts.json`): what a sign-in on
+    /// the slot waits for once [`Accounts::watch_slot`] looked.
+    pub(super) fn slot_is_global(&self) -> bool {
+        if !self.managed() {
+            return true;
+        }
+        let Some(stores) = self.stores() else {
+            return false;
+        };
+        let global = self.registry().global;
+        let slot = stores.uuid(&Place::Slot);
+        slot.is_some() && slot == stores.uuid(&Place::Folder(global))
     }
 
     /// G6: someone signed in by hand on the slot. Looks at `~/.claude.json`
@@ -774,6 +801,11 @@ pub async fn switch_locked(
             ..Outcome::default()
         });
     }
+    // A sign-in from the app on the slot or on either folder: Claude Code
+    // is about to save one where the swap moves them.
+    if let Some(account) = accounts.logins.under_way_on(&[from.as_str(), to.as_str()]) {
+        return Err(SwitchError::SigningIn(name_of(accounts, &account)));
+    }
     {
         let this = accounts.clone();
         let id = to.clone();
@@ -1229,10 +1261,15 @@ pub async fn finish_pending(
                 SwitchError::Busy | SwitchError::Failed(_) => {
                     !accounts.pending_try_failed(&pending)
                 }
-                SwitchError::Stale => false,
+                // Once that sign-in is over.
+                SwitchError::Stale | SwitchError::SigningIn(_) => false,
             };
             if !calls_off {
-                tracing::info!(account = %pending.account, error = %error.sentence(), "the switch that waits is tried again");
+                if matches!(error, SwitchError::SigningIn(_)) {
+                    tracing::debug!(account = %pending.account, error = %error.sentence(), "the switch that waits is tried again");
+                } else {
+                    tracing::info!(account = %pending.account, error = %error.sentence(), "the switch that waits is tried again");
+                }
                 return false;
             }
             tracing::warn!(account = %pending.account, error = %error.sentence(), "the switch that waited was called off");
@@ -1818,6 +1855,42 @@ mod tests {
         std::fs::remove_file(home.paths.root.join(slot::JOURNAL)).unwrap();
         accounts.remove("personal", true, 0).unwrap();
         assert!(!home.paths.account_dir("personal").exists());
+    }
+
+    /// A sign-in from the app on the slot or on either folder: no switch
+    /// until it is over; one on another account's folder is no matter.
+    #[tokio::test]
+    async fn no_switch_crosses_a_sign_in_under_way() {
+        let (_home, accounts) = managed("switch-signing-in");
+        for (account, on_slot) in [("personal", false), ("default", true)] {
+            let reserved = accounts.logins.reserve("l1", account, on_slot);
+            let refused = switch_locked(
+                &no_tmux(),
+                &accounts,
+                &HashMap::new(),
+                "personal",
+                By::Person,
+            )
+            .await;
+            assert_eq!(
+                refused,
+                Err(SwitchError::SigningIn(name_of(&accounts, account)))
+            );
+            assert_eq!(refused.unwrap_err().code(), "signing_in");
+            assert_eq!(accounts.registry().global, "default");
+            drop(reserved);
+        }
+        let elsewhere = accounts.logins.reserve("l2", "side-project", false);
+        let done = switch_locked(
+            &no_tmux(),
+            &accounts,
+            &HashMap::new(),
+            "personal",
+            By::Person,
+        )
+        .await;
+        assert_eq!(done.unwrap().global, "personal");
+        drop(elsewhere);
     }
 
     #[tokio::test]

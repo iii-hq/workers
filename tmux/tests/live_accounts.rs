@@ -260,7 +260,7 @@ fn world(name: &str) -> World {
             ),
         ],
         opener: Some(PathBuf::from("/bin/true")),
-        ttl_ms: None,
+        ..Default::default()
     });
     let collector = Arc::new(Collector::with_accounts(
         config,
@@ -1128,6 +1128,11 @@ async fn a_sign_in_by_hand_on_the_slot_makes_it_global() {
     )
     .await
     .unwrap();
+    // While it runs, the global account doesn't change hands.
+    let refused: serde_json::Value =
+        serde_json::from_str(&w.global("personal").await.unwrap_err()).unwrap();
+    assert_eq!(refused["code"], "signing_in", "{refused}");
+    assert_eq!(w.accounts().registry().global, "default");
     account_fns::login_cancel(
         &w.ctx,
         account_fns::LoginCancelInput {

@@ -704,11 +704,6 @@ pub struct ClaudeLogin {
     pub state: LoginState,
     /// The sign-in page to open on any device: it shows the code to paste.
     pub url: String,
-    /// With `browser: host`, the link Claude Code gave the browser on the
-    /// worker's computer: its return to Claude Code's local listener
-    /// finishes the sign-in with no code (it works on that computer only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser_url: Option<String>,
     /// When the link stops working and Claude Code is stopped.
     pub expires_at_ms: u64,
     pub browser: LoginBrowser,

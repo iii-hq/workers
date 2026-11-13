@@ -206,13 +206,6 @@
           "browser": {
             "$ref": "#/definitions/LoginBrowser"
           },
-          "browser_url": {
-            "description": "With `browser: host`, the link Claude Code gave the browser on the worker's computer: its return to Claude Code's local listener finishes the sign-in with no code (it works on that computer only).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "email": {
             "description": "The email the sign-in page is filled with (the account's).",
             "type": [

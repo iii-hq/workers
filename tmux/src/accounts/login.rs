@@ -27,6 +27,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::{watch, Notify};
 
 use super::launch::shell_quote;
+use super::slot::Place;
 use super::Accounts;
 use crate::model::{now_ms, ClaudeLogin, LoginBrowser, LoginError, LoginState};
 
@@ -38,6 +39,16 @@ pub const LINGER_MS: u64 = 60_000;
 pub const CODE_WAIT: Duration = Duration::from_secs(60);
 /// How long Claude Code may take to print its link.
 pub const URL_WAIT: Duration = Duration::from_secs(45);
+/// How long Claude Code may go on checking a code (and saving the sign-in)
+/// once its login is to end: expired, cancelled, or `login_code` gave up.
+const CHECK_GRACE: Duration = Duration::from_secs(15);
+/// How long Claude Code has to stop on SIGTERM before SIGKILL.
+const KILL_AFTER: Duration = Duration::from_secs(3);
+/// How often a sign-in on the slot is looked for in the registry before
+/// the login says it could not be taken in.
+const TAKE_IN_TRIES: u32 = 3;
+/// `browser: host` with nothing to open a browser with.
+const NO_OPENER: &str = "No browser can be opened on this computer (no BROWSER, and no xdg-open): sign in with browser \"none\" and open the link on any device.";
 /// How long, with the browser on this computer, Claude Code may take to
 /// hand it its link once it printed the other.
 const BROWSER_NOTE_WAIT: Duration = Duration::from_secs(3);
@@ -286,10 +297,23 @@ pub fn gone() -> LoginError {
     )
 }
 
-fn expired() -> LoginError {
+fn expired(ttl_ms: u64) -> LoginError {
+    let seconds = ttl_ms.div_ceil(1000);
+    let after = match seconds {
+        60 => "a minute".to_string(),
+        s if s % 60 == 0 => format!("{} minutes", s / 60),
+        s => format!("{s} seconds"),
+    };
     login_error(
         "expired",
-        "The sign-in link expired after 10 minutes: get a new one.",
+        format!("The sign-in link expired after {after}: get a new one."),
+    )
+}
+
+fn replaced() -> LoginError {
+    login_error(
+        "gone",
+        "A newer sign-in for this account replaced this one: use its link.",
     )
 }
 
@@ -316,6 +340,8 @@ pub struct Runner {
     pub opener: Option<PathBuf>,
     /// How long a link works, instead of [`LINK_TTL_MS`].
     pub ttl_ms: Option<u64>,
+    /// How long `login_code` waits, instead of [`CODE_WAIT`].
+    pub code_wait: Option<Duration>,
 }
 
 /// Where and how a login runs, decided under the swap gate.
@@ -371,11 +397,18 @@ impl Output {
     }
 }
 
+/// The worker's end of the pty. Dropping it hangs nothing up (the thread
+/// reading Claude Code's output holds a copy of the master until Claude
+/// Code is gone), but the writer, dropped, types an end of input
+/// (portable-pty sends a newline and VEOF), which a Claude Code checking a
+/// code must not get: [`terminate`] drops it only when stopping.
 struct Pty {
-    /// Kept open: closing it hangs Claude Code up.
     _master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
 }
+
+/// Claude Code's exit status once it ended (`None` inside: unknown).
+type Exit = watch::Receiver<Option<Option<i32>>>;
 
 struct Login {
     id: String,
@@ -390,14 +423,17 @@ struct Login {
     folder: PathBuf,
     pid: Option<u32>,
     status: watch::Sender<Status>,
-    /// The exit status once Claude Code ended (`None` inside: unknown).
-    exit: watch::Receiver<Option<Option<i32>>>,
+    exit: Exit,
     pty: Mutex<Option<Pty>>,
     output: Arc<Output>,
     /// Where the output stood when the latest code was typed, and the code
     /// (to keep it out of any message).
     typed: Mutex<Option<(usize, String)>>,
+    /// Wakes the supervisor: the login was cancelled, or asked to stop.
     stop: Notify,
+    /// Why to stop once Claude Code is through checking a code:
+    /// `login_code` waited in vain.
+    stop_asked: Mutex<Option<LoginError>>,
     browser_link: Mutex<Option<String>>,
 }
 
@@ -408,6 +444,11 @@ impl Login {
 
     fn ended(&self) -> bool {
         self.status.borrow().ended_at_ms.is_some()
+    }
+
+    fn checking(&self) -> bool {
+        let status = self.status.borrow();
+        status.ended_at_ms.is_none() && status.state == LoginState::Checking
     }
 
     /// Ends it with `state` and `error` unless it ended already; returns
@@ -442,21 +483,11 @@ impl Login {
         ended
     }
 
-    /// Stop Claude Code (its process group: it is the pty's session
-    /// leader) unless it ended already.
-    fn kill(&self) {
-        if self.exit.borrow().is_none() {
-            if let Some(pid) = self.pid.and_then(|pid| i32::try_from(pid).ok()) {
-                // SAFETY: kill has no memory preconditions; a negative pid
-                // names the process group Claude Code leads (the pty's
-                // session), not yet reaped, so not reused.
-                unsafe {
-                    libc::kill(-pid, libc::SIGTERM);
-                }
-            }
-        }
-        // Closing the pty hangs up whatever is left.
-        *self.pty.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    /// Stop Claude Code ([`terminate`], after `grace`: it may be saving a
+    /// sign-in); nothing more is typed into it.
+    fn stop_claude(&self, grace: Duration) {
+        let pty = self.pty.lock().unwrap_or_else(|p| p.into_inner()).take();
+        terminate(self.pid, self.exit.clone(), grace, pty);
     }
 
     /// With the browser on this computer: the link Claude Code gave it,
@@ -475,6 +506,8 @@ impl Login {
         known.clone()
     }
 
+    /// What the feed and `tmux::accounts::list` show: never the browser
+    /// link, which signs in with no code (only `login_start` answers it).
     fn entry(&self) -> ClaudeLogin {
         let status = self.status();
         ClaudeLogin {
@@ -482,11 +515,6 @@ impl Login {
             account: self.account.clone(),
             state: status.state,
             url: self.url.clone(),
-            browser_url: if self.ended() {
-                None
-            } else {
-                self.browser_url()
-            },
             expires_at_ms: self.expires_at_ms,
             browser: self.browser,
             email: self.email.clone(),
@@ -495,71 +523,188 @@ impl Login {
     }
 }
 
+/// Send `signal` to the process group Claude Code leads (the pty's
+/// session).
+fn signal_group(pid: i32, signal: i32) {
+    // SAFETY: kill has no memory preconditions; a negative pid names the
+    // process group Claude Code leads, which its waiter thread had not
+    // reaped when this was decided, so it is not reused.
+    unsafe {
+        libc::kill(-pid, signal);
+    }
+}
+
+/// Stop Claude Code unless it ends by itself within `grace`: the end of
+/// input `pty` types when dropped, SIGTERM to its process group, then
+/// SIGKILL if it is still there [`KILL_AFTER`] later (one that ignores
+/// both would stay, and so would the thread reading its pty). On a thread
+/// of its own: the caller doesn't wait.
+fn terminate(pid: Option<u32>, exit: Exit, grace: Duration, pty: Option<Pty>) {
+    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    if exit.borrow().is_some() {
+        return;
+    }
+    let gone_within = move |within: Duration| {
+        let until = std::time::Instant::now() + within;
+        loop {
+            if exit.borrow().is_some() {
+                return true;
+            }
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let stop = move || {
+        if gone_within(grace) {
+            return;
+        }
+        drop(pty);
+        signal_group(pid, libc::SIGTERM);
+        if gone_within(KILL_AFTER) {
+            return;
+        }
+        tracing::info!(pid, "Claude Code did not stop on SIGTERM: killed");
+        signal_group(pid, libc::SIGKILL);
+    };
+    if let Err(error) = std::thread::Builder::new()
+        .name("tmux-login-stop".into())
+        .spawn(stop)
+    {
+        tracing::warn!(%error, "no thread to stop Claude Code with: SIGTERM now");
+        signal_group(pid, libc::SIGTERM);
+    }
+}
+
 /// The sign-ins under way and those that ended in the last minute.
 #[derive(Default)]
 pub struct Logins {
-    logins: Mutex<HashMap<String, Arc<Login>>>,
+    book: Mutex<Book>,
     runner: Mutex<Runner>,
+}
+
+#[derive(Default)]
+struct Book {
+    logins: HashMap<String, Arc<Login>>,
+    /// Logins started that wait for their link, not in `logins` yet:
+    /// their account and whether they run on the slot.
+    starting: HashMap<String, (String, bool)>,
+}
+
+/// A login's place while it starts: given up when dropped.
+pub(crate) struct Reservation<'a> {
+    logins: &'a Logins,
+    id: String,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.logins.book().starting.remove(&self.id);
+    }
+}
+
+/// What `login_start` answers: the login, and the browser link (with
+/// `browser: host`), which nothing else shows.
+#[derive(Debug, Clone)]
+pub struct Started {
+    pub login: ClaudeLogin,
+    pub browser_url: Option<String>,
 }
 
 /// What the feed is told after a change it can't see by itself.
 pub type Poke = Arc<dyn Fn() + Send + Sync>;
 
 impl Logins {
+    fn book(&self) -> std::sync::MutexGuard<'_, Book> {
+        self.book.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Run logins with `runner` (tests).
     pub fn set_runner(&self, runner: Runner) {
         *self.runner.lock().unwrap_or_else(|p| p.into_inner()) = runner;
     }
 
     fn get(&self, id: &str) -> Option<Arc<Login>> {
-        self.logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(id)
-            .cloned()
+        self.book().logins.get(id).cloned()
     }
 
     /// The feed's `logins`: under way, and ended less than a minute ago;
     /// older ones are dropped.
     pub fn entries(&self, now: u64) -> Vec<ClaudeLogin> {
-        let mut logins = self.logins.lock().unwrap_or_else(|p| p.into_inner());
-        logins.retain(|_, login| {
+        let mut book = self.book();
+        book.logins.retain(|_, login| {
             login
                 .status()
                 .ended_at_ms
                 .is_none_or(|ended| now.saturating_sub(ended) < LINGER_MS)
         });
-        let mut list: Vec<&Arc<Login>> = logins.values().collect();
+        let mut list: Vec<&Arc<Login>> = book.logins.values().collect();
         list.sort_by(|a, b| a.started_at_ms.cmp(&b.started_at_ms).then(a.id.cmp(&b.id)));
         list.into_iter().map(|login| login.entry()).collect()
     }
 
-    /// Whether a login under way runs on account `id`'s place.
-    pub fn running_for(&self, id: &str) -> bool {
-        self.logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+    /// The account of a sign-in under way (or starting) that a switch
+    /// between `accounts` would run into: one on the slot, or on one of
+    /// their folders. A switch moves sign-ins in and out of exactly those
+    /// places, where Claude Code is about to save one.
+    pub fn under_way_on(&self, accounts: &[&str]) -> Option<String> {
+        let book = self.book();
+        book.logins
             .values()
-            .any(|login| login.account == id && !login.ended())
+            .filter(|login| !login.ended())
+            .map(|login| (login.account.clone(), login.on_slot))
+            .chain(book.starting.values().cloned())
+            .find(|(account, on_slot)| *on_slot || accounts.contains(&account.as_str()))
+            .map(|(account, _)| account)
+    }
+
+    /// Hold `account`'s place for login `id` while it starts: the logins
+    /// under way for that account end, and so does one still starting (it
+    /// gives up once it has its link). A switch sees it from now on.
+    pub(crate) fn reserve(&self, id: &str, account: &str, on_slot: bool) -> Reservation<'_> {
+        let replaced: Vec<String> = {
+            let mut book = self.book();
+            book.starting.retain(|_, (other, _)| other != account);
+            book.starting
+                .insert(id.to_string(), (account.to_string(), on_slot));
+            book.logins
+                .values()
+                .filter(|login| login.account == account && !login.ended())
+                .map(|login| login.id.clone())
+                .collect()
+        };
+        for other in replaced {
+            self.cancel(&other);
+        }
+        Reservation {
+            logins: self,
+            id: id.to_string(),
+        }
     }
 
     /// Stop login `id`: it leaves the list at once; a `login_code` waiting
     /// on it answers `gone`. Unknown or over: nothing to do.
     pub fn cancel(&self, id: &str) -> bool {
-        let removed = self
-            .logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(id);
+        let removed = self.book().logins.remove(id);
         let Some(login) = removed else {
             return false;
         };
+        let checking = login.checking();
         let cancelled = login.end(
             LoginState::Failed,
             Some(login_error("gone", "The sign-in was cancelled.")),
             None,
         );
-        login.kill();
+        // A code being checked: Claude Code may be saving the sign-in, and
+        // gets the time to finish that first.
+        login.stop_claude(if checking {
+            CHECK_GRACE
+        } else {
+            Duration::ZERO
+        });
         login.stop.notify_one();
         // Now, not when its supervisor gets to it: the worker may be
         // stopping.
@@ -567,39 +712,44 @@ impl Logins {
         cancelled
     }
 
-    /// Stop every login under way (the worker is stopping): their folders
-    /// are removed, a Claude Code left would wait for nobody.
+    /// Stop the logins of `account` (it was removed), those starting
+    /// included. Returns whether one was under way.
+    pub fn cancel_account(&self, account: &str) -> bool {
+        let ids: Vec<String> = {
+            let mut book = self.book();
+            book.starting.retain(|_, (other, _)| other != account);
+            book.logins
+                .values()
+                .filter(|login| login.account == account)
+                .map(|login| login.id.clone())
+                .collect()
+        };
+        // Every one of them, not up to the first.
+        ids.iter().filter(|id| self.cancel(id)).count() > 0
+    }
+
+    /// Stop every login under way (the worker is stopping), and those
+    /// starting: their folders are removed, a Claude Code left would wait
+    /// for nobody.
     pub fn cancel_all(&self) -> usize {
-        let ids: Vec<String> = self
-            .logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .keys()
-            .cloned()
-            .collect();
+        let ids: Vec<String> = {
+            let mut book = self.book();
+            book.starting.clear();
+            book.logins.keys().cloned().collect()
+        };
         ids.iter().filter(|id| self.cancel(id)).count()
     }
 
     /// Start `claude auth login` for `plan` and answer once it printed its
-    /// link. A login under way for the same account is cancelled first.
+    /// link. A login under way for the same account ends; `gate` (the swap
+    /// gate, held since the plan was made) is let go once Claude Code runs.
     pub async fn start(
         &self,
         accounts: Arc<Accounts>,
         plan: Plan,
         poke: Poke,
         gate: super::Gate,
-    ) -> Result<ClaudeLogin, LoginError> {
-        let before: Vec<String> = self
-            .logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .filter(|login| login.account == plan.account && !login.ended())
-            .map(|login| login.id.clone())
-            .collect();
-        for id in before {
-            self.cancel(&id);
-        }
+    ) -> Result<Started, LoginError> {
         let runner = self
             .runner
             .lock()
@@ -615,23 +765,39 @@ impl Logins {
                     "Claude Code is not installed on this computer (no `claude` on PATH or in ~/.local/bin).",
                 )
             })?;
-        sweep(&std::env::temp_dir(), now_ms());
+        let opener = match plan.browser {
+            LoginBrowser::Host => Some(
+                runner
+                    .opener
+                    .clone()
+                    .or_else(host_opener)
+                    .ok_or_else(|| login_error("failed", NO_OPENER))?,
+            ),
+            LoginBrowser::None => None,
+        };
         let id = uuid::Uuid::new_v4().simple().to_string();
+        // Its place first, under the gate: a later start for the account
+        // replaces this one, and a switch waits for it.
+        let reservation = self.reserve(&id, &plan.account, plan.config_dir.is_none());
+        sweep(&std::env::temp_dir(), now_ms());
         let folder = std::env::temp_dir().join(format!("{FOLDER_PREFIX}{id}"));
         let spawned = {
             let folder = folder.clone();
             let plan = plan.clone();
             let runner = runner.clone();
-            tokio::task::spawn_blocking(move || spawn(&claude, &runner, &plan, &folder))
-                .await
-                .map_err(|error| {
-                    login_error(
-                        "failed",
-                        format!("The worker failed to start Claude Code ({error})."),
-                    )
-                })?
+            tokio::task::spawn_blocking(move || {
+                spawn(&claude, &runner, &plan, opener.as_deref(), &folder)
+            })
+            .await
+            .map_err(|error| {
+                login_error(
+                    "failed",
+                    format!("The worker failed to start Claude Code ({error})."),
+                )
+            })?
         };
-        // Claude Code runs where the plan said: a switch may go on.
+        // Claude Code runs where the plan said: a switch may go on (one
+        // that would cross this login sees its place and waits).
         drop(gate);
         let spawned = match spawned {
             Ok(spawned) => spawned,
@@ -647,15 +813,12 @@ impl Logins {
         let url = match wait_for_url(&spawned.output, spawned.exit.clone()).await {
             Ok(url) => url,
             Err(message) => {
-                if let Some(pid) = spawned.pid.and_then(|pid| i32::try_from(pid).ok()) {
-                    if spawned.exit.borrow().is_none() {
-                        // SAFETY: as in Login::kill.
-                        unsafe {
-                            libc::kill(-pid, libc::SIGTERM);
-                        }
-                    }
-                }
-                drop(spawned.pty);
+                terminate(
+                    spawned.pid,
+                    spawned.exit.clone(),
+                    Duration::ZERO,
+                    Some(spawned.pty),
+                );
                 let _ = std::fs::remove_dir_all(&folder);
                 return Err(login_error("failed", message));
             }
@@ -685,6 +848,7 @@ impl Logins {
             output: spawned.output,
             typed: Mutex::new(None),
             stop: Notify::new(),
+            stop_asked: Mutex::new(None),
             browser_link: Mutex::new(None),
         });
         tracing::info!(
@@ -703,59 +867,86 @@ impl Logins {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-        self.logins
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, login.clone());
+        // In the list, unless a later start for the account (or the worker
+        // stopping) took its place meanwhile.
+        let kept = {
+            let mut book = self.book();
+            let kept = book.starting.remove(&id).is_some();
+            if kept {
+                book.logins.insert(id.clone(), login.clone());
+            }
+            kept
+        };
+        drop(reservation);
+        if !kept {
+            login.end(LoginState::Failed, Some(replaced()), None);
+            login.stop_claude(Duration::ZERO);
+            let _ = std::fs::remove_dir_all(&login.folder);
+            return Err(replaced());
+        }
         tokio::spawn(supervise(login.clone(), accounts, poke.clone()));
         poke();
-        Ok(login.entry())
+        Ok(Started {
+            browser_url: login.browser_url(),
+            login: login.entry(),
+        })
     }
 
     /// Type `code` into login `id` and wait for the outcome: the account
     /// it signed in (on the slot, the global one), or why not.
     pub async fn code(&self, id: &str, code: &str, poke: Poke) -> Result<String, LoginError> {
-        let code = clean_code(code).ok_or_else(invalid_code)?;
         let login = self.get(id).ok_or_else(gone)?;
+        let code = clean_code(code).ok_or_else(invalid_code)?;
+        let wait = self
+            .runner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .code_wait
+            .unwrap_or(CODE_WAIT);
         let mut status = login.status.subscribe();
-        let shapeless_before;
-        {
-            let current = status.borrow_and_update().clone();
-            shapeless_before = current.shapeless;
-            match current.state {
-                LoginState::WaitingCode => {
-                    // Checking before the code goes in, so whatever Claude
-                    // Code answers finds it so.
-                    *login.typed.lock().unwrap_or_else(|p| p.into_inner()) =
-                        Some((login.output.len(), code.clone()));
-                    login
-                        .status
-                        .send_modify(|status| status.state = LoginState::Checking);
-                    let typed = {
-                        let mut pty = login.pty.lock().unwrap_or_else(|p| p.into_inner());
-                        match pty.as_mut() {
-                            Some(pty) => {
-                                let mut line = code.clone().into_bytes();
-                                line.push(b'\r');
-                                pty.writer
-                                    .write_all(&line)
-                                    .and_then(|()| pty.writer.flush())
-                            }
-                            None => Err(std::io::Error::other("closed")),
-                        }
-                    };
-                    poke();
-                    if typed.is_err() {
-                        // Claude Code is gone; the supervisor says how.
-                        let _ = status.borrow_and_update();
-                    }
-                }
-                // Another device's code is being checked: same outcome.
-                LoginState::Checking => {}
-                _ => return finished(&current),
+        // Waiting for a code to checking in one step: of two calls at once,
+        // one types its code and the other waits for that outcome.
+        let mut current = None;
+        let mut mine = false;
+        login.status.send_if_modified(|now| {
+            current = Some(now.clone());
+            mine = now.ended_at_ms.is_none() && now.state == LoginState::WaitingCode;
+            if mine {
+                now.state = LoginState::Checking;
             }
+            mine
+        });
+        let current = current.unwrap_or_else(|| login.status());
+        let shapeless_before = current.shapeless;
+        if mine {
+            // Noted before the code goes in, so whatever Claude Code
+            // answers finds it so.
+            *login.typed.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((login.output.len(), code.clone()));
+            let typed = {
+                let mut pty = login.pty.lock().unwrap_or_else(|p| p.into_inner());
+                match pty.as_mut() {
+                    Some(pty) => {
+                        let mut line = code.clone().into_bytes();
+                        line.push(b'\r');
+                        pty.writer
+                            .write_all(&line)
+                            .and_then(|()| pty.writer.flush())
+                    }
+                    None => Err(std::io::Error::other("closed")),
+                }
+            };
+            if let Err(error) = typed {
+                // Claude Code is gone: its supervisor says how.
+                tracing::debug!(login = %login.id, %error, "the code could not be typed");
+            }
+            poke();
+        } else if current.ended_at_ms.is_some() || current.state != LoginState::Checking {
+            return finished(&current);
         }
-        let waited = tokio::time::timeout(CODE_WAIT, async {
+        // Another call's code (another device's) is being checked: the
+        // same outcome.
+        let waited = tokio::time::timeout(wait, async {
             loop {
                 {
                     let now = status.borrow_and_update();
@@ -772,20 +963,30 @@ impl Logins {
             }
         })
         .await;
-        match waited {
-            Ok(result) => result,
-            Err(_) => {
-                let error = login_error(
-                    "failed",
-                    "Claude Code didn't finish checking the code within a minute; get a new link.",
-                );
-                if login.end(LoginState::Failed, Some(error.clone()), None) {
-                    login.kill();
-                    login.stop.notify_one();
-                    poke();
+        if let Ok(result) = waited {
+            return result;
+        }
+        // Claude Code is still checking: its supervisor stops it, once it
+        // is through saving whatever it may be saving.
+        let error = login_error(
+            "failed",
+            "Claude Code didn't finish checking the code in time; get a new link.",
+        );
+        *login.stop_asked.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.clone());
+        login.stop.notify_one();
+        let _ = tokio::time::timeout(CHECK_GRACE + Duration::from_secs(5), async {
+            while status.borrow_and_update().ended_at_ms.is_none() {
+                if status.changed().await.is_err() {
+                    break;
                 }
-                Err(finished(&login.status()).err().unwrap_or(error))
             }
+        })
+        .await;
+        let now = login.status();
+        if now.ended_at_ms.is_some() {
+            finished(&now)
+        } else {
+            Err(error)
         }
     }
 }
@@ -794,8 +995,8 @@ impl Logins {
 fn finished(status: &Status) -> Result<String, LoginError> {
     match (status.state, &status.signed_in_as, &status.error) {
         (LoginState::Done, Some(account), _) => Ok(account.clone()),
-        (LoginState::Expired, _, _) => Err(expired()),
         (_, _, Some(error)) => Err(error.clone()),
+        (LoginState::Expired, _, _) => Err(expired(LINK_TTL_MS)),
         _ => Err(gone()),
     }
 }
@@ -843,36 +1044,52 @@ struct Spawned {
     pid: Option<u32>,
     pty: Pty,
     output: Arc<Output>,
-    exit: watch::Receiver<Option<Option<i32>>>,
+    exit: Exit,
 }
 
-/// The `PATH` Claude Code gets: the shims' folder first when no browser
-/// may open (a second guard after `BROWSER`, WD2).
-fn path_with(first: Option<&Path>) -> std::ffi::OsString {
+/// The `PATH` Claude Code gets when no browser may open: the shims' folder
+/// first (a second guard after `BROWSER`, WD2). A folder that can't be on
+/// `PATH` fails the login rather than drop the guard.
+fn path_with(first: &Path) -> anyhow::Result<std::ffi::OsString> {
     let rest = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs: Vec<PathBuf> = first.map(Path::to_path_buf).into_iter().collect();
-    dirs.extend(std::env::split_paths(&rest));
-    std::env::join_paths(dirs).unwrap_or(rest)
+    let dirs = std::iter::once(first.to_path_buf()).chain(std::env::split_paths(&rest));
+    std::env::join_paths(dirs).map_err(|error| {
+        anyhow::anyhow!("the folder {} can't go on PATH: {error}", first.display())
+    })
 }
 
 /// What opens a link on this computer for `browser: host`: the worker's
 /// own `BROWSER` (one program), else `open` on macOS, `xdg-open` on Linux.
 fn host_opener() -> Option<PathBuf> {
-    if let Some(browser) = std::env::var_os("BROWSER").filter(|b| !b.is_empty()) {
+    opener_for(
+        std::env::var_os("BROWSER"),
+        cfg!(target_os = "macos"),
+        crate::binary::find_program,
+    )
+}
+
+/// [`host_opener`] from the worker's `BROWSER`, the platform, and how a
+/// program is found; `None` when nothing here opens a browser.
+fn opener_for(
+    browser: Option<std::ffi::OsString>,
+    macos: bool,
+    find: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(browser) = browser.filter(|b| !b.is_empty()) {
         let browser = PathBuf::from(browser);
-        let text = browser.to_string_lossy();
+        let text = browser.to_string_lossy().into_owned();
         if !text.contains(char::is_whitespace) && !text.contains(':') {
             return if browser.is_absolute() {
                 Some(browser)
             } else {
-                crate::binary::find_program(&text)
+                find(&text)
             };
         }
     }
-    if cfg!(target_os = "macos") {
+    if macos {
         Some(PathBuf::from("/usr/bin/open"))
     } else {
-        crate::binary::find_program("xdg-open")
+        find("xdg-open")
     }
 }
 
@@ -888,16 +1105,18 @@ fn write_script(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// Make the login's folder (0700: the shims and the link they note), then
 /// start Claude Code in a pty.
-fn spawn(claude: &Path, runner: &Runner, plan: &Plan, folder: &Path) -> anyhow::Result<Spawned> {
+fn spawn(
+    claude: &Path,
+    runner: &Runner,
+    plan: &Plan,
+    opener: Option<&Path>,
+    folder: &Path,
+) -> anyhow::Result<Spawned> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new().mode(0o700).create(folder)?;
     let note = folder.join("browser-link");
-    let opener = match plan.browser {
-        LoginBrowser::Host => runner.opener.clone().or_else(host_opener),
-        LoginBrowser::None => None,
-    };
     let shim = folder.join("browser");
-    write_script(&shim, &browser_shim(&note, opener.as_deref()))?;
+    write_script(&shim, &browser_shim(&note, opener))?;
     let guard = match plan.browser {
         LoginBrowser::None => {
             let bin = folder.join("bin");
@@ -928,7 +1147,9 @@ fn spawn(claude: &Path, runner: &Runner, plan: &Plan, folder: &Path) -> anyhow::
     command.env("HOME", &plan.home);
     command.env("TERM", "xterm-256color");
     command.env("BROWSER", &shim);
-    command.env("PATH", path_with(guard.as_deref()));
+    if let Some(bin) = &guard {
+        command.env("PATH", path_with(bin)?);
+    }
     match &plan.config_dir {
         Some(dir) => command.env("CLAUDE_CONFIG_DIR", dir),
         None => command.env_remove("CLAUDE_CONFIG_DIR"),
@@ -1005,12 +1226,17 @@ async fn wait_for_url(
     }
 }
 
-/// Watch a login to its end: Claude Code exits (signed in or not), its 10
-/// minutes run out, or someone cancels it.
+/// Watch a login to its end: Claude Code exits (signed in or not), its
+/// time runs out, `login_code` gives up on it, or someone cancels it. A
+/// code being checked then gets [`CHECK_GRACE`] first: Claude Code may be
+/// saving the sign-in, and its own outcome stands when it comes in time.
 async fn supervise(login: Arc<Login>, accounts: Arc<Accounts>, poke: Poke) {
     let mut exit = login.exit.clone();
     let wait = Duration::from_millis(login.expires_at_ms.saturating_sub(now_ms()));
-    let deadline = tokio::time::Instant::now() + wait;
+    let mut deadline = tokio::time::Instant::now() + wait;
+    // How it ends once the code being checked is through (or the grace
+    // ran out).
+    let mut ending: Option<(LoginState, LoginError)> = None;
     loop {
         if login.ended() {
             break;
@@ -1023,20 +1249,55 @@ async fn supervise(login: Arc<Login>, accounts: Arc<Accounts>, poke: Poke) {
             break;
         }
         note_shapeless(&login, &poke);
+        if ending.is_none() {
+            let asked = login
+                .stop_asked
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(error) = asked {
+                if login.checking() {
+                    ending = Some((LoginState::Failed, error));
+                    deadline = tokio::time::Instant::now() + CHECK_GRACE;
+                } else {
+                    if login.end(LoginState::Failed, Some(error), None) {
+                        login.stop_claude(Duration::ZERO);
+                    }
+                    break;
+                }
+            }
+        }
         tokio::select! {
             _ = exit.changed() => {}
             _ = login.output.changed.notified() => {}
             _ = login.stop.notified() => {}
             _ = tokio::time::sleep_until(deadline) => {
-                if login.end(LoginState::Expired, Some(expired()), None) {
-                    tracing::info!(login = %login.id, "sign-in link expired");
-                    login.kill();
+                let (state, error) = match ending.take() {
+                    Some(ending) => ending,
+                    None => {
+                        let expired =
+                            expired(login.expires_at_ms.saturating_sub(login.started_at_ms));
+                        if login.checking() {
+                            ending = Some((LoginState::Expired, expired));
+                            deadline = tokio::time::Instant::now() + CHECK_GRACE;
+                            continue;
+                        }
+                        (LoginState::Expired, expired)
+                    }
+                };
+                if login.end(state, Some(error), None) {
+                    tracing::info!(login = %login.id, state = ?state, "sign-in stopped");
+                    login.stop_claude(Duration::ZERO);
                 }
                 break;
             }
         }
     }
-    login.kill();
+    // Claude Code ended, or whoever ended the login is stopping it (and
+    // has its pty): the folder goes.
+    if login.exit.borrow().is_some() {
+        *login.pty.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
     let _ = std::fs::remove_dir_all(&login.folder);
     poke();
 }
@@ -1079,11 +1340,16 @@ async fn settle(login: &Login, accounts: &Arc<Accounts>, status: Option<i32>) {
     };
     let text = login.output.text_from(at);
     match outcome(status == Some(0), &text, code) {
-        Outcome::Done => {
-            let account = signed_in_as(login, accounts).await;
-            tracing::info!(login = %login.id, account = %account, "signed in");
-            login.end(LoginState::Done, None, Some(account));
-        }
+        Outcome::Done => match signed_in_as(login, accounts).await {
+            Ok(account) => {
+                tracing::info!(login = %login.id, account = %account, "signed in");
+                login.end(LoginState::Done, None, Some(account));
+            }
+            Err(error) => {
+                tracing::info!(login = %login.id, why = %error.message, "Claude Code ended, the sign-in is not there");
+                login.end(LoginState::Failed, Some(error), None);
+            }
+        },
         Outcome::Rejected(message) => {
             tracing::info!(login = %login.id, "Anthropic did not accept the code");
             login.end(
@@ -1103,25 +1369,69 @@ async fn settle(login: &Login, accounts: &Arc<Accounts>, status: Option<i32>) {
     }
 }
 
-/// The account a finished sign-in landed on: its own on its folder; on
-/// the slot, the global account once the worker took in a sign-in to
-/// another one (G6), which happens here rather than at the next tick.
-async fn signed_in_as(login: &Login, accounts: &Arc<Accounts>) -> String {
-    accounts.reread_credentials(&login.account);
+/// The account a sign-in Claude Code reported landed on, once it is where
+/// it should be: on the account's folder, that folder holds a sign-in now;
+/// on the slot, the slot does and the worker took it in (a sign-in to
+/// another account makes that one global, G6: here rather than at the next
+/// tick). Whoever signed in stands, even someone other than the email the
+/// page was filled with: the answer carries the account as it reads now.
+async fn signed_in_as(login: &Login, accounts: &Arc<Accounts>) -> Result<String, LoginError> {
+    let place = if login.on_slot {
+        Place::Slot
+    } else {
+        Place::Folder(login.account.clone())
+    };
+    let holds = {
+        let accounts = accounts.clone();
+        tokio::task::spawn_blocking(move || accounts.place_signed_in(&place))
+            .await
+            .unwrap_or(false)
+    };
+    if !holds {
+        return Err(login_error(
+            "failed",
+            format!(
+                "Claude Code ended as if signed in, but {} holds no sign-in (on macOS the login Keychain may be locked: the worker has to run in the person's logged-in session).",
+                if login.on_slot {
+                    "~/.claude"
+                } else {
+                    "the account's folder"
+                }
+            ),
+        ));
+    }
     if !login.on_slot {
+        accounts.reread_credentials(&login.account);
         accounts
             .load_accounts_now(vec![login.account.clone()])
             .await;
-        return login.account.clone();
+        return Ok(login.account.clone());
     }
-    {
-        let _gate = accounts.gate().await;
-        accounts.watch_slot().await;
+    for attempt in 1..=TAKE_IN_TRIES {
+        {
+            let _gate = accounts.gate().await;
+            accounts.watch_slot().await;
+        }
+        let taken = {
+            let accounts = accounts.clone();
+            tokio::task::spawn_blocking(move || accounts.slot_is_global())
+                .await
+                .unwrap_or(false)
+        };
+        if taken {
+            let global = accounts.registry().global;
+            accounts.reread_credentials(&global);
+            accounts.load_now().await;
+            return Ok(global);
+        }
+        if attempt < TAKE_IN_TRIES {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
-    let global = accounts.registry().global;
-    accounts.reread_credentials(&global);
-    accounts.load_now().await;
-    global
+    Err(login_error(
+        "failed",
+        "Signed in on ~/.claude, but the worker could not take that sign-in in yet (a switch left half-way is being settled); the accounts show it within seconds.",
+    ))
 }
 
 #[cfg(test)]
@@ -1326,5 +1636,44 @@ mod tests {
         let wire: serde_json::Value = serde_json::from_str(&to_wire(&invalid_code())).unwrap();
         assert_eq!(wire["code"], "invalid_code");
         assert!(wire["message"].as_str().unwrap().contains('#'));
+    }
+
+    #[test]
+    fn host_mode_needs_something_to_open_a_browser_with() {
+        let nowhere = |_: &str| None;
+        assert_eq!(opener_for(None, false, nowhere), None);
+        assert_eq!(
+            opener_for(None, true, nowhere),
+            Some(PathBuf::from("/usr/bin/open"))
+        );
+        assert_eq!(
+            opener_for(Some("/opt/b/browse".into()), false, nowhere),
+            Some(PathBuf::from("/opt/b/browse"))
+        );
+        let firefox = |name: &str| (name == "firefox").then(|| PathBuf::from("/usr/bin/firefox"));
+        assert_eq!(
+            opener_for(Some("firefox".into()), false, firefox),
+            Some(PathBuf::from("/usr/bin/firefox"))
+        );
+        // A command line, not one program: the platform's opener.
+        assert_eq!(
+            opener_for(Some("open -a Safari".into()), false, nowhere),
+            None
+        );
+    }
+
+    #[test]
+    fn a_folder_that_cant_go_on_path_fails_the_login() {
+        assert!(path_with(Path::new("/tmp/a:b/bin")).is_err());
+        let path = path_with(Path::new("/tmp/login/bin")).unwrap();
+        assert!(path.to_string_lossy().starts_with("/tmp/login/bin"));
+    }
+
+    #[test]
+    fn an_expired_link_says_how_long_it_had() {
+        assert!(expired(LINK_TTL_MS).message.contains("after 10 minutes"));
+        assert!(expired(60_000).message.contains("after a minute"));
+        assert!(expired(1_500).message.contains("after 2 seconds"));
+        assert_eq!(expired(LINK_TTL_MS).code, "expired");
     }
 }

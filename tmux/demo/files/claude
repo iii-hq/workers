@@ -174,9 +174,23 @@ def auth_login(args):
     ends with status 1. It hands $BROWSER the link whose return to its
     loopback listener (GET /callback?code=demo-ok&state=demo-state) signs in
     with no code, and notes that link in <state>/auth-login.url
-    (demo/login.sh browser)."""
+    (demo/login.sh browser).
+
+    For the worker's tests: `demo-slow` (`demo-slow:<id>`) signs in like
+    `demo-ok` after 4 seconds of checking instead of 1.5; `demo-hollow` says
+    it signed in and saves nothing; FAKE_CLAUDE_STUBBORN=1 ignores SIGTERM and
+    an end of input.
+    Its pid is noted in <state>/auth-login.pid."""
     import http.server
     import threading
+
+    if os.environ.get("FAKE_CLAUDE_STUBBORN") == "1":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        write_text(os.path.join(STATE_DIR, "auth-login.pid"), "%d\n" % PID)
+    except OSError:
+        pass
 
     email = args[args.index("--email") + 1] if "--email" in args[:-1] else None
     hint = "&login_hint=" + email.replace("@", "%40") if email else ""
@@ -238,6 +252,9 @@ def auth_login(args):
         if not ready:
             continue
         chunk = os.read(sys.stdin.fileno(), 4096)
+        if not chunk and os.environ.get("FAKE_CLAUDE_STUBBORN") == "1":
+            time.sleep(0.2)  # deaf to an end of input too
+            continue
         if not chunk:
             sys.stdout.write("\n")
             sys.stderr.write("Login failed: Input ended before a code was pasted. "
@@ -252,7 +269,14 @@ def auth_login(args):
                 sys.stderr.write("Invalid code. Please make sure the full code was copied.\n")
                 sys.stderr.flush()
                 continue
-            time.sleep(1.5)  # Anthropic checks the code
+            slow = first == "demo-slow" or first.startswith("demo-slow:")
+            time.sleep(4.0 if slow else 1.5)  # Anthropic checks the code
+            if first == "demo-hollow":
+                sys.stdout.write("Login successful.\n")
+                sys.stdout.flush()
+                return 0
+            if slow:
+                first = "demo-ok" + first[len("demo-slow"):]
             if first == "demo-ok" or first.startswith("demo-ok:"):
                 outcome["who"] = login_who(first, email)
                 finished.set()
