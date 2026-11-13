@@ -1,0 +1,122 @@
+name: Mesh E2E
+
+on:
+  pull_request:
+    paths:
+      - 'mesh/**'
+      - 'rbac-proxy/**'
+      - 'harness/**'
+      - 'fp/**'
+      - 'state/**'
+      - 'queue/**'
+      - 'session-manager/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/mesh-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mesh-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Real engine and hub boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTOOLCHAIN: local
+      TS_NO_LOGS_NO_SUPPORT: 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: mesh/go.sum
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            rbac-proxy
+            harness
+            fp
+            state
+            queue
+            session-manager
+      - name: Setup repository pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node for embedded frontends
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22.23.4'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Build embedded frontends from frozen dependencies
+        run: |
+          pnpm --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' --filter '@iii-workers/mesh-ui...' install --frozen-lockfile
+          for directory in harness/ui state/ui mesh/ui; do
+            pnpm --dir "$directory" build
+          done
+          git diff --exit-code -- mesh/assets
+      - name: Install current iii engine
+        env:
+          III_RELEASE_TAG: 'iii/v0.26.0'
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build real workers sequentially
+        run: |
+          for worker in rbac-proxy harness fp state queue session-manager; do
+            cargo build --locked --manifest-path "$worker/Cargo.toml" --bin "$worker"
+          done
+      - name: Run real mesh suite without privileged networking
+        run: |
+          iii --version
+          install -d -m 700 mesh/tests/e2e/reports
+          install -m 600 /dev/null mesh/tests/e2e/reports/results.log
+          III_BIN=$(command -v iii) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
+      - name: Prepare credential-free public report
+        if: always()
+        run: |
+          node --test mesh/tests/e2e/public-report.test.mjs
+          mkdir -p mesh/tests/e2e/reports
+          node mesh/tests/e2e/public-report.mjs mesh/tests/e2e/reports
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: mesh-e2e-report
+          path: mesh/tests/e2e/reports/public-report.json
+          retention-days: 7
+
+  windows-crossbuild:
+    name: Windows ${{ matrix.arch }} compilation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTOOLCHAIN: local
+      GOOS: windows
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: mesh/go.sum
+      - name: Cross-build every mesh package
+        run: go -C mesh build -tags ts_omit_peerapiserver ./...

@@ -242,6 +242,7 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
         "ci.yml", "build.yml", "_worker-e2e.yml",
         "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
         "storage-e2e.yml", "browser-scrapling-e2e.yml", "judge-e2e.yml",
+        "mesh-e2e.yml",
     }
 
 

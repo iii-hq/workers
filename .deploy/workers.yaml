@@ -2396,6 +2396,28 @@ workers:
       - aarch64-unknown-linux-gnu
       windows_exception: session and inbox locking use POSIX flock and O_NOFOLLOW; Windows builds are unsupported
     publish: true
+  mesh:
+    source:
+      path: mesh
+      package_manifest: package.json
+    artifact:
+      kind: go-binary
+      toolchain:
+        name: go
+        version: 1.27.1
+      binary: mesh
+      targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-pc-windows-msvc
+      - aarch64-pc-windows-msvc
+      # Drops tailscale's peer API server, a host listener outside the tunnel.
+      tags:
+      - ts_omit_peerapiserver
+    publish: true
   workflow:
     source:
       path: workflow
