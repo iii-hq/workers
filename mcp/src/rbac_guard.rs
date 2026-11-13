@@ -89,9 +89,10 @@ fn not_proxied_message(url: &str) -> String {
   on this engine. It must connect through rbac-proxy so RBAC decides what MCP
   clients may do.
   Connected to: {url} ({SESSION_PROBE}: function_not_found)
-  Fix: install rbac-proxy (iii call compose::add worker=rbac-proxy), configure its
-  rbac block, and start mcp with --url ws://<rbac-proxy host>:<port> (default 49200)
-  and III_TOKEN set to a token its auth function accepts.
+  Fix: install rbac-proxy (iii call compose::add worker=rbac-proxy), set its
+  rbac.auth_function_id, and give mcp:
+    III_MCP_ENGINE_URL=ws://127.0.0.1:49200   (rbac-proxy's port)
+    III_TOKEN=<a token your auth function accepts>
   To run without RBAC anyway (local development only):
     {DANGEROUS_ENV}=true"
     )
@@ -243,6 +244,10 @@ mod tests {
         );
         assert!(msg.contains(URL));
         assert!(msg.contains("compose::add worker=rbac-proxy"));
+        assert!(
+            msg.contains("III_MCP_ENGINE_URL=ws://127.0.0.1:49200"),
+            "{msg}"
+        );
         assert!(msg.contains("III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true"));
     }
 

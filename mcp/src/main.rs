@@ -32,8 +32,10 @@ struct Cli {
     #[arg(long, default_value = "./config.yaml")]
     config: String,
 
-    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
-    url: String,
+    /// Engine URL; normally rbac-proxy's. Falls back to III_MCP_ENGINE_URL,
+    /// then III_URL.
+    #[arg(long)]
+    url: Option<String>,
 
     #[arg(long)]
     manifest: bool,
@@ -48,6 +50,11 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let url = config::engine_url(
+        cli.url.clone(),
+        std::env::var("III_MCP_ENGINE_URL").ok(),
+        std::env::var("III_URL").ok(),
+    );
 
     if cli.manifest {
         let m = manifest::build_manifest();
@@ -64,8 +71,9 @@ async fn main() -> Result<()> {
     };
     let cfg = Arc::new(cfg);
 
+    iii_mcp::disable_trace_payloads();
     let iii = register_worker(
-        &cli.url,
+        &url,
         InitOptions {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
@@ -93,7 +101,7 @@ async fn main() -> Result<()> {
     .map_err(|e| e.to_string());
     let dangerous =
         rbac_guard::parse_dangerous(std::env::var(rbac_guard::DANGEROUS_ENV).ok().as_deref());
-    let mode = match rbac_guard::decide(&rbac_guard::classify_probe(probe), dangerous, &cli.url) {
+    let mode = match rbac_guard::decide(&rbac_guard::classify_probe(probe), dangerous, &url) {
         Decision::Refuse(message) => {
             eprintln!("{message}");
             iii.shutdown_async().await;

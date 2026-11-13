@@ -7,21 +7,18 @@
 //!
 //! Surface:
 //!
-//!   * [`config`] — YAML-backed [`config::McpConfig`] (`hidden_prefixes`,
-//!     `require_expose`, `api_path`).
-//!   * [`functions`] — registers the `mcp::handler` function, observes
-//!     `http::on-request` with its route, and bridges the http worker's
-//!     request into [`handler::handle_mcp_body`].
-//!   * [`handler`] — JSON-RPC dispatch; pins the protocol version and
-//!     fans out to `tools/*`, `resources/*`, `prompts/*`.
-//!   * [`jsonrpc`] — JSON-RPC 2.0 wire types and helpers.
-//!   * [`manifest`] — `--manifest` payload exposed to the iii registry.
-//!   * [`skills_bridge`] — delegates `resources/*` and `prompts/*` to the
-//!     `skills` worker and falls back to empty payloads when it isn't
-//!     registered.
-//!   * [`tools`] — `tools/list` + `tools/call` against the engine
-//!     function registry; honours `hidden_prefixes` / `require_expose`.
-//!   * [`transport`] — encodes JSON-RPC responses as a single SSE frame.
+//!   * [`config`]: [`config::McpConfig`] and the engine URL precedence.
+//!   * [`functions`]: registers `mcp::handler` (the endpoint, not
+//!     observable) and `mcp::observed` (the observer sink), and observes
+//!     `http::on-request` for the endpoint's routes.
+//!   * [`handler`]: JSON-RPC dispatch for `initialize`, `tools/*`,
+//!     `resources/*`.
+//!   * [`gateway`]: the gateway tools (`iii_call`, `iii_secret_store`,
+//!     `iii_observe`, ...).
+//!   * [`directory_bridge`]: agent profiles and skills from iii-directory.
+//!   * [`rbac_guard`]: refuses to start unless behind rbac-proxy.
+//!   * [`sessions`]: Streamable HTTP sessions and their observers.
+//!   * [`manifest`]: the `--manifest` payload.
 
 pub mod bus;
 pub mod config;
@@ -35,8 +32,41 @@ pub mod manifest;
 pub mod origin;
 pub mod rbac_guard;
 pub mod sessions;
-pub mod tools;
 pub mod transport;
 
 #[cfg(test)]
 pub mod testkit;
+
+/// Keep request and response bodies out of this worker's trace spans: a
+/// tool call can carry a credential on its way to `iii_secret_store`. Call
+/// it before connecting to the engine.
+pub fn disable_trace_payloads() {
+    std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1");
+}
+
+#[cfg(test)]
+mod startup_tests {
+    #[test]
+    fn trace_payloads_are_turned_off() {
+        // A tool call can carry a credential for iii_secret_store.
+        std::env::remove_var("III_DISABLE_TRACE_PAYLOADS");
+        super::disable_trace_payloads();
+        assert_eq!(
+            std::env::var("III_DISABLE_TRACE_PAYLOADS").as_deref(),
+            Ok("1")
+        );
+    }
+
+    #[test]
+    fn the_worker_declares_its_dependencies() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(include_str!("../iii.worker.yaml")).unwrap();
+        let deps = yaml["dependencies"].as_mapping().expect("dependencies");
+        for dep in ["http", "rbac-proxy", "secrets"] {
+            assert!(
+                deps.contains_key(serde_yaml::Value::String(dep.into())),
+                "{dep} missing"
+            );
+        }
+    }
+}

@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::config::default_hidden_prefixes;
+use crate::config::McpConfig;
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -16,15 +16,15 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description: "MCP 2025-06-18 Streamable HTTP server for the iii engine: iii_call / iii_observe gateway, behind rbac-proxy.".to_string(),
-        default_config: serde_json::json!({
-            "hidden_prefixes": default_hidden_prefixes(),
-            "require_expose": false,
-            "api_path": "/mcp",
-            "tools": "gateway",
-            "allowed_origins": [],
-            "session_idle_ttl_secs": crate::config::McpConfig::default().session_idle_ttl_secs,
-            "max_buffered_events": crate::config::McpConfig::default().max_buffered_events,
-        }),
+        default_config: {
+            let cfg = McpConfig::default();
+            serde_json::json!({
+                "api_path": cfg.api_path,
+                "allowed_origins": cfg.allowed_origins,
+                "session_idle_ttl_secs": cfg.session_idle_ttl_secs,
+                "max_buffered_events": cfg.max_buffered_events,
+            })
+        },
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -35,47 +35,24 @@ mod tests {
 
     #[test]
     fn json_roundtrip_has_required_fields() {
-        let m = build_manifest();
-        let json = serde_json::to_string_pretty(&m).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
-        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
-        assert!(parsed["description"].is_string());
-        assert!(!parsed["description"].as_str().unwrap().is_empty());
-        assert!(parsed["default_config"].is_object());
-        assert!(parsed["default_config"]["hidden_prefixes"].is_array());
-        assert!(!parsed["supported_targets"]
-            .as_array()
-            .expect("supported_targets must be an array")
-            .is_empty());
+        let m: serde_json::Value = serde_json::to_value(build_manifest()).unwrap();
+        assert_eq!(m["name"], env!("CARGO_PKG_NAME"));
+        assert_eq!(m["version"], env!("CARGO_PKG_VERSION"));
+        assert!(!m["description"].as_str().unwrap().is_empty());
+        assert!(!m["supported_targets"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn default_config_matches_mcp_config_default() {
-        let m = build_manifest();
+    fn default_config_is_exactly_the_live_settings() {
         let cfg = crate::config::McpConfig::default();
         assert_eq!(
-            m.default_config["require_expose"].as_bool().unwrap(),
-            cfg.require_expose
+            build_manifest().default_config,
+            serde_json::json!({
+                "api_path": cfg.api_path,
+                "allowed_origins": [],
+                "session_idle_ttl_secs": cfg.session_idle_ttl_secs,
+                "max_buffered_events": cfg.max_buffered_events,
+            })
         );
-        assert_eq!(m.default_config["api_path"].as_str().unwrap(), cfg.api_path);
-        let arr: Vec<String> = m.default_config["hidden_prefixes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(arr, cfg.hidden_prefixes);
-    }
-
-    #[test]
-    fn default_config_carries_the_gateway_settings() {
-        let m = build_manifest();
-        let cfg = crate::config::McpConfig::default();
-        let d = &m.default_config;
-        assert_eq!(d["tools"], "gateway");
-        assert_eq!(d["allowed_origins"], serde_json::json!([]));
-        assert_eq!(d["session_idle_ttl_secs"], cfg.session_idle_ttl_secs);
-        assert_eq!(d["max_buffered_events"], cfg.max_buffered_events);
     }
 }

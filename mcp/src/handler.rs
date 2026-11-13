@@ -19,7 +19,6 @@ use crate::jsonrpc::{
 use crate::origin::{header, origin_allowed};
 use crate::rbac_guard::RbacMode;
 use crate::sessions::{Observe, Sessions};
-use crate::tools::{mcp_tools_call, mcp_tools_list, McpToolsCallError};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -78,24 +77,6 @@ fn initialize_result(mode: &RbacMode) -> Value {
     })
 }
 
-async fn tools_list<B: Bus>(app: &App<'_, B>) -> Result<Value, String> {
-    let mut tools: Vec<Value> = Vec::new();
-    if app.cfg.tools.gateway() {
-        if let Some(list) = gateway::tools_list()["tools"].as_array() {
-            tools.extend(list.iter().cloned());
-        }
-    }
-    if app.cfg.tools.functions() {
-        let listed = mcp_tools_list(app.bus, app.cfg)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(list) = listed["tools"].as_array() {
-            tools.extend(list.iter().cloned());
-        }
-    }
-    Ok(json!({ "tools": tools }))
-}
-
 async fn tools_call<B: Bus + Observe>(
     app: &App<'_, B>,
     session_id: Option<&str>,
@@ -115,30 +96,17 @@ async fn tools_call<B: Bus + Observe>(
         .filter(|a| a.is_object())
         .cloned()
         .unwrap_or_else(|| json!({}));
-    if app.cfg.tools.gateway() {
-        let ctx = gateway::Ctx {
-            bus: app.bus,
-            sessions: app.sessions,
-            session_id,
-            mode: app.mode,
-            sink: app.sink,
-        };
-        if let Some(result) = gateway::call_tool(&ctx, name, &args).await {
-            return json_rpc_success(id, result);
-        }
-    }
-    if app.cfg.tools.functions() {
-        return match mcp_tools_call(app.bus, app.cfg, params).await {
-            Ok(v) => json_rpc_success(id, v),
-            Err(McpToolsCallError::InvalidParams(e)) => {
-                json_rpc_error(id, INVALID_PARAMS, e.to_string())
-            }
-        };
-    }
-    json_rpc_success(
-        id,
-        json!({ "content": [{ "type": "text", "text": format!("unknown tool: {name} (this server offers the iii_* gateway tools)") }], "isError": true }),
-    )
+    let ctx = gateway::Ctx {
+        bus: app.bus,
+        sessions: app.sessions,
+        session_id,
+        mode: app.mode,
+        sink: app.sink,
+    };
+    let result = gateway::call_tool(&ctx, name, &args).await.unwrap_or_else(|| {
+        json!({ "content": [{ "type": "text", "text": format!("unknown tool: {name} (this server offers the iii_* gateway tools)") }], "isError": true })
+    });
+    json_rpc_success(id, result)
 }
 
 async fn dispatch<B: Bus + Observe>(
@@ -150,10 +118,7 @@ async fn dispatch<B: Bus + Observe>(
     match req.method.as_str() {
         "initialize" => json_rpc_success(id, initialize_result(app.mode)),
         "ping" => json_rpc_success(id, json!({})),
-        "tools/list" => match tools_list(app).await {
-            Ok(v) => json_rpc_success(id, v),
-            Err(e) => json_rpc_error(id, INTERNAL_ERROR, e),
-        },
+        "tools/list" => json_rpc_success(id, gateway::tools_list()),
         "tools/call" => tools_call(app, session_id, &req.params, id).await,
         "resources/list" => match directory_bridge::resources_list(app.bus).await {
             Ok(v) => json_rpc_success(id, v),
@@ -164,14 +129,6 @@ async fn dispatch<B: Bus + Observe>(
             Err(e) => json_rpc_error(id, INTERNAL_ERROR, e.to_string()),
         },
         "resources/templates/list" => json_rpc_success(id, directory_bridge::resource_templates()),
-        // Profiles are reached through the gateway tools (and the iii Claude
-        // plugin's /iii:* commands); this server offers no MCP prompts.
-        "prompts/list" => json_rpc_success(id, json!({ "prompts": [] })),
-        "prompts/get" => json_rpc_error(
-            id,
-            INVALID_PARAMS,
-            "this server offers no prompts".to_string(),
-        ),
         other => json_rpc_error(id, METHOD_NOT_FOUND, format!("Method not found: {other}")),
     }
 }
@@ -254,7 +211,7 @@ pub async fn handle_http<B: Bus + Observe>(
 mod tests {
     use super::*;
     use crate::bus::fake::FakeBus;
-    use crate::config::{McpConfig, ToolMode};
+    use crate::config::McpConfig;
     use crate::rbac_guard::{RbacMode, DANGEROUS_NOTICE};
     use crate::sessions::{SessionLimits, Sessions};
     use crate::testkit::Engine;
@@ -424,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gateway_mode_lists_the_fixed_tools() {
+    async fn tools_list_is_the_fixed_gateway_set() {
         let f = Fixture::new(FakeBus::new());
         let tools = result(&f.post(json!({}), rpc("tools/list", json!({}))).await)["tools"].clone();
         assert_eq!(
@@ -437,49 +394,9 @@ mod tests {
         );
     }
 
-    fn functions_bus() -> FakeBus {
-        FakeBus::new()
-            .on("engine::functions::list", |_| {
-                Ok(json!({ "functions": [
-                    { "function_id": "myworker::echo", "description": "Echo" },
-                    { "function_id": "state::set" }
-                ]}))
-            })
-            .on("myworker::echo", |p| Ok(json!({ "echo": p })))
-    }
-
     #[tokio::test]
-    async fn functions_mode_lists_one_tool_per_visible_function() {
-        let mut f = Fixture::new(functions_bus());
-        f.cfg.tools = ToolMode::Functions;
-        let tools = result(&f.post(json!({}), rpc("tools/list", json!({}))).await)["tools"].clone();
-        let names: Vec<_> = tools
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].clone())
-            .collect();
-        assert_eq!(names, vec![json!("myworker__echo")]);
-    }
-
-    #[tokio::test]
-    async fn both_mode_lists_gateway_then_function_tools() {
-        let mut f = Fixture::new(functions_bus());
-        f.cfg.tools = ToolMode::Both;
-        let tools = result(&f.post(json!({}), rpc("tools/list", json!({}))).await)["tools"].clone();
-        let names: Vec<String> = tools
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(names[0], "iii_call");
-        assert_eq!(names.last().unwrap(), "myworker__echo");
-    }
-
-    #[tokio::test]
-    async fn gateway_mode_does_not_forward_function_style_tool_names() {
-        let f = Fixture::new(functions_bus());
+    async fn function_style_tool_names_are_unknown_tools() {
+        let f = Fixture::new(FakeBus::new().on("myworker::echo", Ok));
         let r = f
             .post(
                 json!({}),
@@ -492,36 +409,6 @@ mod tests {
         let (err, text) = tool_text(&r);
         assert!(err && text.contains("unknown tool"), "{text}");
         assert!(f.engine.bus.calls().is_empty());
-    }
-
-    #[tokio::test]
-    async fn functions_mode_still_calls_by_tool_name() {
-        let mut f = Fixture::new(functions_bus());
-        f.cfg.tools = ToolMode::Functions;
-        let r = f
-            .post(
-                json!({}),
-                rpc(
-                    "tools/call",
-                    json!({ "name": "myworker__echo", "arguments": { "a": 1 } }),
-                ),
-            )
-            .await;
-        assert_eq!(
-            result(&r)["structuredContent"],
-            json!({ "echo": { "a": 1 } })
-        );
-        // iii_call is not a tool in functions-only mode.
-        let r = f
-            .post(
-                json!({}),
-                rpc(
-                    "tools/call",
-                    json!({ "name": "iii_call", "arguments": { "function_id": "myworker::echo" } }),
-                ),
-            )
-            .await;
-        assert!(tool_text(&r).0);
     }
 
     #[tokio::test]
@@ -567,7 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resources_come_from_the_directory_and_prompts_are_empty() {
+    async fn resources_come_from_the_directory_and_there_are_no_prompts() {
         let f = Fixture::new(FakeBus::new().on("directory::skills::list", |_| {
             Ok(json!({ "skills": [{ "id": "kanban" }] }))
         }));
@@ -580,17 +467,17 @@ mod tests {
             result(&r)["resourceTemplates"][0]["uriTemplate"],
             "iii://{id}"
         );
-        assert_eq!(
-            result(&f.post(json!({}), rpc("prompts/list", json!({}))).await),
-            json!({ "prompts": [] })
-        );
-        assert_eq!(
-            rpc_error(
-                &f.post(json!({}), rpc("prompts/get", json!({ "name": "x" })))
-                    .await
-            )["code"],
-            -32602
-        );
+        // No prompts capability, so no prompts methods.
+        for (method, params) in [
+            ("prompts/list", json!({})),
+            ("prompts/get", json!({ "name": "x" })),
+        ] {
+            assert_eq!(
+                rpc_error(&f.post(json!({}), rpc(method, params)).await)["code"],
+                -32601,
+                "{method}"
+            );
+        }
         assert!(!f
             .engine
             .bus

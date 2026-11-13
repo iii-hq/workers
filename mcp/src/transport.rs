@@ -1,7 +1,5 @@
 //! MCP Streamable HTTP transport: one SSE event whose data line is the
 //! JSON-RPC reply.
-//!
-//! Direct port of `src/mcp/transport.ts`.
 
 use crate::jsonrpc::JsonRpcResponse;
 

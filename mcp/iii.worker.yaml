@@ -15,3 +15,5 @@ dependencies:
   # The MCP server refuses to start unless its engine connection goes through
   # rbac-proxy (or III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true).
   rbac-proxy: "latest"
+  # iii_secret_store writes credentials to the secrets vault.
+  secrets: "latest"

@@ -137,7 +137,10 @@ fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {
         })
         .request_format(schema_value::<McpRequest>())
         .response_format(json!({ "type": "null" }))
-        .description("MCP 2025-06-18 Streamable HTTP endpoint (gateway tools, sessions, observe)."),
+        .description("MCP 2025-06-18 Streamable HTTP endpoint (gateway tools, sessions, observe).")
+        // A request body can carry a credential for iii_secret_store; an
+        // observer would get a copy of every one.
+        .observable(false),
     );
 }
 

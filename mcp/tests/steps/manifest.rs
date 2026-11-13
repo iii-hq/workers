@@ -104,28 +104,6 @@ fn manifest_api_path(world: &mut McpWorld, want: String) {
     assert_eq!(got, want);
 }
 
-#[then(regex = r#"^the manifest's default require_expose is (true|false)$"#)]
-fn manifest_require_expose(world: &mut McpWorld, want: String) {
-    let m = manifest_value(world);
-    let got = m["default_config"]["require_expose"]
-        .as_bool()
-        .expect("default_config.require_expose is a bool");
-    assert_eq!(got, want == "true");
-}
-
-#[then(regex = r#"^the manifest's default hidden_prefixes contains "([^"]+)"$"#)]
-fn manifest_hidden_prefix(world: &mut McpWorld, needle: String) {
-    let m = manifest_value(world);
-    let arr = m["default_config"]["hidden_prefixes"]
-        .as_array()
-        .expect("default_config.hidden_prefixes is an array");
-    let prefixes: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-    assert!(
-        prefixes.contains(&needle.as_str()),
-        "hidden_prefixes missing {needle:?}; got {prefixes:?}"
-    );
-}
-
 #[then("the manifest's supported_targets is non-empty")]
 fn manifest_supported_targets(world: &mut McpWorld) {
     let m = manifest_value(world);

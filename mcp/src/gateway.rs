@@ -19,8 +19,9 @@ use crate::directory_bridge;
 use crate::rbac_guard::RbacMode;
 use crate::sessions::{Observe, ObserveRequest, Sessions};
 
-pub const TOOL_NAMES: [&str; 10] = [
+pub const TOOL_NAMES: [&str; 11] = [
     "iii_call",
+    "iii_secret_store",
     "iii_observe",
     "iii_events",
     "iii_observers",
@@ -34,6 +35,13 @@ pub const TOOL_NAMES: [&str; 10] = [
 
 const DEFAULT_MAX_CHARS: usize = 100_000;
 const INTERNAL_PREFIX: &str = "mcp::";
+/// The one `secrets` function that answers with a value. `iii_call` refuses
+/// it: this bridge hands references on, never values back to a client.
+const RESOLVE_FN: &str = "secrets::resolve";
+/// What [`iii_secret_store`] calls: `secrets::set` writes the vault.
+const SECRET_SET_FN: &str = "secrets::set";
+/// This worker's name. It never resolves a secret, so it is never a consumer.
+const SELF_NAME: &str = "mcp";
 
 /// What one gateway tool call runs against.
 pub struct Ctx<'a, B> {
@@ -46,7 +54,7 @@ pub struct Ctx<'a, B> {
     pub sink: &'a str,
 }
 
-const INSTRUCTIONS: &str = "The running iii engine. Everything on it is a function, called by id. Act on the engine with iii_call (any function id, with a JSON payload) instead of the `iii call` CLI or curl; discover ids with iii_call on engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before its first call. React to the engine with iii_observe instead of polling: it buffers every matching invocation of a function for this session; read them with iii_events, list them with iii_observers, and remove each one with iii_unobserve when done. Profiles written for the iii harness say agent_call and harness::observe: here those are iii_call and iii_observe. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status says whether RBAC is on.";
+const INSTRUCTIONS: &str = "The running iii engine. Everything on it is a function, called by id. Act on the engine with iii_call (any function id, with a JSON payload) instead of the `iii call` CLI or curl; discover ids with iii_call on engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before its first call. React to the engine with iii_observe instead of polling: it buffers every matching invocation of a function for this session; read them with iii_events, list them with iii_observers, and remove each one with iii_unobserve when done. Profiles written for the iii harness say agent_call and harness::observe: here those are iii_call and iii_observe. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status says whether RBAC is on. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
 
 /// The server instructions MCP clients show the model.
 pub fn instructions(mode: &RbacMode) -> String {
@@ -73,6 +81,16 @@ pub fn tools_list() -> Value {
                 "max_chars": { "type": "number", "description": "Cap on the returned JSON (default 100000)." }
             },
             "required": ["function_id"]
+        })),
+        tool("iii_secret_store", "Store a credential (API key, token, password) in the iii secrets vault and get back its secret://NAME reference. Pass that reference wherever the credential is needed instead of the value: only the workers named in consumers can resolve it. Use it whenever you hold a credential; never put one in an iii_call payload. Storing an existing name rotates it.", json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,127}$", "description": "Secret name, e.g. STRIPE_API_KEY. The reference is secret://<name>." },
+                "value": { "type": "string", "minLength": 1, "description": "The credential, stored as given." },
+                "consumers": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Worker names allowed to resolve it, e.g. [\"llm-router\"]." },
+                "description": { "type": "string", "description": "What it is for." }
+            },
+            "required": ["name", "value", "consumers"]
         })),
         tool("iii_observe", "Observe a function on the iii engine: every matching invocation of it is buffered for this MCP session. Returns an observer_id; read what happened with iii_events, remove it with iii_unobserve. Use it instead of polling.", json!({
             "type": "object",
@@ -139,6 +157,9 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
     let Some(function_id) = str_arg(args, "function_id") else {
         return error("function_id is required");
     };
+    if function_id == RESOLVE_FN {
+        return error(format!("`{RESOLVE_FN}` returns a secret's value, and this bridge never hands one back. Pass the secret://NAME reference to the function that needs it; that worker resolves it."));
+    }
     if function_id.starts_with(INTERNAL_PREFIX) {
         return error(format!("`{function_id}`: `{INTERNAL_PREFIX}` functions are this bridge's internals and cannot be called through it"));
     }
@@ -175,6 +196,72 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
     }
 }
 
+fn valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && name.len() <= 128
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Store a credential with `secrets::set` and answer with its reference only.
+/// No message built here, or passed on from `secrets`, carries the value.
+async fn iii_secret_store<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
+    let Some(name) = args.get("name").and_then(Value::as_str) else {
+        return error("name is required");
+    };
+    if !valid_secret_name(name) {
+        return error("name must match ^[A-Za-z_][A-Za-z0-9_.-]{0,127}$");
+    }
+    if name == "III_SECRETS_KEY" {
+        return error("name III_SECRETS_KEY is reserved");
+    }
+    let value = match args.get("value") {
+        Some(Value::String(v)) if !v.is_empty() => v.clone(),
+        _ => return error("value is required and must be a non-empty string"),
+    };
+    let consumers: Option<Vec<String>> = args
+        .get("consumers")
+        .and_then(Value::as_array)
+        .filter(|list| !list.is_empty())
+        .and_then(|list| {
+            list.iter()
+                .map(|c| {
+                    c.as_str()
+                        .map(str::trim)
+                        .filter(|c| !c.is_empty())
+                        .map(String::from)
+                })
+                .collect()
+        });
+    let Some(consumers) = consumers else {
+        return error("consumers must list at least one worker name that may resolve the secret");
+    };
+    if consumers.iter().any(|c| c == SELF_NAME) {
+        return error("consumers cannot include mcp: this bridge passes references on and never resolves a value");
+    }
+    let mut payload = json!({ "name": name, "value": value, "consumers": consumers });
+    match args.get("description") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(d)) => payload["description"] = Value::String(d.clone()),
+        Some(_) => return error("description must be a string"),
+    }
+    match ctx.bus.call(SECRET_SET_FN, payload, None).await {
+        Ok(stored) => {
+            let mut out = serde_json::Map::new();
+            for key in ["ref", "hint", "fingerprint", "consumers"] {
+                if let Some(v) = stored.get(key) {
+                    out.insert(key.to_string(), v.clone());
+                }
+            }
+            text(&Value::Object(out))
+        }
+        Err(e) if e.is_missing_function() => error(
+            "the secrets worker is not running: add it with compose::add worker=secrets, then try again",
+        ),
+        Err(e) => error(e.to_string()),
+    }
+}
+
 /// Run a gateway tool; `None` when `name` is not one of [`TOOL_NAMES`].
 pub async fn call_tool<B: Bus + Observe>(
     ctx: &Ctx<'_, B>,
@@ -183,6 +270,7 @@ pub async fn call_tool<B: Bus + Observe>(
 ) -> Option<Value> {
     let result = match name {
         "iii_call" => iii_call(ctx, args).await,
+        "iii_secret_store" => iii_secret_store(ctx, args).await,
         "iii_observe" => match need_session(ctx) {
             Err(e) => e,
             Ok(sid) => match serde_json::from_value::<ObserveRequest>(args.clone()) {
@@ -365,6 +453,219 @@ mod tests {
         assert!(call_tool(&ctx, "myworker__echo", &json!({}))
             .await
             .is_none());
+    }
+
+    const SECRET: &str = "sk-live-0123456789abcdef";
+
+    fn stored(e: &Engine) -> Vec<Value> {
+        e.bus
+            .calls()
+            .into_iter()
+            .filter(|(f, _)| f == "secrets::set")
+            .map(|(_, p)| p)
+            .collect()
+    }
+
+    #[test]
+    fn secret_store_is_a_gateway_tool_needing_name_value_and_consumers() {
+        let list = tools_list();
+        let t = list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "iii_secret_store")
+            .expect("iii_secret_store is listed")
+            .clone();
+        assert_eq!(
+            t["inputSchema"]["required"],
+            json!(["name", "value", "consumers"])
+        );
+        let d = t["description"].as_str().unwrap();
+        assert!(d.contains("secret://"), "{d}");
+    }
+
+    #[tokio::test]
+    async fn secret_store_writes_the_vault_and_returns_only_the_reference() {
+        let e = Engine::new(FakeBus::new().on("secrets::set", |_| {
+            // Whatever secrets answers, a value must not come back out.
+            Ok(json!({
+                "name": "STRIPE_KEY", "ref": "secret://STRIPE_KEY", "store": "vault",
+                "hint": "sk-liv…cdef", "fingerprint": "3f9a0c1d2e4b5a67",
+                "consumers": ["billing"], "value": SECRET,
+                "created_at": "t", "updated_at": "t"
+            }))
+        }));
+        let (err, v) = tool(
+            &e,
+            &sessions(),
+            None,
+            "iii_secret_store",
+            json!({ "name": "STRIPE_KEY", "value": SECRET, "consumers": ["billing"],
+                    "description": "Stripe live key" }),
+        )
+        .await;
+        assert!(!err, "{v}");
+        assert_eq!(
+            v,
+            json!({ "ref": "secret://STRIPE_KEY", "hint": "sk-liv…cdef",
+                    "fingerprint": "3f9a0c1d2e4b5a67", "consumers": ["billing"] })
+        );
+        assert_eq!(
+            stored(&e),
+            vec![
+                json!({ "name": "STRIPE_KEY", "value": SECRET, "consumers": ["billing"],
+                         "description": "Stripe live key" })
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_store_passes_the_value_byte_for_byte() {
+        let e = Engine::new(FakeBus::new().on("secrets::set", |_| {
+            Ok(json!({ "ref": "secret://K", "hint": "h", "consumers": ["w"] }))
+        }));
+        let raw = "  line1\nline2  ";
+        let (err, _) = tool(
+            &e,
+            &sessions(),
+            None,
+            "iii_secret_store",
+            json!({ "name": "K", "value": raw, "consumers": ["w"] }),
+        )
+        .await;
+        assert!(!err);
+        assert_eq!(stored(&e)[0]["value"], raw);
+        assert!(stored(&e)[0].get("description").is_none());
+    }
+
+    #[tokio::test]
+    async fn secret_store_refuses_bad_arguments_without_echoing_the_value() {
+        let e = Engine::new(FakeBus::new());
+        let s = sessions();
+        for (args, mentions) in [
+            (json!({ "value": SECRET, "consumers": ["w"] }), "name"),
+            (
+                json!({ "name": "1BAD", "value": SECRET, "consumers": ["w"] }),
+                "name",
+            ),
+            (
+                json!({ "name": "has space", "value": SECRET, "consumers": ["w"] }),
+                "name",
+            ),
+            (
+                json!({ "name": "III_SECRETS_KEY", "value": SECRET, "consumers": ["w"] }),
+                "reserved",
+            ),
+            (json!({ "name": "K", "consumers": ["w"] }), "value"),
+            (
+                json!({ "name": "K", "value": "", "consumers": ["w"] }),
+                "value",
+            ),
+            (
+                json!({ "name": "K", "value": 42, "consumers": ["w"] }),
+                "value",
+            ),
+            (json!({ "name": "K", "value": SECRET }), "consumers"),
+            (
+                json!({ "name": "K", "value": SECRET, "consumers": [] }),
+                "consumers",
+            ),
+            (
+                json!({ "name": "K", "value": SECRET, "consumers": ["w", 3] }),
+                "consumers",
+            ),
+            (
+                json!({ "name": "K", "value": SECRET, "consumers": [" "] }),
+                "consumers",
+            ),
+            (
+                json!({ "name": "K", "value": SECRET, "consumers": ["w"], "description": 1 }),
+                "description",
+            ),
+        ] {
+            let (err, v) = tool(&e, &s, None, "iii_secret_store", args.clone()).await;
+            let msg = v.to_string();
+            assert!(err, "{args}");
+            assert!(msg.contains(mentions), "{args} -> {msg}");
+            assert!(!msg.contains(SECRET), "value echoed: {msg}");
+        }
+        assert!(e.bus.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn secret_store_never_makes_mcp_a_consumer() {
+        // mcp hands references on; it never resolves a value back to a client.
+        let e = Engine::new(FakeBus::new());
+        let (err, v) = tool(
+            &e,
+            &sessions(),
+            None,
+            "iii_secret_store",
+            json!({ "name": "K", "value": SECRET, "consumers": ["billing", "mcp"] }),
+        )
+        .await;
+        assert!(err);
+        assert!(v.as_str().unwrap().contains("mcp"), "{v}");
+        assert!(e.bus.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn secret_store_reports_a_secrets_error_without_the_value() {
+        let e = Engine::new(FakeBus::new().on("secrets::set", |_| {
+            Err(crate::bus::BusError::new("VAULT_ERROR", "vault is locked"))
+        }));
+        let (err, v) = tool(
+            &e,
+            &sessions(),
+            None,
+            "iii_secret_store",
+            json!({ "name": "K", "value": SECRET, "consumers": ["w"] }),
+        )
+        .await;
+        assert!(err);
+        let msg = v.as_str().unwrap();
+        assert!(
+            msg.contains("VAULT_ERROR") && !msg.contains(SECRET),
+            "{msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_store_explains_a_missing_secrets_worker() {
+        let e = Engine::new(FakeBus::new());
+        let (err, v) = tool(
+            &e,
+            &sessions(),
+            None,
+            "iii_secret_store",
+            json!({ "name": "K", "value": SECRET, "consumers": ["w"] }),
+        )
+        .await;
+        assert!(err);
+        let msg = v.as_str().unwrap();
+        assert!(
+            msg.contains("secrets") && msg.contains("compose::add"),
+            "{msg}"
+        );
+        assert!(!msg.contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn iii_call_cannot_resolve_a_secret_value() {
+        let e = Engine::new(FakeBus::new());
+        for id in ["secrets::resolve", " secrets::resolve "] {
+            let (err, v) = tool(
+                &e,
+                &sessions(),
+                None,
+                "iii_call",
+                json!({ "function_id": id, "payload": { "ref": "secret://K" } }),
+            )
+            .await;
+            assert!(err);
+            assert!(v.as_str().unwrap().contains("secret://"), "{v}");
+        }
+        assert!(e.bus.calls().is_empty());
     }
 
     #[tokio::test]

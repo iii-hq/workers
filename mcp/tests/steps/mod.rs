@@ -13,4 +13,3 @@ pub mod manifest;
 pub mod notifications;
 pub mod prompts;
 pub mod resources;
-pub mod tools;

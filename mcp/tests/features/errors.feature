@@ -2,7 +2,7 @@
 Feature: malformed and unsupported requests return JSON-RPC errors
   Pins the bridge's JSON-RPC error envelopes for the four shapes the
   spec calls out: invalid request (-32600), method not found
-  (-32601), invalid params (-32602). The bridge returns these with a
+  (-32601), invalid params (-32602), plus the unknown-tool result. The bridge returns these with a
   200 HTTP status — the JSON-RPC error is in the SSE body, not the
   HTTP layer.
 
@@ -31,7 +31,6 @@ Feature: malformed and unsupported requests return JSON-RPC errors
     Then the JSON-RPC error code is -32602
     And  the JSON-RPC error message contains "name"
 
-  Scenario: tools/call resolving to a hidden prefix is rejected with -32602
+  Scenario: tools/call with a function-style name is an unknown tool
     When I send a tools/call with name "engine__functions__list"
-    Then the JSON-RPC error code is -32602
-    And  the JSON-RPC error message contains "hidden"
+    Then the tool result is an error mentioning "unknown tool"

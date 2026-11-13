@@ -94,6 +94,20 @@ async fn instructions_mention(world: &mut McpWorld, needle: String) {
 
 // ----- gateway ------------------------------------------------------------
 
+#[when("I send a tools/list request")]
+async fn send_tools_list(world: &mut McpWorld) {
+    post_jsonrpc(world, rpc(2, "tools/list", json!({}))).await;
+}
+
+#[then(regex = r#"^the tool result is an error mentioning "([^"]+)"$"#)]
+async fn tool_error_mentions(world: &mut McpWorld, needle: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let (err, text) = tool_text(world);
+    assert!(err && text.contains(&needle), "{text}");
+}
+
 #[then("the advertised tools start with the gateway set")]
 async fn gateway_tools_first(world: &mut McpWorld) {
     if world.iii.is_none() {
@@ -115,6 +129,36 @@ async fn gateway_tools_first(world: &mut McpWorld) {
 #[when(regex = r#"^I call iii_call with function "([^"]+)"$"#)]
 async fn call_iii_call(world: &mut McpWorld, function_id: String) {
     tool(world, "iii_call", json!({ "function_id": function_id })).await;
+}
+
+#[when(regex = r#"^I list the engine's "([^"]+)" functions through iii_call$"#)]
+async fn list_functions(world: &mut McpWorld, prefix: String) {
+    tool(
+        world,
+        "iii_call",
+        json!({ "function_id": "engine::functions::list", "payload": { "prefix": prefix } }),
+    )
+    .await;
+}
+
+// `engine::functions::list` reports `observable` only when it is false.
+#[then(regex = r#"^"([^"]+)" is listed as not observable$"#)]
+async fn listed_not_observable(world: &mut McpWorld, function_id: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let (err, text) = tool_text(world);
+    assert!(!err, "{text}");
+    let v: Value = serde_json::from_str(&text).expect("a JSON tool result");
+    let entry = v["result"]["functions"]
+        .as_array()
+        .and_then(|fs| fs.iter().find(|f| f["function_id"] == function_id.as_str()))
+        .unwrap_or_else(|| panic!("{function_id} is not registered: {text}"));
+    assert_eq!(
+        entry.get("observable"),
+        Some(&Value::Bool(false)),
+        "{entry}"
+    );
 }
 
 #[then("the tool result is not an error")]
