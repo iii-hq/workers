@@ -309,7 +309,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   zsh: 'bash',
   patch: 'diff',
   jsonc: 'json',
-  json5: 'json',
+  json5: 'javascript',
   mjs: 'javascript',
   cjs: 'javascript',
   mts: 'typescript',
