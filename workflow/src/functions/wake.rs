@@ -1,7 +1,7 @@
 //! `workflow::wake` — fast-wake a run when one of its nodes finishes.
 //!
-//! Observes `harness::on-turn-completed` (no session filter, so we receive every
-//! terminal turn in the engine and discard non-workflow ones). A finished node
+//! Observes `harness::on-turn-completed`, filtered to workflow node sessions
+//! by their id prefix. A finished node
 //! re-ticks its run within milliseconds instead of waiting for the next cron
 //! sweep. Best-effort: events are at-least-once / unordered / lost if the worker
 //! is down — the cron sweep + tick reconcile remain the durable wake path.
@@ -31,11 +31,13 @@ pub struct WakeResponse {
     pub woke: bool,
 }
 
-/// Node sessions are deterministic `wf_<run_id>_<node_uid>@r<n>` ids. The reverse
-/// index resolves run_id; this prefix check cheaply rejects every non-workflow
-/// turn before any state I/O.
+/// Prefix of every node session id (`wf_<run_id>_<node_uid>@r<n>`).
+pub const SESSION_PREFIX: &str = "wf_";
+
+/// The observer filter already drops other sessions; this repeats the check
+/// for a direct call, before any state I/O.
 pub fn is_workflow_session(session_id: &str) -> bool {
-    session_id.starts_with("wf_")
+    session_id.starts_with(SESSION_PREFIX)
 }
 
 pub async fn handle(deps: &Deps, ev: WakeEvent) -> Result<WakeResponse, WorkflowError> {
@@ -54,9 +56,10 @@ pub async fn handle(deps: &Deps, ev: WakeEvent) -> Result<WakeResponse, Workflow
         return Ok(WakeResponse { woke: false }); // already done
     }
 
-    // Wake: a tick reconciles the just-finished node and advances the run. The
-    // step guard + deterministic sids make a duplicate/out-of-order event a no-op.
-    start::enqueue_tick(&deps.iii, &run_id, record.step + 1).await?;
+    // Wake: a tick reconciles the just-finished node and advances the run. This
+    // read is unlocked, so the step may already be stale; a wake tick skips the
+    // step guard instead of being dropped by it.
+    start::enqueue_wake_tick(&deps.iii, &run_id, record.step + 1).await?;
     Ok(WakeResponse { woke: true })
 }
 

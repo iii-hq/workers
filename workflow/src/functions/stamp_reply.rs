@@ -1,18 +1,21 @@
-//! `workflow::stamp-reply` — the pre_call hook that makes `reply_to`
-//! auto-capture the caller's session.
+//! `workflow::stamp-reply` — the pre_call hook that stamps the caller's session
+//! and folder into `workflow::start`.
 //!
 //! Observes `harness::hook::on-pre-call` scoped to `workflow::start` (see
-//! `configuration::observe_pre_call_hook`). When an agent calls `workflow::start`
-//! with a `reply_to` object, this hook stamps the TRUE caller identity
-//! (`session_id` / `model` / `provider`, taken from the harness-supplied hook
-//! envelope) into `reply_to`, OVERWRITING anything the agent supplied — so an
-//! agent cannot direct a run's result into another session. If there is no
-//! caller identity to stamp, the hook answers a bare `continue` with no
-//! mutations (the harness parses that identically to `null`).
+//! `configuration::observe_pre_call_hook`). It stamps the TRUE caller session,
+//! taken from the harness-supplied hook envelope, as `caller_session_id`,
+//! OVERWRITING anything the agent supplied: node sessions nest under it, and
+//! `workflow::start` answers it with the `next` observe call. It also replaces
+//! any supplied `caller_fs_root` with the caller turn's folder
+//! (`metadata.fs_scope.root`), so node sessions run where the caller runs. If
+//! there is nothing to stamp or remove, the hook answers a bare `continue` with
+//! no mutations (the harness parses that identically to `null`).
 //!
-//! The harness routes deserialization failures / hook errors through the
-//! observer's `on_error: fail_open` arg, so a hiccup here never blocks
-//! `workflow::start` — it just skips the auto-stamp.
+//! The observer is bound `on_error: fail_closed`: a hook error or timeout
+//! refuses `workflow::start`, since an unstamped call would carry the agent's
+//! own `caller_fs_root`. The hook runs only on calls made from an agent turn:
+//! the harness refuses `workflow::start` as a binding target and `fp` refuses it
+//! as a pipe step, since both dispatch without it.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -21,7 +24,8 @@ use serde_json::{json, Value};
 pub const STAMP_REPLY_ID: &str = "workflow::stamp-reply";
 
 /// Hook outcome returned to the harness: always `continue`, with rewritten
-/// `workflow::start` arguments when there was a caller identity to stamp.
+/// `workflow::start` arguments when it stamps the caller's session or folder, or
+/// removes a supplied `caller_fs_root`.
 /// The harness's `parse_output` treats a missing/`"continue"` decision and
 /// absent mutations as "continue unchanged", so the no-op case is the same
 /// wire the old `null` reply produced — but the response schema stays typed
@@ -36,7 +40,8 @@ pub struct StampReplyResponse {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StampReplyMutations {
-    /// The call's arguments with the caller identity stamped in.
+    /// The call's arguments, rewritten with the caller's stamped session and folder
+    /// (any supplied `caller_fs_root` removed).
     pub arguments: Value,
 }
 
@@ -56,15 +61,11 @@ pub struct StampReplyEvent {
     #[serde(default)]
     pub turn_id: Option<String>,
     #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
     pub call: Option<StampCall>,
-    /// Caller turn's dispatch policy, captured into the stamped `reply_to` so the
-    /// reply can wake the caller with its own reach.
+    /// Caller turn's `options.metadata`; its `fs_scope.root` is the caller's
+    /// folder, stamped as `caller_fs_root`.
     #[serde(default)]
-    pub functions: Option<Value>,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -76,48 +77,42 @@ pub struct StampCall {
 }
 
 /// Pure decision: `continue` with rewritten arguments when there was a caller
-/// identity to stamp, else `continue` with no mutations (unchanged call).
+/// identity or folder to stamp, or a supplied folder to remove, else
+/// `continue` with no mutations (unchanged call).
 pub fn decide(event: StampReplyEvent) -> StampReplyResponse {
-    let Some(session_id) = event.session_id.filter(|s| !s.is_empty()) else {
-        return cont(None); // no caller identity to stamp
-    };
     let mut args = event.call.map(|c| c.arguments).unwrap_or(Value::Null);
     let Some(obj) = args.as_object_mut() else {
         return cont(None);
     };
-    // Always record the orchestrator session so node sessions can nest under it
-    // in the console tree — independent of reply_to/await. Identity comes from
+    // The folder comes from the caller's turn, never the agent: drop a supplied
+    // one even when there is no session to stamp.
+    let mut changed = obj.remove("caller_fs_root").is_some();
+    let root = event
+        .metadata
+        .as_ref()
+        .and_then(|m| m.pointer("/fs_scope/root"))
+        .and_then(Value::as_str)
+        .filter(|r| !r.is_empty());
+    if let Some(root) = root {
+        obj.insert("caller_fs_root".into(), json!(root));
+        changed = true;
+    }
+    let Some(session_id) = event.session_id.filter(|s| !s.is_empty()) else {
+        // No caller identity to stamp: a supplied one is the agent's, never trusted.
+        changed |= obj.remove("caller_session_id").is_some();
+        return cont(changed.then_some(StampReplyMutations { arguments: args }));
+    };
+    // Always record the orchestrator session: node sessions nest under it in the
+    // console tree, and the run's outcome is observed from it. Identity comes from
     // the hook envelope, never the agent, so this overwrites any supplied value.
     obj.insert("caller_session_id".into(), json!(session_id));
-    // If the caller opted into reply_to, stamp the true identity into it too.
-    if obj.contains_key("reply_to") {
-        // Carry over a caller-supplied template; overwrite identity from the envelope.
-        let template = obj.get("reply_to").and_then(|r| r.get("template")).cloned();
-        let mut reply = serde_json::Map::new();
-        reply.insert("session_id".into(), json!(session_id));
-        if let Some(m) = event.model.filter(|s| !s.is_empty()) {
-            reply.insert("model".into(), json!(m));
-        }
-        if let Some(p) = event.provider.filter(|s| !s.is_empty()) {
-            reply.insert("provider".into(), json!(p));
-        }
-        // Caller's dispatch policy from the envelope (identity-stamped, never from
-        // the agent), so reply delivery can wake the caller with its own reach.
-        if let Some(f) = event.functions {
-            reply.insert("functions".into(), f);
-        }
-        if let Some(t) = template {
-            reply.insert("template".into(), t);
-        }
-        obj.insert("reply_to".into(), Value::Object(reply));
-    }
     cont(Some(StampReplyMutations { arguments: args }))
 }
 
 /// Pre_call hook handler: stamp the caller identity into the call's arguments
 /// (see `decide`) and ALWAYS continue. The hook never parks or blocks the harness
-/// turn — `workflow::start` is fire-and-forget; the outcome comes back via
-/// `reply_to` / `notify`.
+/// turn — `workflow::start` is fire-and-forget; the outcome comes back through an
+/// observe of `workflow::on-run-completed` or `notify`.
 pub async fn handle(event: StampReplyEvent) -> Result<StampReplyResponse, iii_sdk::errors::Error> {
     Ok(decide(event))
 }
@@ -141,61 +136,31 @@ mod tests {
     }
 
     #[test]
-    fn stamps_session_and_model_when_reply_to_present() {
-        let out = wire(decide(event(
-            "sess_1",
-            "m1",
-            json!({
-                "definition": { "version": 1 },
-                "reply_to": {}
-            }),
-        )));
-        let args = &out["mutations"]["arguments"];
-        let rt = &args["reply_to"];
-        assert_eq!(out["decision"], "continue");
-        assert_eq!(rt["session_id"], "sess_1");
-        assert_eq!(rt["model"], "m1");
-        // Caller session is also captured for tree-nesting.
-        assert_eq!(args["caller_session_id"], "sess_1");
-    }
-
-    #[test]
-    fn captures_caller_function_policy_into_reply_to() {
-        // The envelope carries the caller turn's dispatch policy; decide stamps it
-        // into reply_to so delivery can wake the caller with its own reach.
+    fn leaves_reply_to_alone_and_stamps_the_session_and_folder() {
+        // `reply_to` was removed: `workflow::start` refuses it, so the hook passes
+        // it through untouched instead of stamping an identity into it.
+        let reply_to = json!({ "session_id": "victim", "template": "done:" });
         let out = wire(decide(
             serde_json::from_value(json!({
-                "session_id": "sess_1",
-                "model": "m1",
-                "functions": { "allow": ["*"], "deny": ["workflow::*"] },
-                "call": { "arguments": { "definition": { "version": 1 }, "reply_to": {} } },
+                "session_id": "real_caller",
+                "metadata": { "fs_scope": { "root": "/home/u/proj" } },
+                "call": { "arguments": {
+                    "reply_to": reply_to,
+                    "caller_session_id": "victim"
+                } },
             }))
             .expect("envelope"),
         ));
-        let rt = &out["mutations"]["arguments"]["reply_to"];
-        assert_eq!(rt["functions"]["allow"][0], "*");
-        assert_eq!(rt["functions"]["deny"][0], "workflow::*");
+        let args = &out["mutations"]["arguments"];
+        assert_eq!(args["reply_to"], reply_to);
+        assert_eq!(args["caller_session_id"], "real_caller"); // overwritten
+        assert_eq!(args["caller_fs_root"], "/home/u/proj");
     }
 
     #[test]
-    fn overwrites_agent_supplied_session_id() {
-        // Spoof attempt: agent points reply_to at someone else's session.
-        let out = wire(decide(event(
-            "real_caller",
-            "m1",
-            json!({
-                "reply_to": { "session_id": "victim", "template": "done:" }
-            }),
-        )));
-        let rt = &out["mutations"]["arguments"]["reply_to"];
-        assert_eq!(rt["session_id"], "real_caller"); // overwritten
-        assert_eq!(rt["template"], "done:"); // template preserved
-    }
-
-    #[test]
-    fn stamps_caller_session_when_reply_to_absent() {
-        // Fire-and-forget start (no reply_to): still capture the caller session
-        // so the run's node sessions can nest under the orchestrator chat.
+    fn stamps_caller_session_on_a_plain_start() {
+        // Capture the caller session so the run's node sessions can nest under
+        // the orchestrator chat, and nothing else.
         let out = wire(decide(event(
             "sess_1",
             "m1",
@@ -204,7 +169,20 @@ mod tests {
         assert_eq!(out["decision"], "continue");
         let args = &out["mutations"]["arguments"];
         assert_eq!(args["caller_session_id"], "sess_1");
-        assert!(args.get("reply_to").is_none()); // no reply_to manufactured
+        assert!(args.get("reply_to").is_none());
+    }
+
+    #[test]
+    fn drops_a_supplied_caller_session_when_the_envelope_has_none() {
+        let mut e = event(
+            "",
+            "",
+            json!({"result": {"n": 1}, "caller_session_id": "wf_r_x_other@r0"}),
+        );
+        e.session_id = None;
+        let args = wire(decide(e))["mutations"]["arguments"].clone();
+        assert!(args.get("caller_session_id").is_none(), "{args}");
+        assert_eq!(args["result"], json!({"n": 1}));
     }
 
     #[test]
@@ -214,6 +192,40 @@ mod tests {
         // A bare continue with no mutations key — the harness parses this
         // identically to the old `null` reply (continue unchanged).
         assert_eq!(wire(decide(ev)), json!({ "decision": "continue" }));
+    }
+
+    #[test]
+    fn stamps_caller_fs_root_from_envelope_metadata() {
+        // Forge attempt: the agent names another folder; the caller turn's wins.
+        let out = wire(decide(
+            serde_json::from_value(json!({
+                "session_id": "s_orch",
+                "metadata": { "fs_scope": { "root": "/home/u/proj" } },
+                "call": { "arguments": { "definition": {}, "caller_fs_root": "/etc" } },
+            }))
+            .expect("envelope"),
+        ));
+        let args = &out["mutations"]["arguments"];
+        assert_eq!(args["caller_fs_root"], "/home/u/proj");
+        assert_eq!(args["caller_session_id"], "s_orch");
+    }
+
+    #[test]
+    fn removes_supplied_caller_fs_root_when_envelope_has_none() {
+        let args = json!({ "definition": {}, "caller_fs_root": "/etc" });
+        let out = wire(decide(event("s_orch", "m1", args.clone())));
+        assert!(out["mutations"]["arguments"]
+            .get("caller_fs_root")
+            .is_none());
+        // The removal runs without a session id too.
+        let out = wire(decide(
+            serde_json::from_value(json!({ "call": { "arguments": args } })).expect("envelope"),
+        ));
+        assert_eq!(
+            out["mutations"]["arguments"],
+            json!({ "definition": {} }),
+            "{out}"
+        );
     }
 
     /// Mirrors the registry publish gate (`collect_worker_interface.py`): the

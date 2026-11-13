@@ -3,12 +3,15 @@
 //! guarding them with one per-run lock closes the read-modify-write race within
 //! a single process.
 //!
-//! NOTE: this is single-process correctness. A multi-process deployment needs
-//! an engine-level compare-and-set on the run record (which iii-state does NOT
-//! provide); the fail-safe is the deterministic child-session id and
-//! `workflow_node_result` key, which keeps duplicate deliveries idempotent.
-//! For multi-instance HA, shard `workflow::tick` by `run_id` so one owning
-//! instance handles all writes for a given run — no new code required.
+//! The fixed key `"idem"` (`start::IDEM_LOCK`) also serializes idempotency-key
+//! check-and-set against its GC delete.
+//!
+//! NOTE: this is single-process correctness, which holds because the engine
+//! allows one instance per namespace. `state::compare-and-set` exists but is not
+//! adopted (whole-value compare, absent equals stored null, no size guard,
+//! scope-wide WATCH with 8 attempts on Redis); the fail-safe is the
+//! deterministic child-session id and `workflow_node_result` key, which keeps
+//! duplicate deliveries idempotent.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};

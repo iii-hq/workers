@@ -29,17 +29,14 @@ fn three_node_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-opus-4-8".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "run_input".into(),
                 template: Some("List the docs to read for: {{topic}}".to_string()),
             },
-            depends_on: vec![],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -48,10 +45,8 @@ fn three_node_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "fanout_item".into(),
@@ -60,7 +55,9 @@ fn three_node_def() -> WorkflowDef {
             depends_on: vec!["plan".to_string()],
             fanout: Some(FanoutSpec {
                 over: "node:plan.result.docs".to_string(),
+                items: None,
             }),
+            ..Default::default()
         },
     );
 
@@ -69,17 +66,15 @@ fn three_node_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-opus-4-8".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "node:read".into(),
                 template: Some("Synthesize from: {{results}}".to_string()),
             },
             depends_on: vec!["read".to_string()],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -90,6 +85,7 @@ fn three_node_def() -> WorkflowDef {
             from: "node:synthesize".into(),
         },
         default_functions: None,
+        max_concurrency: None,
     }
 }
 
@@ -111,14 +107,15 @@ fn new_record(def_input: Value) -> WorkflowRunRecord {
         result: None,
         result_error: None,
         notify: None,
-        reply_to: None,
         caller_session_id: None,
+        caller_fs_root: None,
+        idem_key: None,
         created_at: 0,
         updated_at: 0,
     }
 }
 
-/// Run one tick step (expand fanouts + decide).
+/// Run one tick step (expand loops and fanouts + decide), in the tick's order.
 ///
 /// If the decision is `Fire(uids)`, mark each uid as Running with synthetic
 /// session/turn ids so the record advances correctly.
@@ -127,6 +124,7 @@ fn drive_step(
     record: &mut WorkflowRunRecord,
     results: &BTreeMap<String, Value>,
 ) -> TickDecision {
+    dag::expand_ready_loops(def, record, results);
     dag::expand_ready_fanouts(def, record, results);
     let decision = decide(def, record);
     if let TickDecision::Fire(ref uids) = decision {
@@ -137,11 +135,8 @@ fn drive_step(
                     state: NodeState::Running,
                     session_id: Some(format!("wf_run_test_{}", uid)),
                     turn_id: Some(format!("turn_{}", uid)),
-                    result_ref: None,
-                    result_error: None,
                     pending_at: Some(1_000_000),
-                    pending_timeout_ms: None,
-                    retries: 0,
+                    ..Default::default()
                 },
             );
         }
@@ -299,10 +294,7 @@ fn redelivered_drive_is_stable() {
             session_id: Some("wf_run_test_plan".to_string()),
             turn_id: Some("turn_plan".to_string()),
             result_ref: Some("run_test/plan".to_string()),
-            result_error: None,
-            pending_at: None,
-            pending_timeout_ms: None,
-            retries: 0,
+            ..Default::default()
         },
     );
     results.insert("plan".to_string(), json!({"docs": ["a", "b"]}));
@@ -357,11 +349,8 @@ fn completed_with_result_error_marks_node_failed() {
             state: NodeState::Running,
             session_id: Some("wf_run_test_plan".to_string()),
             turn_id: Some("turn_plan".to_string()),
-            result_ref: None,
-            result_error: None,
             pending_at: Some(1_000_000),
-            pending_timeout_ms: None,
-            retries: 0,
+            ..Default::default()
         },
     );
 
@@ -415,17 +404,14 @@ fn diamond_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "run_input".into(),
                 template: None,
             },
-            depends_on: vec![],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -434,17 +420,15 @@ fn diamond_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "node:a".into(),
                 template: None,
             },
             depends_on: vec!["a".to_string()],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -453,17 +437,15 @@ fn diamond_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "node:a".into(),
                 template: None,
             },
             depends_on: vec!["a".to_string()],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -472,10 +454,8 @@ fn diamond_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 // Join node: read BOTH branches. depends_on lists b and c, so the
@@ -487,7 +467,7 @@ fn diamond_def() -> WorkflowDef {
                 template: None,
             },
             depends_on: vec!["b".to_string(), "c".to_string()],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -498,6 +478,7 @@ fn diamond_def() -> WorkflowDef {
             from: "node:d".into(),
         },
         default_functions: None,
+        max_concurrency: None,
     }
 }
 
@@ -655,17 +636,14 @@ fn fanout_empty_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "run_input".into(),
                 template: Some("t".to_string()),
             },
-            depends_on: vec![],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -674,10 +652,8 @@ fn fanout_empty_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "fanout_item".into(),
@@ -686,7 +662,9 @@ fn fanout_empty_def() -> WorkflowDef {
             depends_on: vec!["a".to_string()],
             fanout: Some(FanoutSpec {
                 over: "node:a.result.items".to_string(),
+                items: None,
             }),
+            ..Default::default()
         },
     );
 
@@ -695,17 +673,15 @@ fn fanout_empty_def() -> WorkflowDef {
         NodeDef {
             agent: AgentSpec {
                 model: "claude-haiku-4-5".to_string(),
-                provider: None,
-                system_prompt: None,
-                functions: None,
                 output: Some(json!({"type": "json"})),
+                ..Default::default()
             },
             input: InputSpec {
                 from: "node:b".into(),
                 template: Some("t".to_string()),
             },
             depends_on: vec!["b".to_string()],
-            fanout: None,
+            ..Default::default()
         },
     );
 
@@ -716,6 +692,7 @@ fn fanout_empty_def() -> WorkflowDef {
             from: "node:c".into(),
         },
         default_functions: None,
+        max_concurrency: None,
     }
 }
 
@@ -768,22 +745,25 @@ fn empty_fanout_completes_run() {
 
 #[test]
 fn sweep_refires_then_fails_after_budget() {
-    use workflow::timeout::{timeout_action, TimeoutAction};
-    use workflow::types::*;
-    // A Running node, pending_at far in the past, max_retries = 1.
+    use workflow::timeout::{node_limits, timeout_action, TimeoutAction};
+    // The node's own limits win over the worker defaults (30 s, no retries).
+    let mut def = three_node_def();
+    let plan = def.nodes.get_mut("plan").unwrap();
+    plan.timeout_ms = Some(1_000);
+    plan.retries = Some(1);
+    let (timeout_ms, max_retries) = node_limits(&def, "plan", 30_000, 0);
+
+    // A Running node, pending_at far in the past.
     let mut cp = NodeCheckpoint {
         state: NodeState::Running,
-        session_id: Some("wf_r_n@r0".into()),
+        session_id: Some("wf_r_plan@r0".into()),
         turn_id: Some("t0".into()),
-        result_ref: None,
-        result_error: None,
         pending_at: Some(0),
-        pending_timeout_ms: Some(1_000),
-        retries: 0,
+        ..Default::default()
     };
     let now = 10_000;
     // first sweep: under budget -> refire attempt 1
-    match timeout_action(&cp, 30_000, 1, now) {
+    match timeout_action(&cp, timeout_ms, max_retries, now) {
         TimeoutAction::Refire { attempt } => {
             cp.retries = attempt;
             cp.pending_at = Some(now);
@@ -793,7 +773,382 @@ fn sweep_refires_then_fails_after_budget() {
     assert_eq!(cp.retries, 1);
     // second sweep (still stuck): at budget -> fail out
     assert!(matches!(
-        timeout_action(&cp, 30_000, 1, now + 10_000),
+        timeout_action(&cp, timeout_ms, max_retries, now + 10_000),
         TimeoutAction::FailOut
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Test 7b: max_concurrency_drains_fanout_in_waves
+// ---------------------------------------------------------------------------
+
+#[test]
+fn max_concurrency_drains_fanout_in_waves() {
+    let mut def = three_node_def();
+    def.max_concurrency = Some(2);
+    let mut record = new_record(json!({"topic": "rust"}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    assert!(matches!(
+        drive_step(&def, &mut record, &results),
+        TickDecision::Fire(_)
+    ));
+    complete(
+        &mut record,
+        &mut results,
+        "plan",
+        json!({"docs": ["a", "b", "c", "d", "e"]}),
+    );
+
+    let mut waves = Vec::new();
+    loop {
+        match drive_step(&def, &mut record, &results) {
+            TickDecision::Fire(uids) if uids == ["synthesize"] => break,
+            TickDecision::Fire(uids) => {
+                assert!(
+                    matches!(drive_step(&def, &mut record, &results), TickDecision::Park),
+                    "the cap must hold while a wave runs"
+                );
+                for uid in &uids {
+                    complete(&mut record, &mut results, uid, json!({"summary": uid}));
+                }
+                waves.push(uids);
+            }
+            other => panic!("expected Fire, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        waves,
+        vec![
+            vec!["read#0", "read#1"],
+            vec!["read#2", "read#3"],
+            vec!["read#4"],
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: sweep_refire_goes_through_decide
+// ---------------------------------------------------------------------------
+
+/// Prevents: the sweep re-firing a timed-out node directly while a required
+/// sibling had already failed, keeping a dead run spending tokens.
+#[test]
+fn sweep_refire_goes_through_decide() {
+    use workflow::timeout::{mark_refire, timeout_action, TimeoutAction};
+
+    let def = diamond_def();
+    let mut record = new_record(json!({}));
+    record.nodes.insert(
+        "a".into(),
+        NodeCheckpoint {
+            state: NodeState::Done,
+            ..Default::default()
+        },
+    );
+    let running = |uid: &str| NodeCheckpoint {
+        state: NodeState::Running,
+        session_id: Some(format!("wf_run_test_{uid}@r0")),
+        pending_at: Some(0),
+        ..Default::default()
+    };
+    record.nodes.insert("b".into(), running("b"));
+    record.nodes.insert("c".into(), running("c"));
+
+    let cp = record.nodes.get_mut("b").unwrap();
+    let TimeoutAction::Refire { attempt } = timeout_action(cp, 1_000, 1, 10_000) else {
+        panic!("expected Refire");
+    };
+    mark_refire(cp, attempt);
+    assert_eq!(cp.state, NodeState::Pending, "a refired node is Pending");
+    assert_eq!(cp.retries, 1);
+    assert_eq!(
+        cp.session_id.as_deref(),
+        Some("wf_run_test_b@r0"),
+        "the old session stays for the tick to stop"
+    );
+
+    // The next tick re-fires it through decide.
+    match decide(&def, &record) {
+        TickDecision::Fire(uids) => assert_eq!(uids, vec!["b".to_string()]),
+        other => panic!("expected Fire([b]), got {other:?}"),
+    }
+
+    // A required sibling failed: decide finalizes instead of re-firing.
+    complete_with_error(&mut record, "c", "boom");
+    assert!(matches!(
+        decide(&def, &record),
+        TickDecision::Finalize(RunStatus::Failed)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: continue_on_error_feeds_null_and_run_completes
+// ---------------------------------------------------------------------------
+
+/// Three independent text nodes, all required through an array `output.from`;
+/// `y` tolerates failure.
+fn independent_def(y_on_error: &str) -> WorkflowDef {
+    serde_json::from_value(json!({
+        "output": {"from": ["node:x", "node:y", "node:z"]},
+        "nodes": {
+            "x": {"agent": {"model": "m"}, "input": {"from": "run_input"}},
+            "y": {"agent": {"model": "m"}, "input": {"from": "run_input"}, "on_error": y_on_error},
+            "z": {"agent": {"model": "m"}, "input": {"from": "run_input"}}
+        }
+    }))
+    .expect("independent def")
+}
+
+#[test]
+fn continue_on_error_feeds_null_and_run_completes() {
+    let def = independent_def("continue");
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    match drive_step(&def, &mut record, &results) {
+        TickDecision::Fire(uids) => assert_eq!(uids, vec!["x", "y", "z"]),
+        other => panic!("expected Fire([x, y, z]), got {other:?}"),
+    }
+    complete_with_error(&mut record, "y", "boom");
+    assert!(
+        matches!(decide(&def, &record), TickDecision::Park),
+        "a tolerated failure does not finalize while siblings run"
+    );
+    complete(&mut record, &mut results, "x", json!("text x"));
+    assert!(matches!(decide(&def, &record), TickDecision::Park));
+    complete(&mut record, &mut results, "z", json!("text z"));
+    assert!(matches!(
+        decide(&def, &record),
+        TickDecision::Finalize(RunStatus::Completed)
+    ));
+    assert_eq!(
+        dag::gather_output(&def, &record, &results),
+        json!({"x": "text x", "y": null, "z": "text z"})
+    );
+
+    // The same failure without `continue` fails the run at once.
+    let strict = independent_def("fail");
+    let mut record = new_record(json!({}));
+    drive_step(&strict, &mut record, &results);
+    complete_with_error(&mut record, "y", "boom");
+    assert!(matches!(
+        decide(&strict, &record),
+        TickDecision::Finalize(RunStatus::Failed)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Loops: one work/verify group per ticket, then one integration node
+// ---------------------------------------------------------------------------
+
+fn ticket_nodes(ticket: &str, max_repeats: u32) -> Value {
+    json!({
+        format!("{ticket}-work"): {
+            "agent": {"profile": "deepwork-impl"},
+            "input": {"from": "run_input"},
+            "on_error": "continue"
+        },
+        format!("{ticket}-verify"): {
+            "agent": {"profile": "deepwork-adversary", "output": {"type": "json"}},
+            "input": {"from": format!("node:{ticket}-work")},
+            "depends_on": [format!("{ticket}-work")],
+            "loop": {"body": [format!("{ticket}-work")],
+                     "while": {"field": "verdict", "equals": "reject"},
+                     "max_repeats": max_repeats},
+            "on_error": "continue"
+        }
+    })
+}
+
+/// `kan-12` and `kan-13` tickets, each a work → verify loop, read by `integrate`.
+fn wave_def(max_repeats: u32) -> WorkflowDef {
+    let mut nodes = ticket_nodes("kan-12", max_repeats);
+    nodes.as_object_mut().unwrap().extend(
+        ticket_nodes("kan-13", max_repeats)
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    nodes["integrate"] = json!({
+        "agent": {"model": "m"},
+        "input": {"from": ["node:kan-12-verify", "node:kan-13-verify"]},
+        "depends_on": ["kan-12-verify", "kan-13-verify"]
+    });
+    serde_json::from_value(json!({"nodes": nodes, "output": {"from": "node:integrate"}}))
+        .expect("wave def")
+}
+
+/// One ticket's work → verify loop; the run returns the verdict.
+fn ticket_def(max_repeats: u32) -> WorkflowDef {
+    serde_json::from_value(json!({
+        "nodes": ticket_nodes("kan-12", max_repeats),
+        "output": {"from": "node:kan-12-verify"}
+    }))
+    .expect("ticket def")
+}
+
+fn fired(decision: TickDecision) -> Vec<String> {
+    match decision {
+        TickDecision::Fire(uids) => uids,
+        other => panic!("expected Fire, got {other:?}"),
+    }
+}
+
+#[test]
+fn loop_repeats_only_the_rejected_ticket() {
+    let def = wave_def(2);
+    let mut record = new_record(json!({"wave": "w1"}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-12-work", "kan-13-work"]
+    );
+    complete(&mut record, &mut results, "kan-12-work", json!("12 done"));
+    complete(&mut record, &mut results, "kan-13-work", json!("13 done"));
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-12-verify", "kan-13-verify"]
+    );
+    complete(
+        &mut record,
+        &mut results,
+        "kan-12-verify",
+        json!({"verdict": "pass"}),
+    );
+    complete(
+        &mut record,
+        &mut results,
+        "kan-13-verify",
+        json!({"verdict": "reject"}),
+    );
+
+    // Only the rejected ticket repeats; integrate waits for its last pass.
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-13-work#it1"]
+    );
+    complete(
+        &mut record,
+        &mut results,
+        "kan-13-work#it1",
+        json!("13 fixed"),
+    );
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-13-verify#it1"]
+    );
+    complete(
+        &mut record,
+        &mut results,
+        "kan-13-verify#it1",
+        json!({"verdict": "pass"}),
+    );
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["integrate"]
+    );
+    assert_eq!(
+        dag::gather_input(&def, &record, "integrate", &results),
+        json!({"kan-12-verify": {"verdict": "pass"}, "kan-13-verify": {"verdict": "pass"}})
+    );
+    complete(&mut record, &mut results, "integrate", json!("merged"));
+    assert!(matches!(
+        drive_step(&def, &mut record, &results),
+        TickDecision::Finalize(RunStatus::Completed)
+    ));
+    assert_eq!(
+        record.nodes.keys().collect::<Vec<_>>(),
+        vec![
+            "integrate",
+            "kan-12-verify",
+            "kan-12-work",
+            "kan-13-verify",
+            "kan-13-verify#it1",
+            "kan-13-work",
+            "kan-13-work#it1"
+        ]
+    );
+}
+
+#[test]
+fn loop_exhausted_completes_with_last_verdict() {
+    let def = ticket_def(1);
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+
+    for (k, uid) in ["", "#it1"].into_iter().enumerate() {
+        let work = format!("kan-12-work{uid}");
+        let verify = format!("kan-12-verify{uid}");
+        assert_eq!(
+            fired(drive_step(&def, &mut record, &results)),
+            vec![work.clone()]
+        );
+        complete(&mut record, &mut results, &work, json!(format!("try {k}")));
+        assert_eq!(
+            fired(drive_step(&def, &mut record, &results)),
+            vec![verify.clone()]
+        );
+        let verdict = json!({"verdict": "reject", "findings": [format!("finding {k}")]});
+        complete(&mut record, &mut results, &verify, verdict);
+    }
+
+    assert!(matches!(
+        drive_step(&def, &mut record, &results),
+        TickDecision::Finalize(RunStatus::Completed)
+    ));
+    assert!(!record.nodes.contains_key("kan-12-verify#it2"));
+    assert_eq!(
+        dag::gather_output(&def, &record, &results),
+        json!({"verdict": "reject", "findings": ["finding 1"]})
+    );
+}
+
+#[test]
+fn loop_resumes_from_serialized_record() {
+    let def = ticket_def(2);
+    let mut record = new_record(json!({}));
+    let mut results: BTreeMap<String, Value> = BTreeMap::new();
+    drive_step(&def, &mut record, &results);
+    complete(&mut record, &mut results, "kan-12-work", json!("try 0"));
+    drive_step(&def, &mut record, &results);
+    complete(
+        &mut record,
+        &mut results,
+        "kan-12-verify",
+        json!({"verdict": "reject"}),
+    );
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-12-work#it1"]
+    );
+
+    // A restart reloads the record and results from state; a duplicate tick adds nothing.
+    let mut record: WorkflowRunRecord =
+        serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+    let def: WorkflowDef = serde_json::from_value(serde_json::to_value(&def).unwrap()).unwrap();
+    let before = record.clone();
+    assert!(dag::expand_ready_loops(&def, &mut record, &results).is_empty());
+    assert_eq!(record, before);
+
+    complete(&mut record, &mut results, "kan-12-work#it1", json!("try 1"));
+    assert_eq!(
+        fired(drive_step(&def, &mut record, &results)),
+        vec!["kan-12-verify#it1"]
+    );
+    complete(
+        &mut record,
+        &mut results,
+        "kan-12-verify#it1",
+        json!({"verdict": "pass"}),
+    );
+    assert!(matches!(
+        drive_step(&def, &mut record, &results),
+        TickDecision::Finalize(RunStatus::Completed)
+    ));
+    assert_eq!(
+        dag::gather_output(&def, &record, &results),
+        json!({"verdict": "pass"})
+    );
 }

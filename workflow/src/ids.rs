@@ -25,9 +25,33 @@ pub fn node_uid(node_id: &str, item: Option<u32>) -> String {
     }
 }
 
+/// Uid of loop pass `k` of a node: `"{node_id}#it{k}"`, or `node_id` itself for
+/// the first pass (`k == 0`).
+pub fn iter_uid(node_id: &str, k: u32) -> String {
+    match k {
+        0 => node_id.to_string(),
+        k => format!("{node_id}#it{k}"),
+    }
+}
+
+/// Split a uid into its node part and loop pass: `"v#it2"` → `("v", 2)`; any other
+/// uid (a plain id, a fanout item) is pass 0 of itself.
+pub fn split_iteration(uid: &str) -> (&str, u32) {
+    uid.rsplit_once("#it")
+        .filter(|(_, k)| k.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(id, k)| Some((id, k.parse().ok()?)))
+        .unwrap_or((uid, 0))
+}
+
 /// Deterministic child session id (opaque idempotency handle; never parsed back).
 pub fn child_session_id(run_id: &str, node_uid: &str) -> String {
     format!("wf_{}_{}", run_id, node_uid)
+}
+
+/// Session id of one node attempt (`wf_<run>_<uid>@r<attempt>`), also its
+/// `harness::send` idempotency key.
+pub fn attempt_session_id(run_id: &str, node_uid: &str, attempt: u32) -> String {
+    child_session_id(run_id, &format!("{node_uid}@r{attempt}"))
 }
 
 /// Key within scope "workflow_node_result" for a node's stored result blob.
@@ -55,6 +79,23 @@ mod tests {
     }
 
     #[test]
+    fn iter_uid_and_split_iteration_round_trip() {
+        assert_eq!(iter_uid("v", 0), "v");
+        assert_eq!(iter_uid("v", 3), "v#it3");
+        for k in 0..=9 {
+            assert_eq!(
+                split_iteration(&iter_uid("kan-12-verify", k)),
+                ("kan-12-verify", k)
+            );
+        }
+        // A fanout item, or a node id that merely contains "it", is not a pass.
+        assert_eq!(split_iteration("read#3"), ("read#3", 0));
+        assert_eq!(split_iteration("edit"), ("edit", 0));
+        assert_eq!(split_iteration("v#it"), ("v#it", 0));
+        assert_eq!(split_iteration("v#itx"), ("v#itx", 0));
+    }
+
+    #[test]
     fn test_child_session_id() {
         assert_eq!(child_session_id("r_1", "read#0"), "wf_r_1_read#0");
     }
@@ -68,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_child_session_id_distinct_per_attempt_but_stable_within_attempt() {
-        // fire_node uses child_session_id(run, "{node_uid}@r{attempt}") as BOTH the
+        // The tick uses attempt_session_id(run, node_uid, attempt) as BOTH the
         // session_id AND the harness idempotency_key. That is the crash-resume
         // fail-safe: re-firing the SAME attempt (a tick replay after a crash) reuses
         // the SAME key so harness::send dedups and does not double-spawn, while a

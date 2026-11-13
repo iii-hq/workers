@@ -25012,13 +25012,13 @@
     }
   },
   {
-    "description": "Fetch the stored JSON result of a single node by its uid — the `node_uid` arg (alias `uid`): a node_id, or '{node_id}#{i}' for a fanned-out item. Use it to recover partial outputs after a run fails partway: workflow::status lists the uids that have a result under `node_results`. Returns {result: null} if the node has not completed or has no stored result.",
+    "description": "Fetch the stored JSON result of one node: `node_uid` is the node id, '{node_id}#{i}' for a fanout item, or '{node_id}#it{k}' for loop pass k ('#it0' is the first pass; the bare id of a node in a loop is its last pass; workflow::status lists the done passes under `node_results`). Returns {result: null} when that node is not done.",
     "name": "workflow::node-result",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "node_uid": {
-          "description": "Node uid: the node id for a plain node, or `\"{node_id}#{i}\"` for a fanned-out item. `workflow::status` lists the uids that have a result under `node_results` (its keys ARE the uids). The canonical arg name is `node_uid`; the shorter `uid` is accepted as an alias.",
+          "description": "The node id, `\"{node_id}#{i}\"` for a fanout item, or `\"{node_id}#it{k}\"` for loop pass k (`#it0` is the first pass); the bare id of a loop node or body node returns its last pass. `uid` is accepted as an alias.",
           "type": "string"
         },
         "run_id": {
@@ -25035,7 +25035,7 @@
     }
   },
   {
-    "description": "Internal pre_call hook on workflow::start: stamps the caller's session (and, for `reply_to`, model/provider/policy) into the arguments. Always continues; not called directly.",
+    "description": "Internal pre_call hook on workflow::start: stamps the caller's session and folder into the arguments. Always continues; not called directly.",
     "name": "workflow::stamp-reply",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -25068,24 +25068,6 @@
             }
           ]
         },
-        "functions": {
-          "default": null,
-          "description": "Caller turn's dispatch policy, captured into the stamped `reply_to` so the reply can wake the caller with its own reach."
-        },
-        "model": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "provider": {
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "session_id": {
           "default": null,
           "type": [
@@ -25106,29 +25088,181 @@
     }
   },
   {
-    "description": "Run a multi-agent workflow and return its run_id immediately. Declarative DAG: fan-out, barrier/join, durable, crash-resumable. To get the result set `reply_to: {}` (or `notify`) and END YOUR TURN — it arrives as a separate message when the run ends; never poll workflow::status in a loop.",
+    "description": "Run a multi-agent workflow and return {run_id, next} immediately. Declarative DAG: fan-out, barrier/join, durable, crash-resumable. Shape: {\"nodes\":{\"a\":{\"task\":\"…\"},\"b\":{\"task\":\"…\",\"reads\":\"a\"}}}; a node omits `model` to run on your model. To get the result make the `harness::observe` call that `next` gives and END YOUR TURN — it arrives as a `[notification]` when the run ends; workers pass `notify`. Never poll workflow::status in a loop.",
     "name": "workflow::start",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
-        "AgentSpec": {
+        "Fanout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": true,
+              "type": "array"
+            }
+          ],
+          "description": "`\"<id>.<path to an array>\"`, or the array itself."
+        },
+        "LoopCondition": {
           "additionalProperties": false,
-          "description": "The sub-agent that runs a node (one harness session).",
+          "description": "`field` of the loop node's result equals `equals`.",
           "properties": {
+            "equals": {
+              "description": "The loop repeats while the field is this string; a missing field, a non-string value or a null result does not hold.",
+              "type": "string"
+            },
+            "field": {
+              "description": "Dotted path into the loop node's JSON result, e.g. `\"verdict\"`. The loop node's `schema` must list each segment in `required`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "equals",
+            "field"
+          ],
+          "type": "object"
+        },
+        "LoopSpec": {
+          "additionalProperties": false,
+          "description": "A bounded do-while loop on the loop node. Pass `k` of a node runs as uid `<id>#it<k>` (the first pass keeps `<id>`); every node of the loop gets `{\"input\": <its input>, \"loop_previous\": <the loop node's previous result>}`, and a body node also `\"own_previous\": <its own previous result>`, both null on the first pass: the same form as a fanout copy's `{\"input\": …, \"fanout_item\": …}`.",
+          "properties": {
+            "body": {
+              "default": [],
+              "description": "Other node ids that repeat with the loop node; the loop node must read each of them, directly or through other body nodes. No loop node may declare `fanout`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_repeats": {
+              "description": "Passes after the first, 1 to 9: `2` means at most 3 passes. The loop also ends quietly at the run's materialized-node cap.",
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "while": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/LoopCondition"
+                }
+              ],
+              "description": "The loop repeats while this condition holds on the loop node's JSON result."
+            }
+          },
+          "required": [
+            "max_repeats",
+            "while"
+          ],
+          "type": "object"
+        },
+        "Node": {
+          "description": "One sub-agent session. Its opening message is `task`, followed by its input as JSON, fenced as untrusted data.",
+          "properties": {
+            "fanout": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/Fanout"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One copy of this node runs per element of an array: `\"<id>.<path>\"` names an array in that node's JSON result (that node needs `schema`), or write the array itself. Without `reads` a copy receives its element; with `reads` it receives `{\"input\": <what reads delivers>, \"fanout_item\": <its element>}`. The node's result is the array of its copies' results, in element order. Not allowed on a node of a loop."
+            },
+            "filesystem_root": {
+              "description": "Absolute folder the node's session runs in, in place of the caller's folder. It must lie inside the caller's folder (symlinks resolved), which is checked once, at start; a run without a caller folder cannot set it. Fanout copies and loop passes share it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "functions": {
               "description": "Child dispatch policy: an allow-list array, a single string, or `{ \"allow\": [...], \"deny\": [...] }`; omit to inherit `default_functions`."
             },
-            "model": {
-              "description": "Model id registered on this engine (discover them with `router::models::list`); an unregistered id is rejected at start.",
-              "type": "string"
-            },
-            "output": {
-              "description": "Output contract; any node another node reads or fans out over must be `{\"type\":\"json\",\"schema\":{...}}` declaring every field read downstream."
-            },
-            "provider": {
-              "description": "Provider override; defaults to the routed provider for the model.",
+            "label": {
+              "description": "Display name, at most 80 characters: the node session's title (a fanout copy gets ` #<i>`) and the node's entry in `workflow::status` details.",
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "loop": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LoopSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Bounded do-while loop carried by this node (the loop node): this node and its `body` run again, as new sessions, while `while` holds on this node's result. Outside the loop only this node can be read, and readers get its last pass. Put the loop node in `output`, or read it from a later node. After the run, a result whose `while.field` still equals `equals` means the loop gave up: the repeats ran out, or a node of the last pass failed (see `failed_nodes`). Any other value means the condition stopped holding. The pass count is the number of `<id>#it<k>` uids in `nodes`, plus one. Say in the `task` of each node of the loop how to use `loop_previous` (for example: fix every finding in it), and in a body node whose result is the work itself, to build on `own_previous`, its own result of the previous pass."
+            },
+            "model": {
+              "description": "Omit to run this node on your own model. Otherwise a model id registered on this engine (discover them with `router::models::list`); an unregistered id is refused at start.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "on_error": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/OnError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`\"fail\"` (default): a failed or cancelled node fails the run when the output needs it. `\"continue\"`: it counts as finished with a `null` result, so readers still run and the run can complete; the error stays in `node_errors`. Retries run first; a run abort still cancels everything."
+            },
+            "phase": {
+              "description": "Group name, at most 80 characters; `workflow::status` counts the nodes of each phase (total, done, failed, running).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "profile": {
+              "description": "Agent profile id (`directory::agents::*`: lowercase letters, digits, `-` and `_`, at most 64 characters), sent as the harness `options.agent`. The profile supplies the system prompt, so `system_prompt` must be omitted, and a model it pins (also through `extends`) wins over `model`. The profile grants no permissions: `functions` still decides them.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "description": "Provider override; defaults to the routed provider for the model. Only with `model` or `profile`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reads": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NodeRefs"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The node(s) whose result this node receives; it runs after them. One id delivers that result as is (a text node arrives as a JSON string, a fanout node as the array of its copies' results); an array of ids delivers an object keyed by id. Omit it to receive the run `input`. On a `fanout` node the value arrives under `input`."
+            },
+            "retries": {
+              "description": "Refires after a timeout, each in a new session; a failed turn is never retried. At most 10; the default refires once, and a refire repeats the node's side effects. `0` fails the node at its first timeout.",
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "schema": {
+              "additionalProperties": true,
+              "description": "JSON Schema, with a top-level `type`, of the JSON value this node delivers; declare every field read downstream. Omit it for a text node.",
+              "type": [
+                "object",
                 "null"
               ]
             },
@@ -25138,114 +25272,50 @@
                 "string",
                 "null"
               ]
-            }
-          },
-          "required": [
-            "model"
-          ],
-          "type": "object"
-        },
-        "FanoutSpec": {
-          "additionalProperties": false,
-          "description": "Per-item parallelism: expand a node into one child per element of an array.",
-          "properties": {
-            "over": {
-              "description": "`\"node:<dep>.<path>\"` to an array the dependency's `agent.output` schema declares; one child runs per element, reading it as `\"fanout_item\"`.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "over"
-          ],
-          "type": "object"
-        },
-        "InputFrom": {
-          "anyOf": [
-            {
-              "description": "`\"run_input\"` (the run's top-level input), `\"node:<id>\"` (that dependency's result), or `\"fanout_item\"` (this fanout child's array element).",
+            },
+            "task": {
+              "description": "What this node does: the text of its opening message, where the instructions go.",
               "type": "string"
             },
-            {
-              "description": "Several `\"node:<id>\"` sources, each also listed in `depends_on`, joined into one object keyed by node id.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          ],
-          "description": "Where a node's input comes from: one source, or an array of `\"node:<id>\"` refs gathered into one object keyed by node id."
-        },
-        "InputSpec": {
-          "additionalProperties": false,
-          "description": "What a node receives as its opening message.",
-          "properties": {
-            "from": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/InputFrom"
-                }
-              ],
-              "description": "Source of the input value: a single source or, for a join node, an array of `\"node:<id>\"` refs."
-            },
-            "template": {
-              "description": "Text prepended to the JSON-serialized input as the node's opening message.",
+            "timeout_ms": {
+              "description": "Milliseconds an attempt may run, wall clock from its send (harness queue wait and parked time included; checked once a minute). At least 1000; defaults to the worker's `default_pending_timeout_ms`. Fanout copies use the node's value.",
+              "format": "uint64",
+              "minimum": 0.0,
               "type": [
-                "string",
+                "integer",
                 "null"
               ]
             }
           },
           "required": [
-            "from"
+            "task"
           ],
           "type": "object"
         },
-        "NodeDef": {
-          "additionalProperties": false,
-          "description": "One agent in the DAG, plus its wiring (inputs, dependency edges, optional fan-out).",
-          "properties": {
-            "agent": {
-              "$ref": "#/definitions/AgentSpec"
+        "NodeRefs": {
+          "anyOf": [
+            {
+              "type": "string"
             },
-            "depends_on": {
-              "default": [],
-              "description": "Prerequisite node ids; the node fires only once all of them are Done (the barrier / join).",
+            {
               "items": {
                 "type": "string"
               },
               "type": "array"
-            },
-            "fanout": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FanoutSpec"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Fan out: one child agent runs per item of the referenced array."
-            },
-            "input": {
-              "$ref": "#/definitions/InputSpec"
             }
-          },
-          "required": [
-            "agent",
-            "input"
           ],
-          "type": "object"
+          "description": "A node id, or an array of node ids."
         },
         "NotifySpec": {
           "additionalProperties": false,
-          "description": "Completion callback: `function_id` is called once on terminal state with `{run_id, status, result, result_error}`; at-least-once, dedup on `run_id`.",
+          "description": "Completion callback: `function_id` is called once on terminal state with `{run_id, status, result, result_error, failed_nodes}`; at-least-once, dedup on `run_id`.",
           "properties": {
             "function_id": {
               "description": "Function id to call on terminal state, e.g. `\"myworker::wf-done\"`.",
               "type": "string"
             },
             "queue": {
-              "description": "Queue for durable delivery; defaults to `\"default\"`.",
+              "description": "Queue for durable delivery; defaults to the worker's `\"workflow-notify\"` queue.",
               "type": [
                 "string",
                 "null"
@@ -25257,114 +25327,46 @@
           ],
           "type": "object"
         },
-        "OutputRef": {
-          "additionalProperties": false,
-          "description": "Selects the node whose result becomes the run's `result`.",
-          "properties": {
-            "from": {
-              "description": "`\"node:<id>\"` of an existing node; for a fanout group the result is the array of its children's results, in order.",
+        "OnError": {
+          "description": "What a node's failure does to the rest of the run.",
+          "oneOf": [
+            {
+              "description": "A failed or cancelled node fails the run when the output needs it.",
+              "enum": [
+                "fail"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "A failed or cancelled node counts as finished with a `null` result: its consumers still fire, and a fan-in keeps the `null` at its position.",
+              "enum": [
+                "continue"
+              ],
               "type": "string"
             }
-          },
-          "required": [
-            "from"
-          ],
-          "type": "object"
-        },
-        "ReplySpec": {
-          "additionalProperties": false,
-          "description": "Push the outcome into the caller's session as a message; agents send `{}` (optionally `template`) — the rest is auto-stamped from the caller's turn.",
-          "properties": {
-            "functions": {
-              "description": "Caller turn's dispatch policy (`{allow, deny}`), auto-stamped so the reply can wake an idle caller with its original reach."
-            },
-            "model": {
-              "description": "Model for the reply turn; auto-stamped from the caller's turn.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "provider": {
-              "description": "Provider override; auto-stamped from the caller's turn.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "session_id": {
-              "description": "Target session; auto-stamped from the caller's turn.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "template": {
-              "description": "Text prepended to the formatted outcome.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "WorkflowDef": {
-          "additionalProperties": false,
-          "description": "Declarative multi-agent DAG, durable and crash-resumable: nodes are sub-agent sessions, `depends_on` the edges, `output` the returned node.",
-          "properties": {
-            "default_functions": {
-              "description": "Dispatch policy inherited by every node that omits `agent.functions` (same shape); when unset those nodes get `[\"*\"]`, everything."
-            },
-            "nodes": {
-              "additionalProperties": {
-                "$ref": "#/definitions/NodeDef"
-              },
-              "description": "Nodes keyed by node id; an id must not contain `#`, `.`, or `/`, and the `depends_on` graph must be acyclic.",
-              "type": "object"
-            },
-            "output": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/OutputRef"
-                }
-              ],
-              "description": "Which node's result the whole run returns."
-            },
-            "version": {
-              "default": 1,
-              "description": "Schema version; only `1` is supported.",
-              "format": "uint32",
-              "minimum": 0.0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "nodes",
-            "output"
-          ],
-          "type": "object"
+          ]
         }
       },
+      "description": "Run a DAG of sub-agent sessions, durable and crash-resumable. Example: `{\"nodes\":{\"a\":{\"task\":\"<what a does>\"},\"b\":{\"task\":\"<what b does>\",\"reads\":\"a\"}},\"input\":<any JSON>}`.",
       "properties": {
+        "caller_fs_root": {
+          "description": "Caller's folder. On a call from an agent turn the `workflow::stamp-reply` hook replaces it with the turn's `metadata.fs_scope.root`; the harness refuses `workflow::start` as a binding target and `fp` as a pipe step, since both skip that hook. Every node session runs in it. Omit it to use the harness default folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "caller_session_id": {
-          "default": null,
           "description": "Orchestrator session, stamped by the `workflow::stamp-reply` hook from the caller's turn; never trusted from the agent.",
           "type": [
             "string",
             "null"
           ]
         },
-        "definition": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/WorkflowDef"
-            }
-          ],
-          "description": "The workflow DAG to run (`workflow` is accepted as an alias key)."
+        "default_functions": {
+          "description": "Dispatch policy inherited by every node that omits `functions` (same shape); when unset those nodes get everything except `workflow::*`, `configuration::*`, `approval::*`, `harness::hook::*` and `harness::send`."
         },
         "idempotency_key": {
-          "default": null,
           "description": "Dedupe key; a repeated key returns the original `run_id` instead of launching a duplicate run.",
           "type": [
             "string",
@@ -25373,7 +25375,23 @@
         },
         "input": {
           "default": null,
-          "description": "Any JSON value; read by nodes whose `input.from` is `\"run_input\"`."
+          "description": "Any JSON value. Every node without `reads` or `fanout` receives it."
+        },
+        "max_concurrency": {
+          "description": "At most this many node sessions live at once (running, or reserved for a send); further ready nodes wait for a slot. At least 1; unset means no cap.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "nodes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Node"
+          },
+          "description": "One sub-agent session per node, keyed by node id; an id must not contain `#`, `.` or `/`.",
+          "type": "object"
         },
         "notify": {
           "anyOf": [
@@ -25384,31 +25402,29 @@
               "type": "null"
             }
           ],
-          "default": null,
           "description": "Completion callback called once when the run reaches a terminal state, instead of polling `workflow::status`."
         },
-        "reply_to": {
+        "output": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ReplySpec"
+              "$ref": "#/definitions/NodeRefs"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "description": "Deliver the outcome into your session as a new message: send `{}` (optionally `template`), then end your turn — it arrives when the run finishes."
+          "description": "What the run returns: a node id returns that node's result as is, an array of ids an object keyed by id. Omit it to return every node no other node reads (one such node: its result as is)."
         }
       },
       "required": [
-        "definition"
+        "nodes"
       ],
       "title": "StartRequest",
       "type": "object"
     }
   },
   {
-    "description": "Return the current status of a workflow run (state per node, plus node_errors / node_results / result / result_error), or null if not found. A single check is cheap, but each call costs one of your turns — do NOT poll in a loop waiting for a long run to finish, that exhausts your turn budget. To be pushed the outcome when the run reaches a terminal state, pass `notify` to workflow::start instead.",
+    "description": "Return a snapshot of a workflow run (status, per-node state with unstarted nodes as pending, node_errors, node_results, phases, result, result_error), or null if not found. `details: true` adds node_details: label, phase, model, session, timings, live usage and harness status per node (at most 100 nodes). Each call costs a turn: do not poll in a loop; observe `workflow::on-run-completed` with args `{run_id}`, or pass `notify` to workflow::start, to be pushed the outcome.",
     "name": "workflow::status",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
