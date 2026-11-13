@@ -76,8 +76,10 @@ client that only the Console drives.
   moves every idle pane that follows the global account unless
   `move: new_only`. `rules` with `mode: switch` lets the worker change the
   global account by itself later. `remove` with `delete_files` deletes that
-  account's folder, its sign-in included. `login` opens a window where the
-  person signs in; never sign in for them.
+  account's folder, its sign-in included. `login_start` gives the person a
+  sign-in link and `login_code` types the code they copied from it; never
+  sign in for them, never ask for or repeat a code, and leave `browser` at
+  `none` unless the person sits at the worker's computer.
 - Starting Claude Code with `claude.skip_permissions: true` lets it run
   commands and change or delete files without asking. Only do it when the
   person asks for it, and say so before asking for approval.
@@ -128,7 +130,7 @@ client that only the Console drives.
 - `tmux::usage::read` — Claude Code's accounts with each one's 5-hour window, week and per-model weeks (used %, reset time), Codex's plan, windows and credits, the global account, the rules and any suggestion; `refresh: true` reads again now (at most once a minute per account).
 - `tmux::accounts::list` — the Claude Code accounts (name, colour, folder, email, plan, signed in, panes running on it, usage), the global one, the rules, the suggestion and the latest switch.
 - `tmux::accounts::add` / `update` / `remove` — add an account (`name`, `color`, `shared` groups linked from `~/.claude`), rename, recolour or change what it shares, take it off the list (`delete_files` deletes its folder; never `default` or the global one).
-- `tmux::accounts::login` — a window named `login` in `session` running `claude auth login` for an account; the person opens the link and pastes the code there.
+- `tmux::accounts::login_start` / `login_code` / `login_cancel` — sign an account in: `login_start` runs `claude auth login` for it in a hidden terminal and answers the link (`url`) the person opens; `login_code` types the code the page showed them (`{state: "done", account}`, or `invalid_code`, `rejected`, `expired`, `gone`, `failed`); `browser: host` opens the worker computer's own browser, which signs in with no code. Sign-ins under way are in `accounts::list` as `logins`.
 - `tmux::accounts::global` — make an account global; `move`: `idle_now_working_after` (default) or `new_only`. Answers the panes `moved`, `after_turn` and `stayed`.
 - `tmux::panes::account` — `global` makes a pane follow the global account, an account id pins it; Claude Code moves there now when idle, after its turn otherwise (`after_turn`); the account it runs on cancels a waiting move.
 - `tmux::accounts::move_idle` — move the idle Claude Code panes of account `from` to `to`, pinned there.
