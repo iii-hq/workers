@@ -2230,7 +2230,9 @@ async fn execute_run(
                 .await
                 .map_err(|e| format!("memory commit failed: {e}"))?
             else {
-                drops.drop_items("conflict", 1);
+                // Durable like a write: its receipt keeps a retry from
+                // seeing it again, so it counts now, not at run end.
+                tally.drop_items("conflict", 1);
                 continue;
             };
             retired

@@ -2205,7 +2205,7 @@ mod productive {
             ));
             stack.script.lock().unwrap().model_pause = Some(pause.clone());
             let input = job("end");
-            let work = stack.run(&input);
+            let work = stack.run_tallied(&input);
             let mutate = async {
                 tokio::time::timeout(std::time::Duration::from_secs(5), pause.0.acquire())
                     .await
@@ -2232,8 +2232,11 @@ mod productive {
                 pause.1.add_permits(1);
                 changed
             };
-            let (result, changed) = tokio::join!(work, mutate);
+            let ((result, tallied), changed) = tokio::join!(work, mutate);
             assert!(result.unwrap_err().contains("state::set"));
+            // The receipted conflict is counted by the pass that hit it,
+            // though the cursor write failed after it.
+            assert_eq!(tallied.unwrap().tally.dropped.get("conflict"), Some(&1));
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"old"}));
             let source =
                 json!(["incremental-fixture", "private", false, null, null, ["end"]]).to_string();
