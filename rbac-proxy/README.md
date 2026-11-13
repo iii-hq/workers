@@ -270,22 +270,22 @@ them with `observable: false`. Details:
 | Function | Input | Output |
 |---|---|---|
 | `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, expose_endpoints, active_connections, version }` |
-| `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, exposes_everything } }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, expose_endpoints } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
 whether an auth function is configured, the live connection count and the
 worker version.
 
-`rbac-proxy::session` answers "is **this** connection behind rbac-proxy?".
-`rbac-proxy::status` cannot: it is an ordinary engine function, so a worker
-connected straight to the engine can call it too. The session probe is
-answered by the proxy's interceptor for every proxied connection, before any
-RBAC gate, and is never forwarded to the engine. A worker connected directly
-to the engine gets `function_not_found`. `policy` says what the proxy
-enforces: whether an auth function is configured, how many
-`expose_functions` rules there are, and whether one of them lets every
-function through in `default`.
+`rbac-proxy::session` answers "is **this** connection behind rbac-proxy?",
+while `rbac-proxy::status` reports on the proxy as a whole. The proxy's
+interceptor answers the session probe for every proxied connection, before any
+RBAC gate, and never forwards it, so a worker connected straight to the engine
+gets `function_not_found`. `policy` is the configuration the session runs
+under: whether an auth function is configured, and the `expose_functions`
+and `expose_endpoints` rules as written. A client reads the globs to decide
+what to warn its users about, for example a `match("*")` without an auth
+function.
 
 A worker that must only run behind the proxy (the `mcp` worker does) calls
 it at boot and refuses to start on `function_not_found`. This guards against

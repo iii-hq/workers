@@ -1191,8 +1191,8 @@ impl Interceptor {
                 "worker_names": self.session.worker_names,
                 "policy": {
                     "auth_function": rbac.auth_function_id.is_some(),
-                    "expose_functions": rbac.expose_functions.len(),
-                    "exposes_everything": exposes_everything(rbac),
+                    "expose_functions": rbac.expose_functions,
+                    "expose_endpoints": rbac.expose_endpoints,
                 },
             },
         });
@@ -1598,19 +1598,6 @@ impl Interceptor {
 /// so a direct engine connection gets `function_not_found` unless something
 /// registered a fake on the engine itself; see the README.
 pub const SESSION_PROBE_ID: &str = "rbac-proxy::session";
-
-/// Ids no ordinary pattern would match together unless it matches anything.
-const EVERYTHING_SAMPLES: [&str; 3] = ["engine::functions::list", "zz-probe::a", "x::y::z"];
-
-/// Whether any id rule in `default` lets every function through.
-fn exposes_everything(rbac: &rbac::RbacConfig) -> bool {
-    rbac.expose_functions.iter().any(|f| {
-        !f.is_metadata()
-            && EVERYTHING_SAMPLES
-                .iter()
-                .all(|id| f.matches(id, "default", None))
-    })
-}
 
 fn unobserve_frame(id: &str) -> String {
     json!({ "type": "unobserve", "id": id }).to_string()
@@ -2064,6 +2051,84 @@ mod tests {
         // A real (non-null) UUID was fabricated.
         assert!(Uuid::parse_str(r["invocation_id"].as_str().unwrap()).is_ok());
         assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    // ----- secrets: storing a credential without being able to read one -----
+    //
+    // An MCP gateway stores credentials with secrets::set and must never hand
+    // a value back with secrets::resolve. The allow list does that; these are
+    // the configurations an operator is likely to write.
+
+    fn invoke(function_id: &str) -> String {
+        json!({
+            "type": "invokefunction",
+            "invocation_id": "44444444-4444-4444-4444-444444444444",
+            "function_id": function_id,
+            "data": { "name": "K" }
+        })
+        .to_string()
+    }
+
+    async fn outcome(i: &Interceptor, function_id: &str) -> Result<(), String> {
+        match i.handle_downstream(&invoke(function_id)).await {
+            DownstreamAction::Forward(_) => Ok(()),
+            other => {
+                let r = reply(other);
+                Err(r["error"]["code"].as_str().unwrap_or_default().to_string())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn secrets_resolve_is_refused_when_not_listed() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        assert_eq!(
+            outcome(&i, "secrets::resolve").await,
+            Err("FORBIDDEN".into())
+        );
+        assert_eq!(outcome(&i, "secrets::set").await, Err("FORBIDDEN".into()));
+    }
+
+    #[tokio::test]
+    async fn listing_secrets_set_alone_allows_storing_but_not_reading() {
+        let i = interceptor(
+            config_with(expose(&["api::*", "secrets::set"]), None),
+            session(None),
+        );
+        assert_eq!(outcome(&i, "secrets::set").await, Ok(()));
+        assert_eq!(
+            outcome(&i, "secrets::resolve").await,
+            Err("FORBIDDEN".into())
+        );
+        assert_eq!(
+            outcome(&i, "secrets::compare-and-set").await,
+            Err("FORBIDDEN".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secrets_wildcard_exposes_resolve_too() {
+        // The trap to document: secrets::* includes secrets::resolve.
+        let i = interceptor(config_with(expose(&["secrets::*"]), None), session(None));
+        assert_eq!(outcome(&i, "secrets::resolve").await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn the_auth_function_can_forbid_resolve_under_a_star_expose() {
+        let mut s = ProxySession::permissive("ip".to_string());
+        s.forbidden_functions = vec!["secrets::resolve".to_string()];
+        let i = interceptor(config_with(expose(&["*"]), None), Arc::new(s));
+        assert_eq!(outcome(&i, "secrets::set").await, Ok(()));
+        assert_eq!(
+            outcome(&i, "secrets::resolve").await,
+            Err("FORBIDDEN".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_star_expose_alone_allows_resolve() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        assert_eq!(outcome(&i, "secrets::resolve").await, Ok(()));
     }
 
     #[tokio::test]
@@ -3496,8 +3561,14 @@ mod tests {
             .is_some_and(|s| Uuid::parse_str(s).is_ok()));
         assert_eq!(res["function_registration_prefix"], Value::Null);
         assert_eq!(res["policy"]["auth_function"], false);
-        assert_eq!(res["policy"]["expose_functions"], 1);
-        assert_eq!(res["policy"]["exposes_everything"], false);
+        // The globs themselves, for a client to judge; no verdict of the
+        // proxy's own.
+        assert_eq!(
+            res["policy"]["expose_functions"],
+            json!(["match(\"api::*\")"])
+        );
+        assert_eq!(res["policy"]["expose_endpoints"], json!([]));
+        assert!(res["policy"].get("exposes_everything").is_none(), "{res}");
     }
 
     #[tokio::test]
@@ -3507,7 +3578,7 @@ mod tests {
         let i = interceptor(config_with(expose(&[]), None), session(None));
         let r = reply(i.handle_downstream(&probe_frame().to_string()).await);
         assert_eq!(r["result"]["proxied"], true);
-        assert_eq!(r["result"]["policy"]["expose_functions"], 0);
+        assert_eq!(r["result"]["policy"]["expose_functions"], json!([]));
     }
 
     #[tokio::test]
@@ -3519,7 +3590,7 @@ mod tests {
         assert_eq!(res["function_registration_prefix"], "tenant1");
         assert_eq!(res["worker_names"], json!([]));
         assert_eq!(res["policy"]["auth_function"], true);
-        assert_eq!(res["policy"]["exposes_everything"], true);
+        assert_eq!(res["policy"]["expose_functions"], json!(["match(\"*\")"]));
     }
 
     #[tokio::test]
@@ -3534,11 +3605,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_probe_flags_a_bare_star_expose_without_auth() {
-        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+    async fn session_probe_reports_every_rule_form_and_the_endpoints() {
+        let mut rbac: rbac::RbacConfig = serde_json::from_value(json!({
+            "expose_functions": [
+                "match(\"api::*\")",
+                { "match": "orders::*", "namespace": "orders" },
+                { "metadata": { "public": true } }
+            ],
+            "expose_endpoints": ["match(\"/\")", "match(\"/otel\")"]
+        }))
+        .unwrap();
+        rbac.auth_function_id = None;
+        let i = interceptor(config_with(rbac, None), session(None));
         let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
-        assert_eq!(res["policy"]["auth_function"], false);
-        assert_eq!(res["policy"]["exposes_everything"], true);
+        assert_eq!(
+            res["policy"]["expose_functions"],
+            json!([
+                "match(\"api::*\")",
+                { "match": "orders::*", "namespace": "orders" },
+                { "metadata": { "public": true } }
+            ])
+        );
+        assert_eq!(
+            res["policy"]["expose_endpoints"],
+            json!(["match(\"/\")", "match(\"/otel\")"])
+        );
     }
 
     #[tokio::test]
