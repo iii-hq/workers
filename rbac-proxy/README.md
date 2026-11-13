@@ -22,7 +22,8 @@ listener, while at the boundary it:
   caller only ever sees the surface it is allowed to invoke,
 - **pins identities**: a proxied worker registers as
   `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
-  name>` for a session without `function_registration_prefix`), and an
+  name>` for a session without `function_registration_prefix`), unless the
+  auth function granted that name in `worker_names`, and an
   `engine::*` call is
   forwarded only as a direct call (a queued one is refused), so a session
   never runs anything as a trusted worker or as another prefix's worker, and
@@ -96,6 +97,20 @@ names, `default` when it names none. The auth function may return scoped
 grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
 namespaces a connection may declare, and `allowed_functions` applies in
 `default` only.
+
+The auth function may also return `worker_names: ["mcp"]`, which rbac-proxy
+adds on top of the engine's auth result. A worker that declares one of these
+names keeps it, instead of getting `rbac-proxy:<...>:<name>`. Names must match
+exactly; patterns are not supported. Grant a name when something waits for the
+worker by name, such as compose readiness. That worker then shares its name with
+every other connection that has the same name, so only grant it to credentials
+you trust to be that worker:
+
+```js
+// my-project::auth-function
+if (headers.authorization === `Bearer ${process.env.MCP_TOKEN}`)
+  return { allowed_functions: ["*"], worker_names: ["mcp"] }
+```
 
 The registration hooks are the engine's, with the engine's input and answer:
 
@@ -212,11 +227,28 @@ them with `observable: false`. Details:
 | Function | Input | Output |
 |---|---|---|
 | `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, active_connections, version }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, exposes_everything } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
 whether an auth function is configured, the live connection count and the
 worker version.
+
+`rbac-proxy::session` answers "is **this** connection behind rbac-proxy?".
+`rbac-proxy::status` cannot: it is an ordinary engine function, so a worker
+connected straight to the engine can call it too. The session probe is
+answered by the proxy's interceptor for every proxied connection, before any
+RBAC gate, and is never forwarded to the engine. A worker connected directly
+to the engine gets `function_not_found`. `policy` says what the proxy
+enforces: whether an auth function is configured, how many
+`expose_functions` rules there are, and whether one of them lets every
+function through in `default`.
+
+A worker that must only run behind the proxy (the `mcp` worker does) calls
+it at boot and refuses to start on `function_not_found`. This guards against
+a misconfigured URL, not against an attacker: anything that can register
+functions on the engine directly could register a fake `rbac-proxy::session`
+there. The proxy refuses to register that id for the connections it serves.
 
 The proxy hosts no observable event source. Two internal functions are the
 targets of its own observers; both are never agent-callable (denied in

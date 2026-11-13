@@ -556,6 +556,13 @@ impl Interceptor {
             .unwrap_or("")
             .to_string();
 
+        // A fake probe on the engine would tell workers that connect directly
+        // that they are behind the proxy.
+        if bare_id == SESSION_PROBE_ID {
+            tracing::warn!("refusing to register {SESSION_PROBE_ID}: the proxy answers it itself");
+            return DownstreamAction::Drop;
+        }
+
         // Hook (bare id), then prefix — matches the engine ordering
         // (engine/mod.rs `Message::RegisterFunction`; the code applies the
         // prefix after the hook).
@@ -878,6 +885,12 @@ impl Interceptor {
             .and_then(Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok());
 
+        // "Is this connection behind rbac-proxy?" Answered here, before any
+        // gate: it describes the connection, not a function on the engine.
+        if function_id == SESSION_PROBE_ID {
+            return self.reply_session_probe(inv_id, &v);
+        }
+
         // A call through an observer (`iii.call({ observer, payload })`).
         let observer_call: Option<Option<String>> = v
             .get("activation")
@@ -1138,7 +1151,8 @@ impl Interceptor {
             // worker never holds a trusted worker's name, and another
             // prefix's session declaring the same name is another worker, to
             // the engine's one-live-worker-per-name rule and to the
-            // replacement of a suspended observer (decision 51).
+            // replacement of a suspended observer (decision 51). A name the
+            // auth function granted in `worker_names` passes as declared.
             if let Some(Value::String(name)) = data.get_mut("name") {
                 *name = self.session.proxied_worker_name(name);
             }
@@ -1158,6 +1172,37 @@ impl Interceptor {
             "FORBIDDEN",
             &rbac::forbidden_message(function_id, remediation),
         )
+    }
+
+    /// The answer to [`SESSION_PROBE_ID`]: this connection is proxied, and
+    /// the facts a client needs to judge what the proxy enforces.
+    fn reply_session_probe(&self, inv_id: Option<Uuid>, v: &Value) -> DownstreamAction {
+        let id = inv_id.unwrap_or_else(Uuid::new_v4);
+        let rbac = &self.config.rbac;
+        let mut result = json!({
+            "type": "invocationresult",
+            "invocation_id": id.to_string(),
+            "function_id": SESSION_PROBE_ID,
+            "result": {
+                "proxied": true,
+                "proxy_version": env!("CARGO_PKG_VERSION"),
+                "session_id": self.session.session_id.to_string(),
+                "function_registration_prefix": self.session.function_registration_prefix,
+                "worker_names": self.session.worker_names,
+                "policy": {
+                    "auth_function": rbac.auth_function_id.is_some(),
+                    "expose_functions": rbac.expose_functions.len(),
+                    "exposes_everything": exposes_everything(rbac),
+                },
+            },
+        });
+        if let Some(tp) = v.get("traceparent") {
+            result["traceparent"] = tp.clone();
+        }
+        if let Some(bg) = v.get("baggage") {
+            result["baggage"] = bg.clone();
+        }
+        DownstreamAction::ReplyToClient(result.to_string())
     }
 
     /// An `InvocationResult { error: { code, message } }` for the caller, with
@@ -1547,6 +1592,26 @@ impl Interceptor {
 }
 
 /// `unobserve` of `id`, as a worker sends it.
+/// The connection-scoped probe a client calls to learn that it is behind
+/// rbac-proxy (and what the proxy enforces). Answered by the interceptor for
+/// every connection, never forwarded and never registrable through the proxy,
+/// so a direct engine connection gets `function_not_found` unless something
+/// registered a fake on the engine itself; see the README.
+pub const SESSION_PROBE_ID: &str = "rbac-proxy::session";
+
+/// Ids no ordinary pattern would match together unless it matches anything.
+const EVERYTHING_SAMPLES: [&str; 3] = ["engine::functions::list", "zz-probe::a", "x::y::z"];
+
+/// Whether any id rule in `default` lets every function through.
+fn exposes_everything(rbac: &rbac::RbacConfig) -> bool {
+    rbac.expose_functions.iter().any(|f| {
+        !f.is_metadata()
+            && EVERYTHING_SAMPLES
+                .iter()
+                .all(|id| f.matches(id, "default", None))
+    })
+}
+
 fn unobserve_frame(id: &str) -> String {
     json!({ "type": "unobserve", "id": id }).to_string()
 }
@@ -1898,6 +1963,49 @@ mod tests {
             names.push(v["data"]["name"].clone());
         }
         assert_ne!(names[0], names[1]);
+    }
+
+    /// A name the auth function granted reaches the engine as declared, so
+    /// a supervisor that waits for the worker by name (compose) sees it.
+    #[tokio::test]
+    async fn a_granted_worker_name_is_forwarded_unchanged() {
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "mcp", "runtime": "rust" },
+            "action": { "type": "void" }
+        })
+        .to_string();
+        for prefix in [None, Some("tenant1")] {
+            let sess = Arc::new(ProxySession {
+                worker_names: vec!["mcp".to_string()],
+                ..(*session(prefix)).clone()
+            });
+            let i = interceptor(config_with(expose(&["api::*"]), None), sess);
+            let v = forwarded(i.handle_downstream(&frame).await);
+            assert_eq!(v["data"]["name"], "mcp");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_worker_name_is_pinned_even_with_other_grants() {
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "queue", "runtime": "rust" },
+            "action": { "type": "void" }
+        })
+        .to_string();
+        let sess = Arc::new(ProxySession {
+            worker_names: vec!["mcp".to_string()],
+            ..(*session(None)).clone()
+        });
+        let i = interceptor(config_with(expose(&["api::*"]), None), sess.clone());
+        let v = forwarded(i.handle_downstream(&frame).await);
+        assert_eq!(
+            v["data"]["name"],
+            format!("rbac-proxy:{}:queue", sess.session_id)
+        );
     }
 
     /// Decision 51 replaces a suspended observer from a connection under the
@@ -3357,5 +3465,104 @@ mod tests {
             json!({ "type": "observerack", "function_id": "foo", "id": "o-1", "revision": 1 });
         let o = forwarded(i.handle_downstream(&ack.to_string()).await);
         assert_eq!(o["function_id"], "tenant1::foo");
+    }
+
+    // ----- rbac-proxy::session: "is this connection behind the proxy?" -----
+
+    fn probe_frame() -> Value {
+        json!({
+            "type": "invokefunction",
+            "invocation_id": "33333333-3333-3333-3333-333333333333",
+            "function_id": "rbac-proxy::session",
+            "data": {}
+        })
+    }
+
+    #[tokio::test]
+    async fn session_probe_is_answered_by_the_proxy_itself() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        // A reply to the client, never a forward: no engine-side function can
+        // answer it for a connection that goes through the proxy.
+        let r = reply(i.handle_downstream(&probe_frame().to_string()).await);
+        assert_eq!(r["type"], "invocationresult");
+        assert_eq!(r["invocation_id"], "33333333-3333-3333-3333-333333333333");
+        assert_eq!(r["function_id"], "rbac-proxy::session");
+        assert!(r.get("error").is_none(), "unexpected error: {r}");
+        let res = &r["result"];
+        assert_eq!(res["proxied"], true);
+        assert_eq!(res["proxy_version"], env!("CARGO_PKG_VERSION"));
+        assert!(res["session_id"]
+            .as_str()
+            .is_some_and(|s| Uuid::parse_str(s).is_ok()));
+        assert_eq!(res["function_registration_prefix"], Value::Null);
+        assert_eq!(res["policy"]["auth_function"], false);
+        assert_eq!(res["policy"]["expose_functions"], 1);
+        assert_eq!(res["policy"]["exposes_everything"], false);
+    }
+
+    #[tokio::test]
+    async fn session_probe_is_answered_even_when_rbac_denies_everything() {
+        // The probe is about the connection, not a function on the engine:
+        // a locked-down proxy still says it is there.
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let r = reply(i.handle_downstream(&probe_frame().to_string()).await);
+        assert_eq!(r["result"]["proxied"], true);
+        assert_eq!(r["result"]["policy"]["expose_functions"], 0);
+    }
+
+    #[tokio::test]
+    async fn session_probe_reports_the_prefix_and_an_auth_function() {
+        let mut rbac = expose(&["*"]);
+        rbac.auth_function_id = Some("my-project::auth".to_string());
+        let i = interceptor(config_with(rbac, None), session(Some("tenant1")));
+        let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
+        assert_eq!(res["function_registration_prefix"], "tenant1");
+        assert_eq!(res["worker_names"], json!([]));
+        assert_eq!(res["policy"]["auth_function"], true);
+        assert_eq!(res["policy"]["exposes_everything"], true);
+    }
+
+    #[tokio::test]
+    async fn session_probe_reports_granted_worker_names() {
+        let sess = Arc::new(ProxySession {
+            worker_names: vec!["mcp".to_string()],
+            ..(*session(None)).clone()
+        });
+        let i = interceptor(config_with(expose(&["api::*"]), None), sess);
+        let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
+        assert_eq!(res["worker_names"], json!(["mcp"]));
+    }
+
+    #[tokio::test]
+    async fn session_probe_flags_a_bare_star_expose_without_auth() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
+        assert_eq!(res["policy"]["auth_function"], false);
+        assert_eq!(res["policy"]["exposes_everything"], true);
+    }
+
+    #[tokio::test]
+    async fn a_void_session_probe_still_gets_an_answer() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let mut frame = probe_frame();
+        frame.as_object_mut().unwrap().remove("invocation_id");
+        frame["action"] = json!({ "type": "void" });
+        let r = reply(i.handle_downstream(&frame.to_string()).await);
+        assert_eq!(r["result"]["proxied"], true);
+        assert!(r["invocation_id"]
+            .as_str()
+            .is_some_and(|s| Uuid::parse_str(s).is_ok()));
+    }
+
+    #[tokio::test]
+    async fn a_client_cannot_register_a_fake_session_probe() {
+        // Registered on the engine, a fake would answer workers that connect
+        // directly, telling them they are behind the proxy when they are not.
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        let frame = json!({ "type": "registerfunction", "id": "rbac-proxy::session" });
+        assert!(matches!(
+            i.handle_downstream(&frame.to_string()).await,
+            DownstreamAction::Drop
+        ));
     }
 }
