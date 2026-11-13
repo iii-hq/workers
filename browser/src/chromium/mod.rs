@@ -283,6 +283,43 @@ impl SearchEnv {
         None
     }
 
+    /// What to change when `resolved` is a binary someone chose (the config
+    /// `executable` or `$CHROME`) and it does not run, plus what the search
+    /// finds without that choice. `None` for a binary the search found by
+    /// itself. The choice is never dropped silently (see [`resolve`]); this
+    /// only names the way out, so a wrapper whose target is gone is fixed in
+    /// one step.
+    ///
+    /// [`resolve`]: Self::resolve
+    pub fn chosen_binary_advice(&self, resolved: &Resolved) -> Option<String> {
+        let mut without = self.clone();
+        let knob = match resolved.source {
+            Source::Configured => {
+                without.configured = None;
+                format!(
+                    "correct or clear the worker config `executable` (now '{}')",
+                    resolved.path.display()
+                )
+            }
+            Source::Env => {
+                without.chrome_env = None;
+                format!(
+                    "correct or unset $CHROME (now '{}')",
+                    resolved.path.display()
+                )
+            }
+            _ => return None,
+        };
+        Some(match without.resolve() {
+            Some(found) => format!(
+                "{knob}; without it the worker would launch {} ({})",
+                found.path.display(),
+                found.source.as_str()
+            ),
+            None => format!("{knob}; without it no other Chromium was found"),
+        })
+    }
+
     /// The places [`resolve`](Self::resolve) looks, in order, for a "not
     /// found" report.
     pub fn searched(&self) -> Vec<String> {
@@ -307,6 +344,11 @@ impl SearchEnv {
 /// engine (scrapling's browser tiers always drive Chromium).
 pub fn resolve_executable(cfg: &WorkerConfig) -> Option<Resolved> {
     SearchEnv::current(cfg).resolve()
+}
+
+/// [`SearchEnv::chosen_binary_advice`] for this machine.
+pub fn chosen_binary_advice(cfg: &WorkerConfig, resolved: &Resolved) -> Option<String> {
+    SearchEnv::current(cfg).chosen_binary_advice(resolved)
 }
 
 fn exe_name(name: &str) -> String {
@@ -725,6 +767,41 @@ mod tests {
         env.chrome_env = Some(from_env.clone());
         let found = env.resolve().unwrap();
         assert_eq!((found.source, found.path), (Source::Env, from_env));
+    }
+
+    #[test]
+    fn a_chosen_binary_gets_advice_naming_the_knob_and_the_fallback() {
+        let tmp = Tmp::new("advice");
+        let mut env = empty_env(&tmp.0);
+        let wrapper = touch_exe(&tmp.0.join("wrapper-chrome"));
+        env.configured = Some(wrapper.clone());
+        let configured = env.resolve().unwrap();
+
+        // Nothing else on the machine: say so.
+        let advice = env.chosen_binary_advice(&configured).unwrap();
+        assert!(advice.contains("worker config `executable`"), "{advice}");
+        assert!(advice.contains(&wrapper.display().to_string()), "{advice}");
+        assert!(advice.contains("no other Chromium"), "{advice}");
+
+        // A Playwright copy exists: name it, so clearing is a safe step.
+        let pw_dir = tmp.0.join("ms-playwright");
+        let pw = touch_exe(&pw_dir.join("chromium-1248").join(BUNDLED_LAYOUTS[0]));
+        env.playwright_dir = Some(pw_dir);
+        let advice = env.chosen_binary_advice(&configured).unwrap();
+        assert!(advice.contains(&pw.display().to_string()), "{advice}");
+        assert!(advice.contains("(playwright)"), "{advice}");
+
+        // $CHROME is the knob when it is what resolved.
+        env.configured = None;
+        let from_env = touch_exe(&tmp.0.join("env-chrome"));
+        env.chrome_env = Some(from_env);
+        let advice = env.chosen_binary_advice(&env.resolve().unwrap()).unwrap();
+        assert!(advice.contains("$CHROME"), "{advice}");
+        assert!(advice.contains("(playwright)"), "{advice}");
+
+        // A binary the search found by itself has nothing to clear.
+        env.chrome_env = None;
+        assert_eq!(env.chosen_binary_advice(&env.resolve().unwrap()), None);
     }
 
     #[cfg(unix)]

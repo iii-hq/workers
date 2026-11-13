@@ -2409,19 +2409,45 @@ async fn doctor_is_not_ok_when_the_executable_prints_no_version() {
     .await
     .expect("call timed out")
     .expect("call failed");
+    // A tab cannot start on it; the error says which knob to change.
+    let started = timeout(
+        Duration::from_secs(60),
+        client.call(CallRequest {
+            function_id: "browser::sessions::start".into(),
+            payload: json!({ "incognito": true }),
+            action: None,
+            timeout_ms: Some(30_000),
+        }),
+    )
+    .await
+    .expect("start timed out");
     // Gone before the asserts, so a failing run leaves no script behind.
     let _ = std::fs::remove_file(&wrapper);
 
     assert_eq!(doctor["ok"], false, "{doctor}");
     assert!(doctor["chromium_version"].is_null(), "{doctor}");
+    let silent = doctor["issues"]
+        .as_array()
+        .and_then(|issues| {
+            issues.iter().find(|i| {
+                i["what"]
+                    .as_str()
+                    .is_some_and(|what| what.contains("printed no version"))
+            })
+        })
+        .unwrap_or_else(|| panic!("no silent-executable issue: {doctor}"));
     assert!(
-        doctor["issues"]
-            .as_array()
-            .is_some_and(|issues| issues.iter().any(|i| i["what"]
-                .as_str()
-                .is_some_and(|what| what.contains("printed no version")))),
+        silent["enable_how"]
+            .as_str()
+            .is_some_and(|how| how.contains("worker config `executable`")),
         "{doctor}"
     );
+    let err = format!(
+        "{:?}",
+        started.expect_err("a dead wrapper cannot start a tab")
+    );
+    assert!(err.contains("To fix it"), "{err}");
+    assert!(err.contains("worker config `executable`"), "{err}");
 
     client.shutdown_async().await;
 }
