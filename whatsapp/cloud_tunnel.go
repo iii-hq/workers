@@ -231,7 +231,11 @@ func (t *DevelopmentTunnel) preflight(ctx context.Context) bool {
 	return true
 }
 
-var quickTunnelOrigin = regexp.MustCompile(`^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com$`)
+const dnsLabel = `[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`
+
+// One label under trycloudflare.com (cloudflared), or <route>.<id> under
+// opentunnel.xyz (OpenTunnel). The bare <id>.opentunnel.xyz is never served.
+var quickTunnelOrigin = regexp.MustCompile(`^https://(?:` + dnsLabel + `\.trycloudflare\.com|` + dnsLabel + `\.` + dnsLabel + `\.opentunnel\.xyz)$`)
 
 func (t *DevelopmentTunnel) apply(snapshot tunnelSnapshot, lease *tunnelLease) {
 	t.state.Enabled = t.intent.Enabled

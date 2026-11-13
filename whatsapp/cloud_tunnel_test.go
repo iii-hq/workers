@@ -25,6 +25,8 @@ type fakeTunnelRPC struct {
 	loseAcquireReply bool
 	failStatus       bool
 	failRelease      bool
+	noPrerequisites  bool
+	opentunnel       bool
 }
 
 func newTunnelFixture(t *testing.T) (*DevelopmentTunnel, *fakeTunnelRPC) {
@@ -51,7 +53,19 @@ func (f *fakeTunnelRPC) call(_ context.Context, id string, input any) (json.RawM
 		if f.failStatus {
 			return nil, errors.New("transport secret-sentinel")
 		}
-		return json.Marshal(map[string]any{"tunnel_id": "webhooks", "status": f.status, "public_url": f.url, "leases": f.leases, "prerequisites": map[string]any{"cloudflared": map[string]bool{"found": f.cloudflared}}})
+		answer := map[string]any{"tunnel_id": "webhooks", "status": f.status, "public_url": f.url, "leases": f.leases, "prerequisites": map[string]any{"cloudflared": map[string]bool{"found": f.cloudflared}}}
+		if f.noPrerequisites {
+			delete(answer, "prerequisites")
+		}
+		if f.opentunnel { // the real opentunnel shape: top-level provider, proxy_protocol on every lease
+			answer["provider"] = "opentunnel"
+			leases := []map[string]any{}
+			for _, l := range f.leases {
+				leases = append(leases, map[string]any{"lease_id": l.LeaseID, "consumer_id": l.ConsumerID, "tunnel_id": l.TunnelID, "expires_at": l.ExpiresAt, "proxy_protocol": "v2"})
+			}
+			answer["leases"] = leases
+		}
+		return json.Marshal(answer)
 	case "quick-tunnel::acquire":
 		consumer := params["consumer_id"].(string)
 		expiry, err := time.Parse(time.RFC3339Nano, params["expires_at"].(string))
@@ -277,13 +291,26 @@ func TestDevelopmentTunnelPreflightAndURLValidation(t *testing.T) {
 			}
 		})
 	}
-	for _, url := range []string{"http://valid.trycloudflare.com", "https://evil.com", "https://sub.sub.trycloudflare.com", "https://good.trycloudflare.com/path", "https://good.trycloudflare.com:443", "https://user@good.trycloudflare.com", "https://good.trycloudflare.com?token=x", "https://-bad.trycloudflare.com", "https://good.trycloudflare.com/"} {
+	for _, url := range []string{"http://valid.trycloudflare.com", "https://evil.com", "https://sub.sub.trycloudflare.com", "https://good.trycloudflare.com/path", "https://good.trycloudflare.com:443", "https://user@good.trycloudflare.com", "https://good.trycloudflare.com?token=x", "https://-bad.trycloudflare.com", "https://good.trycloudflare.com/",
+		"https://abc234.opentunnel.xyz", "https://a.b.c.opentunnel.xyz", "https://opentunnel.xyz", "http://r0ute234abcd5678.abc234.opentunnel.xyz", "https://r0ute234abcd5678.abc234.opentunnel.xyz.evil.test", "https://r0ute234abcd5678.abc234.opentunnelxxyz", "https://r0ute234abcd5678.abc234.opentunnel.xyz:443", "https://r0ute234abcd5678.abc234.opentunnel.xyz/path", "https://r0ute234abcd5678.abc234.opentunnel.xyz/", "https://user@r0ute234abcd5678.abc234.opentunnel.xyz", "https://r0ute234abcd5678.abc234.opentunnel.xyz?token=x", "https://R0UTE.abc234.opentunnel.xyz", "https://-bad.abc234.opentunnel.xyz",
+		"https://r0ute234abcd5678.abc234.opentunnel.xyz.", "https://good.trycloudflare.com.", "https://x.abc234.OpenTunnel.XYZ"} {
 		t.Run(url, func(t *testing.T) {
 			service, fake := newTunnelFixture(t)
 			fake.url = url
 			got, err := service.Start(context.Background())
 			tunnelResult(t, got, err, "failed")
 		})
+	}
+}
+func TestDevelopmentTunnelAcceptsOpenTunnelURL(t *testing.T) {
+	service, fake := newTunnelFixture(t)
+	fake.url = "https://r0ute234abcd5678.abc234.opentunnel.xyz"
+	fake.noPrerequisites = true
+	fake.opentunnel = true
+	got, err := service.Start(context.Background())
+	status := tunnelResult(t, got, err, "ready")
+	if *status.PublicURL != fake.url || *status.WebhookURL != fake.url+status.WebhookPath {
+		t.Fatalf("public=%s webhook=%s", *status.PublicURL, *status.WebhookURL)
 	}
 }
 func TestDevelopmentTunnelPersistenceIsPrivateAndCannotReleaseForeignLease(t *testing.T) {
