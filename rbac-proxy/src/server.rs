@@ -63,7 +63,7 @@ impl ProxyState {
 pub fn router(state: ProxyState) -> Router {
     Router::new()
         .route("/", get(proxy::ws_upgrade))
-        .route("/ws/channels/:channel_id", get(channels::channel_bridge))
+        .route("/ws/channels/{channel_id}", get(channels::channel_bridge))
         .fallback(not_found)
         .with_state(state)
 }
@@ -289,6 +289,45 @@ mod tests {
             closed.is_ok(),
             "a connection whose headers never ended stayed open"
         );
+        let _ = tx.send(true);
+    }
+
+    /// The `{channel_id}` route builds under axum 0.8 syntax, upgrades, and
+    /// reports a failed engine dial to the client as close 1011 with reason.
+    #[tokio::test]
+    async fn channel_route_upgrades_and_reports_dial_failure() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let config = WorkerConfig {
+            engine_url: "ws://127.0.0.1:1".to_string(),
+            ..WorkerConfig::default()
+        };
+        let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tx = serve_with_deadline(
+            listener,
+            ProxyState::new(cell, iii),
+            Duration::from_secs(10),
+        );
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/channels/ch-1"))
+            .await
+            .expect("the channel route upgrades");
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("a frame before the timeout")
+            .expect("a frame")
+            .expect("a well-formed frame");
+        let Message::Close(Some(close)) = frame else {
+            panic!("expected a close frame, got {frame:?}");
+        };
+        assert_eq!(u16::from(close.code), 1011);
+        assert_eq!(close.reason.as_str(), "engine channel dial failed");
         let _ = tx.send(true);
     }
 
