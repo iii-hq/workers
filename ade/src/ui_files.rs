@@ -163,4 +163,38 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    /// `/ui-files/{worker}/{*path}` builds and routes under axum 0.8: both
+    /// captures reach the handler, whose validation answers 400 (the router
+    /// fallback would answer 404). Rejected before any engine call.
+    #[tokio::test]
+    async fn route_captures_worker_and_wildcard_path() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let iii = std::sync::Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let state = AppState::new(
+            std::sync::Arc::new("ws://127.0.0.1:1".to_string()),
+            None,
+            None,
+            Some(iii),
+        );
+        for uri in [
+            "/ui-files/Stories/ws/x.html",
+            "/ui-files/stories/ws/../x.html",
+        ] {
+            let response = crate::server::router(state.clone())
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(&body[..], b"bad worker or path", "{uri}");
+        }
+    }
 }
