@@ -228,12 +228,22 @@ Rules shared by all tools:
 - An unknown tool name is a tool error ("unknown tool"); function-style
   names (`myworker__echo`) are **not** forwarded.
 
-`initialize.instructions` tells the model to use `iii_call` instead of the
-`iii` CLI and `iii_observe` instead of polling functions, that `agent_call` /
-`harness::observe` in harness-written profiles mean `iii_call` /
-`iii_observe`, and that the server cannot register functions: to add one,
-the agent creates or changes a worker it controls and registers it with the
-iii-sdk.
+`initialize.instructions` open with the first call every agent makes:
+`iii_get_agent` with no arguments, which reads iii-directory's built-in
+`default` profile (`directory::agents::get {"id": "default"}`); the agent
+follows it, reading its `agent_call` as `iii_call` and `harness::observe` as
+`iii_observe`. They then name the discovery functions, each with what it
+returns (`directory::search_functions` for candidate ids by capability,
+`engine::functions::list`, `engine::workers::list`,
+`directory::skills::index`, and `engine::functions::info` for a contract
+before the first call), and say up front that some functions are
+higher-order: they call other functions for the agent (`fp::pipe` chains
+calls worker-side, so large values never pass through the agent; `fp::batch`
+runs independent calls at once). They also say to use `iii_call` instead of
+the `iii` CLI and `iii_observe` instead of polling, and that the server
+cannot register functions: to add one, the agent creates or changes a worker
+it controls and registers it with the iii-sdk. The `iii_call` description
+repeats the discovery and higher-order parts in brief.
 
 Earlier versions offered one tool per visible function; 0.7 removes that
 mode, with `hidden_prefixes` and `require_expose`.
