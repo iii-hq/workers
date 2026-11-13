@@ -141,7 +141,7 @@ grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
 namespaces a connection may declare, and `allowed_functions` applies in
 `default` only.
 
-The auth function may also return `worker_names: ["mcp"]`, which rbac-proxy
+The auth function may also return `worker_names: ["mcp-server"]`, which rbac-proxy
 adds on top of the engine's auth result. A worker that declares one of these
 names keeps it, instead of getting `rbac-proxy:<...>:<name>`. Names must match
 exactly; patterns are not supported. Grant a name when something waits for the
@@ -152,7 +152,7 @@ you trust to be that worker:
 ```js
 // my-project::auth-function
 if (headers.authorization === `Bearer ${process.env.MCP_TOKEN}`)
-  return { allowed_functions: ["*"], worker_names: ["mcp"] }
+  return { allowed_functions: ["*"], worker_names: ["mcp-server"] }
 ```
 
 The registration hooks are the engine's, with the engine's input and answer:
