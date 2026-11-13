@@ -114,6 +114,17 @@ handshake; rbac-proxy's auth function receives it. No `mcp` code is involved.
 An rbac-proxy with no `auth_function_id` refuses every upgrade, so in practice
 a proxied `mcp` is always authenticated.
 
+### Running under compose
+
+rbac-proxy renames a proxied worker to `rbac-proxy:<session or prefix>:<name>`,
+and compose waits for a worker by its exact name, so it would never see `mcp`
+start, and would kill it when `startup_timeout` ran out. The auth function's
+result can list `worker_names: ["mcp"]`: rbac-proxy then forwards that
+declared name unchanged (exact match, no patterns) and `rbac-proxy::session`
+reports the grant. Compose is unchanged. A granted name is shared with every
+connection holding it, so the auth function grants it only to the credential
+that runs `mcp`.
+
 ## HTTP and sessions
 
 The worker observes `http::on-request` for `POST <api_path>` and
@@ -154,11 +165,12 @@ and re-initialize.
 
 ## Tools
 
-`tools: gateway` (default) offers exactly these ten, in this order.
+`tools/list` offers exactly these eleven, in this order.
 
 | Tool | Input | Output | Session |
 |---|---|---|---|
 | `iii_call` | `function_id` (required), `payload` (object, default `{}`), `timeout_ms`, `void`, `max_chars` (default 100000) | `{ result }`; `{ result: <cut JSON text>, truncated: true, total_chars }` when larger than `max_chars`; `{ result: null, void: true }` for `void` | no |
+| `iii_secret_store` | `name`, `value`, `consumers` (all required), `description` | `{ ref, hint, fingerprint, consumers }` | no |
 | `iii_observe` | `function_id` (required), `filters`, `args`, `capture`, `namespace`, `max_events`, `expires_in_ms` | `{ observer_id, function_id, state }` | yes |
 | `iii_events` | `observer_id` (optional: all of the session's), `max` (default 50) | `{ events, remaining, dropped }` | yes |
 | `iii_observers` | — | `[{ observer_id, function_id, filters?, state, buffered, received, dropped }]` | yes |
@@ -176,21 +188,45 @@ Rules shared by all tools:
   JSON-RPC errors.
 - Argument errors (missing `function_id`, non-object `payload`) are tool
   errors and make no engine call.
-- `iii_call` refuses `mcp::*` (the worker's own internals). Nothing else is
-  filtered locally: RBAC decides.
+- `iii_call` refuses `mcp::*` (the worker's own internals) and
+  `secrets::resolve` (see Secrets). Nothing else is filtered locally: RBAC
+  decides.
 - A session tool without a session returns a tool error telling the client to
   initialize and send `Mcp-Session-Id`.
-- An unknown tool name in gateway-only mode is a tool error ("unknown
-  tool"); function-style names (`myworker__echo`) are **not** forwarded.
+- An unknown tool name is a tool error ("unknown tool"); function-style
+  names (`myworker__echo`) are **not** forwarded.
 
 `initialize.instructions` tells the model to use `iii_call` instead of the
 `iii` CLI, `iii_observe` instead of polling, and that `agent_call` /
 `harness::observe` in harness-written profiles mean `iii_call` /
 `iii_observe`.
 
-`tools: functions` is the pre-0.7 behaviour (one tool per visible function,
-`hidden_prefixes`, `require_expose`); `tools: both` lists the gateway tools
-first, then those, and dispatches gateway names first.
+Earlier versions offered one tool per visible function; 0.7 removes that
+mode, with `hidden_prefixes` and `require_expose`.
+
+## Secrets
+
+An MCP client can hold credentials (a user pastes an API key into the chat;
+another MCP server hands one over). Sent in an `iii_call` payload, a value
+would be recorded in trace spans, copied to observers, and kept in the target
+function's input. Instead:
+
+- `iii_secret_store` validates `name` (`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`,
+  not `III_SECRETS_KEY`), a non-empty string `value` (stored byte for byte)
+  and at least one consumer, then calls `secrets::set` (vault store). It
+  returns only `ref`, `hint`, `fingerprint` and `consumers`, whatever
+  `secrets` answers. Storing an existing name rotates it.
+- `mcp` is never a consumer (refused in `consumers`), and `iii_call` refuses
+  `secrets::resolve`: references go out, values never come back to a client.
+- `mcp::handler` receives every request body, so it is registered
+  `observable: false`.
+- `mcp` sets `III_DISABLE_TRACE_PAYLOADS=1` before connecting, as `secrets`
+  does, so its spans carry no payloads.
+- No tool result or error message contains the value. A missing `secrets`
+  worker is reported with how to add it.
+
+rbac-proxy's `expose_functions` must include `secrets::set`. The instructions
+tell the model never to put a credential in an `iii_call` payload.
 
 ## Observe
 
@@ -226,29 +262,28 @@ Skills are resources at `iii://<id>`, read from `iii-directory`:
 unknown skill, a foreign URI, or a missing directory give empty envelopes; any
 other engine error is a JSON-RPC internal error.
 
-No prompts capability. `prompts/list` returns `[]` for clients that ask
-anyway; `prompts/get` is -32602. Profiles are reached through the gateway
+No prompts capability. `prompts/list` and `prompts/get` are method not
+found (-32601). Profiles are reached through the gateway
 tools and, in Claude Code, the `iii` plugin's `/iii:*` commands.
 
 ## Configuration
 
 | Key | Default | Applies to |
 |---|---|---|
-| `tools` | `gateway` | `gateway` \| `functions` \| `both` |
 | `allowed_origins` | `[]` | Origin check |
 | `session_idle_ttl_secs` | `1800` | sessions |
 | `max_buffered_events` | `500` | observe |
-| `hidden_prefixes` | `engine::`, `state::`, `stream::`, `iii.`, `iii::`, `mcp::`, `a2a::` | functions mode |
-| `require_expose` | `false` | functions mode |
 | `api_path` | `/mcp` | routes |
 
 | Environment | |
 |---|---|
-| `--url` / `III_URL` | engine URL: rbac-proxy's port in production |
+| `--url`, then `III_MCP_ENGINE_URL`, then `III_URL` | engine URL: rbac-proxy's port in production. Compose sets `III_URL` to the engine itself, hence the dedicated variable. |
 | `III_TOKEN` | bearer token for rbac-proxy's auth function |
 | `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` | `true` or `1` to start without rbac-proxy |
 
-The manifest declares `http` and `rbac-proxy` as dependencies.
+Keys from earlier versions (`tools`, `hidden_prefixes`, `require_expose`) are
+ignored. The manifest declares `http`, `rbac-proxy` and `secrets` as
+dependencies.
 
 ## Security model
 
@@ -259,35 +294,43 @@ The manifest declares `http` and `rbac-proxy` as dependencies.
 | A web page driving a localhost MCP server (DNS rebinding) | Origin check (MCP spec requirement) | non-browser local processes are trusted, as with any localhost service |
 | Faking "behind the proxy" | probe answered only by the proxy, never forwarded; proxy refuses registering the id | anything that can register functions on the engine *directly* could register a fake; documented, it guards misconfiguration, not an attacker with engine access |
 | Event injection into a session | sink only routes to live observer ids (UUIDv4) | an attacker who learns an observer id can inject events into that observer's buffer |
+| Credentials in tool calls | `iii_secret_store`; handler not observable; no trace payloads; no value in results; `secrets::resolve` refused | the value crosses the `http` worker, whose own records may hold it, and the client's model has seen it |
 | Resource exhaustion | per-observer buffer cap, idle session TTL, engine-side `max_fires` / expiry | no cap on sessions or observers per session |
 
 ## Compatibility
 
 Breaking (hence 0.7.0):
 
-- default `tools` is `gateway`: existing clients see ten tools, not one per
-  function. `tools: functions` restores the old listing.
+- clients see the eleven gateway tools, not one tool per function; the
+  per-function mode is gone.
 - `mcp` will not start unless proxied (or the flag is set).
-- no prompts capability; resources come from `iii-directory`.
-- `skills::` / `prompts::` left the default `hidden_prefixes`.
+- no prompts capability (the methods are -32601); resources come from
+  `iii-directory`.
+- the engine URL is read from `III_MCP_ENGINE_URL` before `III_URL`.
 
 The registry still shows 0.5.9's stale `skills` dependency; publishing 0.7.0
 replaces it.
 
 ## Testing
 
-- 102 unit tests in `mcp`, written first: the guard's decision table and
+- 93 unit tests in `mcp`, written first: the guard's decision table and
   messages, Origin parsing, the directory bridge, sessions (routing, buffering,
   drop counting, unobserve, end, reaping, close), the gateway tools, the HTTP
-  handler (status codes, sessions, tool modes, resources/prompts), the SDK
-  adapter's `capture` parsing, config, manifest. The engine is a fake `Bus`.
+  handler (status codes, sessions, resources), `iii_secret_store` (stored
+  payload, reference-only result, argument errors without the value, `mcp`
+  refused as consumer, missing `secrets`), the `secrets::resolve` refusal,
+  the SDK adapter's `capture` parsing, config, manifest, declared
+  dependencies. The engine is a fake `Bus`.
 - 6 tests in `rbac-proxy` for the probe (answered before RBAC, policy facts,
-  void calls, refused registration).
-- 29 BDD scenarios against a live engine, including observe end to end
+  void calls, refused registration) and 7 for `worker_names`.
+- 26 BDD scenarios against a live engine, including `mcp::handler` listed
+  as not observable, including observe end to end
   (`state::set` filtered by scope, buffered, read, session ended, then 404).
 - Manually, on a compose project: `mcp` behind rbac-proxy with a bearer-token
-  auth function, the same end-to-end path through the http worker, and both
-  refusal paths (unproxied; unrecognised flag value).
+  auth function granting `worker_names: ["mcp"]` (compose reports it ready),
+  the same end-to-end path through the http worker, `iii_secret_store`
+  through the endpoint (stored, reference only, `secrets::resolve` refused,
+  deleted), and both refusal paths (unproxied; unrecognised flag value).
 
 ## Open questions
 
@@ -296,9 +339,9 @@ replaces it.
    per session, rbac-proxy-style) would give per-user RBAC. Worth doing before
    remote/shared engines?
 2. **Telemetry through the proxy.** iii-helpers' OTel exporter connects to
-   `<url>/otel`; rbac-proxy does not proxy that path, so a proxied `mcp` logs a
-   404 every 30 s and exports no telemetry. Proxy `/otel` in rbac-proxy, or
-   point telemetry at the engine directly?
+   `<url>/otel`, which rbac-proxy does not forward yet, so a proxied `mcp`
+   logs a 404 and exports no telemetry. Decided: rbac-proxy will forward
+   `/otel`, authenticated like the main connection.
 3. **Push instead of poll.** Streamable HTTP allows a `GET` SSE stream for
    server-initiated messages. Clients that hold it open could receive events
    (or `notifications/resources/updated`) instead of polling `iii_events`.
