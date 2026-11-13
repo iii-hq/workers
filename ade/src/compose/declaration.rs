@@ -6,7 +6,7 @@ use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_yaml::{Mapping, Value};
+use serde_yaml_ng::{Mapping, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -86,7 +86,7 @@ pub fn parse_worker_ref(worker_ref: &str) -> (ContainerSource, String) {
 }
 
 pub fn parse_project(file: impl Into<String>, source: &str) -> Result<ProjectDeclaration, String> {
-    let root: Value = serde_yaml::from_str(source).map_err(|error| error.to_string())?;
+    let root: Value = serde_yaml_ng::from_str(source).map_err(|error| error.to_string())?;
     let empty = Mapping::new();
     let root = root.as_mapping().unwrap_or(&empty);
     let engine = field(root, "engine").and_then(Value::as_mapping);

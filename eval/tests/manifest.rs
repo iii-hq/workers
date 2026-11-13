@@ -29,13 +29,14 @@ fn manifest_subcommand_emits_valid_json() {
 fn worker_manifest_declares_runtime_dependencies() {
     let source = std::fs::read_to_string(format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR")))
         .expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&source).expect("parse worker manifest");
     let dependencies = manifest["dependencies"]
         .as_mapping()
         .expect("dependencies map");
     for dependency in ["state", "queue", "cron", "iii-observability", "judge"] {
         assert!(
-            dependencies.contains_key(serde_yaml::Value::String(dependency.into())),
+            dependencies.contains_key(serde_yaml_ng::Value::String(dependency.into())),
             "missing {dependency}"
         );
     }
@@ -53,12 +54,13 @@ fn worker_manifest_declares_runtime_dependencies() {
 fn worker_manifest_omits_harness_to_stay_within_install_graph_depth() {
     let source = std::fs::read_to_string(format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR")))
         .expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&source).expect("parse worker manifest");
     let dependencies = manifest["dependencies"]
         .as_mapping()
         .expect("dependencies map");
     assert!(
-        !dependencies.contains_key(serde_yaml::Value::String("harness".into())),
+        !dependencies.contains_key(serde_yaml_ng::Value::String("harness".into())),
         "harness must stay out of the manifest: it pushes the install graph past the depth cap"
     );
 }

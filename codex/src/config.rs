@@ -78,7 +78,7 @@ impl Config {
     /// error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_yaml::from_str(&text)?),
+            Ok(text) => Ok(serde_yaml_ng::from_str(&text)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
@@ -97,5 +97,37 @@ impl Config {
     /// by the worker; this does not re-expand).
     pub fn from_json(value: &Value) -> anyhow::Result<Config> {
         Ok(serde_json::from_value(value.clone())?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shipped_config_yaml_parses_to_the_defaults() {
+        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml")).unwrap();
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            serde_json::to_value(Config::default()).unwrap()
+        );
+    }
+
+    #[test]
+    fn yaml_overrides_round_trip() {
+        let yaml = "defaults:\n  sandbox_mode: read-only # comment\n  reasoning_effort: 'high'\n  skip_git_repo_check: false\nbase_url: \"\"\n";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.defaults.sandbox_mode, "read-only");
+        assert_eq!(cfg.defaults.reasoning_effort, "high");
+        assert!(!cfg.defaults.skip_git_repo_check);
+        assert_eq!(cfg.defaults.approval_policy, "never");
+        assert!(cfg.iii_context);
+
+        let back: Config =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&cfg).unwrap()
+        );
     }
 }

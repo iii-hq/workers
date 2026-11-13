@@ -972,7 +972,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let cfg: WorkerConfig =
-            serde_yml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         Self::finalize(cfg)
     }
 
@@ -1621,10 +1621,10 @@ databases:
         // "byte-iteration mojibake" regression. The helper is private; we
         // exercise it via a YAML containing a non-ASCII comment.
         let yaml = "# café 日本語\ndatabases:\n  p:\n    url: \"sqlite::memory:\"\n";
-        // Note: serde_yml strips comments, but expand_env runs on the raw
+        // Note: serde_yaml_ng strips comments, but expand_env runs on the raw
         // text *before* parsing. If the helper corrupted UTF-8, the parse
         // would fail because the multibyte sequence would be mangled into
-        // an invalid byte run inside the string we hand to serde_yml.
+        // an invalid byte run inside the string we hand to serde_yaml_ng.
         let c = cfg(yaml);
         assert!(matches!(c.databases["p"].driver, DriverKind::Sqlite));
     }

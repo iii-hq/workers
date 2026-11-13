@@ -174,7 +174,7 @@ max_concurrent_sandboxes: 32
 default_cpus: 1
 default_memory_mb: 512
 "#;
-        let cfg: SandboxConfig = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: SandboxConfig = serde_yaml_ng::from_str(yaml).expect("parse");
         assert!(cfg.auto_install);
         assert_eq!(
             cfg.image_allowlist,
@@ -191,7 +191,7 @@ default_memory_mb: 512
 
     #[test]
     fn defaults_fill_in_when_fields_absent() {
-        let cfg: SandboxConfig = serde_yaml::from_str("{}").expect("parse");
+        let cfg: SandboxConfig = serde_yaml_ng::from_str("{}").expect("parse");
         assert!(cfg.auto_install);
         assert!(cfg.image_allowlist.is_empty());
         assert_eq!(cfg.default_idle_timeout_secs, 300);
@@ -211,7 +211,7 @@ custom_images:
   my-app: ghcr.io/acme/my-app:1.2.3
   other: docker.io/tenant/other:latest
 "#;
-        let cfg: SandboxConfig = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: SandboxConfig = serde_yaml_ng::from_str(yaml).expect("parse");
         assert_eq!(
             cfg.custom_images.get("my-app").unwrap(),
             "ghcr.io/acme/my-app:1.2.3"
@@ -229,7 +229,7 @@ image_allowlist: [python]
 per_image_caps:
   python: { max_cpus: 4, max_memory_mb: 2048 }
 "#;
-        let cfg: SandboxConfig = serde_yaml::from_str(yaml).expect("parse");
+        let cfg: SandboxConfig = serde_yaml_ng::from_str(yaml).expect("parse");
         let cap = cfg.per_image_caps.get("python").expect("python cap");
         assert_eq!(cap.max_cpus, 4);
         assert_eq!(cap.max_memory_mb, 2048);

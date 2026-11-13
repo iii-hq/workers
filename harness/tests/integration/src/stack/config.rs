@@ -104,6 +104,6 @@ pub(crate) fn write_seed(worker: &str, layout: &RunLayout) -> anyhow::Result<Opt
         return Ok(None);
     };
     let path = layout.seed_path(worker)?;
-    std::fs::write(&path, serde_yaml::to_string(&seed)?)?;
+    std::fs::write(&path, serde_yaml_ng::to_string(&seed)?)?;
     Ok(Some(path))
 }

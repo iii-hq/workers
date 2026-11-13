@@ -10,7 +10,7 @@ struct RepositoryPermissions {
 
 fn repository_permissions() -> Permissions {
     let config: RepositoryPermissions =
-        serde_yaml::from_str(include_str!("../../iii-permissions.yaml"))
+        serde_yaml_ng::from_str(include_str!("../../iii-permissions.yaml"))
             .expect("repository permissions should be valid YAML");
     let specs = parse_rules_from_config(&Value::Array(config.rules));
     Permissions::compile(&specs).expect("repository permission rules should compile")

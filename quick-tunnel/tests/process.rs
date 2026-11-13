@@ -335,7 +335,7 @@ exec /usr/bin/python3 -c 'import signal; signal.alarm(10); signal.pause()'
         )
         .unwrap();
         let yaml = dir.path().join("worker.yaml");
-        std::fs::write(&yaml, serde_yaml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(&yaml, serde_yaml_ng::to_string(&config).unwrap()).unwrap();
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_quick-tunnel"))
             .args(["--local-config", "--url", "ws://127.0.0.1:1", "--config"])
             .arg(yaml)

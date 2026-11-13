@@ -185,7 +185,7 @@ impl CodeRunnerConfig {
 /// nothing on disk is read at runtime.
 pub fn load_config(path: &str) -> Result<CodeRunnerConfig> {
     let raw = std::fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&raw)?)
+    Ok(serde_yaml_ng::from_str(&raw)?)
 }
 
 #[cfg(test)]
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn unknown_config_keys_are_rejected() {
-        let err = serde_yaml::from_str::<CodeRunnerConfig>("max_runtimez: 3").unwrap_err();
+        let err = serde_yaml_ng::from_str::<CodeRunnerConfig>("max_runtimez: 3").unwrap_err();
         assert!(err.to_string().contains("max_runtimez"));
     }
 

@@ -103,7 +103,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let parsed: Self =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         parsed.validate()
     }
 

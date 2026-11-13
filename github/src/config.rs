@@ -53,7 +53,7 @@ impl Config {
     /// defaults; a parse error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_yaml::from_str(&expand_env(&text))?),
+            Ok(text) => Ok(serde_yaml_ng::from_str(&expand_env(&text))?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }

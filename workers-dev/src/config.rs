@@ -71,7 +71,7 @@ pub struct RepoWorker {
     /// `worker-compose.yaml`. It knows things a synthesized declaration cannot
     /// guess — `harness-e2e` refuses to start without the `config_override`
     /// its own file carries.
-    pub declared: Option<serde_yaml::Value>,
+    pub declared: Option<serde_yaml_ng::Value>,
     /// The binary to `cargo run --bin`. `None` for the workers that are not
     /// Rust binaries — they install from the registry, not from this tree.
     pub bin: Option<String>,
@@ -109,7 +109,7 @@ struct ComposeFile {
     /// A `Mapping` rather than a map type so declaration order survives — the
     /// dashboard lists containers in the order the file does.
     #[serde(default)]
-    containers: serde_yaml::Mapping,
+    containers: serde_yaml_ng::Mapping,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,7 +163,7 @@ impl Config {
 
         let text = std::fs::read_to_string(&compose_path)
             .with_context(|| format!("read {}", compose_path.display()))?;
-        let file: ComposeFile = serde_yaml::from_str(&text)
+        let file: ComposeFile = serde_yaml_ng::from_str(&text)
             .with_context(|| format!("parse {}", compose_path.display()))?;
 
         let file_namespace = match file.namespace.as_deref() {
@@ -285,7 +285,7 @@ pub fn discover_workers(
 
 fn read_worker(dir: &Path, root: &Path) -> Option<RepoWorker> {
     let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
-    let manifest: WorkerManifest = serde_yaml::from_str(&text).ok()?;
+    let manifest: WorkerManifest = serde_yaml_ng::from_str(&text).ok()?;
     let name = manifest
         .name
         .or_else(|| dir.file_name()?.to_str().map(str::to_string))?;
@@ -307,12 +307,12 @@ fn read_worker(dir: &Path, root: &Path) -> Option<RepoWorker> {
 /// The container a worker declares for itself. Its own key when there is one,
 /// otherwise the sole container — a single-worker project names it whatever
 /// it likes.
-fn declared_container(dir: &Path, name: &str) -> Option<serde_yaml::Value> {
+fn declared_container(dir: &Path, name: &str) -> Option<serde_yaml_ng::Value> {
     let text = std::fs::read_to_string(dir.join(SELF_COMPOSE_FILE)).ok()?;
-    let file: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let file: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).ok()?;
     let containers = file.get("containers")?.as_mapping()?;
     containers
-        .get(serde_yaml::Value::from(name))
+        .get(serde_yaml_ng::Value::from(name))
         .cloned()
         .or_else(|| {
             (containers.len() == 1)
@@ -376,7 +376,7 @@ pub fn expand_home(input: &str) -> PathBuf {
 }
 
 fn parse_containers(
-    containers: &serde_yaml::Mapping,
+    containers: &serde_yaml_ng::Mapping,
     compose_dir: &Path,
 ) -> Result<Vec<WorkerSpec>> {
     let mut workers = Vec::new();
@@ -385,8 +385,8 @@ fn parse_containers(
             .as_str()
             .with_context(|| format!("containers: key {key:?} is not a string"))?
             .to_string();
-        let container: ComposeContainer =
-            serde_yaml::from_value(value.clone()).with_context(|| format!("containers.{name}"))?;
+        let container: ComposeContainer = serde_yaml_ng::from_value(value.clone())
+            .with_context(|| format!("containers.{name}"))?;
         let ui_dir = container
             .worker
             .strip_prefix("path://")

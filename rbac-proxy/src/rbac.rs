@@ -1035,7 +1035,7 @@ mod tests {
                   public: true
                   name: match("*public*")
         "#;
-        let parsed: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let parsed: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(parsed.auth_function_id.as_deref(), Some("my-project::auth"));
         assert_eq!(parsed.expose_functions.len(), 3);
 
@@ -1305,7 +1305,7 @@ mod tests {
                   public: true
                 namespace: billing
         "#;
-        let c: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let c: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let none = HashMap::new();
         assert!(allowed_in("orders", "api::x", &c, &none, &[], &[]));
         assert!(!allowed_in(

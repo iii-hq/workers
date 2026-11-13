@@ -12,14 +12,14 @@
 //!   catch-all map — non-empty catch-all = unknown keys = hard error. This
 //!   keeps deprecated keys accepted, which `#[serde(deny_unknown_fields)]`
 //!   cannot express.
-//! - Parsing goes Value-first then `from_value`: serde_yaml 0.9 detects
+//! - Parsing goes Value-first then `from_value`: serde_yaml_ng 0.10 detects
 //!   duplicate mapping keys only at the `Value` layer (typed maps silently
 //!   last-win), so the two-step keeps duplicate keys a hard error.
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_yaml::Value as YamlValue;
+use serde_yaml_ng::Value as YamlValue;
 
 /// Strip control characters from a manifest key before it is echoed into a
 /// terminal-bound error or warning. Manifest keys are third-party (a cloned
@@ -130,7 +130,7 @@ pub struct ResourcesSection {
 }
 
 /// Human-readable YAML type label for shape-error messages. Numbers echo
-/// their value (safe — serde_yaml renders them numerically); everything else
+/// their value (safe — serde_yaml_ng renders them numerically); everything else
 /// gets a type name so hostile string content never reaches the terminal.
 fn yaml_value_desc(v: &YamlValue) -> String {
     match v {
@@ -324,7 +324,7 @@ impl WorkerManifest {
         if !problems.is_empty() {
             return Err(format!("invalid manifest shape: {}", problems.join("; ")));
         }
-        serde_yaml::from_value(doc.clone()).map_err(|e| format!("invalid manifest shape: {e}"))
+        serde_yaml_ng::from_value(doc.clone()).map_err(|e| format!("invalid manifest shape: {e}"))
     }
 
     /// Every unknown manifest key as a dotted path, sanitized for terminal
@@ -357,14 +357,14 @@ mod tests {
 
     #[test]
     fn from_value_rejects_non_mapping_document_via_serde_backstop() {
-        let doc: YamlValue = serde_yaml::from_str("just-a-string").unwrap();
+        let doc: YamlValue = serde_yaml_ng::from_str("just-a-string").unwrap();
         let err = WorkerManifest::from_value(&doc).expect_err("non-mapping must fail");
         assert!(err.starts_with("invalid manifest shape:"), "got: {err}");
     }
 
     #[test]
     fn unknown_keys_skip_the_accepted_deprecated_ones() {
-        let doc: YamlValue = serde_yaml::from_str(
+        let doc: YamlValue = serde_yaml_ng::from_str(
             "name: w\nruntime:\n  kind: bun\n  foo: 1\nconfig: {}\nbad: 2\nentry: w.ts\n",
         )
         .unwrap();

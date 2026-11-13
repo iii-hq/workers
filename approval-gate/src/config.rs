@@ -144,7 +144,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -257,31 +257,31 @@ mod tests {
 
     #[test]
     fn partial_yaml_fills_grant_reask_limit_default() {
-        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("default_mode: auto\n").unwrap();
         assert_eq!(cfg.grant_reask_limit, 3);
     }
 
     #[test]
     fn grant_reask_limit_is_configurable() {
-        let cfg: WorkerConfig = serde_yaml::from_str("grant_reask_limit: 5\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("grant_reask_limit: 5\n").unwrap();
         assert_eq!(cfg.grant_reask_limit, 5);
     }
 
     #[test]
     fn defaults_from_empty_object() {
-        let from_yaml: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(from_yaml, WorkerConfig::default());
     }
 
     #[test]
     fn partial_yaml_fills_defaults() {
-        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("default_mode: auto\n").unwrap();
         assert_eq!(cfg.default_mode, PermissionMode::Auto);
     }
 
     #[test]
     fn unknown_root_key_is_rejected() {
-        let res: Result<WorkerConfig, _> = serde_yaml::from_str("sweep_scheduel: \"x\"\n");
+        let res: Result<WorkerConfig, _> = serde_yaml_ng::from_str("sweep_scheduel: \"x\"\n");
         assert!(res.is_err());
     }
 

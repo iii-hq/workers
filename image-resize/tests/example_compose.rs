@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_yaml::Value;
+use serde_yaml_ng::Value;
 
 fn example_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("example")
@@ -14,7 +14,7 @@ fn compose() -> Value {
     let path = example_dir().join("worker-compose.yaml");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    serde_yaml::from_str(&text).expect("worker-compose.yaml parses")
+    serde_yaml_ng::from_str(&text).expect("worker-compose.yaml parses")
 }
 
 /// The directory a `path://` worker names, resolved against the example.
@@ -59,7 +59,7 @@ fn the_example_runs_http_image_resize_and_the_demo() {
     assert!(worker_dir(demo).join("package.json").is_file());
     assert_eq!(
         demo["start_after"],
-        serde_yaml::from_str::<Value>("[http, image-resize]").unwrap()
+        serde_yaml_ng::from_str::<Value>("[http, image-resize]").unwrap()
     );
 }
 

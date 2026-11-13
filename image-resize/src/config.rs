@@ -65,7 +65,7 @@ impl Default for ResizeConfig {
 
 pub fn load_config(path: &str) -> Result<ResizeConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let config: ResizeConfig = serde_yaml::from_str(&contents)?;
+    let config: ResizeConfig = serde_yaml_ng::from_str(&contents)?;
     Ok(config)
 }
 
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn test_config_defaults() {
-        let config: ResizeConfig = serde_yaml::from_str("{}").unwrap();
+        let config: ResizeConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(config.width, 200);
         assert_eq!(config.height, 200);
         assert_eq!(config.strategy, ResizeStrategy::ScaleToFit);
@@ -93,7 +93,7 @@ quality:
   jpeg: 70
   webp: 60
 "#;
-        let config: ResizeConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ResizeConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.width, 300);
         assert_eq!(config.height, 150);
         assert_eq!(config.strategy, ResizeStrategy::CropToFit);

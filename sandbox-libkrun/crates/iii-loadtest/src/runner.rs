@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn the_engine_config_carries_the_port_and_observer_settings() {
         let yaml: serde_json::Value =
-            serde_yaml::from_str(&engine_config(28101, &["max_per_connection=4096".into()]))
+            serde_yaml_ng::from_str(&engine_config(28101, &["max_per_connection=4096".into()]))
                 .unwrap();
         assert_eq!(yaml["workers"][0]["name"], "iii-worker-manager");
         assert_eq!(yaml["workers"][0]["config"]["port"], 28101);
@@ -704,7 +704,7 @@ mod tests {
     fn a_scenario_raises_the_caps_it_needs_unless_the_run_sets_them() {
         let config = |run: &[&str]| -> serde_json::Value {
             let run: Vec<String> = run.iter().map(|kv| kv.to_string()).collect();
-            serde_yaml::from_str(&engine_config(
+            serde_yaml_ng::from_str(&engine_config(
                 28101,
                 &scenarios::observer_settings("match-keys", &run),
             ))
@@ -731,7 +731,7 @@ mod tests {
         settings.engine_log_level = "warn".into();
         settings.observability = "off".into();
         let entry: serde_json::Value =
-            serde_yaml::from_str(&observability_entry(&settings).unwrap()).unwrap();
+            serde_yaml_ng::from_str(&observability_entry(&settings).unwrap()).unwrap();
         assert_eq!(entry["id"], "iii-observability");
         assert_eq!(entry["value"]["level"], "warn");
         assert_eq!(entry["value"]["enabled"], false);

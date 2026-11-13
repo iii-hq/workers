@@ -500,7 +500,7 @@ pub fn update_skill_in(
 
     let (fm_text, body) = fs_source::split_frontmatter(&req.content);
     let fm: SkillFrontmatter = fm_text
-        .and_then(|t| serde_yaml::from_str(t).ok())
+        .and_then(|t| serde_yaml_ng::from_str(t).ok())
         .unwrap_or_default();
     let title = resolve_title(&fm, body, &id);
     Ok(SkillUpdateOutput {
@@ -642,7 +642,7 @@ pub fn create_skill_in(
 
     let (fm_text, body) = fs_source::split_frontmatter(&req.content);
     let fm: SkillFrontmatter = fm_text
-        .and_then(|t| serde_yaml::from_str(t).ok())
+        .and_then(|t| serde_yaml_ng::from_str(t).ok())
         .unwrap_or_default();
     let title = resolve_title(&fm, body, &id);
     Ok(SkillCreateOutput {

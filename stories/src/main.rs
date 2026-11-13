@@ -45,8 +45,9 @@ fn worker_metadata() -> WorkerMetadata {
 fn read_seed(path: &str) -> Option<serde_json::Value> {
     match std::fs::read_to_string(path)
         .map_err(|e| e.to_string())
-        .and_then(|raw| serde_yaml::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string()))
-    {
+        .and_then(|raw| {
+            serde_yaml_ng::from_str::<serde_json::Value>(&raw).map_err(|e| e.to_string())
+        }) {
         Ok(value) => Some(value),
         Err(error) => {
             tracing::warn!(

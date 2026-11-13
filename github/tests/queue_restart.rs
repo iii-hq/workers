@@ -107,7 +107,7 @@ fn write_config(dir: &Path) {
     });
     std::fs::write(
         dir.join("config.yaml"),
-        serde_yaml::to_string(&config).unwrap(),
+        serde_yaml_ng::to_string(&config).unwrap(),
     )
     .unwrap();
 }
