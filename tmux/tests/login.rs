@@ -414,6 +414,12 @@ async fn starting_again_or_cancelling_ends_the_login_under_way() {
     .await
     .unwrap();
     assert!(w.login(&second.login_id).await.is_none());
+    // Its folder (the browser shim) is gone with it, and the replaced
+    // login's too.
+    for id in [&first.login_id, &second.login_id] {
+        let folder = std::env::temp_dir().join(format!("iii-tmux-login-{id}"));
+        assert!(!folder.exists(), "{}", folder.display());
+    }
     assert_eq!(
         w.code(&second.login_id, "demo-ok#demo-state")
             .await

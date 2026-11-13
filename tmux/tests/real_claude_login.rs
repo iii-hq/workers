@@ -242,7 +242,14 @@ async fn the_real_claude_code_signs_in_through_the_worker_s_pty() {
         browser_url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A"),
         "{browser_url}"
     );
-    let opened = std::fs::read_to_string(&trapped).unwrap();
+    // The shim notes the link, then runs the opener: the note can come
+    // first.
+    let mut waited = 0;
+    while !trapped.exists() && waited < 50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        waited += 1;
+    }
+    let opened = std::fs::read_to_string(&trapped).expect("the opener ran");
     assert_eq!(opened.trim(), format!("opener {browser_url}"));
     account_fns::login_cancel(
         &ctx,

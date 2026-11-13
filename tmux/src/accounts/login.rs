@@ -561,11 +561,14 @@ impl Logins {
         );
         login.kill();
         login.stop.notify_one();
+        // Now, not when its supervisor gets to it: the worker may be
+        // stopping.
+        let _ = std::fs::remove_dir_all(&login.folder);
         cancelled
     }
 
-    /// Stop every login under way (the worker is stopping): a folder of
-    /// theirs is removed, a Claude Code left would wait for nobody.
+    /// Stop every login under way (the worker is stopping): their folders
+    /// are removed, a Claude Code left would wait for nobody.
     pub fn cancel_all(&self) -> usize {
         let ids: Vec<String> = self
             .logins
@@ -574,17 +577,7 @@ impl Logins {
             .keys()
             .cloned()
             .collect();
-        let mut stopped = 0;
-        for id in ids {
-            let login = self.get(&id);
-            if self.cancel(&id) {
-                stopped += 1;
-            }
-            if let Some(login) = login {
-                let _ = std::fs::remove_dir_all(&login.folder);
-            }
-        }
-        stopped
+        ids.iter().filter(|id| self.cancel(id)).count()
     }
 
     /// Start `claude auth login` for `plan` and answer once it printed its
