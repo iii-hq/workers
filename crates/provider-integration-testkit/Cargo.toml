@@ -23,7 +23,8 @@ provider-zai = ["dep:provider-zai"]
 
 [dependencies]
 anyhow = "1"
-axum = "0.8"
+# =0.8.8: last axum on tokio-tungstenite 0.28, the iii-sdk major; lift when iii-sdk moves to 0.29.
+axum = "=0.8.8"
 iii-sdk = "=0.26.0"
 llm-router = { path = "../../llm-router", default-features = false }
 provider-anthropic = { path = "../../provider-anthropic", optional = true }

@@ -686,14 +686,13 @@ impl AcpHandler {
         if let Err(e) = remove_session_from_index(&self.iii, &p.session_id).await {
             errs.push(format!("index: {}", e));
         }
-        if errs.is_empty() {
-            if let Err(error) =
+        if errs.is_empty()
+            && let Err(error) =
                 state_delete(&self.iii, &scope, &session_history_key(&p.session_id)).await
-            {
-                match state_get(&self.iii, &scope, &session_history_key(&p.session_id)).await {
-                    Ok(None) => {}
-                    _ => errs.push(format!("history tombstone: {}", error)),
-                }
+        {
+            match state_get(&self.iii, &scope, &session_history_key(&p.session_id)).await {
+                Ok(None) => {}
+                _ => errs.push(format!("history tombstone: {}", error)),
             }
         }
 

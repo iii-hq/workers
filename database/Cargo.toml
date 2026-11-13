@@ -71,7 +71,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # SSH tunnels (postgres/mysql behind a bastion): pure Rust on the same
 # aws-lc-rs provider as rustls, no OpenSSL. `rsa` adds RSA host and user keys
 # (ssh-rsa, rsa-sha2-*); zlib compression is not needed for a db tunnel.
-russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["aws-lc-rs", "rsa"] }
 # `database::formatSql`.
 sqlformat = "0.5"
 # Chat mention provider descriptor + search/get wire types (`@database(id=…)`).
