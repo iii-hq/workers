@@ -4,12 +4,16 @@
 use super::launch::Target;
 use super::paths::ClaudePaths;
 use super::registry::{self, Entry, Registry};
+use super::slot::Place;
 use super::{shared, Accounts, DEFAULT};
 use crate::model::now_ms;
 
 /// An account a swap involves is not removed until the swap is over.
 pub const SWAP_UNDER_WAY: &str =
     "A switch of the global account involving it is under way; try again once it is over.";
+
+/// `remove` with `delete_files` while the account signs in.
+pub const SIGNING_IN_THERE: &str = "A sign-in runs on it: cancel it (tmux::accounts::login_cancel) and let Claude Code stop, or remove the account and keep its folder.";
 
 pub fn no_account(id: &str) -> String {
     format!("There is no Claude Code account \"{id}\".")
@@ -136,9 +140,10 @@ impl Accounts {
     /// Take account `id` off the list. Never `default`, the global one, the
     /// one a switch waits to make global, nor one a swap running or left
     /// half-way involves ([`SWAP_UNDER_WAY`]).
-    /// Its panes keep running. With `delete_files` its folder goes too (only
-    /// inside the accounts root, never what its links point at), refused
-    /// while `running` Claude Code panes still run on it.
+    /// Its panes keep running; a sign-in of it from the app stops. With
+    /// `delete_files` its folder goes too (only inside the accounts root,
+    /// never what its links point at), refused while `running` Claude Code
+    /// panes still run on it, or a sign-in does.
     pub fn remove(&self, id: &str, delete_files: bool, running: u32) -> Result<(), String> {
         let paths = self.paths_or_err()?;
         if id == DEFAULT {
@@ -177,6 +182,10 @@ impl Accounts {
                     "{running} Claude Code {panes} still {run} on it: move or close {them} first, or remove the account and keep its folder."
                 ));
             }
+            // Claude Code would save that sign-in in the folder deleted.
+            if delete_files && self.logins.signing_in(id) {
+                return Err(SIGNING_IN_THERE.into());
+            }
             if delete_files {
                 shared::delete_account_dir(&paths.root, &paths.account_dir(id))?;
             }
@@ -185,6 +194,8 @@ impl Accounts {
             Ok(())
         })?;
         self.forget(id);
+        // A sign-in of the account removed has nowhere to land.
+        self.logins.cancel_account(id);
         Ok(())
     }
 
@@ -210,12 +221,18 @@ impl Accounts {
             Target::Dir(dir) => Some(std::path::PathBuf::from(dir)),
             Target::Slot | Target::Plain => None,
         };
+        let before = self.place_mark(&if config_dir.is_some() {
+            Place::Folder(id.to_string())
+        } else {
+            Place::Slot
+        });
         Ok(super::login::Plan {
             account: id.to_string(),
             config_dir,
             home: paths.home.clone(),
             email: self.email_of(id),
             browser,
+            before,
         })
     }
 

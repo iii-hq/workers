@@ -310,6 +310,16 @@ impl Accounts {
             .is_some_and(|credentials| credentials.signed_in())
     }
 
+    /// What tells the sign-in `place` holds now from another one
+    /// ([`super::credentials::sign_in_mark`]); `None` without one.
+    pub(super) fn place_mark(&self, place: &Place) -> Option<String> {
+        self.stores()
+            .and_then(|stores| stores.read(place).ok())
+            .flatten()
+            .as_ref()
+            .and_then(super::credentials::sign_in_mark)
+    }
+
     /// Whether the registry names whoever is signed in to the slot as the
     /// global account (always, without `accounts.json`): what a sign-in on
     /// the slot waits for once [`Accounts::watch_slot`] looked.

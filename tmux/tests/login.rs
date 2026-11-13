@@ -664,14 +664,17 @@ async fn two_starts_at_once_leave_one_login() {
             )
         };
         let (a, b) = tokio::join!(start(), start());
+        // A start that lost answers `gone`; one that answered first may
+        // be cancelled by the other right after.
+        for lost in [&a, &b].into_iter().filter_map(|r| r.as_ref().err()) {
+            let lost: serde_json::Value = serde_json::from_str(lost).unwrap();
+            assert_eq!(lost["code"], "gone", "{lost}");
+        }
         let won: Vec<&account_fns::LoginStartOutput> = [&a, &b]
             .into_iter()
             .filter_map(|r| r.as_ref().ok())
             .collect();
-        assert_eq!(won.len(), 1, "{a:?} {b:?}");
-        let lost = [&a, &b].into_iter().find_map(|r| r.as_ref().err()).unwrap();
-        let lost: serde_json::Value = serde_json::from_str(lost).unwrap();
-        assert_eq!(lost["code"], "gone", "{lost}");
+        assert!(!won.is_empty(), "{a:?} {b:?}");
         let live: Vec<ClaudeLogin> = w
             .logins()
             .await
@@ -679,7 +682,7 @@ async fn two_starts_at_once_leave_one_login() {
             .filter(|l| l.account == "personal" && l.state == LoginState::WaitingCode)
             .collect();
         assert_eq!(live.len(), 1, "{live:?}");
-        assert_eq!(live[0].login_id, won[0].login_id);
+        assert!(won.iter().any(|w| w.login_id == live[0].login_id));
     }
     // The one left signs in.
     let id = w.logins().await.last().unwrap().login_id.clone();
@@ -700,31 +703,42 @@ async fn two_codes_at_once_get_one_outcome() {
         Err(error) => error["code"].as_str().unwrap().to_string(),
     };
     assert_eq!(outcome(&a), outcome(&b));
+    // Claude Code was typed one code, not both.
+    let lines = std::fs::read_to_string(w.dir.join("state/auth-login.lines")).unwrap();
+    assert_eq!(lines.trim(), "1");
 }
 
-/// Claude Code saying it signed in proves nothing by itself: the sign-in
-/// has to be in the account's folder.
+/// Claude Code saying it signed in proves nothing by itself: a new
+/// sign-in has to be where it belongs. The one there before is not one:
+/// on a folder that held a sign-in, on ~/.claude, on an empty folder.
 #[tokio::test]
 async fn a_sign_in_that_did_not_land_fails() {
     let w = world("hollow", &["personal"]).await;
+    let hollow = |account: &'static str, place: &'static str| {
+        let w = &w;
+        async move {
+            let started = w.start(account, None).await;
+            let error = w
+                .code(&started.login_id, "demo-hollow#demo-state")
+                .await
+                .unwrap_err();
+            assert_eq!(error["code"], "failed", "{error}");
+            let message = error["message"].as_str().unwrap();
+            assert!(
+                message.contains(&format!("{place} holds no new sign-in")),
+                "{error}"
+            );
+            assert_eq!(
+                w.login(&started.login_id).await.unwrap().state,
+                LoginState::Failed
+            );
+        }
+    };
+    hollow("personal", "the account's folder").await;
+    hollow("default", "~/.claude").await;
+    assert_eq!(w.ctx.collector.accounts().registry().global, "default");
     std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
-    let started = w.start("personal", None).await;
-    let error = w
-        .code(&started.login_id, "demo-hollow#demo-state")
-        .await
-        .unwrap_err();
-    assert_eq!(error["code"], "failed", "{error}");
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("holds no sign-in"),
-        "{error}"
-    );
-    assert_eq!(
-        w.login(&started.login_id).await.unwrap().state,
-        LoginState::Failed
-    );
+    hollow("personal", "the account's folder").await;
 }
 
 /// A code Claude Code takes longer to check than `login_code` waits: it is
@@ -752,12 +766,20 @@ async fn a_slow_check_is_not_cut_off() {
 async fn a_link_expiring_mid_check_lets_the_check_finish() {
     let w = world("late", &["personal"]).await;
     std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
-    w.runner(|runner| runner.ttl_ms = Some(2_000));
+    // The code goes in within 4 seconds; checking it takes 7.
+    w.runner(|runner| {
+        runner.ttl_ms = Some(4_000);
+        runner.env.push(("FAKE_CLAUDE_SLOW_S".into(), "7".into()));
+    });
     let started = w.start("personal", None).await;
     let done = w
         .code(&started.login_id, "demo-slow#demo-state")
         .await
         .unwrap();
+    assert!(
+        tmux::model::now_ms() > started.expires_at_ms,
+        "the link ran out while the code was checked"
+    );
     assert_eq!(done.account.id, "personal");
     assert_eq!(
         w.login(&started.login_id).await.unwrap().state,
@@ -817,7 +839,197 @@ async fn a_claude_code_deaf_to_sigterm_is_killed() {
     )
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let signals = w.dir.join("state/auth-login.signals");
+    eventually("SIGTERM", || async {
+        std::fs::read_to_string(&signals)
+            .ok()
+            .filter(|noted| noted.contains("TERM"))
+    })
+    .await;
     assert!(alive(pid), "SIGTERM is ignored: it is still there");
     eventually("killed", || async { (!alive(pid)).then_some(()) }).await;
+}
+
+/// Cancelled while a code is checked on ~/.claude: Claude Code may still
+/// be saving the sign-in there, so no switch goes through until it is gone.
+#[tokio::test]
+async fn a_check_cancelled_holds_switches_off_until_claude_code_is_gone() {
+    let w = world("cancel-guard", &["personal", "side-project"]).await;
+    w.runner(|runner| runner.env.push(("FAKE_CLAUDE_SLOW_S".into(), "3".into())));
+    let logins = &w.ctx.collector.accounts().logins;
+    let started = w.start("default", None).await;
+    let (typed, ()) = tokio::join!(w.code(&started.login_id, "demo-slow#demo-state"), async {
+        eventually("checking", || async {
+            w.login(&started.login_id)
+                .await
+                .filter(|l| l.state == LoginState::Checking)
+        })
+        .await;
+        account_fns::login_cancel(
+            &w.ctx,
+            account_fns::LoginCancelInput {
+                login_id: started.login_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(w.login(&started.login_id).await.is_none());
+        assert_eq!(
+            logins
+                .under_way_on(&["personal", "side-project"])
+                .as_deref(),
+            Some("default")
+        );
+    });
+    assert_eq!(typed.unwrap_err()["code"], "gone");
+    eventually("Claude Code gone", || async {
+        logins
+            .under_way_on(&["personal", "side-project"])
+            .is_none()
+            .then_some(())
+    })
+    .await;
+    // It got to save the sign-in.
+    assert_eq!(w.token_in(&w.paths.claude_home).as_deref(), Some("work"));
+}
+
+/// A switch left half-way (its journal, the swap lock held elsewhere):
+/// no sign-in starts on ~/.claude or on the two accounts it moves.
+#[tokio::test]
+async fn no_sign_in_starts_where_a_switch_is_left_half_way() {
+    let w = world("unsettled", &["personal", "side-project"]).await;
+    let accounts = w.ctx.collector.accounts().clone();
+    let journal = w.paths.root.join(tmux::accounts::slot::JOURNAL);
+    std::fs::write(
+        &journal,
+        r#"{"from": "default", "to": "personal", "step": 4}"#,
+    )
+    .unwrap();
+    let held = accounts.stores().unwrap().hold_swap().unwrap();
+    for account in ["default", "personal"] {
+        let error = account_fns::login_start(
+            &w.ctx,
+            account_fns::LoginStartInput {
+                account: account.into(),
+                browser: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error["code"], "failed", "{error}");
+        assert_eq!(
+            error["message"],
+            tmux::accounts::switch::SWAP_UNSETTLED,
+            "{error}"
+        );
+    }
+    assert!(w.logins().await.is_empty());
+    // An account the switch doesn't move signs in.
+    let other = w.start("side-project", None).await;
+    assert!(w.code(&other.login_id, "demo-ok#demo-state").await.is_ok());
+    drop(held);
+    std::fs::remove_file(&journal).unwrap();
+}
+
+/// An account's folder isn't deleted while it signs in there; removed
+/// with its folder kept, its sign-in stops and says why.
+#[tokio::test]
+async fn removing_an_account_stops_its_sign_in() {
+    let w = world("remove", &["personal", "side-project"]).await;
+    let accounts = w.ctx.collector.accounts().clone();
+    let started = w.start("side-project", None).await;
+    let refused = accounts.remove("side-project", true, 0).unwrap_err();
+    assert_eq!(refused, tmux::accounts::manage::SIGNING_IN_THERE);
+    assert!(w.paths.account_dir("side-project").is_dir());
+    assert!(accounts.registry().has("side-project"));
+    assert_eq!(
+        w.login(&started.login_id).await.unwrap().state,
+        LoginState::WaitingCode
+    );
+    let (typed, ()) = tokio::join!(w.code(&started.login_id, "demo-slow#demo-state"), async {
+        eventually("checking", || async {
+            w.login(&started.login_id)
+                .await
+                .filter(|l| l.state == LoginState::Checking)
+        })
+        .await;
+        account_fns::remove(
+            &w.ctx,
+            account_fns::RemoveAccountInput {
+                account: "side-project".into(),
+                delete_files: false,
+            },
+        )
+        .await
+        .unwrap();
+    });
+    let error = typed.unwrap_err();
+    assert_eq!(error["code"], "gone");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("account was removed"),
+        "{error}"
+    );
+    assert!(w.login(&started.login_id).await.is_none());
+    // Its Claude Code gone, the folder can go (the account is, already).
+    eventually("Claude Code gone", || async {
+        (!accounts.logins.signing_in("side-project")).then_some(())
+    })
+    .await;
+}
+
+/// With the browser on this computer, a return just before the link runs
+/// out still signs in: Claude Code gets the time to save it. A code typed
+/// once the time is up is not taken.
+#[tokio::test]
+async fn with_the_browser_here_a_return_as_the_link_runs_out_still_signs_in() {
+    let w = world("host-late", &["personal"]).await;
+    std::fs::remove_file(w.paths.account_dir("personal").join(".credentials.json")).unwrap();
+    w.runner(|runner| {
+        runner.ttl_ms = Some(2_000);
+        runner.env.push(("FAKE_CLAUDE_SLOW_S".into(), "4".into()));
+    });
+    let started = w.start("personal", Some(LoginBrowser::Host)).await;
+    let browser_url = started.browser_url.clone().unwrap();
+    let port: u16 = browser_url
+        .split("localhost%3A")
+        .nth(1)
+        .and_then(|rest| rest.split('%').next())
+        .and_then(|port| port.parse().ok())
+        .unwrap();
+    // Back from the page now; saving the sign-in takes 4 seconds.
+    let back = tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(
+                b"GET /callback?code=demo-slow&state=demo-state HTTP/1.0\r\nHost: localhost\r\n\r\n",
+            )
+            .unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        answer
+    });
+    let late = started.expires_at_ms + 300;
+    tokio::time::sleep(Duration::from_millis(
+        late.saturating_sub(tmux::model::now_ms()),
+    ))
+    .await;
+    let error = w.code(&started.login_id, "x#y").await.unwrap_err();
+    assert_eq!(error["code"], "expired", "{error}");
+    assert!(back.await.unwrap().starts_with("HTTP/1.0 200"));
+    let entry = eventually("signed in", || async {
+        w.login(&started.login_id)
+            .await
+            .filter(|l| l.state != LoginState::WaitingCode)
+    })
+    .await;
+    assert_eq!(entry.state, LoginState::Done, "{entry:?}");
+    assert_eq!(
+        w.token_in(&w.paths.account_dir("personal")).as_deref(),
+        Some("personal")
+    );
 }

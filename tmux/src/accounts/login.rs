@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,7 +49,9 @@ const KILL_AFTER: Duration = Duration::from_secs(3);
 /// the login says it could not be taken in.
 const TAKE_IN_TRIES: u32 = 3;
 /// `browser: host` with nothing to open a browser with.
-const NO_OPENER: &str = "No browser can be opened on this computer (no BROWSER, and no xdg-open): sign in with browser \"none\" and open the link on any device.";
+const NO_OPENER: &str = "No browser can be opened on this computer (no BROWSER, and no xdg-open with a display): sign in with browser \"none\" and open the link on any device.";
+/// How often the worker looks whether Claude Code ended.
+const REAP_EVERY: Duration = Duration::from_millis(50);
 /// How long, with the browser on this computer, Claude Code may take to
 /// hand it its link once it printed the other.
 const BROWSER_NOTE_WAIT: Duration = Duration::from_secs(3);
@@ -317,6 +320,24 @@ fn replaced() -> LoginError {
     )
 }
 
+fn cancelled() -> LoginError {
+    login_error("gone", "The sign-in was cancelled.")
+}
+
+fn removed() -> LoginError {
+    login_error(
+        "gone",
+        "The account was removed, and its sign-in stopped with it.",
+    )
+}
+
+fn stopping() -> LoginError {
+    login_error(
+        "gone",
+        "The worker is stopping: start the sign-in again once it is back.",
+    )
+}
+
 pub fn invalid_code() -> LoginError {
     login_error(
         "invalid_code",
@@ -356,6 +377,9 @@ pub struct Plan {
     /// For `--email`.
     pub email: Option<String>,
     pub browser: LoginBrowser,
+    /// The sign-in where Claude Code signs in, as it was before
+    /// ([`super::credentials::sign_in_mark`]): `done` needs another one.
+    pub before: Option<String>,
 }
 
 /// Where a login is, as its waiters see it.
@@ -410,6 +434,32 @@ struct Pty {
 /// Claude Code's exit status once it ended (`None` inside: unknown).
 type Exit = watch::Receiver<Option<Option<i32>>>;
 
+/// Claude Code's process. It is reaped (and its pid free for another
+/// process) only under `reaped`, which a signal holds too: no signal
+/// reaches a process that isn't Claude Code's.
+struct Proc {
+    pid: i32,
+    reaped: Mutex<bool>,
+    /// Someone is stopping it already: later stops change nothing.
+    stopping: AtomicBool,
+}
+
+impl Proc {
+    /// Send `signal` to the process group Claude Code leads (the pty's
+    /// session), unless it was reaped.
+    fn signal(&self, signal: i32) {
+        let reaped = self.reaped.lock().unwrap_or_else(|p| p.into_inner());
+        if !*reaped {
+            // SAFETY: kill has no memory preconditions; a negative pid
+            // names the process group Claude Code leads, and Claude Code,
+            // not reaped (`reaped` is held), still holds that number.
+            unsafe {
+                libc::kill(-self.pid, signal);
+            }
+        }
+    }
+}
+
 struct Login {
     id: String,
     account: String,
@@ -421,7 +471,9 @@ struct Login {
     expires_at_ms: u64,
     /// The shims and the link they note: removed when the login ends.
     folder: PathBuf,
-    pid: Option<u32>,
+    /// The sign-in that was there before ([`Plan::before`]).
+    before: Option<String>,
+    proc: Option<Arc<Proc>>,
     status: watch::Sender<Status>,
     exit: Exit,
     pty: Mutex<Option<Pty>>,
@@ -487,7 +539,7 @@ impl Login {
     /// sign-in); nothing more is typed into it.
     fn stop_claude(&self, grace: Duration) {
         let pty = self.pty.lock().unwrap_or_else(|p| p.into_inner()).take();
-        terminate(self.pid, self.exit.clone(), grace, pty);
+        terminate(self.proc.clone(), self.exit.clone(), grace, pty);
     }
 
     /// With the browser on this computer: the link Claude Code gave it,
@@ -523,27 +575,17 @@ impl Login {
     }
 }
 
-/// Send `signal` to the process group Claude Code leads (the pty's
-/// session).
-fn signal_group(pid: i32, signal: i32) {
-    // SAFETY: kill has no memory preconditions; a negative pid names the
-    // process group Claude Code leads, which its waiter thread had not
-    // reaped when this was decided, so it is not reused.
-    unsafe {
-        libc::kill(-pid, signal);
-    }
-}
-
 /// Stop Claude Code unless it ends by itself within `grace`: the end of
 /// input `pty` types when dropped, SIGTERM to its process group, then
 /// SIGKILL if it is still there [`KILL_AFTER`] later (one that ignores
 /// both would stay, and so would the thread reading its pty). On a thread
-/// of its own: the caller doesn't wait.
-fn terminate(pid: Option<u32>, exit: Exit, grace: Duration, pty: Option<Pty>) {
-    let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) else {
+/// of its own: the caller doesn't wait. Only the first stop of a Claude
+/// Code does anything: its grace stands.
+fn terminate(proc: Option<Arc<Proc>>, exit: Exit, grace: Duration, pty: Option<Pty>) {
+    let Some(proc) = proc else {
         return;
     };
-    if exit.borrow().is_some() {
+    if exit.borrow().is_some() || proc.stopping.swap(true, Ordering::SeqCst) {
         return;
     }
     let gone_within = move |within: Duration| {
@@ -558,40 +600,56 @@ fn terminate(pid: Option<u32>, exit: Exit, grace: Duration, pty: Option<Pty>) {
             std::thread::sleep(Duration::from_millis(50));
         }
     };
+    let stopped = proc.clone();
     let stop = move || {
         if gone_within(grace) {
             return;
         }
         drop(pty);
-        signal_group(pid, libc::SIGTERM);
+        stopped.signal(libc::SIGTERM);
         if gone_within(KILL_AFTER) {
             return;
         }
-        tracing::info!(pid, "Claude Code did not stop on SIGTERM: killed");
-        signal_group(pid, libc::SIGKILL);
+        tracing::info!(
+            pid = stopped.pid,
+            "Claude Code did not stop on SIGTERM: killed"
+        );
+        stopped.signal(libc::SIGKILL);
     };
     if let Err(error) = std::thread::Builder::new()
         .name("tmux-login-stop".into())
         .spawn(stop)
     {
         tracing::warn!(%error, "no thread to stop Claude Code with: SIGTERM now");
-        signal_group(pid, libc::SIGTERM);
+        proc.signal(libc::SIGTERM);
     }
 }
 
 /// The sign-ins under way and those that ended in the last minute.
 #[derive(Default)]
 pub struct Logins {
-    book: Mutex<Book>,
+    book: Arc<Mutex<Book>>,
     runner: Mutex<Runner>,
 }
 
 #[derive(Default)]
 struct Book {
     logins: HashMap<String, Arc<Login>>,
-    /// Logins started that wait for their link, not in `logins` yet:
-    /// their account and whether they run on the slot.
-    starting: HashMap<String, (String, bool)>,
+    /// Logins started that wait for their link, not in `logins` yet.
+    starting: HashMap<String, Starting>,
+    /// The Claude Code of each login, by login id, from its start until it
+    /// is gone, even once its login ended (a code being checked gets time
+    /// to finish): its account and whether it runs on the slot.
+    running: HashMap<String, (String, bool)>,
+}
+
+/// A login waiting for its link.
+struct Starting {
+    account: String,
+    on_slot: bool,
+    /// Why it is not wanted any more (a newer start for the account, the
+    /// account removed, the worker stopping): it stops once it sees that.
+    given_up: Option<LoginError>,
 }
 
 /// A login's place while it starts: given up when dropped.
@@ -649,35 +707,63 @@ impl Logins {
     /// The account of a sign-in under way (or starting) that a switch
     /// between `accounts` would run into: one on the slot, or on one of
     /// their folders. A switch moves sign-ins in and out of exactly those
-    /// places, where Claude Code is about to save one.
+    /// places, where Claude Code is about to save one. A Claude Code still
+    /// there counts, its login over or not: one cancelled while checking a
+    /// code may still be saving it.
     pub fn under_way_on(&self, accounts: &[&str]) -> Option<String> {
         let book = self.book();
         book.logins
             .values()
             .filter(|login| !login.ended())
             .map(|login| (login.account.clone(), login.on_slot))
-            .chain(book.starting.values().cloned())
+            .chain(
+                book.starting
+                    .values()
+                    .map(|start| (start.account.clone(), start.on_slot)),
+            )
+            .chain(book.running.values().cloned())
             .find(|(account, on_slot)| *on_slot || accounts.contains(&account.as_str()))
             .map(|(account, _)| account)
     }
 
+    /// Whether a sign-in of `account` is under way, starting, or its
+    /// Claude Code still there.
+    pub fn signing_in(&self, account: &str) -> bool {
+        let book = self.book();
+        book.logins
+            .values()
+            .any(|login| login.account == account && !login.ended())
+            || book.starting.values().any(|start| start.account == account)
+            || book.running.values().any(|(other, _)| other == account)
+    }
+
     /// Hold `account`'s place for login `id` while it starts: the logins
     /// under way for that account end, and so does one still starting (it
-    /// gives up once it has its link). A switch sees it from now on.
+    /// gives up once it sees that). A switch sees it from now on.
     pub(crate) fn reserve(&self, id: &str, account: &str, on_slot: bool) -> Reservation<'_> {
-        let replaced: Vec<String> = {
+        let earlier: Vec<String> = {
             let mut book = self.book();
-            book.starting.retain(|_, (other, _)| other != account);
-            book.starting
-                .insert(id.to_string(), (account.to_string(), on_slot));
+            for start in book.starting.values_mut() {
+                if start.account == account && start.given_up.is_none() {
+                    start.given_up = Some(replaced());
+                }
+            }
+            book.starting.insert(
+                id.to_string(),
+                Starting {
+                    account: account.to_string(),
+                    on_slot,
+                    given_up: None,
+                },
+            );
             book.logins
                 .values()
                 .filter(|login| login.account == account && !login.ended())
                 .map(|login| login.id.clone())
                 .collect()
         };
-        for other in replaced {
-            self.cancel(&other);
+        for other in earlier {
+            self.end_login(&other, replaced());
         }
         Reservation {
             logins: self,
@@ -685,21 +771,69 @@ impl Logins {
         }
     }
 
+    /// Why start `id` is not wanted any more, if it isn't.
+    fn given_up(&self, id: &str) -> Option<LoginError> {
+        match self.book().starting.get(id) {
+            Some(start) => start.given_up.clone(),
+            None => Some(gone()),
+        }
+    }
+
+    /// Note Claude Code of login `id` running until `exit` says it is gone
+    /// ([`Logins::under_way_on`]). A sign-in it saved after its login ended
+    /// (cancelled while checking a code) is read on the next look.
+    fn note_running(
+        &self,
+        id: &str,
+        plan: &Plan,
+        mut exit: Exit,
+        accounts: Arc<Accounts>,
+        poke: Poke,
+    ) {
+        let on_slot = plan.config_dir.is_none();
+        self.book()
+            .running
+            .insert(id.to_string(), (plan.account.clone(), on_slot));
+        let book = self.book.clone();
+        let id = id.to_string();
+        let account = plan.account.clone();
+        tokio::spawn(async move {
+            let status = loop {
+                if let Some(status) = *exit.borrow_and_update() {
+                    break status;
+                }
+                if exit.changed().await.is_err() {
+                    break None;
+                }
+            };
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .running
+                .remove(&id);
+            if status == Some(0) && !on_slot {
+                accounts.reread_credentials(&account);
+            }
+            poke();
+        });
+    }
+
     /// Stop login `id`: it leaves the list at once; a `login_code` waiting
     /// on it answers `gone`. Unknown or over: nothing to do.
     pub fn cancel(&self, id: &str) -> bool {
+        self.end_login(id, cancelled())
+    }
+
+    /// [`Logins::cancel`], saying `why`.
+    fn end_login(&self, id: &str, why: LoginError) -> bool {
         let removed = self.book().logins.remove(id);
         let Some(login) = removed else {
             return false;
         };
         let checking = login.checking();
-        let cancelled = login.end(
-            LoginState::Failed,
-            Some(login_error("gone", "The sign-in was cancelled.")),
-            None,
-        );
+        let ended = login.end(LoginState::Failed, Some(why), None);
         // A code being checked: Claude Code may be saving the sign-in, and
-        // gets the time to finish that first.
+        // gets the time to finish that first (a switch still waits for
+        // it, [`Logins::under_way_on`]).
         login.stop_claude(if checking {
             CHECK_GRACE
         } else {
@@ -709,7 +843,7 @@ impl Logins {
         // Now, not when its supervisor gets to it: the worker may be
         // stopping.
         let _ = std::fs::remove_dir_all(&login.folder);
-        cancelled
+        ended
     }
 
     /// Stop the logins of `account` (it was removed), those starting
@@ -717,7 +851,11 @@ impl Logins {
     pub fn cancel_account(&self, account: &str) -> bool {
         let ids: Vec<String> = {
             let mut book = self.book();
-            book.starting.retain(|_, (other, _)| other != account);
+            for start in book.starting.values_mut() {
+                if start.account == account && start.given_up.is_none() {
+                    start.given_up = Some(removed());
+                }
+            }
             book.logins
                 .values()
                 .filter(|login| login.account == account)
@@ -725,7 +863,10 @@ impl Logins {
                 .collect()
         };
         // Every one of them, not up to the first.
-        ids.iter().filter(|id| self.cancel(id)).count() > 0
+        ids.iter()
+            .filter(|id| self.end_login(id, removed()))
+            .count()
+            > 0
     }
 
     /// Stop every login under way (the worker is stopping), and those
@@ -734,10 +875,14 @@ impl Logins {
     pub fn cancel_all(&self) -> usize {
         let ids: Vec<String> = {
             let mut book = self.book();
-            book.starting.clear();
+            for start in book.starting.values_mut() {
+                start.given_up.get_or_insert_with(stopping);
+            }
             book.logins.keys().cloned().collect()
         };
-        ids.iter().filter(|id| self.cancel(id)).count()
+        ids.iter()
+            .filter(|id| self.end_login(id, stopping()))
+            .count()
     }
 
     /// Start `claude auth login` for `plan` and answer once it printed its
@@ -796,9 +941,6 @@ impl Logins {
                 )
             })?
         };
-        // Claude Code runs where the plan said: a switch may go on (one
-        // that would cross this login sees its place and waits).
-        drop(gate);
         let spawned = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -809,18 +951,32 @@ impl Logins {
                 ));
             }
         };
+        // A switch sees this Claude Code until it is gone, whatever comes
+        // of its login.
+        self.note_running(
+            &id,
+            &plan,
+            spawned.exit.clone(),
+            accounts.clone(),
+            poke.clone(),
+        );
+        // Claude Code runs where the plan said: a switch may go on (one
+        // that would cross this login sees it and waits).
+        drop(gate);
         let started_at_ms = now_ms();
-        let url = match wait_for_url(&spawned.output, spawned.exit.clone()).await {
+        let url = match wait_for_url(&spawned.output, spawned.exit.clone(), || self.given_up(&id))
+            .await
+        {
             Ok(url) => url,
-            Err(message) => {
+            Err(error) => {
                 terminate(
-                    spawned.pid,
+                    spawned.proc,
                     spawned.exit.clone(),
                     Duration::ZERO,
                     Some(spawned.pty),
                 );
                 let _ = std::fs::remove_dir_all(&folder);
-                return Err(login_error("failed", message));
+                return Err(error);
             }
         };
         let (status, _) = watch::channel(Status {
@@ -841,7 +997,8 @@ impl Logins {
             expires_at_ms: started_at_ms
                 + runner.ttl_ms.or_else(ttl_from_env).unwrap_or(LINK_TTL_MS),
             folder,
-            pid: spawned.pid,
+            before: plan.before.clone(),
+            proc: spawned.proc,
             status,
             exit: spawned.exit,
             pty: Mutex::new(Some(spawned.pty)),
@@ -867,22 +1024,28 @@ impl Logins {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-        // In the list, unless a later start for the account (or the worker
-        // stopping) took its place meanwhile.
-        let kept = {
+        // In the list, unless a later start for the account (or its
+        // removal, or the worker stopping) took its place meanwhile.
+        let refused = {
             let mut book = self.book();
-            let kept = book.starting.remove(&id).is_some();
-            if kept {
-                book.logins.insert(id.clone(), login.clone());
+            match book.starting.remove(&id) {
+                Some(Starting { given_up: None, .. }) => {
+                    book.logins.insert(id.clone(), login.clone());
+                    None
+                }
+                Some(Starting {
+                    given_up: Some(why),
+                    ..
+                }) => Some(why),
+                None => Some(gone()),
             }
-            kept
         };
         drop(reservation);
-        if !kept {
-            login.end(LoginState::Failed, Some(replaced()), None);
+        if let Some(why) = refused {
+            login.end(LoginState::Failed, Some(why.clone()), None);
             login.stop_claude(Duration::ZERO);
             let _ = std::fs::remove_dir_all(&login.folder);
-            return Err(replaced());
+            return Err(why);
         }
         tokio::spawn(supervise(login.clone(), accounts, poke.clone()));
         poke();
@@ -904,13 +1067,16 @@ impl Logins {
             .code_wait
             .unwrap_or(CODE_WAIT);
         let mut status = login.status.subscribe();
+        // The link's time is up (its login only waits for a browser that
+        // may be coming back): no code goes in.
+        let late = now_ms() >= login.expires_at_ms;
         // Waiting for a code to checking in one step: of two calls at once,
         // one types its code and the other waits for that outcome.
         let mut current = None;
         let mut mine = false;
         login.status.send_if_modified(|now| {
             current = Some(now.clone());
-            mine = now.ended_at_ms.is_none() && now.state == LoginState::WaitingCode;
+            mine = !late && now.ended_at_ms.is_none() && now.state == LoginState::WaitingCode;
             if mine {
                 now.state = LoginState::Checking;
             }
@@ -942,6 +1108,11 @@ impl Logins {
             }
             poke();
         } else if current.ended_at_ms.is_some() || current.state != LoginState::Checking {
+            if current.ended_at_ms.is_none() {
+                return Err(expired(
+                    login.expires_at_ms.saturating_sub(login.started_at_ms),
+                ));
+            }
             return finished(&current);
         }
         // Another call's code (another device's) is being checked: the
@@ -1041,7 +1212,7 @@ fn sweep(temp: &Path, now: u64) {
 }
 
 struct Spawned {
-    pid: Option<u32>,
+    proc: Option<Arc<Proc>>,
     pty: Pty,
     output: Arc<Output>,
     exit: Exit,
@@ -1059,20 +1230,26 @@ fn path_with(first: &Path) -> anyhow::Result<std::ffi::OsString> {
 }
 
 /// What opens a link on this computer for `browser: host`: the worker's
-/// own `BROWSER` (one program), else `open` on macOS, `xdg-open` on Linux.
+/// own `BROWSER` (one program), else `open` on macOS, `xdg-open` on Linux
+/// with a display to open it on.
 fn host_opener() -> Option<PathBuf> {
+    let set = |key: &str| std::env::var_os(key).is_some_and(|value| !value.is_empty());
     opener_for(
         std::env::var_os("BROWSER"),
         cfg!(target_os = "macos"),
+        set("DISPLAY") || set("WAYLAND_DISPLAY"),
         crate::binary::find_program,
     )
 }
 
-/// [`host_opener`] from the worker's `BROWSER`, the platform, and how a
-/// program is found; `None` when nothing here opens a browser.
+/// [`host_opener`] from the worker's `BROWSER`, the platform, whether
+/// there is a display (X or Wayland), and how a program is found; `None`
+/// when nothing here opens a browser. Like Claude Code itself, which skips
+/// `xdg-open` with no display.
 fn opener_for(
     browser: Option<std::ffi::OsString>,
     macos: bool,
+    display: bool,
     find: impl Fn(&str) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
     if let Some(browser) = browser.filter(|b| !b.is_empty()) {
@@ -1088,8 +1265,10 @@ fn opener_for(
     }
     if macos {
         Some(PathBuf::from("/usr/bin/open"))
-    } else {
+    } else if display {
         find("xdg-open")
+    } else {
+        None
     }
 }
 
@@ -1159,7 +1338,16 @@ fn spawn(
     }
     let mut child = pair.slave.spawn_command(command)?;
     drop(pair.slave);
-    let pid = child.process_id();
+    let proc = child
+        .process_id()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .map(|pid| {
+            Arc::new(Proc {
+                pid,
+                reaped: Mutex::new(false),
+                stopping: AtomicBool::new(false),
+            })
+        });
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
     let output = Arc::new(Output::default());
@@ -1178,14 +1366,33 @@ fn spawn(
             })?;
     }
     let (exit_tx, exit) = watch::channel(None);
+    let reaper = proc.clone();
     std::thread::Builder::new()
         .name("tmux-login-wait".into())
         .spawn(move || {
-            let status = child.wait().ok().map(|status| status.exit_code() as i32);
+            // Reaped only under the lock a signal takes ([`Proc`]).
+            let status = loop {
+                let reaped = reaper
+                    .as_ref()
+                    .map(|proc| proc.reaped.lock().unwrap_or_else(|p| p.into_inner()));
+                let ended = match child.try_wait() {
+                    Ok(Some(status)) => Some(Some(status.exit_code() as i32)),
+                    Ok(None) => None,
+                    Err(_) => Some(None),
+                };
+                if let Some(status) = ended {
+                    if let Some(mut reaped) = reaped {
+                        *reaped = true;
+                    }
+                    break status;
+                }
+                drop(reaped);
+                std::thread::sleep(REAP_EVERY);
+            };
             let _ = exit_tx.send(Some(status));
         })?;
     Ok(Spawned {
-        pid,
+        proc,
         pty: Pty {
             _master: pair.master,
             writer,
@@ -1195,13 +1402,18 @@ fn spawn(
     })
 }
 
-/// The link, once Claude Code printed it; why not otherwise.
+/// The link, once Claude Code printed it; why not otherwise, or why the
+/// login is not wanted any more (`given_up`, looked at as it goes).
 async fn wait_for_url(
     output: &Output,
     mut exit: watch::Receiver<Option<Option<i32>>>,
-) -> Result<String, String> {
+    given_up: impl Fn() -> Option<LoginError>,
+) -> Result<String, LoginError> {
     let deadline = tokio::time::Instant::now() + URL_WAIT;
     loop {
+        if let Some(why) = given_up() {
+            return Err(why);
+        }
         let text = output.text_from(0);
         if let Some(url) = find_url(&text) {
             return Ok(url);
@@ -1211,15 +1423,19 @@ async fn wait_for_url(
             // What it printed last may still be on its way.
             tokio::time::sleep(Duration::from_millis(100)).await;
             let text = output.text_from(0);
-            return Err(early_end(&text, status));
+            return Err(login_error("failed", early_end(&text, status)));
         }
         tokio::select! {
             _ = output.changed.notified() => {}
             _ = exit.changed() => {}
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             _ = tokio::time::sleep_until(deadline) => {
-                return Err(format!(
-                    "Claude Code showed no sign-in link within {} seconds.",
-                    URL_WAIT.as_secs()
+                return Err(login_error(
+                    "failed",
+                    format!(
+                        "Claude Code showed no sign-in link within {} seconds.",
+                        URL_WAIT.as_secs()
+                    ),
                 ));
             }
         }
@@ -1277,7 +1493,10 @@ async fn supervise(login: Arc<Login>, accounts: Arc<Accounts>, poke: Poke) {
                     None => {
                         let expired =
                             expired(login.expires_at_ms.saturating_sub(login.started_at_ms));
-                        if login.checking() {
+                        // With the browser on this computer, the person may
+                        // have just come back from the page: Claude Code may
+                        // be saving that sign-in now.
+                        if login.checking() || login.browser == LoginBrowser::Host {
                             ending = Some((LoginState::Expired, expired));
                             deadline = tokio::time::Instant::now() + CHECK_GRACE;
                             continue;
@@ -1370,67 +1589,75 @@ async fn settle(login: &Login, accounts: &Arc<Accounts>, status: Option<i32>) {
 }
 
 /// The account a sign-in Claude Code reported landed on, once it is where
-/// it should be: on the account's folder, that folder holds a sign-in now;
-/// on the slot, the slot does and the worker took it in (a sign-in to
-/// another account makes that one global, G6: here rather than at the next
-/// tick). Whoever signed in stands, even someone other than the email the
-/// page was filled with: the answer carries the account as it reads now.
+/// it should be: a sign-in other than the one there before the login
+/// ([`Plan::before`]: one Claude Code said it saved and didn't is no
+/// proof), on the account's folder, or on the slot taken in by the worker
+/// (a sign-in to another account makes that one global, G6: here rather
+/// than at the next tick). Looked for a few times, a second apart: a store
+/// (the Keychain) may show a sign-in a moment late. Whoever signed in
+/// stands, even someone other than the email the page was filled with:
+/// the answer carries the account as it reads now.
 async fn signed_in_as(login: &Login, accounts: &Arc<Accounts>) -> Result<String, LoginError> {
     let place = if login.on_slot {
         Place::Slot
     } else {
         Place::Folder(login.account.clone())
     };
-    let holds = {
-        let accounts = accounts.clone();
-        tokio::task::spawn_blocking(move || accounts.place_signed_in(&place))
-            .await
-            .unwrap_or(false)
-    };
-    if !holds {
-        return Err(login_error(
-            "failed",
-            format!(
-                "Claude Code ended as if signed in, but {} holds no sign-in (on macOS the login Keychain may be locked: the worker has to run in the person's logged-in session).",
-                if login.on_slot {
-                    "~/.claude"
-                } else {
-                    "the account's folder"
-                }
-            ),
-        ));
-    }
-    if !login.on_slot {
-        accounts.reread_credentials(&login.account);
-        accounts
-            .load_accounts_now(vec![login.account.clone()])
-            .await;
-        return Ok(login.account.clone());
-    }
+    let mut landed = false;
     for attempt in 1..=TAKE_IN_TRIES {
-        {
-            let _gate = accounts.gate().await;
-            accounts.watch_slot().await;
-        }
-        let taken = {
+        let mark = {
             let accounts = accounts.clone();
-            tokio::task::spawn_blocking(move || accounts.slot_is_global())
+            let place = place.clone();
+            tokio::task::spawn_blocking(move || accounts.place_mark(&place))
                 .await
-                .unwrap_or(false)
+                .unwrap_or(None)
         };
-        if taken {
-            let global = accounts.registry().global;
-            accounts.reread_credentials(&global);
-            accounts.load_now().await;
-            return Ok(global);
+        landed = mark.is_some() && mark != login.before;
+        if landed && !login.on_slot {
+            accounts.reread_credentials(&login.account);
+            accounts
+                .load_accounts_now(vec![login.account.clone()])
+                .await;
+            return Ok(login.account.clone());
+        }
+        if landed {
+            {
+                let _gate = accounts.gate().await;
+                accounts.watch_slot().await;
+            }
+            let taken = {
+                let accounts = accounts.clone();
+                tokio::task::spawn_blocking(move || accounts.slot_is_global())
+                    .await
+                    .unwrap_or(false)
+            };
+            if taken {
+                let global = accounts.registry().global;
+                accounts.reread_credentials(&global);
+                accounts.load_now().await;
+                return Ok(global);
+            }
         }
         if attempt < TAKE_IN_TRIES {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
+    if landed {
+        return Err(login_error(
+            "failed",
+            "Signed in on ~/.claude, but the worker could not take that sign-in in yet (a switch left half-way is being settled); the accounts show it within seconds.",
+        ));
+    }
     Err(login_error(
         "failed",
-        "Signed in on ~/.claude, but the worker could not take that sign-in in yet (a switch left half-way is being settled); the accounts show it within seconds.",
+        format!(
+            "Claude Code ended as if signed in, but {} holds no new sign-in (on macOS the login Keychain may be locked: the worker has to run in the person's logged-in session).",
+            if login.on_slot {
+                "~/.claude"
+            } else {
+                "the account's folder"
+            }
+        ),
     ))
 }
 
@@ -1641,25 +1868,32 @@ mod tests {
     #[test]
     fn host_mode_needs_something_to_open_a_browser_with() {
         let nowhere = |_: &str| None;
-        assert_eq!(opener_for(None, false, nowhere), None);
+        assert_eq!(opener_for(None, false, true, nowhere), None);
         assert_eq!(
-            opener_for(None, true, nowhere),
+            opener_for(None, true, false, nowhere),
             Some(PathBuf::from("/usr/bin/open"))
         );
         assert_eq!(
-            opener_for(Some("/opt/b/browse".into()), false, nowhere),
+            opener_for(Some("/opt/b/browse".into()), false, false, nowhere),
             Some(PathBuf::from("/opt/b/browse"))
         );
         let firefox = |name: &str| (name == "firefox").then(|| PathBuf::from("/usr/bin/firefox"));
         assert_eq!(
-            opener_for(Some("firefox".into()), false, firefox),
+            opener_for(Some("firefox".into()), false, false, firefox),
             Some(PathBuf::from("/usr/bin/firefox"))
         );
         // A command line, not one program: the platform's opener.
         assert_eq!(
-            opener_for(Some("open -a Safari".into()), false, nowhere),
+            opener_for(Some("open -a Safari".into()), false, false, nowhere),
             None
         );
+        // xdg-open opens a browser only with a display (X or Wayland).
+        let xdg = |name: &str| (name == "xdg-open").then(|| PathBuf::from("/usr/bin/xdg-open"));
+        assert_eq!(
+            opener_for(None, false, true, xdg),
+            Some(PathBuf::from("/usr/bin/xdg-open"))
+        );
+        assert_eq!(opener_for(None, false, false, xdg), None);
     }
 
     #[test]

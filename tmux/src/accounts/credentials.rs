@@ -127,6 +127,31 @@ pub type Raw = serde_json::Map<String, serde_json::Value>;
 /// The key of the Claude sign-in in a store.
 pub const OAUTH_KEY: &str = "claudeAiOauth";
 
+/// What tells one sign-in in `raw` from the next without keeping a token:
+/// the first 16 hex of the SHA-256 of its access token, refresh token and
+/// expiry (a new sign-in, or a renewal, changes them). `None` without a
+/// sign-in Claude Code can use.
+pub fn sign_in_mark(raw: &Raw) -> Option<String> {
+    if !credentials_of(raw).signed_in() {
+        return None;
+    }
+    let oauth = raw.get(OAUTH_KEY)?;
+    let part = |key: &str| {
+        oauth
+            .get(key)
+            .map(|value| value.to_string())
+            .unwrap_or_default()
+    };
+    let text = format!(
+        "{}\0{}\0{}",
+        part("accessToken"),
+        part("refreshToken"),
+        part("expiresAt")
+    );
+    let digest = Sha256::digest(text.as_bytes());
+    Some(digest.iter().take(8).map(|b| format!("{b:02x}")).collect())
+}
+
 /// The first 16 hex of the SHA-256 of `raw`'s refresh token, when it has
 /// one: what tells two chains apart without keeping a token (G7).
 pub fn chain_id(raw: Option<&Raw>) -> Option<String> {
