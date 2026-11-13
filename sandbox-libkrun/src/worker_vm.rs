@@ -840,7 +840,8 @@ impl WorkerVms {
     /// Remove `state_key`'s VM state. With `prune`, all of it; without, all but
     /// the VM's data ([`remove_runtime_state`]), which a later start of the same
     /// `state_key` boots over again; its build directory is free either way.
-    /// `destroyed` says whether anything went (runtime state, without `prune`). S502 while it is preparing, running or
+    /// `destroyed` says whether anything went (runtime state, without `prune`);
+    /// `kept` lists the data a destroy without `prune` left. S502 while it is preparing, running or
     /// being destroyed. It blocks for the removal: call it off the async runtime.
     pub fn destroy(
         &self,
@@ -864,14 +865,9 @@ impl WorkerVms {
             (slots.insert(id.clone(), Slot::Destroying(instance)), last)
         };
         let removed = if req.prune {
-            std::fs::remove_dir_all(&dir).map(|()| true)
+            std::fs::remove_dir_all(&dir).map(|()| (true, Vec::new()))
         } else {
-            remove_runtime_state(&dir, &id).map(|(removed, kept)| {
-                for path in kept {
-                    tracing::info!(vm_id = %id, path = %path.display(), "worker::destroy kept the VM's data");
-                }
-                removed
-            })
+            remove_runtime_state(&dir, &id)
         };
         let mut slots = self.slots();
         slots.remove(&id);
@@ -879,9 +875,9 @@ impl WorkerVms {
         if last > 0 {
             self.destroyed().insert(id.clone(), last);
         }
-        let destroyed = match removed {
-            Ok(removed) => removed,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        let (destroyed, kept) = match removed {
+            Ok((removed, kept)) => (removed, kept),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (false, Vec::new()),
             Err(e) => {
                 // Its state is still there, so keep reporting it.
                 if let Some(prev) = prev {
@@ -893,7 +889,11 @@ impl WorkerVms {
                 )));
             }
         };
-        Ok(WorkerDestroyResponse { destroyed })
+        let kept: Vec<String> = kept.iter().map(|p| p.display().to_string()).collect();
+        for path in &kept {
+            tracing::info!(vm_id = %id, path = %path, "worker::destroy kept the VM's data");
+        }
+        Ok(WorkerDestroyResponse { destroyed, kept })
     }
 
     /// Leave `vm_id`'s VM to its lease, from now on. Nothing is told when a client
@@ -4091,7 +4091,18 @@ mod tests {
         std::fs::write(&outside, "keep me").unwrap();
         std::os::unix::fs::symlink(&outside, vm.join("planted")).unwrap();
 
-        assert!(vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        let reply = vms.destroy(keep_req("t", "k")).unwrap();
+        assert!(reply.destroyed);
+        assert_eq!(
+            reply.kept,
+            [
+                "root.pre-build",
+                "upper.ext4",
+                "upper.ext4.pre-build",
+                "upper.ext4.pre-build.1"
+            ]
+            .map(|name| vm.join(name).display().to_string())
+        );
         assert_eq!(
             names_in(&vm),
             [
@@ -4113,8 +4124,11 @@ mod tests {
         // The build directory is free.
         let dir = t.join("project/build/k").canonicalize().unwrap();
         claim(&vms, &scoped_auth_token("t", "other"), "other", &dir).unwrap();
-        // A second destroy finds data only: it keeps it and removes nothing.
-        assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        // A second destroy finds data only: it keeps it, removes nothing, and
+        // says what it kept.
+        let reply = vms.destroy(keep_req("t", "k")).unwrap();
+        assert!(!reply.destroyed);
+        assert_eq!(reply.kept.len(), 4, "{:?}", reply.kept);
         assert!(vm.join("upper.ext4").is_file());
     }
 
@@ -4125,7 +4139,8 @@ mod tests {
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = vm_with_data(t, &vms, "k");
-        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        let reply = vms.destroy(destroy_req("t", "k")).unwrap();
+        assert!(reply.destroyed && reply.kept.is_empty(), "{reply:?}");
         assert!(!vm.exists());
         assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
         assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);

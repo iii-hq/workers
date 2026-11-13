@@ -198,7 +198,8 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   the pre-build copies and the seal. A later start of the same `state_key`
   boots over the same data. A VM an earlier adapter ran first moves its disk to
   a pre-build copy, as its first build start would; a VM with no data goes
-  whole. `destroyed` is false when the directory held data only. `prune: true`
+  whole. The reply lists in `kept` the absolute paths it kept; `destroyed` is
+  false when the directory held data only. `prune: true`
   removes everything, as 0.4.x did. The data stays in
   `~/.iii/sandbox/workers/<vm_id>/`, which the log of the destroy names.
 - **Binary packages.** From 0.5.0 (sandbox contract 1.4) a `Binary` source names

@@ -24,7 +24,8 @@ code.)
   VM's runtime state and its build-dir record, which frees its build directory,
   and keeps its data disk, the pre-build copies of an earlier adapter and the
   seal: a later start of the same `state_key` boots over the same data. A VM
-  with no data goes whole; `destroyed` is false when only data was there.
+  with no data goes whole. The reply lists what stayed in `kept`; `destroyed`
+  is false when only data was there.
   `prune: true` removes everything, as 0.4.x did. `adapter::info` advertises
   `worker.prune`.
 

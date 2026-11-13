@@ -764,7 +764,8 @@ exec sleep 600
         })
         .unwrap();
     assert!(kept.destroyed);
-    eprintln!("[kept] {:?}", names(&vm_dir));
+    eprintln!("[kept] {:?} {:?}", kept.kept, names(&vm_dir));
+    assert_eq!(kept.kept, [vm_dir.join("upper.ext4").display().to_string()]);
     assert_eq!(names(&vm_dir), ["build-mode", "upper.ext4"]);
 
     let started = boot().await.unwrap();
