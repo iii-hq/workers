@@ -682,7 +682,8 @@ impl Logins {
             browser: plan.browser,
             email: plan.email.clone(),
             started_at_ms,
-            expires_at_ms: started_at_ms + runner.ttl_ms.unwrap_or(LINK_TTL_MS),
+            expires_at_ms: started_at_ms
+                + runner.ttl_ms.or_else(ttl_from_env).unwrap_or(LINK_TTL_MS),
             folder,
             pid: spawned.pid,
             status,
@@ -804,6 +805,15 @@ fn finished(status: &Status) -> Result<String, LoginError> {
         (_, _, Some(error)) => Err(error.clone()),
         _ => Err(gone()),
     }
+}
+
+/// For tests and demos: `III_CLAUDE_LOGIN_TTL_S` (10 to 600 seconds)
+/// replaces the link's 10 minutes.
+fn ttl_from_env() -> Option<u64> {
+    std::env::var("III_CLAUDE_LOGIN_TTL_S")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| seconds.clamp(10, 600) * 1000)
 }
 
 /// The login folders' names (in the temporary folder) start so.

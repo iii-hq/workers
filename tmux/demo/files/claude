@@ -191,15 +191,22 @@ def auth_login(args):
             from urllib.parse import parse_qs, urlparse
             url = urlparse(self.path)
             query = parse_qs(url.query)
-            ok = (url.path == "/callback" and query.get("state") == ["demo-state"]
-                  and (query.get("code") or [""])[0].startswith("demo-ok"))
-            self.send_response(200 if ok else 400)
+            state_ok = url.path == "/callback" and query.get("state") == ["demo-state"]
+            denied = state_ok and "error" in query
+            ok = state_ok and (query.get("code") or [""])[0].startswith("demo-ok")
+            self.send_response(200 if ok or denied else 400)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"Signed in. You can close this window.\n" if ok
-                             else b"Invalid state parameter\n")
-            if ok and not finished.is_set():
+                             else b"Sign-in was canceled or failed. You can close this window.\n"
+                             if denied else b"Invalid state parameter\n")
+            if finished.is_set():
+                return
+            if ok:
                 outcome["who"] = login_who(query["code"][0], email)
+                finished.set()
+            elif denied:
+                outcome["denied"] = query["error"][0]
                 finished.set()
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Callback)
@@ -254,6 +261,10 @@ def auth_login(args):
             sys.stderr.flush()
             return 1
     server.shutdown()
+    if "denied" in outcome:
+        sys.stdout.write("\n")
+        sys.stderr.write("Login failed: OAuth error: %s\n" % outcome["denied"])
+        return 1
     sign_in_here(outcome["who"])
     sys.stdout.write("Login successful.\n")
     sys.stdout.flush()
