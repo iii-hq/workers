@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn validates_count_nesting_and_warns_past_the_limit() {
         assert!(validate(&parse(json!({ "calls": [] }))).is_err());
-        for nested in [BATCH_ID, pipe::PIPE_ID, "harness::send"] {
+        for nested in [BATCH_ID, pipe::PIPE_ID, "harness::send", "workflow::start"] {
             assert!(
                 validate(&parse(json!({ "calls": [{ "function": nested }] }))).is_err(),
                 "{nested}"

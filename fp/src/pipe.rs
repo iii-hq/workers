@@ -21,7 +21,7 @@ use iii_sdk::IIIClient;
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -205,6 +205,22 @@ pub(crate) fn forbidden_step(
         return Some(
             "harness/turn-control functions are not supported in a pipe — steps run with \
              worker authority, which would bypass the agent-level deny on them",
+        );
+    }
+    // The harness hook stamps the caller's session and folder onto a direct
+    // workflow::start; a step skips it, so a forged folder would be trusted.
+    if function_id == "workflow::start" {
+        return Some(
+            "workflow::start is not supported in a pipe — steps run with worker authority, \
+             which would skip the caller stamp the pre-call hook puts on it",
+        );
+    }
+    // The same stamp names the node a workflow-result::submit delivers for; a
+    // step could deliver another node's result.
+    if function_id == "workflow-result::submit" {
+        return Some(
+            "workflow-result::submit is not supported in a pipe — steps run with worker \
+             authority, which would skip the caller stamp that names the submitting node",
         );
     }
     // `stream::*` is the deprecated iii-stream surface. Engines still host it,
@@ -722,6 +738,7 @@ mod tests {
             ("provider::anthropic::chat", "routing"),
             ("harness::send", "turn-control"),
             ("run::start", "turn-control"),
+            ("workflow::start", "caller stamp"),
             ("stream::set", "bus-internal"),
             ("iii::durable::publish", "bus-internal"),
             ("storage::on-config-change", "lifecycle"),
@@ -741,6 +758,14 @@ mod tests {
         ]}))
         .unwrap();
         assert!(validate(&ok).is_ok());
+
+        // Only workflow::start is refused: reading or stopping a run is harmless.
+        let wf = parse(json!({ "through": [
+            { "function": "workflow::status", "payload": { "run_id": "r" } },
+            { "function": "workflow::stop", "payload": { "run_id": "r" } },
+        ]}))
+        .unwrap();
+        assert!(validate(&wf).is_ok());
 
         // Session READS are needs_approval, not hard-denied, so they ride a
         // pipe: pull an attachment out of the own session and thread it on.
