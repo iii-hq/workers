@@ -793,7 +793,15 @@ func TestEventsApplyWithoutATick(t *testing.T) {
 		return list(r)
 	}
 	cfg := Config{Join: "env://MESH_JOIN_TEST", Name: "laptop"}
-	r := &runner{dir: t.TempDir(), bridge: NewBridge(local, "local"), enroll: func(context.Context, Config, string) (joinState, bool, error) {
+	// "joining" shows only while the enrollment runs, and the status is published as a snapshot: one that
+	// returned at once could be over before it is read.
+	sawJoining := make(chan struct{})
+	r := &runner{dir: t.TempDir(), bridge: NewBridge(local, "local"), enroll: func(ctx context.Context, _ Config, _ string) (joinState, bool, error) {
+		select {
+		case <-sawJoining:
+		case <-ctx.Done():
+			return joinState{}, false, ctx.Err()
+		}
 		return enrolled("laptop"), true, nil
 	}, o: Options{Version: "0.1.0", Fetch: func(context.Context) (string, *Config, error) {
 		mu.Lock()
@@ -805,6 +813,7 @@ func TestEventsApplyWithoutATick(t *testing.T) {
 	next, stop := watched(t, r)
 	defer stop()
 	next("joining", func(s Status) bool { return s.State == "joining" })
+	close(sawJoining)
 	next("waiting for hub", func(s Status) bool { return s.State == "waiting for hub" })
 	next("connected", func(s Status) bool { return s.State == "connected" && s.Node == "laptop" })
 
