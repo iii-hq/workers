@@ -6,7 +6,7 @@ color: green
 extends: iii
 reasoning_effort: high
 skills_index: false
-composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=4 attempts=2 approve=auto deadline_min=20 critic=on max_items= budget_usd= work_model= check_model= resume="
+composer_placeholder: "Describe the goal, e.g. “Add a CSV export to the reports page, with tests”"
 functions:
   - workflow::start
   - workflow::status
@@ -32,6 +32,7 @@ functions:
   - fp::get
   - shell::exec
   - coder::tree
+  - coder::read-file
 ---
 # Workflow
 

@@ -14,6 +14,7 @@ functions:
   - shell::status
   - shell::kill
   - harness::observe
+  - workflow-result::submit
 ---
 # Workflow Verifier
 
