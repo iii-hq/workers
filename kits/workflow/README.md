@@ -1,21 +1,21 @@
-# deepflow
+# workflow kit
 
-Give **Deepflow** a goal and a team of agents works it, with the kanban board as the task list and the `workflow` worker running the agents:
+Give the **Workflow** agent a goal and a team of agents works it, with the kanban board as the task list and the `workflow` worker running the agents:
 
-1. Unless the goal already names its change, Deepflow explores before it plans: one workflow run of explorers, three competing designs, a refuter for each and a planner that writes the plan and the tickets.
+1. Unless the goal already names its change, the Workflow agent explores before it plans: one workflow run of explorers, three competing designs, a refuter for each and a planner that writes the plan and the tickets.
 2. The tickets become subtasks of one run ticket. Each wave of ready tickets is one workflow run. Every ticket phase is a node of that run, with its own agent profile and model.
 3. A check node verifies each result. On a `fail` the run loops the work back with the check's reasons, up to `attempts` passes.
 4. Rounds repeat until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
-Deepflow uses the ticket strategy of [`deepwork`](../deepwork/) (run ticket, cards, outcome labels, rounds, a critic pass, a synthesized report) and installs beside it: its profiles, labels (`df:run`), branches (`deepflow/…`), worktrees (`.worktrees/df-…`) and state scopes (`df-…`) are its own.
+The workflow kit uses the ticket strategy of [`deepwork`](../deepwork/) (run ticket, cards, outcome labels, rounds, a critic pass, a synthesized report) and installs beside it: its profiles, labels (`wf:run`), branches (`workflow/…`), worktrees (`.worktrees/wf-…`) and state scopes (`wf-…`) are its own.
 
 A goal that changes code in a git repository runs the **dev flow**. The baseline checks run once in the run worktree. Each code ticket is implemented in its own git worktree, then integrated on the run branch. One run per integrated wave writes the wave's tests and checks them (verify and review together), looping the tests back on a fail. Cards become Done only after that check passes. A critic node reviews the whole branch, and the branch is kept by default. Other goals (research, reading, analysis) run the **plain flow**: each ticket is worked and checked in the same run, and one last ticket can merge the results into one report (`synthesize=off` turns it off).
 
-Deepflow needs the `workflow`, `harness`, `state`, `kanban` and `ide` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run Deepflow starts.
+The kit needs the `workflow`, `harness`, `state`, `kanban`, `ide` and `fp` workers. The `workflow` worker must take the flat `workflow::start` request (`nodes` at the top level, each node with its `task`): an older one refuses every run the kit starts.
 
 ## How it differs from deepwork
 
-| | deepwork | deepflow |
+| | deepwork | workflow kit |
 |---|---|---|
 | A wave | `harness::spawn` of one lead per ticket, one `state::barrier` wake | one `workflow::start` run, one notification |
 | Attempts | the lead relays work and check phases | the run's check loop |
@@ -24,33 +24,33 @@ Deepflow needs the `workflow`, `harness`, `state`, `kanban` and `ide` workers. T
 | Stuck agent | wave deadline, null procedure | node `timeout_ms`, then the run goes on |
 | Progress | session tree | session tree, plus `workflow::status` phases and per-node usage |
 
-Not in deepflow 0.1: judges, a second critic pass, `isolation=shared`, `plan_only`, a release field, `notify`, and the PR and CI finish options. Use deepwork for those.
+Not in the workflow kit 0.1: judges, a second critic pass, `isolation=shared`, `plan_only`, a release field, `notify`, and the PR and CI finish options. Use deepwork for those.
 
 ## Profiles
 
 | Profile | What it does | Model to pin |
 |---|---|---|
-| `deepflow` | the orchestrator you talk to | none: uses the session's |
-| `deepflow-worker` | research, reading, analysis | optional |
-| `deepflow-impl` | implements a card, or writes the tests and repairs of a batch | a strong one |
-| `deepflow-planner` | explores the goal, writes a design proposal, turns the proposals into the plan | a strong one, or `plan_model=` |
-| `deepflow-verifier` | checks a result or a batch, runs the baseline, refutes designs and review findings, and reviews the branch | a mid-tier one |
+| `workflow` | the orchestrator you talk to | none: uses the session's |
+| `workflow-worker` | research, reading, analysis | optional |
+| `workflow-impl` | implements a card, or writes the tests and repairs of a batch | a strong one |
+| `workflow-planner` | explores the goal, writes a design proposal, turns the proposals into the plan | a strong one, or `plan_model=` |
+| `workflow-verifier` | checks a result or a batch, runs the baseline, refutes designs and review findings, and reviews the branch | a mid-tier one |
 
-Every profile except `deepflow` is hidden. Without a pin, a node runs on `work_model` or `check_model`, else on the orchestrator's model.
+Every profile except `workflow` is hidden. Without a pin, a node runs on `work_model` or `check_model`, else on the orchestrator's model.
 
 ## Install
 
 ```
-iii call directory::download-kit kit=iii/deepflow apply=true --timeout-ms 1200000
+iii call directory::download-kit kit=iii/workflow apply=true --timeout-ms 1200000
 ```
 
 A reply that is a plan instead of an install has warnings or decisions: review and apply it in the ADE under Directory → Kits, or with `iii call directory::kits::apply plan_id=<plan_id> --timeout-ms 1200000`.
 
-To pin a model, add `model: <provider>::<model>` to `agents/deepflow-impl.md` or `agents/deepflow-verifier.md` (optional: `agents/deepflow-worker.md`). Kit updates keep your edits.
+To pin a model, add `model: <provider>::<model>` to `agents/workflow-impl.md` or `agents/workflow-verifier.md` (optional: `agents/workflow-worker.md`). Kit updates keep your edits.
 
 ## Run it
 
-In the console, pick **Deepflow** and type the goal. For a code goal, start it from the repository's top folder. To change the defaults, add an `args:` line:
+In the console, pick **Workflow** and type the goal. For a code goal, start it from the repository's top folder. To change the defaults, add an `args:` line:
 
 ```
 Add per-user rate limits to the login route.
@@ -89,8 +89,8 @@ Watch the run on the board, or open the run ticket's waves with `workflow::statu
 
 ## Limits
 
-- One workflow worker per namespace.
+- One `workflow` worker per namespace.
 - A node runs as its own session: a session's hard cost cap and its own `options.functions` don't reach the nodes. Every node gets `*` minus the kit's deny list (no board writes, no state writes, no sub-agents, no `workflow::*`). Use `budget_usd` to bound a run.
 - A node timeout kills that node only; the run reads it as a failed attempt.
-- A run's end reaches Deepflow as a `workflow::on-run-completed` notification: a policy that narrows the Deepflow session's `options.functions` must allow `harness::observe` and `workflow::on-run-completed`.
-- The dev flow keeps the branch unless `approve=on` and the Finish answer says otherwise. Deepflow never pushes.
+- A run's end reaches the Workflow agent as a `workflow::on-run-completed` notification: a policy that narrows that session's `options.functions` must allow `harness::observe` and `workflow::on-run-completed`.
+- The dev flow keeps the branch unless `approve=on` and the Finish answer says otherwise. The kit never pushes.

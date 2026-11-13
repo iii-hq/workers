@@ -906,7 +906,7 @@ describe('ChatContextPanel', () => {
       expect(workflowSection()?.querySelectorAll('div.pl-6')).toHaveLength(0)
       expect(
         inSection('button[aria-label^="Open KAN-5 batch r1w1 tests"]')?.title,
-      ).toContain('deepflow-impl')
+      ).toContain('workflow-impl')
       expect(text.indexOf('KAN-5 batch r1w1 tests')).toBeLessThan(
         text.indexOf('KAN-5 batch r1w1 check'),
       )

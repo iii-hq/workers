@@ -25,7 +25,7 @@ export const BATCH = {
       label: 'KAN-5 batch r1w1 check',
       model: 'codex/gpt-6-luna',
       phase: 'check',
-      profile: 'deepflow-verifier',
+      profile: 'workflow-verifier',
       session_id: 'wf_r_3f03_batch-check@r0',
       state: 'done',
       usage: {
@@ -46,7 +46,7 @@ export const BATCH = {
       label: 'KAN-5 batch r1w1 tests',
       model: 'codex/gpt-6-luna',
       phase: 'test',
-      profile: 'deepflow-impl',
+      profile: 'workflow-impl',
       session_id: 'wf_r_3f03_batch-work@r0',
       state: 'done',
       usage: {

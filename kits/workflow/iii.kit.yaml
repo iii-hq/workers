@@ -1,10 +1,10 @@
 iii: v1
-name: iii/deepflow
+name: iii/workflow
 version: 0.1.0
 iii_engine_version: ">=0.26.0"
 description: "Multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get one worktree per ticket, one tests-and-check run per integrated wave and a kept branch. Installs beside iii/deepwork."
 license: Apache-2.0
-repo: https://github.com/iii-hq/workers/tree/main/kits/deepflow
+repo: https://github.com/iii-hq/workers/tree/main/kits/workflow
 tags: [orchestration, workflows, kanban, verification, sub-agents]
 workers:
   # The flat workflow::start request (`nodes` at the top level, `task` on a node; an older
@@ -27,3 +27,6 @@ workers:
   kanban: ^0.2.0
   # shell::exec, shell::on-job-finished and coder::* for the nodes. No caret: projects pin ide@latest.
   ide: ">=0.13.0"
+  # fp::pipe + fp::get read node_errors when a workflow::status reply is too large to return.
+  # No caret: harness pulls fp@latest.
+  fp: ">=0.3.0"

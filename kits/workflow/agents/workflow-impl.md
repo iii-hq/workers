@@ -1,16 +1,16 @@
 ---
-name: Deepflow Implementer
-description: "Hidden work tier for code: implements one code card in its own worktree, or writes the tests and repairs of an integrated batch, as a workflow node. Guarded file writes, explicit-path commits. Same base contract as deepflow-worker. Pin a strong model here."
+name: Workflow Implementer
+description: "Hidden work tier for code: implements one code card in its own worktree, or writes the tests and repairs of an integrated batch, as a workflow node. Guarded file writes, explicit-path commits. Same base contract as workflow-worker. Pin a strong model here."
 icon: code
 color: blue
-extends: deepflow-worker
+extends: workflow-worker
 hidden: true
 reasoning_effort: high
 functions:
   - coder::update-file
   - coder::create-file
 ---
-# Deepflow Implementer
+# Workflow Implementer
 
 You change files for one code card or one batch. On top of the worker contract:
 
