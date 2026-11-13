@@ -120,7 +120,7 @@ for each moved key.
 |---|---|---|
 | `nodes` | required | One sub-agent session per node, keyed by node id. An id has no `#`, `.` or `/`. |
 | `input` | `null` | Any JSON. Every node without `reads` or `fanout` receives it. |
-| `output` | every unread node | A node id returns that result as is; an array of ids returns an object keyed by id. An unread node is one no other node names in `reads` or `fanout`: one returns its result as is, several an object keyed by id. |
+| `output` | every unread node | A node id returns that result as is; an array of ids returns an object keyed by id. An unread node is one no other node names in `reads` or `fanout`: one returns its result as is, several an object keyed by id. A loop node or a loop body node returns its last pass; see [Loops](#loops). |
 | `max_concurrency` | no cap | Live node sessions at once (running, or reserved for a send). At least 1. |
 | `default_functions` | everything except `workflow::*`, `configuration::*`, `approval::*`, `harness::hook::*` and `harness::send` | Dispatch policy of every node without `functions`. |
 | `idempotency_key`, `notify` | none | See [Getting the result back](#getting-the-result-back-dont-poll). |
@@ -263,8 +263,14 @@ field of its JSON result equals a string, as a do-while:
   <the loop node's result of the previous pass>}`, and a body node also
   `"own_previous": <its own result of the previous pass>`. Both are null on
   the first pass. Inside the loop, `reads` reads the same pass.
-- Outside the loop only the loop node can be read: readers wait for its last
-  pass and read that result, and so does `output`.
+- Outside the loop a node can read only the loop node: readers wait for its
+  last pass and read that result. `output` may name the loop node and any
+  body node: each returns its last pass, all from the same pass, and the run
+  waits for the loop to end even when `output` names only a body node. A body
+  node whose last pass failed under `on_error: "continue"` returns `null` (its
+  error is in `failed_nodes`), never an earlier pass; read one with
+  `workflow::node-result` and `<id>#it<k>`. Without `on_error: "continue"`, a
+  failed pass of any node of a loop the output needs fails the run.
 - Put the loop node in `output`, or read it from a later node. After the run,
   a result whose `while.field` still equals `equals` means the loop gave up:
   the repeats ran out, or a node of the last pass failed (see `failed_nodes`).
@@ -366,8 +372,13 @@ model. Callers compute idle time from `last_generate_at`.
   and the pass count is the number of `<id>#it<k>` uids in `nodes`, plus one.
   Say in the `task` of each node of the loop how to use `loop_previous` (for
   example: fix every finding in it), and in a body node that answers with the
-  work itself, to build on `own_previous`. Loop nodes cannot fan out, and only
-  the loop node is readable outside its loop.
+  work itself, to build on `own_previous`. No node of a loop can fan out.
+  Outside its loop a node reads only the loop node; `output` may also name a
+  body node, which returns its last pass.
+- **The run result is capped at 1 MiB.** An `output` whose combined value is
+  larger fails the run, and `result_error` says so. The node results stay
+  readable with `workflow::node-result`, so name fewer nodes in `output` when
+  their results are large.
 - **Usage covers the current attempt.** A refired node reports the usage of
   its newest `@r<n>` session tree only.
 - **Stopping an idle caller.** Stopping an idle caller cancels the running

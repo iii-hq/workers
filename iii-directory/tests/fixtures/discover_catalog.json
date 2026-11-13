@@ -25197,7 +25197,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Bounded do-while loop carried by this node (the loop node): this node and its `body` run again, as new sessions, while `while` holds on this node's result. Outside the loop only this node can be read, and readers get its last pass. Put the loop node in `output`, or read it from a later node. After the run, a result whose `while.field` still equals `equals` means the loop gave up: the repeats ran out, or a node of the last pass failed (see `failed_nodes`). Any other value means the condition stopped holding. The pass count is the number of `<id>#it<k>` uids in `nodes`, plus one. Say in the `task` of each node of the loop how to use `loop_previous` (for example: fix every finding in it), and in a body node whose result is the work itself, to build on `own_previous`, its own result of the previous pass."
+              "description": "Bounded do-while loop carried by this node (the loop node): this node and its `body` run again, as new sessions, while `while` holds on this node's result. Outside the loop a node can read only this node, and readers get its last pass; `output` may also name a body node, which returns its last pass (`null` when that pass failed). Put the loop node in `output`, or read it from a later node. After the run, a result whose `while.field` still equals `equals` means the loop gave up: the repeats ran out, or a node of the last pass failed (see `failed_nodes`). Any other value means the condition stopped holding. The pass count is the number of `<id>#it<k>` uids in `nodes`, plus one. Say in the `task` of each node of the loop how to use `loop_previous` (for example: fix every finding in it), and in a body node whose result is the work itself, to build on `own_previous`, its own result of the previous pass."
             },
             "model": {
               "description": "Omit to run this node on your own model. Otherwise a model id registered on this engine (discover them with `router::models::list`); an unregistered id is refused at start.",
@@ -25413,7 +25413,7 @@
               "type": "null"
             }
           ],
-          "description": "What the run returns: a node id returns that node's result as is, an array of ids an object keyed by id. Omit it to return every node no other node reads (one such node: its result as is)."
+          "description": "What the run returns: a node id returns that node's result as is, an array of ids an object keyed by id. A node of a loop, the loop node or a body node, returns its last pass. Omit it to return every node no other node reads (one such node: its result as is)."
         }
       },
       "required": [

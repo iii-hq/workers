@@ -63,7 +63,8 @@ struct RequestWire {
     #[serde(default)]
     input: Value,
     /// What the run returns: a node id returns that node's result as is, an array
-    /// of ids an object keyed by id. Omit it to return every node no other node
+    /// of ids an object keyed by id. A node of a loop, the loop node or a body
+    /// node, returns its last pass. Omit it to return every node no other node
     /// reads (one such node: its result as is).
     output: Option<NodeRefs>,
     /// At most this many node sessions live at once (running, or reserved for a
@@ -139,8 +140,10 @@ struct Node {
     filesystem_root: Option<String>,
     /// Bounded do-while loop carried by this node (the loop node): this node and
     /// its `body` run again, as new sessions, while `while` holds on this node's
-    /// result. Outside the loop only this node can be read, and readers get its
-    /// last pass. Put the loop node in `output`, or read it from a later node.
+    /// result. Outside the loop a node can read only this node, and readers get
+    /// its last pass; `output` may also name a body node, which returns its last
+    /// pass (`null` when that pass failed). Put the loop node in `output`, or
+    /// read it from a later node.
     /// After the run, a result whose `while.field` still equals `equals` means the
     /// loop gave up: the repeats ran out, or a node of the last pass failed (see
     /// `failed_nodes`). Any other value means the condition stopped holding. The
@@ -718,8 +721,8 @@ fn lower(w: RequestWire) -> StartRequest {
         Some(NodeRefs::One(id)) => OutputFrom::One(node_ref(id)),
         Some(NodeRefs::Many(ids)) => OutputFrom::Many(ids.iter().map(|id| node_ref(id)).collect()),
         None => {
-            // Every node is read: the reads form a cycle. Name the nodes outside any
-            // loop body, so `validate_def` reports the cycle or the loop, not `output`.
+            // Every node is read, so the reads form a cycle that `validate_def`
+            // refuses; name the nodes outside any loop body.
             let in_body: BTreeSet<&String> = w
                 .nodes
                 .values()
@@ -1305,14 +1308,6 @@ fn validate_loops(def: &WorkflowDef) -> Result<(), String> {
                      '{c}', which returns the last pass"
                 ));
             }
-        }
-    }
-    for out in def.output.from.node_ids() {
-        if is_body(out) {
-            return Err(format!(
-                "output references '{out}', a loop.body node of '{}'; name '{}' instead",
-                group[out], group[out]
-            ));
         }
     }
     for (x, node) in &def.nodes {
@@ -3219,7 +3214,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_outside_read_of_loop_body_and_output_naming_it() {
+    fn rejects_outside_read_of_loop_body() {
         let err = loop_err(|v| {
             v["nodes"]["report"]["input"] = json!({"from": ["node:verify", "node:work"]})
         });
@@ -3230,12 +3225,33 @@ mod tests {
             ),
             "{err}"
         );
-        let err = loop_err(|v| v["output"] = json!({"from": ["node:report", "node:work"]}));
-        assert!(
-            err.contains(
-                "output references 'work', a loop.body node of 'verify'; name 'verify' instead"
-            ),
-            "{err}"
+    }
+
+    #[test]
+    fn output_may_name_a_loop_body_node() {
+        for output in [
+            json!({"from": "node:work"}),
+            json!({"from": ["node:report", "node:work"]}),
+        ] {
+            let mut v = loop_json();
+            v["output"] = output;
+            assert_eq!(check_loop(v), Ok(()));
+        }
+        let req = parse(json!({"nodes": {
+            "work": {"task": "t"},
+            "check": {"task": "t", "reads": "work",
+                      "schema": {"type": "object", "properties": {"verdict": {"type": "string"}},
+                                 "required": ["verdict"]},
+                      "loop": {"body": ["work"], "while": {"field": "verdict", "equals": "fail"},
+                               "max_repeats": 2}}
+        }, "output": ["check", "work"]}));
+        assert_eq!(
+            validate_def(&req.definition).map_err(|e| e.to_string()),
+            Ok(())
+        );
+        assert_eq!(
+            req.definition.output.from,
+            OutputFrom::Many(vec!["node:check".into(), "node:work".into()])
         );
     }
 

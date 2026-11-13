@@ -687,8 +687,10 @@ pub fn validate_acyclic(def: &WorkflowDef) -> Result<(), String> {
     Ok(())
 }
 
-/// The output node(s) plus the transitive closure of their `depends_on` (node_ids).
+/// The output node(s) plus the transitive closure of their `depends_on` (node_ids);
+/// a node of a loop also brings its loop node.
 pub fn required_set(def: &WorkflowDef) -> BTreeSet<String> {
+    let groups = loop_groups(def);
     let mut req = BTreeSet::new();
     let mut stack: Vec<String> = def
         .output
@@ -703,6 +705,10 @@ pub fn required_set(def: &WorkflowDef) -> BTreeSet<String> {
             continue;
         }
         req.insert(n.clone());
+        // A body node's last pass is known only when its loop ends.
+        if let Some(loop_id) = groups.get(n.as_str()) {
+            stack.push(loop_id.to_string());
+        }
         if let Some(node) = def.nodes.get(&n) {
             for dep in &node.depends_on {
                 stack.push(dep.clone());
@@ -1984,5 +1990,57 @@ mod tests {
         // A strict failure in a later pass fails the run.
         r.nodes.get_mut("w#it1").unwrap().state = NodeState::Failed;
         assert_eq!(quiescence(&d, &r), RunStatus::Failed);
+    }
+
+    #[test]
+    fn output_body_node_requires_its_loop_and_returns_last_pass() {
+        let mut d = loop_def(2);
+        d.output.from = "node:w".into();
+        assert_eq!(
+            required_set(&d),
+            ["v", "w"].into_iter().map(String::from).collect()
+        );
+        let mut r = record();
+        let mut results = BTreeMap::new();
+        set_done(&mut r, &mut results, "w", json!("work 0"));
+        r.nodes.insert("v".into(), running_checkpoint());
+        assert_eq!(
+            quiescence(&d, &r),
+            RunStatus::AwaitingNodes,
+            "the run waits for the loop node to judge pass 0"
+        );
+        set_done(&mut r, &mut results, "v", json!({"verdict": "reject"}));
+        assert_eq!(expand_ready_loops(&d, &mut r, &results), vec!["v"]);
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "pass"}));
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        assert_eq!(gather_output(&d, &r, &results), json!("work 1"));
+        d.output.from = OutputFrom::Many(vec!["node:v".into(), "node:w".into()]);
+        assert_eq!(
+            gather_output(&d, &r, &results),
+            json!({"v": {"verdict": "pass"}, "w": "work 1"})
+        );
+    }
+
+    #[test]
+    fn output_body_node_is_null_when_its_last_pass_failed() {
+        let mut d = loop_def(2);
+        d.output.from = OutputFrom::Many(vec!["node:v".into(), "node:w".into()]);
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        r.nodes.insert("w#it1".into(), failed_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Failed, "strict body node");
+
+        d.nodes.get_mut("w").unwrap().on_error = OnError::Continue;
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "reject"}));
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        assert_eq!(
+            gather_output(&d, &r, &results),
+            json!({"v": {"verdict": "reject"}, "w": null}),
+            "never an earlier pass"
+        );
     }
 }
