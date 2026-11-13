@@ -79,9 +79,26 @@ export function typeInto(element: HTMLElement, text: string): boolean {
   return false
 }
 
-/** A phone or tablet: the primary pointer is a finger. */
-export function isTouchScreen(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+/**
+ * Whether the running dictation was started by a finger on the mic. Set when
+ * a dictation starts, so a keyboard shortcut or command on a touch-first
+ * device (a tablet with a hardware keyboard) keeps its usual focus.
+ */
+let startedByTouch = false
+
+/** Record how the dictation now starting was started. */
+export function setDictationStartedByTouch(touch: boolean): void {
+  startedByTouch = touch
+}
+
+/** True while the running dictation was started by touch. */
+export function dictationStartedByTouch(): boolean {
+  return startedByTouch
+}
+
+/** A finger or pen, not a mouse: the pointer types `takeFocusOnTouch` acts on. */
+export function isTouchPointer(event: { pointerType?: string } | undefined): boolean {
+  return event?.pointerType !== undefined && event.pointerType !== 'mouse'
 }
 
 /**
@@ -93,15 +110,15 @@ export function isTouchScreen(): boolean {
  * toolbar stays shown.
  */
 export function takeFocusOnTouch(event: { pointerType?: string; currentTarget: EventTarget | null; preventDefault(): void } | undefined): void {
-  if (!event || event.pointerType === 'mouse') return
+  if (!event || !isTouchPointer(event)) return
   event.preventDefault()
   if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus({ preventScroll: true })
 }
 
-/** After text lands in the chat composer on a phone, drop the caret the
-    console gave it, so the keyboard does not cover the message. */
-export function releaseComposerFocusOnTouch(): void {
-  if (!isTouchScreen()) return
+/** After text from a touch-started dictation lands in the chat composer,
+    drop the caret the console gave it, so the keyboard does not cover the
+    message. */
+export function releaseComposerFocus(): void {
   const release = () => {
     const active = deepActiveElement()
     if (active instanceof HTMLElement && isChatComposer(active)) active.blur()

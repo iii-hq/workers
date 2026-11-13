@@ -12,7 +12,7 @@ import { IconButton } from '@iii-dev/console-ui'
 import { Check, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DictationController, DictationStatus } from '../lib/dictation'
-import { deepActiveElement, editableTarget, isTouchScreen, takeFocusOnTouch } from '../lib/focus-target'
+import { deepActiveElement, dictationStartedByTouch, editableTarget, takeFocusOnTouch } from '../lib/focus-target'
 import { formatClock } from '../lib/format'
 import { LiveWaveform } from '../lib/live-waveform'
 
@@ -34,14 +34,14 @@ export function RecordingBar({
   const stopping = status === 'stopping'
 
   // A click on the mic leaves focus on a control now under the bar: carry it to Done.
-  // On a touch screen the composer's editor can still hold focus with the
+  // When a finger started it, the composer's editor can still hold focus with the
   // keyboard merely hidden (Android's back key does that); the phone brings
   // the keyboard back over the recording. Done takes focus instead: it keeps
   // the toolbar shown (it lives in the composer) and no keyboard comes up.
   useEffect(() => {
     const active = deepActiveElement()
     if (!(active instanceof HTMLElement)) return
-    if (active.closest('.voice-composer-btn') || (isTouchScreen() && editableTarget(active))) {
+    if (active.closest('.voice-composer-btn') || (dictationStartedByTouch() && editableTarget(active))) {
       doneRef.current?.focus({ preventScroll: true })
     }
   }, [])

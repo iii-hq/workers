@@ -18,7 +18,10 @@ import {
   deepActiveElement,
   editableTarget,
   isChatComposer,
-  releaseComposerFocusOnTouch,
+  isTouchPointer,
+  dictationStartedByTouch,
+  releaseComposerFocus,
+  setDictationStartedByTouch,
   takeFocusOnTouch,
   typeInto,
 } from './focus-target'
@@ -37,6 +40,7 @@ export async function toggleDictation(
 ): Promise<void> {
   const status = controller.getState().status
   if (status === 'idle' || status === 'error') {
+    setDictationStartedByTouch(false)
     await controller.start()
     return
   }
@@ -131,7 +135,10 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
       if (heldRef.current) {
         heldRef.current = false
         const status = controller.getState().status
-        if (status === 'listening' || status === 'starting') void cancel()
+        if (status === 'listening' || status === 'starting') {
+          setDictationStartedByTouch(false)
+          void cancel()
+        }
       }
     },
   }
@@ -168,6 +175,8 @@ export function MicButton({
       style={{ '--voice-level': level } as React.CSSProperties}
       className={classes}
       onPointerDown={(event?: React.PointerEvent) => {
+        // Remember how a dictation that starts on this press was started.
+        if (state === 'idle' || state === 'error') setDictationStartedByTouch(isTouchPointer(event))
         takeFocusOnTouch(event)
         pointer.onPointerDown()
       }}
@@ -199,11 +208,14 @@ export async function deliverTranscript(
   text: string,
   target?: HTMLElement | null,
 ): Promise<'field' | 'composer' | 'clipboard' | 'failed'> {
+  // This dictation is over: the next one records how it starts.
+  const touch = dictationStartedByTouch()
+  setDictationStartedByTouch(false)
   const field = target?.isConnected ? target : editableTarget(deepActiveElement())
   if (field && !isChatComposer(field) && typeInto(field, text)) return 'field'
   if (host.chat?.compose) {
     host.chat.compose({ text: `${text} ` })
-    releaseComposerFocusOnTouch()
+    if (touch) releaseComposerFocus()
     return 'composer'
   }
   return (await copyText(text)) ? 'clipboard' : 'failed'
