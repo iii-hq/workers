@@ -12,14 +12,14 @@
 
 use serde_json::Value;
 
-/// The escape hatch. Namespaced so it cannot switch off anything but this.
+/// The escape hatch.
 pub const DANGEROUS_ENV: &str = "III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC";
 
 /// The connection-scoped probe rbac-proxy answers itself.
 pub const SESSION_PROBE: &str = "rbac-proxy::session";
 
 /// What MCP clients are told when the server runs without RBAC.
-pub const DANGEROUS_NOTICE: &str = "WARNING: this MCP server runs WITHOUT RBAC (III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC). Every client can call every function on this engine.";
+pub const DANGEROUS_NOTICE: &str = "WARNING: this MCP server runs WITHOUT RBAC (III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC). Every MCP client can call every function on this engine.";
 
 /// `true` / `1` turn it on; unset or empty leave it off; anything else is
 /// refused, so a typo never silently means "unprotected" or "protected".
@@ -77,7 +77,10 @@ impl RbacMode {
 pub enum Decision {
     Start {
         mode: RbacMode,
+        /// Logged at `warn`.
         warnings: Vec<String>,
+        /// Logged at `info`.
+        notes: Vec<String>,
     },
     Refuse(String),
 }
@@ -105,6 +108,19 @@ fn dangerous_warning(url: &str) -> String {
     )
 }
 
+/// Whether the probe's `expose_functions` globs include a bare `*`, in any
+/// form rbac-proxy reports (`match("*")`, `match('*')`, `{ match: "*" }`).
+fn exposes_everything(globs: Option<&Value>) -> bool {
+    let Some(Value::Array(rules)) = globs else {
+        return false;
+    };
+    rules.iter().any(|rule| match rule {
+        Value::String(s) => matches!(s.trim(), "match(\"*\")" | "match('*')"),
+        Value::Object(o) => o.get("match").and_then(Value::as_str) == Some("*"),
+        _ => false,
+    })
+}
+
 pub fn decide(probe: &ProbeResult, dangerous: Result<bool, String>, url: &str) -> Decision {
     let dangerous = match dangerous {
         Ok(d) => d,
@@ -114,23 +130,28 @@ pub fn decide(probe: &ProbeResult, dangerous: Result<bool, String>, url: &str) -
         ProbeResult::Proxied(answer) => {
             let policy = answer.get("policy").cloned().unwrap_or(Value::Null);
             let mut warnings = Vec::new();
+            let mut notes = Vec::new();
             let auth = policy.get("auth_function").and_then(Value::as_bool) == Some(true);
-            let everything = policy.get("exposes_everything").and_then(Value::as_bool) == Some(true);
-            if everything && !auth {
+            if exposes_everything(policy.get("expose_functions")) && !auth {
                 warnings.push(format!(
                     "mcp: WARNING: the rbac-proxy at {url} exposes every function and has no auth function; RBAC is not restricting MCP clients."
                 ));
             }
             if dangerous {
-                warnings.push(format!(
+                notes.push(format!(
                     "mcp: {DANGEROUS_ENV} is set but ignored: this connection is behind rbac-proxy."
                 ));
             }
-            Decision::Start { mode: RbacMode::Proxied { policy }, warnings }
+            Decision::Start {
+                mode: RbacMode::Proxied { policy },
+                warnings,
+                notes,
+            }
         }
         ProbeResult::NotProxied if dangerous => Decision::Start {
             mode: RbacMode::Dangerous,
             warnings: vec![dangerous_warning(url)],
+            notes: vec![],
         },
         ProbeResult::NotProxied => Decision::Refuse(not_proxied_message(url)),
         ProbeResult::Unreachable(e) => Decision::Refuse(format!(
@@ -146,14 +167,28 @@ mod tests {
 
     const URL: &str = "ws://127.0.0.1:49134";
 
-    fn proxied(auth: bool, exposes_everything: bool) -> ProbeResult {
+    fn proxied_with(auth: bool, expose_functions: Value) -> ProbeResult {
         ProbeResult::Proxied(json!({
             "proxied": true,
             "proxy_version": "1.1.3",
             "session_id": "s",
             "function_registration_prefix": null,
-            "policy": { "auth_function": auth, "expose_functions": 1, "exposes_everything": exposes_everything }
+            "policy": {
+                "auth_function": auth,
+                "expose_functions": expose_functions,
+                "expose_endpoints": ["match(\"/\")"]
+            }
         }))
+    }
+
+    /// `everything`: the globs include a bare `*`.
+    fn proxied(auth: bool, everything: bool) -> ProbeResult {
+        let globs = if everything {
+            json!(["match(\"*\")"])
+        } else {
+            json!(["match(\"api::*\")"])
+        };
+        proxied_with(auth, globs)
     }
 
     #[test]
@@ -204,7 +239,7 @@ mod tests {
     #[test]
     fn behind_the_proxy_it_starts() {
         let d = decide(&proxied(true, false), Ok(false), URL);
-        let Decision::Start { mode, warnings } = d else {
+        let Decision::Start { mode, warnings, .. } = d else {
             panic!("{d:?}")
         };
         assert!(matches!(mode, RbacMode::Proxied { .. }));
@@ -221,16 +256,54 @@ mod tests {
     }
 
     #[test]
-    fn the_flag_is_ignored_with_a_note_behind_the_proxy() {
-        let Decision::Start { mode, warnings } = decide(&proxied(true, false), Ok(true), URL)
+    fn the_everything_warning_reads_the_globs_in_every_form() {
+        for globs in [
+            json!(["match(\"api::*\")", "match(\"*\")"]),
+            json!(["match('*')"]),
+            json!([{ "match": "*" }]),
+            json!([{ "match": "*", "namespace": "orders" }]),
+        ] {
+            let Decision::Start { warnings, .. } =
+                decide(&proxied_with(false, globs.clone()), Ok(false), URL)
+            else {
+                panic!()
+            };
+            assert_eq!(warnings.len(), 1, "{globs}");
+        }
+        for globs in [
+            json!(["match(\"api::*\")"]),
+            json!([{ "match": "*::public" }]),
+            json!([{ "metadata": { "public": true } }]),
+            json!([]),
+            json!(3),
+        ] {
+            let Decision::Start { warnings, .. } =
+                decide(&proxied_with(false, globs.clone()), Ok(false), URL)
+            else {
+                panic!()
+            };
+            assert!(warnings.is_empty(), "{globs}: {warnings:?}");
+        }
+        // With an auth function, `*` is the operator's choice: no warning.
+        let Decision::Start { warnings, .. } = decide(&proxied(true, true), Ok(false), URL) else {
+            panic!()
+        };
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_flag_is_ignored_with_an_info_note_behind_the_proxy() {
+        let Decision::Start {
+            mode,
+            warnings,
+            notes,
+        } = decide(&proxied(true, false), Ok(true), URL)
         else {
             panic!()
         };
         assert!(matches!(mode, RbacMode::Proxied { .. }));
-        assert!(
-            warnings.iter().any(|w| w.contains("ignored")),
-            "{warnings:?}"
-        );
+        assert!(warnings.is_empty(), "not a warning: {warnings:?}");
+        assert!(notes.iter().any(|n| n.contains("ignored")), "{notes:?}");
     }
 
     #[test]
@@ -253,7 +326,8 @@ mod tests {
 
     #[test]
     fn not_proxied_with_the_flag_starts_dangerously_and_says_so() {
-        let Decision::Start { mode, warnings } = decide(&ProbeResult::NotProxied, Ok(true), URL)
+        let Decision::Start { mode, warnings, .. } =
+            decide(&ProbeResult::NotProxied, Ok(true), URL)
         else {
             panic!()
         };
@@ -263,6 +337,7 @@ mod tests {
             "{warnings:?}"
         );
         assert!(warnings[0].contains("Every MCP client can call every function"));
+        assert!(DANGEROUS_NOTICE.contains("Every MCP client can call every function"));
     }
 
     #[test]

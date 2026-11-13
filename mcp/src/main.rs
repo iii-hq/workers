@@ -1,8 +1,10 @@
 //! `mcp` binary entry. Connects to the iii engine (normally through
 //! rbac-proxy), refuses to start unless that connection is proxied or
 //! `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` is set, registers `mcp::handler`
-//! and `mcp::observed`, serves `POST`/`DELETE <api_path>`, reaps idle MCP
-//! sessions, then sleeps on Ctrl+C.
+//! and `mcp::observed` once the http worker is known to listen on loopback
+//! (or `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP` is set), serves
+//! `POST`/`GET`/`DELETE <api_path>`, ends idle MCP sessions, then sleeps on
+//! Ctrl+C.
 //!
 //! All real logic lives under [`mcp`]; tests under `tests/` reuse the
 //! same modules to drive the bridge in-process.
@@ -17,8 +19,9 @@ use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 use iii_mcp::engine::SdkEngine;
+use iii_mcp::http_guard;
 use iii_mcp::rbac_guard::{self, Decision};
-use iii_mcp::sessions::{SessionLimits, Sessions};
+use iii_mcp::sessions::Sessions;
 use iii_mcp::{config, functions, manifest};
 
 use crate::config::McpConfig;
@@ -107,20 +110,48 @@ async fn main() -> Result<()> {
             iii.shutdown_async().await;
             std::process::exit(1);
         }
-        Decision::Start { mode, warnings } => {
+        Decision::Start {
+            mode,
+            warnings,
+            notes,
+        } => {
             for w in warnings {
                 tracing::warn!("{w}");
                 eprintln!("{w}");
+            }
+            for n in notes {
+                tracing::info!("{n}");
             }
             mode
         }
     };
     tracing::info!(rbac = ?mode, "rbac check passed");
 
-    let sessions = Arc::new(Sessions::new(SessionLimits {
-        max_buffered: cfg.max_buffered_events,
-        idle_ttl: Duration::from_secs(cfg.session_idle_ttl_secs),
-    }));
+    // Then where the endpoint is reachable from: the http worker's bind.
+    let status = Bus::call(
+        iii.as_ref(),
+        "http::status",
+        serde_json::json!({}),
+        Some(10_000),
+    )
+    .await
+    .map_err(|e| e.to_string());
+    let public = http_guard::parse_flag(std::env::var(http_guard::PUBLIC_HTTP_ENV).ok().as_deref());
+    match http_guard::decide(status, public, &cfg.api_path) {
+        http_guard::Bind::Refuse(message) => {
+            eprintln!("{message}");
+            iii.shutdown_async().await;
+            std::process::exit(1);
+        }
+        http_guard::Bind::Serve { warnings } => {
+            for w in warnings {
+                tracing::warn!("{w}");
+                eprintln!("{w}");
+            }
+        }
+    }
+
+    let sessions = Arc::new(Sessions::new(cfg.session_limits()));
     let ctx = functions::Ctx::new(
         SdkEngine {
             client: iii.clone(),
@@ -152,14 +183,16 @@ async fn main() -> Result<()> {
     });
 
     // Idle sessions lose their observers; check every minute.
-    let reaper = sessions.clone();
+    // Idle-session sweep: once a minute, end the sessions idle longer than
+    // session_idle_ttl_secs (clients do not always send DELETE).
+    let sweep = sessions.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
-            let n = reaper.reap().await;
+            let n = sweep.end_idle().await;
             if n > 0 {
-                tracing::info!(sessions = n, "reaped idle MCP sessions");
+                tracing::info!(sessions = n, "ended idle MCP sessions");
             }
         }
     });

@@ -1,13 +1,20 @@
 //! MCP sessions and their observers.
 //!
 //! Streamable HTTP gives each client an `Mcp-Session-Id` at `initialize`.
-//! A session owns the observers it created with `iii_observe`; every
-//! matching invocation the engine delivers to the shared sink
-//! (`mcp::observed`) is routed here by `observer_id` and buffered until the
-//! client reads it with `iii_events`. Claude Code and other clients cannot be
-//! woken mid-turn, so buffering is the delivery.
+//! A session owns the observers it creates. Each one delivers its
+//! observations one of three ways ([`Delivery`]):
 //!
-//! Sessions idle longer than the TTL are reaped, disposing their observers:
+//! - **poll** (`iii_observe`): the engine sends them to the shared sink
+//!   (`mcp::observed`), which buffers them in the session until the client
+//!   reads them with `iii_observations_poll`;
+//! - **sse** (`iii_observations_sse`): through the sink, then pushed on the
+//!   session's `GET` SSE stream, held in the buffer while no stream is open;
+//! - **target** (`iii_observe` with `target_function_id`): the engine runs
+//!   that function for each one; nothing reaches the session.
+//!
+//! The buffer is per session (oldest dropped first). A session has at most
+//! `max_observers` observers, and the store at most `max_sessions` sessions.
+//! Sessions idle longer than the TTL are ended, disposing their observers:
 //! HTTP clients do not always send `DELETE` when they go away.
 
 use std::collections::{HashMap, VecDeque};
@@ -18,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 pub use crate::bus::BusError;
@@ -37,7 +45,7 @@ pub trait Observe: Send + Sync {
     fn observe(&self, req: &ObserveRequest, target: &str) -> Box<dyn ObserverLike>;
 }
 
-/// The `iii_observe` tool arguments.
+/// The source half of the observe tools' arguments.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ObserveRequest {
     #[serde(default)]
@@ -50,15 +58,41 @@ pub struct ObserveRequest {
     pub capture: Option<Vec<String>>,
     #[serde(default)]
     pub namespace: Option<String>,
+    /// The observer ends after this many observations.
     #[serde(default)]
-    pub max_events: Option<u64>,
+    pub max_observations: Option<u64>,
     #[serde(default)]
     pub expires_in_ms: Option<u64>,
 }
 
+/// Where an observer's observations go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// Buffered in the session for `iii_observations_poll`.
+    Poll,
+    /// Pushed on the session's SSE stream.
+    Sse,
+    /// The engine runs this function with each observation.
+    Target(String),
+}
+
+impl Delivery {
+    fn name(&self) -> &'static str {
+        match self {
+            Delivery::Poll => "poll",
+            Delivery::Sse => "sse",
+            Delivery::Target(_) => "target",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SessionLimits {
-    /// Per-observer buffer; the oldest events are dropped beyond it.
+    /// Live sessions; `initialize` is refused beyond it.
+    pub max_sessions: usize,
+    /// Observers per session.
+    pub max_observers: usize,
+    /// Observations held per session; the oldest are dropped beyond it.
     pub max_buffered: usize,
     /// A session nobody used for this long is ended.
     pub idle_ttl: Duration,
@@ -67,21 +101,23 @@ pub struct SessionLimits {
 impl Default for SessionLimits {
     fn default() -> Self {
         Self {
+            max_sessions: 16,
+            max_observers: 100,
             max_buffered: 500,
             idle_ttl: Duration::from_secs(30 * 60),
         }
     }
 }
 
-/// How long `iii_observe` waits for the engine to activate an observer. An
-/// observer of a function nobody hosts yet stays `pending`, which is valid.
+/// How long an observe tool waits for the engine to activate an observer.
+/// An observer of a function nobody hosts yet stays `pending`, which is valid.
 const READY_WAIT: Duration = Duration::from_secs(5);
 
 struct Entry {
     function_id: String,
     filters: Option<Value>,
+    delivery: Delivery,
     handle: Arc<dyn ObserverLike>,
-    events: VecDeque<(u64, Value)>,
     received: u64,
     dropped: u64,
 }
@@ -90,6 +126,26 @@ struct Session {
     last_seen: Instant,
     order: Vec<String>,
     observers: HashMap<String, Entry>,
+    /// Poll observations, and SSE ones waiting for a stream: (seq, observer id, observation).
+    buffer: VecDeque<(u64, String, Value)>,
+    /// Dropped since the last poll.
+    dropped: u64,
+    stream: Option<mpsc::UnboundedSender<Value>>,
+}
+
+impl Session {
+    fn buffered_for(&self, observer_id: &str) -> usize {
+        self.buffer
+            .iter()
+            .filter(|(_, id, _)| id == observer_id)
+            .count()
+    }
+
+    fn is_sse(&self, observer_id: &str) -> bool {
+        self.observers
+            .get(observer_id)
+            .is_some_and(|e| e.delivery == Delivery::Sse)
+    }
 }
 
 #[derive(Default)]
@@ -113,17 +169,28 @@ impl Sessions {
         }
     }
 
-    pub fn create(&self) -> String {
+    /// Open a session, unless `max_sessions` are already open.
+    pub fn create(&self) -> Result<String, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.sessions.len() >= self.limits.max_sessions {
+            return Err(format!(
+                "this MCP server already has {} sessions (max_sessions); end one with DELETE or wait for an idle one to end",
+                self.limits.max_sessions
+            ));
+        }
         let id = Uuid::new_v4().to_string();
-        self.inner.lock().unwrap().sessions.insert(
+        inner.sessions.insert(
             id.clone(),
             Session {
                 last_seen: Instant::now(),
                 order: vec![],
                 observers: HashMap::new(),
+                buffer: VecDeque::new(),
+                dropped: 0,
+                stream: None,
             },
         );
-        id
+        Ok(id)
     }
 
     /// Mark a session used; `false` when it does not exist.
@@ -137,20 +204,44 @@ impl Sessions {
         }
     }
 
+    /// Create an observer for the session. Poll and SSE observers target
+    /// `sink`; a target observer targets its function.
     pub async fn observe<O: Observe + ?Sized>(
         &self,
         observe: &O,
         session_id: &str,
         req: ObserveRequest,
-        target: &str,
+        delivery: Delivery,
+        sink: &str,
     ) -> Result<Value, String> {
         let function_id = req.function_id.trim().to_string();
         if function_id.is_empty() {
             return Err("function_id is required".into());
         }
-        if !self.touch(session_id) {
-            return Err(format!("unknown session: {session_id}"));
+        let delivery = match delivery {
+            Delivery::Target(t) if t.trim().is_empty() => {
+                return Err("target_function_id must name a function".into())
+            }
+            Delivery::Target(t) => Delivery::Target(t.trim().to_string()),
+            other => other,
+        };
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let Some(session) = inner.sessions.get_mut(session_id) else {
+                return Err(format!("unknown session: {session_id}"));
+            };
+            session.last_seen = Instant::now();
+            if session.observers.len() >= self.limits.max_observers {
+                return Err(format!(
+                    "this session already has {} observers (max_observers_per_session); remove one with iii_unobserve",
+                    self.limits.max_observers
+                ));
+            }
         }
+        let target = match &delivery {
+            Delivery::Target(t) => t.as_str(),
+            _ => sink,
+        };
         let handle: Arc<dyn ObserverLike> = Arc::from(observe.observe(
             &ObserveRequest {
                 function_id: function_id.clone(),
@@ -159,53 +250,72 @@ impl Sessions {
             target,
         ));
         let observer_id = handle.id();
-        {
+        let recorded = {
             // Recorded before activation, so an early delivery is routed.
             let mut inner = self.inner.lock().unwrap();
-            let Some(session) = inner.sessions.get_mut(session_id) else {
-                return Err(format!("unknown session: {session_id}"));
-            };
-            session.order.push(observer_id.clone());
-            session.observers.insert(
-                observer_id.clone(),
-                Entry {
-                    function_id: function_id.clone(),
-                    filters: req.filters.clone(),
-                    handle: handle.clone(),
-                    events: VecDeque::new(),
-                    received: 0,
-                    dropped: 0,
-                },
-            );
-            inner
-                .owner
-                .insert(observer_id.clone(), session_id.to_string());
+            match inner.sessions.get_mut(session_id) {
+                None => false,
+                Some(session) => {
+                    session.order.push(observer_id.clone());
+                    session.observers.insert(
+                        observer_id.clone(),
+                        Entry {
+                            function_id: function_id.clone(),
+                            filters: req.filters.clone(),
+                            delivery: delivery.clone(),
+                            handle: handle.clone(),
+                            received: 0,
+                            dropped: 0,
+                        },
+                    );
+                    inner
+                        .owner
+                        .insert(observer_id.clone(), session_id.to_string());
+                    true
+                }
+            }
+        };
+        if !recorded {
+            // The session ended while the engine was asked.
+            handle.dispose().await;
+            return Err(format!("unknown session: {session_id}"));
         }
         if let Ok(Err(e)) = tokio::time::timeout(READY_WAIT, handle.ready()).await {
             self.forget(session_id, &observer_id);
             handle.dispose().await;
             return Err(format!("observe refused: {}: {}", e.code, e.message));
         }
-        Ok(
-            json!({ "observer_id": observer_id, "function_id": function_id, "state": handle.state() }),
-        )
+        let mut out = json!({
+            "observer_id": observer_id,
+            "function_id": function_id,
+            "state": handle.state(),
+            "delivery": delivery.name(),
+        });
+        if let Delivery::Target(t) = &delivery {
+            out["target_function_id"] = json!(t);
+        }
+        Ok(out)
     }
 
-    /// Remove an observer from its session; returns its entry.
-    fn forget(&self, session_id: &str, observer_id: &str) -> Option<Entry> {
+    /// Remove an observer from its session; returns its entry and how many
+    /// of its observations were discarded.
+    fn forget(&self, session_id: &str, observer_id: &str) -> Option<(Entry, usize)> {
         let mut inner = self.inner.lock().unwrap();
-        let entry = inner.sessions.get_mut(session_id).and_then(|s| {
+        let (entry, discarded) = inner.sessions.get_mut(session_id).and_then(|s| {
             s.order.retain(|o| o != observer_id);
-            s.observers.remove(observer_id)
+            let entry = s.observers.remove(observer_id)?;
+            let before = s.buffer.len();
+            s.buffer.retain(|(_, id, _)| id != observer_id);
+            Some((entry, before - s.buffer.len()))
         })?;
         inner.owner.remove(observer_id);
-        Some(entry)
+        Some((entry, discarded))
     }
 
-    /// Route one observed invocation to its session; `false` when it belongs
-    /// to no live observer (dropped, never resurrected).
-    pub fn deliver(&self, event: Value) -> bool {
-        let Some(observer_id) = event
+    /// Route one observation from the sink to its session; `false` when it
+    /// belongs to no live poll or SSE observer (dropped, never resurrected).
+    pub fn deliver(&self, observation: Value) -> bool {
+        let Some(observer_id) = observation
             .get("observer_id")
             .and_then(Value::as_str)
             .map(str::to_string)
@@ -219,23 +329,40 @@ impl Sessions {
         inner.seq += 1;
         let seq = inner.seq;
         let max = self.limits.max_buffered;
-        let Some(entry) = inner
-            .sessions
-            .get_mut(&session_id)
-            .and_then(|s| s.observers.get_mut(&observer_id))
-        else {
+        let Some(session) = inner.sessions.get_mut(&session_id) else {
             return false;
         };
-        entry.received += 1;
-        entry.events.push_back((seq, event));
-        while entry.events.len() > max {
-            entry.events.pop_front();
-            entry.dropped += 1;
+        let Some(entry) = session.observers.get_mut(&observer_id) else {
+            return false;
+        };
+        match entry.delivery {
+            Delivery::Target(_) => return false,
+            Delivery::Sse => {
+                entry.received += 1;
+                if let Some(stream) = &session.stream {
+                    if stream.send(observation.clone()).is_ok() {
+                        return true;
+                    }
+                    session.stream = None;
+                }
+            }
+            Delivery::Poll => entry.received += 1,
+        }
+        session.buffer.push_back((seq, observer_id, observation));
+        while session.buffer.len() > max {
+            if let Some((_, id, _)) = session.buffer.pop_front() {
+                session.dropped += 1;
+                if let Some(e) = session.observers.get_mut(&id) {
+                    e.dropped += 1;
+                }
+            }
         }
         true
     }
 
-    pub fn events(
+    /// Read and remove poll observations, oldest first: one observer's, or
+    /// all of the session's poll observers'.
+    pub fn poll(
         &self,
         session_id: &str,
         observer_id: Option<&str>,
@@ -248,41 +375,77 @@ impl Sessions {
             .get_mut(session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         session.last_seen = Instant::now();
-        let ids: Vec<String> = match observer_id {
-            Some(id) if session.observers.contains_key(id) => vec![id.to_string()],
-            Some(id) => return Err(format!("unknown observer: {id}")),
-            None => session.order.clone(),
+        if let Some(id) = observer_id {
+            match session.observers.get(id) {
+                None => return Err(format!("unknown observer: {id}")),
+                Some(e) if e.delivery != Delivery::Poll => {
+                    return Err(format!(
+                        "observer {id} does not buffer for polling: it was created with {}",
+                        if e.delivery == Delivery::Sse {
+                            "iii_observations_sse (its observations arrive on the SSE stream)"
+                        } else {
+                            "a target_function_id (the engine runs that function instead)"
+                        }
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+        let wanted = |id: &str| match observer_id {
+            Some(o) => o == id,
+            None => true,
         };
-        let mut queued: Vec<(u64, String)> = ids
+        let mut observations = Vec::new();
+        let mut kept = VecDeque::with_capacity(session.buffer.len());
+        let mut remaining = 0;
+        let sse: Vec<String> = session
+            .observers
             .iter()
-            .flat_map(|id| {
-                session.observers[id]
-                    .events
-                    .iter()
-                    .map(move |(seq, _)| (*seq, id.clone()))
-            })
+            .filter(|(_, e)| e.delivery == Delivery::Sse)
+            .map(|(id, _)| id.clone())
             .collect();
-        queued.sort_by_key(|(seq, _)| *seq);
-        let total = queued.len();
-        let mut events = Vec::new();
-        for (_, id) in queued.into_iter().take(max) {
-            if let Some((_, e)) = session
-                .observers
-                .get_mut(&id)
-                .and_then(|en| en.events.pop_front())
-            {
-                events.push(e);
+        for item in session.buffer.drain(..) {
+            let is_poll = !sse.contains(&item.1);
+            if is_poll && wanted(&item.1) {
+                if observations.len() < max {
+                    observations.push(item.2);
+                    continue;
+                }
+                remaining += 1;
+            }
+            kept.push_back(item);
+        }
+        session.buffer = kept;
+        let dropped = std::mem::take(&mut session.dropped);
+        Ok(json!({ "observations": observations, "remaining": remaining, "dropped": dropped }))
+    }
+
+    /// Open the session's SSE stream: observations of its SSE observers go
+    /// to the returned receiver from now on, starting with those that were
+    /// waiting. A new stream replaces the previous one.
+    pub fn attach_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<mpsc::UnboundedReceiver<Value>, String> {
+        let mut inner = self.inner.lock().unwrap();
+        let session = inner
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?;
+        session.last_seen = Instant::now();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut kept = VecDeque::with_capacity(session.buffer.len());
+        let waiting: Vec<(u64, String, Value)> = session.buffer.drain(..).collect();
+        for item in waiting {
+            if session.is_sse(&item.1) {
+                let _ = tx.send(item.2);
+            } else {
+                kept.push_back(item);
             }
         }
-        let mut dropped = 0;
-        for id in &ids {
-            if let Some(en) = session.observers.get_mut(id) {
-                dropped += en.dropped;
-                en.dropped = 0;
-            }
-        }
-        let remaining = total - events.len();
-        Ok(json!({ "events": events, "remaining": remaining, "dropped": dropped }))
+        session.buffer = kept;
+        session.stream = Some(tx);
+        Ok(rx)
     }
 
     pub fn list(&self, session_id: &str) -> Result<Vec<Value>, String> {
@@ -300,11 +463,15 @@ impl Sessions {
                 let mut v = json!({
                     "observer_id": id,
                     "function_id": e.function_id,
+                    "delivery": e.delivery.name(),
                     "state": e.handle.state(),
-                    "buffered": e.events.len(),
+                    "buffered": session.buffered_for(id),
                     "received": e.received,
                     "dropped": e.dropped,
                 });
+                if let Delivery::Target(t) = &e.delivery {
+                    v["target_function_id"] = json!(t);
+                }
                 if let Some(f) = &e.filters {
                     v["filters"] = f.clone();
                 }
@@ -317,11 +484,11 @@ impl Sessions {
         if !self.touch(session_id) {
             return Err(format!("unknown session: {session_id}"));
         }
-        let entry = self
+        let (entry, discarded) = self
             .forget(session_id, observer_id)
             .ok_or_else(|| format!("unknown observer: {observer_id}"))?;
         entry.handle.dispose().await;
-        Ok(json!({ "observer_id": observer_id, "removed": true, "discarded": entry.events.len() }))
+        Ok(json!({ "observer_id": observer_id, "removed": true, "discarded": discarded }))
     }
 
     /// End a session and dispose its observers; `false` when unknown.
@@ -343,7 +510,7 @@ impl Sessions {
     }
 
     /// End every session idle longer than the TTL; returns how many.
-    pub async fn reap(&self) -> usize {
+    pub async fn end_idle(&self) -> usize {
         let expired: Vec<String> = {
             let inner = self.inner.lock().unwrap();
             inner
@@ -437,14 +604,22 @@ mod tests {
         }
     }
 
-    fn store() -> Sessions {
-        Sessions::new(SessionLimits {
-            max_buffered: 500,
+    const SINK: &str = "mcp::observed";
+
+    fn limits(max_sessions: usize, max_observers: usize, max_buffered: usize) -> SessionLimits {
+        SessionLimits {
+            max_sessions,
+            max_observers,
+            max_buffered,
             idle_ttl: Duration::from_secs(60),
-        })
+        }
     }
 
-    fn event(observer_id: &str, input: Value) -> Value {
+    fn store() -> Sessions {
+        Sessions::new(limits(16, 100, 500))
+    }
+
+    fn observation(observer_id: &str, input: Value) -> Value {
         json!({ "observer_id": observer_id, "function_id": "state::set", "status": "success", "input": input })
     }
 
@@ -452,14 +627,43 @@ mod tests {
         serde_json::from_value(json!({ "function_id": function_id })).unwrap()
     }
 
+    fn inputs(v: &Value) -> Vec<Value> {
+        v["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["input"].clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_defaults_are_16_sessions_100_observers_and_500_buffered() {
+        let d = SessionLimits::default();
+        assert_eq!(
+            (d.max_sessions, d.max_observers, d.max_buffered),
+            (16, 100, 500)
+        );
+    }
+
     #[test]
     fn sessions_are_created_with_unique_ids_and_known_afterwards() {
         let s = store();
-        let a = s.create();
-        let b = s.create();
+        let a = s.create().unwrap();
+        let b = s.create().unwrap();
         assert_ne!(a, b);
         assert!(s.touch(&a));
         assert!(!s.touch("nope"));
+    }
+
+    #[tokio::test]
+    async fn there_are_at_most_max_sessions_and_ending_one_frees_a_slot() {
+        let s = Sessions::new(limits(2, 100, 500));
+        let a = s.create().unwrap();
+        s.create().unwrap();
+        let err = s.create().unwrap_err();
+        assert!(err.contains("2") && err.contains("max_sessions"), "{err}");
+        assert!(s.end(&a).await);
+        assert!(s.create().is_ok());
     }
 
     #[test]
@@ -470,7 +674,7 @@ mod tests {
             "args": { "table": "orders" },
             "capture": ["input", "error"],
             "namespace": "default",
-            "max_events": 3,
+            "max_observations": 3,
             "expires_in_ms": 60000
         }))
         .unwrap();
@@ -479,59 +683,132 @@ mod tests {
             r.capture.as_deref(),
             Some(&["input".to_string(), "error".to_string()][..])
         );
-        assert_eq!(r.max_events, Some(3));
+        assert_eq!(r.max_observations, Some(3));
     }
 
     #[tokio::test]
-    async fn observe_targets_the_sink_and_records_the_observer_in_the_session() {
+    async fn a_poll_observer_targets_the_sink() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create();
+        let sid = s.create().unwrap();
         let r = s
-            .observe(&o, &sid, req("state::set"), "mcp::observed")
+            .observe(&o, &sid, req("state::set"), Delivery::Poll, SINK)
             .await
             .unwrap();
         assert_eq!(
             r,
-            json!({ "observer_id": "obs-1", "function_id": "state::set", "state": "active" })
+            json!({ "observer_id": "obs-1", "function_id": "state::set", "state": "active", "delivery": "poll" })
         );
-        assert_eq!(o.asked.lock().unwrap()[0].1, "mcp::observed");
-        assert_eq!(s.list(&sid).unwrap()[0]["observer_id"], "obs-1");
+        assert_eq!(o.asked.lock().unwrap()[0].1, SINK);
     }
 
     #[tokio::test]
-    async fn observe_rejects_an_empty_function_id_and_an_unknown_session() {
+    async fn an_sse_observer_targets_the_sink_too() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create();
+        let sid = s.create().unwrap();
+        let r = s
+            .observe(&o, &sid, req("state::set"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        assert_eq!(r["delivery"], "sse");
+        assert_eq!(o.asked.lock().unwrap()[0].1, SINK);
+    }
+
+    #[tokio::test]
+    async fn a_target_observer_runs_its_target_and_buffers_nothing() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        let r = s
+            .observe(
+                &o,
+                &sid,
+                req("a::b"),
+                Delivery::Target("c::run".into()),
+                SINK,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r,
+            json!({ "observer_id": "obs-1", "function_id": "a::b", "state": "active",
+                    "delivery": "target", "target_function_id": "c::run" })
+        );
+        assert_eq!(o.asked.lock().unwrap()[0].1, "c::run");
+        // The engine never sends its invocations here; a forged one is dropped.
+        assert!(!s.deliver(observation("obs-1", json!(1))));
+        assert_eq!(s.poll(&sid, None, 50).unwrap()["observations"], json!([]));
+        let listed = &s.list(&sid).unwrap()[0];
+        assert_eq!(listed["delivery"], "target");
+        assert_eq!(listed["target_function_id"], "c::run");
+        // Still the session's: unobserve and end dispose it.
+        assert!(s.unobserve(&sid, "obs-1").await.is_ok());
+        assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn observe_rejects_bad_requests_before_asking_the_engine() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
         assert!(s
-            .observe(&o, &sid, req(" "), "mcp::observed")
+            .observe(&o, &sid, req(" "), Delivery::Poll, SINK)
             .await
             .unwrap_err()
             .contains("function_id"));
         assert!(s
-            .observe(&o, "nope", req("a::b"), "mcp::observed")
+            .observe(&o, "nope", req("a::b"), Delivery::Poll, SINK)
             .await
             .unwrap_err()
             .contains("unknown session"));
+        assert!(s
+            .observe(&o, &sid, req("a::b"), Delivery::Target(" ".into()), SINK)
+            .await
+            .unwrap_err()
+            .contains("target_function_id"));
         assert!(o.asked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_has_at_most_max_observers() {
+        let s = Sessions::new(limits(16, 2, 500));
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        for _ in 0..2 {
+            s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+                .await
+                .unwrap();
+        }
+        let err = s
+            .observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
+            .await
+            .unwrap_err();
+        assert!(err.contains("2") && err.contains("iii_unobserve"), "{err}");
+        assert_eq!(o.asked.lock().unwrap().len(), 2);
+        // Another session has its own allowance.
+        let other = s.create().unwrap();
+        assert!(s
+            .observe(&o, &other, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
     async fn a_refused_observer_is_disposed_and_reported_with_its_code() {
         let s = store();
         let o = FakeObserve {
-            refuse: Some(BusError::new("INVALID_ARGS", "bad filter")),
+            refuse: Some(BusError::new("FORBIDDEN", "not allowed")),
             ..Default::default()
         };
-        let sid = s.create();
-        let e = s
-            .observe(&o, &sid, req("a::b"), "mcp::observed")
+        let sid = s.create().unwrap();
+        let err = s
+            .observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
             .await
             .unwrap_err();
         assert!(
-            e.contains("INVALID_ARGS") && e.contains("bad filter"),
-            "{e}"
+            err.contains("FORBIDDEN") && err.contains("not allowed"),
+            "{err}"
         );
         assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
         assert!(s.list(&sid).unwrap().is_empty());
@@ -541,92 +818,95 @@ mod tests {
     async fn deliveries_are_routed_to_the_owning_session_only() {
         let s = store();
         let o = FakeObserve::default();
-        let a = s.create();
-        let b = s.create();
-        s.observe(&o, &a, req("x::y"), "mcp::observed")
+        let a = s.create().unwrap();
+        let b = s.create().unwrap();
+        s.observe(&o, &a, req("x::y"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        s.observe(&o, &b, req("x::y"), "mcp::observed")
+        s.observe(&o, &b, req("x::y"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        assert!(s.deliver(event("obs-1", json!(1))));
-        assert!(s.deliver(event("obs-2", json!(2))));
-        assert!(
-            !s.deliver(event("obs-999", json!(3))),
-            "unknown observer must be dropped"
-        );
-        assert!(!s.deliver(json!("not an event")));
-        let ea = s.events(&a, None, 50).unwrap();
-        assert_eq!(
-            ea["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| e["input"].clone())
-                .collect::<Vec<_>>(),
-            vec![json!(1)]
-        );
-        // Another session cannot read or remove it.
-        assert!(s
-            .events(&b, Some("obs-1"), 50)
-            .unwrap_err()
-            .contains("unknown observer"));
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        assert!(s.deliver(observation("obs-2", json!(2))));
+        assert!(!s.deliver(observation("obs-9", json!(9))));
+        assert!(!s.deliver(json!({ "no": "observer id" })));
+        assert_eq!(inputs(&s.poll(&a, None, 50).unwrap()), vec![json!(1)]);
+        assert_eq!(inputs(&s.poll(&b, None, 50).unwrap()), vec![json!(2)]);
     }
 
     #[tokio::test]
-    async fn events_drain_oldest_first_with_max_remaining_and_dropped() {
-        let s = Sessions::new(SessionLimits {
-            max_buffered: 3,
-            idle_ttl: Duration::from_secs(60),
-        });
+    async fn the_buffer_is_per_session_oldest_dropped_across_its_observers() {
+        let s = Sessions::new(limits(16, 100, 3));
         let o = FakeObserve::default();
-        let sid = s.create();
-        s.observe(&o, &sid, req("a::b"), "mcp::observed")
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        s.observe(&o, &sid, req("c::d"), "mcp::observed")
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        for i in 0..5 {
-            s.deliver(event("obs-1", json!(i)));
-        }
-        s.deliver(event("obs-2", json!("b")));
-        let first = s.events(&sid, None, 2).unwrap();
-        let inputs = |v: &Value| {
-            v["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| e["input"].clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(inputs(&first), vec![json!(2), json!(3)]);
-        assert_eq!(first["remaining"], 2);
+        s.deliver(observation("obs-1", json!(1)));
+        s.deliver(observation("obs-2", json!("a")));
+        s.deliver(observation("obs-1", json!(2)));
+        s.deliver(observation("obs-2", json!("b"))); // drops 1
+        s.deliver(observation("obs-1", json!(3))); // drops "a"
+        let first = s.poll(&sid, None, 2).unwrap();
+        assert_eq!(inputs(&first), vec![json!(2), json!("b")]);
+        assert_eq!(first["remaining"], 1);
         assert_eq!(first["dropped"], 2);
-        let rest = s.events(&sid, None, 50).unwrap();
-        assert_eq!(inputs(&rest), vec![json!(4), json!("b")]);
+        let rest = s.poll(&sid, None, 50).unwrap();
+        assert_eq!(inputs(&rest), vec![json!(3)]);
         assert_eq!(rest["dropped"], 0);
+        // Per observer, for iii_observers.
+        let listed = s.list(&sid).unwrap();
         assert_eq!(
-            s.events(&sid, Some("obs-1"), 50).unwrap()["events"],
-            json!([])
+            (listed[0]["dropped"].clone(), listed[1]["dropped"].clone()),
+            (json!(1), json!(1))
         );
     }
 
     #[tokio::test]
-    async fn list_reports_counts_and_filters() {
+    async fn poll_reads_one_observer_or_refuses_an_unknown_one() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        s.deliver(observation("obs-2", json!(2)));
+        let one = s.poll(&sid, Some("obs-2"), 50).unwrap();
+        assert_eq!(inputs(&one), vec![json!(2)]);
+        assert_eq!(one["remaining"], 0);
+        assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(1)]);
+        assert!(s
+            .poll(&sid, Some("nope"), 50)
+            .unwrap_err()
+            .contains("unknown observer"));
+        assert!(s
+            .poll("nope", None, 50)
+            .unwrap_err()
+            .contains("unknown session"));
+    }
+
+    #[tokio::test]
+    async fn list_reports_delivery_counts_and_filters() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
         let mut r = req("a::b");
         r.filters = Some(json!({ "input.x": { "$eq": 1 } }));
-        s.observe(&o, &sid, r, "mcp::observed").await.unwrap();
-        s.deliver(event("obs-1", json!(1)));
-        s.deliver(event("obs-1", json!(2)));
-        s.events(&sid, Some("obs-1"), 1).unwrap();
+        s.observe(&o, &sid, r, Delivery::Poll, SINK).await.unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        s.deliver(observation("obs-1", json!(2)));
+        s.poll(&sid, Some("obs-1"), 1).unwrap();
         assert_eq!(
             s.list(&sid).unwrap(),
             vec![json!({
-                "observer_id": "obs-1", "function_id": "a::b",
+                "observer_id": "obs-1", "function_id": "a::b", "delivery": "poll",
                 "filters": { "input.x": { "$eq": 1 } },
                 "state": "active", "buffered": 1, "received": 2, "dropped": 0
             })]
@@ -634,63 +914,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sse_observations_go_to_the_attached_stream_not_the_buffer() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        let mut rx = s.attach_stream(&sid).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        assert!(s.deliver(observation("obs-2", json!(2))));
+        assert_eq!(rx.try_recv().unwrap()["input"], 1);
+        assert!(rx.try_recv().is_err());
+        // Poll reads only poll observers.
+        assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(2)]);
+        assert!(s
+            .poll(&sid, Some("obs-1"), 50)
+            .unwrap_err()
+            .contains("iii_observations_sse"));
+        assert_eq!(s.list(&sid).unwrap()[0]["received"], 1);
+    }
+
+    #[tokio::test]
+    async fn sse_observations_wait_for_a_stream_and_flush_in_order() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        s.deliver(observation("obs-1", json!(2)));
+        assert_eq!(s.list(&sid).unwrap()[0]["buffered"], 2);
+        let mut rx = s.attach_stream(&sid).unwrap();
+        assert_eq!(rx.try_recv().unwrap()["input"], 1);
+        assert_eq!(rx.try_recv().unwrap()["input"], 2);
+        assert_eq!(s.list(&sid).unwrap()[0]["buffered"], 0);
+        // The stream went away: observations wait again for the next one.
+        drop(rx);
+        s.deliver(observation("obs-1", json!(3)));
+        let mut again = s.attach_stream(&sid).unwrap();
+        assert_eq!(again.try_recv().unwrap()["input"], 3);
+    }
+
+    #[tokio::test]
+    async fn a_new_stream_replaces_the_old_one() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        let mut old = s.attach_stream(&sid).unwrap();
+        let mut new = s.attach_stream(&sid).unwrap();
+        s.deliver(observation("obs-1", json!(1)));
+        assert!(old.try_recv().is_err());
+        assert_eq!(new.try_recv().unwrap()["input"], 1);
+        assert!(s
+            .attach_stream("nope")
+            .unwrap_err()
+            .contains("unknown session"));
+    }
+
+    #[tokio::test]
     async fn unobserve_disposes_only_the_sessions_own_observer() {
         let s = store();
         let o = FakeObserve::default();
-        let a = s.create();
-        let b = s.create();
-        s.observe(&o, &a, req("a::b"), "mcp::observed")
+        let a = s.create().unwrap();
+        let b = s.create().unwrap();
+        s.observe(&o, &a, req("x::y"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        s.deliver(event("obs-1", json!(1)));
+        s.deliver(observation("obs-1", json!(1)));
         assert!(s
             .unobserve(&b, "obs-1")
             .await
             .unwrap_err()
             .contains("unknown observer"));
+        assert_eq!(o.disposed.load(Ordering::SeqCst), 0);
+        let r = s.unobserve(&a, "obs-1").await.unwrap();
         assert_eq!(
-            s.unobserve(&a, "obs-1").await.unwrap(),
+            r,
             json!({ "observer_id": "obs-1", "removed": true, "discarded": 1 })
         );
         assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
-        assert!(
-            !s.deliver(event("obs-1", json!(2))),
-            "late delivery is not resurrected"
-        );
+        assert!(!s.deliver(observation("obs-1", json!(2))));
+        assert_eq!(s.poll(&a, None, 50).unwrap()["observations"], json!([]));
     }
 
     #[tokio::test]
     async fn ending_a_session_disposes_its_observers() {
         let s = store();
         let o = FakeObserve::default();
-        let sid = s.create();
-        s.observe(&o, &sid, req("a::b"), "mcp::observed")
-            .await
-            .unwrap();
-        s.observe(&o, &sid, req("c::d"), "mcp::observed")
-            .await
-            .unwrap();
+        let sid = s.create().unwrap();
+        for d in [
+            Delivery::Poll,
+            Delivery::Sse,
+            Delivery::Target("c::run".into()),
+        ] {
+            s.observe(&o, &sid, req("a::b"), d, SINK).await.unwrap();
+        }
         assert!(s.end(&sid).await);
-        assert_eq!(o.disposed.load(Ordering::SeqCst), 2);
-        assert!(!s.touch(&sid));
+        assert_eq!(o.disposed.load(Ordering::SeqCst), 3);
         assert!(!s.end(&sid).await);
+        assert!(!s.deliver(observation("obs-1", json!(1))));
     }
 
     #[tokio::test]
-    async fn idle_sessions_are_reaped_and_active_ones_kept() {
+    async fn idle_sessions_are_ended_and_active_ones_kept() {
         let s = Sessions::new(SessionLimits {
-            max_buffered: 10,
-            idle_ttl: Duration::from_millis(30),
+            idle_ttl: Duration::from_millis(20),
+            ..SessionLimits::default()
         });
         let o = FakeObserve::default();
-        let idle = s.create();
-        let busy = s.create();
-        s.observe(&o, &idle, req("a::b"), "mcp::observed")
+        let idle = s.create().unwrap();
+        let busy = s.create().unwrap();
+        s.observe(&o, &idle, req("a::b"), Delivery::Poll, SINK)
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert!(s.touch(&busy));
-        assert_eq!(s.reap().await, 1);
+        assert_eq!(s.end_idle().await, 1);
         assert!(!s.touch(&idle));
         assert!(s.touch(&busy));
         assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
@@ -700,16 +1047,13 @@ mod tests {
     async fn close_all_disposes_everything() {
         let s = store();
         let o = FakeObserve::default();
-        let a = s.create();
-        let b = s.create();
-        s.observe(&o, &a, req("a::b"), "mcp::observed")
-            .await
-            .unwrap();
-        s.observe(&o, &b, req("a::b"), "mcp::observed")
-            .await
-            .unwrap();
+        for _ in 0..2 {
+            let sid = s.create().unwrap();
+            s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+                .await
+                .unwrap();
+        }
         s.close_all().await;
         assert_eq!(o.disposed.load(Ordering::SeqCst), 2);
-        assert!(!s.touch(&a));
     }
 }

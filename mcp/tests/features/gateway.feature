@@ -35,11 +35,11 @@ Feature: gateway tools, sessions and Origin over Streamable HTTP
     When I send a ping request with session "no-such-session"
     Then the http response status is 404
 
-  Scenario: observe, trigger, read the event, then end the session
+  Scenario: observe, trigger, poll the observation, then end the session
     Given I open an MCP session
     When I observe "state::set" for this scenario's scope
     And  I set a state key in this scenario's scope
-    Then iii_events returns 1 event for this scenario's scope within 5 seconds
+    Then iii_observations_poll returns 1 observation for this scenario's scope within 5 seconds
     When I end the session with DELETE
     Then the http response status is 200
     When I send a ping request with the ended session
