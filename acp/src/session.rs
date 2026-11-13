@@ -659,10 +659,10 @@ fn apply_history_update(
     if history.closed {
         return false;
     }
-    if let Some(owner_conn_id) = owner_conn_id {
-        if history.owner_conn_id.as_deref() != Some(owner_conn_id) {
-            return false;
-        }
+    if let Some(owner_conn_id) = owner_conn_id
+        && history.owner_conn_id.as_deref() != Some(owner_conn_id)
+    {
+        return false;
     }
     if let Some(item_id) = cursor_item_id {
         if history.cursor_item_ids.iter().any(|seen| seen == item_id) {
