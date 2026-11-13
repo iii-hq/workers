@@ -1,18 +1,20 @@
 # MCP gateway behind rbac-proxy
 
-The `mcp` worker becomes the way agents outside the engine (Claude Code,
+The worker is `mcp-server` (formerly `mcp`).
+
+The `mcp-server` worker becomes the way agents outside the engine (Claude Code,
 Codex, OpenCode, Cursor, any MCP client) reach a running iii engine: a
 Streamable HTTP MCP server offering a small, fixed set of tools, `iii_call` and
 `iii_observe` above all, that must run behind `rbac-proxy`.
 
-Status: implemented in `mcp` 0.7.0 (this PR) and `rbac-proxy`
+Status: implemented in `mcp-server` 0.7.0 (this PR) and `rbac-proxy`
 (`rbac-proxy::session`, `worker_names`, `expose_endpoints`, #1712). This document is for review: it
 describes the behaviour and contracts, the security model, and what is
 deliberately left out.
 
 ## Why
 
-Before this change `mcp` had three problems:
+Before this change `mcp-server` had three problems:
 
 1. **One tool per function.** `tools/list` advertised every visible engine
    function as its own MCP tool. A real engine has hundreds of functions, so
@@ -32,11 +34,11 @@ harness speaks HTTP MCP. One server, done properly, serves them all.
 ## Shape
 
 ```text
-MCP client ──HTTP──▶ http worker ──http::on-request──▶ mcp::handler
+MCP client ──HTTP──▶ http worker ──http::on-request──▶ mcp-server::handler
  (Claude Code,        (POST/GET/DELETE /mcp)             │  gateway tools, sessions,
   Codex, ...)                                            │  Origin check
                                                          ▼
-                                     mcp worker's engine connection
+                              mcp-server worker's engine connection
                                                          │  ws://…:49200 + Bearer III_TOKEN
                                                          ▼
                                                     rbac-proxy ── auth function, expose_functions,
@@ -45,16 +47,16 @@ MCP client ──HTTP──▶ http worker ──http::on-request──▶ mcp::
                                                        engine ── every worker's functions
 ```
 
-- `mcp` keeps one iii-sdk connection. In production it points at
+- `mcp-server` keeps one iii-sdk connection. In production it points at
   rbac-proxy, so **every** call, observer and discovery result the MCP
-  server makes is decided by RBAC. `mcp` itself has no allow-list for the
+  server makes is decided by RBAC. `mcp-server` itself has no allow-list for the
   gateway tools.
 - All MCP clients share that one proxied identity: RBAC governs "agents via
   MCP" as a whole (see [Open questions](#open-questions)).
 
 ## Startup: RBAC or nothing
 
-Before registering any function or route, `mcp` calls
+Before registering any function or route, `mcp-server` calls
 `rbac-proxy::session` on its connection.
 
 ### `rbac-proxy::session` (rbac-proxy)
@@ -113,14 +115,14 @@ returns as `warning`: "WARNING: this MCP server runs WITHOUT RBAC
 function on this engine."
 
 Credentials: iii-sdk sends `Authorization: Bearer $III_TOKEN` on the WebSocket
-handshake; rbac-proxy's auth function receives it. No `mcp` code is involved.
+handshake; rbac-proxy's auth function receives it. No `mcp-server` code is involved.
 
 An rbac-proxy with no `auth_function_id` refuses every upgrade, so in practice
-a proxied `mcp` is always authenticated.
+a proxied `mcp-server` is always authenticated.
 
 ### Where the endpoint is reachable from
 
-`mcp` serves through the http worker, whose default host is `0.0.0.0`. After
+`mcp-server` serves through the http worker, whose default host is `0.0.0.0`. After
 the RBAC check it reads `http::status`:
 
 | http worker host | `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP` | Outcome |
@@ -137,12 +139,12 @@ rbac-proxy per server gives each its own rules.
 
 Compose waits for a worker to connect under its exact name, but rbac-proxy
 renames every proxied worker to `rbac-proxy:<session or prefix>:<name>`. So
-compose would never see `mcp` connect, and would kill it when
+compose would never see `mcp-server` connect, and would kill it when
 `startup_timeout` ran out.
 
 The fix is in the auth function: its result can list the names a connection
-may keep, `worker_names: ["mcp"]`. rbac-proxy then forwards the declared name
-unchanged (exact match, no patterns), compose sees `mcp`, and
+may keep, `worker_names: ["mcp-server"]`. rbac-proxy then forwards the declared name
+unchanged (exact match, no patterns), compose sees `mcp-server`, and
 `rbac-proxy::session` reports the grant. Compose itself is unchanged.
 
 Grant a name only to the credential that runs that worker. Two connections
@@ -158,7 +160,7 @@ The worker observes `http::on-request` for `POST`, `GET` and `DELETE
 1. **Origin.** No `Origin` header: allowed (CLI/SDK clients). Loopback origins
    (`localhost`, `*.localhost`, `127.0.0.1`, `[::1]`, any scheme and port):
    allowed. Exact matches in `allowed_origins`: allowed. Anything else,
-   `null` and malformed origins included: **403**. This check is `mcp`'s own,
+   `null` and malformed origins included: **403**. This check is `mcp-server`'s own,
    as the MCP spec requires: the http worker's default CORS policy is
    permissive (any origin), and CORS would not stop a request from reaching
    the server anyway.
@@ -185,12 +187,12 @@ the body.
 |---|---|
 | `initialize` | new session (UUID v4) |
 | any request with its id | refreshes `last_seen` |
-| idle longer than `session_idle_ttl_secs` (default 1800) | ended by the idle-session sweep: a tokio task in `mcp` that wakes every 60 s and ends every session idle past the TTL |
+| idle longer than `session_idle_ttl_secs` (default 1800) | ended by the idle-session sweep: a tokio task in `mcp-server` that wakes every 60 s and ends every session idle past the TTL |
 | `DELETE` | ended |
 | worker shutdown | every session ended |
 | ended | all its observers disposed on the engine; buffers dropped |
 
-Sessions are in memory: a restart of `mcp` loses them, and clients get 404
+Sessions are in memory: a restart of `mcp-server` loses them, and clients get 404
 and re-initialize.
 
 ## Tools
@@ -221,7 +223,7 @@ Rules shared by all tools:
   params, a malformed request).
 - Argument errors (missing `function_id`, non-object `payload`) are tool
   errors and make no engine call.
-- `iii_call` refuses `mcp::*`, the worker's own internals. Nothing else is
+- `iii_call` refuses `mcp-server::*`, the worker's own internals. Nothing else is
   filtered locally: RBAC decides.
 - A session tool without a session returns a tool error telling the client to
   initialize and send `Mcp-Session-Id`.
@@ -230,13 +232,15 @@ Rules shared by all tools:
 
 `initialize.instructions` open with the first call every agent makes:
 `iii_get_agent` with no arguments, which reads iii-directory's built-in
-`default` profile (`directory::agents::get {"id": "default"}`); the agent
-follows it, reading its `agent_call` as `iii_call` and `harness::observe` as
-`iii_observe`. They then name the discovery functions, each with what it
+`default-mcp` profile (`directory::agents::get {"id": "default-mcp"}`, from
+#1714): the `default` identity rewritten for MCP clients, with `iii_call` and
+the observe tools in place of `agent_call` and `harness::*`, derived from
+`default` by a checked script. They then name the discovery functions, each with what it
 returns (`directory::search_functions` for candidate ids by capability,
 `engine::functions::list`, `engine::workers::list`,
-`directory::skills::index`, and `engine::functions::info` for a contract
-before the first call), and say up front that some functions are
+`engine::functions::info` for a contract before the first call, and
+`directory::skills::index` for the relevant skills, which are guidance
+documents rather than one per worker, to read sparingly), and say up front that some functions are
 higher-order: they call other functions for the agent (`fp::pipe` chains
 calls worker-side, so large values never pass through the agent; `fp::batch`
 runs independent calls at once). They also say to use `iii_call` instead of
@@ -263,13 +267,13 @@ function's input. Instead:
 - **No value can be read back through the MCP server.** Every MCP client
   shares the server's one identity, so if one could resolve a secret, any
   agent on the server could read every secret. Two layers enforce it, neither
-  in `mcp`: rbac-proxy's allow list keeps `secrets::resolve` out (the setup
+  in `mcp-server`: rbac-proxy's allow list keeps `secrets::resolve` out (the setup
   forbids it in the auth result, since `match("*")` and `match("secrets::*")`
   include it), and the `secrets` worker resolves only for the consumers a
   secret lists.
-- `mcp::handler` receives every request body, so it is registered
+- `mcp-server::handler` receives every request body, so it is registered
   `observable: false`.
-- `mcp` sets `III_DISABLE_TRACE_PAYLOADS=1` before connecting, as `secrets`
+- `mcp-server` sets `III_DISABLE_TRACE_PAYLOADS=1` before connecting, as `secrets`
   does, so its spans carry no payloads.
 - No tool result or error message contains the value. A missing `secrets`
   worker is reported with how to add it.
@@ -284,8 +288,8 @@ An observer delivers its observations one of three ways:
 
 | Created with | Delivery | Where observations go |
 |---|---|---|
-| `iii_observe` | poll | engine → `mcp::observed` → the session's buffer, read with `iii_observations_poll` |
-| `iii_observations_sse` | sse | engine → `mcp::observed` → the session's `GET` stream, as `notifications/iii/observation` |
+| `iii_observe` | poll | engine → `mcp-server::observed` → the session's buffer, read with `iii_observations_poll` |
+| `iii_observations_sse` | sse | engine → `mcp-server::observed` → the session's `GET` stream, as `notifications/iii/observation` |
 | `iii_observe` with `target_function_id` | target | the engine runs that function with each observation; nothing reaches the session |
 
 Every observer belongs to its session whatever the delivery: `iii_observers`
@@ -293,7 +297,7 @@ lists it, `iii_unobserve` removes it, and ending the session disposes it.
 `iii_unobserve` disposes the SDK observer handle, which sends the engine its
 `unobserve` frame; no function is called.
 
-- **Sink.** Poll and SSE observers target `mcp::observed`, one sink for the
+- **Sink.** Poll and SSE observers target `mcp-server::observed`, one sink for the
   worker, which routes each observation to its session by `observer_id`.
   Observations for observers that are not live (unobserved, ended session,
   unknown id, a target observer) are dropped and never resurrected.
@@ -320,8 +324,10 @@ lists it, `iii_unobserve` removes it, and ending the session disposes it.
   the socket took proves nothing about the client), so a `GET` with
   `Last-Event-ID: n` replays every SSE observation after `n`. A `GET`
   without it gets only those no stream wrote. A dropped connection therefore
-  loses nothing; mcp notices it on the next write and stops, and the
-  client's reconnect resumes. mcp writes nothing on a schedule: a quiet
+  loses nothing; mcp-server notices it on the next write and stops, and
+  the client's reconnect resumes. It writes one `retry` field when the
+  stream opens (so the http worker sends the headers at once) and nothing on
+  a schedule after that: a quiet
   stream is ended by the http worker's idle timeout and the client
   reconnects. Observations the cap dropped before the client got them are
   announced first, as `notifications/iii/observations_dropped`
@@ -375,14 +381,14 @@ Keys from earlier versions (`tools`, `hidden_prefixes`, `require_expose`,
 
 | Threat | Mitigation | Residual |
 |---|---|---|
-| MCP clients calling anything on the engine | rbac-proxy: auth function + `expose_functions` + observer gating + discovery filtering on `mcp`'s connection | one shared identity for all MCP clients |
-| `mcp` accidentally deployed straight to the engine | boot refusal via `rbac-proxy::session` | the escape hatch exists, and says so to clients |
+| MCP clients calling anything on the engine | rbac-proxy: auth function + `expose_functions` + observer gating + discovery filtering on `mcp-server`'s connection | one shared identity for all MCP clients |
+| `mcp-server` accidentally deployed straight to the engine | boot refusal via `rbac-proxy::session` | the escape hatch exists, and says so to clients |
 | The endpoint reachable from other machines | boot refusal unless the http worker is on loopback | the escape hatch exists, and warns |
 | A web page driving a localhost MCP server (DNS rebinding) | Origin check (MCP spec requirement) | non-browser local processes are trusted, as with any localhost service |
 | Faking "behind the proxy" | probe answered only by the proxy, never forwarded; proxy refuses registering the id | anything that can register functions on the engine *directly* could register a fake; it guards misconfiguration, not an attacker with engine access |
 | Forged observations injected into a session | sink admits only engine deliveries and the observed function's host (engine-stamped caller); only live observer ids route | the host of a function can deliver to observers of its own function, which it could fake by calling it anyway |
 | Credentials in tool calls | `iii_secret_store`; handler not observable; no trace payloads; no value in results | the value crosses the `http` worker, whose own records may hold it, and the client's model has seen it |
-| Reading secrets back | rbac-proxy allow list (`secrets::resolve` forbidden); `secrets` resolves only for listed consumers | a misconfigured allow list (`match("*")` without the forbid) lets clients call it; `secrets` still refuses unless `mcp` is a consumer |
+| Reading secrets back | rbac-proxy allow list (`secrets::resolve` forbidden); `secrets` resolves only for listed consumers | a misconfigured allow list (`match("*")` without the forbid) lets clients call it; `secrets` still refuses unless `mcp-server` is a consumer |
 | Resource exhaustion | caps on sessions and observers per session, per-session buffer, idle session TTL, engine-side `max_fires` / expiry | one client can still take every session slot |
 
 ## Compatibility
@@ -391,7 +397,7 @@ Breaking (hence 0.7.0):
 
 - clients see the twelve gateway tools, not one tool per function; the
   per-function mode is gone.
-- `mcp` will not start unless proxied (or the flag is set), nor serve on an
+- `mcp-server` will not start unless proxied (or the flag is set), nor serve on an
   http worker that is not on loopback (or the other flag is set).
 - no prompts capability (the methods are -32601); resources come from
   `iii-directory`.
@@ -404,7 +410,7 @@ replaces it.
 
 ## Testing
 
-- 122 unit tests in `mcp`, written first: the guard's decision table and
+- 122 unit tests in `mcp-server`, written first: the guard's decision table and
   messages (globs, info note), the bind guard, the sink caller guard, Origin
   parsing, the directory bridge, sessions (caps, poll/SSE/target delivery,
   the per-session buffer and drop counting, streams attached, waiting and
@@ -417,10 +423,10 @@ replaces it.
   void calls, refused registration), `worker_names`, `expose_endpoints` and
   `/otel`, and the allow-list scenarios for `secrets::resolve` (not listed;
   only `secrets::set`; `secrets::*`; `*` with and without the forbid).
-- 26 BDD scenarios against a live engine, including `mcp::handler` listed
+- 26 BDD scenarios against a live engine, including `mcp-server::handler` listed
   as not observable and observe end to end (`state::set` filtered by scope,
   polled, session ended, then 404).
-- Manually, on a compose project behind rbac-proxy (compose reports `mcp`
+- Manually, on a compose project behind rbac-proxy (compose reports `mcp-server`
   ready): the tool list, `access_control` and the policy globs, a poll
   observer, an SSE observation received on a real `GET` stream through the
   http worker, a target observer running a function, `secrets::resolve`
@@ -429,13 +435,13 @@ replaces it.
 
 ## Open questions
 
-1. **Per-client identity.** All MCP clients share `mcp`'s proxied identity.
+1. **Per-client identity.** All MCP clients share `mcp-server`'s proxied identity.
    Passing each MCP session's credentials through would give per-user RBAC.
-   A possible follow-up; for now, namespaces and several rbac-proxy + mcp
+   A possible follow-up; for now, namespaces and several rbac-proxy + mcp-server
    pairs (each with its own token and rules) cover it without the extra
    complexity.
 2. **Durable sessions.** Sessions, observers and buffers are in memory, so an
-   `mcp` restart loses them. Decided: make them state-backed so observers
+   `mcp-server` restart loses them. Decided: make them state-backed so observers
    survive a restart; not in this PR.
 3. **Shorter idle TTL.** Whether `session_idle_ttl_secs` should default to
    less than 30 minutes now that sessions are capped.
