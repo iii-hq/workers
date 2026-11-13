@@ -400,6 +400,11 @@ pub struct TurnRecord {
     /// act on each one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exchange_finished: bool,
+    /// A finished turn whose finalize drained a queued message and reseeds the
+    /// session: `harness::status` reports `expects_wake` on it until the
+    /// reseeded turn replaces this record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continues: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watermark_entry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -595,6 +600,7 @@ pub(crate) mod tests {
             message_preview: None,
             abort: false,
             exchange_finished: false,
+            continues: false,
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

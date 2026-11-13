@@ -219,10 +219,11 @@ impl SourceSpec {
     }
 }
 
-/// An armed wake: a one-shot self-delivery binding that has not fired and is
-/// not past its lifecycle. An EXPIRED one does not count — its deadline
-/// timer retires it and tells the owner, and a session must not stay
-/// non-terminal waiting on a wake that can never fire.
+/// An armed wake: a one-shot self-delivery binding whose record still exists.
+/// A CLAIMED one (`fires == 1`) still counts: its delivery seeds the woken
+/// turn before `retire` deletes the record, so the session never looks
+/// terminal between the claim and the turn that the wake starts. A record
+/// whose claimer died is retired by the binding pass (`expiry::sweep`).
 pub fn is_armed_wake(binding: &Binding, _now_ms: i64) -> bool {
     // Deliberately NOT gated on `is_exhausted`: a past-deadline unfired wake
     // still OWES its owner the expiry notice (bindings::expiry). Retirement
@@ -232,12 +233,10 @@ pub fn is_armed_wake(binding: &Binding, _now_ms: i64) -> bool {
     // terminal while the notice was still coming (live-caught by the
     // `subagent_validation_failure` e2e: the suite finalized in that window
     // and the notice was lost with the teardown).
-    binding.lifecycle.once
-        && binding.target.function_id == crate::functions::SEND_ID
-        && binding.fires == 0
+    binding.lifecycle.once && binding.target.function_id == crate::functions::SEND_ID
 }
 
-/// Whether a session is parked on a wake it has not consumed — a one-shot
+/// Whether a session is parked on a wake that has not yet seeded its turn — a one-shot
 /// binding that delivers back into the session itself. A turn completing with
 /// one armed is NOT terminal: the run continues when the wake fires.
 ///
@@ -582,11 +581,17 @@ mod tests {
             is_armed_wake(&b, 100),
             "the expiry notice is still owed; the session is still parked"
         );
-        // A consumed wake and a non-wake target never arm.
-        let mut fired = binding();
-        fired.lifecycle.once = true;
-        fired.fires = 1;
-        assert!(!is_armed_wake(&fired, 0));
+        // A claimed wake stays armed while its record exists: the delivery
+        // seeds the woken turn before `retire` deletes it, and a session that
+        // read as unparked in between was settled on by its pollers.
+        let mut claimed = binding();
+        claimed.lifecycle.once = true;
+        claimed.fires = 1;
+        assert!(
+            is_armed_wake(&claimed, 0),
+            "a claimed wake parks its session until retirement deletes it"
+        );
+        // A non-wake target never arms.
         let mut call = binding();
         call.lifecycle.once = true;
         call.target = BindingTarget::new("state::set");

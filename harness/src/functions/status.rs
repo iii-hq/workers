@@ -41,7 +41,9 @@ pub struct StatusReport {
     pub depth: Option<u32>,
     pub pending_function_calls: Option<Vec<String>>,
     pub children: Vec<ChildRef>,
-    /// The session owns an armed wake (a one-shot notify subscription): a
+    /// The session owns an armed wake (a one-shot notify subscription, claimed
+    /// or not, until its delivery has seeded the woken turn), or its finished
+    /// turn drained a queued message and is about to be reseeded: a
     /// completed turn here is NOT the run's outcome — a later turn in this
     /// session carries it. Mirrors the `terminal` flag on
     /// `harness::on-turn-completed` (`expects_wake == !terminal`). Pollers
@@ -243,7 +245,10 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     // One store read answers both: the flag (fail-closed on an unreadable
     // store, same as `session_expects_wake`) and the detail rows behind it.
     let armed = crate::bindings::armed_wakes(deps, &req.session_id).await;
-    let expects_wake = armed.as_ref().is_none_or(|wakes| !wakes.is_empty());
+    // A finished turn that drained a queued wake is replaced by its reseeded
+    // turn moments later; until then it is not the run's outcome either.
+    let expects_wake = armed.as_ref().is_none_or(|wakes| !wakes.is_empty())
+        || (record.status.is_terminal() && record.continues);
     let armed_wakes = req
         .verbose
         .then(|| armed.unwrap_or_default())

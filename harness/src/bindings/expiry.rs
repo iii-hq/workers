@@ -155,6 +155,9 @@ async fn retire_due_attempt(deps: &Deps, binding_id: &str, due: i64, attempt: u3
             arm(deps, &binding);
             return false;
         }
+        if left_to_its_delivery(&binding, deps.deliveries.contains(&binding.id)) {
+            return false;
+        }
         if retire_spent(deps, &store, &binding).await {
             return true;
         }
@@ -164,6 +167,13 @@ async fn retire_due_attempt(deps: &Deps, binding_id: &str, due: i64, attempt: u3
         "expired binding kept moving under retirement; the next binding pass retries"
     );
     false
+}
+
+/// A spent record whose delivery still runs in this process: that delivery
+/// retires it once the woken turn is seeded, and deleting it first unparks
+/// the session mid-delivery.
+fn left_to_its_delivery(binding: &Binding, dispatching: bool) -> bool {
+    dispatching && binding.is_spent()
 }
 
 fn retry_later(deps: &Deps, binding_id: &str, due: i64, attempt: u32, error: &str) {
@@ -532,6 +542,22 @@ mod tests {
             panic!("a re-arm must not replace the pending deadline");
         }));
         assert_eq!(timers.len(), 1);
+    }
+
+    #[test]
+    fn only_a_spent_record_whose_delivery_runs_here_is_left_to_it() {
+        let mut claimed = wake(Some(100));
+        claimed.fires = 1;
+        assert!(left_to_its_delivery(&claimed, true));
+        assert!(
+            !left_to_its_delivery(&claimed, false),
+            "a dead claimer's record is the pass's to clean up"
+        );
+        // An unfired wake past its deadline is not spent: its expiry notice
+        // goes out even while another fire of it is being dispatched.
+        let expired = wake(Some(100));
+        assert!(expired.is_exhausted(100));
+        assert!(!left_to_its_delivery(&expired, true));
     }
 
     #[test]

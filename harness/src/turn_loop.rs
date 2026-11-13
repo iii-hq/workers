@@ -2866,11 +2866,29 @@ async fn finalize_completed(
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
+    record.continues = woke;
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    // One decision for the proof and the event: a wake can retire in between.
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
-    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
+    // Second sweep, right AFTER the terminal write, pairing with `try_enqueue`'s
+    // post-enqueue recheck: a send whose recheck still saw `Running` must have
+    // enqueued before the terminal write landed, so this sweep collects its
+    // row; a recheck that sees the terminal record seeds its own turn. Without
+    // it, a row enqueued between the first drain and the terminal write would
+    // strand — queued against a turn that will never drain again. It runs
+    // before the completion event so `terminal` and `continues` count its row.
+    let late = drain_queued_best_effort(deps, session, &record.session_id).await;
+    if late && !woke {
+        record.continues = true;
+        // Best effort: failing the step here would skip the reseed below.
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(session_id = %record.session_id, %error, "could not mark the finished turn as continuing");
+        }
+    }
+    let woke = woke || late;
+    // One decision for the proof and the event: a wake can retire in between.
+    let terminal = !woke && turn_is_terminal(deps, &record.session_id).await;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
@@ -2912,16 +2930,12 @@ async fn finalize_completed(
                 .await;
         }
     }
-    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
-    // post-enqueue recheck: a send whose recheck still saw `Running` must have
-    // enqueued before the terminal write landed, so this sweep collects its
-    // row; a recheck that sees the terminal record seeds its own turn. Without
-    // it, a row enqueued between the first drain and the terminal write would
-    // strand — queued against a turn that will never drain again.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // A message parked during this turn's final step was just drained to the
     // transcript with no turn to react to it; seed one now (after the terminal
-    // write above, or it would clobber the fresh turn's slot).
+    // write above, or it would clobber the fresh turn's slot). It stays after
+    // the projection and the completion event: seeded earlier, the new turn's
+    // first step (on another instance) could write `working` and emit its
+    // `on-turn-started` before this turn's `done` and `on-turn-completed`.
     if woke {
         reseed_after_finalize_drain(deps, record).await;
     }
@@ -3125,9 +3139,10 @@ async fn finalize_failed(
     let presentation = failure_presentation(public_message, failure);
     let summary = presentation.summary;
     let detail = failure.detail.unwrap_or(public_message);
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
+    let terminal = !woke && turn_is_terminal(deps, &record.session_id).await;
     record.status = TurnStatus::Failed;
     record.exchange_finished = terminal;
+    record.continues = woke;
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);

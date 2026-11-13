@@ -264,6 +264,9 @@ pub async fn handle(
     // redelivered fire find the budget spent — and the compare-and-set is what
     // stops two SIMULTANEOUS fires taking the same ordinal, which lost a
     // delivery and let a bounded lifecycle over-spend.
+    // Marked before the claim, so no binding pass here sees the spent record
+    // without it: a claimed wake keeps its session parked until `retire` below.
+    let in_flight = deps.deliveries.enter(&binding.id);
     let claimed = match store.claim_fire(&binding).await {
         Ok(crate::bindings::ClaimOutcome::Claimed(b)) => *b,
         Ok(crate::bindings::ClaimOutcome::Exhausted(current)) => {
@@ -318,8 +321,10 @@ pub async fn handle(
 
     let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
 
-    if retiring {
-        retire(deps, &claimed).await;
+    if retiring && !retire(deps, &claimed).await {
+        // The next binding pass cleans up the spent record this left.
+        drop(in_flight);
+        deps.kicks.bindings.notify_one();
     }
 
     let note = outcome
@@ -451,6 +456,10 @@ fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
         return Err(format!(
             "`{target}` is an internal harness function and cannot be a deferred call target"
         ));
+    }
+    // A binding stored before this refusal existed must not fire either.
+    if let Some(e) = crate::functions::observe::unstamped_target_refusal(target) {
+        return Err(e);
     }
     if !CompiledPolicy::from(binding.capability.as_ref()).allows(target) {
         return Err(format!(
@@ -1453,6 +1462,23 @@ mod tests {
             call_allowed(&b, "run::record").is_err(),
             "no frozen capability must deny, not pass"
         );
+    }
+
+    /// Prevents: a stored binding firing workflow::start without the pre-call
+    /// hook that stamps the caller's folder, even inside its frozen capability.
+    #[test]
+    fn a_stored_workflow_start_binding_does_not_fire() {
+        use crate::types::turn::FunctionPolicy;
+        let mut b = wake_binding("state::on-changed");
+        b.target = crate::bindings::BindingTarget::new("workflow::start");
+        b.capability = Some(FunctionPolicy {
+            allow: vec!["workflow::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        });
+        let err = call_allowed(&b, "workflow::start").unwrap_err();
+        assert!(err.contains("skips the pre-call hook"), "got: {err}");
+        assert!(call_allowed(&b, "workflow::status").is_ok());
     }
 
     /// What a ƒ-call target actually receives — the value the delivery record

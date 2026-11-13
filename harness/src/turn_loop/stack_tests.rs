@@ -729,6 +729,100 @@ async fn resolves_after_a_stop_keep_its_stopping_ack() {
     );
 }
 
+/// A wake queued during a parking turn's final step reseeds the session once
+/// the turn finishes. The parking turn is not the run's outcome: a consumer
+/// that settled on it lost the woken turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finalize_that_drains_a_wake_reports_the_turn_as_continuing() {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    let (result, calls, turn) =
+        run_on_fake_engine(json!({}), json!([]), None, hooks, |deps| async move {
+            let cfg = deps.cfg().await;
+            let wake = crate::state::QueuedMessage {
+                id: "q_wake".into(),
+                session_id: "s".into(),
+                message: AgentMessage::user_text("[notification] woke"),
+                entry_id: "e_fire_sub_1".into(),
+                origin: None,
+                queued_at: 1,
+            };
+            crate::state::enqueue_message(&deps.iii, &wake, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            finalize_completed(&deps, &deps.session().await, &mut record, None).await
+        })
+        .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    let completed: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, _)| function == "harness::on-turn-completed")
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(completed.len(), 1, "{calls:?}");
+    assert_eq!(completed[0]["turn_id"], "t1");
+    assert_eq!(completed[0]["terminal"], false);
+    // `harness::status` reads `continues` on every write of the finished turn,
+    // so it reports `expects_wake` until the reseed replaces the record.
+    let finished: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, data)| {
+            function == "state::set"
+                && data["scope"] == "harness_turn"
+                && data["value"]["turn_id"] == "t1"
+        })
+        .map(|(_, data)| &data["value"])
+        .collect();
+    assert!(!finished.is_empty());
+    assert!(
+        finished
+            .iter()
+            .all(|record| record["status"] == "completed" && record["continues"] == true),
+        "{finished:?}"
+    );
+    assert_eq!(turn["status"], "running");
+    assert_ne!(
+        turn["turn_id"], "t1",
+        "the drained wake reseeds the session"
+    );
+    assert!(turn.get("continues").is_none(), "{turn}");
+}
+
+/// `continues` alone keeps `expects_wake` up once the wake's record is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_expects_a_wake_on_a_finished_turn_that_continues() {
+    let (expects, _, _) =
+        run_on_fake_engine(json!({}), json!([]), None, json!({}), |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            let mut expects = Vec::new();
+            for continues in [true, false] {
+                record.continues = continues;
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                    .await
+                    .unwrap();
+                let req = crate::functions::status::StatusRequest {
+                    session_id: "s".into(),
+                    verbose: false,
+                };
+                let report = crate::functions::status::handle(&deps, req).await.unwrap();
+                expects.push(report.unwrap().expects_wake);
+            }
+            expects
+        })
+        .await;
+    assert_eq!(expects, [true, false], "no binding is stored");
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})
@@ -856,6 +950,7 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
     let stored_turn = turn.clone();
     let observed_hooks: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
     let server = tokio::spawn(async move {
+        let mut queue = serde_json::Map::new();
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
         // The hook functions only register on an engine advertising observe.v2.
@@ -923,6 +1018,18 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 "state::set" if data["scope"] == "harness_turn" => {
                     *stored_turn.lock().unwrap() = data["value"].clone();
                     json!({})
+                }
+                "state::set" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    let key = data["key"].as_str().unwrap().to_string();
+                    queue.insert(key, data["value"].clone());
+                    json!({})
+                }
+                "state::delete" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    queue.remove(data["key"].as_str().unwrap());
+                    json!({})
+                }
+                "state::list" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    Value::Array(queue.values().cloned().collect())
                 }
                 "state::list" | "harness::state::list" => json!([]),
                 "state::list_keys" => json!({"keys": []}),
