@@ -6,6 +6,8 @@ WebSocket port, speaks the iii worker protocol verbatim, and transparently
 reverse-proxies every frame — functions **and** channels — to a trusted engine
 listener, while at the boundary it:
 
+- **serves only the endpoints you list** in `rbac.expose_endpoints` (`/`,
+  `/ws/channels/*`, `/otel`); with none listed it refuses every connection,
 - **authenticates** each connection (the operator's `auth_function_id`),
 - **gates** every invocation in the namespace it is made in (vendored
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
@@ -33,7 +35,7 @@ listener, while at the boundary it:
 
 It is the [`ade`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
-spliced into the pump and a second proxied route for `/ws/channels/{id}`.
+spliced into the pump, plus relays for `/ws/channels/{id}` and `/otel`.
 
 The RBAC decision logic is **vendored verbatim** from the engine
 (`engine/src/workers/worker/rbac_config.rs`), so a connection through
@@ -67,6 +69,43 @@ rbac-proxy --url ws://127.0.0.1:49134
   `configuration` entry's `initial_value` when none exists yet.
 - `--manifest` — print the publish manifest as JSON and exit.
 
+## Before you start: expose the endpoints
+
+rbac-proxy serves **no endpoint until you list it** in
+`rbac.expose_endpoints`, the same way `expose_functions` exposes no function
+until you list it. With the list empty every connection gets `403`, and the
+proxy logs a warning at startup and on every config change.
+
+Most setups want all three of the engine's endpoints:
+
+```yaml
+rbac:
+  expose_endpoints:
+    - match("/")              # workers: the iii protocol, gated by RBAC
+    - match("/ws/channels/*") # channels (streams between functions)
+    - match("/otel")          # telemetry: worker logs, traces and metrics
+```
+
+| Endpoint | What it carries | Leave it out and |
+|---|---|---|
+| `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, then every frame is checked against the RBAC rules. | No worker can connect. |
+| `/ws/channels/*` | Channel sockets. Relayed as is; the engine checks each channel's access key, as it does for direct connections. | Functions that stream through channels fail. |
+| `/otel` | Telemetry from the SDK. Authenticated by the same auth function as `/`, then relayed as is. | Workers log `Failed to connect to engine WebSocket: HTTP error: 403 Forbidden` and their telemetry is not exported. |
+
+Rules use the `expose_functions` wildcard syntax over the request path:
+`match("/otel")` or `{ match: "/otel" }`, where `*` matches any run of
+characters and the pattern must match the whole path. A bare `"/otel"`
+is an error that tells you to write `match("/otel")`. Any other path you
+expose is authenticated like `/otel` and relayed to the same path on the
+engine. A refused request's `403` body names the rule to add, for example
+`Add match("/otel") to rbac.expose_endpoints.` `rbac-proxy::status` lists
+the exposed patterns.
+
+**Upgrading from an earlier version:** earlier versions always served `/`
+and `/ws/channels/*` and never `/otel`. Add `expose_endpoints` to your
+`rbac-proxy` configuration entry before upgrading, or every worker behind the
+proxy is refused.
+
 ## Configuration
 
 Config lives in the `configuration` worker under id `rbac-proxy` (no committed
@@ -81,6 +120,10 @@ expose_worker_internals: false    # strip pid/ip/metrics from engine::workers::*
 middleware_function_id: my-project::middleware-function
 rbac:
   auth_function_id: my-project::auth-function
+  expose_endpoints:          # nothing is served without these (see above)
+    - match("/")
+    - match("/ws/channels/*")
+    - match("/otel")
   on_function_registration_function_id: my-project::on-function-reg
   on_observer_registration_function_id: my-project::on-observer-reg
   expose_functions:
@@ -226,7 +269,7 @@ them with `observable: false`. Details:
 
 | Function | Input | Output |
 |---|---|---|
-| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, active_connections, version }` |
+| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, expose_endpoints, active_connections, version }` |
 | `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, exposes_everything } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
