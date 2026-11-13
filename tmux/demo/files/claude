@@ -4,10 +4,10 @@ like Claude Code 2.1.322 for the worker: it records itself in
 <config>/sessions/<pid>.json (sessionId, cwd, status), keeps a transcript in
 <config>/projects/<cwd slug>/<session>.jsonl, sets its pane title, honours
 --resume <id> (and refuses one its config folder can't see, like the real
-one), shows --dangerously-skip-permissions, and `auth login` prints a sign-in
-link and waits for a pasted code (`personal`, `side-project` or `as:<id>`
-pasted as the code signs in as that account). `claude-state <pane> working|waiting|idle|limit` changes
-what it shows. SIGTERM ends it cleanly, as it does Claude Code.
+one), shows --dangerously-skip-permissions, and `auth login` behaves like
+Claude Code 2.1.323's (see auth_login: `demo-ok#demo-state` signs in, any
+other code is refused). `claude-state <pane> working|waiting|idle|limit`
+changes what it shows. SIGTERM ends it cleanly, as it does Claude Code.
 
 Each line typed into it is a request: like Claude Code, it reads
 <config>/.credentials.json again right then, answers with the account its
@@ -141,23 +141,130 @@ def account_from_code(code):
     return code if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", code) else ACCOUNT
 
 
-def auth_login():
-    sys.stdout.write("Opening browser to sign in…\n")
-    sys.stdout.write(
-        "If the browser didn't open, visit: https://claude.ai/oauth/authorize?code=true"
-        "&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code"
-        "&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
-        "&scope=user%3Aprofile+user%3Ainference&code_challenge=demo&state=demo" + str(PID) + "\n")
+AUTHORIZE = ("https://claude.com/cai/oauth/authorize?code=true"
+             "&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code"
+             "&redirect_uri=%s&scope=org%%3Acreate_api_key+user%%3Aprofile+user%%3Ainference"
+             "+user%%3Asessions%%3Aclaude_code+user%%3Amcp_servers+user%%3Afile_upload+user%%3Aplugins"
+             "&code_challenge=demo-challenge&code_challenge_method=S256&state=demo-state")
+MANUAL_REDIRECT = "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
+REFUSED = ("Login failed: That code wasn't accepted. It may be incomplete, expired, already used, "
+           "or from an earlier sign-in attempt. Sign in again to get a new code.\n")
+
+
+def login_who(code_half, email):
+    """Who `demo-ok` (or `demo-ok:<id>`, anyone) signs in: the person the
+    page was filled with (--email), else this folder's account."""
+    if code_half.startswith("demo-ok:"):
+        who = code_half[len("demo-ok:"):]
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", who):
+            return who
+    if email:
+        for person, (address, *_rest) in setup_demo().PEOPLE.items():
+            if address == email:
+                return person
+    return ACCOUNT
+
+
+def auth_login(args):
+    """Like `claude auth login` (2.1.323): prints the sign-in link (an OSC 8
+    link, on a terminal) and waits for the code the page shows,
+    `<code>#<state>`; a line without both halves is refused and it waits
+    again. `demo-ok#demo-state` (any state) signs in, `demo-ok:<id>#…` as
+    account <id>; any other code is refused as Anthropic refuses one, and it
+    ends with status 1. It hands $BROWSER the link whose return to its
+    loopback listener (GET /callback?code=demo-ok&state=demo-state) signs in
+    with no code, and notes that link in <state>/auth-login.url
+    (demo/login.sh browser)."""
+    import http.server
+    import threading
+
+    email = args[args.index("--email") + 1] if "--email" in args[:-1] else None
+    hint = "&login_hint=" + email.replace("@", "%40") if email else ""
+    finished = threading.Event()
+    outcome = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            from urllib.parse import parse_qs, urlparse
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            ok = (url.path == "/callback" and query.get("state") == ["demo-state"]
+                  and (query.get("code") or [""])[0].startswith("demo-ok"))
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Signed in. You can close this window.\n" if ok
+                             else b"Invalid state parameter\n")
+            if ok and not finished.is_set():
+                outcome["who"] = login_who(query["code"][0], email)
+                finished.set()
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Callback)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    manual = AUTHORIZE % MANUAL_REDIRECT + hint
+    automatic = AUTHORIZE % ("http%%3A%%2F%%2Flocalhost%%3A%d%%2Fcallback" % port) + hint
+    shown = "\033]8;;%s\a\033[94m%s\033[39m\033]8;;\a" % (manual, manual) \
+        if sys.stdout.isatty() else manual
+    sys.stdout.write("Opening browser to sign in\u2026\n")
+    sys.stdout.write("If the browser didn't open, visit: %s\n" % shown)
     sys.stdout.write("Paste code here if prompted > ")
     sys.stdout.flush()
-    code = sys.stdin.readline().strip()
-    if not code:
-        sys.stdout.write("\nLogin cancelled.\n")
-        return 1
-    sign_in_here(account_from_code(code))
-    sys.stdout.write("\nLogin successful.\n")
-    time.sleep(1)
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        write_text(os.path.join(STATE_DIR, "auth-login.url"), automatic + "\n")
+    except OSError:
+        pass
+    browser = os.environ.get("BROWSER")
+    if browser:
+        try:
+            subprocess.run([browser, automatic], timeout=10, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    pending = b""
+    while not finished.is_set():
+        ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+        if not ready:
+            continue
+        chunk = os.read(sys.stdin.fileno(), 4096)
+        if not chunk:
+            sys.stdout.write("\n")
+            sys.stderr.write("Login failed: Input ended before a code was pasted. "
+                             "Sign in again and paste the code shown.\n")
+            return 130
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            halves = line.decode(errors="replace").strip().split("#")
+            first, second = halves[0], (halves[1] if len(halves) > 1 else "")
+            if not first or not second:
+                sys.stderr.write("Invalid code. Please make sure the full code was copied.\n")
+                sys.stderr.flush()
+                continue
+            time.sleep(1.5)  # Anthropic checks the code
+            if first == "demo-ok" or first.startswith("demo-ok:"):
+                outcome["who"] = login_who(first, email)
+                finished.set()
+                break
+            sys.stderr.write(REFUSED)
+            sys.stderr.flush()
+            return 1
+    server.shutdown()
+    sign_in_here(outcome["who"])
+    sys.stdout.write("Login successful.\n")
+    sys.stdout.flush()
     return 0
+
+
+def write_text(path, text):
+    tmp = "%s.%d.tmp" % (path, PID)
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
 def auth_status():
@@ -325,7 +432,7 @@ def main():
         print("2.1.322 (Claude Code)")
         return 0
     if args[:2] == ["auth", "login"]:
-        return auth_login()
+        return auth_login(args[2:])
     if args[:2] == ["auth", "status"]:
         return auth_status()
     resume = None

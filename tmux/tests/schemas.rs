@@ -47,7 +47,9 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::usage::read",
             "tmux::accounts::list",
             "tmux::accounts::add",
-            "tmux::accounts::login",
+            "tmux::accounts::login_start",
+            "tmux::accounts::login_code",
+            "tmux::accounts::login_cancel",
             "tmux::accounts::update",
             "tmux::accounts::remove",
             "tmux::accounts::global",
@@ -65,8 +67,15 @@ fn catalog_ids_are_unique_and_kebab_case() {
         let id = spec.function_id;
         assert!(seen.insert(id), "duplicate function id {id}");
         assert!(id.starts_with("tmux::"), "{id} is not namespaced");
-        // `move_idle` is the id the apps were given (agent-accounts §3.4).
-        if id != "tmux::accounts::move_idle" {
+        // `move_idle` (agent-accounts §3.4) and the sign-in's three
+        // (claude-login-ui §2) are the ids the apps were given.
+        let given = [
+            "tmux::accounts::move_idle",
+            "tmux::accounts::login_start",
+            "tmux::accounts::login_code",
+            "tmux::accounts::login_cancel",
+        ];
+        if !given.contains(&id) {
             assert!(!id.contains('_'), "{id} uses snake_case");
         }
     }

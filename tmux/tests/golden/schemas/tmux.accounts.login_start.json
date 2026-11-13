@@ -1,0 +1,126 @@
+{
+  "description": "Start signing a Claude Code account in: runs `claude auth login` (with `--email` when the account has one) on the account's folder, or on ~/.claude for the global account, in a hidden terminal (no tmux window), and answers with the sign-in link (`url`) once Claude Code printed it. The page it opens shows a code to pass to tmux::accounts::login_code. `browser`: `none` (the default) keeps Claude Code from opening a browser on this computer; `host` lets it, for an app running on this computer: coming back from that page finishes the sign-in with no code (`browser_url` is the link it opened). The link works for 10 minutes (`expires_at_ms`); then Claude Code is stopped. A new start for the same account cancels the one under way. The feed's `logins` shows every sign-in under way (`waiting_code`, `checking`) and those that ended in the last minute (`done`, `failed`, `expired`). Signing in to another account on ~/.claude makes that one global (added when it is new). On macOS, Claude Code keeps the sign-in in the login Keychain, which only a worker running in the user's GUI session (a LaunchAgent, not an SSH or background shell) can write. Errors are one JSON object `{code: \"failed\", message}`.",
+  "function_id": "tmux::accounts::login_start",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LoginBrowser": {
+        "description": "Who may open the sign-in page on the computer the worker runs on.",
+        "oneOf": [
+          {
+            "description": "Nobody: Claude Code opens no browser; the link is shown elsewhere and the code from the page is pasted back.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code opens the browser there, whose return to its local listener finishes the sign-in with no code (the app runs on that computer).",
+            "enum": [
+              "host"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "account": {
+        "description": "Account id (`default` for the one `~/.claude` had at first).",
+        "type": "string"
+      },
+      "browser": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LoginBrowser"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "`none` (the default): no browser opens on this computer; `host`: Claude Code opens it here."
+      }
+    },
+    "required": [
+      "account"
+    ],
+    "title": "LoginStartInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LoginBrowser": {
+        "description": "Who may open the sign-in page on the computer the worker runs on.",
+        "oneOf": [
+          {
+            "description": "Nobody: Claude Code opens no browser; the link is shown elsewhere and the code from the page is pasted back.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code opens the browser there, whose return to its local listener finishes the sign-in with no code (the app runs on that computer).",
+            "enum": [
+              "host"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "account": {
+        "description": "The account signing in.",
+        "type": "string"
+      },
+      "browser": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/LoginBrowser"
+          }
+        ],
+        "description": "`none` or `host`."
+      },
+      "browser_url": {
+        "description": "With `browser: host`, the link Claude Code opened in this computer's browser, whose return finishes the sign-in with no code (it works on this computer only).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "email": {
+        "description": "The email the page is filled with (the account's), when it has one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "expires_at_ms": {
+        "description": "When the link stops working and Claude Code is stopped (10 minutes).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "login_id": {
+        "description": "Pass it to tmux::accounts::login_code and login_cancel.",
+        "type": "string"
+      },
+      "url": {
+        "description": "The sign-in page, for any device: it shows the code to paste.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "account",
+      "browser",
+      "expires_at_ms",
+      "login_id",
+      "url"
+    ],
+    "title": "LoginStartOutput",
+    "type": "object"
+  }
+}

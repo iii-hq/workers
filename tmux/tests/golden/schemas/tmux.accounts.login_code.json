@@ -1,0 +1,330 @@
+{
+  "description": "Pass the code from the sign-in page to a sign-in under way (tmux::accounts::login_start): its whitespace is taken out, and a code without Claude Code's shape (`<code>#<state>`) is refused (`invalid_code`) without reaching Claude Code. Then waits up to a minute for Claude Code to check it with Anthropic and answers `{state: \"done\", account}` (the account signed in; on ~/.claude the global one, which may be another account than asked for when the person signed in to it), or an error, one JSON object `{code, message}`: `invalid_code` (the sign-in still waits), `rejected` (Anthropic didn't accept the code; Claude Code ended, so a new link is needed: a code only works with the link it came from), `expired` (the 10 minutes ran out), `gone` (no such sign-in, cancelled, or over) or `failed` (anything else). A second call while a code is checked waits for the same outcome. The code is never logged or kept.",
+  "function_id": "tmux::accounts::login_code",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "code": {
+        "description": "The code the sign-in page shows (`<code>#<state>`), as copied: whitespace is taken out.",
+        "type": "string"
+      },
+      "login_id": {
+        "description": "From tmux::accounts::login_start.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "code",
+      "login_id"
+    ],
+    "title": "LoginCodeInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ClaudeAccount": {
+        "description": "A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the global slot while it is global and in its own folder otherwise.",
+        "properties": {
+          "color": {
+            "description": "`blue`, `green`, `violet`, `orange` or `pink`.",
+            "type": "string"
+          },
+          "dir": {
+            "description": "Its folder, absolute: `<accounts root>/<id>`. Without `accounts.json`, the one account (`default`) has none, and this is `~/.claude`.",
+            "type": "string"
+          },
+          "dir_display": {
+            "description": "Its folder with `~` for the home folder.",
+            "type": "string"
+          },
+          "email": {
+            "default": null,
+            "description": "The signed-in email.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`default` for the sign-in `~/.claude` had when accounts began, else a slug of its first name.",
+            "type": "string"
+          },
+          "is_default": {
+            "description": "Its id is `default`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The name people gave it.",
+            "type": "string"
+          },
+          "organization": {
+            "default": null,
+            "description": "The organization it belongs to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "panes": {
+            "description": "Claude Code panes using it now (for the global account, every pane on the slot, its followers included).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "plan": {
+            "default": null,
+            "description": "`pro`, `max`, `team`, `enterprise` or what Claude Code recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shared": {
+            "description": "The groups its folder shares with `~/.claude`: `settings`, `extensions`, `plugins`, `conversations`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "signed_in": {
+            "description": "It holds a Claude sign-in.",
+            "type": "boolean"
+          },
+          "tier": {
+            "default": null,
+            "description": "The rate-limit tier, e.g. `default_claude_max_20x`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_expired": {
+            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "type": "boolean"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ClaudeUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The latest usage reading."
+          }
+        },
+        "required": [
+          "color",
+          "dir",
+          "dir_display",
+          "id",
+          "is_default",
+          "name",
+          "panes",
+          "shared",
+          "signed_in",
+          "token_expired"
+        ],
+        "type": "object"
+      },
+      "ClaudeUsage": {
+        "description": "One reading of a Claude Code account's usage.",
+        "properties": {
+          "as_of_ms": {
+            "description": "When this reading was taken.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error": {
+            "default": null,
+            "description": "Why the latest attempt to read failed: `rate_limited`, `unauthorized`, `network`, `token_expired`, `not_signed_in`, `unreadable`. The windows are then the last good reading, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extra": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ExtraUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Usage beyond the plan."
+          },
+          "five_hour": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The current 5-hour window."
+          },
+          "week": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, all models."
+          },
+          "week_models": {
+            "default": [],
+            "description": "Every per-model weekly window the account has, Opus and Sonnet included.",
+            "items": {
+              "$ref": "#/definitions/ModelLimit"
+            },
+            "type": "array"
+          },
+          "week_opus": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Opus only."
+          },
+          "week_sonnet": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The week, Sonnet only."
+          }
+        },
+        "required": [
+          "as_of_ms"
+        ],
+        "type": "object"
+      },
+      "ExtraUsage": {
+        "description": "Usage beyond the plan.",
+        "properties": {
+          "enabled": {
+            "description": "Extra usage is turned on for the account.",
+            "type": "boolean"
+          },
+          "used_percent": {
+            "default": null,
+            "description": "How much of its monthly limit is used, 0 to 100, when there is one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "Limit": {
+        "description": "One usage window of an account.",
+        "properties": {
+          "reset_since_read": {
+            "default": false,
+            "description": "The window reset after the reading, so `used_percent` is 0 until the next reading.",
+            "type": "boolean"
+          },
+          "resets_at_ms": {
+            "default": null,
+            "description": "When the window starts again.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "used_percent": {
+            "description": "How much of the window is used, 0 to 100.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "used_percent"
+        ],
+        "type": "object"
+      },
+      "LoginDone": {
+        "description": "Always `done`: anything else is an error.",
+        "enum": [
+          "done"
+        ],
+        "type": "string"
+      },
+      "ModelLimit": {
+        "description": "A weekly window of one model family (Claude Code's `weekly_scoped` limits).",
+        "properties": {
+          "limit": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Limit"
+              }
+            ],
+            "description": "The window."
+          },
+          "name": {
+            "description": "The model's display name, e.g. `Opus`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "limit",
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "account": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ClaudeAccount"
+          }
+        ],
+        "description": "The account signed in, as tmux::accounts::list shows it."
+      },
+      "state": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/LoginDone"
+          }
+        ],
+        "description": "`done`."
+      }
+    },
+    "required": [
+      "account",
+      "state"
+    ],
+    "title": "LoginCodeOutput",
+    "type": "object"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "description": "Stop a sign-in under way (tmux::accounts::login_start): Claude Code is stopped and the sign-in leaves the feed's `logins`; a tmux::accounts::login_code waiting on it answers `gone`. Nothing happens for one that is over or unknown.",
+  "function_id": "tmux::accounts::login_cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "login_id": {
+        "description": "From tmux::accounts::login_start.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "login_id"
+    ],
+    "title": "LoginCancelInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Nothing to return.",
+    "title": "EmptyOutput",
+    "type": "object"
+  }
+}

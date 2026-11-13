@@ -187,6 +187,69 @@
         ],
         "type": "object"
       },
+      "ClaudeLogin": {
+        "description": "A sign-in of a Claude Code account from the app (claude-login-ui).",
+        "properties": {
+          "account": {
+            "description": "The account signing in.",
+            "type": "string"
+          },
+          "browser": {
+            "$ref": "#/definitions/LoginBrowser"
+          },
+          "browser_url": {
+            "description": "With `browser: host`, the link Claude Code gave the browser on the worker's computer: its return to Claude Code's local listener finishes the sign-in with no code (it works on that computer only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "description": "The email the sign-in page is filled with (the account's).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/LoginError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `failed` and `expired`: why."
+          },
+          "expires_at_ms": {
+            "description": "When the link stops working and Claude Code is stopped.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "login_id": {
+            "description": "Pass it to `tmux::accounts::login_code` and `login_cancel`.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/definitions/LoginState"
+          },
+          "url": {
+            "description": "The sign-in page to open on any device: it shows the code to paste.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "browser",
+          "expires_at_ms",
+          "login_id",
+          "state",
+          "url"
+        ],
+        "type": "object"
+      },
       "ClaudeUsage": {
         "description": "One reading of a Claude Code account's usage.",
         "properties": {
@@ -328,6 +391,83 @@
           "used_percent"
         ],
         "type": "object"
+      },
+      "LoginBrowser": {
+        "description": "Who may open the sign-in page on the computer the worker runs on.",
+        "oneOf": [
+          {
+            "description": "Nobody: Claude Code opens no browser; the link is shown elsewhere and the code from the page is pasted back.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code opens the browser there, whose return to its local listener finishes the sign-in with no code (the app runs on that computer).",
+            "enum": [
+              "host"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "LoginError": {
+        "description": "Why a sign-in failed, as `tmux::accounts::login_code` answers it.",
+        "properties": {
+          "code": {
+            "description": "`rejected` (Anthropic didn't accept the code; Claude Code ended), `expired`, `gone` or `failed`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "One sentence.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "LoginState": {
+        "description": "Where a sign-in is.",
+        "oneOf": [
+          {
+            "description": "Claude Code shows the link and waits for the code.",
+            "enum": [
+              "waiting_code"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Claude Code is checking a code with Anthropic.",
+            "enum": [
+              "checking"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Signed in.",
+            "enum": [
+              "done"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "It ended without a sign-in (`error` says why).",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The link's 10 minutes ran out; Claude Code was stopped.",
+            "enum": [
+              "expired"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "ModelLimit": {
         "description": "A weekly window of one model family (Claude Code's `weekly_scoped` limits).",
@@ -549,6 +689,14 @@
         ],
         "default": null,
         "description": "The latest change of the global account."
+      },
+      "logins": {
+        "default": [],
+        "description": "Sign-ins under way (`tmux::accounts::login_start`), and those that ended in the last minute, oldest first.",
+        "items": {
+          "$ref": "#/definitions/ClaudeLogin"
+        },
+        "type": "array"
       },
       "managed": {
         "description": "The accounts registry exists (an account was added or a setting saved).",

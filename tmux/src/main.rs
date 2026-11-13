@@ -179,6 +179,10 @@ async fn main() -> Result<()> {
 
     wait_for_shutdown_signal().await?;
     let detached = terminals.close_all().await;
+    let logins = collector.accounts().logins.cancel_all();
+    if logins > 0 {
+        tracing::info!(logins, "sign-ins under way stopped");
+    }
     tracing::info!(detached, "tmux worker shutting down");
     iii.shutdown_async().await;
     Ok(())

@@ -74,6 +74,16 @@ fn lookup(binary: &str, path_var: Option<&std::ffi::OsStr>, home: Option<&Path>)
     found
 }
 
+/// The first executable `name` on `PATH`, then in [`fallback_dirs`] (a
+/// daemon's `PATH` is short): how the worker finds `claude` to sign in.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    lookup(name, path_var.as_deref(), home.as_deref())
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+}
+
 fn expand_home(raw: &str, home: Option<&std::ffi::OsStr>) -> PathBuf {
     let home = home.map(Path::new).filter(|home| home.is_absolute());
     match (raw.strip_prefix("~/"), home) {

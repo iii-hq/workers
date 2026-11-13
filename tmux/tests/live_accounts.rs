@@ -246,6 +246,22 @@ fn world(name: &str) -> World {
         ..WorkerConfig::default()
     }
     .into_shared();
+    // Sign-ins run the fake too, never the real Claude Code or a browser.
+    accounts.logins.set_runner(tmux::accounts::login::Runner {
+        claude: Some(bin.join("claude")),
+        env: vec![
+            (
+                "FAKE_CLAUDE_SANDBOX".to_string(),
+                dir.to_string_lossy().into_owned(),
+            ),
+            (
+                "FAKE_CLAUDE_STATE_DIR".to_string(),
+                dir.join("state").to_string_lossy().into_owned(),
+            ),
+        ],
+        opener: Some(PathBuf::from("/bin/true")),
+        ttl_ms: None,
+    });
     let collector = Arc::new(Collector::with_accounts(
         config,
         ConsoleClients::default(),
@@ -1071,54 +1087,55 @@ async fn a_sign_in_by_hand_on_the_slot_makes_it_global() {
     )
     .await
     .unwrap();
-    // Personal signs in on its folder through the worker's login window
-    // (the fake takes the account named as the code).
-    let login = account_fns::login(
+    // Personal signs in on its folder through the worker's hidden sign-in
+    // (claude-login-ui: no tmux window; the fake takes `demo-ok`).
+    let windows_before = w.tmux_out(&["list-windows", "-a", "-F", "#{window_id}"]);
+    let login = account_fns::login_start(
         &w.ctx,
-        account_fns::LoginInput {
+        account_fns::LoginStartInput {
             account: "personal".into(),
-            session: "base".into(),
+            browser: None,
         },
     )
     .await
     .unwrap();
-    assert!(w.start_command(&login.pane_id).contains(&format!(
-        "env CLAUDE_CONFIG_DIR={} claude auth login",
-        w.paths.account_dir("personal").display()
-    )));
-    eventually("the sign-in prompt", || async {
-        w.screen(&login.pane_id)
-            .contains("Paste code")
-            .then_some(())
-    })
-    .await;
-    w.tmux(&["send-keys", "-t", &login.pane_id, "-l", "personal"]);
-    w.tmux(&["send-keys", "-t", &login.pane_id, "Enter"]);
-    eventually("Personal signed in", || async {
-        token_in(&w.paths.account_dir("personal")).filter(|t| t == "personal")
-    })
-    .await;
-    // The window closes once `claude auth login` ends; until then that
-    // process runs on Personal's folder (a switch to it would be blocked).
-    eventually("the login window closed", || async {
-        let panes = w.tmux_out(&["list-panes", "-a", "-F", "#{pane_id}"]);
-        (!panes.lines().any(|pane| pane == login.pane_id)).then_some(())
-    })
-    .await;
-    // The global account's sign-in opens on ~/.claude.
-    let global_login = account_fns::login(
+    assert_eq!(
+        w.tmux_out(&["list-windows", "-a", "-F", "#{window_id}"]),
+        windows_before,
+        "no login window"
+    );
+    let done = account_fns::login_code(
         &w.ctx,
-        account_fns::LoginInput {
-            account: "default".into(),
-            session: "base".into(),
+        account_fns::LoginCodeInput {
+            login_id: login.login_id,
+            code: "demo-ok#demo-state".into(),
         },
     )
     .await
     .unwrap();
-    assert!(w
-        .start_command(&global_login.pane_id)
-        .contains("env -u CLAUDE_CONFIG_DIR claude auth login"));
-    w.tmux(&["send-keys", "-t", &global_login.pane_id, "Enter"]);
+    assert_eq!(done.account.id, "personal");
+    assert_eq!(
+        token_in(&w.paths.account_dir("personal")).as_deref(),
+        Some("personal")
+    );
+    // The global account's sign-in runs on ~/.claude; cancelled here.
+    let global_login = account_fns::login_start(
+        &w.ctx,
+        account_fns::LoginStartInput {
+            account: "default".into(),
+            browser: None,
+        },
+    )
+    .await
+    .unwrap();
+    account_fns::login_cancel(
+        &w.ctx,
+        account_fns::LoginCancelInput {
+            login_id: global_login.login_id,
+        },
+    )
+    .await
+    .unwrap();
 
     let a = windows::create(&w.ctx, window("a", claude("global", false)))
         .await
