@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.4.1
+## 0.5.0
 
 Sandbox contract 1.4: binary packages in VMs, a build's `base_image`, and a
 `worker::destroy` that keeps the VM's data unless asked to `prune`. The S-codes
-are those of 0.4.0.
+are those of 0.4.x. (0.4.1 and 0.4.2, published from `main`, carry 0.4.0's
+code.)
 
 ### Added
 
@@ -24,7 +25,7 @@ are those of 0.4.0.
   and keeps its data disk, the pre-build copies of an earlier adapter and the
   seal: a later start of the same `state_key` boots over the same data. A VM
   with no data goes whole; `destroyed` is false when only data was there.
-  `prune: true` removes everything, as 0.4.0 did. `adapter::info` advertises
+  `prune: true` removes everything, as 0.4.x did. `adapter::info` advertises
   `worker.prune`.
 
 ### Fixed
@@ -34,9 +35,9 @@ are those of 0.4.0.
   `image.erofs` into place and renames the new `image.id` last, flushing the
   directory between the steps. A crash, a failed flush or a failed rename
   between the two renames leaves an image without an id, which `worker::start`
-  refuses with S508 until the next build. 0.4.0 renamed the image beside the
+  refuses with S508 until the next build. 0.4.x renamed the image beside the
   previous build's id, and a start accepted that pair. A filesystem that cannot
-  flush a directory gets a warning, as in 0.4.0, not a failed build.
+  flush a directory gets a warning, as in 0.4.x, not a failed build.
 - **A scoped token no longer writes or boots another VM's build directory.**
   A VM's build directory is the last `output_dir` (`worker::build`) or
   `build_dir` (`worker::start`) its scoped token presented, recorded in
@@ -51,10 +52,10 @@ are those of 0.4.0.
   `worker::destroy` deletes the VM's record; the project token is not checked.
   The check reads no directory name.
 
-### Upgrading from 0.4.0
+### Upgrading from 0.4.x
 
 Each VM records its build directory on its next scoped build or start. A caller
-that wants 0.4.0's `worker::destroy`, which removed the data disk too, sends
+that wants 0.4.x's `worker::destroy`, which removed the data disk too, sends
 `prune: true`; without it the data stays.
 
 ### Known limits

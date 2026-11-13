@@ -760,13 +760,13 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        // iii-compose installs ADAPTER_RANGE "^0.4.1" for contract 1.4, so releases stay 0.4.x.
+        // iii-compose installs ADAPTER_RANGE "^0.5" for contract 1.4, so releases stay 0.5.x.
         assert_eq!(
             (
                 env!("CARGO_PKG_VERSION_MAJOR"),
                 env!("CARGO_PKG_VERSION_MINOR")
             ),
-            ("0", "4")
+            ("0", "5")
         );
         assert_eq!((i.contract.major, i.contract.minor), (1, 4));
         // What `iii sandbox run` and `iii sandbox build` refuse an adapter without.

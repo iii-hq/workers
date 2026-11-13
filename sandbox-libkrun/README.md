@@ -135,7 +135,7 @@ From 0.4.0 (sandbox contract 1.3) the adapter builds a VM's image and boots it,
 so a run never installs anything. It advertises `worker.build` in
 `adapter::info` only in the overlay rootfs mode; the legacy mode
 (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) cannot boot
-a build and keeps quiet about it. From 0.4.1 (sandbox contract 1.4) it also
+a build and keeps quiet about it. From 0.5.0 (sandbox contract 1.4) it also
 advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
 
 - **`worker::build`** boots a build VM on the cached base image (pulling it when
@@ -151,7 +151,7 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   into place and the new `image.id` last, with the directory flushed between
   the steps. A crash, a failed flush or a failed rename between the two
   renames leaves an image without an id, which a start refuses with S508 until
-  the next build (0.4.0 renamed the new image beside the previous id, which a
+  the next build (0.4.x renamed the new image beside the previous id, which a
   start accepted). This assumes one writer per `output_dir` at a time (see
   Known limits). The build streams its output into `logs` and writes a
   one-byte binary frame there at least every 5 s; when the channel closes or a
@@ -164,7 +164,7 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   `build_id` (S508 otherwise, or when it is missing) and boots `image.erofs` as
   the overlay's lower, without setup or install. A `path://` worker's code
   still syncs in live; a bundle's is in the image.
-- **A scoped token's build directory.** From 0.4.1 a VM's build directory is
+- **A scoped token's build directory.** From 0.5.0 a VM's build directory is
   the last `output_dir` or `build_dir` its scoped token presented, recorded in
   `~/.iii/sandbox/workers/<vm_id>/build-dir` with a MAC of the project token.
   On a directory another VM of the same project token recorded, a scoped token
@@ -191,7 +191,7 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` with `prune` removes them with the rest.
-- **`worker::destroy` and `prune`.** From 0.4.1 (sandbox contract 1.4) a
+- **`worker::destroy` and `prune`.** From 0.5.0 (sandbox contract 1.4) a
   destroy without `prune` removes the VM's runtime state (its `root/` share,
   console log, instance and state-key records, build scratch) and its build-dir
   record, which frees its build directory, and keeps its data: the data disk,
@@ -199,9 +199,9 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   boots over the same data. A VM an earlier adapter ran first moves its disk to
   a pre-build copy, as its first build start would; a VM with no data goes
   whole. `destroyed` is false when the directory held data only. `prune: true`
-  removes everything, as 0.4.0 did. The data stays in
+  removes everything, as 0.4.x did. The data stays in
   `~/.iii/sandbox/workers/<vm_id>/`, which the log of the destroy names.
-- **Binary packages.** From 0.4.1 (sandbox contract 1.4) a `Binary` source names
+- **Binary packages.** From 0.5.0 (sandbox contract 1.4) a `Binary` source names
   the directory where Compose put a binary package's Linux build and its
   `executable`, relative to it: a relative path of plain components naming an
   executable regular file in the package, through no symlink (S501 otherwise).
@@ -213,7 +213,7 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   `/workspace`, with no argument and the usual env (`III_URL`,
   `III_WORKER_NAME`). A binary package boots only a build: `worker::prepare`, and
   `worker::start` without `build`, are S501.
-- **`base_image`.** From 0.4.1 `worker::build` takes a `base_image` that
+- **`base_image`.** From 0.5.0 `worker::build` takes a `base_image` that
   overrides the manifest's `runtime.base_image` for any source; a local
   worker's manifest may then leave it out, as it may for a start that boots a
   build. A `base_image` that is not a plausible OCI reference is S001.
