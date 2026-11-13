@@ -20,7 +20,7 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::OnceCell;
 
-use iii_mcp::config::{McpConfig, ToolMode};
+use iii_mcp::config::McpConfig;
 use iii_mcp::engine::SdkEngine;
 use iii_mcp::functions;
 use iii_mcp::rbac_guard::RbacMode;
@@ -88,15 +88,11 @@ pub async fn try_connect_raw() -> Option<Arc<IIIClient>> {
 /// `http::on-request` for `POST`/`DELETE` at `cfg.api_path`. Mirrors the boot
 /// sequence in [`mcp/src/main.rs`](../../../src/main.rs), minus the RBAC
 /// check: the harness connects straight to the engine, so it runs in the
-/// `Dangerous` mode the escape hatch would select. Tools are `both`, so the
-/// per-function scenarios still cover the hidden-prefix floor. A route that
+/// `Dangerous` mode the escape hatch would select. A route that
 /// does not become active is logged, not propagated, so a polluted engine
 /// degrades to a soft skip.
 async fn register_bridge(iii: &Arc<IIIClient>) {
-    let cfg = Arc::new(McpConfig {
-        tools: ToolMode::Both,
-        ..McpConfig::default()
-    });
+    let cfg = Arc::new(McpConfig::default());
     let sessions = Arc::new(Sessions::new(SessionLimits::default()));
     let ctx = functions::Ctx::new(
         SdkEngine {

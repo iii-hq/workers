@@ -1,16 +1,10 @@
 //! JSON-RPC 2.0 helpers for the MCP Streamable HTTP bridge.
-//!
-//! Direct port of `src/mcp/jsonrpc.ts`.
 
 use serde::Serialize;
 use serde_json::Value;
 
-pub const JSON_RPC_VERSION: &str = "2.0";
+const JSON_RPC_VERSION: &str = "2.0";
 
-/// Parse error -- Invalid JSON. Defined for spec completeness; the engine
-/// rejects malformed JSON before it reaches the bridge.
-#[allow(dead_code)]
-pub const PARSE_ERROR: i64 = -32_700;
 /// Invalid Request -- not a valid JSON-RPC object (includes batch).
 pub const INVALID_REQUEST: i64 = -32_600;
 pub const METHOD_NOT_FOUND: i64 = -32_601;
@@ -148,23 +142,8 @@ pub fn json_rpc_error(
     }
 }
 
-#[allow(dead_code)]
-pub fn json_rpc_error_with_data(
-    id: JsonRpcResponseId,
-    code: i64,
-    message: impl Into<String>,
-    data: Value,
-) -> JsonRpcResponse {
-    JsonRpcResponse::Failure {
-        id,
-        code,
-        message: message.into(),
-        data: Some(data),
-    }
-}
-
 /// Returns true if `value` looks like a JSON-RPC 2.0 request: object with
-/// `jsonrpc == "2.0"` and `method: string`. Mirrors the TS predicate exactly.
+/// `jsonrpc == "2.0"` and `method: string`.
 pub fn is_json_rpc_request(value: &Value) -> bool {
     let Some(obj) = value.as_object() else {
         return false;
@@ -186,8 +165,7 @@ pub fn parse_json_rpc_request(value: &Value) -> Option<JsonRpcRequest> {
 }
 
 /// Pull a response id out of an arbitrary body so we can echo it back in error
-/// responses for malformed-but-id-bearing requests. Mirrors
-/// `responseIdFromBody` in the TS handler.
+/// responses for malformed-but-id-bearing requests.
 pub fn response_id_from_body(value: &Value) -> JsonRpcResponseId {
     if let Some(obj) = value.as_object() {
         if let Some(id) = obj.get("id").and_then(JsonRpcId::from_value) {
@@ -283,7 +261,6 @@ mod tests {
 
     #[test]
     fn error_codes_match_jsonrpc_spec() {
-        assert_eq!(PARSE_ERROR, -32_700);
         assert_eq!(INVALID_REQUEST, -32_600);
         assert_eq!(METHOD_NOT_FOUND, -32_601);
         assert_eq!(INVALID_PARAMS, -32_602);

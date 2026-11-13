@@ -1,10 +1,5 @@
-# Which tools tools/list offers:
-#   gateway   iii_call, iii_observe, iii_events, iii_observers, iii_unobserve,
-#             iii_status, iii_list_agents, iii_get_agent, iii_list_skills,
-#             iii_get_skill (default)
-#   functions one tool per visible engine function (myworker::echo -> myworker__echo)
-#   both      gateway tools first, then the function tools
-tools: gateway
+# HTTP path of the endpoint (POST, and DELETE to end a session).
+api_path: "/mcp"
 
 # Browser origins allowed besides loopback (localhost, 127.0.0.1, [::1] on
 # any port). Requests without an Origin header (CLI clients) always pass.
@@ -15,22 +10,3 @@ session_idle_ttl_secs: 1800
 
 # Per-observer event buffer; the oldest events are dropped beyond it.
 max_buffered_events: 500
-
-# Functions mode only: function id prefixes filtered out of tools/list and
-# rejected at tools/call. Gateway tools are governed by rbac-proxy instead.
-# `stream::` covers the deprecated iii-stream functions.
-hidden_prefixes:
-  - "engine::"
-  - "state::"
-  - "stream::"
-  - "iii."
-  - "iii::"
-  - "mcp::"
-  - "a2a::"
-
-# Functions mode only: when true, only functions whose
-# `metadata.mcp.expose == true` are advertised.
-require_expose: false
-
-# HTTP path of the endpoint (POST, and DELETE to end a session).
-api_path: "/mcp"
