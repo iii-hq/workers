@@ -93,18 +93,28 @@ iii call configuration::set --json '{
     "engine_url": "ws://127.0.0.1:49134",
     "rbac": {
       "auth_function_id": "mcp-auth::authenticate",
+      "expose_endpoints": ["match(\"/\")", "match(\"/ws/channels/*\")", "match(\"/otel\")"],
       "expose_functions": ["match(\"*\")"]
     }
   }
 }'
 ```
 
-rbac-proxy applies it live. `expose_functions` is what MCP clients may reach:
-`match("*")` is everything; narrow it (`match("orders::*")`,
-`metadata: { public: true }`, ...) to limit agents. See
-[rbac-proxy](https://iii.dev/registry/workers/rbac-proxy) for the rules,
-scoped grants and hooks. Check it with `iii call rbac-proxy::status`
-(`rbac_enabled: true`).
+rbac-proxy applies it live. Two lists decide what gets through:
+
+- `expose_endpoints` is which of the engine's endpoints rbac-proxy serves.
+  **It serves none until you list them.** `mcp` needs `/` to connect at
+  all; `/otel` carries its logs and traces (without it the log shows
+  `HTTP error: 403 Forbidden` and no telemetry is exported); keep
+  `/ws/channels/*` for functions that stream.
+- `expose_functions` is what MCP clients may reach:
+  `match("*")` is everything; narrow it (`match("orders::*")`,
+  `metadata: { public: true }`, ...) to limit agents. Keep `secrets::set`
+  in it for `iii_secret_store`.
+
+See [rbac-proxy](https://iii.dev/registry/workers/rbac-proxy) for the rules,
+scoped grants and hooks. Check it with `iii call rbac-proxy::status`:
+`rbac_enabled: true` and the three endpoints in `expose_endpoints`.
 
 ### 4. Point mcp at rbac-proxy
 
