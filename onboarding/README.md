@@ -19,7 +19,7 @@ Three parts:
 - `learn-iii::progress::get` — the status of every step per tour, with the observed event that closed it, plus the next tour to offer.
 - `learn-iii::steps::complete` — mark one step complete. Pass `fired` (`{ function_id, payload }`) when an observed event closed it; the observed function and the event are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
 - `learn-iii::steps::reset` — forget one tour and start it again.
-- `learn-iii::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
+- `learn-iii::subscribe` — add an email address to the iii product-update list through `POST https://iii.dev/api/subscribe` (`source: "ade"`), which sends a confirmation email first. Used by the Stay in touch step's signup box; the POST happens here, never in the browser. Answers `{ subscribed, outcome }`, where `outcome` is `subscribed`, `invalid_email` (shown to the person) or `retry_later` (the API could not take it now). `III_LEARN_III_SIGNUP_URL` overrides the endpoint: https, or plain http to this machine for a local stand-in.
 
 A step that waits on something carries a `condition`: an observe source the
 page observes from the browser with a per-tab target. The agent-finished steps
