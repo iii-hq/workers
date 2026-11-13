@@ -2,8 +2,30 @@
 
 ## 0.4.1
 
-Sandbox contract 1.3, unchanged: the wire types, the fixtures and the S-codes
-are those of 0.4.0, so Compose's `^0.4` installs it as is.
+Sandbox contract 1.4: binary packages in VMs, a build's `base_image`, and a
+`worker::destroy` that keeps the VM's data unless asked to `prune`. The S-codes
+are those of 0.4.0.
+
+### Added
+
+- **Binary packages in VMs.** A `Binary` source names the directory where
+  Compose put a binary package's Linux build and its `executable`.
+  `worker::build` needs a `base_image` for it (S001 without one), copies the
+  package into the image and runs its `scripts.install` when it ships a
+  manifest; a start of the build runs the executable from `/workspace`. A
+  binary package boots only a build (S501 on `worker::prepare`, or a start
+  without `build`). `adapter::info` advertises `worker.binary` in the overlay
+  mode.
+- **A build's `base_image`.** `worker::build` takes a `base_image` that overrides
+  the manifest's `runtime.base_image` for every source; a local worker's
+  manifest may then leave it out.
+- **`worker::destroy` keeps the data.** Without `prune`, a destroy removes the
+  VM's runtime state and its build-dir record, which frees its build directory,
+  and keeps its data disk, the pre-build copies of an earlier adapter and the
+  seal: a later start of the same `state_key` boots over the same data. A VM
+  with no data goes whole; `destroyed` is false when only data was there.
+  `prune: true` removes everything, as 0.4.0 did. `adapter::info` advertises
+  `worker.prune`.
 
 ### Fixed
 
@@ -31,8 +53,9 @@ are those of 0.4.0, so Compose's `^0.4` installs it as is.
 
 ### Upgrading from 0.4.0
 
-Nothing to do: each VM records its directory on its next scoped build or
-start.
+Each VM records its build directory on its next scoped build or start. A caller
+that wants 0.4.0's `worker::destroy`, which removed the data disk too, sends
+`prune: true`; without it the data stays.
 
 ### Known limits
 

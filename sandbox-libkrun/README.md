@@ -135,7 +135,8 @@ From 0.4.0 (sandbox contract 1.3) the adapter builds a VM's image and boots it,
 so a run never installs anything. It advertises `worker.build` in
 `adapter::info` only in the overlay rootfs mode; the legacy mode
 (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) cannot boot
-a build and keeps quiet about it.
+a build and keeps quiet about it. From 0.4.1 (sandbox contract 1.4) it also
+advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
 
 - **`worker::build`** boots a build VM on the cached base image (pulling it when
   missing) with a fresh upper, copies the worker's code into `/workspace` (a
@@ -182,14 +183,40 @@ a build and keeps quiet about it.
   name; the project token is not checked.
 - **Data disk.** A VM that boots builds keeps its writes on
   `~/.iii/sandbox/workers/<vm_id>/upper.ext4`, beside the guest's share
-  `root/`: they outlive restarts and rebuilds, and only `worker::destroy`
+  `root/`: they outlive restarts and rebuilds, and only `worker::destroy` with `prune`
   removes them. The overlay is mounted without `index`, `metacopy`,
   `redirect_dir` and `xino`, which lets a rebuild swap the lower under it.
 - **Earlier disks.** The first start of a build writes the seal
   `<vm_id>/build-mode`. Without it, a 0.3 overlay disk (`root/upper.ext4`)
   moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
-  `worker::destroy` removes them with the rest.
+  `worker::destroy` with `prune` removes them with the rest.
+- **`worker::destroy` and `prune`.** From 0.4.1 (sandbox contract 1.4) a
+  destroy without `prune` removes the VM's runtime state (its `root/` share,
+  console log, instance and state-key records, build scratch) and its build-dir
+  record, which frees its build directory, and keeps its data: the data disk,
+  the pre-build copies and the seal. A later start of the same `state_key`
+  boots over the same data. A VM an earlier adapter ran first moves its disk to
+  a pre-build copy, as its first build start would; a VM with no data goes
+  whole. `destroyed` is false when the directory held data only. `prune: true`
+  removes everything, as 0.4.0 did. The data stays in
+  `~/.iii/sandbox/workers/<vm_id>/`, which the log of the destroy names.
+- **Binary packages.** From 0.4.1 (sandbox contract 1.4) a `Binary` source names
+  the directory where Compose put a binary package's Linux build and its
+  `executable`, relative to it: a relative path of plain components naming an
+  executable regular file in the package, through no symlink (S501 otherwise).
+  `worker::build` needs a `base_image` for it (S001 without one), copies the
+  package whole into `/workspace`, and runs its `scripts.install` when the
+  package ships an `iii.worker.yaml`. That manifest passes the bundle gates but
+  one: its name is the package's and it declares no `scripts.setup`, and it
+  needs no `scripts.start`. A start of the build runs the executable from
+  `/workspace`, with no argument and the usual env (`III_URL`,
+  `III_WORKER_NAME`). A binary package boots only a build: `worker::prepare`, and
+  `worker::start` without `build`, are S501.
+- **`base_image`.** From 0.4.1 `worker::build` takes a `base_image` that
+  overrides the manifest's `runtime.base_image` for any source; a local
+  worker's manifest may then leave it out, as it may for a start that boots a
+  build. A `base_image` that is not a plausible OCI reference is S001.
 - **What a `path://` copy leaves out.** One list, the source watcher's ignore
   list plus `.iii`: a run neither copies nor syncs those names, so what the
   build put there is never overwritten by the host's.
@@ -254,8 +281,8 @@ Two races of a build are accepted:
 A scoped token takes any build directory that no VM of the same project token
 has recorded now:
 
-- the directory of a destroyed VM whose build directory stayed (`iii sandbox
-  destroy`), until a VM records it again;
+- the directory of a destroyed VM whose build directory stayed, until a VM
+  records it again;
 - the new path after Compose moved a container's directory, until that
   container's next build or start records it;
 - every build directory of another Compose namespace: a container's build
