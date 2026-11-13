@@ -1518,6 +1518,75 @@ async fn recall_context_reaches_only_pre_generate_and_is_never_stored() {
     assert!(!stored.to_string().contains("Private recall request"));
 }
 
+/// Memory decides its header from the pre_generate input and its turn-end
+/// from `harness::on-turn-completed`: the input carries the turn's parent
+/// exactly as that event does, so the two decisions agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_generate_input_carries_the_turns_parent() {
+    use crate::hooks::HookPoint;
+    use crate::types::turn::TurnStatus::Completed;
+    let stack = Stack::new().await;
+
+    stack.reset_turn("top", Completed).await;
+    let top = stack
+        .deps
+        .hooks
+        .envelope(HookPoint::PreGenerate, &stack.record("top").await, 0);
+    assert!(top.get("parent").is_none(), "{top}");
+    assert!(top.get("parent_session_id").is_none(), "{top}");
+
+    // A session displayed under another (spawned into an existing session)
+    // passes its display parent on to every turn that continues it.
+    stack.reset_turn("s", Completed).await;
+    let mut prior = stack.record("s").await;
+    prior.display_parent_session_id = Some("s_parent".into());
+    crate::state::put_turn(&stack.deps.iii, &prior, 1000)
+        .await
+        .unwrap();
+    let out = crate::functions::send::inject(
+        &stack.deps,
+        "s",
+        AgentMessage::user_text("go on"),
+        Some("next"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!out.queued);
+    let continuing = stack.record("s").await;
+    assert_ne!(
+        continuing.turn_id, "t-s",
+        "a new turn continues the session"
+    );
+    let input = stack
+        .deps
+        .hooks
+        .envelope(HookPoint::PreGenerate, &continuing, 0);
+    assert_eq!(input["parent_session_id"], json!("s_parent"));
+    assert!(input.get("parent").is_none(), "{input}");
+
+    let link = crate::types::turn::ParentLink {
+        session_id: "s_p".into(),
+        turn_id: "t_p".into(),
+        function_call_id: "fc".into(),
+    };
+    let mut child = crate::types::turn::tests::record();
+    child.parent = Some(link.clone());
+    child.display_parent_session_id = Some("s_root".into());
+    let input = stack.deps.hooks.envelope(HookPoint::PreGenerate, &child, 0);
+    assert_eq!(input["parent"], serde_json::to_value(&link).unwrap());
+    assert_eq!(input["parent_session_id"], json!("s_root"));
+
+    for point in HookPoint::all() {
+        if point == HookPoint::PreGenerate {
+            continue;
+        }
+        let input = stack.deps.hooks.envelope(point, &child, 0);
+        assert!(input.get("parent").is_none(), "{point:?}");
+        assert!(input.get("parent_session_id").is_none(), "{point:?}");
+    }
+}
+
 #[path = "extraction_provenance_tests.rs"]
 mod extraction_provenance_tests;
 

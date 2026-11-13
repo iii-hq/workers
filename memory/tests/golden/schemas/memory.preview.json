@@ -200,6 +200,13 @@
               "string",
               "null"
             ]
+          },
+          "turn_id": {
+            "description": "The turn an explicit save was called from (`memory::save` inside a turn).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -237,7 +244,7 @@
         "type": "boolean"
       },
       "system_prompt_section": {
-        "description": "The memory section appended to the system prompt (ambient header + rules), exactly as injected — truncation markers included.",
+        "description": "The memory section appended to the system prompt (ambient header + rules) as the user's own session gets it, truncation markers included; a sub-agent's or automation session's header says nothing is captured.",
         "type": "string"
       }
     },

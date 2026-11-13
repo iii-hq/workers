@@ -43,7 +43,9 @@ pub const BANK_DELETE_DESC: &str =
 pub const SAVE_ID: &str = "memory::save";
 pub const SAVE_DESC: &str =
     "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
-     the existing memory instead of duplicating it. Use when the user says `remember this`.";
+     the existing memory instead of duplicating it. Called from a turn, it records that \
+     session and turn as the source. Needed where the `# Memory` header asks for it (a \
+     sub-agent, extraction off): save what a later session would need.";
 
 pub const GET_ID: &str = "memory::get";
 pub const GET_DESC: &str = "Fetch one memory by id, including superseded/tombstoned records.";

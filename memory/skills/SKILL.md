@@ -9,13 +9,23 @@ description: >-
 
 # memory
 
-Cross-session memory is automatic here. The session's bank injects its rules
-and relevant memories into your context each turn, new memories are extracted
-in the background after each turn, and standing instructions (style directives,
-workflow corrections) graduate into the bank's auto-managed `learned` rule on
-their own. When the user asks you to remember something, acknowledge it — no
-save call is required, though an explicit `memory::save` makes it durable
-immediately instead of after the turn.
+The session's bank injects its rules and relevant memories into your context
+each turn. Later sessions in the bank start with only what is recalled from it,
+and the `# Memory` header says which case applies to yours:
+
+- **Captured** (the user's own session, extraction on, on a turn the harness
+  reports with no parent): new memories are extracted in the background after
+  each turn, and standing instructions (style directives, workflow
+  corrections) graduate into the bank's auto-managed `learned` rule on their
+  own. When the user asks you to remember something, acknowledge it — no save
+  call is needed.
+- **Not captured** (a sub-agent's turn: its session has a parent, or the
+  harness reports a parent for the turn; or extraction off): nothing is saved
+  automatically. If `memory::save` is available to you, save what a later
+  session would need with it.
+- **Scripted** (an automation or e2e run): nothing is saved automatically, and
+  the header does not ask you to save. A scripted run does not write into the
+  user's memory.
 
 **Rules** are markdown documents injected whole into the system prompt on every
 turn (`memory::rule::*`, on disk under the bank's `rules/` folder). **Memories**
@@ -25,9 +35,20 @@ rule; point-in-time information belongs in memories.
 
 ## When to Use
 
-- The user says "remember X", or corrects you in a way that should stick —
-  save it now: `memory::save { "text": "...", "entities": [...], "pinned": true }`.
-  Pin anything they explicitly ask to keep. Re-saving reinforces, never duplicates.
+- The header asks you to save — if `memory::save` is available to you, save
+  what a later session would need:
+  `memory::save { "text": "...", "entities": [...] }`, one self-contained
+  sentence each. It records your session and turn as its source; re-saving
+  reinforces, never duplicates.
+- The user asks to keep something for good (not in a scripted run) — if
+  `memory::save` is available to you, `memory::save { "text": "...",
+  "pinned": true }` in this turn; add `"entities": ["user"]` when it is a fact
+  about the user: a save from a turn is not tagged `user` on its own. In a
+  captured session, extraction then skips a restatement of that record in the
+  same or nearly the same words; a looser rewording can still land beside it,
+  unpinned. Without `memory::save`, in a captured session acknowledge it and
+  `memory::pin` it once `memory::recall` shows it; anywhere else, tell the user
+  it cannot be saved from here.
 - The user asks what you remember about a topic — `memory::recall { "query": "..." }`
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
@@ -37,14 +58,17 @@ rule; point-in-time information belongs in memories.
 - The user asks to fix or forget something — find it via recall/list, then
   `memory::update` (corrected text) or `memory::delete` (tombstone), and
   `memory::pin` to protect the corrected version.
-- The user wants a style or convention set enforced everywhere —
-  `memory::rule::set { "bank": "...", "name": "style", "content": "..." }`.
-- The user asks you never to remember something — `memory::rule::set` a hand
-  rule saying not to keep it, and `memory::delete` what is already stored
-  (find it via `memory::recall` or `memory::list`).
+- The user wants a style or convention enforced everywhere — in a captured
+  session acknowledge it: a standing instruction graduates into `learned`.
+  Hand-written rules are the user's to edit on the console's memory page; rule
+  writes are not granted to agents by default.
+- The user asks you never to remember something — `memory::delete` what is
+  already stored (find it via `memory::recall` or `memory::list`), and tell
+  them that keeping it out for good takes a rule they add on the memory page.
 - Separate contexts deserve separate banks (`blog` vs `coding`): a session
   selects its bank via session metadata `memory_bank` (`session::set-meta`)
-  or the console composer's bank picker; `memory::bank::create` makes one.
+  or the console composer's bank picker. The user creates banks on the
+  console's memory page: bank writes are not granted to agents by default.
   Calls without `bank` act on your session's bank (the one named in your
   `# Memory` header; a sub-agent shares its parent's), so leave it out unless
   the user names another bank.
@@ -80,7 +104,8 @@ rule; point-in-time information belongs in memories.
 
 ## Functions
 
-- `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce.
+- `memory::save` — explicit save; content-fingerprinted, repeat saves reinforce;
+  from a turn it records that session and turn.
 - `memory::get / list / update / delete / pin` — memory CRUD; delete tombstones,
   update bumps a revision, pinned records are untouchable by automatic paths.
 - `memory::recall` — rank a bank's memories against a query (the injection
@@ -93,9 +118,12 @@ rule; point-in-time information belongs in memories.
   `default_bank` read under it, as its turns get it.
 - `memory::tags` — a bank's distinct tags with counts. Add `tags` on save
   when the user wants memories organized within a bank.
-- `memory::bank::create / list / delete` — named memory scopes; delete trashes.
-- `memory::rule::list / set` — always-injected markdown rules; empty content
-  removes a rule.
+- `memory::bank::list` — named memory scopes; creating or deleting one
+  (`memory::bank::create / delete`, delete trashes) is a human-owned surface,
+  denied to agents by default.
+- `memory::rule::list` — the bank's always-injected markdown rules; writing
+  one (`memory::rule::set`) is a human-owned surface, denied to agents by
+  default.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
   pointer); the consolidation seam, agent-denied by default. `reinforce`
   makes it a merge; `reason` rides the `memory::on-item-changed` events.

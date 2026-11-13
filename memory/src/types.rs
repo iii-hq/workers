@@ -21,6 +21,9 @@ pub enum Confidence {
 pub struct Provenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The turn an explicit save was called from (`memory::save` inside a turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,6 +222,7 @@ mod tests {
             pinned: true,
             source: Some(Provenance {
                 session_id: Some("s_1".into()),
+                turn_id: None,
                 entry_id: None,
                 agent: None,
             }),
@@ -230,7 +234,22 @@ mod tests {
             stated_at: Some(2),
         };
         let s = serde_json::to_string(&f).unwrap();
+        assert!(
+            !s.contains("turn_id"),
+            "records without a turn stay as they were"
+        );
         let back: Memory = serde_json::from_str(&s).unwrap();
         assert_eq!(f, back);
+        let from_turn = Memory {
+            source: Some(Provenance {
+                session_id: Some("s_1".into()),
+                turn_id: Some("t_1".into()),
+                ..Provenance::default()
+            }),
+            ..f
+        };
+        let s = serde_json::to_string(&from_turn).unwrap();
+        let back: Memory = serde_json::from_str(&s).unwrap();
+        assert_eq!(from_turn, back);
     }
 }

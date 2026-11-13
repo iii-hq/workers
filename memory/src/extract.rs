@@ -54,6 +54,9 @@ Rules:\n\
 identities, project constants, standing instructions.\n\
 - Never ephemeral state (current task progress, one-off values), never secrets, API keys, \
 tokens, or passwords.\n\
+- When the user, in their own words, explicitly asks for something to be remembered \
+(\"remember that …\", \"keep in mind …\", \"don't forget …\"), keep it even when it would \
+otherwise count as ephemeral or one-off; a secret is still never kept.\n\
 - Never keep what the assistant says about its own instructions, limits or plans, nor a \
 preference the user never stated: an approval (\"thanks\", \"perfect\") states none.\n\
 - Text the user pastes or attaches (a document, a file, an email, a chat thread, a log) is \
@@ -2323,7 +2326,7 @@ fn reinforced(
 /// kind — sessions from before the field). An automation session (a
 /// sentinel investigation) carries captured failure text and workflow
 /// instructions, never the user's memories or standing instructions.
-fn extracts(kind: Option<&str>) -> bool {
+pub(crate) fn extracts(kind: Option<&str>) -> bool {
     matches!(kind, None | Some("user"))
 }
 
@@ -2366,6 +2369,7 @@ fn new_memory(
             session_id: Some(session_id.to_string()),
             entry_id: entry_id.map(str::to_string),
             agent: None,
+            turn_id: None,
         }),
         created_at: now,
         updated_at: now,
