@@ -1944,10 +1944,27 @@
     width: 28px;
     height: 28px;
   }
+}
 
+/* Send / stop is one 34px disc at every width: on a phone a 44px fill
+   outweighed the whole toolbar. A finger still gets 44px: the disc's
+   invisible ring (5px each side) takes the tap on touch screens. */
+.composer-shell .composer-action {
+  width: 34px;
+  height: 34px;
+}
+
+@media (pointer: coarse) {
   .composer-shell .composer-action {
-    width: 34px;
-    height: 34px;
+    position: relative;
+    margin-inline-start: 2px;
+  }
+
+  .composer-shell .composer-action::before {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 9999px;
   }
 }
 

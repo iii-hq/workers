@@ -11,6 +11,7 @@ import { Copy, Mic, Send, Square, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DictationController } from '../lib/dictation'
 import { useDictation } from '../lib/dictation'
+import { setDictationStartedByTouch } from '../lib/focus-target'
 import { StatusBadge } from '../ui/status'
 import { PanelBody, PanelEmpty, SectionCard } from './shared'
 
@@ -35,6 +36,7 @@ export function DictateSection({
       appliedSignalRef.current = autoStartSignal
       setDraft([])
       setCleared(false)
+      setDictationStartedByTouch(false)
       start()
     }
   }, [autoStartSignal, start])
@@ -58,6 +60,7 @@ export function DictateSection({
   const onStart = () => {
     setDraft([])
     setCleared(false)
+    setDictationStartedByTouch(false)
     start()
   }
 
