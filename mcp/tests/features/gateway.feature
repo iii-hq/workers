@@ -17,6 +17,12 @@ Feature: gateway tools, sessions and Origin over Streamable HTTP
     Then the tool result is not an error
     And  the tool result mentions "workers"
 
+  Scenario: nobody can observe the endpoint's request bodies
+    # A tool call can carry a secret for iii_secret_store; an observer of
+    # mcp::handler would get a copy of every request body.
+    When I list the engine's "mcp::" functions through iii_call
+    Then "mcp::handler" is listed as not observable
+
   Scenario: a foreign Origin is refused with 403
     When I send a ping request from Origin "https://evil.example"
     Then the http response status is 403
