@@ -794,6 +794,44 @@ try {
         pushStatus()
         await expect(shareRow('state').locator('.mesh-ui-muted')).toHaveCount(0)
 
+        // Peer to peer: the switch saves client.peer_to_peer, waits for the worker's status, and the risk text follows it.
+        const p2pSwitch = page.getByRole('switch', { name: 'Peer to peer', exact: true })
+        const p2pRisk = /do not see, limit or log those calls|the hub does not see, limit or log those calls/
+        await expect(p2pSwitch).not.toBeChecked()
+        await expect(page.getByText(p2pRisk)).toHaveCount(0)
+        await p2pSwitch.click()
+        await expect(page.getByText(p2pRisk).first()).toBeVisible()
+        await expect(page.getByText('applying…', { exact: true })).toHaveCount(0)
+        stored = await savePage({ ...stored, client: { ...stored.client, peer_to_peer: true } })
+        assert(calls.some((call) => JSON.stringify(call.data).includes('"peer_to_peer":true')), 'the switch saves client.peer_to_peer')
+        await expect(connection.getByText('applying…', { exact: true })).toBeVisible()
+        // A hub that wants another version keeps the path off, and its own warning says so.
+        clientExtra = { hub_wants_version: '0.2.0' }
+        pushStatus()
+        await expect(page.getByText(/The hub wants version/)).toBeVisible()
+        await expect(connection.getByText('applying…', { exact: true })).toHaveCount(0)
+        clientExtra = { peer_to_peer: true }
+        pushStatus()
+        await expect(connection.getByText('applying…', { exact: true })).toHaveCount(0)
+        await expect(page.getByText(p2pRisk).first()).toBeVisible()
+        // Each machine says how its calls travel; the hub says nothing.
+        clientRemote = [{ machine: 'hub', functions: ['hub::shell::exec'] },
+          { machine: 'a', functions: ['peer::a::x::y'], path: 'hub' }, { machine: 'b', functions: ['peer::b::x::y'], path: 'direct' },
+          { machine: 'c', functions: ['peer::c::x::y'], path: 'relay' }, { machine: 'd', functions: ['peer::d::x::y'], path: 'idle' }]
+        pushStatus()
+        await expect(remoteList.locator('summary')).toHaveText(['hub1 function', 'athrough the hub · 1 function', 'bpeer to peer · direct · 1 function',
+          'cpeer to peer · relayed by the hub machine · 1 function', 'dpeer to peer · 1 function'])
+        clientRemote = meshRemote
+        // Off: stopping until the worker closes the path, and the warning leaves with the switch.
+        await p2pSwitch.click()
+        await expect(page.getByText(p2pRisk)).toHaveCount(0)
+        stored = await savePage({ ...stored, client: { ...stored.client, peer_to_peer: false } })
+        await expect(connection.getByText('stopping…', { exact: true })).toBeVisible()
+        clientExtra = {}
+        pushStatus()
+        await expect(connection.getByText('stopping…', { exact: true })).toHaveCount(0)
+        await expect(remoteList.locator('summary')).toHaveText(['hub2 functions', 'gpu-box2 functions'])
+
         // A new machine name renames the joined machine, with no restart.
         hubName = 'laptop'
         requestedName = 'laptop'

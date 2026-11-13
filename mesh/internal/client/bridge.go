@@ -38,6 +38,7 @@ type Function struct {
 type RemoteStatus struct {
 	Machine   string   `json:"machine"`
 	Functions []string `json:"functions"`
+	Path      string   `json:"path,omitempty"` // how a machine's calls travel: hub, or peer to peer as direct, relay or idle
 }
 
 // SharedStatus is one share entry in the local mesh::status.
@@ -67,6 +68,7 @@ type Bridge struct {
 	mirrors   map[string]*iii.FunctionRef // local registrations, by mirror id
 	online    context.Context             // cancelled when the hub connection leaves StateConnected
 	offline   context.CancelFunc
+	direct    *direct // the peer to peer path; nil while it is off
 
 	// Changed runs under the bridge's lock whenever Status or Shared may report something new; it must not block.
 	Changed func()
@@ -182,7 +184,20 @@ func (b *Bridge) Namespace() string {
 	return b.rt.Namespace
 }
 
+// Announce tells the hub that what it shows of this machine changed, and reports whether it sent: not while the hub connection is down.
+func (b *Bridge) Announce() bool {
+	b.mu.Lock()
+	remote, online, namespace := b.remote, b.online, b.rt.Namespace
+	b.mu.Unlock()
+	if remote == nil || online == nil || online.Err() != nil {
+		return false
+	}
+	_, err := remote.Call(context.Background(), iii.CallRequest{FunctionID: "mesh::node::changed", Namespace: namespace, Action: iii.VoidAction()})
+	return err == nil
+}
+
 func (b *Bridge) Close() {
+	_ = b.SetDirect(nil, "")
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closeRemote()
@@ -256,7 +271,7 @@ func HubFirst(a, b string) int {
 // Remote lists the mirrors by owner, the hub first.
 func (b *Bridge) Remote() []RemoteStatus {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	d := b.direct
 	byOwner := map[string][]string{}
 	for _, e := range b.catalog.Functions {
 		if e.Owner != b.rt.Node {
@@ -267,18 +282,37 @@ func (b *Bridge) Remote() []RemoteStatus {
 	for _, owner := range slices.SortedFunc(maps.Keys(byOwner), HubFirst) {
 		out = append(out, RemoteStatus{Machine: owner, Functions: slices.Sorted(slices.Values(byOwner[owner]))})
 	}
+	b.mu.Unlock()
+	paths := map[string]string{}
+	if d != nil {
+		for _, p := range d.net.Peers() { // after the lock: this asks the backend
+			paths[p.Name], _, _ = strings.Cut(p.Path, " ")
+		}
+	}
+	for i := range out {
+		if out[i].Machine != "hub" {
+			out[i].Path = cmp.Or(paths[out[i].Machine], "hub") // a machine in the map is one that also turned peer to peer on
+		}
+	}
 	return out
 }
 
 var errOffline = &iii.InvocationError{Code: "mesh_offline", Message: "this machine is not connected to its hub"}
 
-// mirror calls e through the hub's mesh::call. It ends when the hub connection
-// drops: the SDK alone would leave the call waiting out its timeout.
+// mirror calls e directly when its machine is in this machine's map, and with
+// no fallback: a failed direct call may have run. Otherwise it calls through the
+// hub's mesh::call, which ends when the hub connection drops: the SDK alone
+// would leave the call waiting out its timeout.
 func (b *Bridge) mirror(e node.CatalogEntry) iii.Handler {
 	return func(ctx context.Context, data json.RawMessage) (any, error) {
 		b.mu.Lock()
-		remote, online, namespace := b.remote, b.online, b.rt.Namespace
+		remote, online, namespace, d := b.remote, b.online, b.rt.Namespace, b.direct
 		b.mu.Unlock()
+		if d != nil && e.Owner != "hub" {
+			if addr, ok := d.net.Peer(e.Owner); ok { // in the map: both machines turned peer to peer on
+				return d.call(ctx, e.Owner, addr, strings.TrimPrefix(e.ID, e.Owner+"::"), data)
+			}
+		}
 		if remote == nil || online == nil || online.Err() != nil {
 			return nil, errOffline
 		}

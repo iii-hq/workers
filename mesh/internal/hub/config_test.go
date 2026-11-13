@@ -69,6 +69,9 @@ func TestClientModeConfig(t *testing.T) {
 	if _, err = parseConfig(json.RawMessage(`{"mode":"client"}`)); err != nil {
 		t.Fatal("client mode without settings must wait for a join, not fail:", err)
 	}
+	if c, err = parseConfig(json.RawMessage(`{"mode":"client","client":{"peer_to_peer":true}}`)); err != nil || !c.Client.PeerToPeer {
+		t.Fatalf("peer to peer: %+v %v", c, err)
+	}
 	for _, bad := range []string{
 		`{"mode":"bogus"}`,
 		`{"mode":"client","client":{"share":["secrets"]}}`,

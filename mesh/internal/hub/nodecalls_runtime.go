@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -12,13 +13,10 @@ import (
 // nodeRefreshDelay folds a burst of engine function changes into one re-read of the online nodes.
 var nodeRefreshDelay = 250 * time.Millisecond
 
-// nodeRefreshEvery re-reads the online nodes for what changes with no event the hub observes:
-// a node's connection path and a worker it shares with no functions.
-var nodeRefreshEvery = 30 * time.Second
-
 type nodeReconcileTask struct {
 	cancel context.CancelFunc
 	dirty  bool
+	wake   chan struct{} // an event of this node cuts the wait of a failed read
 }
 type nodeReconciler struct {
 	hub    *Hub
@@ -52,19 +50,10 @@ func (h *Hub) startNodeCalls(ctx context.Context) {
 	go h.refreshPass() // the first node calls carry the catalog
 	go func() {
 		defer close(r.done)
-		ticker := time.NewTicker(nodeRefreshEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				h.queueNodes()
-			case <-ctx.Done():
-				r.mu.Lock() // an enqueue that saw the live context has added its task
-				r.mu.Unlock()
-				r.wg.Wait()
-				return
-			}
-		}
+		<-ctx.Done()
+		r.mu.Lock() // an enqueue that saw the live context has added its task
+		r.mu.Unlock()
+		r.wg.Wait()
 	}()
 }
 
@@ -148,10 +137,14 @@ func (r *nodeReconciler) enqueue(name string) {
 	}
 	if task := r.tasks[name]; task != nil {
 		task.dirty = true
+		select {
+		case task.wake <- struct{}{}:
+		default:
+		}
 		return
 	}
 	ctx, cancel := context.WithCancel(r.ctx)
-	task := &nodeReconcileTask{cancel: cancel}
+	task := &nodeReconcileTask{cancel: cancel, wake: make(chan struct{}, 1)}
 	r.tasks[name] = task
 	r.wg.Add(1)
 	go r.reconcile(ctx, name, task)
@@ -175,9 +168,17 @@ func (r *nodeReconciler) reconcile(ctx context.Context, name string, task *nodeR
 		r.mu.Unlock()
 	}()
 	lastError := ""
+	wait := time.Duration(0)
 	for ctx.Err() == nil {
 		r.mu.Lock()
+		if task.dirty {
+			wait = 0 // an event may have ended the failure: the waits start over
+		}
 		task.dirty = false
+		select {
+		case <-task.wake: // this pass reads what that event announced
+		default:
+		}
 		r.mu.Unlock()
 		err := r.hub.OnNodeOnline(ctx, name)
 		if ctx.Err() != nil {
@@ -200,12 +201,17 @@ func (r *nodeReconciler) reconcile(ctx context.Context, name string, task *nodeR
 		if err == nil {
 			continue
 		}
-		timer := time.NewTimer(time.Second)
+		var retry <-chan time.Time // nil: only an event of this node reads it again
+		// A node that answers again announces nothing; a new version or a node function registering queues the node.
+		if !errors.Is(err, errOtherVersion) && !remoteCode(err, "function_not_found") {
+			wait = min(max(retryMin, 2*wait), time.Minute)
+			retry = time.NewTimer(wait).C
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-task.wake:
+		case <-retry:
 		}
 	}
 }

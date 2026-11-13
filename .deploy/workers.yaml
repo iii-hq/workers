@@ -2692,6 +2692,9 @@ workers:
       - aarch64-apple-darwin
       - x86_64-pc-windows-msvc
       - aarch64-pc-windows-msvc
+      # Drops tailscale's peer API server, a host listener outside the tunnel.
+      tags:
+      - ts_omit_peerapiserver
     publish: true
   workflow:
     source:

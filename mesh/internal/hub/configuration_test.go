@@ -135,3 +135,17 @@ func TestConfigFetchFailure(t *testing.T) {
 		t.Fatal("malformed fetch accepted")
 	}
 }
+
+func TestResumedReadsEverythingAgain(t *testing.T) {
+	h, _ := tunnelHub(t, true)
+	h.ConfigID, h.proxyKick = "project_mesh", make(chan struct{}, 1)
+	// The stored entry changed while no event could reach the hub.
+	h.engine = &configRPC{t: t, value: json.RawMessage(`{"value":{"trusted_proxies":["192.0.2.0/24"]}}`)}
+	h.resumed(t.Context())
+	if got := h.Config().TrustedProxies; !reflect.DeepEqual(got, []string{"192.0.2.0/24"}) {
+		t.Fatalf("trusted_proxies %v: the stored configuration was not read again", got)
+	}
+	if nodes, proxy, tunnel := h.refreshing.Load(), len(h.proxyKick), len(h.tunnelKick); !nodes || proxy != 1 || tunnel != 1 {
+		t.Fatalf("passes asked for: nodes %v, proxy %d, tunnel %d; want all three", nodes, proxy, tunnel)
+	}
+}

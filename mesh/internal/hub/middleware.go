@@ -51,6 +51,10 @@ func (h *Hub) middleware(ctx context.Context, client rpc, req MiddlewareRequest)
 	if err != nil {
 		return nil, err
 	}
+	if req.FunctionID == nodeChangedID {
+		h.queueNode(node) // nothing it sends is read: the hub reads the node's signed status
+		return json.RawMessage("null"), nil
+	}
 	if req.FunctionID == "" {
 		return nil, errors.New("missing target function")
 	}
@@ -88,11 +92,14 @@ func (h *Hub) middleware(ctx context.Context, client rpc, req MiddlewareRequest)
 	return client.Call(ctx, iii.CallRequest{FunctionID: req.FunctionID, Payload: req.Payload, Metadata: metadata, Action: req.Action, Namespace: req.Namespace, Timeout: 610 * time.Second})
 }
 
-// meshCallID is the one grant every node session holds: a call of a shared function, never registered.
+// meshCallID is a grant every node session holds: a call of a shared function, never registered.
 const meshCallID = "mesh::call"
 
-// shortcut: a fixed cap of 64 mesh calls in flight per calling machine; make it a setting when a real mesh reaches it.
-const maxCallsInFlight = 64
+// nodeChangedID is the other one, never registered: the node says its shares or its path changed, which no event the hub observes announces.
+const nodeChangedID = "mesh::node::changed"
+
+// The cap of mesh calls in flight per calling machine, the same on the direct path.
+const maxCallsInFlight = meshclient.MaxCallsInFlight
 
 type meshCallRequest struct {
 	Owner      string          `json:"owner"` // "hub" or the machine sharing function_id

@@ -39,6 +39,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iii-hq/workers/mesh/internal/join"
@@ -46,6 +47,7 @@ import (
 	"tailscale.com/control/controlhttp/controlhttpserver"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstime"
+	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
 	"tailscale.com/util/zstdframe"
 )
@@ -117,6 +119,7 @@ type Coordinator struct {
 	cancel       context.CancelFunc
 	life         sync.Mutex
 	backend      *userspace
+	woke         atomic.Pointer[func()]
 }
 
 func (c *Coordinator) Public() key.MachinePublic { return c.key.Public() }
@@ -590,6 +593,7 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 			return
 		}
 		if resp != nil {
+			resp.ControlTime = new(c.clock.Now()) // hearing any response is hearing the hub: meshnet's 10-minute rule counts from it
 			if err := write(w, req.Compress, resp); err != nil {
 				return
 			}
@@ -608,7 +612,7 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 			return
 		case <-wake:
 		case <-tickC:
-			if err := write(w, req.Compress, &tailcfg.MapResponse{KeepAlive: true}); err != nil {
+			if err := write(w, req.Compress, &tailcfg.MapResponse{KeepAlive: true, ControlTime: new(c.clock.Now())}); err != nil {
 				return
 			}
 			if !c.mapProgress(n) {
@@ -638,7 +642,7 @@ func (c *Coordinator) mapProgress(n *node) bool {
 }
 
 // update takes what a map request says about n. Peers see a new disco key,
-// endpoints or home relay; the rest they do not need.
+// endpoints, home relay or peer tag; the rest they do not need.
 func (c *Coordinator) update(n *node, req tailcfg.MapRequest) error {
 	before := *n
 	moved := false
@@ -653,8 +657,10 @@ func (c *Coordinator) update(n *node, req tailcfg.MapRequest) error {
 		if hi = hi.Clone(); hi.NetInfo == nil && n.Hostinfo != nil {
 			hi.NetInfo = n.Hostinfo.NetInfo
 		}
+		was := direct(n)
 		moved = moved || home(hi) != home(n.Hostinfo)
 		n.Hostinfo = hi
+		moved = moved || direct(n) != was
 	}
 	n.capVer = req.Version
 	n.LastMap = c.clock.Now().UTC()
@@ -703,8 +709,10 @@ func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *strin
 	}
 	if full {
 		r.Domain = project
-		r.PacketFilter = tailcfg.FilterAllowAll
 		r.UserProfiles = []tailcfg.UserProfile{{ID: user, LoginName: "iii mesh", DisplayName: "iii mesh"}}
+	}
+	if full || n.Name == "hub" && r.Node != nil {
+		r.PacketFilter = c.filter(n) // the hub's filter names the gateway port, which moves
 	}
 	currentRelay := fmt.Sprintf("%s:%d:%d", c.host, c.relayPort, c.stunPort)
 	if relay != nil {
@@ -749,10 +757,30 @@ func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *strin
 
 // sees is whether a and b are in each other's map, which is the whole access
 // rule: WireGuard takes packets only from peers in the map, at both ends. The
-// hub sees every node and every node sees only the hub. A removed node sees
-// none and is seen by none.
+// hub sees every node; two other nodes see each other only while both request
+// PeerTag. A removed node sees none and is seen by none.
 func (c *Coordinator) sees(a, b *node) bool {
-	return c.authorized(a) && c.authorized(b) && (a.Name == "hub" || b.Name == "hub")
+	return c.authorized(a) && c.authorized(b) && (a.Name == "hub" || b.Name == "hub" || direct(a) && direct(b))
+}
+
+// direct is whether n asked to be shown to the other nodes that ask.
+func direct(n *node) bool {
+	return n.Hostinfo != nil && slices.Contains(n.Hostinfo.RequestTags, PeerTag)
+}
+
+// only is the rule that takes TCP on one port from any peer in the map.
+func only(port uint16) tailcfg.FilterRule {
+	return tailcfg.FilterRule{SrcIPs: []string{"*"}, IPProto: []int{int(ipproto.TCP)},
+		DstPorts: []tailcfg.NetPortRange{{IP: "*", Ports: tailcfg.PortRange{First: port, Last: port}}}}
+}
+
+// filter is n's packet filter: the hub takes TCP only on its gateway port, a client only PeerPort, from the hub too, which opens no connection to a client. It guards the peer API port only on a node that drops the backend's exemption for it, as the hub node and meshnet do.
+func (c *Coordinator) filter(n *node) []tailcfg.FilterRule {
+	if n.Name == "hub" {
+		// Never empty: an omitted filter keeps the last one. Port 0, before the gateway is set, is a port nothing listens on.
+		return []tailcfg.FilterRule{only(uint16(c.gatewayPort))}
+	}
+	return []tailcfg.FilterRule{only(PeerPort)}
 }
 
 // tail is headscale's TailNode, trimmed to one address and hub services. A

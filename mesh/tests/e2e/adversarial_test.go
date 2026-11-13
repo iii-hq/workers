@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	meshclient "github.com/iii-hq/workers/mesh/internal/client"
 	"github.com/iii-hq/workers/mesh/internal/hub"
+	"github.com/iii-hq/workers/mesh/internal/meshnet"
 )
 
 func fakeWorker(f *fixture, n *testNode, name string) *iii.Client {
@@ -464,4 +466,21 @@ func TestE2EMeshSharing(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Security: over the mesh a joined machine opens the hub node's gateway port and nothing else, the backend's peer API included.
+func TestE2EHubTakesOnlyItsGateway(t *testing.T) {
+	f := newFixture(t, "default")
+	n := f.enrollMesh("probe")
+	gateway, err := netip.ParseAddrPort(f.hubAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to := gateway.Addr()
+	eventually(t, 10*time.Second, "the gateway port to open", func() error { return dial(n.mesh, to, gateway.Port()) })
+	for _, port := range []uint16{f.peerAPIPort(t, "hub", to), meshnet.PeerPort} {
+		if err := dial(n.mesh, to, port); err == nil {
+			t.Fatalf("the machine opened port %d on the hub node", port)
+		}
+	}
 }

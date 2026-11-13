@@ -519,10 +519,11 @@ def build(args: argparse.Namespace) -> int:
                 environment = os.environ.copy()
                 environment.update(deployment_targets.go_target_env(target))
                 environment.update(CGO_ENABLED="0", GOWORK="off", GOTOOLCHAIN="local")
+                tags = ["-tags", ",".join(str(tag) for tag in artifact["tags"])] if artifact.get("tags") else []
                 run(
                     "go", "build", "-mod=readonly", "-trimpath", "-ldflags",
                     f"-s -w -X main.version={descriptor['package_manifest_version']}",
-                    "-o", str(binary_path), ".", cwd=source_dir, env=environment,
+                    "-o", str(binary_path), *tags, ".", cwd=source_dir, env=environment,
                 )
             else:
                 manifest = source_dir / str(source["package_manifest"])

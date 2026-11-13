@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,7 @@ type Status struct {
 	RenameError     string         `json:"rename_error,omitempty"`   // why the machine does not have client.name
 	JoinUnused      bool           `json:"join_unused,omitempty"`    // client.hub_url or client.join is not the enrollment in use: used only after a leave
 	HubWantsVersion string         `json:"hub_wants_version,omitempty"`
+	PeerToPeer      bool           `json:"peer_to_peer"` // the direct listener is open and the running node asks to be shown to peers
 	Shared          []SharedStatus `json:"shared"`
 	Remote          []RemoteStatus `json:"remote"` // what this machine can call in the mesh
 }
@@ -110,6 +112,7 @@ type runner struct {
 	renameTo  string // name the hub gave, until the node's map shows it
 	renameErr string
 	unused    bool // see Status.JoinUnused
+	p2p       bool // see Status.PeerToPeer
 	mesh      *meshnet.Mesh
 	n         *node.Node
 }
@@ -126,6 +129,22 @@ const StatusChanged = "mesh::on-status-changed"
 
 // The first retry of a failed pass and the longest wait between two.
 var retryMin, retryMax = 2 * time.Second, time.Minute
+
+// pathSettle is the one more look after the hub was told of a path that is not direct.
+var pathSettle = 5 * time.Second
+
+// hubPath is this machine's path to the hub as the hub shows it; a variable so a test can move it with no event.
+var hubPath = func(m *meshnet.Mesh) string {
+	if m == nil {
+		return ""
+	}
+	for _, p := range m.Peers() {
+		if p.Name == "hub" {
+			return p.Path
+		}
+	}
+	return ""
+}
 
 func (r *runner) kick(why uint32) {
 	r.pending.Or(why)
@@ -222,7 +241,7 @@ func (r *runner) observe(ctx context.Context) error {
 		{iii.Source{FunctionID: "secrets::on-changed", Deliver: iii.DeliverOutput}, "mesh::on-config-change"},
 		{iii.Source{FunctionID: "engine::on-functions-changed", Deliver: iii.DeliverOutput}, "mesh::on-functions-change"},
 	} {
-		if _, err := local.Observe(o.source, o.target); err != nil {
+		if err := Observe(ctx, local, o.source, o.target, iii.ObserverOptions{}, func() { r.kick(wakeApply) }); err != nil {
 			return fmt.Errorf("observe %s: %w", o.source.FunctionID, err)
 		}
 	}
@@ -289,6 +308,7 @@ func (r *runner) loop(ctx context.Context) {
 				}
 				if why&wakeNode != 0 {
 					r.rename(ctx)
+					r.direct()
 				}
 			}
 			settle()
@@ -325,14 +345,28 @@ func (r *runner) loop(ctx context.Context) {
 	}
 }
 
-// publish delivers the status each time it changes. It is not loop, which a join holds for up to a minute.
+// publish delivers the status each time it changes, and tells the hub when what it shows of this machine changed. It is not loop, which a join holds for up to a minute.
 func (r *runner) publish(ctx context.Context) {
-	var last []byte
+	var last, announced []byte
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.dirty:
+		}
+		r.mu.Lock()
+		path := hubPath(r.mesh) // under the lock: stop closes the mesh only after it clears r.mesh
+		r.mu.Unlock()
+		// Not the whole node status: its clock skew moves on every hub call, and the hub's read is one.
+		view, _ := json.Marshal(struct {
+			Path    string
+			Workers []node.WorkerStatus
+		}{path, r.bridge.Status()})
+		if !bytes.Equal(view, announced) && r.bridge.Announce() {
+			announced = view // only what was sent: the connection coming up runs this again
+			if !strings.HasPrefix(path, "direct") {
+				time.AfterFunc(pathSettle, r.changed) // a path turning direct has no event: look once more
+			}
 		}
 		if r.emit == nil {
 			continue
@@ -382,6 +416,9 @@ func (r *runner) apply(ctx context.Context) {
 		r.fail("error", r.fetchErr)
 		return
 	}
+	if !r.cfg.PeerToPeer {
+		r.direct() // off first: the steps below can wait on the hub for half a minute
+	}
 	r.sync(ctx)
 	if r.done == nil {
 		r.start(ctx, *r.cfg)
@@ -392,6 +429,40 @@ func (r *runner) apply(ctx context.Context) {
 		r.unused = unused
 		r.mu.Unlock()
 	}
+	r.direct() // on last: the listener never opens over a share list older than the setting
+}
+
+// wantDirect is whether the direct path should be on: the setting, a name from the hub, and no hub asking for another version.
+func wantDirect(c *Config, named bool, wanted string) bool {
+	return c != nil && c.PeerToPeer && named && wanted == ""
+}
+
+// direct brings the listener and the tag in line with wantDirect.
+func (r *runner) direct() {
+	r.mu.Lock()
+	m, n := r.mesh, r.n
+	r.mu.Unlock()
+	if m == nil {
+		return
+	}
+	_, named := m.SelfName() // the first map wakes this again, as in rename
+	on := wantDirect(r.cfg, named, n.WantedVersion())
+	if on == r.p2p {
+		return
+	}
+	var net directNet
+	if on {
+		net = m
+	}
+	if err := r.bridge.SetDirect(net, r.o.Version); err != nil {
+		r.retry = true // r.p2p keeps its value so the next pass tries again
+		log.Printf("mesh: peer to peer: %v", err)
+		return
+	}
+	r.mu.Lock()
+	r.p2p = on
+	r.mu.Unlock()
+	r.changed()
 }
 
 // isUnused says whether client.hub_url or client.join names another hub or join value than the enrollment st.
@@ -528,6 +599,7 @@ func (r *runner) start(ctx context.Context, c Config) {
 		r.fail("error", err)
 		return
 	}
+	m.OnChange(func() { r.bridge.MapChanged(); r.changed() })
 	runCtx, cancel := context.WithCancel(ctx)
 	r.cancel, r.done, r.joined, r.since = cancel, make(chan error, 1), st, time.Now()
 	r.mu.Lock()
@@ -858,8 +930,9 @@ func (r *runner) stop(err error) {
 	r.cancel()
 	r.mu.Lock()
 	m := r.mesh
-	r.mesh, r.n = nil, nil
+	r.mesh, r.n, r.p2p = nil, nil, false
 	r.mu.Unlock()
+	_ = r.bridge.SetDirect(nil, "") // a refused withdrawal does not matter: each start begins without the tag
 	_ = r.bridge.SetRuntime(context.Background(), node.Runtime{})
 	m.Close()
 	r.done, r.joined = nil, nil
@@ -891,7 +964,7 @@ func (r *runner) fail(state string, err error) {
 func (r *runner) status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Status{Mode: "client", HubURL: r.hubURL, Namespace: r.bridge.Namespace(), State: r.state, Error: r.err, Retrying: r.retrying, RequestedName: r.requested, RenameError: r.renameErr, JoinUnused: r.unused}
+	s := Status{Mode: "client", HubURL: r.hubURL, Namespace: r.bridge.Namespace(), State: r.state, Error: r.err, Retrying: r.retrying, RequestedName: r.requested, RenameError: r.renameErr, JoinUnused: r.unused, PeerToPeer: r.p2p}
 	if r.mesh != nil {
 		var named bool
 		s.Node, named = r.mesh.SelfName()

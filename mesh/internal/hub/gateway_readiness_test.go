@@ -52,6 +52,7 @@ func TestGatewayPeerPathWithLostTSMPPong(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	h.Coordinator.SetGatewayPort(50334) // the hub node takes TCP only on its gateway port
 	accepted := make(chan error, 1)
 	go func() {
 		conn, err := listener.Accept()

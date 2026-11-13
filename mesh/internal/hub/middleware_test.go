@@ -36,6 +36,24 @@ func TestMiddlewareRefusesWithoutSessionKey(t *testing.T) {
 		t.Fatal("refused request reached engine")
 	}
 }
+
+// A node that says it changed is answered here, for its own session only, and reaches no engine function.
+func TestNodeChangedIsAnsweredByTheMiddleware(t *testing.T) {
+	h := authHub()
+	f := &forwardingRPC{}
+	laptop := SessionContext{MeshNode: "laptop", SessionKey: h.Sessions.Open("laptop")}
+	if out, err := h.middleware(t.Context(), f, MiddlewareRequest{FunctionID: "mesh::node::changed", Namespace: "proj", Context: laptop, Action: iii.VoidAction()}); err != nil || string(out) != "null" {
+		t.Fatalf("answer %s %v", out, err)
+	}
+	for _, ctx := range []SessionContext{{}, {MeshNode: "laptop", SessionKey: "invalid"}, {MeshNode: "desktop", SessionKey: laptop.SessionKey}} {
+		if _, err := h.middleware(t.Context(), f, MiddlewareRequest{FunctionID: "mesh::node::changed", Namespace: "proj", Context: ctx}); err == nil {
+			t.Fatalf("answered for %+v", ctx)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("reached the engine: %+v", f.calls)
+	}
+}
 func TestMiddlewareConfigurationRules(t *testing.T) {
 	h := authHub()
 	ctx := SessionContext{MeshNode: "laptop", SessionKey: h.Sessions.Open("laptop")}

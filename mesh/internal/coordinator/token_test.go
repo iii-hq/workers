@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -302,6 +303,55 @@ type pollRecorder struct {
 }
 
 func (w *pollRecorder) Flush() { w.ResponseRecorder.Flush(); w.flushed <- struct{}{} }
+
+// meshnet's 10-minute rule counts from the last response a machine received, so each one says when the hub wrote it.
+func TestEveryMapResponseCarriesTheTime(t *testing.T) {
+	clock := asyncClock{tstest.NewClock(tstest.ClockOpts{})}
+	c, err := newWithClock(t.TempDir(), func(string, string) (string, error) { return "", nil }, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _, secret := issueToken(t, c, join.TokenOptions{})
+	req := tokenRequest(secret, "laptop")
+	machine := key.NewMachine().Public()
+	if !c.register(machine, "a", req).MachineAuthorized {
+		t.Fatal("join failed")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	b, _ := json.Marshal(tailcfg.MapRequest{NodeKey: req.NodeKey, Stream: true})
+	recorder := &pollRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: make(chan struct{}, 10)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.serveMap(recorder, httptest.NewRequest("POST", "/machine/map", bytes.NewReader(b)).WithContext(ctx), machine)
+	}()
+	defer func() { cancel(); <-done }()
+	check := func(what string, keepAlive bool) {
+		t.Helper()
+		select {
+		case <-recorder.flushed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s was not written", what)
+		}
+		var resp tailcfg.MapResponse
+		size := binary.LittleEndian.Uint32(recorder.Body.Next(4))
+		if err := json.Unmarshal(recorder.Body.Next(int(size)), &resp); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if resp.KeepAlive != keepAlive || resp.ControlTime == nil || !resp.ControlTime.Equal(clock.Now()) {
+			t.Fatalf("%s: keepalive %t with time %v, want %t with %s", what, resp.KeepAlive, resp.ControlTime, keepAlive, clock.Now())
+		}
+	}
+	check("the full map", false)
+	clock.Advance(time.Second) // short of the keepalive, so the next response is the delta
+	c.mu.Lock()
+	c.changed(c.byKey(req.NodeKey))
+	c.mu.Unlock()
+	check("a delta", false)
+	clock.Advance(time.Minute)
+	check("a keepalive", true)
+}
 
 func TestEphemeralNameReuseRevokesOnlyCurrentToken(t *testing.T) {
 	clock := asyncClock{tstest.NewClock(tstest.ClockOpts{})}

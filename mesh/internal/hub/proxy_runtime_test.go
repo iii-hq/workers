@@ -6,13 +6,20 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/gateway"
 )
 
 type proxyRPC struct {
+	mu         sync.Mutex // the hub's loop calls while a test changes the answers
+	callErr    error      // fails the rbac-proxy call itself
+	writeErr   error      // fails configuration::ensure and configuration::set
+	gets       int        // configuration::get calls: one for each pass that writes nothing
 	applyErr   error
 	applied    map[string]any
 	applyCalls int
@@ -23,8 +30,13 @@ type proxyRPC struct {
 	writes     int
 }
 
+func (f *proxyRPC) set(change func()) { f.mu.Lock(); defer f.mu.Unlock(); change() }
+func (f *proxyRPC) passes() int       { f.mu.Lock(); defer f.mu.Unlock(); return f.gets }
+
 func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var p map[string]any
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		f.t.Fatal(err)
@@ -34,6 +46,9 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 			f.t.Fatalf("proxy refresh namespace: %s", req.Namespace)
 		}
 		f.applyCalls++
+		if f.callErr != nil {
+			return nil, f.callErr
+		}
 		if f.ack != nil {
 			return f.ack, nil
 		}
@@ -50,8 +65,14 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 	if req.Namespace != "default" || p["id"] != "rbac-proxy" {
 		f.t.Fatalf("proxy config routing: %+v %s", req, p)
 	}
+	if req.FunctionID == "configuration::get" {
+		f.gets++
+	}
 	if f.err != nil {
 		return nil, f.err
+	}
+	if req.FunctionID != "configuration::get" && f.writeErr != nil {
+		return nil, f.writeErr
 	}
 	switch req.FunctionID {
 	case "configuration::get":
@@ -267,6 +288,171 @@ func TestLegacyProxyUpgradeNeverRepairsEndpointsOrConflicts(t *testing.T) {
 			after, _ := json.Marshal(f.value)
 			if f.writes != 0 || f.applyCalls != 0 || string(before) != string(after) {
 				t.Fatal("conflicting legacy config changed")
+			}
+		})
+	}
+}
+
+// within waits up to 5 s for ok.
+func within(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+	}
+}
+
+func TestRetryWaitsDoubleToAMinuteAndStartOver(t *testing.T) {
+	defer func(d time.Duration) { retryMin = d }(retryMin)
+	retryMin = time.Second
+	var r retry
+	defer r.reset()
+	for _, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, time.Minute, time.Minute} {
+		if r.again(func() {}); r.wait != want {
+			t.Fatalf("wait %s, want %s", r.wait, want)
+		}
+	}
+	if r.reset(); r.wait != 0 || r.timer.Stop() {
+		t.Fatal("reset left the retry armed")
+	}
+	if r.again(func() {}); r.wait != time.Second {
+		t.Fatalf("wait %s after a reset, want the first one", r.wait)
+	}
+	// One retry at a time: a pass that fails while a retry waits replaces it.
+	retryMin = 50 * time.Millisecond
+	r.reset()
+	var first, second atomic.Int32
+	r.again(func() { first.Add(1) })
+	r.again(func() { second.Add(1) })
+	within(t, "the retry did not run", func() bool { return second.Load() == 1 })
+	if first.Load() != 0 {
+		t.Fatal("a replaced retry still ran")
+	}
+}
+
+// An event may have ended the failure: the pass runs at once and the wait starts over.
+func TestAnEventStartsTheRetryOver(t *testing.T) {
+	h, _ := tunnelHub(t, false)
+	h.proxyKick = make(chan struct{}, 1)
+	for name, r := range map[string]struct {
+		retry *retry
+		kick  func()
+		woken chan struct{}
+	}{"proxy": {&h.proxyRetry, h.kickProxy, h.proxyKick}, "tunnel": {&h.tunnelRetry, h.kickTunnel, h.tunnelKick}} {
+		r.retry.again(func() {})
+		if r.kick(); r.retry.wait != 0 || r.retry.timer.Stop() || len(r.woken) != 1 {
+			t.Fatalf("%s: wait %s, %d passes asked for; want no wait and one pass", name, r.retry.wait, len(r.woken))
+		}
+	}
+}
+
+// proxyLoop is a hub with a healthy proxy and its loop running; first is the retry's first wait.
+func proxyLoop(t *testing.T, first time.Duration) (*Hub, *proxyRPC) {
+	t.Helper()
+	old := retryMin
+	retryMin = first
+	h := authHub()
+	h.proxyKick, h.tunnelKick = make(chan struct{}, 1), make(chan struct{}, 1)
+	h.MeshGateway = gateway.New(func(netip.Addr) (string, bool) { return "laptop", true }, h.config.ProxyURL, h.Tickets)
+	f := &proxyRPC{t: t}
+	h.proxyClient, h.proxyReady = f, true
+	h.SetHooks(Hooks{})
+	if h.refreshProxy(t.Context()); h.proxyHealth() != "ok" {
+		t.Fatalf("start: %s", h.proxyHealth())
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); h.serve(t.Context()) }()
+	t.Cleanup(func() {
+		<-done // the test's context ended before the cleanups
+		h.proxyRetry.reset()
+		h.MeshGateway.Close()
+		retryMin = old
+	})
+	return h, f
+}
+
+func TestProxyFollowsFunctionChanges(t *testing.T) {
+	h, f := proxyLoop(t, time.Hour) // no retry comes in time: only the event can run a pass
+	f.set(func() { f.err = errors.New("config unavailable") })
+	h.functionsChanged()
+	within(t, "a function change did not run the proxy pass", func() bool { return h.proxyHealth() != "ok" && h.MeshGateway.Status() != "ok" })
+	f.set(func() { f.err = nil })
+	h.functionsChanged()
+	within(t, "a function change did not bring the proxy back", func() bool { return h.proxyHealth() == "ok" && h.MeshGateway.Status() == "ok" })
+}
+
+// A pass that ends well, or in a failure an event ends, leaves no retry waiting and the next failure starts from the first wait.
+func TestProxyPassThatEndsStopsItsRetry(t *testing.T) {
+	defer func(d time.Duration) { retryMin = d }(retryMin)
+	retryMin = time.Minute
+	for name, end := range map[string]func(*proxyRPC){
+		"it recovers": func(f *proxyRPC) { f.err = nil },
+		"another function owns the entry": func(f *proxyRPC) {
+			f.err, f.value = nil, map[string]any{"rbac": map[string]any{"auth_function_id": "other::auth"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := authHub()
+			f := &proxyRPC{t: t, err: errors.New("config unavailable")}
+			h.proxyClient, h.proxyReady = f, true
+			defer h.proxyRetry.reset()
+			if h.reconcileProxy(t.Context()); h.proxyRetry.wait != time.Minute {
+				t.Fatalf("wait %s after a failure no event ends, want a retry", h.proxyRetry.wait)
+			}
+			end(f)
+			if h.reconcileProxy(t.Context()); h.proxyRetry.wait != 0 || h.proxyRetry.timer.Stop() {
+				t.Fatal("the pass left its retry waiting")
+			}
+		})
+	}
+}
+
+func TestProxyRetriesOnlyWhatNoEventEnds(t *testing.T) {
+	missing := &iii.InvocationError{Code: "function_not_found"}
+	for _, tc := range []struct {
+		name  string
+		fail  func(*proxyRPC)
+		retry bool
+	}{
+		{"the rbac-proxy call times out", func(f *proxyRPC) { f.callErr = iii.ErrTimeout }, true},
+		{"the configuration read fails", func(f *proxyRPC) { f.err = errors.New("config unavailable") }, true},
+		{"the configuration write fails", func(f *proxyRPC) { f.value, f.writeErr = nil, iii.ErrTimeout }, true},
+		{"rbac-proxy could not bind", func(f *proxyRPC) { f.applyErr = errors.New("address already in use") }, true},
+		{"rbac-proxy answers an unbound listener", func(f *proxyRPC) {
+			f.ack, _ = json.Marshal(map[string]any{"ok": true, "applied_config": f.applied, "bound_host": f.applied["host"], "bound_port": 0})
+		}, true},
+		{"rbac-proxy is not connected", func(f *proxyRPC) { f.callErr = missing }, false},
+		{"the configuration worker is not connected", func(f *proxyRPC) { f.err = missing }, false},
+		{"another function owns the entry", func(f *proxyRPC) {
+			f.value = map[string]any{"rbac": map[string]any{"auth_function_id": "other::auth"}}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, f := proxyLoop(t, 5*time.Millisecond)
+			start := f.passes()
+			f.set(func() { tc.fail(f) })
+			h.kickProxy() // the only event until the failure is over
+			within(t, "the event did not run a pass", func() bool { return f.passes() > start && h.proxyHealth() != "ok" })
+			time.Sleep(200 * time.Millisecond)
+			n := f.passes() - start
+			if !tc.retry {
+				if n != 1 {
+					t.Fatalf("%d passes in 200 ms for a failure an event ends, want 1", n)
+				}
+				h.functionsChanged()
+				within(t, "the event did not run a pass", func() bool { return f.passes() == start+2 })
+				return
+			}
+			if n > 8 { // 5, 10, 20, 40, 80 ms apart: 6 passes
+				t.Fatalf("%d passes in 200 ms, want a doubling wait", n)
+			}
+			within(t, "the failure was not tried again", func() bool { return f.passes() >= start+3 })
+			f.set(func() { f.callErr, f.err, f.writeErr, f.applyErr, f.ack = nil, nil, nil, nil, nil })
+			within(t, "the retry did not bring the proxy back", func() bool { return h.proxyHealth() == "ok" })
+			n = f.passes()
+			if time.Sleep(100 * time.Millisecond); f.passes() != n {
+				t.Fatal("a pass ran after the proxy came back")
 			}
 		})
 	}

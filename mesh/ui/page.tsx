@@ -24,10 +24,12 @@ type Shared = { worker: string; state: string; functions: string[] }
 type ClientStatus = {
   mode: 'client'; hub_url: string; node: string; namespace: string; state: string; error: string
   retrying?: boolean; requested_name?: string; rename_error?: string
+  // peer_to_peer: the direct listener is open; remote[].path: how calls to that machine travel (absent for the hub).
+  peer_to_peer?: boolean
   // join_unused: client.hub_url or client.join is not the enrollment in use; it is used only after a leave.
   join_unused?: boolean; hub_wants_version?: string; shared: Shared[]
   // What this machine can call, by owner, hub first: ids are its local hub::… and peer::<machine>::… functions.
-  remote?: { machine: string; functions: string[] }[]
+  remote?: { machine: string; functions: string[]; path?: string }[]
 }
 // The hub's mesh::status; `tunnel` is present only while the tunnel is enabled.
 type Tunnel = { enabled: boolean; tunnel_id: string; state: string; url?: string; error?: string }
@@ -99,10 +101,10 @@ function SharedWorkers({ node, functions, skipped }: { node: Node; functions: En
 
 type Mode = 'hub' | 'client'
 // The basics a connection needs. Everything else lives in the configuration form.
-type Basics = { mode: Mode; public_url: string; tunnel: boolean; hub_url: string; join: string; name: string; share: string[]; hub_share: string[] }
+type Basics = { mode: Mode; public_url: string; tunnel: boolean; hub_url: string; join: string; name: string; peer_to_peer: boolean; share: string[]; hub_share: string[] }
 const BASIC_PATHS: Record<keyof Basics, string[]> = {
   mode: ['mode'], public_url: ['public_url'], tunnel: ['tunnel', 'enabled'], hub_url: ['client', 'hub_url'], join: ['client', 'join'],
-  name: ['client', 'name'], share: ['client', 'share'], hub_share: ['share'],
+  name: ['client', 'name'], peer_to_peer: ['client', 'peer_to_peer'], share: ['client', 'share'], hub_share: ['share'],
 }
 function basicsOf(config: JsonValue | null): Basics {
   const text = (path: string[]) => { const v = config === null ? undefined : at(config, path); return typeof v === 'string' ? v : '' }
@@ -111,6 +113,7 @@ function basicsOf(config: JsonValue | null): Basics {
     mode: text(BASIC_PATHS.mode) === 'client' ? 'client' : 'hub', public_url: text(BASIC_PATHS.public_url),
     tunnel: config !== null && at(config, BASIC_PATHS.tunnel) === true,
     hub_url: text(BASIC_PATHS.hub_url), join: text(BASIC_PATHS.join), name: text(BASIC_PATHS.name),
+    peer_to_peer: config !== null && at(config, BASIC_PATHS.peer_to_peer) === true,
     share: list(BASIC_PATHS.share), hub_share: list(BASIC_PATHS.hub_share),
   }
 }
@@ -120,7 +123,7 @@ const MODE_OPTIONS: { value: Mode; label: string; icon: false }[] = [
 ]
 const MODE_HELP: Record<Mode, string> = {
   hub: 'This project is the hub. Other projects join it as clients; the hub and every machine can call the workers the others share.',
-  client: 'This project joins another project\'s hub. It shares the workers you pick below and can call what the hub and other machines share.',
+  client: 'This project joins another project\'s hub. It shares the workers you pick below and can call what the hub and other machines share. Calls go through the hub unless both machines turn on peer to peer.',
 }
 // The mesh worker refuses these or never publishes their functions; listing them would only offer a switch that does nothing.
 const NEVER_SHARED = new Set(['mesh', 'secrets', 'configuration', 'rbac-proxy', 'approval-gate'])
@@ -228,6 +231,12 @@ function ShareList({ share, saved, live, workers, machine, place, calls, risk, f
   </section>
 }
 
+// How calls to a machine travel, from remote[].path; an unknown value shows nothing.
+const PATH_LABEL: Record<string, string> = {
+  hub: 'through the hub', direct: 'peer to peer · direct', relay: 'peer to peer · relayed by the hub machine', idle: 'peer to peer',
+}
+const PEER_RISK = ' With peer to peer on, machines that also turned it on call this machine directly: the hub does not see, limit or log those calls, and a machine the hub removed keeps access for up to 10 minutes while this machine cannot reach the hub.'
+
 function ClientSetup({ basics, saved, edit, status, workers, functions, secretInput, onLeave }: {
   basics: Basics; saved: Basics; edit: <K extends keyof Basics>(key: K, value: Basics[K]) => void
   status: ClientStatus | null; workers: string[]; functions: EngineFunction[]; secretInput?: SecretInput
@@ -244,6 +253,8 @@ function ClientSetup({ basics, saved, edit, status, workers, functions, secretIn
   const [variant, headline, next] = CLIENT_STATE[state] ?? (status?.error ? CLIENT_STATE.error : [])
   const renamed = state === 'connected' && wanted !== '' && status?.requested_name === wanted && status.node !== wanted
   const node = status?.node || basics.name || 'machine'
+  // The worker lags a save until it reads it; only a joined machine on the hub's version has a direct path to wait for.
+  const p2pPending = status?.state === 'connected' && !status.hub_wants_version && Boolean(status.peer_to_peer) !== saved.peer_to_peer ? (saved.peer_to_peer ? 'applying…' : 'stopping…') : ''
   return <>
     <section className="mesh-ui-section" aria-labelledby="mesh-connect-title">
       <div className="mesh-ui-section-head"><h2 id="mesh-connect-title">Hub connection</h2>
@@ -270,17 +281,20 @@ function ClientSetup({ basics, saved, edit, status, workers, functions, secretIn
         <SettingsField label="Machine name" field="client.name" description="How this project appears on the hub. The hub may add a suffix such as -2."
           error={basics.name && !NAME.test(basics.name) ? 'Use lowercase letters, digits and single hyphens, starting with a letter and not ending with a hyphen.' : undefined}
           renderControl={(props) => <Input {...props} placeholder="my-laptop" value={basics.name} onChange={(next) => edit('name', next)} />} />
+        <SettingsField label="Peer to peer" field="client.peer_to_peer" description="Call machines that also turned this on directly, and take their calls the same way, without the hub project in between. The hub still introduces the machines and relays the encrypted traffic when they cannot reach each other. Those machines learn this machine's network addresses."
+          renderControl={(props) => <span className="mesh-ui-inline"><Switch {...props} checked={basics.peer_to_peer} onChange={(e) => edit('peer_to_peer', e.currentTarget.checked)} />
+            {p2pPending ? <span className="mesh-ui-muted" role="status">{p2pPending}</span> : null}</span>} />
       </SettingsList>
     </section>
     <ShareList share={basics.share} saved={saved.share} live={status ? status.shared ?? [] : null} workers={workers} machine={status?.node ?? ''}
       place="this machine" calls={<>the hub calls them as <code>{node}::function</code>, other machines as <code>peer::{node}::function</code></>}
-      risk="The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here."
-      footer="The hub project and every machine joined to the hub can call what you share." onChange={(next) => edit('share', next)} />
+      risk={"The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here." + (basics.peer_to_peer ? PEER_RISK : '')}
+      footer={"The hub project and every machine joined to the hub can call what you share." + (basics.peer_to_peer ? PEER_RISK : '')} onChange={(next) => edit('share', next)} />
     <section className="mesh-ui-section" aria-labelledby="mesh-remote-title">
       <div className="mesh-ui-section-head"><h2 id="mesh-remote-title">Available from the mesh</h2></div>
       <div className="mesh-ui-workers">{remote.length ? <ul role="list" aria-labelledby="mesh-remote-title">
-        {remote.map(({ machine, functions: ids }) => <li key={machine}>
-          <FunctionList worker={machine} machine={machine === 'hub' ? 'hub' : `peer::${machine}`} lead={<code>{machine}</code>}
+        {remote.map(({ machine, functions: ids, path }) => <li key={machine}>
+          <FunctionList worker={machine} machine={machine === 'hub' ? 'hub' : `peer::${machine}`} lead={<code>{machine}</code>} state={path ? PATH_LABEL[path] : undefined}
             functions={ids.map((id) => ({ function_id: id, description: described.get(id) }))} />
         </li>)}
       </ul> : <p className="mesh-ui-muted">{status?.state === 'connected' ? 'Nothing is shared with this machine yet' : 'Shown once this machine is connected'}</p>}</div>

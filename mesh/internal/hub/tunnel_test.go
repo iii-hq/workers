@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 // tunnelRPC fakes quick-tunnel's acquire/status/release contract.
 type tunnelRPC struct {
+	mu                                sync.Mutex // the hub's loop calls while a test changes the answers
 	calls                             []string
 	payloads                          []map[string]any
 	acquireErr, statusErr, releaseErr error
@@ -37,6 +40,8 @@ func (f *tunnelRPC) Call(_ context.Context, r iii.CallRequest) (json.RawMessage,
 	if err := json.Unmarshal(r.Payload, &p); err != nil {
 		return nil, err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls, f.payloads = append(f.calls, r.FunctionID), append(f.payloads, p)
 	switch r.FunctionID {
 	case "quick-tunnel::acquire":
@@ -76,7 +81,26 @@ func (f *tunnelRPC) Call(_ context.Context, r iii.CallRequest) (json.RawMessage,
 	}
 	return nil, errors.New("unexpected " + r.FunctionID)
 }
-func (f *tunnelRPC) take() []string { c := f.calls; f.calls = nil; return c }
+func (f *tunnelRPC) take() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.calls
+	f.calls = nil
+	return c
+}
+func (f *tunnelRPC) set(change func()) { f.mu.Lock(); defer f.mu.Unlock(); change() }
+
+// count is how many calls of id the fake took; "" counts every call.
+func (f *tunnelRPC) count(id string) (n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if id == "" || c == id {
+			n++
+		}
+	}
+	return n
+}
 
 func tunnelHub(t *testing.T, coord bool) (*Hub, *tunnelRPC) {
 	f := &tunnelRPC{state: "starting"}
@@ -251,30 +275,182 @@ func TestTunnelKeepsURLWhileLeaseHolds(t *testing.T) {
 	}
 }
 
-func TestTunnelRetriesFailedRelease(t *testing.T) {
-	h, f := tunnelHub(t, false)
-	ctx := context.Background()
-	h.reconcileTunnel(ctx)
-	f.take()
-	f.releaseErr = iii.ErrTimeout
-	h.config.Tunnel.Enabled = false
-	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release")
-	f.releaseErr = nil
-	h.reconcileTunnel(ctx)
-	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release")
+// shortLease lowers the lease times for a test that waits for them.
+func shortLease(t *testing.T, lease, renew time.Duration) {
+	oldLease, oldRenew := tunnelLease, tunnelRenew
+	tunnelLease, tunnelRenew = lease, renew
+	t.Cleanup(func() { tunnelLease, tunnelRenew = oldLease, oldRenew })
+}
 
-	h.config.Tunnel.Enabled = true // a new target waits for the old lease's release
-	h.reconcileTunnel(ctx)
-	f.take()
-	f.releaseErr = iii.ErrTimeout
-	h.config.Tunnel.TunnelID = "hub"
-	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release")
-	f.releaseErr = nil
-	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release", "quick-tunnel::acquire", "quick-tunnel::status")
+// tunnelLoop is a tunnel hub with its loop running; first is the retry's first wait.
+func tunnelLoop(t *testing.T, first time.Duration) (*Hub, *tunnelRPC) {
+	t.Helper()
+	old := retryMin
+	retryMin = first
+	h, f := tunnelHub(t, false)
+	h.proxyKick, h.Sessions = make(chan struct{}, 1), &Sessions{}
+	done := make(chan struct{})
+	go func() { defer close(done); h.serve(t.Context()) }()
+	t.Cleanup(func() {
+		<-done // the test's context ended before the cleanups
+		h.tunnelRetry.reset()
+		if h.tunnelDue != nil {
+			h.tunnelDue.Stop()
+		}
+		retryMin = old
+	})
+	return h, f
+}
+
+func TestTunnelLeaseIsRenewedByItsDeadline(t *testing.T) {
+	shortLease(t, 600*time.Millisecond, 400*time.Millisecond)
+	h, f := tunnelLoop(t, time.Hour)
+	h.kickTunnel() // the only event
+	within(t, "the lease was not renewed when it was due", func() bool { return f.count("quick-tunnel::acquire") >= 2 })
+	var ends []time.Time // of each lease asked for
+	f.set(func() {
+		for i, id := range f.calls {
+			if end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(f.payloads[i]["expires_at"])); id == "quick-tunnel::acquire" && err == nil {
+				ends = append(ends, end)
+			}
+		}
+	})
+	if late := ends[1].Sub(ends[0]); late >= tunnelLease {
+		t.Fatalf("renewed %s after the acquire: the %s lease had ended", late, tunnelLease)
+	}
+}
+
+func TestTunnelRetriesOnlyWhatNoEventEnds(t *testing.T) {
+	const acquire, status, url = "quick-tunnel::acquire", "quick-tunnel::status", "https://abc234.opentunnel.xyz"
+	t.Run("an acquire that times out", func(t *testing.T) {
+		h, f := tunnelLoop(t, 5*time.Millisecond)
+		f.set(func() { f.acquireErr, f.state, f.url = iii.ErrTimeout, "ready", url })
+		h.kickTunnel() // the only event
+		within(t, "a timed out acquire was not tried again", func() bool { return f.count(acquire) >= 3 })
+		if s := h.Status(); s.PublicURL != "" || s.Tunnel.State != "unavailable" {
+			t.Fatalf("status while acquire fails: %+v %+v", s, s.Tunnel)
+		}
+		f.set(func() { f.acquireErr = nil })
+		within(t, "the retry did not publish the URL", func() bool { return h.Status().PublicURL == url })
+	})
+	t.Run("a status that times out", func(t *testing.T) {
+		h, f := tunnelLoop(t, 5*time.Millisecond)
+		f.set(func() { f.statusErr = iii.ErrTimeout })
+		h.kickTunnel()
+		within(t, "a timed out status was not tried again", func() bool { return f.count(status) >= 3 })
+	})
+	t.Run("a lease quick-tunnel dropped", func(t *testing.T) {
+		h, f := tunnelLoop(t, 5*time.Millisecond)
+		f.set(func() { f.dropLease = true })
+		h.kickTunnel()
+		within(t, "a lease that status does not list was not acquired again", func() bool { return f.count(acquire) >= 2 })
+	})
+	for name, err := range map[string]error{
+		"quick-tunnel is not installed":   &iii.InvocationError{Code: "function_not_found", Message: acquire},
+		"quick-tunnel has no such target": errors.New("invalid consumer_id or unauthorized tunnel_id"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, f := tunnelLoop(t, 5*time.Millisecond)
+			f.set(func() { f.acquireErr = err })
+			h.kickTunnel()
+			within(t, "the event did not run a pass", func() bool { return f.count(acquire) > 0 })
+			time.Sleep(200 * time.Millisecond)
+			if n := f.count(acquire); n != 1 {
+				t.Fatalf("%d acquires in 200 ms for a failure quick-tunnel starting ends, want 1", n)
+			}
+			h.functionsChanged() // what quick-tunnel starting causes
+			within(t, "a function change did not run the tunnel pass", func() bool { return f.count(acquire) == 2 })
+		})
+	}
+}
+
+// A lease the hub no longer wants is released by the retry: nothing announces that quick-tunnel answers again.
+func TestTunnelRetriesFailedRelease(t *testing.T) {
+	const acquire, release = "quick-tunnel::acquire", "quick-tunnel::release"
+	for name, change := range map[string]func(*Config){
+		"the tunnel is turned off": func(c *Config) { c.Tunnel.Enabled = false },
+		"the tunnel id changes":    func(c *Config) { c.Tunnel.TunnelID = "hub" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, f := tunnelLoop(t, 5*time.Millisecond)
+			h.kickTunnel()
+			within(t, "no lease", func() bool { return f.count("quick-tunnel::status") == 1 })
+			f.set(func() { f.releaseErr = iii.ErrTimeout })
+			h.mu.Lock()
+			change(&h.config)
+			h.mu.Unlock()
+			h.kickTunnel() // the configuration change: the last event
+			within(t, "the event did not run a pass", func() bool { return f.count(release) > 0 })
+			time.Sleep(200 * time.Millisecond)
+			if n := f.count(release); n > 8 { // 5, 10, 20, 40, 80 ms apart: 6 releases
+				t.Fatalf("%d releases in 200 ms, want a doubling wait", n)
+			}
+			within(t, "the failed release was not tried again", func() bool { return f.count(release) >= 3 })
+			if n := f.count(acquire); n != 1 {
+				t.Fatalf("%d acquires while the old lease is held, want 1", n)
+			}
+			f.set(func() { f.releaseErr = nil })
+			held := func() string { h.tunnelMu.Lock(); defer h.tunnelMu.Unlock(); return h.tunnel.tunnelID }
+			within(t, "the retry did not release the lease", func() bool { return held() != "mesh" })
+			if h.Config().Tunnel.Enabled { // the new target waited for the old lease's release
+				within(t, "the new target was not acquired", func() bool { return held() == "hub" && f.count("quick-tunnel::status") == 2 })
+			}
+			n := f.count("")
+			if time.Sleep(100 * time.Millisecond); f.count("") != n {
+				t.Fatal("a call followed the release")
+			}
+		})
+	}
+}
+
+// A pass that ends with nothing to retry leaves no retry waiting, and the next failure starts from the first wait.
+func TestTunnelPassThatEndsStopsItsRetry(t *testing.T) {
+	defer func(d time.Duration) { retryMin = d }(retryMin)
+	retryMin = time.Minute
+	h, f := tunnelHub(t, false)
+	f.acquireErr = iii.ErrTimeout
+	if h.reconcileTunnel(t.Context()); h.tunnelRetry.wait != time.Minute {
+		t.Fatalf("wait %s after a failure no event ends, want a retry", h.tunnelRetry.wait)
+	}
+	f.acquireErr = nil
+	h.reconcileTunnel(t.Context())
+	defer h.tunnelDue.Stop()
+	if h.tunnelRetry.wait != 0 || h.tunnelRetry.timer.Stop() {
+		t.Fatal("the pass left its retry waiting")
+	}
+}
+
+// A lease that ends while quick-tunnel is away has no event: its deadline stops the URL, with one pass and no spin.
+func TestTunnelStopsPublishingWhenTheLeaseEnds(t *testing.T) {
+	const acquire, status, url = "quick-tunnel::acquire", "quick-tunnel::status", "https://abc234.opentunnel.xyz"
+	for _, tc := range []struct {
+		name  string
+		event bool
+		want  []string
+	}{
+		{"an event finds quick-tunnel gone", true, []string{acquire, status, status, acquire}},
+		{"the renewal finds quick-tunnel gone", false, []string{acquire, status, acquire, acquire}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shortLease(t, time.Second, 400*time.Millisecond)
+			h, f := tunnelLoop(t, time.Hour)
+			f.set(func() { f.state, f.url = "ready", url })
+			h.kickTunnel()
+			within(t, "the tunnel did not turn ready", func() bool { return h.Status().PublicURL == url })
+			missing := &iii.InvocationError{Code: "function_not_found"}
+			f.set(func() { f.acquireErr, f.statusErr = missing, missing })
+			if tc.event {
+				h.kickTunnel() // the last event
+			}
+			within(t, "the failed call was not reported", func() bool { return h.Status().Tunnel.Error == tunnelNotResponding })
+			if got := h.Status().PublicURL; got != url {
+				t.Fatalf("public URL %q while the lease holds, want %q", got, url)
+			}
+			within(t, "the URL outlived its lease", func() bool { s := h.Status(); return s.PublicURL == "" && s.Tunnel.State == "unavailable" })
+			time.Sleep(150 * time.Millisecond)
+			wantCalls(t, f, tc.want...) // a deadline in the past would spin
+		})
+	}
 }
 
 func TestTunnelChangeKicksOnlyForOwnTarget(t *testing.T) {

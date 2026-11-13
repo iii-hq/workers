@@ -108,6 +108,7 @@ func (h *hub) start(t *testing.T, ctx context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.SetGatewayPort(49135) // the hub node takes TCP only on its gateway port
 	r.listener = listeners[0]
 	serveEcho(r.listener)
 }
@@ -118,7 +119,7 @@ type node struct {
 	status *ipnstate.Status
 }
 
-func (h *hub) enroll(t *testing.T, name string) *node {
+func (h *hub) enroll(t *testing.T, name string, tags ...string) *node {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -134,6 +135,7 @@ func (h *hub) enroll(t *testing.T, name string) *node {
 		t.Fatal(err)
 	}
 	s := h.client(t, name, secret)
+	s.AdvertiseTags = tags
 	status, err := s.Up(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -269,6 +271,55 @@ func TestJoinIsolateRemove(t *testing.T) {
 	if got := h.redemptions.Load(); got != 2 {
 		t.Fatalf("join exchanges = %d, want 2", got)
 	}
+}
+
+// Security: nodes that both request the peer tag reach each other's peer port and nothing else; an untagged node stays out.
+func TestPeerToPeerVisibility(t *testing.T) {
+	h := newHub(t)
+	a, b, c := h.enroll(t, "a", coordinator.PeerTag), h.enroll(t, "b", coordinator.PeerTag), h.enroll(t, "c")
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	// b really listens on both ports, so only the packet filter explains a second port that does not answer.
+	var open, other string
+	for port, address := range map[uint16]*string{coordinator.PeerPort: &open, 49135: &other} {
+		listener, err := b.server.Listen("tcp6", fmt.Sprintf(":%d", port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		serveEcho(listener)
+		*address = netip.AddrPortFrom(b.status.TailscaleIPs[0], port).String()
+	}
+	eventually(t, ctx, "a reaches b's peer port", func(ctx context.Context) error { return echo(ctx, a.server, open) })
+	if err := echo(ctx, a.server, other); err == nil {
+		t.Fatal("a reached a port of b other than the peer port")
+	}
+	sees := func(n, peer *node) bool {
+		t.Helper()
+		s, err := status(t.Context(), n.server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.Peer[peer.status.Self.PublicKey] != nil
+	}
+	if !sees(a, b) || !sees(b, a) {
+		t.Fatal("tagged a and b do not see each other")
+	}
+	if sees(c, a) || sees(c, b) || sees(a, c) || sees(b, c) {
+		t.Fatal("untagged c is in a tagged node's map, or one is in its map")
+	}
+	if err := echo(ctx, c.server, open); err == nil {
+		t.Fatal("untagged c reached b's peer port")
+	}
+	if err := h.run.c.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, ctx, "b drops removed a", func(context.Context) error {
+		if sees(b, a) {
+			return errors.New("b still sees a")
+		}
+		return nil
+	})
 }
 
 func TestHubRestartKeepsNodes(t *testing.T) {

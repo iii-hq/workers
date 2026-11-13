@@ -33,15 +33,27 @@ iii call --engine ws://127.0.0.1:49834 mesh::nodes::get name=laptop
 ```
 
 Status reports front-door, gateway and proxy health plus total, online and
-outdated node counts. The list holds each node's name, address, platform,
-version, online state and shared workers; each shared worker lists its hub
-function ids (`<node>::<function>`). The hub re-reads the online nodes when the
-functions registered on its engine change, so a worker shared or stopped after
-the join shows within about a second. What changes with no such event, a node's
-connection path or a worker shared with no functions, shows within 30 seconds:
-the hub also re-reads every online node at that interval. An empty list means
-no client has joined. An offline node exposes no functions, though its workers
-may still list the ids it last reported.
+outdated node counts. The hub applies its rbac-proxy settings again when the
+functions on its engine change, when the `rbac-proxy` configuration entry
+changes and when its engine connection returns. It polls nothing. Each change
+of the functions costs one read of the `rbac-proxy` entry and one call to
+rbac-proxy. A call that times out, or an rbac-proxy that could not bind its
+port, is tried again after 1 second and then at doubling intervals up to a
+minute; a missing rbac-proxy or an entry another worker owns is not retried:
+the hub waits for the event that changes it.
+
+The list holds each node's name, address, platform, version, online state and
+shared workers; each shared worker lists its hub function ids
+(`<node>::<function>`). The hub reads an online node again when the functions
+registered on its engine change, when the node says its shared workers or its
+path changed, and when the nodes are listed, so a worker shared or stopped
+after the join shows within about a second and **Refresh** shows each node's
+current path. A node looks at its path once more 5 seconds after it reported
+one that is not direct. A later move between direct and relayed is not
+announced, because the network layer reports no such event; it shows the next
+time the node is read. An empty list means no client has joined. An offline
+node exposes no functions, though its workers may still list the ids it last
+reported.
 
 ## Node events
 
@@ -210,8 +222,14 @@ The public URL is `public_url` when set, otherwise the tunnel URL once the
 tunnel is `ready`, otherwise empty. While `public_url` is set the hub holds no
 lease and `mesh::status` reports the tunnel as `overridden`. The hub holds a
 10-minute lease, renews it when under 5 minutes remain and releases it on
-shutdown, so quick-tunnel's `max_lease_seconds` must be at least 600. A failed
-quick-tunnel call keeps the last URL while the lease is unexpired.
+shutdown, so quick-tunnel's `max_lease_seconds` must be at least 600. The hub
+follows the tunnel through `quick-tunnel::on-changed` and through the changes
+of its engine's functions, and polls nothing. A quick-tunnel call that times
+out, a release that fails and a lease quick-tunnel dropped are tried again
+after 1 second and then at doubling intervals up to a minute. While
+quick-tunnel is not installed, or has no target for the tunnel id, the hub
+waits for quick-tunnel to start. A failed quick-tunnel call keeps the last URL
+while the lease is unexpired.
 `mesh::status` reports `tunnel.state` (`starting`, `ready`,
 `reconnecting`, `failed`, `stopped`, `unavailable` or `overridden`),
 `tunnel.error` and `tunnel.proxy_protocol` (`v2` while the hub reads visitor
@@ -281,9 +299,11 @@ card, removes a node, revokes its token and replaces the code.
 
 Every node connection passes the hub gateway and rbac-proxy. Its functions
 register under the node's name, and `<node>::mesh-node::*` accepts only
-requests signed by the hub. A node's only call grant in the project's
-namespace is `mesh::call`. No function registers that id: the hub's middleware
-answers it by running a function from its list of shared functions. It refuses
+requests signed by the hub. A node's call grants in the project's namespace
+are `mesh::call` and `mesh::node::changed`. No function registers either id.
+`mesh::node::changed` carries nothing the hub reads: it makes the hub read that
+node's signed status again. For `mesh::call`, the hub's middleware answers it
+by running a function from its list of shared functions. It refuses
 with `FORBIDDEN` when the calling machine is not on the hub's version, the
 function is not listed under the stated owner, the owner is the caller, a hub
 worker is no longer in `share` or the call asks to be enqueued. Until it has
@@ -298,8 +318,8 @@ function and the owner, never the payload. In `default` a node may call
 `configuration::on-updated` for those entries. It may also
 observe its own `<node>::*` functions in the project's namespace, with empty
 args. Other observations, ADE assets and condition callbacks are refused. A
-client bridge receives calls and calls only `mesh::call`; it uses none of the
-configuration grants.
+client bridge receives calls and calls only `mesh::call` and
+`mesh::node::changed`; it uses none of the configuration grants.
 
 ## Isolated local build and validation
 
@@ -319,6 +339,9 @@ done
 III_BIN=/absolute/path/to/iii mesh/tests/e2e/run-tests.sh
 node --test mesh/tests/e2e/public-report.test.mjs
 ```
+
+Builds and tests use `-tags ts_omit_peerapiserver`, as `make build`, `make test`
+and the runner do; an untagged `go test` fails on purpose.
 
 The runner allocates loopback engine and proxy ports and temporary state, and
 cleans up only its own process groups. Raw logs/frames can contain credentials:
@@ -340,7 +363,7 @@ lab=$(mktemp -d)
 printf '%s\n' '{"workers":[{"name":"iii-worker-manager","config":{"host":"127.0.0.1","port":49834}}]}' > "$lab/engine.json"
 (cd "$lab" && exec /absolute/path/to/iii --no-update-check --config "$lab/engine.json")
 # In another terminal, using that same lab path:
-# Build: (cd "$repo/mesh" && go build -o "$lab/mesh" .)
+# Build: make -C "$repo/mesh" build BIN="$lab/mesh"
 # Run: (cd "$lab" && exec ./mesh --url ws://127.0.0.1:49834)
 iii call --engine ws://127.0.0.1:49834 -n project mesh::status --json '{}'
 ```
@@ -397,7 +420,8 @@ A client is a project's own mesh worker joined to another project's hub as a
 node, without root, publishing chosen local workers there. The hub sees them
 as `<node>::<function>`, for example `harness-mbp::mesh-probe::echo`, and
 each call is forwarded to the local engine. Every other joined machine calls
-them through the hub as `peer::<node>::<function>`. Networking runs in
+them through the hub as `peer::<node>::<function>`, or directly when both
+machines turn on `client.peer_to_peer` (see [Peer to peer](#peer-to-peer)). Networking runs in
 userspace: no TUN device, no root, no system service. A client opens no hub
 listener and writes no hub state.
 
@@ -408,6 +432,7 @@ client:
   join: secret://MESH_JOIN            # secret://NAME or env://NAME, never the code itself
   name: harness-mbp                   # requested; the hub may assign harness-mbp-2
   share: [mesh-probe]                 # local workers the mesh may call; [] shares nothing
+  peer_to_peer: false                 # true: call machines that also turned this on directly, without the hub
 ```
 
 Store the hub's join code or `iiimj_` token as secret `MESH_JOIN` with
@@ -459,9 +484,115 @@ client is not connected, and a call in flight ends with `mesh_offline` when the
 connection drops. Such a call may still run: the SDK sends a call it queued
 once it reconnects, and a call already sent keeps running where it lives. Retry
 only what is safe to run twice. The hub re-reads what is shared when the functions on its
-engine, its `share` list or a machine's version change. It sends the list in a
+engine, its `share` list or a machine's version change, or when a machine says
+its shares changed. It sends the list in a
 signed control call to each machine that holds another revision, and the
-mirrors follow. Leaving and removal clear them.
+mirrors follow. Leaving and removal clear them. With `client.peer_to_peer` on,
+a call to a machine that also turned it on skips the hub (next section).
+
+### Peer to peer
+
+`client.peer_to_peer` (default `false`) is one switch for both directions. It
+applies live, with no restart and no re-join, and the Mesh page shows
+"applying…" or "stopping…" until the machine has caught up. With it on, a
+machine:
+
+- requests the tag `tag:p2p` in its hostinfo. The hub shows two joined machines
+  to each other only when both request it; the hub is shown to everyone as
+  before.
+- listens on TCP port 9136 of its own tunnel address, reachable only from those
+  machines, and takes their calls there.
+- sends its `peer::<machine>::<function>` calls to such a machine directly,
+  one HTTP request on its own connection per call, inside the WireGuard tunnel
+  between the two machines.
+
+A hub does not take part in the setting: it ignores it. The hub still admits and
+removes machines, hands out keys and addresses, builds the catalog of what each
+machine shares (so a machine that shares must still reach the hub to be listed),
+serves `hub::<function>` calls and serves every pair where either machine has
+the setting off.
+
+| Calling machine | Target | Route |
+| --- | --- | --- |
+| any | the hub (`hub::…`) | hub |
+| setting off | any | hub |
+| setting on | setting off, or not yet in its map | hub |
+| setting on | setting on | direct; the hub engine is not called |
+
+There is no fallback. When both machines have the setting on and the call
+cannot go direct (the connection cannot be opened, the target leaves the map or
+is renamed during the call, the answer does not come from the target), the call
+fails with `mesh_offline` and is not sent through the hub: turning the setting
+on says these calls stay out of the hub project, and a call that failed after it
+was sent may have run, so repeating it elsewhere could run it twice. A target
+that refuses answers with its own error, `FORBIDDEN` for a function it does not
+share.
+
+**Is it really direct?** Both machines always exchange packets inside a
+WireGuard tunnel keyed by their own node keys, so the hub cannot read or alter
+them and no hub engine function runs. Whether the packets cross the hub machine
+depends on the network path:
+
+- **Direct path:** UDP between the two machines. It forms on one network, when a
+  machine has a public address or a port mapping, or across NATs when the hub
+  sets `stun_port` (which needs `public_url`; a tunnel carries no UDP).
+- **Relay path:** otherwise the encrypted packets go through the relay on the
+  hub machine. `stun_port` defaults to 0, so machines on different networks are
+  relayed by default. The hub does not read them, but they use the hub machine
+  and stop when it stops.
+
+`remote[].path` in `mesh::status` and the Mesh page say which one a machine is
+on: `hub`, `direct`, `relay` ("relayed by the hub machine") or `idle` (no
+active path at the moment). Never read `relay` as direct. The page learns the
+path when a direct call opens it and looks once more 5 seconds after the calls;
+a later move between relayed and direct is not announced, because the network
+layer reports no such event, and shows at the next refresh.
+
+The target decides, per call, from the tunnel address the connection comes
+from. It refuses, before reading the payload, a caller that is not a joined
+machine, the hub or itself, a caller on another mesh version, and any function
+that is not in its own current share list, so an unshare takes effect at the
+next call without the hub, and `hub::…`, `peer::…`, `mesh::`, `approval::` and
+the other ids that are never shared cannot be reached through it. It runs the
+function exactly as for a call through the hub: caller `mesh`, no confirmation,
+and the function is not told which machine called.
+
+What this changes for security:
+
+- Machines with the setting on learn each other's network addresses and
+  hostinfo.
+- The hub does not see, limit or log these calls. A target logs its refusals
+  only, at most one line per calling machine every 10 seconds.
+- **The 10-minute rule.** A removal reaches a machine only through the hub, so
+  both ends use the direct path only while they heard the hub in the last 10
+  minutes. After that, calls fail with `mesh_offline` until the hub is heard
+  again. A machine the hub removed can keep calling a target that cannot reach
+  the hub for up to 10 minutes: the hub sends every machine a message at least
+  once a minute, and each end counts from the last one it received. When the
+  hub removes a machine or renames the target, or a machine turns the setting off, calls in flight with
+  it end at once with `mesh_offline`. The function on the target may still run,
+  and it holds the caller's slot until it returns.
+- A machine may have 64 calls in flight on a target and 72 open connections to
+  it; the target has 512 connections in all. The 65th call gets `mesh_busy`.
+  Counts follow the tunnel address, so a rename does not reset them.
+- A payload or result is limited to 16 MiB each way.
+
+Two limits the hub path does not have:
+
+- **A silent machine.** A target that sleeps, crashes or loses its network
+  without leaving the mesh stays in the caller's map, so nothing tells the
+  caller. A new call fails after 10 seconds, but a call already in flight waits
+  for its timeout (about 10 minutes). Through the hub the same loss is noticed
+  in about a minute.
+- **The 2-minute transfer.** A payload must reach the target, and a result
+  leave it, within 2 minutes each; slower than about 1.2 Mbit/s for 16 MiB
+  fails with `mesh_offline`. A function that then runs longer is not cut.
+
+Turning the setting off takes effect on that machine at once: it closes the
+listener, ends its direct calls, then withdraws the tag, and its peers go back
+to the hub path. The machine's tunnel keeps a closed port busy while connections
+that were accepted are open, so turning it on again right after can retry for
+a minute or more.
 
 Saving another `client.name` on a joined client renames the machine without
 leaving. The client asks the hub over its control connection, which proves the
@@ -492,12 +623,19 @@ cannot be shared, and functions under `engine::`, `mesh::`, `mesh-node::`,
 published or mirrored. The approval gate keeps agents away only from ids that
 start with `approval::`, so a mirrored `peer::<machine>::approval::resolve`
 would let an agent on one machine approve another machine's agent calls.
-Inbound tailnet connections to the client are refused and the local
-`III_TOKEN` is not sent to the hub. The hub gateway is reached through a random
-loopback port that accepts a connection only when its request carries a random
-per-process token in a header, so other local processes and web pages cannot
-act as this node toward the hub. A process that can read this worker's memory
-or state directory still can; it already holds the machine's keys.
+Inbound tailnet connections to the client are refused, except TCP port 9136
+while `client.peer_to_peer` is on, from the hub and from the machines the hub
+shows this one because both turned it on. The caller is named by its tunnel address and may
+call only what this machine shares. On the tailnet the hub's own machine
+accepts TCP connections only on `gateway_port`: every other port is closed to
+every machine. The release build omits the network library's peer API server
+(Go build tag `ts_omit_peerapiserver`), so no mesh process, hub or client,
+opens a listener for it on its host. The local `III_TOKEN` is not sent to the
+hub. The hub gateway is reached through a random loopback port that accepts a
+connection only when its request carries a random per-process token in a
+header, so other local processes and web pages cannot act as this node toward
+the hub. A process that can read this worker's memory or state directory still
+can; it already holds the machine's keys.
 
 The hub hands its namespace only to a node that runs its exact version, and
 nothing updates itself. On a mismatch the client's status shows the version the
@@ -508,7 +646,8 @@ on another version gets no mirrors, its workers stay out of the other machines'
 lists and its calls through the hub are refused. A client that already shares
 workers makes them callable by every machine once it runs the hub's version,
 without asking again. Build with `make build`, which stamps the `package.json`
-version (a plain `go build` has none and fails), and bump clients with the hub.
+version (a plain `go build` has none and fails) and sets the release build tag,
+and bump clients with the hub.
 
 Bridging is request/response only. Channel refs in a payload or result are
 refused with `channels_unsupported`; triggers, observers and events do not
@@ -521,8 +660,8 @@ the list: other machines cannot call it, while the hub project still calls a
 machine's shares. The hub admits its own shares first, then machines by name,
 up to 8 MiB in all. It logs each owner left out, lists the machines under
 `catalog_skipped` in its `mesh::status` and marks its own shares `too large`. A
-machine may have 64 calls through the hub in flight; the next one fails with
-`mesh_busy`. These limits are fixed. Windows clients and payloads over 16 MiB
+machine may have 64 calls through the hub in flight, and 64 to each target on
+the direct path; the next one fails with `mesh_busy`. These limits are fixed. Windows clients and payloads over 16 MiB
 are unsupported.
 Live acceptance against a running hub remains unverified.
 
@@ -582,7 +721,9 @@ without revoking the token or replacing the code.
 Upgrade the hub before its clients, or both together: a hub of the earlier
 build shares nothing with a client of this one. To downgrade a hub to a build
 before 0.2.0, first remove the `share` key from its entry, even an empty list:
-an earlier build refuses the entry and stops at startup.
+an earlier build refuses the entry and stops at startup. Likewise remove
+`client.peer_to_peer`, even `false`, from a client before running a build
+before 0.3.0.
 
 ## Agent access
 
@@ -605,7 +746,7 @@ See [NOTICE](NOTICE) for upstream provenance and licenses.
 ## Building the Console assets
 
 The Go binary embeds committed `assets/page.js` and `assets/styles.css` through
-its top-level assets package. A fresh `go vet`, `go test` or `make build` needs
+its top-level assets package. A fresh `go vet`, `make test` or `make build` needs
 no Node installation or frontend output. After changing `ui/`, use the pinned
 repository Node/pnpm toolchain and rebuild before committing:
 

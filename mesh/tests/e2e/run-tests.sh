@@ -17,4 +17,4 @@ for task_binary in "$III_BIN" "$MESH_TEST_PROXY_BIN" "$MESH_TEST_FP_BIN" "$MESH_
   [[ -x "$task_binary" ]] || { echo "Missing executable: $task_binary" >&2; exit 1; }
 done
 cd "$TASK_ROOT/mesh"
-go test -tags=e2e ./tests/e2e -count=1 -timeout=15m -v "$@"
+go test -tags=e2e,ts_omit_peerapiserver ./tests/e2e -count=1 -timeout=15m -v "$@"

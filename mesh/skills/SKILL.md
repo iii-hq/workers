@@ -39,6 +39,15 @@ no longer shared, and `mesh_busy` when this machine already has 64 calls in
 flight. A call that ended with `mesh_offline` or a timeout may still have run
 on its target: check before retrying one that changes something.
 
+`mesh::status` `remote[].path` says how each machine is reached: `hub`, or
+`direct`, `relay` or `idle` when both machines turned on peer to peer and the
+call skips the hub. A `peer::` call to such a machine is never retried through
+the hub: it fails with `mesh_offline` when that machine cannot be reached, when
+it leaves the mesh or is renamed during the call, or when either machine has not
+reached the hub for 10 minutes. It fails with `mesh_busy` when the target has 64
+calls in flight from this machine. A target that goes silent is reported only
+when the call times out, so a call can wait up to about 10 minutes.
+
 Discovery reads are allowed. Remote calls need approval by default, `hub::` and
 `peer::` calls included; a local tool's allow rule does not grant access to its
 remote counterpart. The machine that runs a remote call does not ask again.

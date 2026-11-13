@@ -18,7 +18,8 @@ import (
 )
 
 func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 35*time.Second)
+	// A hang guard only: under -race this test runs 33 to 36 s, and the dial right after the port move waits one SYN retransmit for the hub's new filter.
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	seen := make(chan string, 8)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,7 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
+	"github.com/iii-hq/workers/mesh/internal/node"
 	"tailscale.com/types/key"
 )
 
@@ -1009,6 +1010,191 @@ func TestRenameFailureKeepsTheNameAndIsAskedAgain(t *testing.T) {
 	}
 }
 
+func TestWantDirect(t *testing.T) {
+	on := &Config{PeerToPeer: true}
+	for _, c := range []struct {
+		what   string
+		c      *Config
+		named  bool
+		wanted string
+		want   bool
+	}{
+		{"setting off", &Config{}, true, "", false},
+		{"no config", nil, true, "", false},
+		{"no name yet", on, false, "", false},
+		{"a hub on another version", on, true, "0.9.0", false},
+		{"all three good", on, true, "", true},
+	} {
+		if got := wantDirect(c.c, c.named, c.wanted); got != c.want {
+			t.Errorf("%s: %v", c.what, got)
+		}
+	}
+}
+
+// The setting opens and closes the path in the running node, off before the pass waits on anything and on after the
+// share list; a failure is retried; map changes reach the status and the calls; a stop or a removal closes it.
+func TestPeerToPeerFollowsTheSetting(t *testing.T) {
+	defer func(a, b time.Duration) { retryMin, retryMax = a, b }(retryMin, retryMax)
+	retryMin, retryMax = 100*time.Millisecond, time.Second
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MESH_JOIN_TEST", "iiimj_reusable")
+	hub, _, enrolled := testHub(t)
+	boot := func(name string, local localEngine, share []string) (*runner, func(bool)) {
+		var on atomic.Bool
+		r := &runner{dir: t.TempDir(), bridge: NewBridge(local, "local"), enroll: func(context.Context, Config, string) (joinState, bool, error) {
+			return enrolled(name), true, nil
+		}, o: Options{Version: "0.1.0", Fetch: func(context.Context) (string, *Config, error) {
+			return "client", &Config{Join: "env://MESH_JOIN_TEST", Share: share, PeerToPeer: on.Load()}, nil
+		}}}
+		return r, func(v bool) { on.Store(v); r.kick(wakeApply) }
+	}
+	mesh := func(r *runner) *meshnet.Mesh {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.mesh
+	}
+	open := func(r *runner) *direct {
+		r.bridge.mu.Lock()
+		defer r.bridge.mu.Unlock()
+		return r.bridge.direct
+	}
+	path := func(s Status) string {
+		if len(s.Remote) != 1 {
+			return ""
+		}
+		return s.Remote[0].Path
+	}
+	// beta's Status.PeerToPeer each time its sync lists the local functions; a channel sent on hold keeps that pass there until it closes.
+	var beta *runner
+	listed, hold := make(chan bool, 256), make(chan chan struct{}, 1)
+	rows := []map[string]any{row("probe::echo", "local", "probe")}
+	local := engine(&rows)
+	list := local.fn
+	local.fn = func(req iii.CallRequest) (json.RawMessage, error) {
+		if req.FunctionID == "engine::functions::list" {
+			listed <- beta.status().PeerToPeer
+			select {
+			case release := <-hold:
+				<-release
+			default:
+			}
+		}
+		return list(req)
+	}
+	pass := func(what string) bool {
+		t.Helper()
+		select {
+		case v := <-listed:
+			return v
+		case <-time.After(20 * time.Second):
+			t.Fatalf("no pass %s", what)
+			return false
+		}
+	}
+	drain := func() (out []bool) {
+		for {
+			select {
+			case v := <-listed:
+				out = append(out, v)
+			default:
+				return out
+			}
+		}
+	}
+	alpha, alphaOn := boot("alpha", &fakeLocal{}, nil)
+	beta, betaOn := boot("beta", local, []string{"probe"})
+	nextA, stopA := watched(t, alpha)
+	defer stopA()
+	nextB, stopB := watched(t, beta)
+	defer stopB()
+	nextA("alpha connected", func(s Status) bool { return s.State == "connected" && s.Node == "alpha" })
+	nextB("beta connected", func(s Status) bool { return s.State == "connected" && s.Node == "beta" })
+	alpha.bridge.SetCatalog(node.Catalog{Rev: "1", Functions: []node.CatalogEntry{{ID: "beta::probe::echo", Owner: "beta"}}})
+	alphaOn(true)
+	nextA("alpha on", func(s Status) bool { return s.PeerToPeer && path(s) == "hub" })
+
+	// A port the stack still holds fails the listen: logged, retried, and opened once free, in the same node.
+	m := mesh(beta)
+	held, err := m.ListenPeers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	betaOn(true)
+	if s := nextB("a retried listen", func(s Status) bool { return s.Retrying }); s.PeerToPeer || s.State != "connected" || s.Error != "" {
+		t.Fatalf("status %+v", s)
+	}
+	_ = held.Close()
+	nextB("beta on", func(s Status) bool { return s.PeerToPeer && !s.Retrying })
+	if mesh(beta) != m || len(hub.Nodes()) != 2 {
+		t.Fatalf("node restarted: nodes %+v", hub.Nodes())
+	}
+	if seen := drain(); slices.Contains(seen, true) {
+		t.Fatalf("listed with the path open in the passes that turned it on: %v", seen)
+	}
+	// A pass with the setting kept on leaves the path as it is: the second pass lists after the first one ended.
+	d := open(beta)
+	beta.kick(wakeApply)
+	first := pass("with the setting kept on")
+	beta.kick(wakeApply)
+	if !first || !pass("after it") || open(beta) != d {
+		t.Fatal("a pass with the setting kept on closed or reopened the path")
+	}
+
+	// Both on: beta joins alpha's map, which reaches alpha's status and later ends alpha's calls to beta.
+	nextA("beta in alpha's map", func(s Status) bool { return path(s) != "hub" && path(s) != "" })
+	addr, ok := mesh(alpha).Peer("beta")
+	if !ok {
+		t.Fatal("beta is not in alpha's map")
+	}
+	ended := make(chan struct{})
+	d = open(alpha)
+	d.mu.Lock()
+	d.calls[&directCall{owner: "beta", addr: addr, cancel: sync.OnceFunc(func() { close(ended) })}] = struct{}{}
+	d.mu.Unlock()
+
+	// Off is closed and shown while the pass that turned it off is still in its first step that may wait.
+	release := make(chan struct{})
+	unhold := sync.OnceFunc(func() { close(release) })
+	defer unhold()                 // runs before stopB, which waits for the held loop
+	mesh(beta).OnChange(func() {}) // the withdrawal's own notification would also publish it
+	hold <- release
+	betaOn(false)
+	nextB("beta off", func(s Status) bool { return !s.PeerToPeer })
+	if pass("that turned it off") || open(beta) != nil {
+		t.Fatal("the path was open when the pass that turned it off listed the local functions")
+	}
+	unhold()
+	nextA("beta gone from alpha's map", func(s Status) bool { return path(s) == "hub" })
+	select {
+	case <-ended:
+	case <-time.After(20 * time.Second):
+		t.Fatal("alpha's call to beta did not end when beta left its map")
+	}
+
+	// A restarted node opens the path again on its new stack, once the hub named it.
+	betaOn(true)
+	nextB("beta on again", func(s Status) bool { return s.PeerToPeer && !s.Retrying })
+	beta.done <- errors.New("connect node service: worker name taken")
+	if s := nextB("a stopped node", func(s Status) bool { return s.State == "error" }); s.PeerToPeer {
+		t.Fatalf("status %+v", s)
+	}
+	nextB("on in the new node", func(s Status) bool { return s.State == "connected" && s.PeerToPeer && !s.Retrying })
+	if now := mesh(beta); now == m || open(beta) == nil || open(beta).net != now {
+		t.Fatal("the path is not on the new node's stack")
+	}
+
+	if err := hub.Remove("beta"); err != nil {
+		t.Fatal(err)
+	}
+	if s := nextB("removed", func(s Status) bool { return s.State == removedState }); s.PeerToPeer || open(beta) != nil {
+		t.Fatalf("removal left the path open: %+v", s)
+	}
+	stopA()
+	if alpha.status().PeerToPeer || open(alpha) != nil {
+		t.Fatal("stop left the path open")
+	}
+}
+
 // Run observes its three sources, answers their events and gives a new status observer the current status.
 func TestRunObservesItsEventSources(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -1160,8 +1346,95 @@ func TestRunObservesItsEventSources(t *testing.T) {
 		"observer": map[string]any{"id": "page-1", "target": "iii::mesh-ui::events::console-1", "capture": []string{"input", "output", "caller"}, "on": "success"}})
 	send <- added
 	read("the current status for a new observer", func() bool { return registered["delivered"] != nil })
+
+	// The engine disposes the observers of a connection away too long: each is made again under a new id, then the settings are read again.
+	for source := range observed {
+		old, was, fetched := observers[source], observed[source], fetches.Load()
+		disposed, _ := json.Marshal(map[string]any{"type": "observerstatechanged", "id": old, "state": "disposed"})
+		send <- disposed
+		read(source+" observed again", func() bool { return observers[source] != old && fetches.Load() > fetched })
+		if !reflect.DeepEqual(observed[source], was) {
+			t.Fatalf("observed again as %+v, was %+v", observed[source], was)
+		}
+	}
 	cancel()
 	<-done
+}
+
+// announcing runs r.publish with the hub's path from path; connect brings the bridge's hub connection up, and the hub hands over what it gets.
+func announcing(t *testing.T, path func() string) (r *runner, frames chan map[string]json.RawMessage, connect func()) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	settle, read := pathSettle, hubPath
+	t.Cleanup(func() { pathSettle, hubPath = settle, read }) // after publish stops, which reads both
+	hubPath = func(*meshnet.Mesh) string { return path() }
+	url, frames := meshHub(t, false)
+	r = &runner{bridge: NewBridge(engine(&[]map[string]any{}), "local"), dirty: make(chan struct{}, 1)}
+	r.bridge.Changed = r.changed
+	t.Cleanup(r.bridge.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); r.publish(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return r, frames, func() {
+		t.Helper()
+		if err := r.bridge.SetRuntime(ctx, node.Runtime{Node: "laptop", Namespace: "hub", URL: url}); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, "connected", func() bool { return isOnline(r.bridge) })
+	}
+}
+
+// The hub is told when its shares or its path of this machine change, and only then.
+func TestPublishAnnouncesOnlyWhatTheHubShows(t *testing.T) {
+	var path atomic.Value
+	path.Store("direct 192.0.2.1:41641")
+	r, frames, connect := announcing(t, func() string { return path.Load().(string) })
+	pathSettle = time.Hour
+	connect()
+	nextFrame(t, frames) // the connection coming up tells the hub once
+	// A shared worker with no functions: no function event tells the hub.
+	if err := r.bridge.Sync(t.Context(), []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	nextFrame(t, frames)
+	r.changed()
+	noFrame(t, frames, 200*time.Millisecond)
+	path.Store("relay hub")
+	r.changed()
+	nextFrame(t, frames)
+	noFrame(t, frames, 200*time.Millisecond)
+}
+
+// A change made while the hub connection is down is told once the connection is up.
+func TestAChangeWhileOfflineIsAnnouncedWhenTheHubIsBack(t *testing.T) {
+	var looks atomic.Int32
+	r, frames, connect := announcing(t, func() string { looks.Add(1); return "direct 192.0.2.1:41641" })
+	if err := r.bridge.Sync(t.Context(), []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the change read", func() bool { return looks.Load() > 0 })
+	connect()
+	nextFrame(t, frames)
+	noFrame(t, frames, 200*time.Millisecond)
+}
+
+// A path that is not direct is looked at once more, since its move to direct has no event; a direct one is not.
+func TestThePathIsLookedAtOnceMore(t *testing.T) {
+	var path atomic.Value
+	path.Store("relay hub")
+	var looks atomic.Int32
+	_, frames, connect := announcing(t, func() string { looks.Add(1); return path.Load().(string) })
+	pathSettle = 200 * time.Millisecond
+	connect()
+	nextFrame(t, frames)
+	path.Store("direct 192.0.2.1:41641") // with no event
+	nextFrame(t, frames)
+	n := looks.Load()
+	noFrame(t, frames, 2*pathSettle)
+	if looks.Load() != n {
+		t.Fatal("a direct path was looked at again")
+	}
 }
 
 func mustJSON(t *testing.T, v any) []byte {

@@ -4,6 +4,7 @@
 [data-iii-ui="mesh"] h2 { font-size: 14px; font-weight: 600; margin: 0; }
 [data-iii-ui="mesh"] h3 { font-size: 13px; font-weight: 500; margin: 0; min-width: 0; overflow-wrap: anywhere; }
 [data-iii-ui="mesh"] .mesh-ui-muted { color: var(--color-ink-faint); font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-inline { display: inline-flex; align-items: center; gap: 8px; }
 [data-iii-ui="mesh"] .mesh-ui-nodes { display: flex; flex-direction: column; gap: 12px; }
 [data-iii-ui="mesh"] .mesh-ui-node { padding: 16px; background: var(--color-panel-raised); border: 1px solid var(--color-edge); border-radius: var(--radius-lg); }
 [data-iii-ui="mesh"] .mesh-ui-node-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }

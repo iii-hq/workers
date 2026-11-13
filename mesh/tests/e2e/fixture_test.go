@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,6 +33,7 @@ type fixture struct {
 	ctx                                                context.Context
 	dir, ns, engineURL, proxyURL, frontURL, hubAddress string
 	admin                                              *iii.Client
+	proxy                                              *exec.Cmd // kept so a test can kill it
 	config                                             hub.Config
 	identity                                           ed25519.PrivateKey
 }
@@ -172,7 +174,7 @@ func newFixture(t *testing.T, ns string) *fixture {
 	mustCall(t, f.admin, "default", "configuration::ensure", map[string]any{"id": "mesh", "name": "Mesh", "description": "mesh", "schema": map[string]any{}, "initial_value": f.config})
 	seed := filepath.Join(f.dir, "proxy.json")
 	writeJSON(t, seed, map[string]any{"host": "127.0.0.1", "port": proxyPort, "engine_url": f.engineURL})
-	startProcess(t, f.dir, "proxy", binary(t, "MESH_TEST_PROXY_BIN"), nil, "--url", f.engineURL, "--config", seed)
+	f.proxy = startProcess(t, f.dir, "proxy", binary(t, "MESH_TEST_PROXY_BIN"), nil, "--url", f.engineURL, "--config", seed)
 	eventually(t, 20*time.Second, "proxy ready", func() error { _, err := call(ctx, f.admin, ns, "rbac-proxy::status", map[string]any{}); return err })
 	hubDir := filepath.Join(f.dir, "hub")
 	done := make(chan error, 1)
@@ -236,6 +238,7 @@ type observedFrame struct {
 }
 type testNode struct {
 	server      *tsnet.Server
+	mesh        *meshnet.Mesh // the client's own stack, in place of server (enrollMesh)
 	name, url   string
 	mu          sync.Mutex
 	frames      []observedFrame
@@ -247,7 +250,9 @@ func (n *testNode) snapshot() []observedFrame {
 	defer n.mu.Unlock()
 	return append([]observedFrame(nil), n.frames...)
 }
-func (f *fixture) enroll(name string) *testNode {
+
+// redeem spends a fresh join code for the secret and the hub's verified identity.
+func (f *fixture) redeem() (string, join.Identity) {
 	t := f.t
 	t.Helper()
 	out := mustCall(t, f.admin, f.ns, "mesh::join::code", map[string]any{})
@@ -266,6 +271,12 @@ func (f *fixture) enroll(name string) *testNode {
 	if err = doc.Verify(identity); err != nil {
 		t.Fatal(err)
 	}
+	return secret, doc
+}
+func (f *fixture) enroll(name string) *testNode {
+	t := f.t
+	t.Helper()
+	secret, doc := f.redeem()
 	shim, err := meshnet.NewShim(f.frontURL, doc.Control)
 	if err != nil {
 		t.Fatal(err)
@@ -278,9 +289,40 @@ func (f *fixture) enroll(name string) *testNode {
 	if _, err = n.server.Up(ctx); err != nil {
 		t.Fatal(err)
 	}
+	f.forward(n, n.server.Dial)
+	return n
+}
+
+// enrollMesh joins name with the client's own stack, which two machines need to call each other.
+func (f *fixture) enrollMesh(name string) *testNode {
+	t := f.t
+	t.Helper()
+	secret, doc := f.redeem()
+	m, err := meshnet.UpUserspace(t.TempDir(), f.frontURL, secret, name, doc.Control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	eventually(t, 20*time.Second, name+" joined", func() error {
+		if got, _ := m.SelfName(); got != name {
+			return fmt.Errorf("named %q", got)
+		}
+		if _, ok := m.Peer("hub"); !ok {
+			return errors.New("the hub is not in its map")
+		}
+		return nil
+	})
+	n := &testNode{name: name, mesh: m}
+	f.forward(n, m.Dial)
+	return n
+}
+
+// forward gives n the loopback URL that reaches the hub gateway through dial and records every frame.
+func (f *fixture) forward(n *testNode, dial func(context.Context, string, string) (net.Conn, error)) {
+	t := f.t
 	// Child processes cannot dial an in-process userspace stack. Each forwarding
 	// connection dials through this node, so the real gateway still owns identity.
-	transport := &http.Transport{DialContext: n.server.Dial}
+	transport := &http.Transport{DialContext: dial}
 	t.Cleanup(transport.CloseIdleConnections)
 	forwarding := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstream, _, err := websocket.Dial(r.Context(), "ws://"+f.hubAddress, &websocket.DialOptions{HTTPClient: &http.Client{Transport: transport}})
@@ -325,7 +367,6 @@ func (f *fixture) enroll(name string) *testNode {
 	}))
 	t.Cleanup(forwarding.Close)
 	n.url = "ws" + strings.TrimPrefix(forwarding.URL, "http")
-	return n
 }
 
 func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }

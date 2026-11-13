@@ -63,7 +63,8 @@ func TestRemoveReturnsNewCode(t *testing.T) {
 	removed := make(chan string, 1)
 	changed := make(chan Config, 4)
 	h.SetHooks(Hooks{Gateway: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "gateway") }), RevokeNode: func(name string) { removed <- name }, ConfigChanged: func(ctx context.Context, old, next Config) { changed <- next }, ProxyStatus: func() string { return "ok" }})
-	client := &http.Client{Transport: &http.Transport{DialContext: node.Dial, DisableKeepAlives: true}, Timeout: 5 * time.Second}
+	// 15 s: the dial right after a port move waits SYN retransmits (1 s, then 3 s) for the hub's new filter, longer under -race.
+	client := &http.Client{Transport: &http.Transport{DialContext: node.Dial, DisableKeepAlives: true}, Timeout: 15 * time.Second}
 	defer client.CloseIdleConnections()
 	check := func(port int) {
 		t.Helper()

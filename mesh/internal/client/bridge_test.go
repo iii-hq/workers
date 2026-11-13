@@ -26,7 +26,8 @@ type fakeLocal struct {
 	mu      sync.Mutex
 	calls   []iii.CallRequest
 	fn      func(iii.CallRequest) (json.RawMessage, error)
-	mirrors map[string]iii.Handler // registrations; removals cannot be seen: Unregister of a handle the SDK did not make sends nothing
+	ctxFn   func(context.Context, iii.CallRequest) (json.RawMessage, error) // replaces fn where a test needs the call's context
+	mirrors map[string]iii.Handler                                          // registrations; removals cannot be seen: Unregister of a handle the SDK did not make sends nothing
 	opts    map[string]iii.RegisterFunctionOptions
 	added   int
 }
@@ -42,10 +43,13 @@ func (f *fakeLocal) RegisterFunction(id string, h iii.Handler, opts ...iii.Regis
 	return &iii.FunctionRef{ID: id}, nil
 }
 
-func (f *fakeLocal) Call(_ context.Context, r iii.CallRequest) (json.RawMessage, error) {
+func (f *fakeLocal) Call(ctx context.Context, r iii.CallRequest) (json.RawMessage, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, r)
 	f.mu.Unlock()
+	if f.ctxFn != nil {
+		return f.ctxFn(ctx, r)
+	}
 	return f.fn(r)
 }
 func (f *fakeLocal) called(id string) []iii.CallRequest {
@@ -416,7 +420,7 @@ func TestCatalogMirrors(t *testing.T) {
 	if o := local.opts["hub::shell::exec"]; o.Description != "run" || string(o.RequestFormat) != `{"type":"object"}` || o.Metadata != nil {
 		t.Fatalf("mirror options %+v", o)
 	}
-	if got := b.Remote(); b.CatalogRev() != "r1" || !reflect.DeepEqual(got, []RemoteStatus{{"hub", []string{"hub::shell::exec"}}, {"desk", []string{"peer::desk::coder::read-file"}}}) {
+	if got := b.Remote(); b.CatalogRev() != "r1" || !reflect.DeepEqual(got, []RemoteStatus{{"hub", []string{"hub::shell::exec"}, ""}, {"desk", []string{"peer::desk::coder::read-file"}, "hub"}}) {
 		t.Fatalf("remote %+v rev %q", got, b.CatalogRev())
 	}
 	var ie *iii.InvocationError
@@ -446,9 +450,9 @@ func TestCatalogMirrors(t *testing.T) {
 	}
 }
 
-// meshHub accepts the bridge and answers mesh::call with what it received, or drops the connection instead.
+// meshHub accepts the bridge and answers mesh::call with what it received, or drops the connection instead. It also hands over each mesh::node::changed.
 func meshHub(t *testing.T, drop bool) (string, chan map[string]json.RawMessage) {
-	calls := make(chan map[string]json.RawMessage, 4)
+	calls := make(chan map[string]json.RawMessage, 16)
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -463,7 +467,13 @@ func meshHub(t *testing.T, drop bool) (string, chan map[string]json.RawMessage) 
 				return
 			}
 			var f map[string]json.RawMessage
-			if json.Unmarshal(raw, &f) != nil || string(f["type"]) != `"invokefunction"` || string(f["function_id"]) != `"mesh::call"` {
+			if json.Unmarshal(raw, &f) != nil || string(f["type"]) != `"invokefunction"` {
+				continue
+			}
+			if id := string(f["function_id"]); id == `"mesh::node::changed"` {
+				calls <- f
+				continue
+			} else if id != `"mesh::call"` {
 				continue
 			}
 			calls <- f
@@ -514,13 +524,69 @@ func TestMirrorCallsThroughTheHub(t *testing.T) {
 	}
 }
 
+func isOnline(b *Bridge) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.online != nil && b.online.Err() == nil
+}
+
+// nextFrame returns the next frame the hub got, or fails after 5 s.
+func nextFrame(t *testing.T, frames chan map[string]json.RawMessage) map[string]json.RawMessage {
+	t.Helper()
+	select {
+	case f := <-frames:
+		return f
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hub got nothing")
+		return nil
+	}
+}
+
+// noFrame fails when the hub gets a frame within d.
+func noFrame(t *testing.T, frames chan map[string]json.RawMessage, d time.Duration) {
+	t.Helper()
+	select {
+	case f := <-frames:
+		t.Fatalf("the hub got %s", mustMarshal(f))
+	case <-time.After(d):
+	}
+}
+
+// Announce sends one void mesh::node::changed in the hub's namespace, and nothing while the hub connection is down.
+func TestAnnounce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	url, frames := meshHub(t, false)
+	b := NewBridge(engine(&[]map[string]any{}), "local")
+	defer b.Close()
+	if b.Announce() {
+		t.Fatal("announced with no hub connection")
+	}
+	if err := b.SetRuntime(context.Background(), node.Runtime{Node: "laptop", Namespace: "hub", URL: "ws://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.Announce() {
+		t.Fatal("announced while the hub connection is not up")
+	}
+	if err := b.SetRuntime(context.Background(), node.Runtime{Node: "laptop", Namespace: "hub", URL: url}); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "connected", func() bool { return isOnline(b) })
+	if !b.Announce() {
+		t.Fatal("not sent on a connection that is up")
+	}
+	if f := nextFrame(t, frames); string(f["function_id"]) != `"mesh::node::changed"` || string(f["namespace"]) != `"hub"` || f["invocation_id"] != nil {
+		t.Fatalf("the hub got %s", mustMarshal(f))
+	}
+	noFrame(t, frames, 100*time.Millisecond)
+}
+
 func mustMarshal(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 // The page reads remote from mesh::status: the hub first, as local mirror ids.
 func TestStatusListsRemote(t *testing.T) {
 	r := &runner{bridge: newBridge(t, engine(&[]map[string]any{}))}
 	r.bridge.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "alpha::probe::echo", Owner: "alpha"}, {ID: "shell::exec", Owner: "hub"}}})
-	if b, _ := json.Marshal(r.status()); !strings.Contains(string(b), `"remote":[{"machine":"hub","functions":["hub::shell::exec"]},{"machine":"alpha","functions":["peer::alpha::probe::echo"]}]`) {
+	if b, _ := json.Marshal(r.status()); !strings.Contains(string(b), `"remote":[{"machine":"hub","functions":["hub::shell::exec"]},{"machine":"alpha","functions":["peer::alpha::probe::echo"],"path":"hub"}]`) {
 		t.Fatalf("status %s", b)
 	}
 }

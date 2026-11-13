@@ -33,11 +33,11 @@ import (
 	"regexp"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"tailscale.com/control/controlclient"
 	"tailscale.com/envknob"
 	_ "tailscale.com/feature/condregister/portmapper"
-	"tailscale.com/health"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnlocal"
@@ -49,6 +49,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/nettype"
+	"tailscale.com/util/eventbus"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
 )
@@ -66,7 +67,6 @@ type Mesh struct {
 	engine         wgengine.Engine
 	monitor        *netmon.Monitor
 	dialer         *tsdial.Dialer
-	health         *health.Tracker
 	stack          *netstack.Impl
 	shim           *Shim
 	unwatch        context.CancelFunc
@@ -75,6 +75,8 @@ type Mesh struct {
 	resources      sync.Once
 	gateway        atomic.Uint32
 	name           atomic.Value // last assigned name seen, a string
+	heard          atomic.Pointer[time.Time]
+	onChange       atomic.Pointer[func()]
 	gatewayChanges chan struct{}
 	errors         chan string
 	done           chan struct{}
@@ -92,7 +94,7 @@ func UpUserspace(dir, publicURL, secret, name string, pinned key.MachinePublic) 
 	return startMesh(dir, shim, secret, name)
 }
 
-// startMesh runs upstream's userspace TUN plus a netstack that only dials out.
+// startMesh runs upstream's userspace TUN plus a netstack that dials out and takes inbound flows only on the ListenPeers listener.
 func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error) {
 	m := &Mesh{gatewayChanges: make(chan struct{}, 1), errors: make(chan string, 1), done: make(chan struct{}), sys: tsd.NewSystem(), shim: shim, watched: make(chan struct{}), removed: make(chan struct{})}
 	watcherStarted := false
@@ -124,8 +126,7 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 		return nil, err
 	}
 	m.sys.Set(m.engine)
-	m.health = m.sys.HealthTracker.Get()
-	m.health.SetMetricsRegistry(m.sys.UserMetricsRegistry())
+	m.sys.HealthTracker.Get().SetMetricsRegistry(m.sys.UserMetricsRegistry())
 	st, err := store.NewFileStore(logf, filepath.Join(dir, "state"))
 	if err != nil {
 		return nil, err
@@ -141,7 +142,7 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 	}
 	m.sys.Set(m.stack)
 	m.stack.ProcessLocalIPs = true
-	// Security: netstack would otherwise forward unclaimed inbound flows to host services (UDP to 127.0.0.1).
+	// Security: netstack would otherwise forward inbound flows no listener claims to host services (UDP to 127.0.0.1); ListenPeers opens the only listener.
 	m.stack.GetTCPHandlerForFlow = func(src, dst netip.AddrPort) (func(net.Conn), bool) { return nil, true }
 	m.stack.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) { return nil, true }
 	wrapper.Start()
@@ -149,6 +150,8 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 	if err != nil {
 		return nil, err
 	}
+	// Security: the backend lets peer API connections past the packet filter, and to it every mesh machine is the owner.
+	wrapper.PeerAPIPort = nil
 	if err = m.stack.Start(m.lb); err != nil {
 		return nil, err
 	}
@@ -171,6 +174,7 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 				return false
 			}
 			m.updateGateway()
+			m.changed()
 			return true
 		})
 		if removed {
@@ -182,6 +186,12 @@ func startMesh(dir string, shim *Shim, secret, name string) (_ *Mesh, err error)
 			close(m.removed)
 		}
 	}()
+	bus := m.sys.Bus.Get().Client("mesh")
+	// Every map response of the hub, keepalives included, carries its time: receiving one is hearing the hub.
+	// Wall time: the monotonic clock stops while the machine sleeps, and the 10-minute rule must count the sleep.
+	eventbus.SubscribeFunc(bus, func(controlclient.ControlTime) { m.heard.Store(new(time.Now().Round(0))) })
+	// A link change or a wake reaches the watcher above only when it moves the engine's endpoints, and the path to the hub can move with either.
+	eventbus.SubscribeFunc(bus, func(netmon.ChangeDelta) { m.changed() })
 	prefs := ipn.NewPrefs()
 	prefs.ControlURL, prefs.Hostname, prefs.WantRunning = shim.URL(), name, true
 	prefs.CorpDNS = false

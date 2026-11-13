@@ -13,11 +13,12 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
 )
 
 // A crashed hub stops being exposed within tunnelLease; a live one renews when
-// less than tunnelRenew remains.
-const (
+// less than tunnelRenew remains. Variables so tests can lower them.
+var (
 	tunnelLease = 10 * time.Minute
 	tunnelRenew = 5 * time.Minute
 )
@@ -93,12 +94,16 @@ func (h *Hub) tunnelStatus(cfg Config) *TunnelStatus {
 	return s
 }
 
-func (h *Hub) kickTunnel() {
+// wakeTunnel asks the hub's loop for a tunnel pass.
+func (h *Hub) wakeTunnel() {
 	select {
 	case h.tunnelKick <- struct{}{}:
 	default:
 	}
 }
+
+// kickTunnel is wakeTunnel for an event: it may have ended a failure, so the retry starts over.
+func (h *Hub) kickTunnel() { h.tunnelRetry.reset(); h.wakeTunnel() }
 func (h *Hub) onTunnelChange(e TunnelChangeEvent) ConfigChangeResult {
 	if cfg := h.Config(); tunnelEnabled(cfg) && e.TunnelID == tunnelIDOf(cfg) {
 		h.kickTunnel()
@@ -174,7 +179,9 @@ func (h *Hub) syncRelay() {
 
 // tunnelFailed reports a failed quick-tunnel call. While the held lease is
 // unexpired the tunnel most likely still serves, so its URL stays published.
-func (h *Hub) tunnelFailed(err error, id, listen string) {
+// It returns whether to try again: quick-tunnel starting ends a missing function or target, and that is an event.
+func (h *Hub) tunnelFailed(err error, id, listen string) bool {
+	again := !strings.Contains(err.Error(), "unauthorized tunnel_id") && !remoteCode(err, "function_not_found")
 	log.Printf("mesh tunnel: %v", err)
 	text := tunnelNotResponding
 	var remote *iii.InvocationError
@@ -189,9 +196,10 @@ func (h *Hub) tunnelFailed(err error, id, listen string) {
 		phase, url := h.tunnelPhase, h.tunnelURL
 		h.mu.RUnlock()
 		h.publishTunnel(phase, text, url)
-		return
+		return again
 	}
 	h.publishTunnel("unavailable", text, "")
+	return again
 }
 
 // reconcileTunnel holds a quick-tunnel lease while the tunnel is wanted and
@@ -206,6 +214,24 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 	cfg := h.Config()
 	id := tunnelIDOf(cfg)
 	want := tunnelEnabled(cfg) && cfg.PublicURL == ""
+	retry, failed := false, false // failed: a call failed; retry: and no event ends that
+	defer func() {
+		if h.tunnelDue != nil {
+			h.tunnelDue.Stop()
+		}
+		held := h.tunnel.leaseID != ""
+		if retry || held && (!want || h.tunnel.tunnelID != id) { // or a lease this pass could not release
+			h.tunnelRetry.again(h.wakeTunnel)
+			return
+		}
+		h.tunnelRetry.reset()
+		if left := time.Until(h.tunnel.expires); held && left > 0 {
+			if !failed {
+				left -= tunnelRenew // a good pass comes back to renew, a failed one only when the lease ends
+			}
+			h.tunnelDue = time.AfterFunc(left, h.wakeTunnel)
+		}
+	}()
 	if h.tunnel.leaseID != "" && (!want || h.tunnel.tunnelID != id) {
 		h.releaseLease()
 	}
@@ -217,12 +243,19 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 		return
 	}
 	if h.tunnel.leaseID != "" && h.tunnel.tunnelID != id {
-		return // the old target's release failed; retried on the next tick
+		return // the old target's release failed; the retry comes back for it
 	}
 	client := h.tunnelRPC()
 	if client == nil {
 		h.publishTunnel("unavailable", tunnelNotResponding, "")
 		return
+	}
+	if !h.tunnel.observed && h.Client != nil {
+		h.tunnel.observed = true // before the first acquire: quick-tunnel only reports changes to an observer
+		if err := meshclient.Observe(ctx, h.Client, iii.Source{FunctionID: "quick-tunnel::on-changed", Namespace: h.Namespace, Deliver: iii.DeliverInput},
+			"mesh::on-tunnel-change", iii.ObserverOptions{ID: "mesh-tunnel", TargetNamespace: h.Namespace}, func() { h.resumed(ctx) }); err != nil {
+			log.Printf("mesh tunnel observer: %v", err)
+		}
 	}
 	if h.tunnel.leaseID == "" || time.Until(h.tunnel.expires) < tunnelRenew {
 		expires := time.Now().Add(tunnelLease).UTC()
@@ -234,7 +267,7 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 			err = errors.New("acquire returned no lease")
 		}
 		if err != nil {
-			h.tunnelFailed(err, id, cfg.Listen)
+			failed, retry = true, h.tunnelFailed(err, id, cfg.Listen)
 			return
 		}
 		// A lease id we did not hold is a new grant, possibly under another PROXY mode
@@ -243,13 +276,6 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 			h.tunnelProxy.Store(false)
 		}
 		h.tunnel = tunnelState{leaseID: lease.LeaseID, tunnelID: id, expires: expires, observed: h.tunnel.observed}
-		if !h.tunnel.observed && h.Client != nil {
-			h.tunnel.observed = true // once: the 15 s tick covers a failed observer
-			if _, err := h.Client.Observe(iii.Source{FunctionID: "quick-tunnel::on-changed", Namespace: h.Namespace, Deliver: iii.DeliverInput},
-				"mesh::on-tunnel-change", iii.ObserverOptions{ID: "mesh-tunnel", TargetNamespace: h.Namespace}); err != nil {
-				log.Printf("mesh tunnel observer: %v", err)
-			}
-		}
 	}
 	var snap struct {
 		Status    string  `json:"status"`
@@ -262,7 +288,7 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 		} `json:"leases"`
 	}
 	if err := h.tunnelCall(ctx, client, "quick-tunnel::status", map[string]string{"tunnel_id": id}, &snap); err != nil {
-		h.tunnelFailed(err, id, cfg.Listen)
+		failed, retry = true, h.tunnelFailed(err, id, cfg.Listen)
 		return
 	}
 	listed := false
@@ -273,7 +299,7 @@ func (h *Hub) reconcileTunnel(ctx context.Context) {
 	}
 	h.tunnelRaw.Store(snap.Provider == "opentunnel")
 	if !listed {
-		h.tunnel.leaseID = "" // re-acquired by the next reconcile
+		h.tunnel.leaseID, retry = "", true // quick-tunnel dropped it with no event: the retry acquires again
 	}
 	url, errText := "", ""
 	if snap.Error != nil {

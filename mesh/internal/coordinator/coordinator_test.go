@@ -30,8 +30,10 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
+	"tailscale.com/types/ipproto"
 	"tailscale.com/types/key"
 	"tailscale.com/util/zstdframe"
+	"tailscale.com/wgengine/filter"
 )
 
 func newCoordinator(t *testing.T, dir string) *Coordinator {
@@ -80,6 +82,183 @@ func TestNodesSeeOnlyHub(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s peers %v, want %v", name, got, want)
 		}
+	}
+}
+
+// tag sends the hostinfo a node sends when it turns peer to peer on or off.
+func tag(t *testing.T, c *Coordinator, name string, on bool) {
+	t.Helper()
+	hi := &tailcfg.Hostinfo{Hostname: name}
+	if on {
+		hi.RequestTags = []string{PeerTag}
+	}
+	if err := c.update(c.byName(name), tailcfg.MapRequest{Hostinfo: hi}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Security: two nodes other than the hub see each other only while both request the peer tag.
+func TestOnlyTaggedNodesSeeEachOther(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	nodes := map[string]*node{}
+	for _, name := range []string{"hub", "a", "b", "c", "d", "gone"} {
+		registerNode(t, c, name)
+		nodes[name] = c.byName(name)
+	}
+	for _, name := range []string{"a", "b", "gone"} {
+		tag(t, c, name, true)
+	}
+	if err := c.Remove("gone"); err != nil {
+		t.Fatal(err)
+	}
+	nodes["d"].Hostinfo = nil // a node may register without one
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"hub", "a", true}, {"hub", "c", true}, {"hub", "d", true},
+		{"a", "b", true},
+		{"a", "c", false}, {"a", "d", false},
+		{"c", "d", false},
+		{"gone", "hub", false}, {"gone", "a", false}, {"gone", "c", false},
+	} {
+		if c.sees(nodes[tc.a], nodes[tc.b]) != tc.want || c.sees(nodes[tc.b], nodes[tc.a]) != tc.want {
+			t.Errorf("%s and %s see each other: want %v", tc.a, tc.b, tc.want)
+		}
+	}
+}
+
+func TestPeerTagChangeReachesTaggedPeers(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	for _, name := range []string{"hub", "a", "b", "c"} {
+		registerNode(t, c, name)
+	}
+	tag(t, c, "b", true)
+	a := c.byName("a")
+	sent, hosts := map[string]map[tailcfg.NodeID]uint64{"b": {}, "c": {}}, map[string]*string{"b": new(string), "c": new(string)}
+	poll := func(name string, full bool) *tailcfg.MapResponse {
+		t.Helper()
+		r, ok := c.delta(c.byName(name), sent[name], hosts[name], full, nil)
+		if !ok {
+			t.Fatalf("%s lost its map", name)
+		}
+		return r
+	}
+	for _, name := range []string{"b", "c"} {
+		if r := poll(name, true); len(r.Peers) != 1 || r.Peers[0].Name != "hub" {
+			t.Fatalf("%s starts with peers %+v", name, r.Peers)
+		}
+	}
+	ver := a.ver
+	tag(t, c, "a", true)
+	if a.ver == ver {
+		t.Fatal("a new tag did not change the node's version")
+	}
+	// The filter does not follow the tag, so a toggle resends none.
+	if r := poll("b", false); r == nil || len(r.PeersChanged) != 1 || r.PeersChanged[0].Name != "a" || r.PeersRemoved != nil || r.PacketFilter != nil {
+		t.Fatalf("tagged b after a's tag: %+v", r)
+	}
+	if r := poll("c", false); r != nil {
+		t.Fatalf("untagged c heard of a's tag: %+v", r)
+	}
+	ver = a.ver
+	tag(t, c, "a", true)
+	if r := poll("b", false); a.ver != ver || r != nil {
+		t.Fatalf("an unchanged tag was published: %+v", r)
+	}
+	tag(t, c, "a", false)
+	if a.ver == ver {
+		t.Fatal("a dropped tag did not change the node's version")
+	}
+	if r := poll("b", false); r == nil || r.PeersChanged != nil || !slices.Equal(r.PeersRemoved, []tailcfg.NodeID{a.ID}) {
+		t.Fatalf("tagged b after a dropped its tag: %+v", r)
+	}
+}
+
+// admits is whether rules let a new flow from src in, matched as the client's filter matches it.
+func admits(t *testing.T, rules []tailcfg.FilterRule, src, dst netip.Addr, proto ipproto.Proto, port uint16) bool {
+	t.Helper()
+	matches, err := filter.MatchesFromFilterRules(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range matches {
+		if !slices.Contains(m.IPProto.AsSlice(), proto) || !m.SrcsContains(src) {
+			continue
+		}
+		for _, d := range m.Dsts {
+			if d.Net.Contains(dst) && d.Ports.Contains(port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Security: without this filter every peer a node sees reaches the backend's peer API on it, and every bound port of the hub node.
+func TestFilterOpensOnlyPeerPortToPeers(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	registerNode(t, c, "a")
+	a := c.byName("a")
+	self, peer := c.address(a.ID), c.address(a.ID+100)
+	if rules := c.filter(a); len(rules) != 1 || !admits(t, rules, peer, self, ipproto.TCP, PeerPort) || admits(t, rules, peer, self, ipproto.TCP, 49135) {
+		t.Fatalf("filter without a hub: %+v", rules)
+	}
+	registerNode(t, c, "hub")
+	hub := c.byName("hub")
+	hubAddr := c.address(hub.ID)
+	// An empty filter is omitted from the map, and the node would keep its last one.
+	if rules := c.filter(hub); len(rules) != 1 {
+		t.Fatalf("hub filter before its gateway port is set: %+v", rules)
+	}
+	for _, port := range []uint16{1, PeerPort, 49135, 65535} {
+		if admits(t, c.filter(hub), self, hubAddr, ipproto.TCP, port) {
+			t.Errorf("hub with no gateway port admitted TCP port %d", port)
+		}
+	}
+	c.SetGatewayPort(49135)
+	client, gateway := c.filter(a), c.filter(hub)
+	for _, tc := range []struct {
+		rules    []tailcfg.FilterRule
+		src, dst netip.Addr
+		proto    ipproto.Proto
+		port     uint16
+		want     bool
+	}{
+		{client, peer, self, ipproto.TCP, PeerPort, true},
+		{client, peer, self, ipproto.TCP, PeerPort - 1, false},
+		{client, peer, self, ipproto.TCP, PeerPort + 1, false},
+		{client, peer, self, ipproto.TCP, 49135, false},
+		{client, peer, self, ipproto.UDP, PeerPort, false},
+		{client, hubAddr, self, ipproto.TCP, PeerPort, true},
+		{client, hubAddr, self, ipproto.TCP, 1, false},
+		{client, hubAddr, self, ipproto.TCP, 65535, false},
+		{client, hubAddr, self, ipproto.UDP, 49135, false},
+		{gateway, self, hubAddr, ipproto.TCP, 49135, true},
+		{gateway, self, hubAddr, ipproto.TCP, 49134, false},
+		{gateway, self, hubAddr, ipproto.TCP, 49136, false},
+		{gateway, self, hubAddr, ipproto.TCP, PeerPort, false},
+		{gateway, self, hubAddr, ipproto.TCP, 40000, false},
+		{gateway, self, hubAddr, ipproto.UDP, 49135, false},
+	} {
+		if got := admits(t, tc.rules, tc.src, tc.dst, tc.proto, tc.port); got != tc.want {
+			t.Errorf("%v to %v %v port %d admitted = %v, want %v", tc.src, tc.dst, tc.proto, tc.port, got, tc.want)
+		}
+	}
+	sent, host := map[string]map[tailcfg.NodeID]uint64{"a": {}, "hub": {}}, ""
+	for name, want := range map[string][]tailcfg.FilterRule{"a": client, "hub": gateway} {
+		if r, _ := c.delta(c.byName(name), sent[name], &host, true, nil); !reflect.DeepEqual(r.PacketFilter, want) {
+			t.Fatalf("%s full map filter: %+v", name, r.PacketFilter)
+		}
+	}
+	// The gateway port is set after the hub node's full map, so the hub's own change carries its filter again; a client's never does.
+	c.SetGatewayPort(50000)
+	tag(t, c, "a", true)
+	if r, _ := c.delta(hub, sent["hub"], &host, false, nil); r == nil || !admits(t, r.PacketFilter, self, hubAddr, ipproto.TCP, 50000) || admits(t, r.PacketFilter, self, hubAddr, ipproto.TCP, 49135) {
+		t.Fatalf("hub delta after its gateway port moved: %+v", r)
+	}
+	if r, _ := c.delta(a, sent["a"], &host, false, nil); r == nil || r.Node == nil || len(r.PeersChanged) != 1 || r.PacketFilter != nil {
+		t.Fatalf("client delta after its own change and the hub's: %+v", r)
 	}
 }
 func TestSanitizeName(t *testing.T) {
@@ -283,6 +462,7 @@ func TestListenUserspaceSurvivesRestart(t *testing.T) {
 			server.Close()
 			t.Fatal(err)
 		}
+		c.SetGatewayPort(49135)
 		n := c.byName("hub")
 		if n == nil {
 			t.Fatal("hub not registered")

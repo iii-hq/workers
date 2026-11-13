@@ -88,6 +88,9 @@ func (h *Hub) signedNodeDetails(ctx context.Context, name string) (NodeDetails, 
 	return h.nodeDetails[name], nil
 }
 
+// errOtherVersion is not retried: a node changes version only by restarting, and its new gateway session queues it.
+var errOtherVersion = errors.New("run one mesh version on both")
+
 // OnNodeOnline hands the hub namespace to a node on the hub's version, which
 // lets its bridge publish the shared functions, then the catalog when the node
 // holds another revision. A node on another version gets neither.
@@ -101,7 +104,7 @@ func (h *Hub) OnNodeOnline(ctx context.Context, name string) error {
 		return err
 	}
 	if status.Version != h.Version {
-		return fmt.Errorf("node runs mesh %q, the hub runs %q: run one mesh version on both", status.Version, h.Version)
+		return fmt.Errorf("node runs mesh %q, the hub runs %q: %w", status.Version, h.Version, errOtherVersion)
 	}
 	raw, err := h.callNode(ctx, name, "mesh-node::workers::apply", node.WorkersRequest{Namespace: h.Namespace}, 5*time.Second)
 	if err != nil {

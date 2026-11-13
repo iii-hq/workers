@@ -5,12 +5,16 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
+	"github.com/iii-hq/workers/mesh/internal/hub"
 )
 
 func TestE2EHubObservableUIAndNodeEvents(t *testing.T) {
@@ -111,4 +115,67 @@ func TestE2EHubObservableUIAndNodeEvents(t *testing.T) {
 			t.Log("current ADE observers serve rebuilt JS/CSS; node joined/online/removed delivery, node filter and no historical replay verified")
 		})
 	}
+}
+
+// An observer the engine disposed, as it does after a connection stays away past its grace period, is made again and the gap is read again.
+func TestE2EObserversSurviveDisposal(t *testing.T) {
+	f := newFixture(t, "default")
+	w := connect(t, f.ctx, f.engineURL, "e2e-observer", "default")
+	var ran, resumed atomic.Int32
+	if _, err := iii.RegisterFunctionTyped(w, "e2e::target", func(context.Context, json.RawMessage) (bool, error) { ran.Add(1); return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	// Observed before it exists, with a fixed id, as the hub observes quick-tunnel.
+	if err := meshclient.Observe(f.ctx, w, iii.Source{FunctionID: "e2e::source", Deliver: iii.DeliverInput}, "e2e::target", iii.ObserverOptions{ID: "e2e-observer"}, func() { resumed.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := iii.RegisterFunctionTyped(f.admin, "e2e::source", func(context.Context, json.RawMessage) (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	fires := func(what string) {
+		t.Helper()
+		before := ran.Load()
+		eventually(t, 5*time.Second, what, func() error {
+			if _, err := call(f.ctx, f.admin, "default", "e2e::source", map[string]any{}); err != nil {
+				return err
+			}
+			if ran.Load() == before {
+				return errors.New("the target did not run")
+			}
+			return nil
+		})
+	}
+	fires("the observer runs its target")
+	if n := resumed.Load(); n != 0 {
+		t.Fatalf("resumed ran %d times with no disposal", n)
+	}
+	mustCall(t, f.admin, "default", "engine::observers::dispose", map[string]any{"id": "e2e-observer"})
+	eventually(t, 5*time.Second, "resumed after the disposal", func() error {
+		if resumed.Load() != 1 {
+			return errors.New("resumed did not run")
+		}
+		return nil
+	})
+	fires("the new observer runs its target")
+	if n := resumed.Load(); n != 1 {
+		t.Fatalf("resumed ran %d times, want 1", n)
+	}
+
+	// The hub: its configuration observer is disposed, then the entry changes.
+	mustCall(t, f.admin, "default", "engine::observers::dispose", map[string]any{"id": "mesh-config-mesh"})
+	time.Sleep(time.Second) // the hub observes again and reads the entry, so only the new observer can deliver the change below
+	cfg := f.config
+	cfg.Tunnel = &hub.TunnelConfig{Enabled: true}
+	mustCall(t, f.admin, "default", "configuration::set", map[string]any{"id": "mesh", "value": cfg})
+	eventually(t, 5*time.Second, "the hub follows its configuration after the disposal", func() error {
+		out, err := call(f.ctx, f.admin, "default", "mesh::status", map[string]any{})
+		var status hub.StatusResult
+		if err == nil {
+			err = json.Unmarshal(out, &status)
+		}
+		if err == nil && (status.Tunnel == nil || status.Tunnel.State != "overridden") {
+			err = fmt.Errorf("tunnel %+v", status.Tunnel)
+		}
+		return err
+	})
 }

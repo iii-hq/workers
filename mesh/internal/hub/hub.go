@@ -114,16 +114,27 @@ func Run(ctx context.Context, o Options) (err error) {
 	// Runs before h.Close, while the client is still connected.
 	defer h.releaseTunnel()
 	h.startNodeCalls(ctx)
+	// Observers replay no history: read everything again after a reconnect.
+	first := true // the listener is first called with the current state, which the start already acted on
+	defer client.AddConnectionStateListener(func(s iii.ConnectionState) {
+		if s == iii.StateConnected && !first {
+			go h.resumed(ctx) // it reads the configuration, and later state changes wait for the listener
+		}
+		first = false
+	})()
 	h.kickTunnel()
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+	h.serve(ctx)
+	return nil
+}
+
+// serve runs the passes that events, retries and the lease deadline ask for, one at a time. Nothing here polls.
+func (h *Hub) serve(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
+			return
+		case <-h.proxyKick:
 			h.refreshProxy(ctx)
-			h.reconcileTunnel(ctx)
 		case <-h.tunnelKick:
 			h.reconcileTunnel(ctx)
 		}

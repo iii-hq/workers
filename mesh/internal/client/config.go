@@ -17,6 +17,8 @@ type Config struct {
 	Join   string   `json:"join,omitempty"`
 	Name   string   `json:"name,omitempty"`
 	Share  []string `json:"share,omitempty"`
+	// No comma in the description: the jsonschema tag splits on them.
+	PeerToPeer bool `json:"peer_to_peer,omitempty" jsonschema:"description=Call machines that also turn this on directly and take their calls without the hub project in between."`
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)

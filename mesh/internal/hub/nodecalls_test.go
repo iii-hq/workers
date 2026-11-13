@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +32,15 @@ type nodeCallRPC struct {
 	workers    node.WorkersRequest
 	hubVersion string
 	statuses   int
+	statusErr  error  // what a status call answers instead of the status
+	onStatus   func() // runs once, during the next status call, after its answer is chosen, under mu
 	catalog    *node.Catalog
+}
+
+func (r *nodeCallRPC) statusCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.statuses
 }
 
 func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
@@ -55,6 +64,14 @@ func (r *nodeCallRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMess
 		json.Unmarshal(payload, &request)
 		r.hubVersion = request.HubVersion
 		r.statuses++
+		err := r.statusErr
+		if f := r.onStatus; f != nil {
+			r.onStatus = nil
+			f()
+		}
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(r.status)
 	}
 	r.calls = append(r.calls, strings.TrimPrefix(fn, "mesh-node::"))
@@ -172,34 +189,157 @@ func TestOnlineNodeWorkersRefresh(t *testing.T) {
 	waitWorkers(`[{"name":"ide","state":"shared","functions":["laptop::coder::read-file"]}]`)
 }
 
-// A node's path and a worker shared with no functions change with no event: the periodic re-read follows them.
-func TestOnlineNodeChangesWithoutAnEventAreReadAgain(t *testing.T) {
-	defer func(d time.Duration) { nodeRefreshEvery = d }(nodeRefreshEvery)
-	nodeRefreshEvery = 20 * time.Millisecond
+// readingHub is nodeCallHub with its node reads running, after the two reads its join starts: the first catalog pass and the pass the node's version starts.
+// Its engine lists no functions: a failed catalog read would read the node again on its retry.
+func readingHub(t *testing.T) (*Hub, *nodeCallRPC) {
+	t.Helper()
 	h, r := nodeCallHub(t)
+	h.engine, h.Sessions = &fakeEngine{}, &Sessions{}
 	r.status.Version = h.Version
-	r.status.Peers = []meshnet.PeerStatus{{Name: "hub", Path: "relay hub"}}
 	h.SetHooks(Hooks{})
 	h.startNodeCalls(t.Context())
-	defer h.Close()
-	wait := func(path, workers string) {
-		t.Helper()
-		var got NodeEntry
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			list, _ := h.ListNodes(t.Context(), struct{}{})
-			w, _ := json.Marshal(list[0].Workers)
-			if got = list[0]; got.Path == path && string(w) == workers {
-				return
-			}
-		}
-		t.Fatalf("node %+v, want path %q workers %s", got, path, workers)
+	t.Cleanup(func() {
+		h.Close()
+		<-h.nodeReconciler.done // no read is left to race a restored variable
+	})
+	within(t, "the join's reads did not end", func() bool { return r.statusCalls() >= 2 && idle(h) })
+	return h, r
+}
+func idle(h *Hub) bool {
+	h.nodeReconciler.mu.Lock()
+	defer h.nodeReconciler.mu.Unlock()
+	return len(h.nodeReconciler.tasks) == 0
+}
+func shows(h *Hub, path, workers string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	w, _ := json.Marshal(h.nodeDetails["laptop"].Workers)
+	return h.nodeDetails["laptop"].Path == path && string(w) == workers
+}
+
+// A node's path and a worker it shares with no functions change with no event the hub observes: the node says so.
+func TestANodeThatSaysItChangedIsReadAgain(t *testing.T) {
+	h, r := readingHub(t)
+	changes := func(path string, workers ...node.WorkerStatus) {
+		r.mu.Lock()
+		r.status.Peers, r.status.Workers = []meshnet.PeerStatus{{Name: "hub", Path: path}}, append([]node.WorkerStatus{}, workers...)
+		r.mu.Unlock()
 	}
-	wait("relay hub", `[]`)
+	changes("direct 192.0.2.1:41641", node.WorkerStatus{Name: "ide", State: "not running"})
+	session := SessionContext{MeshNode: "laptop", SessionKey: h.Sessions.Open("laptop")}
+	if out, err := h.middleware(t.Context(), nil, MiddlewareRequest{FunctionID: "mesh::node::changed", Namespace: "project", Context: session}); err != nil || string(out) != "null" {
+		t.Fatalf("answer %s %v", out, err)
+	}
+	within(t, "the node was not read again", func() bool {
+		return shows(h, "direct 192.0.2.1:41641", `[{"name":"ide","state":"not running","functions":[]}]`)
+	})
+	changes("relay hub")
+	time.Sleep(300 * time.Millisecond)
+	if !shows(h, "direct 192.0.2.1:41641", `[{"name":"ide","state":"not running","functions":[]}]`) {
+		t.Fatal("the node was read with no event")
+	}
+}
+
+// Listing the nodes reads each online node again, and the read's status event brings what moved to the page.
+func TestListingTheNodesReadsThemAgain(t *testing.T) {
+	h, r := readingHub(t)
+	var pushes atomic.Int32
+	h.mu.Lock()
+	h.emit = func([]byte) { pushes.Add(1) }
+	h.mu.Unlock()
 	r.mu.Lock()
 	r.status.Peers = []meshnet.PeerStatus{{Name: "hub", Path: "direct 192.0.2.1:41641"}}
-	r.status.Workers = []node.WorkerStatus{{Name: "ide", State: "not running", Functions: []string{}}}
 	r.mu.Unlock()
-	wait("direct 192.0.2.1:41641", `[{"name":"ide","state":"not running","functions":[]}]`)
+	if _, err := h.listAndRead(t.Context(), struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	within(t, "a list did not read the node", func() bool { return shows(h, "direct 192.0.2.1:41641", `[]`) && pushes.Load() == 1 })
+	// GetNode lists too, and reads only the node it names.
+	before := r.statusCalls()
+	if _, err := h.GetNode(t.Context(), NodeRequest{Name: "laptop"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := r.statusCalls() - before; got != 1 || pushes.Load() != 1 {
+		t.Fatalf("GetNode made %d status calls and %d status events, want 1 and none", got, pushes.Load()-1)
+	}
+}
+
+// A version mismatch and a node function not registered yet each end with an event that queues the node: neither is retried.
+func TestFailuresAnEventEndsAreNotRetried(t *testing.T) {
+	old := retryMin
+	t.Cleanup(func() { retryMin = old })
+	retryMin = 5 * time.Millisecond
+	for _, c := range []struct {
+		name  string
+		reads int // a version that moved also reads the catalog, which queues the node once more
+		fail  func(*nodeCallRPC)
+	}{
+		{"another version", 2, func(r *nodeCallRPC) { r.status.Version = "0.1.0" }},
+		{"a node function not registered yet", 1, func(r *nodeCallRPC) { r.statusErr = &iii.InvocationError{Code: "function_not_found"} }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, r := readingHub(t)
+			r.mu.Lock()
+			c.fail(r)
+			r.mu.Unlock()
+			before := r.statusCalls()
+			h.queueNode("laptop")
+			within(t, "the node was not read", func() bool { return r.statusCalls()-before >= c.reads })
+			time.Sleep(200 * time.Millisecond)
+			if got := r.statusCalls() - before; got != c.reads {
+				t.Fatalf("%d reads with no event, want %d", got, c.reads)
+			}
+			h.queueNode("laptop")
+			within(t, "an event did not read the node again", func() bool { return r.statusCalls()-before == c.reads+1 })
+		})
+	}
+}
+
+// A node whose read timed out announces nothing when it answers again: the read is retried at doubling waits, and any event of the node runs it at once.
+func TestAFailingNodeBacksOffAndAnEventRetriesAtOnce(t *testing.T) {
+	old := retryMin
+	t.Cleanup(func() { retryMin = old })
+	retryMin = 25 * time.Millisecond // large next to a busy -race run's scheduling delays
+	h, r := readingHub(t)
+	fail := func(err error) {
+		r.mu.Lock()
+		r.statusErr = err
+		r.mu.Unlock()
+	}
+	fail(iii.ErrTimeout)
+	before := r.statusCalls()
+	h.queueNode("laptop")
+	time.Sleep(time.Second)
+	// Reads at 0, 25, 75, 175, 375 and 775 ms; a fixed 25 ms wait reads 40 times, and a busy machine only reads fewer.
+	if got := r.statusCalls() - before; got > 8 {
+		t.Fatalf("%d reads in 1 s", got)
+	}
+	within(t, "the failing node was not read again", func() bool { return r.statusCalls()-before >= 3 })
+	// An event starts the waits over: the read after it follows 25 ms later, not 1.6 s.
+	before = r.statusCalls()
+	h.queueNode("laptop")
+	time.Sleep(750 * time.Millisecond)
+	if got := r.statusCalls() - before; got < 2 {
+		t.Fatalf("%d reads in 750 ms after an event", got)
+	}
+	fail(nil)
+	within(t, "the node that answers again was not read", func() bool { return idle(h) })
+	retryMin = time.Minute // the task that read it has ended
+	fail(iii.ErrTimeout)
+	before = r.statusCalls()
+	h.queueNode("laptop")
+	within(t, "the node was not read", func() bool { return r.statusCalls()-before == 1 })
+	// The event cuts the wait; an event during that read is read by the next pass, and nothing reads it again.
+	r.mu.Lock()
+	r.statusErr, r.onStatus = nil, func() { r.statusErr = iii.ErrTimeout; h.queueNode("laptop") }
+	r.mu.Unlock()
+	h.queueNode("laptop")
+	within(t, "an event did not cut the wait", func() bool { return r.statusCalls()-before >= 3 })
+	time.Sleep(100 * time.Millisecond)
+	if got := r.statusCalls() - before; got != 3 {
+		t.Fatalf("%d reads, want 3: one event was read twice", got)
+	}
 }
 func TestApplyOnReconnect(t *testing.T) {
 	h, r := nodeCallHub(t)
@@ -278,7 +418,7 @@ func TestNodeGoingOnlineIsReconciledByItsEvent(t *testing.T) {
 			t.Fatalf("online node not reconciled: %+v", list)
 		}
 	}
-	// A failing re-read retries until the machine is gone, then stops on that event.
+	// A node on another version waits for an event, and its removal ends the wait.
 	r.mu.Lock()
 	r.status.Version = "0.0.9"
 	r.mu.Unlock()

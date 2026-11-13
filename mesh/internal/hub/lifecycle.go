@@ -77,6 +77,10 @@ type Hub struct {
 	tunnel          tunnelState
 	tunnelClient    rpc
 	tunnelKick      chan struct{}
+	proxyKick       chan struct{}
+	proxyRetry      retry
+	tunnelRetry     retry
+	tunnelDue       *time.Timer // guarded by tunnelMu: when the held lease is due
 	refreshing      atomic.Bool // a re-read of the online nodes is scheduled
 	passMu          sync.Mutex  // one catalog read and node re-read at a time
 	passBackoff     time.Duration
@@ -100,7 +104,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		o.DataDir = filepath.Join(os.Getenv("III_COMPOSE_DIR"), "data", "mesh")
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel, tunnelKick: make(chan struct{}, 1)}
+	h = &Hub{Version: o.Version, Namespace: namespace(), ConfigID: configID(), Client: client, config: cloneConfig(cfg), defaults: GrantDefaults{Allow: DefaultAllow()}, limit: join.NewLimit(10, 10*time.Minute, time.Now), cancel: cancel, tunnelKick: make(chan struct{}, 1), proxyKick: make(chan struct{}, 1)}
 	defer func() {
 		if err != nil {
 			h.Close()
@@ -168,6 +172,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 	if e != nil {
 		return h, e
 	}
+	h.Coordinator.OnWake(h.kickTunnel) // a timer does not count the time asleep, and the lease is wall time
 	h.gatewayListener = listeners[0]
 	h.gateway = h.serveGateway(h.gatewayListener)
 	if cfg.StunPort > 0 {

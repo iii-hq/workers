@@ -11,6 +11,7 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	meshclient "github.com/iii-hq/workers/mesh/internal/client"
 )
 
 type rpc interface {
@@ -123,6 +124,19 @@ func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChange
 	return ConfigChangeResult{OK: true}, nil
 }
 
+// functionsChanged runs every pass that a worker coming or going can change.
+func (h *Hub) functionsChanged() { h.onFunctionsChange(); h.kickProxy(); h.kickTunnel() }
+
+// resumed reads again everything an event announces: an event sent while the connection or an observer was away reached no one.
+func (h *Hub) resumed(ctx context.Context) {
+	if c := h.engineRPC(); c != nil {
+		if _, err := h.onConfigChange(ctx, c, ConfigChangeEvent{ID: h.ConfigID}); err != nil {
+			log.Printf("mesh configuration: %v", err)
+		}
+	}
+	h.functionsChanged()
+}
+
 var internalFunction = iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
 
 // registerConfigurationID tells the Console which configuration entry the page edits.
@@ -151,9 +165,9 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 	}, internal); err != nil {
 		return err
 	}
-	// Only schedules a re-read of the online nodes; the observed payload is never read.
+	// Only schedules the passes; the observed payload is never read.
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::on-functions-change", func(context.Context, json.RawMessage) (ConfigChangeResult, error) {
-		h.onFunctionsChange()
+		h.functionsChanged()
 		return ConfigChangeResult{OK: true}, nil
 	}, internal); err != nil {
 		return err
@@ -161,17 +175,18 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 	if local {
 		return nil
 	}
-	if _, err := client.Observe(iii.Source{FunctionID: "engine::on-functions-changed", Deliver: iii.DeliverOutput}, "mesh::on-functions-change", iii.ObserverOptions{TargetNamespace: h.Namespace}); err != nil {
+	resumed := func() { h.resumed(ctx) }
+	if err := meshclient.Observe(ctx, client, iii.Source{FunctionID: "engine::on-functions-changed", Deliver: iii.DeliverOutput}, "mesh::on-functions-change", iii.ObserverOptions{TargetNamespace: h.Namespace}, resumed); err != nil {
 		return err
 	}
 	for _, id := range []string{h.ConfigID, "rbac-proxy"} {
 		if id == "rbac-proxy" && !h.proxyReady {
 			continue
 		}
-		if _, err := client.Observe(iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Deliver: iii.DeliverOutput, Filters: iii.Filters{
+		if err := meshclient.Observe(ctx, client, iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Deliver: iii.DeliverOutput, Filters: iii.Filters{
 			"input.id":         iii.Op{"$eq": id},
 			"input.event_type": iii.Op{"$in": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}},
-		}}, "mesh::on-config-change", iii.ObserverOptions{ID: "mesh-config-" + id, TargetNamespace: h.Namespace}); err != nil {
+		}}, "mesh::on-config-change", iii.ObserverOptions{ID: "mesh-config-" + id, TargetNamespace: h.Namespace}, resumed); err != nil {
 			return err
 		}
 	}

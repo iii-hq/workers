@@ -219,6 +219,13 @@ func (h *Hub) ListNodes(ctx context.Context, _ struct{}) ([]NodeEntry, error) {
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	return nodes, nil
 }
+
+// listAndRead is mesh::nodes::list, not ListNodes, which GetNode also calls: a list is the only event for a path that moved.
+// shortcut: every list reads every online node again; read the hub backend's own peer status if a large mesh feels it
+func (h *Hub) listAndRead(ctx context.Context, in struct{}) ([]NodeEntry, error) {
+	h.queueNodes()
+	return h.ListNodes(ctx, in)
+}
 func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
 	list, _ := h.ListNodes(ctx, struct{}{})
 	for _, n := range list {
@@ -285,7 +292,7 @@ func (h *Hub) registerFunctions(ctx context.Context, client *iii.Client) error {
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) { return h.Status(), nil }); err != nil {
 		return err
 	}
-	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::list", h.ListNodes); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::list", h.listAndRead); err != nil {
 		return err
 	}
 	if _, err := iii.RegisterFunctionTyped(client, "mesh::nodes::get", h.GetNode); err != nil {

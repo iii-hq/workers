@@ -23,6 +23,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/nettype"
+	"tailscale.com/util/eventbus"
 	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/netstack"
 )
@@ -121,6 +122,12 @@ func (c *Coordinator) Listen(ctx context.Context, control string, ports ...int) 
 		return nil, err
 	}
 	u.sys.Set(u.engine)
+	// A timer does not count the time asleep: the hub renews what it holds by wall time when the machine wakes.
+	eventbus.SubscribeFunc(u.sys.Bus.Get().Client("mesh-hub"), func(d netmon.ChangeDelta) {
+		if f := c.woke.Load(); d.TimeJumped() && f != nil {
+			(*f)()
+		}
+	})
 	u.sys.HealthTracker.Get().SetMetricsRegistry(u.sys.UserMetricsRegistry())
 	u.stack, err = netstack.Create(logf, u.sys.Tun.Get(), u.engine, u.sys.MagicSock.Get(), u.dialer, u.sys.DNSManager.Get(), u.sys.ProxyMapper())
 	if err != nil {
@@ -137,6 +144,8 @@ func (c *Coordinator) Listen(ctx context.Context, control string, ports ...int) 
 	if err != nil {
 		return nil, err
 	}
+	// Security: the backend lets peer API connections past the packet filter, and to it every mesh machine is the owner.
+	u.sys.Tun.Get().PeerAPIPort = nil
 	if err = u.stack.Start(u.backend); err != nil {
 		return nil, err
 	}
@@ -189,6 +198,9 @@ func (c *Coordinator) Listen(ctx context.Context, control string, ports ...int) 
 	go func() { <-ctx.Done(); u.close(); stop(); cancel() }()
 	return listeners, nil
 }
+
+// OnWake sets f to run when the hub's machine wakes from sleep; f must not block.
+func (c *Coordinator) OnWake(f func()) { c.woke.Store(&f) }
 
 // ListenTCP binds another port on the existing hub backend. The caller owns
 // closing the returned listener; Close also releases it during shutdown.

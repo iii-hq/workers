@@ -40,7 +40,7 @@ func fetchProxyConfig(ctx context.Context, client rpc) (map[string]any, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, callFailed(err)
 	}
 	var entry map[string]json.RawMessage
 	if json.Unmarshal(raw, &entry) != nil || len(entry["value"]) == 0 {
@@ -76,6 +76,11 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 	defer func() {
 		if err != nil {
 			h.setProxyHealth(err.Error(), false)
+		}
+		if errors.As(err, &transient{}) {
+			h.proxyRetry.again(h.wakeProxy)
+		} else {
+			h.proxyRetry.reset() // done, or an event the hub observes ends this failure
 		}
 	}()
 	if !h.proxyReady || h.proxyClient == nil {
@@ -116,7 +121,7 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 			_, err = configCall(ctx, h.proxyClient, "configuration::set", map[string]any{"id": "rbac-proxy", "value": next})
 		}
 		if err != nil {
-			return err
+			return callFailed(err)
 		}
 		// Ensure may preserve a concurrent owner; only the authoritative result activates.
 		next, err = fetchProxyConfig(ctx, h.proxyClient)
@@ -192,6 +197,17 @@ func (h *Hub) refreshProxy(ctx context.Context) {
 	}
 }
 
+// wakeProxy asks the hub's loop for a proxy pass.
+func (h *Hub) wakeProxy() {
+	select {
+	case h.proxyKick <- struct{}{}:
+	default:
+	}
+}
+
+// kickProxy is wakeProxy for an event: it may have ended a failure, so the retry starts over.
+func (h *Hub) kickProxy() { h.proxyRetry.reset(); h.wakeProxy() }
+
 func (h *Hub) proxyEngineURL() string {
 	if h.Client != nil {
 		return h.Client.Address()
@@ -210,21 +226,21 @@ type proxyApplyResult struct {
 func (h *Hub) applyProxy(ctx context.Context, desired map[string]any) error {
 	raw, err := h.proxyClient.Call(ctx, iii.CallRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Payload: json.RawMessage(`{"id":"rbac-proxy"}`), Timeout: 15 * time.Second})
 	if err != nil {
-		return fmt.Errorf("apply proxy configuration: %w", err)
+		return fmt.Errorf("apply proxy configuration: %w", callFailed(err))
 	}
 	var result proxyApplyResult
 	if json.Unmarshal(raw, &result) != nil {
 		return errors.New("malformed proxy application response")
 	}
 	if !result.OK || result.Error != "" {
-		return fmt.Errorf("proxy configuration was not applied: %s", result.Error)
+		return transient{fmt.Errorf("proxy configuration was not applied: %s", result.Error)}
 	}
 	_, write, status := EnsureProxyConfig(result.AppliedConfig)
 	if write || status != "ok" || !validProxyHooks(result.AppliedConfig) || !configContains(result.AppliedConfig, desired) {
 		return errors.New("proxy applied configuration does not match mesh ownership")
 	}
 	if result.BoundPort < 1 || result.BoundHost != result.AppliedConfig["host"] || float64(result.BoundPort) != result.AppliedConfig["port"] {
-		return errors.New("proxy applied listener does not match configuration")
+		return transient{errors.New("proxy applied listener does not match configuration")}
 	}
 	return nil
 }

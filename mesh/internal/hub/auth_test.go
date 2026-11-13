@@ -27,7 +27,7 @@ func TestAuthGrants(t *testing.T) {
 	if got.FunctionRegistrationPrefix != "laptop" {
 		t.Fatalf("identity: %+v", got)
 	}
-	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"mesh::call"}) {
+	if !reflect.DeepEqual(got.Namespaces["default"], []string{"configuration::get", "configuration::ensure", "configuration::register", "configuration::set", "configuration::on-updated"}) || !reflect.DeepEqual(got.Namespaces["proj"], []string{"mesh::call", "mesh::node::changed"}) {
 		t.Fatalf("namespaces: %+v", got.Namespaces)
 	}
 

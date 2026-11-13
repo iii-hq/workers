@@ -1566,6 +1566,18 @@ jobs:
         with:
           go-version-file: ${{ matrix.worker }}/go.mod
           cache-dependency-path: ${{ matrix.worker }}/go.sum
+      # Vet and test the configuration the release builds, with its build tags.
+      - name: Use the release build tags
+        working-directory: .
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          tags=$(python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; print(",".join(_lib.read_worker(os.environ["WORKER"]).artifact.get("tags", [])))')
+          if [[ -n "$tags" ]]; then
+            echo "GOFLAGS=$GOFLAGS -tags=$tags" >> "$GITHUB_ENV"
+          fi
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
