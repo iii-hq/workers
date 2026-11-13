@@ -270,7 +270,7 @@ def validate_artifact(
             "kind", "toolchain", "binary", "targets", "windows_exception", "frontends", "companions",
             "features", "prebuild", "macos_entitlements",
         },
-        "go-binary": {"kind", "toolchain", "binary", "targets", "windows_exception"},
+        "go-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "tags"},
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
             "install_command", "build_command", "include",
@@ -311,6 +311,13 @@ def validate_artifact(
                 fail(f"{worker}: Go release version must come from package.json, not go.mod")
             if not (worker_dir / "go.mod").is_file():
                 fail(f"{worker}: go-binary requires go.mod")
+            tags = artifact.get("tags")
+            if tags is not None and (
+                not isinstance(tags, list)
+                or not tags
+                or any(not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9_.]+", tag) for tag in tags)
+            ):
+                fail(f"workers.{worker}.artifact.tags must be a non-empty array of Go build tag names")
         # Every deployment builds the same matrix, so what is tested on `next`
         # is exactly what finalization promotes to `latest`. Windows is part of
         # that matrix; a worker that cannot ship it says so explicitly, because
