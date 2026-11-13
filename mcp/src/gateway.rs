@@ -53,7 +53,10 @@ pub struct Ctx<'a, B> {
     pub sink: &'a str,
 }
 
-const INSTRUCTIONS: &str = "The running iii engine. Everything on it is a function, called by id. Act on the engine with iii_call (any function id, with a JSON payload) instead of the `iii call` CLI or curl; discover ids with iii_call on engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before its first call. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Profiles written for the iii harness say agent_call and harness::observe: here those are iii_call and iii_observe. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
+/// The profile every session loads first: iii-directory's built-in one.
+pub const DEFAULT_PROFILE: &str = "default";
+
+const INSTRUCTIONS: &str = "Start by loading the default agent profile with iii_get_agent (no arguments, or id \"default\"; it reads directory::agents::get from iii-directory) and follow it. It is written for the iii harness: where it says agent_call use iii_call, and where it says harness::observe use iii_observe. Everything on the running iii engine is a function, called by id with iii_call (a function id and a JSON payload) instead of the `iii call` CLI or curl; never use a function id from memory. Discover what this system can do with iii_call: directory::search_functions { capabilities: [...] } returns candidate function ids for what you need, engine::functions::list ({ prefix } or { search }) the functions registered now, engine::workers::list the workers connected now, directory::skills::index a guide per installed worker, and engine::functions::info { function_id } a function's contract, which you read before its first call. Some functions are higher-order: they call other functions for you, so their payload names function ids and payloads. fp::pipe runs a chain of calls worker-side, each result passed to the next, so a large value moves between other functions without passing through you; fp::batch runs independent calls at once. Call them with iii_call like any other function. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
 
 /// The server instructions MCP clients show the model.
 pub fn instructions(mode: &RbacMode) -> String {
@@ -70,7 +73,7 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 pub fn tools_list() -> Value {
     let id_only = |what: &str| json!({ "type": "object", "properties": { "id": { "type": "string", "description": what } }, "required": ["id"] });
     json!({ "tools": [
-        tool("iii_call", "Call any function on the iii engine by id and return its result. The way to act on the engine: use it instead of the `iii call` CLI. Find ids with engine::functions::list or directory::search_functions, and read a contract with engine::functions::info before the first call.", json!({
+        tool("iii_call", "Call any function on the iii engine by id and return its result: the way to act on the engine, instead of the `iii call` CLI. Find ids with directory::search_functions (by capability) or engine::functions::list, and read a contract with engine::functions::info before the first call. Some functions are higher-order and call other functions for you: fp::pipe chains calls worker-side, each result passed to the next; fp::batch runs independent calls at once.", json!({
             "type": "object",
             "properties": {
                 "function_id": { "type": "string", "description": "e.g. `engine::workers::list`" },
@@ -108,7 +111,10 @@ pub fn tools_list() -> Value {
         tool("iii_list_agents", "List the agent profiles installed in the iii engine (id, name, description, model, counts).", json!({
             "type": "object", "properties": { "include_hidden": { "type": "boolean", "description": "Include hidden helper profiles." } }
         })),
-        tool("iii_get_agent", "Fetch one agent profile: its full system prompt (resolved through extends), preloaded skills and functions.", id_only("Profile id")),
+        tool("iii_get_agent", "Fetch an agent profile: its full system prompt (resolved through extends), preloaded skills and functions. Without an id, the default profile, which every session loads first.", json!({
+            "type": "object",
+            "properties": { "id": { "type": "string", "description": "Profile id. Default: default." } }
+        })),
         tool("iii_list_skills", "List skills installed in the iii engine. Filter with search (substring) or prefix (worker namespace).", json!({
             "type": "object", "properties": { "search": { "type": "string" }, "prefix": { "type": "string" } }
         })),
@@ -366,9 +372,14 @@ pub async fn call_tool<B: Bus + Observe>(
                 Err(e) => error(e.to_string()),
             }
         }
-        "iii_get_agent" => match str_arg(args, "id") {
-            None => error("id is required"),
-            Some(id) => match directory_bridge::get_agent(ctx.bus, id).await {
+        "iii_get_agent" => match args.get("id") {
+            Some(v) if !v.is_null() && !v.is_string() => error("id must be a profile id (a string)"),
+            _ => match directory_bridge::get_agent(
+                ctx.bus,
+                str_arg(args, "id").unwrap_or(DEFAULT_PROFILE),
+            )
+            .await
+            {
                 Ok(v) => text(&v),
                 Err(e) => error(e.to_string()),
             },
@@ -477,7 +488,8 @@ mod tests {
         assert_eq!(required("iii_observe"), json!(["function_id"]));
         assert_eq!(required("iii_observations_sse"), json!(["function_id"]));
         assert_eq!(required("iii_unobserve"), json!(["observer_id"]));
-        assert_eq!(required("iii_get_agent"), json!(["id"]));
+        // No id: the default profile.
+        assert_eq!(required("iii_get_agent"), Value::Null);
     }
 
     fn description(name: &str) -> String {
@@ -513,6 +525,76 @@ mod tests {
         assert!(props.get("max_events").is_none());
         let sse = description("iii_observations_sse");
         assert!(sse.contains("GET") && sse.contains("stream"), "{sse}");
+    }
+
+    #[test]
+    fn the_instructions_start_with_the_default_profile() {
+        let i = instructions(&proxied());
+        let first = i.split(". ").next().unwrap();
+        assert!(
+            first.contains("iii_get_agent") && first.contains("default"),
+            "the first sentence: {first}"
+        );
+        assert!(i.contains("directory::agents::get"), "{i}");
+        // Dangerous mode keeps the warning first, then the same opening.
+        let d = instructions(&RbacMode::Dangerous);
+        assert!(d.starts_with(DANGEROUS_NOTICE));
+        assert!(d.contains("iii_get_agent"));
+    }
+
+    #[test]
+    fn the_instructions_name_the_discovery_functions() {
+        let i = instructions(&proxied());
+        for f in [
+            "directory::search_functions",
+            "engine::functions::list",
+            "engine::functions::info",
+            "engine::workers::list",
+            "directory::skills::index",
+        ] {
+            assert!(i.contains(f), "{f} missing from: {i}");
+        }
+    }
+
+    #[test]
+    fn the_instructions_explain_higher_order_functions() {
+        let i = instructions(&proxied());
+        for needle in ["higher-order", "fp::pipe", "fp::batch", "other functions"] {
+            assert!(i.contains(needle), "{needle} missing from: {i}");
+        }
+        let d = description("iii_call");
+        for needle in [
+            "directory::search_functions",
+            "engine::functions::info",
+            "higher-order",
+            "fp::pipe",
+        ] {
+            assert!(d.contains(needle), "{needle} missing from: {d}");
+        }
+    }
+
+    #[test]
+    fn the_get_agent_description_points_at_the_default_profile() {
+        let d = description("iii_get_agent");
+        assert!(d.contains("default"), "{d}");
+    }
+
+    #[tokio::test]
+    async fn get_agent_without_an_id_reads_the_default_profile() {
+        let e = Engine::new(FakeBus::new().on("directory::agents::get", |p| {
+            Ok(json!({ "id": p["id"], "system_prompt": "You are an iii agent." }))
+        }));
+        let s = sessions();
+        for args in [json!({}), json!({ "id": " " })] {
+            let (err, v) = tool(&e, &s, None, "iii_get_agent", args).await;
+            assert!(!err, "{v}");
+            assert_eq!(v["id"], "default");
+        }
+        assert!(e
+            .bus
+            .calls()
+            .iter()
+            .all(|(f, p)| f == "directory::agents::get" && p["id"] == "default"));
     }
 
     #[test]
@@ -1053,8 +1135,8 @@ mod tests {
                 .1,
             json!("# kanban")
         );
-        let (err, v) = tool(&e, &s, None, "iii_get_agent", json!({})).await;
-        assert!(err && v.as_str().unwrap().contains("id"));
+        let (err, v) = tool(&e, &s, None, "iii_get_agent", json!({ "id": 3 })).await;
+        assert!(err && v.as_str().unwrap().contains("id"), "{v}");
     }
 
     #[tokio::test]

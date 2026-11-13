@@ -28,7 +28,6 @@ use crate::transport::{encode_sse_gap, encode_sse_jsonrpc, encode_sse_observatio
 /// The methods the endpoint serves on `api_path`.
 pub const ROUTE_METHODS: [&str; 3] = ["POST", "GET", "DELETE"];
 
-
 pub const FUNCTION_ID: &str = "mcp::handler";
 pub const SINK_FUNCTION_ID: &str = "mcp::observed";
 pub const HTTP_ON_REQUEST_FN: &str = "http::on-request";
