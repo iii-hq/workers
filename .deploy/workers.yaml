@@ -1529,26 +1529,6 @@ workers:
         version: 1.97.1
       binary: provider-anthropic
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-claude-code:
     source:
@@ -1561,26 +1541,6 @@ workers:
         version: 1.97.1
       binary: provider-claude-code
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-command-code:
     source:
@@ -1593,26 +1553,6 @@ workers:
         version: 1.97.1
       binary: provider-command-code
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-deepseek:
     source:
@@ -1625,26 +1565,6 @@ workers:
         version: 1.97.1
       binary: provider-deepseek
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-elevenlabs:
     source:
@@ -1657,26 +1577,6 @@ workers:
         version: 1.97.1
       binary: provider-elevenlabs
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-github-copilot:
     source:
@@ -1689,26 +1589,6 @@ workers:
         version: 1.97.1
       binary: provider-github-copilot
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-kimi:
     source:
@@ -1721,26 +1601,6 @@ workers:
         version: 1.97.1
       binary: provider-kimi
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-llamacpp:
     source:
@@ -1753,26 +1613,6 @@ workers:
         version: 1.97.1
       binary: provider-llamacpp
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-openai:
     source:
@@ -1786,25 +1626,6 @@ workers:
       binary: provider-openai
       targets: *id001
       frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
       - workspace_root: .
         source_path: provider-openai/ui
         runtime:
@@ -1837,25 +1658,6 @@ workers:
       binary: provider-openai-codex
       targets: *id001
       frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
       - workspace_root: .
         source_path: provider-openai-codex/ui
         runtime:
@@ -1919,26 +1721,6 @@ workers:
         version: 1.97.1
       binary: provider-openrouter
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-sarvam:
     source:
@@ -1951,26 +1733,6 @@ workers:
         version: 1.97.1
       binary: provider-sarvam
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-xai:
     source:
@@ -1983,26 +1745,6 @@ workers:
         version: 1.97.1
       binary: provider-xai
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   provider-zai:
     source:
@@ -2015,26 +1757,6 @@ workers:
         version: 1.97.1
       binary: provider-zai
       targets: *id001
-      frontends:
-      - workspace_root: .
-        source_path: llm-router/ui
-        runtime:
-          name: node
-          version: 22.20.0
-        package_manager:
-          name: pnpm
-          version: 11.13.1
-        lockfile: pnpm-lock.yaml
-        install_command:
-        - pnpm
-        - install
-        - --frozen-lockfile
-        build_command:
-        - pnpm
-        - run
-        - build
-        outputs:
-        - dist
     publish: true
   pubsub:
     source:

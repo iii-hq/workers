@@ -21,6 +21,7 @@ fn normalize_entities(entities: Vec<String>) -> Vec<String> {
 
 /// Inputs for one save transition (grouped: clippy arity cap, and the
 /// call sites read better named).
+#[derive(Clone)]
 struct SaveInput {
     id: String,
     text: String,
@@ -166,22 +167,33 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
         deps.emitter.bank("created", &bank_name).await;
     }
 
-    let id = fingerprint(&text);
-    let now = stated_now_ms();
-    let existing = bank.get(&id).await;
-    let (memory, event, created) = save_transition(
-        existing,
-        SaveInput {
-            id,
-            text,
-            entities,
-            tags,
-            pinned: req.pinned,
-            session_id: req.session_id,
-            now,
-        },
-    );
-    bank.commit(memory.clone()).await?;
+    let input = SaveInput {
+        id: fingerprint(&text),
+        text,
+        entities,
+        tags,
+        pinned: req.pinned,
+        session_id: req.session_id,
+        now: stated_now_ms(),
+    };
+    // The same text saved twice at once: the commit that lands second
+    // re-reads and corroborates the first instead of failing.
+    let mut tries = 0;
+    let (memory, event, created) = loop {
+        let existing = bank.get(&input.id).await;
+        let next = save_transition(existing.clone(), input.clone());
+        if bank
+            .commit_expected(next.0.clone(), existing.as_ref())
+            .await?
+            .is_some()
+        {
+            break next;
+        }
+        tries += 1;
+        if tries == COMMIT_TRIES {
+            return Err(still_changing(&input.id));
+        }
+    };
     let reason = crate::redact::reason(&labels);
     deps.emitter
         .item_with(event, &bank_name, &memory, reason.as_deref())
@@ -260,7 +272,7 @@ pub struct MemoryResponse {
     pub memory: Memory,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct UpdateRequest {
     /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
@@ -278,6 +290,19 @@ pub struct UpdateRequest {
 }
 
 pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, MemoryError> {
+    // A write that lands between the read and the commit re-reads.
+    for _ in 0..COMMIT_TRIES {
+        if let Some(updated) = update_once(deps, req.clone()).await? {
+            return Ok(updated);
+        }
+    }
+    Err(still_changing(&req.id))
+}
+
+async fn update_once(
+    deps: &Deps,
+    req: UpdateRequest,
+) -> Result<Option<MemoryResponse>, MemoryError> {
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
@@ -285,6 +310,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    let expected = memory.clone();
     let mut text_changed = false;
     let mut labels: Vec<&'static str> = Vec::new();
     if let Some(text) = req.text {
@@ -319,7 +345,13 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     }
     memory.updated_at = now_ms();
     memory.revision += 1;
-    bank.commit(memory.clone()).await?;
+    if bank
+        .commit_expected(memory.clone(), Some(&expected))
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
     let reason = crate::redact::reason(&labels);
     deps.emitter
         .item_with(ItemEvent::Updated, &bank_name, &memory, reason.as_deref())
@@ -328,7 +360,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     if text_changed {
         crate::embed_client::spawn_backfill(deps, &bank_name);
     }
-    Ok(MemoryResponse { memory })
+    Ok(Some(MemoryResponse { memory }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -340,6 +372,19 @@ pub struct DeleteRequest {
 }
 
 pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, MemoryError> {
+    // A write that lands between the read and the commit re-reads.
+    for _ in 0..COMMIT_TRIES {
+        if let Some(deleted) = delete_once(deps, &req).await? {
+            return Ok(deleted);
+        }
+    }
+    Err(still_changing(&req.id))
+}
+
+async fn delete_once(
+    deps: &Deps,
+    req: &DeleteRequest,
+) -> Result<Option<MemoryResponse>, MemoryError> {
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
@@ -347,16 +392,32 @@ pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, M
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    let expected = memory.clone();
     if memory.invalid_at.is_none() {
         memory.invalid_at = Some(now_ms());
         memory.updated_at = now_ms();
         memory.revision += 1;
-        bank.commit(memory.clone()).await?;
+        if bank
+            .commit_expected(memory.clone(), Some(&expected))
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
         deps.emitter
             .item(ItemEvent::Deleted, &bank_name, &memory)
             .await;
     }
-    Ok(MemoryResponse { memory })
+    Ok(Some(MemoryResponse { memory }))
+}
+
+/// Tries of a read/modify/write before a still-changing record fails the call.
+const COMMIT_TRIES: usize = 3;
+
+fn still_changing(id: &str) -> MemoryError {
+    MemoryError::InvalidInput(format!(
+        "memory `{id}` kept changing during the write; retry"
+    ))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -392,6 +453,13 @@ pub struct SupersedeRequest {
     pub id: String,
     /// Live memory that replaces it.
     pub superseded_by: String,
+    /// Optional proof-bound snapshot of the loser; compared under the same
+    /// storage lock as the winner snapshot and both writes.
+    #[serde(default)]
+    pub expected_memory: Option<serde_json::Value>,
+    /// Optional proof-bound snapshot of the winner. Legacy callers may omit both.
+    #[serde(default)]
+    pub expected_superseded_by: Option<serde_json::Value>,
     /// Merge semantics: the survivor absorbs the retired record's
     /// observations (corroboration += retired + 1) in the same call. A
     /// pinned survivor is never written. Default false (a state change:
@@ -411,6 +479,9 @@ pub struct SupersedeResponse {
     /// True when the survivor was reinforced (`reinforce` asked and the
     /// survivor is not pinned).
     pub reinforced: bool,
+    /// Post-commit survivor snapshot for a subsequent proof-bound absorption.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub survivor: Option<Memory>,
 }
 
 const MAX_REASON_CHARS: usize = 500;
@@ -466,40 +537,18 @@ pub async fn supersede(
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
-    let winner = bank
-        .get(&req.superseded_by)
-        .await
-        .ok_or_else(|| MemoryError::MemoryNotFound(req.superseded_by.clone()))?;
-    if !winner.is_live() {
-        return Err(MemoryError::InvalidInput(format!(
-            "superseded_by `{}` is not a live memory",
-            req.superseded_by
-        )));
-    }
-    let memory = bank
-        .get(&req.id)
-        .await
-        .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
-    if memory.pinned {
-        return Err(MemoryError::InvalidInput(format!(
-            "memory `{}` is pinned; pinned memories are untouchable by automatic paths",
-            req.id
-        )));
-    }
-    // An already-retired target is an error, not a silent success:
-    // concurrent consolidation passes would otherwise count the same
-    // retirement twice and double-reinforce the survivor.
-    if !memory.is_live() {
-        return Err(MemoryError::InvalidInput(format!(
-            "memory `{}` is already retired (superseded_by: {:?})",
-            req.id, memory.superseded_by
-        )));
-    }
     let reason = clamp_reason(req.reason);
-    let (retired, survivor) = supersede_transition(memory, winner, req.reinforce, now_ms());
-    // Loser first: a retry after a failed survivor write then fails as
-    // "already retired" instead of double-reinforcing.
-    bank.commit(retired.clone()).await?;
+    let (retired, survivor) = bank
+        .supersede(
+            &req.id,
+            &req.superseded_by,
+            req.reinforce,
+            (
+                req.expected_memory.as_ref(),
+                req.expected_superseded_by.as_ref(),
+            ),
+        )
+        .await?;
     deps.emitter
         .item_with(
             ItemEvent::Superseded,
@@ -509,15 +558,16 @@ pub async fn supersede(
         )
         .await;
     let reinforced = survivor.is_some();
-    if let Some(survivor) = survivor {
-        bank.commit(survivor.clone()).await?;
+    if let Some(survivor) = &survivor {
+        // Both records are already durably committed by Bank::supersede.
         deps.emitter
-            .item_with(ItemEvent::Updated, &bank_name, &survivor, reason.as_deref())
+            .item_with(ItemEvent::Updated, &bank_name, survivor, reason.as_deref())
             .await;
     }
     Ok(SupersedeResponse {
         memory: retired,
         reinforced,
+        survivor,
     })
 }
 

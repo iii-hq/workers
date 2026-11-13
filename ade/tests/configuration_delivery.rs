@@ -106,7 +106,7 @@ async fn exercise_delivery() {
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
-        ws.send(Message::Text(
+        ws.send(Message::text(
             json!({"type":"workerregistered","worker_id":"fixture"}).to_string(),
         ))
         .await
@@ -129,7 +129,7 @@ async fn exercise_delivery() {
                         frame["response_format"]["properties"]["id"]["type"],
                         "string"
                     );
-                    ws.send(Message::Text(
+                    ws.send(Message::text(
                         json!({
                             "type":"invokefunction", "function_id":"ade::configuration-id",
                             "invocation_id":invocation,
@@ -151,7 +151,7 @@ async fn exercise_delivery() {
                 Some("invokefunction") => {
                     let function = frame["function_id"].as_str().unwrap();
                     if !function.starts_with("configuration::") {
-                        ws.send(Message::Text(
+                        ws.send(Message::text(
                             json!({
                                 "type":"invocationresult", "function_id":function,
                                 "invocation_id":frame["invocation_id"], "result":{}
@@ -233,10 +233,10 @@ async fn exercise_delivery() {
                     } else {
                         panic!("unexpected RPC {function}");
                     }
-                    ws.send(Message::Text(reply.to_string())).await.unwrap();
+                    ws.send(Message::text(reply.to_string())).await.unwrap();
                 }
                 Some("ping") => {
-                    ws.send(Message::Text(json!({"type":"pong"}).to_string()))
+                    ws.send(Message::text(json!({"type":"pong"}).to_string()))
                         .await
                         .unwrap();
                 }

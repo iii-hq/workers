@@ -1,5 +1,8 @@
+import {
+  TRACE_1_ID,
+  TRACE_2_ID,
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { TRACE_1_ID, TRACE_2_ID } from '../fixtures/traces-fixtures'
 import { TracesV2 } from '../index'
 import { withFakeIiiClient } from './harness'
 

@@ -7,14 +7,16 @@
 //!
 //! v1 detection is deliberately conservative and fully deterministic:
 //! automatic writes happen ONLY for normalized-text equality
-//! (case/punctuation/whitespace-insensitive). Token-set equality (word
-//! order shuffles) is surfaced as REPORT-ONLY candidates — "Alice manages
-//! Bob" and "Bob manages Alice" sort to the same tokens but mean opposite
-//! things, so reordering never authorizes a write; a human or a stronger
-//! verifier promotes those. Grouping keys are designed to grow: when
+//! (case/punctuation/whitespace-insensitive; operators and signs kept).
+//! Token-set equality (word order shuffles) is surfaced as REPORT-ONLY
+//! candidates — "Alice manages Bob" and "Bob manages Alice" sort to the
+//! same tokens but mean opposite things, so reordering never authorizes a
+//! write; a human or a stronger verifier promotes those. Grouping keys are designed to grow: when
 //! memories gain tags, tags join the group key next to entities.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
@@ -25,8 +27,69 @@ use serde_json::{json, Value};
 const PAGE: usize = 500;
 const CALL_TIMEOUT_MS: u64 = 15_000;
 
+pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// The pass's IO boundary: the SDK client in production, a fake in the
+/// offline tests (no engine, no model).
+pub trait ConsolidationTransport: Send + Sync {
+    fn invoke<'a>(&'a self, function: &'a str, payload: Value) -> TransportFuture<'a, Value>;
+
+    fn complete<'a>(
+        &'a self,
+        model: &'a str,
+        system: &'a str,
+        prompt: String,
+        max_tokens: u32,
+    ) -> TransportFuture<'a, Value>;
+
+    fn judge<'a>(
+        &'a self,
+        model: &'a str,
+        prompt: String,
+    ) -> TransportFuture<'a, crate::llm::JudgeReply>;
+}
+
+impl ConsolidationTransport for IIIClient {
+    fn invoke<'a>(&'a self, function: &'a str, payload: Value) -> TransportFuture<'a, Value> {
+        Box::pin(async move {
+            self.call(CallRequest {
+                function_id: function.to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(if matches!(function, "state::get" | "state::set") {
+                    5_000
+                } else {
+                    CALL_TIMEOUT_MS
+                }),
+            })
+            .await
+            .map_err(|e| format!("{function}: {e}"))
+        })
+    }
+
+    fn complete<'a>(
+        &'a self,
+        model: &'a str,
+        system: &'a str,
+        prompt: String,
+        max_tokens: u32,
+    ) -> TransportFuture<'a, Value> {
+        Box::pin(crate::llm::complete(
+            self, model, system, prompt, max_tokens,
+        ))
+    }
+
+    fn judge<'a>(
+        &'a self,
+        model: &'a str,
+        prompt: String,
+    ) -> TransportFuture<'a, crate::llm::JudgeReply> {
+        Box::pin(crate::llm::judge(self, model, prompt))
+    }
+}
+
 /// The slice of a memory record this pass reads (wire-tolerant: unknown
-/// fields ignored).
+/// fields land in `snapshot`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryRow {
     pub id: String,
@@ -45,6 +108,27 @@ pub struct MemoryRow {
     /// do not bump it). Absent on legacy records.
     #[serde(default)]
     pub stated_at: Option<u64>,
+    /// Every other wire field (revision, provenance, tags, ...), echoed back
+    /// as `expected_memory` so memory can refuse a record edited since this
+    /// pass read it.
+    #[serde(flatten)]
+    pub snapshot: BTreeMap<String, Value>,
+}
+
+impl MemoryRow {
+    pub(crate) fn expected_snapshot(&self) -> Value {
+        let mut fields = self.snapshot.clone();
+        fields.extend([
+            ("id".into(), json!(self.id)),
+            ("text".into(), json!(self.text)),
+            ("pinned".into(), json!(self.pinned)),
+            ("corroboration".into(), json!(self.corroboration)),
+            ("created_at".into(), json!(self.created_at)),
+            ("updated_at".into(), json!(self.updated_at)),
+            ("stated_at".into(), json!(self.stated_at)),
+        ]);
+        json!(fields)
+    }
 }
 
 /// One planned merge: `losers` retire in favor of `winner`.
@@ -94,8 +178,8 @@ pub struct BankReport {
     /// cannot re-run the whole pass on every heartbeat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
-    /// Semantic-tier decisions (applied, or planned on dry runs), each with
-    /// the judge's reason.
+    /// Applied semantic-tier decisions, each with the judge's reason (the
+    /// tier never runs on dry runs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub semantic: Vec<crate::semantic::SemanticAction>,
     /// Judge actions dropped by validation (unknown alias, pinned target,
@@ -147,12 +231,39 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// Case-folded, punctuation-stripped, whitespace-collapsed text.
+/// Operators and signs that change a fact: `< > = + * % # ^ ~ & |`, the `!`
+/// of `!=`, and a `-` sign before a digit (`-5`, not the hyphen of `10-15`).
+pub(crate) fn is_operator(chars: &[char], i: usize) -> bool {
+    let c = chars[i];
+    let next = chars.get(i + 1);
+    "<>=+*%#^~&|".contains(c)
+        || (c == '!' && next == Some(&'='))
+        || (c == '-'
+            && next.is_some_and(char::is_ascii_digit)
+            && !i.checked_sub(1).is_some_and(|p| chars[p].is_alphanumeric()))
+}
+
+/// Case-folded, punctuation-stripped, whitespace-collapsed text. Operators
+/// and signs survive, and so do `- . , : /` between two alphanumerics, so
+/// `x > 5`/`x < 5`, `-5`/`5`, `C++`/`C#` and `0.05`/`005` never collide.
+/// shortcut: a lone `!` is punctuation, so a factorial (`5!`) folds into `5`;
+/// a symbol-aware tokenizer would be the upgrade if that ever matters.
 pub fn normalize(text: &str) -> String {
-    let lowered = text.to_lowercase();
-    let cleaned: String = lowered
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+    let chars: Vec<char> = text.to_lowercase().chars().collect();
+    let alnum = |i: Option<usize>| {
+        i.and_then(|i| chars.get(i))
+            .is_some_and(|c| c.is_alphanumeric())
+    };
+    let cleaned: String = (0..chars.len())
+        .map(|i| {
+            let c = chars[i];
+            let joins = "-.,:/".contains(c) && alnum(i.checked_sub(1)) && alnum(Some(i + 1));
+            if c.is_alphanumeric() || is_operator(&chars, i) || joins {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -191,6 +302,9 @@ pub fn plan(rows: &[MemoryRow]) -> Vec<PlannedGroup> {
 fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> Vec<PlannedGroup> {
     let mut groups: BTreeMap<String, Vec<&MemoryRow>> = BTreeMap::new();
     for row in rows {
+        if normalize(&row.text).is_empty() {
+            continue;
+        }
         groups.entry(key(&row.text)).or_default().push(row);
     }
     let mut planned = Vec::new();
@@ -232,23 +346,19 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
     planned
 }
 
-pub(crate) async fn call(
-    iii: &IIIClient,
+pub(crate) async fn call<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     function_id: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    iii.call(CallRequest {
-        function_id: function_id.to_string(),
-        payload,
-        action: None,
-        timeout_ms: Some(CALL_TIMEOUT_MS),
-    })
-    .await
-    .map_err(|e| format!("{function_id}: {e}"))
+    iii.invoke(function_id, payload).await
 }
 
 /// Banks eligible for this pass (config allowlist applied).
-pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>, String> {
+pub async fn list_banks<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    allow: &[String],
+) -> Result<Vec<String>, String> {
     let reply = call(iii, "memory::bank::list", json!({})).await?;
     let banks = reply
         .get("banks")
@@ -264,8 +374,8 @@ pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>
 
 /// Every LIVE memory in a bank, paged. Undecodable rows are reported —
 /// a partial scan must not read as a complete one.
-pub(crate) async fn fetch_live(
-    iii: &IIIClient,
+pub(crate) async fn fetch_live<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     errors: &mut Vec<String>,
 ) -> Result<Vec<MemoryRow>, String> {
@@ -310,8 +420,8 @@ pub(crate) async fn fetch_live(
 
 /// Run one pass over one bank. `budget` is the remaining supersede budget
 /// for the whole run; decremented as work applies.
-pub async fn run_bank(
-    iii: &IIIClient,
+pub async fn run_bank<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     dry_run: bool,
     budget: &mut usize,
@@ -334,7 +444,16 @@ pub async fn run_bank(
         if dry_run || group.report_only {
             continue;
         }
-        apply_group(iii, bank, group, budget, &mut report, REASON_NORMALIZED).await;
+        apply_group(
+            iii,
+            bank,
+            group,
+            &rows,
+            budget,
+            &mut report,
+            REASON_NORMALIZED,
+        )
+        .await;
     }
     report.groups = groups;
     (report, rows)
@@ -348,40 +467,69 @@ pub async fn run_bank(
 /// `memory::save(winner_text)` silently created a duplicate whenever the
 /// winner's text had been edited (`memory::update` keeps the old id, so the
 /// fingerprint no longer matches) and wrote pinned winners.
-async fn apply_group(
-    iii: &IIIClient,
+///
+/// Each call carries the snapshots this pass planned on (`expected_memory`,
+/// `expected_superseded_by`), so a memory worker that knows the guards
+/// refuses a record edited since the scan instead of retiring it.
+async fn apply_group<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     group: &PlannedGroup,
+    rows: &[MemoryRow],
     budget: &mut usize,
     report: &mut BankReport,
     reason: &str,
 ) -> usize {
     let mut applied = 0usize;
+    let Some(winner) = rows.iter().find(|row| row.id == group.winner_id) else {
+        report.errors.push("missing winner snapshot".into());
+        return 0;
+    };
+    let mut expected_winner = Some(winner.expected_snapshot());
     for loser in &group.loser_ids {
         if *budget == 0 {
             report.capped += 1;
             continue;
         }
-        let superseded = call(
-            iii,
-            "memory::supersede",
-            json!({
-                "bank": bank,
-                "id": loser,
-                "superseded_by": group.winner_id,
-                "reinforce": true,
-                "reason": reason,
-            }),
-        )
-        .await;
-        match superseded {
+        let Some(seen) = rows.iter().find(|row| &row.id == loser) else {
+            report.errors.push("missing loser snapshot".into());
+            break;
+        };
+        let mut payload = json!({
+            "bank": bank,
+            "id": loser,
+            "superseded_by": group.winner_id,
+            "expected_memory": seen.expected_snapshot(),
+            "reinforce": true,
+            "reason": reason,
+        });
+        if let Some(expected) = &expected_winner {
+            payload["expected_superseded_by"] = expected.clone();
+        }
+        match call(iii, "memory::supersede", payload).await {
             Ok(reply) => {
                 *budget -= 1;
                 applied += 1;
                 report.superseded += 1;
                 tally_reinforcement(report, &reply);
+                match reply.get("survivor").filter(|v| !v.is_null()) {
+                    // The reinforced winner changed: guard the next call with
+                    // its post-commit snapshot.
+                    Some(survivor) => expected_winner = Some(survivor.clone()),
+                    // Reinforced but no snapshot: a memory worker that predates
+                    // the guards (it ignores `expected_*`); finish the group
+                    // without the winner guard.
+                    None if reply.get("reinforced") == Some(&Value::Bool(true)) => {
+                        expected_winner = None
+                    }
+                    // Winner not written (pinned): its snapshot still holds.
+                    None => {}
+                }
             }
-            Err(e) => report.errors.push(e),
+            Err(e) => {
+                report.errors.push(e);
+                break;
+            }
         }
     }
     applied
@@ -398,8 +546,8 @@ pub struct LlmOptions {
 /// promotions. Runs AFTER the deterministic pass, never on dry runs.
 /// Fail-soft — an unavailable router lands in the report's notes (never
 /// errors: it must not keep the pass due) and the pass stays valid.
-pub async fn run_llm_tier(
-    iii: &IIIClient,
+pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
     bank: &str,
     rows: &[MemoryRow],
     report: &mut BankReport,
@@ -411,12 +559,11 @@ pub async fn run_llm_tier(
     let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates) else {
         return;
     };
-    let reply = match crate::llm::judge(iii, &opts.model, prompt).await {
+    let reply = match iii.judge(&opts.model, prompt).await {
         Ok(r) => r,
         Err(e) => {
-            // ponytail: this routing (notes, not errors) has no test seam
-            // until IIIClient/llm::judge can be faked; the checkpoint policy
-            // it relies on is pinned in functions.rs.
+            // An unavailable optional decision provider remains a soft skip;
+            // it does not turn already-applied deterministic work into a retry.
             report.notes.push(format!("llm tier skipped: {e}"));
             return;
         }
@@ -425,7 +572,7 @@ pub async fn run_llm_tier(
     // Confirmed merges: clone the groups first (report holds them).
     let confirmed = confirmed_groups(&reply.merge_groups, &reorder);
     for group in &confirmed {
-        let applied = apply_group(iii, bank, group, budget, report, REASON_REORDER).await;
+        let applied = apply_group(iii, bank, group, rows, budget, report, REASON_REORDER).await;
         report.llm_merged += applied;
     }
 
@@ -488,6 +635,7 @@ mod tests {
             created_at,
             updated_at: created_at,
             stated_at: None,
+            snapshot: BTreeMap::new(),
         }
     }
 
@@ -532,6 +680,33 @@ mod tests {
             "user prefers terse direct answers"
         );
         assert_eq!(token_key("b a b c"), "a b c");
+    }
+
+    #[test]
+    fn case_whitespace_and_trailing_period_merge_but_symbols_never_collide() {
+        let rows = vec![
+            row("fp1", "Alice likes Rust", false, 0, 100),
+            row("fp2", "Alice likes Rust.", false, 0, 200),
+            row("fp3", "alice  likes rust", false, 0, 300),
+        ];
+        let groups = plan(&rows);
+        assert_eq!(groups.len(), 1);
+        assert!(!groups[0].report_only);
+        assert_eq!(groups[0].loser_ids, vec!["fp2", "fp3"]);
+
+        for (a, b) in [
+            ("timeout > 5s", "timeout < 5s"),
+            ("delta is -5", "delta is 5"),
+            ("uses C++", "uses C#"),
+            ("uses C++", "uses C"),
+            ("uses C#", "uses C"),
+            ("a != b", "a = b"),
+            ("rate 0.05", "rate 005"),
+        ] {
+            assert_ne!(normalize(a), normalize(b), "{a:?} vs {b:?}");
+            let rows = vec![row("x", a, false, 0, 100), row("y", b, false, 0, 200)];
+            assert!(plan(&rows).is_empty(), "{a:?} vs {b:?} must not group");
+        }
     }
 
     #[test]
@@ -611,13 +786,10 @@ mod tests {
             row("fp1", "   ", false, 0, 100),
             row("fp2", "\t\n", false, 0, 200),
         ];
-        // Both normalize to "" — grouping them would supersede real (if
-        // odd) records on no signal; current behavior groups by equal key,
-        // which is deterministic and surfaced in the plan for review.
-        let groups = plan(&rows);
-        for g in &groups {
-            assert!(!g.report_only || g.loser_ids.is_empty() || !g.loser_ids.is_empty());
-        }
+        assert!(
+            plan(&rows).is_empty(),
+            "empty evidence cannot authorize retirement"
+        );
     }
 
     #[test]

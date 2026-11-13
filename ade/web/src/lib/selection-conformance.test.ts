@@ -77,9 +77,9 @@ describe('neutral selection contract', () => {
       'ade/web/src/components/chat/SessionAddonsPicker.tsx',
       'ade/web/src/components/chat/MemoryChip.tsx',
       'ade/web/src/pages/Configuration/index.tsx',
-      'ade/web/src/pages/TracesV2/components/ViewsDropdown.tsx',
-      'ade/web/src/pages/TracesV2/components/WaterfallChart.tsx',
-      'ade/web/src/pages/TracesV2/components/timeline/spanVisuals.tsx',
+      'packages/traces-ui/src/components/ViewsDropdown.tsx',
+      'packages/traces-ui/src/components/WaterfallChart.tsx',
+      'packages/traces-ui/src/components/timeline/spanVisuals.tsx',
     ].map((path) => readFileSync(join(repoRoot, path), 'utf8'))
 
     for (const source of sources) {

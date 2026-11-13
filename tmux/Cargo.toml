@@ -2,7 +2,7 @@
 
 [package]
 name = "tmux"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 publish = false
 description = "tmux worker for iii — sessions and windows as tmux::* functions, agent/compose/port status per pane, and a live console terminal attached as a real tmux client"
@@ -26,6 +26,9 @@ base64 = "0.22"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
+# NFC, as Claude Code normalises CLAUDE_CONFIG_DIR before naming its Keychain
+# item; already in the graph through reqwest (url, idna).
+icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }
 tar = { version = "0.4", default-features = false }
 libc = "0.2"
 portable-pty = "0.9.0"
@@ -48,3 +51,11 @@ tokio = { version = "1", features = ["test-util"] }
 # A scripted engine for tests/live_feed.rs; both are already in the graph through iii-sdk.
 futures-util = "0.3"
 tokio-tungstenite = "0.28"
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

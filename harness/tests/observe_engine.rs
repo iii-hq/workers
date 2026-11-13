@@ -598,7 +598,7 @@ async fn a_kept_observer_is_observed_again_after_an_absence_past_the_grace_perio
     wait_observer_state(&source, "kept", Some("active")).await;
     emit(&source, "demo::on-event", json!({ "n": 2 })).await;
     let got = received.wait("keeper::record", 2).await;
-    assert_eq!(got[1], json!({ "n": 2 }), "{got:?}");
+    assert_eq!(got[1]["output"], json!({ "n": 2 }), "{got:?}");
 
     source.shutdown_async().await;
     keeper.shutdown_async().await;

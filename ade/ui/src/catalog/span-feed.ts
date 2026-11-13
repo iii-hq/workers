@@ -1,7 +1,7 @@
 /**
  * The catalog's live span feed: notify-then-query over the engine's
  * `observability::on-span` source, the same model the Traces masthead uses
- * (`ade/web/src/lib/traces-activity.ts`, `useAllSpans`).
+ * (`packages/traces-ui/src/api/activity.ts`, `useAllSpans`).
  *
  * The engine's observability worker coalesces span activity into one
  * `{ trace_ids }` call per ~300ms window, made on span start and close for

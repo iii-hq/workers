@@ -1,7 +1,7 @@
+import { TraceListRow } from '@iii-dev/traces-ui/src/components/TraceListRow'
+import { TRACE_LIST_FIXTURE } from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { fn } from 'storybook/test'
-import { TraceListRow } from '../components/TraceListRow'
-import { TRACE_LIST_FIXTURE } from '../fixtures/traces-fixtures'
 
 const HEALTHY_TRACE =
   TRACE_LIST_FIXTURE.find((t) => t.status === 'ok') ?? TRACE_LIST_FIXTURE[0]

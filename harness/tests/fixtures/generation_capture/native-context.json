@@ -1,0 +1,226 @@
+{
+  "assembly": {
+    "input": [
+      {
+        "content": [
+          {
+            "text": "synthetic-turn-fact\nother fact",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "timestamp": 0
+      },
+      {
+        "content": [
+          {
+            "text": "synthetic-turn-fact\nother fact",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "timestamp": 0
+      },
+      {
+        "content": [
+          {
+            "text": "padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding ",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "timestamp": 0
+      },
+      {
+        "content": [
+          {
+            "text": "done",
+            "type": "text"
+          }
+        ],
+        "model": "synthetic",
+        "provider": "synthetic",
+        "role": "assistant",
+        "stop_reason": "end",
+        "timestamp": 0
+      },
+      {
+        "content": [
+          {
+            "text": "tail",
+            "type": "text"
+          }
+        ],
+        "role": "user",
+        "timestamp": 0
+      }
+    ],
+    "output": {
+      "applied": {
+        "capped_parts": 0,
+        "capped_tokens": 0,
+        "compacted": true,
+        "initial_token_count": 2522,
+        "pruned": false,
+        "pruned_tokens": 0,
+        "summarized_head_tokens": 2498,
+        "summary": "synthetic-turn-fact\nother fact",
+        "tail_start_index": 4,
+        "tokens_before": 2498
+      },
+      "breakdown": {
+        "by_role": {
+          "assistant": 0,
+          "custom": 0,
+          "function_result": 0,
+          "user": 17
+        },
+        "estimator": "heuristic",
+        "system_prompt_tokens": 21,
+        "tools_tokens": 0
+      },
+      "effective_max_output_tokens": 128,
+      "input_indices": [
+        4
+      ],
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "tail",
+              "type": "text"
+            }
+          ],
+          "role": "user",
+          "timestamp": 0
+        }
+      ],
+      "model_resolved": "inline",
+      "summary_origin": {
+        "assembly_id": "native-assembly-fixture",
+        "span": {
+          "byte_end": 86,
+          "byte_start": 56,
+          "summary_sha256": "8879a9fed0fc03a3dd046668e8340a637cdcd87cf2dad2a6f06ae5ba83691ef3",
+          "system_sha256": "d16061b9d5d52ed4d1582926c110298111e090eb98b9ee087af6235301fdb45a"
+        },
+        "summarized_indices": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "system_prompt": "synthetic-turn-fact\nother fact\n\n# Conversation summary\n\nsynthetic-turn-fact\nother fact",
+      "token_count": 38,
+      "usable": 1872
+    }
+  },
+  "renderers": {
+    "memory-basecopy": {
+      "summary_origin": {
+        "assembly_id": "native-render-memory-basecopy",
+        "span": {
+          "byte_end": 112,
+          "byte_start": 95,
+          "summary_sha256": "17cb7ce5d579f03db0082797a957e4da70bb1f775b7e32a168038ab1a9649309",
+          "system_sha256": "ca56b727b513d4770f1732fc92639f2d6b90c13fc9e1139ff45c598fd053a895"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "<memory bank=\"synthetic-atlas\">\n- Atlas deploys with ember.\n</memory>\n\n# Conversation summary\n\nunrelated summary"
+    },
+    "memory-noncontiguous": {
+      "summary_origin": {
+        "assembly_id": "native-render-memory-noncontiguous",
+        "span": {
+          "byte_end": 112,
+          "byte_start": 32,
+          "summary_sha256": "7fe93d78d99da9cbe6f627f7e746fdc5d618a626387ac5d3ebdb378a5f8da7f0",
+          "system_sha256": "04d3b9494748cc03173ebcc843d3a328b4181141ed228e0b714a563e8cf8b84e"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "policy\n\n# Conversation summary\n\n<memory bank=\"synthetic-atlas\">\ninterloper\n- Atlas deploys with ember.\n</memory>"
+    },
+    "memory-ordered": {
+      "summary_origin": {
+        "assembly_id": "native-render-memory-ordered",
+        "span": {
+          "byte_end": 101,
+          "byte_start": 32,
+          "summary_sha256": "1bc06c115ef6447acdd4967960522ba3331c62599497157eddc35ebc397e4e30",
+          "system_sha256": "9211aaead00f2c5b304ad85c738e53546eb5ed86bbe03b43647b741c2126de2d"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "policy\n\n# Conversation summary\n\n<memory bank=\"synthetic-atlas\">\n- Atlas deploys with ember.\n</memory>"
+    },
+    "memory-reordered": {
+      "summary_origin": {
+        "assembly_id": "native-render-memory-reordered",
+        "span": {
+          "byte_end": 101,
+          "byte_start": 32,
+          "summary_sha256": "8c1f90709d65df38ead7cbe71e3e30ef169149f282591b0853a0804a11064de9",
+          "system_sha256": "735617c83d886fedf9ab3d5352ea0ce51007039cea8c7b7a4ec6bde199a7b27d"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "policy\n\n# Conversation summary\n\n</memory>\n- Atlas deploys with ember.\n<memory bank=\"synthetic-atlas\">"
+    },
+    "summary-basecopy": {
+      "summary_origin": {
+        "assembly_id": "native-render-summary-basecopy",
+        "span": {
+          "byte_end": 65,
+          "byte_start": 56,
+          "summary_sha256": "c2703a7ddf6c74b39505339af20dd6dd4f0794720e038b78ba395600c72417d4",
+          "system_sha256": "921c9b6f6909980f7f47304c22912993c8d4578ad3f453babd4c019eaae5d2a9"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "synthetic-turn-fact\nother fact\n\n# Conversation summary\n\nunrelated"
+    },
+    "summary-noncontiguous": {
+      "summary_origin": {
+        "assembly_id": "native-render-summary-noncontiguous",
+        "span": {
+          "byte_end": 97,
+          "byte_start": 56,
+          "summary_sha256": "5bb417af6fa10904f2aeea3f12545354c41aea0535c379ad28e7cf62d8076f72",
+          "system_sha256": "a191830bb0dba0375ab21a3f021af072bf28d6d02759970cb89d2d4766198b2f"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "synthetic-turn-fact\nother fact\n\n# Conversation summary\n\nsynthetic-turn-fact\ninterloper\nother fact"
+    },
+    "summary-reordered": {
+      "summary_origin": {
+        "assembly_id": "native-render-summary-reordered",
+        "span": {
+          "byte_end": 86,
+          "byte_start": 56,
+          "summary_sha256": "1e74ae5d3c2e331c39c2cb1a8ab9b96353bf3e1933c9093114c8eb4ead6a5efa",
+          "system_sha256": "ae6b997f17d9a09ae47efa994cae239276030baa7b979afecc0aa95820ea865e"
+        },
+        "summarized_indices": [
+          1
+        ]
+      },
+      "system_prompt": "synthetic-turn-fact\nother fact\n\n# Conversation summary\n\nother fact\nsynthetic-turn-fact"
+    }
+  }
+}

@@ -1,18 +1,18 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
-import { SpanBaggageTab } from '../components/SpanBaggageTab'
-import { SpanErrorsTab } from '../components/SpanErrorsTab'
-import { SpanInfoTab } from '../components/SpanInfoTab'
-import { SpanLinksTab } from '../components/SpanLinksTab'
-import { SpanLogsTab } from '../components/SpanLogsTab'
-import { SpanOtelLogsTab } from '../components/SpanOtelLogsTab'
-import { SpanTagsTab } from '../components/SpanTagsTab'
+import { SpanBaggageTab } from '@iii-dev/traces-ui/src/components/SpanBaggageTab'
+import { SpanErrorsTab } from '@iii-dev/traces-ui/src/components/SpanErrorsTab'
+import { SpanInfoTab } from '@iii-dev/traces-ui/src/components/SpanInfoTab'
+import { SpanLinksTab } from '@iii-dev/traces-ui/src/components/SpanLinksTab'
+import { SpanLogsTab } from '@iii-dev/traces-ui/src/components/SpanLogsTab'
+import { SpanOtelLogsTab } from '@iii-dev/traces-ui/src/components/SpanOtelLogsTab'
+import { SpanTagsTab } from '@iii-dev/traces-ui/src/components/SpanTagsTab'
 import {
   ERROR_SPAN,
   FN_SPAN,
   LLM_SPAN,
   WATERFALL_FIXTURE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 import { withFakeIiiClient } from './harness'
 
 const meta = {

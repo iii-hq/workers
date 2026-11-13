@@ -2,7 +2,7 @@
  * How long a function call took, for the chat surface's card header.
  *
  * Milliseconds above a millisecond, exactly as before. Below one, the same
- * `μs` the traces surface uses (`pages/TracesV2/lib/traceUtils.ts`): a lot of
+ * `μs` the traces surface uses (`packages/traces-ui/src/lib/traceUtils.ts`): a lot of
  * what an agent dispatches is engine-local — an observe, a state
  * read — and finishes in microseconds, where rounding to `0ms` reads like the
  * call never happened.

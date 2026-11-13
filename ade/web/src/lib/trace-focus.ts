@@ -5,8 +5,6 @@
  * is consumed by the first one to take it.
  */
 
-import { useEffect, useRef } from 'react'
-
 interface FocusRequest {
   traceId: string
   seq: number
@@ -30,19 +28,20 @@ export function takeTraceFocusRequest(): string | null {
   return request?.traceId ?? null
 }
 
-/** Calls `onFocus` for a pending request now and for every later one. */
-export function useTraceFocusRequest(onFocus: (traceId: string) => void): void {
-  const onFocusRef = useRef(onFocus)
-  onFocusRef.current = onFocus
-  useEffect(() => {
-    const deliver = () => {
-      const traceId = takeTraceFocusRequest()
-      if (traceId) onFocusRef.current(traceId)
-    }
-    deliver()
-    listeners.add(deliver)
-    return () => {
-      listeners.delete(deliver)
-    }
-  }, [])
+/**
+ * Calls `onFocus` for a pending request now and for every later one, until
+ * the returned unsubscribe runs.
+ */
+export function subscribeTraceFocus(
+  onFocus: (traceId: string) => void,
+): () => void {
+  const deliver = () => {
+    const traceId = takeTraceFocusRequest()
+    if (traceId) onFocus(traceId)
+  }
+  deliver()
+  listeners.add(deliver)
+  return () => {
+    listeners.delete(deliver)
+  }
 }

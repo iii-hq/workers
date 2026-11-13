@@ -90,7 +90,7 @@
             "type": "integer"
           },
           "semantic": {
-            "description": "Semantic-tier decisions (applied, or planned on dry runs), each with the judge's reason.",
+            "description": "Applied semantic-tier decisions, each with the judge's reason (the tier never runs on dry runs).",
             "items": {
               "$ref": "#/definitions/SemanticAction"
             },
@@ -168,12 +168,8 @@
         "type": "object"
       },
       "SemanticAction": {
-        "description": "One semantic-tier decision as reported (and kept in `last_report`).",
+        "description": "One applied semantic-tier decision as reported (and kept in `last_report`). Actions dropped by the pre-write freshness check are not listed; they count in `semantic_rejected` with a note.",
         "properties": {
-          "applied": {
-            "description": "False on dry runs. Actions dropped by the pre-write freshness check are not listed here; they count in `semantic_rejected` with a note.",
-            "type": "boolean"
-          },
           "keep_id": {
             "description": "Merge survivor / supersede replacement.",
             "type": "string"
@@ -196,7 +192,6 @@
           }
         },
         "required": [
-          "applied",
           "keep_id",
           "keep_text",
           "kind",

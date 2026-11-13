@@ -62,7 +62,9 @@ async fn console_terminal_functions_cannot_be_observed() {
     let iii = register_worker(&address, InitOptions::default());
     let config = WorkerConfig::default().into_shared();
     let console = ConsoleClients::default();
-    let collector = Arc::new(Collector::new(config, console.clone()));
+    let collector = Arc::new(Collector::sandboxed(config, console.clone()));
+    // No test reads this computer's Claude Code sign-in or reaches the network.
+    assert!(!collector.accounts().can_fetch());
     let manager = TerminalManager::new(
         Arc::new(iii.clone()),
         collector,

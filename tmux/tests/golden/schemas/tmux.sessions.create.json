@@ -3,7 +3,36 @@
   "function_id": "tmux::sessions::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ClaudeLaunchInput": {
+        "description": "`claude` on tmux::windows::create and tmux::sessions::create.",
+        "properties": {
+          "account": {
+            "default": "global",
+            "description": "`global` (the default: it runs on the global account and moves when that changes) or an account id (pinned to it).",
+            "type": "string"
+          },
+          "skip_permissions": {
+            "default": false,
+            "description": "Start it with --dangerously-skip-permissions (default false). Refused when the host runs as root.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
     "properties": {
+      "claude": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ClaudeLaunchInput"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Start Claude Code on an account in the first window instead of `command` (not both): the worker builds the command (returned as `runs`) and marks the pane with its account."
+      },
       "command": {
         "default": null,
         "description": "Shell command to run in the first window instead of the default shell.",
@@ -51,6 +80,13 @@
       "pane_id": {
         "description": "First pane id.",
         "type": "string"
+      },
+      "runs": {
+        "description": "With `claude`: the exact command the pane runs.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "session": {
         "description": "Session name.",

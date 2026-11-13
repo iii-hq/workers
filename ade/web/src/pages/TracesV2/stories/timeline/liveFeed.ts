@@ -9,11 +9,11 @@
  * .stories file.
  */
 
-import { useEffect, useState } from 'react'
 import type {
   TimelineSpan,
   TimelineSpanKind,
-} from '../../components/timeline/layout'
+} from '@iii-dev/traces-ui/src/components/timeline/layout'
+import { useEffect, useState } from 'react'
 
 export interface Scenario {
   /** random delay range between spawns */

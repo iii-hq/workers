@@ -135,12 +135,10 @@ There are two distinct shapes for failures:
 graph TD
   ChatView["ChatView (UI)"]
   Backend["ChatBackend interface"]
-  Mock["mockBackend (lib/backend/mock.ts)"]
-  Real["realBackend (lib/backend/real.ts) - stub today"]
+  Real["realBackend (lib/backend/real.ts)"]
   Scenarios["scenarioBackend (stories/playground/scenarios)"]
 
   ChatView -->|consumes| Backend
-  Backend -.implements.- Mock
   Backend -.implements.- Real
   Backend -.implements.- Scenarios
 ```
@@ -149,13 +147,14 @@ The seam is `chat-app/src/lib/backend/`:
 
 - [`types.ts`](src/lib/backend/types.ts) — the contract types: `StreamEvent`,
   `ChatStreamOptions`, `ChatBackend`.
-- [`mock.ts`](src/lib/backend/mock.ts) — three canned bodies, jittered token
-  delays, abort-aware sleeps. Used in dev; tree-shaken from prod builds.
-- [`real.ts`](src/lib/backend/real.ts) — stub that throws
-  `'backend not configured'`. Replace its body with your provider; preserve
-  the `ChatBackend` shape and you're done.
+- `mock.ts` — removed. Canned streams now live only in the Playground
+  scenarios ([`src/stories/playground/scenarios/`](src/stories/playground/scenarios)),
+  built with `makeBackend` from
+  [`helpers.ts`](src/stories/playground/scenarios/helpers.ts).
+- [`real.ts`](src/lib/backend/real.ts) — the default backend. It connects
+  through the iii client and sends harness turns.
 - [`index.ts`](src/lib/backend/index.ts) — `getDefaultBackend()` returns the
-  mock when `import.meta.env.DEV`, otherwise the real backend.
+  real backend.
 
 The chat page imports `getDefaultBackend()` once at module load and passes
 it to `ChatView` as a prop. Nothing else in the app depends on the choice.
@@ -204,7 +203,7 @@ important" direction.
 
 Consecutive `function-call` messages collapse into one bordered accordion
 in the message flow. Single-call runs stay rendered as a standalone
-[`FunctionCallMessage`](src/components/chat/FunctionCallMessage.tsx).
+[`FunctionCallCard`](src/components/function-call/FunctionCallCard.tsx).
 
 ```
 ┌─[chat column]──────────────────────┐
@@ -237,7 +236,8 @@ expanded body:
 - **Default open** while any child is pending/running/errored; respects
   user toggle once everything settles.
 - **Files touched**: new
-  [`FunctionCallGroup.tsx`](src/components/chat/FunctionCallGroup.tsx),
+  `FunctionCallGroup` (now a component inside
+  [`MessageList.tsx`](src/components/chat/MessageList.tsx)),
   new `embedded` prop on `FunctionCallMessage`, grouping helper inside
   `MessageList`.
 - **Pros**: minimal change, no layout work, immediate noise reduction,
@@ -429,13 +429,11 @@ The one runtime choice left is which backend the **in-app chat dock** uses:
 
 | build               | `getDefaultBackend()` | effect                                     |
 |---------------------|-----------------------|--------------------------------------------|
-| dev (`pnpm dev`)    | `mockBackend`         | canned streaming, no API keys.             |
-| prod (`pnpm build`) | `realBackend`         | the stub you replace with a real provider. |
+| dev (`pnpm dev`)    | `realBackend`         | same backend as prod; no build-mode switch. |
+| prod (`pnpm build`) | `realBackend`         | connects through the iii client.            |
 
-[`src/lib/backend/index.ts`](src/lib/backend/index.ts) keys off
-`import.meta.env.DEV`, which Vite/Rolldown inlines as a literal at build time,
-so `mockBackend` (and its transitive imports) is dropped by tree-shaking in
-production.
+[`src/lib/backend/index.ts`](src/lib/backend/index.ts) returns `realBackend`
+in every build; canned streams exist only in the Storybook scenarios.
 
 ### Verifying a prod build is clean
 

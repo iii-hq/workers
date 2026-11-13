@@ -7,13 +7,13 @@
  * exactly the notify-then-query loop a live engine runs.
  */
 
-import type { ISdk } from 'iii-browser-sdk'
-import type { StoredSpan } from '@/pages/TracesV2/api/traces'
+import type { StoredSpan } from '@iii-dev/traces-ui/src/api/traces'
 import {
   generateStressTrace,
   snapshotAt,
   summarizeStressTrace,
-} from '@/pages/TracesV2/fixtures/stress-traces'
+} from '@iii-dev/traces-ui/src/fixtures/stress-traces'
+import type { ISdk } from 'iii-browser-sdk'
 
 type CallArgs = { function_id: string; payload?: Record<string, unknown> }
 type Handler = (data: unknown) => Promise<unknown>

@@ -70,6 +70,9 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+    // The Traces package resolves its own node_modules; one React (and one
+    // QueryClient context) for the whole page whatever versions it pins.
+    dedupe: ['react', 'react-dom', '@tanstack/react-query'],
   },
   test: {
     exclude: [...configDefaults.exclude, 'e2e/**'],

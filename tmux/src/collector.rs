@@ -10,15 +10,17 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::activity::{ActivityReader, Recorder};
+use crate::accounts::panes::{pane_claude, ClaudeProc, Marks, PaneState};
+use crate::accounts::Accounts;
+use crate::activity::{ActivityReader, ClaudeRecord, Recorder};
 use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
 use crate::binary::{BinaryCache, Resolved};
 use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
 use crate::install::installable;
 use crate::model::{
-    now_ms, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane, PaneRef,
-    PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
+    now_ms, AgentState, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane,
+    PaneClaude, PaneRef, PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
 };
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
 use crate::tmux_cli::{list_all_args, parse_list_all, RawSnapshot, Socket, Tmux, TmuxError};
@@ -61,6 +63,9 @@ struct ProcCache {
     env: Arc<HashMap<u32, IiiEnv>>,
     error: Option<String>,
     scanned_at: Option<Instant>,
+    /// When `table` was last read from the system (a scan that failed
+    /// keeps the one before).
+    table_at: Option<Instant>,
     pane_signature: u64,
 }
 
@@ -79,6 +84,14 @@ pub struct Collector {
     compiled: StdMutex<Option<CompiledAgents>>,
     /// The agents the last collection found, by pane id, and when.
     seen: StdMutex<Option<(Instant, HashMap<String, AgentStatus>)>>,
+    /// The Claude Code panes the last collection found, by pane id, when,
+    /// and whether tmux listed its panes then (an empty map from a listing
+    /// that failed is not "no Claude Code").
+    claude_seen: StdMutex<Option<ClaudeSeen>>,
+    /// The running tmux server's version, as the last collection read it:
+    /// what it accepts, which an upgraded client's `-V` doesn't say.
+    server_version: StdMutex<Option<String>>,
+    accounts: Arc<Accounts>,
     console: ConsoleClients,
     /// One collection at a time: concurrent callers would only race each
     /// other's scans.
@@ -87,6 +100,25 @@ pub struct Collector {
 
 impl Collector {
     pub fn new(config: SharedConfig, console: ConsoleClients) -> Self {
+        Self::with_accounts(config, console, Accounts::from_env())
+    }
+
+    /// For tests: accounts in a temporary folder of their own (see
+    /// [`Accounts::sandbox`]), so no test reads this computer's Claude Code
+    /// sign-in or asks the usage endpoint.
+    pub fn sandboxed(config: SharedConfig, console: ConsoleClients) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "tmux-collector-sandbox-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        Self::with_accounts(config, console, Accounts::sandbox(&dir))
+    }
+
+    pub fn with_accounts(
+        config: SharedConfig,
+        console: ConsoleClients,
+        accounts: Arc<Accounts>,
+    ) -> Self {
         Self {
             config,
             binary: BinaryCache::default(),
@@ -96,9 +128,74 @@ impl Collector {
             agents: Mutex::new(AgentTracker::default()),
             compiled: StdMutex::new(None),
             seen: StdMutex::new(None),
+            claude_seen: StdMutex::new(None),
+            server_version: StdMutex::new(None),
+            accounts,
             console,
             gate: Mutex::new(()),
         }
+    }
+
+    /// Claude Code accounts and usage.
+    pub fn accounts(&self) -> &Arc<Accounts> {
+        &self.accounts
+    }
+
+    /// The last collection's Claude Code panes, when it is at most
+    /// `max_age` old (any age with `None`).
+    fn claude_seen(&self, max_age: Option<Duration>) -> Option<ClaudeSeen> {
+        let seen = self.claude_seen.lock().unwrap_or_else(|p| p.into_inner());
+        seen.as_ref()
+            .filter(|seen| max_age.is_none_or(|max| seen.at.elapsed() < max))
+            .cloned()
+    }
+
+    /// The panes running Claude Code or carrying an account mark, from a
+    /// collection at most [`SEEN_FRESH`] old (`fresh`: made now). Empty when
+    /// tmux could not list them; see [`Collector::claude_panes_checked`].
+    pub async fn claude_panes(&self, fresh: bool) -> HashMap<String, PaneState> {
+        if !fresh {
+            if let Some(seen) = self.claude_seen(Some(SEEN_FRESH)) {
+                return seen.panes;
+            }
+        }
+        self.overview().await;
+        // The collection just made (or a newer one), however long it took.
+        self.claude_seen(None)
+            .map(|seen| seen.panes)
+            .unwrap_or_default()
+    }
+
+    /// [`Collector::claude_panes`] from a collection made now, or why tmux
+    /// could not list its panes: for what must not take a failed look for
+    /// "no Claude Code" (deleting an account's folder, dropping waiting
+    /// moves).
+    pub async fn claude_panes_checked(&self) -> Result<HashMap<String, PaneState>, String> {
+        let overview = self.overview().await;
+        match self.claude_seen(None) {
+            Some(seen) if seen.listed => Ok(seen.panes),
+            _ => Err(overview
+                .sessions
+                .tmux
+                .error
+                .unwrap_or_else(|| "tmux did not list its panes".to_string())),
+        }
+    }
+
+    /// [`Collector::claude_panes_checked`] on processes scanned now too.
+    /// A scan is reused while the panes' programs look the same, for up to
+    /// `ports_interval_ms`: a shell that started another Claude Code since,
+    /// on another account, would still show the one before. For deleting
+    /// an account's folder, which no reused scan may decide.
+    pub async fn claude_panes_rescanned(&self) -> Result<HashMap<String, PaneState>, String> {
+        let asked = Instant::now();
+        self.procs.lock().await.scanned_at = None;
+        let panes = self.claude_panes_checked().await?;
+        let scanned = self.procs.lock().await.table_at;
+        if !scanned.is_some_and(|at| at >= asked) {
+            return Err("the processes could not be scanned".to_string());
+        }
+        Ok(panes)
     }
 
     pub fn config(&self) -> Arc<WorkerConfig> {
@@ -127,15 +224,22 @@ impl Collector {
         self.procs.lock().await.table.clone()
     }
 
-    /// The configured tmux, or why there is none.
+    /// The configured tmux, or why there is none. Its version is the
+    /// running server's when a collection read it (what the server accepts
+    /// decides, e.g. pane options from 3.0), else the client's.
     pub async fn tmux(&self) -> Result<Tmux, String> {
         let config = self.config();
         let resolved = self.binary.get(&config.tmux_binary).await?;
+        let server = self
+            .server_version
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         Ok(Tmux {
             path: resolved.path,
             socket: Socket::from_config(&config),
             timeout: Duration::from_millis(config.command_timeout_ms),
-            version: resolved.version,
+            version: server.unwrap_or(resolved.version),
         })
     }
 
@@ -230,6 +334,7 @@ impl Collector {
             match scanned {
                 Ok((table, listeners, env)) => {
                     cache.table = Arc::new(table);
+                    cache.table_at = Some(Instant::now());
                     match listeners {
                         Ok(listeners) => {
                             cache.listeners = Arc::new(listeners);
@@ -262,8 +367,9 @@ impl Collector {
 
         let mut info = TmuxInfo::default();
         let mut raw = RawSnapshot::default();
+        let mut listed = true;
         let tmux = match self.tmux().await {
-            Ok(tmux) => {
+            Ok(mut tmux) => {
                 info.available = true;
                 info.path = Some(tmux.path.to_string_lossy().into_owned());
                 info.version = self
@@ -278,9 +384,29 @@ impl Collector {
                         info.server_running = true;
                         info.socket_path =
                             raw.server.as_ref().map(|server| server.socket_path.clone());
+                        let server_version = raw
+                            .server
+                            .as_ref()
+                            .map(|server| server.version.clone())
+                            .filter(|version| !version.is_empty());
+                        if let Some(version) = &server_version {
+                            tmux.version = version.clone();
+                        }
+                        *self
+                            .server_version
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = server_version;
                     }
-                    Err(TmuxError::NoServer) => {}
-                    Err(error) => info.error = Some(error.to_string()),
+                    Err(TmuxError::NoServer) => {
+                        *self
+                            .server_version
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = None;
+                    }
+                    Err(error) => {
+                        listed = false;
+                        info.error = Some(error.to_string());
+                    }
                 }
                 Some(tmux)
             }
@@ -334,14 +460,37 @@ impl Collector {
         }
 
         let agents = self.agent_set(&config);
-        let statuses = match &tmux {
+        let (statuses, records) = match &tmux {
             Some(tmux) => {
                 self.agent_statuses(tmux, &raw, procs.table.clone(), &agents, &config)
                     .await
             }
-            None => HashMap::new(),
+            None => (HashMap::new(), HashMap::new()),
         };
-        let sessions = build_sessions(&raw, &statuses, &composes, &listeners, &self.console);
+        // tmux before 3.0 keeps the account marks per window (D4).
+        let window_marks = tmux.as_ref().is_some_and(|tmux| tmux.pane_scope() == "-w");
+        let claude = self.claude_states(&raw, &statuses, &records, &procs.table, window_marks);
+        let counts = crate::accounts::panes::counts(&claude);
+        let infos: HashMap<String, PaneClaude> = claude
+            .iter()
+            .map(|(id, state)| (id.clone(), state.info.clone()))
+            .collect();
+        *self.claude_seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(ClaudeSeen {
+            at: Instant::now(),
+            listed,
+            panes: claude,
+        });
+        // Sign-ins and profiles are read in the background (M2).
+        self.accounts.load_soon().await;
+        let usage = self.accounts.snapshot(&counts);
+        let sessions = build_sessions(
+            &raw,
+            &statuses,
+            &infos,
+            &composes,
+            &listeners,
+            &self.console,
+        );
 
         Overview {
             sessions: SessionsSnapshot {
@@ -356,7 +505,100 @@ impl Collector {
                 listeners,
                 generated_at_ms,
             },
+            usage: Some(usage),
         }
+    }
+
+    /// Each pane that runs Claude Code or carries an account mark. A pane
+    /// running another agent (Codex) gets no account (BadgeStyles).
+    /// `window_marks`: tmux keeps the marks per window (before 3.0), so
+    /// two Claude Code panes in one window can't have marks of their own.
+    fn claude_states(
+        &self,
+        raw: &RawSnapshot,
+        statuses: &HashMap<String, AgentStatus>,
+        records: &HashMap<String, ClaudeRecord>,
+        table: &ProcTable,
+        window_marks: bool,
+    ) -> HashMap<String, PaneState> {
+        let registry = self.accounts.registry();
+        // Distinct panes: a window linked into two sessions lists its
+        // panes once per session.
+        let mut claude_per_window: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for pane in &raw.panes {
+            if statuses
+                .get(&pane.id)
+                .is_some_and(|agent| agent.id == "claude")
+            {
+                claude_per_window
+                    .entry(pane.window_id.as_str())
+                    .or_default()
+                    .insert(pane.id.as_str());
+            }
+        }
+        let alive: std::collections::HashSet<&str> =
+            raw.panes.iter().map(|pane| pane.id.as_str()).collect();
+        let move_errors = self.accounts.move_errors(&alive);
+        let mut out = HashMap::new();
+        for pane in &raw.panes {
+            let marks = Marks::from_raw(&pane.claude_mark, pane.skip_mark, &pane.pending_mark);
+            let agent = statuses.get(&pane.id);
+            let claude = match agent {
+                Some(agent) if agent.id == "claude" => Some(ClaudeProc {
+                    pid: agent.pid,
+                    record: records.get(&pane.id),
+                }),
+                Some(_) => continue,
+                None => None,
+            };
+            // Before tmux 3.0 a pane's marks are its window's: another pane
+            // in a window that runs Claude Code has that one's marks, not
+            // marks of its own, and is left out (a move asked on it, or
+            // its look at a pending move, would act on the other pane).
+            if window_marks
+                && claude.is_none()
+                && claude_per_window.contains_key(pane.window_id.as_str())
+            {
+                continue;
+            }
+            let claude_pid = claude.as_ref().map(|c| c.pid);
+            if marks.pending.is_some() {
+                self.accounts.note_waiting(&pane.id, claude_pid);
+            }
+            let marks_shared = window_marks
+                && claude_per_window
+                    .get(pane.window_id.as_str())
+                    .is_some_and(|panes| panes.len() > 1);
+            let Some((mut info, place)) =
+                pane_claude(&self.accounts, &registry, table, pane.pid, &marks, claude)
+            else {
+                continue;
+            };
+            if marks_shared {
+                info.movable = false;
+                info.not_movable_reason = Some(crate::accounts::panes::SHARED_MARKS.to_string());
+            }
+            info.move_error = move_errors.get(&pane.id).cloned();
+            out.insert(
+                pane.id.clone(),
+                PaneState {
+                    pane_id: pane.id.clone(),
+                    pane_pid: pane.pid,
+                    claude_pid,
+                    record: records.get(&pane.id).cloned(),
+                    marks,
+                    info,
+                    agent_state: agent.map(|a| a.state),
+                    cwd: pane.cwd.clone(),
+                    place,
+                    kind: claude_pid.and_then(|pid| {
+                        crate::accounts::panes::move_kind(table, pane.pid, pid).ok()
+                    }),
+                    marks_shared,
+                },
+            );
+        }
+        out
     }
 
     async fn agent_statuses(
@@ -366,7 +608,7 @@ impl Collector {
         table: Arc<ProcTable>,
         agents: &AgentSet,
         config: &WorkerConfig,
-    ) -> HashMap<String, AgentStatus> {
+    ) -> (HashMap<String, AgentStatus>, HashMap<String, ClaudeRecord>) {
         let found: Vec<(String, usize, u32, String)> = raw
             .panes
             .iter()
@@ -410,23 +652,36 @@ impl Collector {
         let now = now_ms();
         let mut tracker = self.agents.lock().await;
         let mut out = HashMap::new();
+        let mut records = HashMap::new();
         while let Some(joined) = captures.join_next().await {
-            let Ok((pane_id, index, pid, pane_title, Ok(text))) = joined else {
+            let Ok((pane_id, index, pid, pane_title, text)) = joined else {
                 continue;
             };
             let Some(agent) = agents.get(index) else {
                 continue;
             };
-            let recorded = activity.remove(&pane_id).unwrap_or_default();
-            let (state, since_ms) = tracker.observe(
-                &pane_id,
-                agent,
-                pid,
-                &text,
-                recorded.state,
-                now,
-                config.busy_window_ms,
-            );
+            let mut recorded = activity.remove(&pane_id).unwrap_or_default();
+            if let Some(record) = recorded.claude.take() {
+                records.insert(pane_id.clone(), record);
+            }
+            let (state, since_ms) = match &text {
+                Ok(text) => tracker.observe(
+                    &pane_id,
+                    agent,
+                    pid,
+                    text,
+                    recorded.state,
+                    now,
+                    config.busy_window_ms,
+                ),
+                // The screen could not be read this time, but the process
+                // is there (a waiting move must not take it for gone): the
+                // state stays what it was, else what the agent records,
+                // else working (never idle without evidence).
+                Err(_) => tracker
+                    .last(&pane_id, &agent.id, pid)
+                    .unwrap_or((recorded.state.unwrap_or(AgentState::Working), now)),
+            };
             out.insert(
                 pane_id,
                 AgentStatus {
@@ -442,8 +697,17 @@ impl Collector {
         }
         tracker.retain(&out.keys().cloned().collect());
         *self.seen.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), out.clone()));
-        out
+        (out, records)
     }
+}
+
+/// The Claude Code panes of one collection.
+#[derive(Clone)]
+struct ClaudeSeen {
+    at: Instant,
+    /// tmux listed its panes (or no server runs).
+    listed: bool,
+    panes: HashMap<String, PaneState>,
 }
 
 struct ProcSnapshot {
@@ -500,6 +764,7 @@ fn pane_index(raw: &RawSnapshot) -> HashMap<u32, PaneRef> {
 fn build_sessions(
     raw: &RawSnapshot,
     agents: &HashMap<String, AgentStatus>,
+    claude: &HashMap<String, PaneClaude>,
     composes: &[ComposeStack],
     listeners: &[Listener],
     console: &ConsoleClients,
@@ -546,6 +811,7 @@ fn build_sessions(
                                 })
                                 .cloned()
                                 .collect(),
+                            claude: claude.get(&pane.id).cloned(),
                         })
                         .collect();
                     panes.sort_by_key(|pane| pane.index);
@@ -585,7 +851,7 @@ fn build_sessions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AddressFamily, AgentState, ListenerRole};
+    use crate::model::{AddressFamily, ListenerRole};
     use crate::tmux_cli::{RawClient, RawPane, RawSession, RawWindow};
 
     fn collector_for(binary: &str, found: Result<Resolved, String>) -> Collector {
@@ -596,6 +862,34 @@ mod tests {
         let collector = Collector::new(config.into_shared(), ConsoleClients::default());
         collector.binary.seed(binary, found);
         collector
+    }
+
+    #[tokio::test]
+    async fn a_rescan_sees_what_a_reused_scan_misses() {
+        let config = WorkerConfig {
+            tmux_binary: "tmux-not-here".to_string(),
+            ports_interval_ms: 300_000,
+            ..WorkerConfig::default()
+        };
+        let collector = Collector::new(config.into_shared(), ConsoleClients::default());
+        collector
+            .binary
+            .seed("tmux-not-here", Err("not installed".to_string()));
+        collector.claude_panes_checked().await.unwrap();
+        // Started after that scan, the panes looking the same.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        collector.claude_panes_checked().await.unwrap();
+        let reused = collector.proc_table().await.get(pid).is_some();
+        collector.claude_panes_rescanned().await.unwrap();
+        let rescanned = collector.proc_table().await.get(pid).is_some();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!reused, "the scan before is reused");
+        assert!(rescanned, "scanned again");
     }
 
     // Only where an official build exists is the answer known without looking
@@ -708,6 +1002,9 @@ mod tests {
                     width: 80,
                     height: 24,
                     dead: false,
+                    claude_mark: String::new(),
+                    skip_mark: false,
+                    pending_mark: String::new(),
                     title: "✳ x".into(),
                 },
                 RawPane {
@@ -722,6 +1019,9 @@ mod tests {
                     width: 80,
                     height: 24,
                     dead: false,
+                    claude_mark: String::new(),
+                    skip_mark: false,
+                    pending_mark: String::new(),
                     title: "".into(),
                 },
             ],
@@ -779,7 +1079,14 @@ mod tests {
                 subagents: vec![],
             },
         )]);
-        let sessions = build_sessions(&raw, &agents, &composes, &listeners, &console);
+        let sessions = build_sessions(
+            &raw,
+            &agents,
+            &HashMap::new(),
+            &composes,
+            &listeners,
+            &console,
+        );
         assert_eq!(
             sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             vec!["api", "work"]

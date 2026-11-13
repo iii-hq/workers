@@ -12,11 +12,11 @@
  * full-canvas detail.
  */
 
+import type { StoredSpan } from '@iii-dev/traces-ui/src/api/traces'
+import type { TimelineSpan } from '@iii-dev/traces-ui/src/components/timeline/layout'
+import { TimelineStrip } from '@iii-dev/traces-ui/src/components/timeline/TimelineStrip'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useMemo, useRef, useState } from 'react'
-import type { StoredSpan } from '../../api/traces'
-import type { TimelineSpan } from '../../components/timeline/layout'
-import { TimelineStrip } from '../../components/timeline/TimelineStrip'
 import { LabFrame } from '../harness'
 import {
   BURSTS,

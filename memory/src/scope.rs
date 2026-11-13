@@ -394,11 +394,12 @@ async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Option<
         .map(|meta| meta.get("metadata").cloned().unwrap_or(Value::Null)))
 }
 
-/// The bank the hook stamped on `turn_id` (its `memory_bank`, `memory_layer`
-/// and `memory_agent` annotations, which the harness merges into the origin
-/// of each assistant entry the turn writes): the newest stamp on a
-/// `session::messages-tail` page. Another hook can write `memory_bank`
-/// too, so a name that is not a valid bank is no stamp.
+/// The bank the hook stamped on `turn_id` (its `memory_bank`,
+/// `memory_derived`, `memory_layer` and `memory_agent` annotations, which
+/// the harness merges into the origin of each assistant entry the turn
+/// writes): the newest stamp on a `session::messages-tail` page. Another
+/// hook can write `memory_bank` too, so a name that is not a valid bank is
+/// no stamp.
 pub(crate) fn stamped_bank(reply: &Value, turn_id: &str) -> Option<Resolved> {
     let (bank, origin) = reply
         .get("messages")?
@@ -415,8 +416,11 @@ pub(crate) fn stamped_bank(reply: &Value, turn_id: &str) -> Option<Resolved> {
         .and_then(|bank| bank.strip_prefix("agent-"))
         .filter(|id| !id.is_empty())
         .map(str::to_string);
-    // Either layer is only ever read under a bank no name chose.
-    let derived = agent.is_some()
+    // Either layer is only ever read under a bank no name chose; a default
+    // bank no name chose has neither, so `memory_derived` says it. A stamp
+    // older than that field reads as before.
+    let derived = origin["memory_derived"] == true
+        || agent.is_some()
         || origin
             .get("memory_layer")
             .and_then(Value::as_str)
@@ -1083,6 +1087,8 @@ mod tests {
               "origin": { "turn_id": "t3", "memory_bank": "Not A Bank" } },
             { "entry_id": "a4", "message": { "role": "assistant" },
               "origin": { "turn_id": "t4", "memory_bank": "main", "memory_agent": "agent-reviewer" } },
+            { "entry_id": "a5", "message": { "role": "assistant" },
+              "origin": { "turn_id": "t5", "memory_bank": "main", "memory_derived": true } },
         ]});
         assert_eq!(
             stamped_bank(&page, "t1"),
@@ -1103,6 +1109,10 @@ mod tests {
         assert!(
             restored.takes_agents(),
             "and still takes agents: no name chose that default bank"
+        );
+        assert!(
+            stamped_bank(&page, "t5").unwrap().takes_agents(),
+            "a default bank no name chose, with no layer or agent to show it"
         );
         assert_eq!(stamped_bank(&page, "t3"), None, "not a valid bank");
         assert_eq!(stamped_bank(&page, "t9"), None);

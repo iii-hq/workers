@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url))
 const sourceRoots = [
   join(repoRoot, 'ade/web/src'),
+  join(repoRoot, 'packages/traces-ui/src'),
   ...readdirSync(repoRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(repoRoot, entry.name, 'ui/src')),
@@ -28,10 +29,15 @@ describe('Console icon size contract', () => {
     const offenders: string[] = []
     for (const path of sourceRoots.flatMap(sourceFiles)) {
       if (path.endsWith('icon-size-conformance.test.ts')) continue
-      // shadcn registry components (components/shadcn) are vendored as
-      // generated: their xs button and icon sizes carry 12px glyphs by
-      // design, and the contract applies to the console's own icons.
-      if (path.includes('/components/shadcn/')) continue
+      // shadcn registry components (components/shadcn, and the Traces
+      // package's copies in ui/shadcn) are vendored as generated: their xs
+      // button and icon sizes carry 12px glyphs by design, and the contract
+      // applies to the console's own icons.
+      if (
+        path.includes('/components/shadcn/') ||
+        path.includes('/traces-ui/src/ui/shadcn/')
+      )
+        continue
       const source = readFileSync(path, 'utf8')
       if (
         /<[A-Z][^>]*\bsize=(?:\{(?:[0-9]|1[0-5])\}|["'](?:[0-9]|1[0-5])["'])/.test(

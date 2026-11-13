@@ -1,0 +1,47 @@
+{
+  "description": "Sign a Claude Code account in: opens a window named `login` in `session` running `claude auth login`, on the account's folder, or on ~/.claude for the global account, which prints a sign-in link and waits for the code. The window closes when the command ends; the account then shows signed in. Signing in to another account on ~/.claude makes that one global (added when it is new).",
+  "function_id": "tmux::accounts::login",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "account": {
+        "description": "Account id (`default` for ~/.claude).",
+        "type": "string"
+      },
+      "session": {
+        "description": "Session id (`$5`) or exact name the `login` window opens in.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "account",
+      "session"
+    ],
+    "title": "LoginInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "Its pane, running `claude auth login`.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "The `login` window's id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane_id",
+      "session_id",
+      "window_id"
+    ],
+    "title": "LoginWindow",
+    "type": "object"
+  }
+}

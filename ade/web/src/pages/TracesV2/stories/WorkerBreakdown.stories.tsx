@@ -1,9 +1,9 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { WorkerBreakdown } from '../components/WorkerBreakdown'
+import { WorkerBreakdown } from '@iii-dev/traces-ui/src/components/WorkerBreakdown'
 import {
   WATERFALL_FIXTURE,
   WATERFALL_SIMPLE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Meta, StoryObj } from '@storybook/react-vite'
 
 const meta = {
   title: 'TracesV2/WorkerBreakdown',

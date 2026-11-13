@@ -1,6 +1,9 @@
+import {
+  ViewSwitcher,
+  type ViewType,
+} from '@iii-dev/traces-ui/src/components/ViewSwitcher'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
-import { ViewSwitcher, type ViewType } from '../components/ViewSwitcher'
 
 // `args` can't hold React state, so a small wrapper owns the controlled
 // `currentView` and feeds `onViewChange` back into it — the toggle actually

@@ -16,10 +16,45 @@ use crate::registry::store::RegistryStore;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{RouteRequest, RouteResponse};
 
-#[derive(Debug, Clone, PartialEq)]
+/// An operator routing heuristic: models matching `pattern` route to
+/// `provider`. The pattern is compiled once, when the heuristic is built from
+/// the configuration entry, never per routing call.
+#[derive(Debug, Clone)]
 pub struct Heuristic {
-    pub pattern: String,
-    pub provider: String,
+    pattern: String,
+    provider: String,
+    // `Arc` keeps the per-call settings clone a refcount bump that shares the
+    // compiled program and its match caches.
+    compiled: Result<Arc<regex::Regex>, regex::Error>,
+}
+
+impl Heuristic {
+    pub fn new(pattern: impl Into<String>, provider: impl Into<String>) -> Self {
+        let pattern = pattern.into();
+        let compiled = regex::Regex::new(&pattern).map(Arc::new);
+        Heuristic {
+            pattern,
+            provider: provider.into(),
+            compiled,
+        }
+    }
+
+    /// Why `pattern` is not a valid regex; routing skips such a heuristic.
+    pub fn pattern_error(&self) -> Option<&regex::Error> {
+        self.compiled.as_ref().err()
+    }
+
+    fn matches(&self, model: &str) -> bool {
+        // An invalid operator regex never matches and never takes the router down.
+        self.compiled.as_ref().is_ok_and(|re| re.is_match(model))
+    }
+}
+
+// The compiled regex is derived from `pattern`, so equality ignores it.
+impl PartialEq for Heuristic {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern && self.provider == other.provider
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,15 +137,13 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
         .filter(|provider| !available(provider))
         .collect();
 
-    // 3. Operator heuristics from the llm-router entry; first available match wins.
+    // 3. Operator heuristics from the llm-router entry; first available match
+    // wins. Their patterns were compiled when the entry was loaded.
     for h in &input.heuristics {
         if !registered(&h.provider) {
             continue;
         }
-        let Ok(re) = regex::Regex::new(&h.pattern) else {
-            continue; // an invalid operator regex never takes the router down
-        };
-        if re.is_match(model) {
+        if h.matches(model) {
             if available(&h.provider) {
                 return Ok(vec![h.provider.clone()]);
             }
@@ -218,10 +251,7 @@ mod tests {
                     vec!["local-llama".into(), "shared-model".into()],
                 ),
             ],
-            heuristics: vec![Heuristic {
-                pattern: "^gpt-".into(),
-                provider: "openai".into(),
-            }],
+            heuristics: vec![Heuristic::new("^gpt-", "openai")],
             default_provider: None,
         }
     }
@@ -259,20 +289,17 @@ mod tests {
         input.model = "gpt-99".into();
         assert_eq!(decide(&input).unwrap(), vec!["openai"]);
         input.heuristics = vec![
-            Heuristic {
-                pattern: "([".into(),
-                provider: "openai".into(),
-            }, // invalid: skipped
-            Heuristic {
-                pattern: "^gpt-".into(),
-                provider: "unregistered".into(),
-            }, // skipped
-            Heuristic {
-                pattern: "^gpt-".into(),
-                provider: "openai".into(),
-            },
+            Heuristic::new("([", "anthropic"), // invalid: skipped, never fatal
+            Heuristic::new("^gpt-", "unregistered"), // skipped
+            Heuristic::new("^gpt-", "openai"),
         ];
+        assert!(input.heuristics[0].pattern_error().is_some());
         assert_eq!(decide(&input).unwrap(), vec!["openai"]);
+        // Order is preserved: an earlier valid match wins over a later one.
+        input
+            .heuristics
+            .insert(2, Heuristic::new("^gpt-9", "lmstudio"));
+        assert_eq!(decide(&input).unwrap(), vec!["lmstudio"]);
     }
 
     // Composite `provider::model` ids (the console's display form) resolve in

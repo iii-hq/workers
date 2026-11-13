@@ -233,7 +233,12 @@ async fn a_new_observer_receives_the_current_overview_alone_in_its_own_shape() {
         ..WorkerConfig::default()
     };
     let config = base.clone().into_shared();
-    let collector = Arc::new(Collector::new(config.clone(), ConsoleClients::default()));
+    let collector = Arc::new(Collector::sandboxed(
+        config.clone(),
+        ConsoleClients::default(),
+    ));
+    // No test reads this computer's Claude Code sign-in or reaches the network.
+    assert!(!collector.accounts().can_fetch());
     let monitor = Monitor::new(host.clone(), collector);
     events::register(&host, monitor.clone());
     monitor.spawn();

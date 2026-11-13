@@ -1,0 +1,1361 @@
+/**
+ * TracesView — the traces page: activity strip, filters, trace list and the
+ * trace detail, over a host's `TraceSource`.
+ *
+ * Composition (this pass): the live TimelineStrip is the masthead — it
+ * replaced the `$ traces` page header and carries the system/pause/refresh
+ * actions in its header row. Below it: filter bar → trace list → pagination.
+ *
+ * The trace detail is an ACCORDION item inside the list: clicking a row
+ * expands the detail (header, view switcher, timeline/waterfall, workers
+ * footer) right beneath it, no animation; clicking another row closes the
+ * previous detail and opens the new one. The scroll position is anchored to
+ * the clicked row across that swap, so collapsing a tall detail above it
+ * doesn't yank the list. A trace opened without a visible row (timeline
+ * strip click, deep link before rows land) renders the same detail pinned
+ * at the top of the scroll area instead. Clicking a span opens the
+ * resizable span panel on the right; Esc walks back (span panel first,
+ * then the expanded detail). The strip stays live up top.
+ *
+ * The session-detail panel and the map/flow visualizations are NOT copied
+ * here (out of scope). The host's optional integrations (sessions,
+ * focus requests, commands, settings, function-call renderers) arrive as
+ * props; without them the page works on its own.
+ */
+
+import {
+  AlertCircle,
+  GitBranch,
+  MessageSquare,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import type { StoredSpan } from './api/traces'
+import { GroupedTraceList } from './components/GroupedTraceList'
+import { SpanPanel } from './components/SpanPanel'
+import { TraceDetailSkeleton } from './components/TraceDetailSkeleton'
+import { TraceFilters } from './components/TraceFilters'
+import { TraceHeader } from './components/TraceHeader'
+import { TraceListRow } from './components/TraceListRow'
+import { TracesPagination } from './components/TracesPagination'
+import { TimelineStrip } from './components/timeline/TimelineStrip'
+import { TraceTimeline } from './components/timeline/TraceTimeline'
+import { ViewSwitcher, type ViewType } from './components/ViewSwitcher'
+import { ViewsDropdown } from './components/ViewsDropdown'
+import { WaterfallChart } from './components/WaterfallChart'
+import { WorkerBreakdown } from './components/WorkerBreakdown'
+import { useAllSpans } from './hooks/useAllSpans'
+import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
+import { useFollowTurns } from './hooks/useFollowTurns'
+import {
+  showsWithoutProbe,
+  useSpanFilteredTraceRows,
+} from './hooks/useSpanFilteredTraceRows'
+import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
+import { useSpanPanelResize } from './hooks/useSpanPanelResize'
+import { useTraceActivity } from './hooks/useTraceActivity'
+import { useTraceData } from './hooks/useTraceData'
+import { useTraceFilters } from './hooks/useTraceFilters'
+import { useTraceViews } from './hooks/useTraceViews'
+import { type TracesHost, TracesProvider, useTraceSource } from './host'
+import { turnTracesFor } from './lib/followTurn'
+import { seedSessions, seedTrace } from './lib/sessionSeed'
+import { isTraceLive } from './lib/timelineSpans'
+import { type TraceChatLink, traceChatLink } from './lib/traceChatLink'
+import { collectTraceDetailSpans } from './lib/traceDetailPages'
+import { withSessionScope } from './lib/traceFilters'
+import type { RowLabelConfig } from './lib/traceListItem'
+import { buildTracePageStats, tracePageCount } from './lib/tracePagination'
+import {
+  applyViewConfig,
+  captureViewConfig,
+  type TracesView as SavedView,
+  viewConfigEquals,
+} from './lib/tracesViews'
+import { traceSpanGroupKey } from './lib/traceTimelineFilters'
+import {
+  toWaterfallData,
+  type VisualizationSpan,
+  type WaterfallData,
+} from './lib/traceTransform'
+import { Cell } from './ui/Cell'
+import { EmptyState } from './ui/EmptyState'
+import { ErrorBoundary } from './ui/ErrorBoundary'
+import { Hint } from './ui/Hint'
+import { NEUTRAL_SURFACE } from './ui/neutral-surface'
+import { Skeleton } from './ui/Skeleton'
+import { StatusPanel } from './ui/StatusPanel'
+import { Button } from './ui/shadcn/button'
+import { cn } from './ui/utils'
+
+const PAGE_SIZES = [25, 50, 100]
+
+// Sentinel a superseded trace seed throws to abandon its own page sweep.
+const superseded = new Error('trace seed superseded')
+
+/**
+ * A harness session — a chat: its turns tag their spans with
+ * `iii.session.id` and `iii.message.id`, and the page's copy speaks of
+ * chats and messages when the host passes them.
+ */
+export interface TracesSession {
+  id: string
+  title?: string
+  /** `working` while the session runs. */
+  status?: string
+  /** A sub-session's parent: its turns are not ones the operator runs. */
+  parentId?: string
+  /** Not started yet: there are no traces to scope to. */
+  draft?: boolean
+}
+
+/**
+ * The host's sessions. With them the list follows the active session, the
+ * page opens its newest turn, and the trace header links back to it.
+ */
+export interface TracesSessions {
+  activeId: string | null
+  active: TracesSession | null
+  sessions: readonly TracesSession[]
+  /** Show the session (and message) a trace belongs to. */
+  open(link: TraceChatLink): void
+}
+
+export interface TracesCommand {
+  id: string
+  title: string
+  detail?: string
+  keywords?: readonly string[]
+  shortcut?: string
+  enabled?: () => boolean
+  run: () => void
+}
+
+/** A host command palette: the page registers its verbs and keys there. */
+export interface TracesCommands {
+  register(commands: readonly TracesCommand[]): () => void
+}
+
+export interface TracesViewProps extends TracesHost {
+  /** mount with a trace's detail already expanded (stories/deep links) */
+  initialTraceId?: string
+  /** Rendered above the activity strip (a pane header, a title bar). */
+  header?: ReactNode
+  /** On the page's root element. */
+  className?: string
+  sessions?: TracesSessions
+  /**
+   * "Show this trace" from elsewhere on the host: called once with a
+   * listener the host calls with a trace id; returns the unsubscribe.
+   */
+  subscribeFocus?: (listener: (traceId: string) => void) => () => void
+  /** Without it, Escape closes the span panel, then the trace detail. */
+  commands?: TracesCommands
+}
+
+export function TracesView({
+  source,
+  settings,
+  functionCallRenderers,
+  ...page
+}: TracesViewProps) {
+  return (
+    <TracesProvider
+      source={source}
+      settings={settings}
+      functionCallRenderers={functionCallRenderers}
+    >
+      <TracesPage {...page} />
+    </TracesProvider>
+  )
+}
+
+function TracesPage({
+  initialTraceId,
+  header,
+  className,
+  sessions,
+  subscribeFocus,
+  commands,
+}: Omit<TracesViewProps, keyof TracesHost>) {
+  const source = useTraceSource()
+  // The strip's system/pause/refresh controls were removed; both stay at
+  // their defaults (streams live, internal spans hidden) until some other
+  // surface grows a toggle.
+  const [showSystem] = useState(false)
+  const [isPaused] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchQuery(value)
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(() => setDebouncedSearch(value), 300)
+  }, [])
+
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const rootRef = useRef<HTMLElement>(null)
+  const [selectedSpan, setSelectedSpan] = useState<VisualizationSpan | null>(
+    null,
+  )
+  const [activeView, setActiveView] = useState<ViewType>('timeline')
+  const [waterfallData, setWaterfallData] = useState<WaterfallData | null>(null)
+
+  // The clicked span is a snapshot; live rebuilds (streamed finals replacing
+  // pending snapshots, growing durations) must reach the open panel, so
+  // re-derive the current version from the waterfall by id.
+  const liveSelectedSpan = useMemo(() => {
+    if (!selectedSpan) return null
+    return (
+      waterfallData?.spans.find((s) => s.span_id === selectedSpan.span_id) ??
+      selectedSpan
+    )
+  }, [selectedSpan, waterfallData])
+  const [isLoadingSpans, setIsLoadingSpans] = useState(false)
+  const [spansError, setSpansError] = useState<string | null>(null)
+  // Non-null while the paged seed still sweeps: the detail is painted but
+  // incomplete. Drives the header's live span counter so "still filling in"
+  // is legible after the skeleton is gone.
+  const [seedProgress, setSeedProgress] = useState<{
+    loaded: number
+    total: number
+  } | null>(null)
+
+  const {
+    filters: filterState,
+    updateFilter,
+    resetFilters,
+    replaceFilters,
+    getApiParams,
+    validationWarnings,
+    clearValidationWarnings,
+  } = useTraceFilters()
+
+  // ── Automatic session scope ──
+  // The trace list FOLLOWS the host's active session: selecting one scopes
+  // the list to its `iii.session.id`, server-side via `withSessionScope`
+  // (the identity attrs live on child spans, so the scope needs the
+  // search-all-spans wire shape). Drafts have no session server-side yet and
+  // never scope; a host without `sessions` has nothing to follow.
+  // Dismissable per session via the chip next to the views dropdown —
+  // selecting another session re-scopes.
+  const activeConversation = sessions?.active ?? null
+  const activeSessionId = sessions?.activeId ?? null
+  const [scopeDismissedFor, setScopeDismissedFor] = useState<string | null>(
+    null,
+  )
+  const sessionScope =
+    activeConversation &&
+    !activeConversation.draft &&
+    activeConversation.id !== scopeDismissedFor
+      ? activeConversation.id
+      : null
+
+  const filterParams = useMemo(
+    () => withSessionScope(getApiParams(), sessionScope),
+    [getApiParams, sessionScope],
+  )
+
+  const {
+    traceGroups,
+    totalTraceCount,
+    newTraceIds,
+    setNewTraceIds,
+    hasOtelConfigured,
+    isQueryLoading,
+    holdRef,
+    heldTraces,
+    flushPendingTraces,
+  } = useTraceData({
+    filterParams,
+    showSystem,
+    debouncedSearch,
+    isPaused,
+    hiddenFunctions: filterState.hiddenFunctions,
+    attributeProjection:
+      filterState.labelMode === 'attribute' && filterState.labelAttribute
+        ? [filterState.labelAttribute]
+        : undefined,
+  })
+
+  // ── Saved views (persisted in the host's settings) ──
+  const {
+    views,
+    available: viewsAvailable,
+    activeViewId,
+    setActiveViewId,
+    saveView,
+    updateView,
+    renameView,
+    deleteView,
+  } = useTraceViews()
+
+  // ── Detail-view span filter (hidden span groups + workers) ──
+  // One selection shared by the timeline AND waterfall tabs, persisted in
+  // the host's settings alongside the saved views.
+  const spanFilter = useSpanFilterSelection()
+
+  const activeSavedView = views.find((v) => v.id === activeViewId) ?? null
+  const activeViewModified = useMemo(
+    () =>
+      activeSavedView
+        ? !viewConfigEquals(captureViewConfig(filterState), activeSavedView)
+        : false,
+    [activeSavedView, filterState],
+  )
+
+  const handleSelectView = useCallback(
+    (view: SavedView | null) => {
+      setActiveViewId(view?.id ?? null)
+      if (view) replaceFilters(applyViewConfig(view))
+      else resetFilters()
+    },
+    [setActiveViewId, replaceFilters, resetFilters],
+  )
+
+  // Re-apply the remembered view once its definition arrives after a page
+  // load — filters are still pristine at that point, so this can't clobber
+  // anything the user already changed.
+  const appliedInitialViewRef = useRef(false)
+  useEffect(() => {
+    if (appliedInitialViewRef.current) return
+    if (!activeViewId || views.length === 0) return
+    appliedInitialViewRef.current = true
+    const view = views.find((v) => v.id === activeViewId)
+    if (view) replaceFilters(applyViewConfig(view))
+    else setActiveViewId(null)
+  }, [activeViewId, views, replaceFilters, setActiveViewId])
+
+  const hideFunction = useCallback(
+    (functionId: string) => {
+      const current = filterState.hiddenFunctions ?? []
+      if (current.includes(functionId)) return
+      updateFilter('hiddenFunctions', [...current, functionId])
+    },
+    [filterState.hiddenFunctions, updateFilter],
+  )
+
+  const rowLabel: RowLabelConfig | undefined = useMemo(
+    () =>
+      filterState.labelMode && filterState.labelMode !== 'function'
+        ? {
+            mode: filterState.labelMode,
+            attribute: filterState.labelAttribute,
+          }
+        : undefined,
+    [filterState.labelMode, filterState.labelAttribute],
+  )
+
+  // Every attribute key observed on loaded traces (row attributes + merged
+  // trace tags) feeds the group-by picker — grouping accepts ANY key, these
+  // just make the known ones one click. iii.* identity/tag keys sort first.
+  const attributeKeySuggestions = useMemo(() => {
+    const keys = new Set<string>()
+    for (const trace of traceGroups) {
+      for (const key of Object.keys(trace.traceTags ?? {})) keys.add(key)
+      for (const key of Object.keys(trace.attributes ?? {})) keys.add(key)
+    }
+    return [...keys].sort((a, b) => {
+      const aIii = a.startsWith('iii.') ? 0 : 1
+      const bIii = b.startsWith('iii.') ? 0 : 1
+      return aIii - bIii || a.localeCompare(b)
+    })
+  }, [traceGroups])
+
+  // Scoped to one session, grouping would collapse to a single group (and
+  // the group-by aggregate path doesn't consult the scope) — render the
+  // flat list instead. The view's row label (e.g. `iii.tag.message`) still
+  // applies, so scoped rows read as the session's turns.
+  const groupByAttribute =
+    sessionScope === null &&
+    filterState.groupBy &&
+    filterState.groupBy !== 'none'
+      ? filterState.groupBy
+      : null
+
+  // Span activity per trace (start + close with engine live_spans on): keeps
+  // the strip's bars live/growing while a trace is still doing work (the rows
+  // above only carry the root span, which for queue-driven traces ends
+  // instantly).
+  const traceActivity = useTraceActivity(isPaused)
+
+  // The masthead strip's data: every span across all traces (seed + the
+  // engine's all-spans stream), one bar per span. Internal spans that are
+  // part of a real trace (built-in calls inside a turn) are included —
+  // hiding them is the funnel/trace_hidden layer's job; `showSystem` only
+  // governs the trace LIST's internal ROOT rows.
+  const allSpans = useAllSpans(isPaused)
+
+  // Follow toggle (strip header): auto-open the trace of the ACTIVE chat's
+  // live turn, so sending a message lands the canvas on the work as it runs.
+  // Scoped to user interactions — the active conversation's top-level
+  // `harness.turn` steps; sub-agent turns never steal the view. The strip's
+  // toggle hides when the host has no sessions.
+  const { followTurns, toggleFollowTurns } = useFollowTurns()
+
+  // Span-filter fallout on the LIST: a row hides while its trace has no
+  // visible span left under the funnel selection (composition read from the
+  // all-spans feed — see the hook). Everything list-shaped below (paging,
+  // stats, empty state) works off the filtered rows; the raw `traceGroups`
+  // keep feeding the group-by key suggestions above.
+  const visibleTraceGroups = useSpanFilteredTraceRows(
+    traceGroups,
+    allSpans,
+    spanFilter,
+  )
+
+  const totalPages = tracePageCount(totalTraceCount, filterState.pageSize)
+  // `traceGroups` is already one server page. The local span-visibility pass
+  // may hide rows from that page, but it must never slice/paginate again.
+  const paged = visibleTraceGroups
+
+  // Liveness evaluation instant for the list rows' pulsing dot — only ticked
+  // while a visible row is actually live, mirroring the strip's clock
+  // (TimelineStrip.tsx) so an idle list renders exactly as often as its data
+  // changes.
+  const [listNow, setListNow] = useState(() => Date.now())
+  const liveTraceIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const t of paged) {
+      if (isTraceLive(t, { activity: traceActivity, now: listNow })) {
+        ids.add(t.traceId)
+      }
+    }
+    return ids
+  }, [paged, traceActivity, listNow])
+  const anyRowLive = liveTraceIds.size > 0
+  useEffect(() => {
+    if (!anyRowLive) return
+    const id = setInterval(() => setListNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [anyRowLive])
+
+  useEffect(() => {
+    if (!isQueryLoading && filterState.page > totalPages) {
+      updateFilter('page', totalPages)
+    }
+  }, [filterState.page, totalPages, updateFilter, isQueryLoading])
+
+  const stats = useMemo(
+    () => buildTracePageStats(visibleTraceGroups, totalTraceCount),
+    [visibleTraceGroups, totalTraceCount],
+  )
+
+  const containerRef = useRef<HTMLDivElement>(null)
+  const spanPanel = useSpanPanelResize(containerRef)
+
+  // Live detail: the selected trace's spans are seeded on explicit open,
+  // paged so a very large trace never becomes one oversized RPC response;
+  // then APPENDED from the engine `trace-spans` stream and rebuilt into the
+  // waterfall via `toWaterfallData`. Accumulated by `span_id` so re-delivered
+  // spans dedupe. Frozen while paused.
+  const detailSpansRef = useRef<Map<string, StoredSpan>>(new Map())
+  const isPausedRef = useRef(isPaused)
+  useEffect(() => {
+    isPausedRef.current = isPaused
+  }, [isPaused])
+
+  const [hasPendingSpans, setHasPendingSpans] = useState(false)
+
+  const rebuildDetail = useCallback((traceId: string): WaterfallData | null => {
+    const wf = toWaterfallData([...detailSpansRef.current.values()], traceId)
+    if (wf) setWaterfallData(wf)
+    setHasPendingSpans(wf?.spans.some((s) => s.pending) ?? false)
+    return wf
+  }, [])
+
+  // While any span of the open trace is still running, re-derive the
+  // waterfall every second so live bars and elapsed durations keep growing
+  // between stream frames (the transform measures pendings against "now").
+  useEffect(() => {
+    if (!hasPendingSpans || !selectedTraceId || isPaused) return
+    const timer = setInterval(() => rebuildDetail(selectedTraceId), 1000)
+    return () => clearInterval(timer)
+  }, [hasPendingSpans, selectedTraceId, isPaused, rebuildDetail])
+
+  // One seed at a time: selecting another trace supersedes the sweep in
+  // flight, which must neither clobber the new trace's spans nor surface
+  // its own late error. Progressive rendering makes this guard load-bearing
+  // — a stale sweep now touches state on every page, not just at the end.
+  const seedSeqRef = useRef(0)
+  const loadTraceSpans = useCallback(
+    async (traceId: string, opts?: { silent?: boolean }) => {
+      const seq = ++seedSeqRef.current
+      const stale = () => seedSeqRef.current !== seq
+      const silent = opts?.silent ?? false
+      // Newest seed owns the progress chip from the start — a superseded
+      // sweep's last reading must not survive the switch.
+      setSeedProgress(null)
+      if (!silent) {
+        setIsLoadingSpans(true)
+        setSpansError(null)
+        setWaterfallData(null)
+      }
+      try {
+        // Pages sized by response bytes, not span count — an oversized page
+        // hangs forever instead of erroring. See lib/traceDetailPages.
+        let revealed = false
+        let lastPaint = 0
+        const detailSpans = await collectTraceDetailSpans(
+          (offset, limit) => {
+            if (stale()) throw superseded
+            return source.traceSpans({
+              trace_id: traceId,
+              search_all_spans: true,
+              include_internal: false,
+              sort_by: 'start_time',
+              sort_order: 'asc',
+              offset,
+              limit,
+            })
+          },
+          {
+            // Paint from the first page: a large trace fills in page by page
+            // (the shape live appends already have) instead of holding the
+            // skeleton through the whole multi-second sweep.
+            onPage: (accumulated, total) => {
+              if (stale()) return
+              // A silent reload lands whole, at the end of its sweep.
+              // Painting its pages as they arrived replaced the open detail
+              // with the sweep's FIRST page — 50 of 155 spans, a 7s window
+              // in place of 24s — and regrew it, on every activity tick of
+              // a running turn: the whole timeline redrew at another scale
+              // about once a second (seen in screen recordings, MOT-4621).
+              if (silent) return
+              detailSpansRef.current = accumulated
+              setSeedProgress({ loaded: accumulated.size, total })
+              // Rebuilding the waterfall on EVERY page saturates the main
+              // thread on fat traces (measured live: no frame painted
+              // between the first page and the sweep's end). Repaint at
+              // most ~1/600ms; the chip above still counts every page, and
+              // the final rebuild after the sweep always runs.
+              const now = Date.now()
+              if (revealed && now - lastPaint < 600) return
+              const wf = rebuildDetail(traceId)
+              if (wf) lastPaint = now
+              // ANY paint dismisses the skeleton, a silent reload's included.
+              // Opening a trace that is still producing spans races the
+              // activity feed: its first tick starts a silent reload that
+              // supersedes this seed before the first page lands, and a
+              // silent reload used to leave `isLoadingSpans` alone — the
+              // waterfall was in state, the skeleton stayed on screen for
+              // as long as the detail stayed open (measured: 50s and
+              // counting, on a trace that had finished in 1.5s).
+              if (!revealed && wf) {
+                revealed = true
+                setIsLoadingSpans(false)
+              }
+            },
+          },
+        )
+        if (stale()) return
+
+        detailSpansRef.current = detailSpans
+        const wf = rebuildDetail(traceId)
+        if (wf) setIsLoadingSpans(false)
+        if (!wf && !silent) {
+          setSpansError('no span data available for this trace')
+        }
+      } catch (err) {
+        if (stale() || err === superseded) return
+        if (!silent) {
+          setSpansError(
+            err instanceof Error ? err.message : 'failed to load trace',
+          )
+        }
+      } finally {
+        if (!stale()) {
+          setSeedProgress(null)
+          if (!silent) setIsLoadingSpans(false)
+        }
+      }
+    },
+    [rebuildDetail, source],
+  )
+
+  // Silent refresh of the OPEN trace on each activity tick that touches it:
+  // no loading state (ticks keep landing while the trace runs), one reload in
+  // flight at a time with one trailing rerun so the final tick of a burst is
+  // never lost, and a stale response for a since-deselected trace is dropped
+  // by `loadTraceSpans` keying on the trace id it was called with.
+  useEffect(() => {
+    if (!selectedTraceId) return
+    let active = true
+    let inFlight = false
+    let rerun = false
+    const refresh = () => {
+      if (inFlight) {
+        rerun = true
+        return
+      }
+      inFlight = true
+      void loadTraceSpans(selectedTraceId, { silent: true }).finally(() => {
+        inFlight = false
+        if (rerun && active && !isPausedRef.current) {
+          rerun = false
+          refresh()
+        }
+      })
+    }
+    const stop = source.watch?.((traceIds) => {
+      if (!active || isPausedRef.current) return
+      if (!traceIds.includes(selectedTraceId)) return
+      refresh()
+    })
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [selectedTraceId, loadTraceSpans, source])
+
+  // ── Scroll anchoring across accordion swaps ──
+  // Selecting a trace while another's detail is expanded ABOVE it removes a
+  // tall block from the scroll flow; without compensation the clicked row
+  // jumps up (or out of view). Before the state change we record the target
+  // row's offset inside the scroll container; after React commits, the
+  // layout effect scrolls by however far the row moved, so the row the user
+  // clicked stays put on screen. Closing anchors to the closing row.
+  const listScrollRef = useRef<HTMLDivElement | null>(null)
+  const scrollAnchorRef = useRef<{ traceId: string; top: number } | null>(null)
+
+  const captureScrollAnchor = useCallback((traceId: string | null) => {
+    scrollAnchorRef.current = null
+    const container = listScrollRef.current
+    if (!container || !traceId) return
+    const row = container.querySelector(
+      `[data-trace-row-id="${CSS.escape(traceId)}"]`,
+    )
+    if (!row) return
+    scrollAnchorRef.current = {
+      traceId,
+      top:
+        row.getBoundingClientRect().top - container.getBoundingClientRect().top,
+    }
+  }, [])
+
+  // No dependency array: the pending anchor is consumed on the first commit
+  // after `selectTrace` sets it (the selection re-render), and every other
+  // commit exits on the null check.
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current
+    if (!anchor) return
+    scrollAnchorRef.current = null
+    const container = listScrollRef.current
+    if (!container) return
+    const row = container.querySelector(
+      `[data-trace-row-id="${CSS.escape(anchor.traceId)}"]`,
+    )
+    if (!row) return
+    const delta =
+      row.getBoundingClientRect().top -
+      container.getBoundingClientRect().top -
+      anchor.top
+    if (delta !== 0) container.scrollTop += delta
+  })
+
+  const selectedTraceIdRef = useRef(selectedTraceId)
+  selectedTraceIdRef.current = selectedTraceId
+
+  const selectTrace = useCallback(
+    (traceId: string | null) => {
+      // opening/switching anchors the clicked row; closing anchors the row
+      // whose detail is about to collapse
+      captureScrollAnchor(traceId ?? selectedTraceIdRef.current)
+      setSelectedTraceId(traceId)
+      setSelectedSpan(null)
+      setWaterfallData(null)
+      setSpansError(null)
+      detailSpansRef.current = new Map()
+      if (traceId) {
+        loadTraceSpans(traceId)
+      }
+    },
+    [loadTraceSpans, captureScrollAnchor],
+  )
+
+  const toggleTrace = useCallback(
+    (traceId: string) => {
+      selectTrace(traceId === selectedTraceIdRef.current ? null : traceId)
+    },
+    [selectTrace],
+  )
+
+  // ── Hold live changes while the user is reading ──
+  // A live newest-first list that inserts rows the moment they arrive is
+  // unreadable under load: everything below the insertion point moves. So
+  // structural changes (rows entering or leaving, order) are HELD while the
+  // user is evidently reading — pointer over the rows, scrolled away from
+  // the top, on a later page, or a detail expanded — and the stats block
+  // in the filter bar shows a quiet "N new" that lands them on click. Rows
+  // on screen keep updating in place. The hold releases (and the held
+  // answer lands) when every reason clears: pointer out, back at the top,
+  // back on page 1, detail closed.
+  const listHoverRef = useRef(false)
+  const [listScrolledAway, setListScrolledAway] = useState(false)
+  const listHeldByState =
+    listScrolledAway || filterState.page !== 1 || selectedTraceId !== null
+  const listHeldByStateRef = useRef(listHeldByState)
+  listHeldByStateRef.current = listHeldByState
+  const syncListHold = useCallback(() => {
+    const held = listHoverRef.current || listHeldByStateRef.current
+    holdRef.current = held
+    if (!held) flushPendingTraces()
+  }, [holdRef, flushPendingTraces])
+  useEffect(() => {
+    holdRef.current = listHoverRef.current || listHeldByState
+    if (!holdRef.current) flushPendingTraces()
+  }, [holdRef, listHeldByState, flushPendingTraces])
+  const handleListScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+    const away = event.currentTarget.scrollTop > 0
+    setListScrolledAway((prev) => (prev === away ? prev : away))
+  }, [])
+  // What "N new" promises: held rows not on screen that will actually
+  // show once landed — a hidden-rooted bookkeeping trace that the span
+  // filter would drop must not be counted as "new".
+  const heldNewCount = useMemo(() => {
+    if (heldTraces.length === 0) return 0
+    const shown = new Set(traceGroups.map((t) => t.traceId))
+    let count = 0
+    for (const trace of heldTraces) {
+      if (!shown.has(trace.traceId) && showsWithoutProbe(trace, spanFilter)) {
+        count++
+      }
+    }
+    return count
+  }, [heldTraces, traceGroups, spanFilter])
+  // The selected trace's own row is never held back: following opens a
+  // turn from the strip feed before its list row has landed, and holding
+  // that row left the detail pinned above a list reading "1 new" for as
+  // long as it stayed open (seen in a screen recording).
+  useEffect(() => {
+    if (selectedTraceId === null) return
+    if (traceGroups.some((t) => t.traceId === selectedTraceId)) return
+    if (heldTraces.some((t) => t.traceId === selectedTraceId)) {
+      flushPendingTraces()
+    }
+  }, [selectedTraceId, traceGroups, heldTraces, flushPendingTraces])
+  // "N new": back to the top of page 1 with everything that arrived.
+  const showHeldTraces = useCallback(() => {
+    if (filterState.page !== 1) updateFilter('page', 1)
+    listScrollRef.current?.scrollTo({ top: 0 })
+    flushPendingTraces()
+  }, [filterState.page, updateFilter, flushPendingTraces])
+
+  // The follow toggle's engine: opens the newest live turn trace of the
+  // active conversation (once per trace — closing it mid-turn is respected).
+  // Following lands the held rows first, so the opened trace's detail
+  // renders under its own row instead of pinned above a stale list.
+  // When the operator asked for a trace by name (a `@trace` mention), turns
+  // that started before that moment are not "new work" to jump to: right
+  // after mount the feed is still landing, and the chat's latest turn would
+  // otherwise read as unseen and replace the trace that was asked for.
+  const focusedAtRef = useRef<number | null>(null)
+  const allSpansRef = useRef(allSpans)
+  allSpansRef.current = allSpans
+  const openFollowedTrace = useCallback(
+    (traceId: string | null) => {
+      const focusedAt = focusedAtRef.current
+      if (traceId && focusedAt !== null && activeSessionId) {
+        const start = turnTracesFor(allSpansRef.current, activeSessionId).get(
+          traceId,
+        )
+        if (start !== undefined && start < focusedAt) return
+      }
+      flushPendingTraces()
+      selectTrace(traceId)
+    },
+    [flushPendingTraces, selectTrace, activeSessionId],
+  )
+  useFollowLiveTurn({
+    enabled: followTurns && !isPaused,
+    activeSessionId,
+    spans: allSpans,
+    selectedTraceId,
+    onOpenTrace: openFollowedTrace,
+  })
+
+  // Chat linkage of the OPEN trace (session + turn), resolved from the row's
+  // merged trace tags with a span-attribute fallback for details opened
+  // without their row (timeline-strip click, deep link). The row tags come
+  // with the LIST fetch, so the link resolves — and the jump-to-chat works —
+  // while the paged detail is still loading; only the fallback path waits
+  // for spans. The buttons only render when the host passes `sessions`.
+  const chatLink = useMemo(() => {
+    if (selectedTraceId === null) return null
+    const tags = traceGroups.find(
+      (t) => t.traceId === selectedTraceId,
+    )?.traceTags
+    return traceChatLink(tags, waterfallData?.spans ?? [])
+  }, [waterfallData, traceGroups, selectedTraceId])
+
+  const handleOpenMessage = sessions?.open
+
+  // Deep-link seed: mount with a trace already expanded (used by stories).
+  const initialAppliedRef = useRef(false)
+  useEffect(() => {
+    if (initialAppliedRef.current || !initialTraceId) return
+    initialAppliedRef.current = true
+    selectTrace(initialTraceId)
+  }, [initialTraceId, selectTrace])
+
+  // Opening traces beside a conversation is almost always a question about
+  // THAT conversation, so the newest turn of the running chat (else the
+  // active one — see `sessionSeed`) opens with the pane. Once per active
+  // chat, and never over a deep link or a trace already open — the
+  // operator's pick, a followed turn: after that the surface is theirs.
+  // `sessionSeedRef` is the deep-link / `@trace` hold; `seededForRef` the
+  // chat the seed has already run (or stood down) for.
+  const sessionSeedRef = useRef(false)
+  const seededForRef = useRef<string | null>(null)
+  const conversations = sessions?.sessions
+  // A string, so a store change that leaves the order alone (a streamed
+  // token) does not re-run the seed.
+  const seedOrder = useMemo(
+    () => seedSessions(activeSessionId, conversations ?? []).join('\n'),
+    [activeSessionId, conversations],
+  )
+  // "Show this trace" from elsewhere in the tab (a `@trace` mention): it
+  // wins over the session seed and over following turns that had already
+  // started, now and on every later request.
+  const onFocus = (traceId: string) => {
+    focusedAtRef.current = Date.now()
+    sessionSeedRef.current = true
+    initialAppliedRef.current = true
+    if (traceId !== selectedTraceIdRef.current) selectTrace(traceId)
+  }
+  const onFocusRef = useRef(onFocus)
+  onFocusRef.current = onFocus
+  useEffect(
+    () => subscribeFocus?.((traceId) => onFocusRef.current(traceId)),
+    [subscribeFocus],
+  )
+  useEffect(() => {
+    if (sessionSeedRef.current || initialTraceId || !activeSessionId) return
+    if (seededForRef.current === activeSessionId) return
+    // Something is open already — clicked before the list landed, or a turn
+    // the follow toggle opened: it stays, and this chat counts as seeded so
+    // a later list refresh cannot replace it.
+    if (selectedTraceIdRef.current !== null) {
+      seededForRef.current = activeSessionId
+      return
+    }
+    const traceId = seedTrace(
+      seedOrder ? seedOrder.split('\n') : [],
+      allSpans,
+      traceGroups,
+    )
+    if (!traceId) return
+    seededForRef.current = activeSessionId
+    selectTrace(traceId)
+  }, [
+    activeSessionId,
+    seedOrder,
+    allSpans,
+    traceGroups,
+    initialTraceId,
+    selectTrace,
+  ])
+
+  // Esc walks back out: span panel first, then the expanded detail. A
+  // pane-scoped command when the host offers one, so it only fires while
+  // this pane has the focus; the raw listener stays for older hosts.
+  const back = useCallback(() => {
+    if (selectedSpan) setSelectedSpan(null)
+    else selectTrace(null)
+  }, [selectedSpan, selectTrace])
+  useEffect(() => {
+    if (commands || !selectedTraceId) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      back()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [commands, selectedTraceId, back])
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'search',
+          title: 'Search traces',
+          detail: 'Put the caret in the trace search',
+          keywords: ['filter', 'find'],
+          run: () =>
+            rootRef.current
+              ?.querySelector<HTMLElement>('[aria-label="search traces"]')
+              ?.focus(),
+        },
+        {
+          id: 'follow',
+          title: followTurns ? 'Stop following turns' : 'Follow turns',
+          detail: 'Jump to each new turn as it arrives',
+          keywords: ['live', 'tail', 'auto'],
+          run: toggleFollowTurns,
+        },
+        {
+          id: 'clear-filters',
+          title: 'Clear the trace filters',
+          detail: 'Back to every trace',
+          keywords: ['reset', 'filters'],
+          run: resetFilters,
+        },
+        {
+          id: 'back',
+          title: 'Close the trace detail',
+          detail: 'Span panel first, then the expanded trace',
+          keywords: ['escape', 'close', 'collapse'],
+          shortcut: 'Escape',
+          enabled: () => selectedTraceId !== null,
+          run: back,
+        },
+      ]),
+    [
+      commands,
+      followTurns,
+      toggleFollowTurns,
+      resetFilters,
+      selectedTraceId,
+      back,
+    ],
+  )
+
+  // The expanded detail, rendered as an accordion item under the selected
+  // row (or pinned at the top of the scroll area when that row isn't in the
+  // current page — timeline-strip clicks, deep links). The left accent
+  // border continues the selected row's marker.
+  const viewSwitcher = (
+    <ViewSwitcher currentView={activeView} onViewChange={setActiveView} />
+  )
+  const traceDetail =
+    selectedTraceId !== null ? (
+      <div className="mx-2 my-1.5 overflow-hidden rounded-xl bg-card ring-1 ring-card-edge">
+        {isLoadingSpans && (
+          <TraceDetailSkeleton
+            onClose={() => selectTrace(null)}
+            chatLink={chatLink}
+            onOpenMessage={handleOpenMessage}
+          />
+        )}
+        {!isLoadingSpans && spansError && (
+          <div className="flex flex-col gap-3 p-4">
+            <StatusPanel
+              variant="alert"
+              icon={<AlertCircle className="h-full w-full" />}
+              headline="failed to load trace"
+              detail={spansError}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => loadTraceSpans(selectedTraceId)}
+              >
+                <RefreshCw data-icon="inline-start" />
+                Retry
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => selectTrace(null)}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        )}
+        {!isLoadingSpans && !spansError && waterfallData && (
+          <>
+            <TraceHeader
+              data={waterfallData}
+              traceId={selectedTraceId}
+              onClose={() => selectTrace(null)}
+              onSpanClick={setSelectedSpan}
+              chatLink={chatLink}
+              onOpenMessage={handleOpenMessage}
+              loadingSpans={seedProgress}
+            />
+            {/* the timeline sizes itself to its packed lines (fitContent);
+                the waterfall is virtualized and needs a bounded scrollport.
+                Both draw the same toolbar row, with the view switcher at
+                its start, so switching views never moves the controls. */}
+            {activeView === 'timeline' && (
+              <TraceTimeline
+                data={waterfallData}
+                onSpanClick={setSelectedSpan}
+                selectedSpanId={selectedSpan?.span_id}
+                spanGroupKey={traceSpanGroupKey}
+                spanFilter={spanFilter}
+                toolbarStart={viewSwitcher}
+                fitContent
+              />
+            )}
+            {activeView === 'waterfall' && (
+              <div className="h-[440px]">
+                <WaterfallChart
+                  data={waterfallData}
+                  onSpanClick={setSelectedSpan}
+                  selectedSpanId={selectedSpan?.span_id}
+                  spanGroupKey={traceSpanGroupKey}
+                  spanFilter={spanFilter}
+                  toolbarStart={viewSwitcher}
+                />
+              </div>
+            )}
+            <div className="border-t border-border">
+              <WorkerBreakdown data={waterfallData} />
+            </div>
+          </>
+        )}
+      </div>
+    ) : null
+
+  const selectedInPage =
+    selectedTraceId !== null && paged.some((t) => t.traceId === selectedTraceId)
+
+  // The scope chip: names the followed conversation; ✕ shows every session
+  // again (until another conversation is selected).
+  const sessionScopeChip = sessionScope ? (
+    <span
+      className="inline-flex h-7 max-w-[14rem] items-center gap-1.5 rounded-md bg-secondary pl-2 text-xs text-foreground"
+      title="the list follows the active chat — showing only this session's traces"
+      data-session-scope-chip
+    >
+      <MessageSquare
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden
+      />
+      <span className="truncate">
+        {activeConversation?.title ?? sessionScope}
+      </span>
+      <Hint label="Show all sessions">
+        <button
+          type="button"
+          onClick={() => setScopeDismissedFor(sessionScope)}
+          aria-label="show all sessions"
+          className="mr-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <X className="size-4" aria-hidden />
+        </button>
+      </Hint>
+    </span>
+  ) : null
+
+  const hasActiveFilters =
+    !!filterState.status ||
+    !!filterState.workerName ||
+    !!filterState.operationName ||
+    !!filterState.minDurationMs ||
+    !!filterState.maxDurationMs ||
+    (!!filterState.startTime && !!filterState.endTime) ||
+    (filterState.attributes?.length ?? 0) > 0 ||
+    (filterState.hiddenFunctions?.length ?? 0) > 0
+  const narrowed = debouncedSearch.trim() !== '' || hasActiveFilters
+  const clearNarrowing = () => {
+    handleSearchChange('')
+    resetFilters()
+  }
+
+  return (
+    <section
+      ref={rootRef}
+      aria-label="traces"
+      className={cn(
+        'flex flex-1 flex-col overflow-hidden',
+        NEUTRAL_SURFACE,
+        className,
+      )}
+    >
+      {header}
+      <TimelineStrip
+        spans={allSpans}
+        spanFilter={spanFilter}
+        isPaused={isPaused}
+        onTraceClick={toggleTrace}
+        followTurns={followTurns}
+        onToggleFollowTurns={sessions ? toggleFollowTurns : undefined}
+      />
+
+      <div className="border-b border-border px-3 py-2">
+        <ErrorBoundary>
+          <TraceFilters
+            filters={filterState}
+            onFilterChange={updateFilter}
+            onClear={resetFilters}
+            validationWarnings={validationWarnings}
+            onClearWarnings={clearValidationWarnings}
+            isLoading={isQueryLoading}
+            searchQuery={searchQuery}
+            onSearchChange={handleSearchChange}
+            stats={hasOtelConfigured ? stats : undefined}
+            heldNew={
+              heldNewCount > 0
+                ? {
+                    count: heldNewCount,
+                    onPage1: filterState.page === 1,
+                    onShow: showHeldTraces,
+                  }
+                : undefined
+            }
+            attributeKeySuggestions={attributeKeySuggestions}
+            leading={
+              <>
+                {viewsAvailable ? (
+                  <ViewsDropdown
+                    views={views}
+                    activeViewId={activeViewId}
+                    activeModified={activeViewModified}
+                    onSelectView={handleSelectView}
+                    onSaveNew={(name) => {
+                      void saveView(name, captureViewConfig(filterState)).then(
+                        (view) => setActiveViewId(view.id),
+                      )
+                    }}
+                    onUpdateActive={() => {
+                      if (activeViewId)
+                        void updateView(
+                          activeViewId,
+                          captureViewConfig(filterState),
+                        )
+                    }}
+                    onRenameActive={(name) => {
+                      if (activeViewId) void renameView(activeViewId, name)
+                    }}
+                    onDeleteActive={() => {
+                      // deleteView clears the selection itself, in the same
+                      // config write.
+                      if (activeViewId) void deleteView(activeViewId)
+                    }}
+                  />
+                ) : null}
+                {sessionScopeChip}
+              </>
+            }
+          />
+        </ErrorBoundary>
+      </div>
+
+      <ErrorBoundary>
+        {/* Only the engine's definitive answer earns this message — while
+            the seed is still unanswered (null) the list area renders its
+            loading skeleton instead. */}
+        {hasOtelConfigured === false ? (
+          <div className="p-9">
+            <Cell title="no observability">
+              this engine does not have the trace exporter registered. configure
+              the engine with the otel/memory exporter to start capturing
+              traces.
+            </Cell>
+          </div>
+        ) : (
+          <div className="flex-1 flex overflow-hidden" ref={containerRef}>
+            {groupByAttribute ? (
+              <div className="flex-1 overflow-y-auto" ref={listScrollRef}>
+                <GroupedTraceList
+                  attribute={groupByAttribute}
+                  showSystem={showSystem}
+                  hiddenFunctions={filterState.hiddenFunctions}
+                  label={rowLabel}
+                  selectedTraceId={selectedTraceId}
+                  onSelectTrace={toggleTrace}
+                  onHideFunction={hideFunction}
+                  expandedContent={traceDetail}
+                />
+              </div>
+            ) : (
+              <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+                {isQueryLoading && visibleTraceGroups.length === 0 ? (
+                  <div
+                    role="status"
+                    aria-busy="true"
+                    aria-label="loading traces"
+                    className="flex flex-col gap-px px-2 py-1"
+                  >
+                    {(
+                      [
+                        'tr-sk-0',
+                        'tr-sk-1',
+                        'tr-sk-2',
+                        'tr-sk-3',
+                        'tr-sk-4',
+                        'tr-sk-5',
+                        'tr-sk-6',
+                      ] as const
+                    ).map((sk, i) => (
+                      <div
+                        key={sk}
+                        className="flex h-9 items-center gap-3 px-2"
+                        style={{ opacity: 1 - i * 0.1 }}
+                      >
+                        <Skeleton className="size-4 rounded-sm" />
+                        <Skeleton className="size-1.5 rounded-full" />
+                        <Skeleton
+                          className="h-3.5"
+                          style={{ width: `${34 - (i % 3) * 8}%` }}
+                        />
+                        <Skeleton className="ml-auto h-3 w-12" />
+                        <Skeleton className="h-3 w-14" />
+                      </div>
+                    ))}
+                  </div>
+                ) : visibleTraceGroups.length === 0 ? (
+                  <div className="flex flex-1 items-center justify-center overflow-y-auto p-6">
+                    {narrowed ? (
+                      <EmptyState
+                        icon={Search}
+                        title="no traces match"
+                        description={
+                          debouncedSearch.trim()
+                            ? `nothing matches “${debouncedSearch.trim()}” with the current filters. try a shorter query, or clear the filters.`
+                            : 'nothing matches the current filters.'
+                        }
+                        action={{
+                          label: 'clear filters',
+                          onClick: clearNarrowing,
+                        }}
+                      />
+                    ) : (
+                      <EmptyState
+                        icon={GitBranch}
+                        title={
+                          sessionScope
+                            ? 'no traces for this chat'
+                            : 'no traces recorded'
+                        }
+                        description={
+                          sessionScope
+                            ? // The client cannot tell "never ran" from "already
+                              // expired", so the copy owns both honestly.
+                              'work from this conversation shows up here as it runs. older traces may have expired.'
+                            : 'traces show up here when functions run. send a request to your engine to see one.'
+                        }
+                        action={
+                          sessionScope
+                            ? {
+                                label: 'show all sessions',
+                                onClick: () =>
+                                  setScopeDismissedFor(sessionScope),
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col overflow-hidden">
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: hover detection for pause/resume of live updates */}
+                    <div
+                      className="flex-1 overflow-y-auto px-2 py-1"
+                      ref={listScrollRef}
+                      onScroll={handleListScroll}
+                      onMouseEnter={() => {
+                        listHoverRef.current = true
+                        syncListHold()
+                      }}
+                      onMouseLeave={() => {
+                        listHoverRef.current = false
+                        syncListHold()
+                      }}
+                    >
+                      {/* detail whose row is on another page (strip click,
+                          deep link) pins to the top of the scroll area */}
+                      {selectedTraceId !== null &&
+                        !selectedInPage &&
+                        traceDetail}
+                      {paged.map((trace) => {
+                        const isExpanded = selectedTraceId === trace.traceId
+                        return (
+                          <div
+                            key={trace.traceId}
+                            data-trace-row-id={trace.traceId}
+                          >
+                            <TraceListRow
+                              trace={trace}
+                              isSelected={isExpanded}
+                              isNew={newTraceIds.has(trace.traceId)}
+                              isLive={liveTraceIds.has(trace.traceId)}
+                              label={rowLabel}
+                              onHideFunction={hideFunction}
+                              onSelect={() => toggleTrace(trace.traceId)}
+                              onAnimationEnd={() => {
+                                if (newTraceIds.has(trace.traceId))
+                                  setNewTraceIds((prev) => {
+                                    const next = new Set(prev)
+                                    next.delete(trace.traceId)
+                                    return next
+                                  })
+                              }}
+                            />
+                            {isExpanded && traceDetail}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="shrink-0 border-t border-border px-2 py-1">
+                      <TracesPagination
+                        currentPage={filterState.page}
+                        totalPages={totalPages}
+                        totalItems={totalTraceCount}
+                        pageSize={filterState.pageSize}
+                        onPageChange={(p) => updateFilter('page', p)}
+                        onPageSizeChange={(s) => {
+                          updateFilter('pageSize', s)
+                          updateFilter('page', 1)
+                        }}
+                        pageSizeOptions={PAGE_SIZES}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedSpan && waterfallData ? (
+              <>
+                {/* biome-ignore lint/a11y/useSemanticElements: <hr> is not draggable; this is a separator drag handle */}
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-valuenow={spanPanel.width}
+                  aria-valuemin={spanPanel.min}
+                  aria-valuemax={spanPanel.max}
+                  tabIndex={0}
+                  aria-label="resize span panel"
+                  onMouseDown={spanPanel.startResize}
+                  onDoubleClick={spanPanel.reset}
+                  className="w-[3px] shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-muted-foreground/40 focus-visible:bg-muted-foreground/40 focus-visible:outline-none active:bg-muted-foreground/70"
+                />
+                <div
+                  style={{ width: spanPanel.width }}
+                  className={cn(
+                    'h-full shrink-0 overflow-hidden border-l border-border bg-card',
+                    spanPanel.isResizing && 'pointer-events-none select-none',
+                  )}
+                >
+                  <SpanPanel
+                    span={liveSelectedSpan ?? selectedSpan}
+                    traceData={waterfallData}
+                    onClose={() => setSelectedSpan(null)}
+                    onNavigateToSpan={setSelectedSpan}
+                    onNavigateToTrace={selectTrace}
+                  />
+                </div>
+              </>
+            ) : null}
+          </div>
+        )}
+      </ErrorBoundary>
+    </section>
+  )
+}

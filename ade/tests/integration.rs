@@ -470,7 +470,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         "id": "console-int-test-1",
         "type": "ping",
     });
-    ws.send(Message::Text(probe.to_string()))
+    ws.send(Message::text(probe.to_string()))
         .await
         .expect("WS send failed");
 
@@ -1203,10 +1203,10 @@ async fn ws_proxy_drops_console_provider_registrations() {
         "private": true,
         "args_format": { "type": "object" },
     });
-    ws.send(Message::Text(hijack.to_string()))
+    ws.send(Message::text(hijack.to_string()))
         .await
         .expect("send hijack");
-    ws.send(Message::Text(page.to_string()))
+    ws.send(Message::text(page.to_string()))
         .await
         .expect("send page registration");
 
@@ -1312,7 +1312,7 @@ async fn ws_proxy_forwards_oversized_engine_message() {
         let mut ws = tokio_tungstenite::accept_async(stream)
             .await
             .expect("ws handshake from proxy");
-        ws.send(Message::Text("x".repeat(BIG_LEN)))
+        ws.send(Message::text("x".repeat(BIG_LEN)))
             .await
             .expect("send oversized message");
         while let Some(Ok(_)) = ws.next().await {}
@@ -1332,11 +1332,9 @@ async fn ws_proxy_forwards_oversized_engine_message() {
 
     // Browser stand-in: browsers impose no message size limit, so the
     // test client must not either.
-    let client_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-        max_message_size: None,
-        max_frame_size: None,
-        ..Default::default()
-    };
+    let client_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None);
     let (mut ws, _) = tokio_tungstenite::connect_async_with_config(
         &format!("ws://127.0.0.1:{}/ws", addr.port()),
         Some(client_config),

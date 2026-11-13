@@ -27,6 +27,8 @@ struct Store {
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
     fail: BTreeSet<String>,
+    /// Fail every state call on these scopes.
+    fail_scope: BTreeSet<String>,
     fail_delete: Option<String>,
     delete_reply: Option<Value>,
     fail_after_queue_once: bool,
@@ -53,7 +55,12 @@ impl Store {
     }
     fn respond(&mut self, function: &str, data: &Value, action: &Value) -> Result<Value, String> {
         self.calls.push((function.into(), data.clone()));
-        if self.fail.contains(function) || self.codes.contains_key(function) {
+        if self.fail.contains(function)
+            || self.codes.contains_key(function)
+            || data["scope"]
+                .as_str()
+                .is_some_and(|scope| self.fail_scope.contains(scope))
+        {
             return Err(format!("injected failure: {function}"));
         }
         if action["type"] == "enqueue" {
@@ -2260,6 +2267,68 @@ async fn session_deleted_removes_the_turn_record() {
         && data["key"] == "child2"));
     assert!(store.state("harness_turn", "child2").is_null());
     assert!(!store.state("harness_turn", "grandchild1").is_null());
+}
+
+/// The recall ledger holds digests only: a store that cannot clear it must
+/// not fail the deletion or skip the purges after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_recall_ledger_purge_does_not_fail_deletion() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .fail_scope
+        .insert("harness_recall_delivery".into());
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    for id in ["grandchild1", "child2"] {
+        for scope in [
+            "harness_filesystem_grants",
+            "harness_budget",
+            "harness_context",
+        ] {
+            assert!(
+                store.calls.iter().any(|(f, data)| f == "state::delete"
+                    && data["scope"] == scope
+                    && data["key"] == id),
+                "{scope} not purged for {id}"
+            );
+        }
+        assert!(store
+            .calls
+            .iter()
+            .any(|(f, data)| f == "approval::on-session-deleted" && data["session_id"] == id));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_recall_ledger_purge_still_acknowledges_session_deleted() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .fail_scope
+        .insert("harness_recall_delivery".into());
+    let ack = on_session_deleted::handle(
+        &stack.deps,
+        SessionDeletedEvent {
+            session_id: "child2".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(ack.ok);
+    assert!(stack
+        .store
+        .lock()
+        .unwrap()
+        .state("harness_turn", "child2")
+        .is_null());
 }
 
 /// A step holds its record in memory and writes it back when it ends. The

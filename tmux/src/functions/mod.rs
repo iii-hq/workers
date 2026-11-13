@@ -1,10 +1,12 @@
 //! The public `tmux::*` functions. Mutations poke the live feed so the
 //! console reflects them at once.
 
+pub mod accounts;
 pub mod install;
 pub mod panes;
 pub mod sessions;
 pub mod subagents;
+pub mod usage;
 pub mod windows;
 
 use std::sync::{Arc, Mutex};
@@ -61,6 +63,10 @@ fn spec<Req: JsonSchema, Resp: JsonSchema>(
 /// No parameters.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct EmptyInput {}
+
+/// Nothing to return.
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct EmptyOutput {}
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct KilledOutput {
@@ -122,6 +128,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         PORTS_LIST_DESC,
     ));
     specs.extend(install::catalog());
+    specs.extend(usage::catalog());
+    specs.extend(accounts::catalog());
     specs
 }
 
@@ -148,4 +156,6 @@ pub fn register_all(iii: &IIIClient, ctx: Arc<Ctx>) {
         ports_list
     );
     install::register(iii, &ctx);
+    usage::register(iii, &ctx);
+    accounts::register(iii, &ctx);
 }

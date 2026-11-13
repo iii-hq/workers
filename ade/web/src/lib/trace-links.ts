@@ -14,7 +14,7 @@
  *
  * (The chat → traces direction needs no store: the traces screen follows the
  * active conversation automatically — see the session scope in
- * `pages/TracesV2/index.tsx`.)
+ * `packages/traces-ui/src/TracesView.tsx`.)
  */
 
 import { useSyncExternalStore } from 'react'

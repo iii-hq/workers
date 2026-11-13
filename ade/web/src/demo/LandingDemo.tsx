@@ -13,6 +13,17 @@
  * are new.
  */
 
+import { TraceFilters } from '@iii-dev/traces-ui/src/components/TraceFilters'
+import { TimelineStrip } from '@iii-dev/traces-ui/src/components/timeline/TimelineStrip'
+import { TraceTimeline } from '@iii-dev/traces-ui/src/components/timeline/TraceTimeline'
+import {
+  ViewSwitcher,
+  type ViewType,
+} from '@iii-dev/traces-ui/src/components/ViewSwitcher'
+import { WaterfallChart } from '@iii-dev/traces-ui/src/components/WaterfallChart'
+import { WorkerBreakdown } from '@iii-dev/traces-ui/src/components/WorkerBreakdown'
+import { useTraceFilters } from '@iii-dev/traces-ui/src/hooks/useTraceFilters'
+import type { VisualizationSpan } from '@iii-dev/traces-ui/src/lib/traceTransform'
 import { ArrowUp, Paperclip, Plus } from 'lucide-react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { ContextUsage } from '@/components/chat/ContextUsage'
@@ -22,17 +33,6 @@ import { Button } from '@/components/ui/Button'
 import { PageSidebar } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
-import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
-import { TimelineStrip } from '@/pages/TracesV2/components/timeline/TimelineStrip'
-import { TraceTimeline } from '@/pages/TracesV2/components/timeline/TraceTimeline'
-import {
-  ViewSwitcher,
-  type ViewType,
-} from '@/pages/TracesV2/components/ViewSwitcher'
-import { WaterfallChart } from '@/pages/TracesV2/components/WaterfallChart'
-import { WorkerBreakdown } from '@/pages/TracesV2/components/WorkerBreakdown'
-import { useTraceFilters } from '@/pages/TracesV2/hooks/useTraceFilters'
-import type { VisualizationSpan } from '@/pages/TracesV2/lib/traceTransform'
 import { DemoEmptyState } from './EmptyState'
 import { MODEL_ID, SESSION_ID, TRACE_ID } from './scenario'
 import { usePlayer } from './usePlayer'

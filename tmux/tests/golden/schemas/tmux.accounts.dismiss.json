@@ -1,0 +1,24 @@
+{
+  "description": "\"Not now\" on a suggestion to switch the global account: no suggestion from that account for that reason until its window resets or it runs lower (week 80 % → 90 % → 5-hour window full → week limit).",
+  "function_id": "tmux::accounts::dismiss",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "suggestion": {
+        "description": "The suggestion's `id`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "suggestion"
+    ],
+    "title": "DismissInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Nothing to return.",
+    "title": "EmptyOutput",
+    "type": "object"
+  }
+}

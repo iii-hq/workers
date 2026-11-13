@@ -65,7 +65,8 @@ describe('theme hover conformance', () => {
 
   it('never paints the accent fill as an interactive hover or focus wash', () => {
     const offenders: string[] = []
-    for (const file of walk(srcRoot)) {
+    const tracesRoot = join(srcRoot, '../../../packages/traces-ui/src')
+    for (const file of [...walk(srcRoot), ...walk(tracesRoot)]) {
       if (BARE_FILL_ALLOWLIST[relative(srcRoot, file)]) continue
       const text = readFileSync(file, 'utf8')
       for (const prefix of STATE_PREFIXES) {

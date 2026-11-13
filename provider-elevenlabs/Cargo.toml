@@ -31,3 +31,11 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

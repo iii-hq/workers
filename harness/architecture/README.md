@@ -13,7 +13,6 @@ prose explains how to use them.
 
 | Document | Audience | Read it when |
 |---|---|---|
-| [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
 | [reactive-observers.md](reactive-observers.md) | Anyone wiring an event to an agent | An agent observes a function with `harness::observe`. Covers the full payload, args and filters, conditions, lifecycle, the timer, and why the harness intercepts the call. |
 | [observer-bindings.md](observer-bindings.md) | Anyone changing the delivery path | You are touching `functions/observe.rs`, `functions/observer_deliver.rs`, `bindings/*`, or the spawn/send seam — the binding record, the delivery order, restarts and stored records. |
 

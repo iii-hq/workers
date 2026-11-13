@@ -103,6 +103,11 @@ pub struct Pane {
     pub compose: Option<ComposeRef>,
     /// Listening sockets owned by processes started from this pane.
     pub ports: Vec<Listener>,
+    /// The Claude Code account the pane runs on and how it follows the
+    /// global one. Present when the pane runs Claude Code or carries an
+    /// account mark; absent otherwise and from workers before 0.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<PaneClaude>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -337,6 +342,366 @@ pub struct Overview {
     pub sessions: SessionsSnapshot,
     /// Listening ports and compose stacks.
     pub ports: PortsSnapshot,
+    /// Claude Code accounts and the weekly usage of Claude Code and Codex.
+    /// Absent from workers before 0.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageSnapshot>,
+}
+
+// ── Claude Code accounts and agent usage ────────────────────────────────
+
+/// How a pane's Claude Code account is chosen (agent-accounts G12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Follow {
+    /// Runs on the global slot (`~/.claude`) and is not pinned, started by
+    /// the worker or by hand: it switches with the global account on its
+    /// next message.
+    Global,
+    /// Pinned to an account: on its folder, or on the slot while that
+    /// account is global (it restarts on its folder when the global one
+    /// changes).
+    Pinned,
+    /// Started by hand on an account's folder (`CLAUDE_CONFIG_DIR` set): no mark.
+    Manual,
+}
+
+/// The Claude Code account of one pane (agent-accounts D4, D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PaneClaude {
+    /// Id of the account the running Claude Code uses: the global account
+    /// on the slot (`~/.claude`), else the account whose folder its
+    /// `CLAUDE_CONFIG_DIR` names. Null when that folder is no registered
+    /// account (see `config_dir`) or Claude Code is not running.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// The config folder the running Claude Code uses, `~` for the home
+    /// folder. Null when Claude Code is not running.
+    #[serde(default)]
+    pub config_dir: Option<String>,
+    /// `global`, `pinned` or `manual`.
+    pub follow: Follow,
+    /// The account the pane moves to when its turn ends (`global`: the slot).
+    #[serde(default)]
+    pub pending: Option<String>,
+    /// Claude Code runs without permission prompts
+    /// (`--dangerously-skip-permissions` or `--permission-mode bypassPermissions`).
+    pub skip_permissions: bool,
+    /// Claude Code's session id, which a move resumes.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The worker can move this pane to another account.
+    pub movable: bool,
+    /// Why it can't, in one sentence, when `movable` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_movable_reason: Option<String>,
+    /// Why the last move of this pane (one that waited for its turn, or a
+    /// switch of the global account) failed, in one sentence; cleared by
+    /// the next account change of the pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_error: Option<String>,
+}
+
+/// One usage window of an account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Limit {
+    /// How much of the window is used, 0 to 100.
+    pub used_percent: f64,
+    /// When the window starts again.
+    #[serde(default)]
+    pub resets_at_ms: Option<u64>,
+    /// The window reset after the reading, so `used_percent` is 0 until the
+    /// next reading.
+    #[serde(default)]
+    pub reset_since_read: bool,
+}
+
+/// A weekly window of one model family (Claude Code's `weekly_scoped` limits).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelLimit {
+    /// The model's display name, e.g. `Opus`.
+    pub name: String,
+    /// The window.
+    pub limit: Limit,
+}
+
+/// Usage beyond the plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ExtraUsage {
+    /// Extra usage is turned on for the account.
+    pub enabled: bool,
+    /// How much of its monthly limit is used, 0 to 100, when there is one.
+    #[serde(default)]
+    pub used_percent: Option<f64>,
+}
+
+/// One reading of a Claude Code account's usage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeUsage {
+    /// The current 5-hour window.
+    #[serde(default)]
+    pub five_hour: Option<Limit>,
+    /// The week, all models.
+    #[serde(default)]
+    pub week: Option<Limit>,
+    /// The week, Opus only.
+    #[serde(default)]
+    pub week_opus: Option<Limit>,
+    /// The week, Sonnet only.
+    #[serde(default)]
+    pub week_sonnet: Option<Limit>,
+    /// Every per-model weekly window the account has, Opus and Sonnet included.
+    #[serde(default)]
+    pub week_models: Vec<ModelLimit>,
+    /// Usage beyond the plan.
+    #[serde(default)]
+    pub extra: Option<ExtraUsage>,
+    /// When this reading was taken.
+    pub as_of_ms: u64,
+    /// Why the latest attempt to read failed: `rate_limited`, `unauthorized`,
+    /// `network`, `token_expired`, `not_signed_in`, `unreadable`. The windows
+    /// are then the last good reading, if any.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// A Claude Code account (agent-accounts G1, G2): one sign-in, kept in the
+/// global slot while it is global and in its own folder otherwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeAccount {
+    /// `default` for the sign-in `~/.claude` had when accounts began, else
+    /// a slug of its first name.
+    pub id: String,
+    /// The name people gave it.
+    pub name: String,
+    /// `blue`, `green`, `violet`, `orange` or `pink`.
+    pub color: String,
+    /// Its folder, absolute: `<accounts root>/<id>`. Without `accounts.json`, the one account (`default`) has none, and this is `~/.claude`.
+    pub dir: String,
+    /// Its folder with `~` for the home folder.
+    pub dir_display: String,
+    /// Its id is `default`.
+    pub is_default: bool,
+    /// The signed-in email.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// The organization it belongs to.
+    #[serde(default)]
+    pub organization: Option<String>,
+    /// `pro`, `max`, `team`, `enterprise` or what Claude Code recorded.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// The rate-limit tier, e.g. `default_claude_max_20x`.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// It holds a Claude sign-in.
+    pub signed_in: bool,
+    /// Its sign-in expired; running Claude Code there renews it.
+    pub token_expired: bool,
+    /// The groups its folder shares with `~/.claude`: `settings`,
+    /// `extensions`, `plugins`, `conversations`.
+    pub shared: Vec<String>,
+    /// Claude Code panes using it now (for the global account, every pane
+    /// on the slot, its followers included).
+    pub panes: u32,
+    /// The latest usage reading.
+    #[serde(default)]
+    pub usage: Option<ClaudeUsage>,
+}
+
+/// What the worker does when the global account runs low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RulesMode {
+    /// Nothing.
+    Off,
+    /// Suggest another account.
+    #[default]
+    Suggest,
+    /// Make another account global by itself.
+    Switch,
+}
+
+/// When the global account counts as low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Threshold {
+    /// 80 % of the week.
+    #[serde(rename = "week_80")]
+    Week80,
+    /// 90 % of the week.
+    #[default]
+    #[serde(rename = "week_90")]
+    Week90,
+    /// The week's limit.
+    Limit,
+}
+
+/// The rules for the global account (agent-accounts D14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct SwitchRules {
+    /// `off`, `suggest` or `switch`.
+    pub mode: RulesMode,
+    /// `week_80`, `week_90` or `limit`.
+    pub at: Threshold,
+    /// Also act when the 5-hour window reaches 100 %.
+    pub five_hour: bool,
+    /// After switching away by itself, switch back once that account's window resets.
+    pub back_after_reset: bool,
+    /// Accounts to try first, in order; then the one with most room this week.
+    pub order: Vec<String>,
+}
+
+impl Default for SwitchRules {
+    fn default() -> Self {
+        Self {
+            mode: RulesMode::Suggest,
+            at: Threshold::Week90,
+            five_hour: false,
+            back_after_reset: false,
+            order: Vec::new(),
+        }
+    }
+}
+
+/// Another account suggested for global.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Suggestion {
+    /// Pass it to `tmux::accounts::dismiss`.
+    pub id: String,
+    /// The global account.
+    pub from: String,
+    /// The account suggested.
+    pub to: String,
+    /// `week_80`, `week_90`, `limit` or `five_hour`.
+    pub reason: String,
+    /// Claude Code panes on the slot that are not pinned: they switch with
+    /// the global account.
+    pub following: u32,
+    /// When the reason was first seen.
+    pub at_ms: u64,
+}
+
+/// The latest change of the global account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountSwitch {
+    /// The global account before.
+    pub from: String,
+    /// The global account after.
+    pub to: String,
+    /// `week_80`, `week_90`, `limit`, `five_hour` or `back` for an
+    /// automatic switch; `login` (someone signed in to a known account with
+    /// `/login`), `login_new` (to a new one, added then), `upgrade` (the
+    /// worker took the slot's sign-in for global when it was updated); null
+    /// when someone switched.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// The worker switched by itself (rules mode `switch`).
+    pub auto: bool,
+    /// Claude Code panes on the slot that switched with it, on their next
+    /// message.
+    #[serde(default)]
+    pub following: u32,
+    /// Pinned panes restarted: the new global account's (now on the slot)
+    /// and the old one's (now on its folder).
+    #[serde(default, alias = "moved")]
+    pub restarted: Vec<String>,
+    /// Panes pinned to the old global account that restart on its folder
+    /// when their turn ends.
+    pub after_turn: Vec<String>,
+    /// When it happened.
+    pub at_ms: u64,
+    /// With `back_after_reset`: when `from`'s window resets and the worker
+    /// switches back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_at_ms: Option<u64>,
+}
+
+/// Claude Code's accounts as the worker sees them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeSnapshot {
+    /// A `claude` binary is on PATH or `~/.claude` exists.
+    pub available: bool,
+    /// The accounts registry exists (an account was added or a setting saved).
+    pub managed: bool,
+    /// Id of the global account: the sign-in of the slot (`~/.claude`), what
+    /// plain `claude` uses anywhere.
+    pub global: String,
+    /// The worker runs as root, where Claude Code refuses `--dangerously-skip-permissions`.
+    pub runs_as_root: bool,
+    /// The default account first, then the others in the order they were added.
+    pub accounts: Vec<ClaudeAccount>,
+    /// The rules for the global account.
+    pub rules: SwitchRules,
+    /// Another account suggested for global, while the global one is low.
+    #[serde(default)]
+    pub suggestion: Option<Suggestion>,
+    /// The latest change of the global account.
+    #[serde(default)]
+    pub last_switch: Option<AccountSwitch>,
+    /// A switch of the global account that waits for windows on the new
+    /// account's folder to finish their turn.
+    #[serde(default)]
+    pub pending_global: Option<PendingGlobal>,
+    /// How long a running Claude Code may take to notice a switch, in
+    /// seconds: 0 on Linux (its next message), 30 on macOS (the Keychain).
+    #[serde(default)]
+    pub switch_delay_s: u32,
+}
+
+/// A switch of the global account waiting for windows to finish their turn
+/// (agent-accounts G4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingGlobal {
+    /// The account becoming global.
+    pub account: String,
+    /// `person` or `rule`.
+    pub by: String,
+    /// The Claude Code panes on its folder still working or waiting.
+    pub waiting_for: Vec<String>,
+    /// When it was asked for.
+    pub at_ms: u64,
+}
+
+/// Codex's credits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CodexCredits {
+    /// The balance as Codex reports it, e.g. `62500.0000000000`.
+    pub balance: String,
+    /// Credits are unlimited.
+    pub unlimited: bool,
+}
+
+/// Codex's usage, from the newest session it recorded (agent-accounts D13).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CodexUsage {
+    /// The ChatGPT plan, e.g. `pro`.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// The 5-hour window, when the plan has one.
+    #[serde(default)]
+    pub five_hour: Option<Limit>,
+    /// The week.
+    #[serde(default)]
+    pub week: Option<Limit>,
+    /// Credits, when the plan has them.
+    #[serde(default)]
+    pub credits: Option<CodexCredits>,
+    /// When Codex recorded it.
+    pub as_of_ms: u64,
+}
+
+/// Claude Code accounts and the weekly usage of Claude Code and Codex.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UsageSnapshot {
+    /// Claude Code's accounts and their usage.
+    pub claude: ClaudeSnapshot,
+    /// Codex's usage, when Codex recorded any.
+    #[serde(default)]
+    pub codex: Option<CodexUsage>,
+    /// When the snapshot was taken.
+    pub generated_at_ms: u64,
 }
 
 pub fn now_ms() -> u64 {

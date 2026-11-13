@@ -113,11 +113,9 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
 }
 
 async fn handle_ws(client: WebSocket, config: ProxyConfig) {
-    let engine_ws_config = WebSocketConfig {
-        max_message_size: None,
-        max_frame_size: None,
-        ..Default::default()
-    };
+    let engine_ws_config = WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None);
     let (engine, _resp) = match tokio_tungstenite::connect_async_with_config(
         config.engine_url.as_str(),
         Some(engine_ws_config),
@@ -168,9 +166,11 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
                         );
                         continue;
                     }
-                    let t = enforce_worker_namespace(&t, config.namespace.as_deref()).unwrap_or(t);
+                    let t = enforce_worker_namespace(&t, config.namespace.as_deref())
+                        .map(Into::into)
+                        .unwrap_or(t);
                     match stamp_internal_registration(&t) {
-                        Some(stamped) => AxumMessage::Text(stamped),
+                        Some(stamped) => AxumMessage::Text(stamped.into()),
                         None => AxumMessage::Text(t),
                     }
                 }
@@ -330,13 +330,13 @@ pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
 /// `None` when the variant has no useful tungstenite equivalent.
 pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
     Some(match msg {
-        AxumMessage::Text(t) => TungMessage::Text(t),
+        AxumMessage::Text(t) => TungMessage::Text(t.as_str().into()),
         AxumMessage::Binary(b) => TungMessage::Binary(b),
         AxumMessage::Ping(p) => TungMessage::Ping(p),
         AxumMessage::Pong(p) => TungMessage::Pong(p),
         AxumMessage::Close(frame) => TungMessage::Close(frame.map(|f| TungCloseFrame {
             code: f.code.into(),
-            reason: f.reason.into_owned().into(),
+            reason: f.reason.as_str().into(),
         })),
     })
 }
@@ -346,13 +346,13 @@ pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
 /// hatch the proxy never produces or forwards).
 pub(crate) fn tungstenite_to_axum(msg: TungMessage) -> Option<AxumMessage> {
     Some(match msg {
-        TungMessage::Text(t) => AxumMessage::Text(t),
+        TungMessage::Text(t) => AxumMessage::Text(t.as_str().into()),
         TungMessage::Binary(b) => AxumMessage::Binary(b),
         TungMessage::Ping(p) => AxumMessage::Ping(p),
         TungMessage::Pong(p) => AxumMessage::Pong(p),
         TungMessage::Close(frame) => AxumMessage::Close(frame.map(|f| AxumCloseFrame {
             code: u16::from(f.code),
-            reason: f.reason.into_owned().into(),
+            reason: f.reason.as_str().into(),
         })),
         TungMessage::Frame(_) => return None,
     })
@@ -366,9 +366,9 @@ mod tests {
     fn text_roundtrips_both_directions() {
         let original = AxumMessage::Text("hello".into());
         let tung = axum_to_tungstenite(original.clone()).unwrap();
-        assert!(matches!(&tung, TungMessage::Text(s) if s == "hello"));
+        assert!(matches!(&tung, TungMessage::Text(s) if s.as_str() == "hello"));
         let back = tungstenite_to_axum(tung).unwrap();
-        assert!(matches!(&back, AxumMessage::Text(s) if s == "hello"));
+        assert!(matches!(&back, AxumMessage::Text(s) if s.as_str() == "hello"));
     }
 
     #[test]
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn binary_roundtrips_both_directions() {
-        let original = AxumMessage::Binary(vec![1, 2, 3, 4]);
+        let original = AxumMessage::Binary(vec![1, 2, 3, 4].into());
         let tung = axum_to_tungstenite(original.clone()).unwrap();
         assert!(matches!(&tung, TungMessage::Binary(b) if b == &vec![1, 2, 3, 4]));
         let back = tungstenite_to_axum(tung).unwrap();
@@ -419,10 +419,14 @@ mod tests {
 
     #[test]
     fn ping_pong_pass_through() {
-        let p = axum_to_tungstenite(AxumMessage::Ping(vec![9])).unwrap();
+        let p = axum_to_tungstenite(AxumMessage::Ping(vec![9].into())).unwrap();
         assert!(matches!(&p, TungMessage::Ping(b) if b == &vec![9]));
-        let p = axum_to_tungstenite(AxumMessage::Pong(vec![10])).unwrap();
+        let p = axum_to_tungstenite(AxumMessage::Pong(vec![10].into())).unwrap();
         assert!(matches!(&p, TungMessage::Pong(b) if b == &vec![10]));
+        let p = tungstenite_to_axum(TungMessage::Ping(vec![11].into())).unwrap();
+        assert!(matches!(&p, AxumMessage::Ping(b) if b == &vec![11]));
+        let p = tungstenite_to_axum(TungMessage::Pong(vec![12].into())).unwrap();
+        assert!(matches!(&p, AxumMessage::Pong(b) if b == &vec![12]));
     }
 
     #[test]

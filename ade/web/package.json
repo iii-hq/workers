@@ -28,6 +28,7 @@
     "@fontsource/chivo-mono": "^5.2.8",
     "@fontsource/geist-mono": "^5.2.8",
     "@fontsource/inter": "^5.2.8",
+    "@iii-dev/traces-ui": "workspace:*",
     "@lexical/code-core": "^0.44.0",
     "@lexical/list": "^0.44.0",
     "@lexical/markdown": "^0.44.0",

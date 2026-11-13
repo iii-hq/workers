@@ -269,17 +269,65 @@ impl Tmux {
     /// tmux command could set the option. Its own option from tmux 3.0; tmux
     /// 2.x has no pane options, so there it is its window's.
     pub async fn keep_when_done(&self, pane: &str, command: Option<&str>) -> Result<(), String> {
-        let scope = if self.at_least(3, 0) { "-p" } else { "-w" };
-        let mut args = vec!["set-option", scope, "-t", pane, "remain-on-exit", "on"];
-        if let Some(command) = command {
-            args.extend([";", "respawn-pane", "-k", "-t", pane, "--", command]);
+        self.start_held(pane, true, command).await
+    }
+
+    /// Sets new pane `pane`'s remain-on-exit, then starts `command` in it
+    /// (see [`Tmux::keep_when_done`]); `false` closes the pane when its
+    /// program ends even where the user's options keep panes.
+    pub async fn start_held(
+        &self,
+        pane: &str,
+        remain_on_exit: bool,
+        command: Option<&str>,
+    ) -> Result<(), String> {
+        let value = if remain_on_exit { "on" } else { "off" };
+        self.start_with_options(pane, &[("remain-on-exit", value)], command)
+            .await
+    }
+
+    /// `-p` (pane options) from tmux 3.0; tmux 2.x has no pane options, so
+    /// there a pane's options are its window's.
+    pub fn pane_scope(&self) -> &'static str {
+        if self.at_least(3, 0) {
+            "-p"
+        } else {
+            "-w"
         }
-        let kept = self.run(&args).await.map(drop);
-        if kept.is_err() {
+    }
+
+    /// Sets `options` on new pane `pane` (made running [`HOLD`]), then
+    /// starts `command` in it, in one tmux command; on failure the pane is
+    /// killed so no placeholder stays behind.
+    pub async fn start_with_options(
+        &self,
+        pane: &str,
+        options: &[(&str, &str)],
+        command: Option<&str>,
+    ) -> Result<(), String> {
+        let scope = self.pane_scope();
+        let mut args: Vec<&str> = Vec::new();
+        for (name, value) in options {
+            if !args.is_empty() {
+                args.push(";");
+            }
+            args.extend(["set-option", scope, "-t", pane, name, value]);
+        }
+        if let Some(command) = command {
+            if !args.is_empty() {
+                args.push(";");
+            }
+            args.extend(["respawn-pane", "-k", "-t", pane, "--", command]);
+        }
+        if args.is_empty() {
+            return Ok(());
+        }
+        let started = self.run(&args).await.map(drop);
+        if started.is_err() {
             // Never leave a pane behind that runs the placeholder.
             let _ = self.run(["kill-pane", "-t", pane]).await;
         }
-        kept.map_err(|error| error.sentence())
+        started.map_err(|error| error.sentence())
     }
 
     /// `(id, name)` of every session; empty when no server runs.
@@ -447,6 +495,12 @@ pub struct RawPane {
     pub width: u32,
     pub height: u32,
     pub dead: bool,
+    /// `@iii_claude_account`: `global` or an account id (agent-accounts D4).
+    pub claude_mark: String,
+    /// `@iii_skip_permissions` is `1`.
+    pub skip_mark: bool,
+    /// `@iii_claude_pending`: the account the pane moves to after its turn.
+    pub pending_mark: String,
     pub title: String,
 }
 
@@ -461,6 +515,9 @@ pub struct RawClient {
 pub struct RawServer {
     pub socket_path: String,
     pub pid: u32,
+    /// The running server's version (`#{version}`), which can be older than
+    /// the client's `-V` after an upgrade; empty when it doesn't say.
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -521,11 +578,16 @@ pub fn list_all_args() -> Vec<String> {
             "#{pane_dead}",
             "#{pane_current_command}",
             "#{pane_current_path}",
+            // User options read through the pane: its own from tmux 3.0, its
+            // window's before (agent-accounts D4).
+            "#{@iii_claude_account}",
+            "#{@iii_skip_permissions}",
+            "#{@iii_claude_pending}",
             "#{pane_title}",
         ],
     );
     let client = format('C', &["#{client_tty}", "#{session_id}", "#{client_pid}"]);
-    let server = format('X', &["#{socket_path}", "#{pid}"]);
+    let server = format('X', &["#{socket_path}", "#{pid}", "#{version}"]);
     [
         vec!["list-sessions".into(), "-F".into(), session],
         vec![
@@ -594,8 +656,8 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                 }
             }
             Some('P') => {
-                let f: Vec<&str> = rest.splitn(12, SEP).collect();
-                if f.len() == 12 {
+                let f: Vec<&str> = rest.splitn(15, SEP).collect();
+                if f.len() == 15 {
                     snapshot.panes.push(RawPane {
                         session_id: f[0].to_string(),
                         window_id: f[1].to_string(),
@@ -608,7 +670,10 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                         dead: flag(f[8]),
                         command: f[9].to_string(),
                         cwd: f[10].to_string(),
-                        title: f[11].to_string(),
+                        claude_mark: f[11].trim().to_string(),
+                        skip_mark: flag(f[12]),
+                        pending_mark: f[13].trim().to_string(),
+                        title: f[14].to_string(),
                     });
                 }
             }
@@ -623,11 +688,12 @@ pub fn parse_list_all(output: &str) -> RawSnapshot {
                 }
             }
             Some('X') => {
-                let f: Vec<&str> = rest.splitn(2, SEP).collect();
-                if f.len() == 2 {
+                let f: Vec<&str> = rest.splitn(3, SEP).collect();
+                if f.len() >= 2 {
                     snapshot.server = Some(RawServer {
                         socket_path: f[0].to_string(),
                         pid: number(f[1]),
+                        version: f.get(2).map(|v| v.trim().to_string()).unwrap_or_default(),
                     });
                 }
             }
@@ -819,15 +885,20 @@ mod tests {
                     "0",
                     "claude",
                     "/home/u/ação",
+                    "personal",
+                    "1",
+                    "",
                     "✳ Tarefa: a\u{1f}b",
                 ],
             ),
             line('C', &["/dev/pts/3", "$1", "999"]),
-            line('X', &["/tmp/tmux-1000/default", "41901"]),
+            line('X', &["/tmp/tmux-1000/default", "41901", "2.9"]),
             "garbage".to_string(),
         ]
         .join("\n");
         let snapshot = parse_list_all(&output);
+        let server = snapshot.server.as_ref().unwrap();
+        assert_eq!((server.pid, server.version.as_str()), (41901, "2.9"));
         assert_eq!(snapshot.sessions[0].name, "my sess");
         assert_eq!(snapshot.sessions[0].attached, 2);
         assert_eq!(snapshot.windows[0].name, "claude code");
@@ -835,6 +906,14 @@ mod tests {
         let pane = &snapshot.panes[0];
         assert_eq!(pane.pid, 4242);
         assert_eq!(pane.cwd, "/home/u/ação");
+        assert_eq!(
+            (
+                pane.claude_mark.as_str(),
+                pane.skip_mark,
+                pane.pending_mark.as_str()
+            ),
+            ("personal", true, "")
+        );
         assert_eq!(
             pane.title, "✳ Tarefa: a\u{1f}b",
             "the title keeps a stray separator"
@@ -863,6 +942,9 @@ mod tests {
                     "0",
                     "claude",
                     "/home/u/ação",
+                    "",
+                    "",
+                    "",
                     "a\\b",
                 ],
             ),

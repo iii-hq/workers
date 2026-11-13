@@ -1,12 +1,12 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
-import { TraceHeader } from '../components/TraceHeader'
+import { TraceHeader } from '@iii-dev/traces-ui/src/components/TraceHeader'
 import {
   TRACE_1_ID,
   TRACE_2_ID,
   WATERFALL_FIXTURE,
   WATERFALL_SIMPLE,
-} from '../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fn } from 'storybook/test'
 
 const meta = {
   title: 'TracesV2/TraceHeader',

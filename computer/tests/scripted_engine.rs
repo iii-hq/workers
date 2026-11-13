@@ -47,7 +47,7 @@ async fn engine() -> (
             tokio::select! {
                 outbound = wire_rx.recv() => {
                     let Some(outbound) = outbound else { break };
-                    if ws.send(WsMessage::Text(outbound.to_string())).await.is_err() { break }
+                    if ws.send(WsMessage::Text(outbound.to_string().into())).await.is_err() { break }
                 }
                 inbound = ws.next() => {
                     let text = match inbound {
@@ -69,7 +69,7 @@ async fn engine() -> (
                             "function_id": value["function_id"],
                             "result": { "ok": true },
                         });
-                        if ws.send(WsMessage::Text(reply.to_string())).await.is_err() { break }
+                        if ws.send(WsMessage::Text(reply.to_string().into())).await.is_err() { break }
                     }
                     let _ = captured_tx.send(value);
                 }

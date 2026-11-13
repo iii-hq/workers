@@ -68,8 +68,11 @@ kanban board.
 | [`whatsapp`](whatsapp/) | Go | Linked-phone sessions through whatsmeow and official Meta Cloud API messaging, attachments, groups, and filtered events; includes ADE setup and integration tests. |
 | [`acp`](acp/) | Rust | Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions. |
 | [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits the `approval::on-pending-*` events. Observes the harness `harness::hook::on-pre-call` hook point. See [`approval-gate/architecture/`](approval-gate/architecture/). |
-| [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker through the `harness::hook::on-pre-call` hook point. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
+| [`harness`](harness/) | Rust | Thin, durable turn loop that turns a model plus a few iii workers into an agent — persists each message, assembles context, streams a completion, runs the function calls the model requests, and repeats as resumable steps, spawning sub-agents as child sessions. Wires `session-manager` (transcript), `context-manager` (token budgeting) and `llm-router` (generation); approval is delegated to the optional `approval-gate` sibling through the `harness::hook::on-pre-call` hook point. See [`harness/README.md`](harness/README.md). |
+| [`ade`](ade/) | Rust | Web console for iii (renamed from `console`) — one binary that serves the React UI and proxies the engine WebSocket on a single port: chat over the harness stack, an OpenTelemetry trace explorer, mentions, worktrees, the Workers screen with the compose project (`ade::compose::*`), and the runtime host other workers inject their pages, renderers and configuration forms into. |
+| [`onboarding`](onboarding/) | Node | Guided console tour (the **learn-iii** page) — `learn-iii::tours::*` step content, per-operator progress kept in `state` so a reload resumes mid-tour, and an injected page that spotlights the console element each step talks about. |
 | [`eval`](eval/) | Rust | Durable same-model A/B evaluation for prompts and system prompts — runs paired harness sessions, delegates correctness to iii evaluator functions, and reports pass rates with token, cost, latency, function-call, trace, and span metrics. |
+| [`workflow`](workflow/) | Rust | Deterministic, crash-resumable multi-agent DAG orchestrator over harness turns — `workflow::start` / `tick` / `stop` / `status`, run state persisted in `state`, nodes fanned out as child harness sessions with deterministic ids, and `workflow::on-run-completed` to observe terminal runs. |
 | [`security-scan`](security-scan/) | Rust | Report-only security reviews of operator-configured repositories at immutable Git commits, using a read-only Harness policy and durable deduplication. |
 | [`sentinel`](sentinel/) | Rust | Error monitor for the engine: groups failures from trace and log telemetry by deterministic fingerprint, freezes the evidence before the in-memory span ring discards it, and opens assisted harness investigations beside the console page. |
 | [`codex`](codex/) | Rust | OpenAI Codex as an iii worker — `codex::*` spawn the codex CLI for headless turns, mirror raw thread events onto `codex::events`, and stream AgentEvent frames onto `agent::events`. |
@@ -93,6 +96,7 @@ kanban board.
 | [`judge-laya`](judge-laya/) | Rust | laya provider for `judge`: the ModernBERT typed-decision model downloaded from the Hugging Face Hub and run in-process (encoder and decision head in one llama.cpp graph), no API key or external service, behind `judge-laya::*`. |
 | [`judge-decider`](judge-decider/) | Rust | decider provider for `judge`: decider-4b v2 (a Qwen3.5-4B-Base fine-tune for typed decisions, GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, no API key or external service, behind `judge-decider::*`. |
 | [`judge-clef`](judge-clef/) | Rust | clef provider for `judge`: Cloudflare's Clef-Flash decision model downloaded from the Hugging Face Hub and run in-process (backbone and joint schema head in one llama.cpp graph), no API key or external service, behind `judge-clef::*`. |
+| [`judge-semif`](judge-semif/) | Rust | SemIf provider for `judge`: a frozen open LLM (Qwen3.5-4B GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, answering from the next-token logits of the option letters (Metal, Vulkan or CPU picked automatically), no API key or external service, behind `judge-semif::*`. |
 | [`judge-openai`](judge-openai/) | Rust | OpenAI provider for `judge`: Noul, Choice and Score questions answered by OpenAI's Decisions API (`gpt-6-luna`, beta), with worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-openai::*`. |
 | [`judge-typesafe`](judge-typesafe/) | Rust | TypeSafe JEV provider for `judge`: worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-typesafe::*`. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, observers, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
@@ -108,16 +112,30 @@ kanban board.
 | [`provider-claude-code`](provider-claude-code/) | Rust | Claude Code (Pro/Max subscription) Messages API provider behind `llm-router` — `provider::claude-code::stream` using OAuth credentials from the auth-credentials vault or `~/.claude/.credentials.json`, namespaced `claude-code/*` catalog. Local/personal dev only (ToS caveat). |
 | [`provider-command-code`](provider-command-code/) | Rust | Command Code multi-vendor provider behind `llm-router`; Claude ids use Anthropic Messages, other ids use OpenAI Chat Completions, and the live catalog is namespaced `command-code/*`. |
 | [`provider-deepseek`](provider-deepseek/) | Rust | DeepSeek Chat Completions provider behind `llm-router` — `provider::deepseek::stream` with thinking-mode toggle + effort, reasoning replay for tool-calling turns, and live model discovery against `api.deepseek.com`. |
+| [`provider-elevenlabs`](provider-elevenlabs/) | Rust | ElevenLabs speech provider behind `llm-router` — `provider::elevenlabs::transcribe` (Scribe speech to text) and `provider::elevenlabs::speak` (Eleven voices text to speech) behind `router::transcribe` / `router::speak`; the `voice` worker uses them through its `router` backends. |
 | [`provider-github-copilot`](provider-github-copilot/) | Rust | GitHub Copilot subscription provider behind `llm-router` — sign in with GitHub once (device-flow login surface, editor-credential import) and the models the plan grants land in the picker; `provider::github-copilot::stream` with worker-owned bearer exchange/refresh and a fully live `copilot/`-prefixed catalog. |
+| [`provider-kimi`](provider-kimi/) | Rust | Moonshot (Kimi) Chat Completions provider behind `llm-router` — `provider::kimi::stream` with Kimi's `reasoning_content` thinking stream, plus `provider::kimi::refresh_models` for the model catalog. |
 | [`provider-llamacpp`](provider-llamacpp/) | Rust | llama.cpp server (`llama-server`) Chat Completions provider behind `llm-router` — `provider::llamacpp::stream` with optional (no-`--api-key`) auth, real json_schema-constrained output, and live model discovery via `/v1/models` + `/props`. |
 | [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider behind `llm-router` — `provider::openai::stream` with reasoning support and live chat-model discovery, plus `provider::openai::embed` for batch embeddings (OpenAI-compatible endpoints included). |
+| [`provider-openai-codex`](provider-openai-codex/) | Rust | OpenAI Codex (ChatGPT subscription) provider behind `llm-router` — `provider::openai-codex::stream` speaks the Responses API at the Codex backend, billed to the ChatGPT plan instead of a pay-per-token API key, with device-code sign-in (`provider::openai-codex::login::*`) and automatic session renewal backed by the encrypted `secrets` vault. |
 | [`provider-opencode-go`](provider-opencode-go/) | Rust | OpenCode Go Chat Completions provider behind `llm-router` — `provider::opencode_go::stream`, live models.dev-enriched catalog via `refresh_models` |
 | [`provider-openrouter`](provider-openrouter/) | Rust | OpenRouter Chat Completions provider behind `llm-router` — one API key in front of every major vendor; `provider::openrouter::stream` with unified reasoning-effort support, billed-cost usage accounting, and a fully live catalog (context/pricing/capabilities from `GET /api/v1/models`, ids prefixed `openrouter/`). |
+| [`provider-sarvam`](provider-sarvam/) | Rust | Sarvam AI provider behind `llm-router` — `provider::sarvam::stream` for the Sarvam chat models (`sarvam-105b`, `sarvam-30b`, `sarvam-m`), plus `provider::sarvam::transcribe` (Saaras: 22 Indian languages and English) and `provider::sarvam::speak` (Bulbul) behind `router::transcribe` / `router::speak`. |
 | [`provider-xai`](provider-xai/) | Rust | xAI (Grok) Chat Completions provider behind `llm-router` — `provider::xai::stream` with grok reasoning support and live model discovery against `api.x.ai`. |
 | [`provider-zai`](provider-zai/) | Rust | Z.AI (GLM) Chat Completions provider behind `llm-router` — `provider::zai::stream` with GLM thinking/effort support and a curated catalog against `api.z.ai` (no upstream model listing). |
 | [`ide`](ide/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change events (`storage::on-object-created`, `storage::on-object-deleted`). |
+| [`state`](state/) | Rust | Distributed key-value state addressed by scope and key — `state::set`/`get`/`update`/`delete`/`compare-and-set`/`list`/… over a pluggable `kv` or `redis` adapter, and `state::on-changed`, which observers watch for every committed change. |
+| [`queue`](queue/) | Rust | Durable function queues — hosts `queue::on-message`, which topic subscribers observe, plus the queue and dead-letter service functions (`queue::enqueue`, `queue::topic_stats`, `queue::dlq_messages`, `queue::redrive`, …) that replace the legacy built-in queue worker. |
+| [`pubsub`](pubsub/) | Rust | **Deprecated**, scheduled for removal — topic-based publish/subscribe: registers the `publish` function, which subscribers observe with a filter on `input.topic`. New code observes a worker-owned event function instead, or uses `queue` when delivery must not be lost. |
+| [`cron`](cron/) | Rust | Cron schedules — hosts `cron::on-tick`; a function that observes it with `{ expression }` as args runs on every fire of that expression, at the next matching UTC time. |
+| [`http`](http/) | Rust | Exposes functions as HTTP endpoints — hosts `http::on-request`; each observer declares a route as args and its target answers the matched requests, with path params, per-route and global middleware, CORS, and chunked streaming responses. |
+| [`web`](web/) | Rust | Outbound HTTP(S) client on the bus — `web::fetch` returns a parsed `{ ok, status, headers, body }` envelope with size/timeout caps and server-side SSRF protection; the network counterpart to `shell::exec` in `ide`. |
+| [`email`](email/) | Rust | SMTP send and real-time IMAP read with `IDLE` push (`email::send`, `email::list`, `email::get`, `email::search`, …); each inbound message is a call of `email::on-new-mail`, and a server without `IDLE` fails fast instead of falling back to polling. |
+| [`bridge`](bridge/) | Rust | Bridges two iii engines over a long-lived `iii-sdk` WebSocket connection — `expose` entries make local functions callable from the remote engine, and `forward` / `invoke` entries make remote functions callable from this one. |
+| [`secrets`](secrets/) | Rust | Local protected secret store — provider keys and other credentials encrypted under a master key kept outside the project (`secret://NAME`) or kept in the project's `.env` (`env://NAME`), referenced from versioned configuration and resolved only by the workers each secret allowlists; `secrets::on-changed` reports rotations and `.env` edits. |
 | [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
+| [`quick-tunnel`](quick-tunnel/) | Rust | Expiring, durable leases on operator-authorized cloudflared Quick Tunnel child processes — `quick-tunnel::acquire` / `release` / `status`, and `quick-tunnel::on-changed` to observe lease changes. Does not install or download cloudflared. |
 | [`tmux`](tmux/) | Rust | tmux sessions and windows as `tmux::*` functions — list, create, rename, select and kill; per pane, the agent CLI running there (Claude Code, Codex, …) as working / waiting / idle, the `iii compose` stack with its engine and worker ports, and every listening port traced to its pane; plus a Console page whose terminal is a live tmux client. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
 | [`a2ui`](a2ui/) | Rust | A2UI v0.9.1 generative interfaces for Harness sessions — `a2ui::generate` turns compact intent into validated declarative surfaces, persists them per conversation, renders them inline in chat and on an injectable Console page, and routes user actions back into the originating session. |
@@ -126,12 +144,14 @@ kanban board.
 | [`ios-simulator`](ios-simulator/) | Rust | iOS Simulators on a Mac — create, boot and watch simulators live in the console as an iPhone you drive with multi-touch (tap, swipe, pinch), hardware buttons and the keyboard; screenshots and recordings; one Mac serves many tenants, each with its own isolated device set and media. |
 | [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle events (`worktree::on-*`), and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
 | [`github`](github/) | Rust | GitHub CLI (`gh`) as an iii worker — typed `github::pr/issue/repo/run/workflow/release/search::*` functions plus `github::exec` argv passthrough and `github::api` for any GitHub REST endpoint. |
+| [`sandbox-libkrun`](sandbox-libkrun/) | Rust | libkrun sandbox adapter — runs sandboxes and worker VMs as libkrun microVMs on the engine's host: the engine's `sandbox::*` router forwards each call as `sandbox-libkrun::<operation>`, and Compose boots `package://` and `path://` VM workers through `sandbox-libkrun::worker::*`. |
 | [`sandbox-code-runner`](sandbox-code-runner/) | Rust | Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. |
 | [`code-runner`](code-runner/) | Rust | Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory. |
 | [`openwiki`](openwiki/) | Node | Source-grounded markdown wiki for any git repository — a lead agent plans the index and writer sub-agents store cited pages via `openwiki::write-page`, with router and heuristic fallback tiers, incremental refresh from git diffs on a per-wiki cron schedule, and a browser UI + JSON API under `/openwiki`. |
 | [`opengantry`](opengantry/) | Node | OpenGantry governance — `gantry::verify` runs the repo gate command and mints a verdict token; `gantry::middleware` on the governed port blocks promote-class calls until the token matches the current mission revision. |
 | [`pdf`](pdf/) | Rust | Read PDFs locally — `pdf::classify` routes text-based versus scanned in tens of milliseconds and names the pages that still need OCR, `pdf::to-markdown` converts with headings, lists and tables intact, and `pdf::extract-items` / `::extract-regions` expose positions and the text inside a box. Ships a console page. |
 | [`document`](document/) | Rust | Read office documents locally — `document::to-markdown` converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text-based PDFs with their structure intact, `document::detect` names a format from its bytes in microseconds, `document::extract-assets` returns the images markdown cannot carry, and `document::ocr` transcribes a scan by rendering its pages through `browser` and reading them with a vision model. |
+| [`voice`](voice/) | Rust | Speak to the console — bundled streaming speech-to-text for live dictation (`voice::dictation::*`), optional host `whisper.cpp` for final-pass and file transcription (`voice::transcribe`), read-aloud (`voice::speak`), and remote speech providers through `llm-router`, with a mic chip and a voice page. |
 
 ## SDK
 
@@ -212,8 +232,10 @@ cargo build --release
 ```
 
 Node/Python workers follow the standard `npm install` / `pip install -e .`
-flow — see each module's README for specifics. `harness` is a pnpm
-monorepo (`pnpm install && pnpm build`).
+flow — see each module's README for specifics. `harness` is a Rust worker
+like the others; its `build.rs` runs `pnpm install && pnpm build` in
+`harness/ui/` when the injected console UI bundle is missing or stale
+(`SKIP_UI_BUILD=1` reuses the existing `ui/dist/`).
 
 ## Harness local development
 
@@ -247,38 +269,6 @@ Intel macOS builds run natively on GitHub's `macos-15-intel` runner; Apple
 Silicon builds keep the dedicated `workers-release-macos-arm-5core` pool.
 Changes to this matrix take effect in newly built and published worker versions;
 existing Registry versions and immutable release assets are not retrofitted.
-
-### Local binary matrix
-
-Build a Rust worker locally without waiting for GitHub Actions:
-
-```bash
-python3 .github/scripts/build_worker_binaries.py ide
-```
-
-On Windows, use `py .github\scripts\build_worker_binaries.py ide`. The TUI
-starts with every target available on the current host selected; use the arrow
-keys and Space to change the matrix, then Enter to build. Archives and SHA-256
-files are written to `dist/workers/<worker>/` using the same names as release
-assets.
-
-The local matrix deliberately excludes all MSVC targets. Linux targets build
-through [`cross`](https://github.com/cross-rs/cross), backed by Docker or
-Podman, on macOS, Linux, or Windows. Apple targets build with Cargo and the
-Apple SDK, so they are available only when the host is macOS. Workers with UI
-bundles also require Node.js and pnpm; their frontends are built once before
-the Rust matrix starts.
-
-Prerequisites:
-
-```bash
-cargo install cross --locked
-docker info # or: podman info
-```
-
-For automation, skip the TUI with `--all` or
-`--targets <triple>,<triple>`. Use `--plan` to inspect the resolved matrix
-without compiling.
 
 ## Registry
 
@@ -316,7 +306,7 @@ present, the private build entry and public `iii.worker.yaml` valid,
 `tests/` non-empty, and the package version not behind the PR base. It also
 requires non-empty public discovery tags on workers whose interface capture is
 enabled — see the
-[Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
+[Registry metadata step](docs/sops/new-worker.md#registry-metadata).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
 [`docs/architecture/testing-and-ci.md`](docs/architecture/testing-and-ci.md).

@@ -58,6 +58,9 @@ fn fingerprint(overview: &Overview) -> Option<Value> {
     let mut value = serde_json::to_value(overview).ok()?;
     value["sessions"]["generated_at_ms"] = Value::Null;
     value["ports"]["generated_at_ms"] = Value::Null;
+    if let Some(usage) = value.get_mut("usage").filter(|usage| usage.is_object()) {
+        usage["generated_at_ms"] = Value::Null;
+    }
     Some(value)
 }
 
@@ -109,6 +112,8 @@ impl Monitor {
         }
         {
             let mut last = self.last.lock().await;
+            // An observer of the feed is someone watching (D12).
+            self.collector.accounts().mark_watched();
             let overview = self.collector.overview().await;
             if let Ok(payload) = serde_json::to_value(&overview) {
                 let request = CallRequest::new(ON_CHANGED_FN, payload)
@@ -142,6 +147,7 @@ impl Monitor {
                         wake.await;
                         continue;
                     }
+                    monitor.collector.accounts().mark_watched();
                     let overview = monitor.collector.overview().await;
                     let print = fingerprint(&overview);
                     if print.is_some() && print != *last {
@@ -210,6 +216,7 @@ mod tests {
                 listeners: vec![],
                 generated_at_ms: at,
             },
+            usage: None,
         }
     }
 

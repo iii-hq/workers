@@ -466,8 +466,8 @@ Atualizar `eval/Cargo.lock` quando as dependências mudarem antes de usar `--loc
 - [Runtime](src/runtime.rs), [state](src/state.rs), [fila](src/queue.rs), [locks](src/locks.rs) e [eventos](src/events.rs).
 - [Adapter e persistência do state](../state/README.md).
 - [Cadastro de funções](src/functions.rs) e [catálogo de schemas](src/surface.rs).
-- [Comparação de sessões](src/comparison.rs) e [UI atual](ui/src/page/index.tsx).
-- [Contrato compartilhado de judge](../crates/judge-contract/src/lib.rs), [referência do hub](../judge/reference.md) e [cancelamento do provider](../judge-typesafe/src/cancellation.rs).
+- [UI atual](ui/src/page/index.tsx). A comparação de sessões (`src/comparison.rs`) foi removida; ver o [README](README.md#migration-from-prompt-experiments).
+- [Contrato compartilhado de judge](../crates/judge-contract/src/lib.rs), [referência do hub](../judge/reference.md) e [cancelamento do provider](../crates/judge-provider/src/cancellation.rs).
 - [Envio ao Harness](../harness/src/functions/send.rs), [status](../harness/src/functions/status.rs), [árvore](../harness/src/functions/session_tree.rs), [reader de sessões](../harness/src/clients/session.rs) e [máscara de prévias](../harness/src/judge.rs).
 - [Helper de fake Engine existente](../judge-typesafe/tests/support/fake_engine.rs).
 - [Runner e CLI E2E](https://github.com/iii-hq/harness-e2e/blob/f42b9008af2da184ca83dfec49062d029be70130/src/main.rs), [contrato de resultados](https://github.com/iii-hq/harness-e2e/blob/f42b9008af2da184ca83dfec49062d029be70130/src/report.rs) e [bus do dashboard](https://github.com/iii-hq/harness-e2e/blob/f42b9008af2da184ca83dfec49062d029be70130/src/dashboard/bus.rs).

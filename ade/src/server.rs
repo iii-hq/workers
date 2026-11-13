@@ -111,8 +111,8 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(assets::index_handler))
         .route("/manifest.webmanifest", get(assets::manifest_handler))
         .route("/sw.js", get(assets::service_worker_handler))
-        .route("/icons/*path", get(assets::icon_handler))
-        .route("/assets/*path", get(assets::asset_handler))
+        .route("/icons/{*path}", get(assets::icon_handler))
+        .route("/assets/{*path}", get(assets::asset_handler))
         .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
 
@@ -126,14 +126,14 @@ pub fn router(state: AppState) -> Router {
             // Documents and assets a worker serves for its own iframes (the
             // stories worker's built story pages), pulled through
             // `<worker>::ui-file { path }` and framed by the console only.
-            .route("/ui-files/:worker/*path", get(ui_files::ui_file_handler));
+            .route("/ui-files/{worker}/{*path}", get(ui_files::ui_file_handler));
     }
 
     if state.ui.is_some() {
         router = router
             .route("/ui", get(ui_manifest_handler))
-            .route("/ui/*path", get(ui_asset_handler))
-            .route("/vendor/*path", get(assets::vendor_handler));
+            .route("/ui/{*path}", get(ui_asset_handler))
+            .route("/vendor/{*path}", get(assets::vendor_handler));
     }
 
     router

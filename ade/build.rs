@@ -40,6 +40,10 @@ fn ensure_web_bundle() {
     println!("cargo:rerun-if-changed=web/tsconfig.json");
     println!("cargo:rerun-if-changed=web/tsconfig.node.json");
     println!("cargo:rerun-if-changed=web/.env.production");
+    // The Traces screen is the @iii-dev/traces-ui workspace package, built
+    // from source into this bundle.
+    println!("cargo:rerun-if-changed=../packages/traces-ui/src");
+    println!("cargo:rerun-if-changed=../packages/traces-ui/package.json");
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let web_dir = manifest_dir.join("web");
@@ -216,7 +220,11 @@ fn dist_is_fresh(dist_index: &Path, web_dir: &Path) -> bool {
         return false;
     };
 
-    let watched_dirs = [web_dir.join("src"), web_dir.join("public")];
+    let watched_dirs = [
+        web_dir.join("src"),
+        web_dir.join("public"),
+        web_dir.join("../../packages/traces-ui/src"),
+    ];
     for dir in watched_dirs.iter() {
         if !dir.exists() {
             continue;
@@ -232,6 +240,7 @@ fn dist_is_fresh(dist_index: &Path, web_dir: &Path) -> bool {
         web_dir.join("pnpm-lock.yaml"),
         web_dir.join("vite.config.ts"),
         web_dir.join(".env.production"),
+        web_dir.join("../../packages/traces-ui/package.json"),
     ];
     for f in watched_files.iter() {
         if !f.exists() {

@@ -16,13 +16,13 @@
  * the activity tick, `calls` counts the engine reads the page made.
  */
 
+import { STRESS_TRACE_ID } from '@iii-dev/traces-ui/src/fixtures/stress-traces'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/shadcn/tooltip'
 import { __setIiiClientDepsForTests } from '@/lib/iii-client'
 import { TracesV2 } from '@/pages/TracesV2'
-import { STRESS_TRACE_ID } from '@/pages/TracesV2/fixtures/stress-traces'
 import { createStressSdk } from './stress-sdk'
 import '../index.css'
 

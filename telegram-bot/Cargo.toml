@@ -36,3 +36,11 @@ uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
 which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

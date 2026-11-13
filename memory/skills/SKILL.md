@@ -32,6 +32,8 @@ rule; point-in-time information belongs in memories.
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
   `memory::preview` shows exactly what a turn on that topic would be given.
+  A turn recalls on the user's message (or the earlier one it continues);
+  a notification turn recalls nothing, so call `memory::recall` when one needs it.
 - The user asks to fix or forget something — find it via recall/list, then
   `memory::update` (corrected text) or `memory::delete` (tombstone), and
   `memory::pin` to protect the corrected version.
@@ -62,6 +64,13 @@ rule; point-in-time information belongs in memories.
   known memory, and a correction supersedes it (a recoverable tombstone;
   pinned memories are never touched). Wider dedup/merge/promote hygiene
   belongs to the `memory-consolidate` sibling worker.
+- Extraction reads only what arrived after the session's confirmed cursor,
+  at most 4 model calls per pass; the rest retries from the last confirmed
+  run. A redelivered job adds no second revision (each effect is appended
+  with a source receipt). A long message is read from its head and tail,
+  and never blocks the turns after it. Item events are
+  best-effort, at most once. Deleting a session or trashing a bank purges its
+  in-flight extraction state.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
 - Recalled memories are dated by when their fact was last stated; trust a

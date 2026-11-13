@@ -3,7 +3,7 @@
 Measures how the traces page behaves on very large traces, the way a busy
 engine produces them, and fails when it regresses. Runs with no engine:
 the page at `/stress.html` mounts the real `TracesV2` surface over a
-generated trace (`src/pages/TracesV2/fixtures/stress-traces.ts`) served by
+generated trace (`packages/traces-ui/src/fixtures/stress-traces.ts`) served by
 a fake client (`src/stress/stress-sdk.ts`) that can also stream it.
 
 ```sh

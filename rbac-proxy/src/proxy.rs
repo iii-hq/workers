@@ -146,7 +146,7 @@ async fn handle_connection(
     let reply_forwarder = tokio::spawn(async move {
         while let Some(text) = reply_rx.recv().await {
             if reply_client_out
-                .send(AxumMessage::Text(text))
+                .send(AxumMessage::Text(text.into()))
                 .await
                 .is_err()
             {
@@ -175,18 +175,32 @@ async fn handle_connection(
             match msg {
                 AxumMessage::Text(t) => match a_int.handle_downstream(t.as_str()).await {
                     DownstreamAction::Forward(out) => {
-                        if a_engine_out.send(TungMessage::Text(out)).await.is_err() {
+                        if a_engine_out
+                            .send(TungMessage::Text(out.into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     DownstreamAction::ReplyToClient(reply) => {
-                        if a_client_out.send(AxumMessage::Text(reply)).await.is_err() {
+                        if a_client_out
+                            .send(AxumMessage::Text(reply.into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     DownstreamAction::ForwardThenReply(out, reply) => {
-                        if a_engine_out.send(TungMessage::Text(out)).await.is_err()
-                            || a_client_out.send(AxumMessage::Text(reply)).await.is_err()
+                        if a_engine_out
+                            .send(TungMessage::Text(out.into()))
+                            .await
+                            .is_err()
+                            || a_client_out
+                                .send(AxumMessage::Text(reply.into()))
+                                .await
+                                .is_err()
                         {
                             break;
                         }
@@ -194,7 +208,11 @@ async fn handle_connection(
                     DownstreamAction::Drop => {}
                     DownstreamAction::Close(replies) => {
                         for reply in replies {
-                            if a_client_out.send(AxumMessage::Text(reply)).await.is_err() {
+                            if a_client_out
+                                .send(AxumMessage::Text(reply.into()))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -234,13 +252,21 @@ async fn handle_connection(
                         UpstreamAction::Drop => (None, Vec::new()),
                     };
                     if let Some(reply) = to_engine {
-                        if b_engine_out.send(TungMessage::Text(reply)).await.is_err() {
+                        if b_engine_out
+                            .send(TungMessage::Text(reply.into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
                     let mut sent = true;
                     for out in frames {
-                        if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                        if b_client_out
+                            .send(AxumMessage::Text(out.into()))
+                            .await
+                            .is_err()
+                        {
                             sent = false;
                             break;
                         }
@@ -294,7 +320,9 @@ async fn reject(client: WebSocket, code: &str, message: &str) {
         "type": "error",
         "error": { "code": code, "message": message }
     });
-    let _ = client.send(AxumMessage::Text(frame.to_string())).await;
+    let _ = client
+        .send(AxumMessage::Text(frame.to_string().into()))
+        .await;
     let _ = client.send(AxumMessage::Close(None)).await;
 }
 
@@ -340,13 +368,13 @@ pub(crate) fn client_frame_to_engine(msg: AxumMessage) -> Option<TungMessage> {
 /// `ade`). Returns `None` when the variant has no useful equivalent.
 pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
     Some(match msg {
-        AxumMessage::Text(t) => TungMessage::Text(t),
+        AxumMessage::Text(t) => TungMessage::Text(t.as_str().into()),
         AxumMessage::Binary(b) => TungMessage::Binary(b),
         AxumMessage::Ping(p) => TungMessage::Ping(p),
         AxumMessage::Pong(p) => TungMessage::Pong(p),
         AxumMessage::Close(frame) => TungMessage::Close(frame.map(|f| TungCloseFrame {
             code: f.code.into(),
-            reason: f.reason.into_owned().into(),
+            reason: f.reason.as_str().into(),
         })),
     })
 }
@@ -355,13 +383,13 @@ pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
 /// `ade`). Returns `None` for raw `Frame`.
 pub(crate) fn tungstenite_to_axum(msg: TungMessage) -> Option<AxumMessage> {
     Some(match msg {
-        TungMessage::Text(t) => AxumMessage::Text(t),
+        TungMessage::Text(t) => AxumMessage::Text(t.as_str().into()),
         TungMessage::Binary(b) => AxumMessage::Binary(b),
         TungMessage::Ping(p) => AxumMessage::Ping(p),
         TungMessage::Pong(p) => AxumMessage::Pong(p),
         TungMessage::Close(frame) => AxumMessage::Close(frame.map(|f| AxumCloseFrame {
             code: u16::from(f.code),
-            reason: f.reason.into_owned().into(),
+            reason: f.reason.as_str().into(),
         })),
         TungMessage::Frame(_) => return None,
     })
@@ -396,8 +424,8 @@ mod tests {
     #[test]
     fn client_binary_never_reaches_the_engine() {
         let frame = br#"{"type":"invokefunction","invocation_id":"x","function_id":"engine::functions::list","data":{}}"#;
-        assert!(client_frame_to_engine(AxumMessage::Binary(frame.to_vec())).is_none());
-        let ping = client_frame_to_engine(AxumMessage::Ping(vec![1])).unwrap();
+        assert!(client_frame_to_engine(AxumMessage::Binary(frame.to_vec().into())).is_none());
+        let ping = client_frame_to_engine(AxumMessage::Ping(vec![1].into())).unwrap();
         assert!(matches!(ping, TungMessage::Ping(_)));
     }
 
@@ -414,5 +442,41 @@ mod tests {
         };
         assert_eq!(u16::from(frame.code), 1001);
         assert_eq!(&*frame.reason, "going away");
+    }
+
+    /// Non-text frames keep their kind, payload, close code and close reason in
+    /// both directions (the engine-bound side drops only downstream Binary,
+    /// covered by `client_binary_never_reaches_the_engine`).
+    #[test]
+    fn non_text_frames_roundtrip_both_directions() {
+        let payload: &[u8] = &[0, 1, 2, 0xff];
+        for (axum, tung) in [
+            (
+                AxumMessage::Binary(payload.to_vec().into()),
+                TungMessage::Binary(payload.to_vec().into()),
+            ),
+            (
+                AxumMessage::Ping(payload.to_vec().into()),
+                TungMessage::Ping(payload.to_vec().into()),
+            ),
+            (
+                AxumMessage::Pong(payload.to_vec().into()),
+                TungMessage::Pong(payload.to_vec().into()),
+            ),
+            (
+                AxumMessage::Close(Some(AxumCloseFrame {
+                    code: 4001,
+                    reason: "policy: d\u{e9}j\u{e0} vu".into(),
+                })),
+                TungMessage::Close(Some(TungCloseFrame {
+                    code: 4001.into(),
+                    reason: "policy: d\u{e9}j\u{e0} vu".into(),
+                })),
+            ),
+            (AxumMessage::Close(None), TungMessage::Close(None)),
+        ] {
+            assert_eq!(axum_to_tungstenite(axum.clone()), Some(tung.clone()));
+            assert_eq!(tungstenite_to_axum(tung), Some(axum));
+        }
     }
 }

@@ -49,8 +49,9 @@ pub struct PreviewResponse {
     /// Memories the turn would be handed, past the relevance cut and token
     /// budget, in injection order.
     pub memories: Vec<PreviewMemory>,
-    /// The appended `<memory>` message body, verbatim; absent when no
-    /// memory fits the budget.
+    /// The appended `<memory>` message body, verbatim. With rules it can hold
+    /// only the rules reminder while `memories` is empty; absent when neither
+    /// a memory fits the budget nor a reminder applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`;
@@ -78,7 +79,16 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
         // A hypothetical message has no window: nothing was injected yet.
         let seen = std::collections::HashSet::new();
         let layers = scope.layers(&cfg.default_bank);
-        hooks::injection(deps, &cfg, bank_name, &layers, Some(&req.query), &seen).await
+        hooks::injection(
+            deps,
+            &cfg,
+            bank_name,
+            &layers,
+            true,
+            Some(&req.query),
+            &seen,
+        )
+        .await
     };
     Ok(PreviewResponse {
         bank: bank_name.to_string(),

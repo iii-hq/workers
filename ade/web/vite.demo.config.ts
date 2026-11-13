@@ -35,6 +35,8 @@ export default defineConfig({
       { find: '@pierre/diffs', replacement: pierreStub },
       { find: '@', replacement: src },
     ],
+    // As in vite.config.ts: one React for the Traces package and the demo.
+    dedupe: ['react', 'react-dom', '@tanstack/react-query'],
   },
   build: {
     outDir: 'dist-demo',

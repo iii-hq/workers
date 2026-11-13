@@ -13,11 +13,8 @@
  * anything for the span hover-card (with % of trace); click to select.
  */
 
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { useState } from 'react'
-import { fn } from 'storybook/test'
-import type { StoredSpan } from '../../api/traces'
-import { TraceTimeline } from '../../components/timeline/TraceTimeline'
+import type { StoredSpan } from '@iii-dev/traces-ui/src/api/traces'
+import { TraceTimeline } from '@iii-dev/traces-ui/src/components/timeline/TraceTimeline'
 import {
   ERROR_SPAN,
   T0,
@@ -25,12 +22,15 @@ import {
   TRACE_3_SPANS,
   WATERFALL_FIXTURE,
   WATERFALL_SIMPLE,
-} from '../../fixtures/traces-fixtures'
+} from '@iii-dev/traces-ui/src/fixtures/traces-fixtures'
 import {
   toWaterfallData,
   type VisualizationSpan,
   type WaterfallData,
-} from '../../lib/traceTransform'
+} from '@iii-dev/traces-ui/src/lib/traceTransform'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { useState } from 'react'
+import { fn } from 'storybook/test'
 import { LabFrame } from '../harness'
 
 const WATERFALL_ERROR = toWaterfallData(

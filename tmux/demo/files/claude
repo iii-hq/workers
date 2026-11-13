@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""A fake Claude Code for the tmux worker's demo container. It behaves enough
+like Claude Code 2.1.322 for the worker: it records itself in
+<config>/sessions/<pid>.json (sessionId, cwd, status), keeps a transcript in
+<config>/projects/<cwd slug>/<session>.jsonl, sets its pane title, honours
+--resume <id> (and refuses one its config folder can't see, like the real
+one), shows --dangerously-skip-permissions, and `auth login` prints a sign-in
+link and waits for a pasted code (`personal`, `side-project` or `as:<id>`
+pasted as the code signs in as that account). `claude-state <pane> working|waiting|idle|limit` changes
+what it shows. SIGTERM ends it cleanly, as it does Claude Code.
+
+Each line typed into it is a request: like Claude Code, it reads
+<config>/.credentials.json again right then, answers with the account its
+token is for ("as personal": the fake token's name, `demo-<name>`; never any
+other token's text) and appends "<pid> <name>" to <state>/requests.log, so a
+switch of the global account shows in an idle session. `/login [id]` typed
+into it signs in on its own config folder, as /login does.
+
+Environment: CLAUDE_CONFIG_DIR (else ~/.claude), FAKE_CLAUDE_STATE_DIR (where
+claude-state leaves states, /tmp/fake-claude), FAKE_CLAUDE_TITLE (a new
+session's title), FAKE_CLAUDE_STATE (the first state).
+
+It runs only inside the demo container (/.dockerenv and DEMO_CONTAINER=1),
+or in a test's sandbox: FAKE_CLAUDE_SANDBOX names a folder that holds its
+home folder, its config folder and its state folder. Anywhere else it would
+write into the real ~/.claude, so it refuses.
+"""
+import json
+import os
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+HOME = os.path.expanduser("~")
+CONFIG_ENV = os.environ.get("CLAUDE_CONFIG_DIR") or None
+CONFIG = CONFIG_ENV or os.path.join(HOME, ".claude")
+ON_SLOT = CONFIG_ENV is None or os.path.realpath(CONFIG) == os.path.realpath(
+    os.path.join(HOME, ".claude"))
+# The account a sign-in here is for when nothing names one: its folder's.
+ACCOUNT = "default" if ON_SLOT else os.path.basename(CONFIG.rstrip("/"))
+STATE_DIR = os.environ.get("FAKE_CLAUDE_STATE_DIR") or "/tmp/fake-claude"
+PID = os.getpid()
+
+
+def allowed():
+    if os.path.exists("/.dockerenv") and os.environ.get("DEMO_CONTAINER") == "1":
+        return True
+    sandbox = os.environ.get("FAKE_CLAUDE_SANDBOX")
+    if not sandbox:
+        return False
+    root = os.path.realpath(sandbox)
+
+    def inside(path):
+        real = os.path.realpath(path)
+        return real == root or real.startswith(root + os.sep)
+
+    json_path = os.path.join(HOME, ".claude.json") if CONFIG_ENV is None else os.path.join(
+        CONFIG, ".claude.json")
+    return all(inside(path) for path in (HOME, CONFIG, STATE_DIR, json_path))
+
+
+if not allowed():
+    sys.stderr.write("this fake claude runs only inside the demo container or a test sandbox\n")
+    sys.exit(2)
+
+
+def proc_start():
+    """What Claude Code records as procStart: field 22 of /proc/<pid>/stat
+    on Linux, `ps -o lstart=` in UTC elsewhere (macOS)."""
+    try:
+        with open("/proc/%d/stat" % PID) as f:
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        pass
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(PID)], capture_output=True,
+                             text=True, timeout=2, env=dict(os.environ, LC_ALL="C", TZ="UTC"))
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+PROC_START = proc_start()
+
+
+def write_json(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)
+
+
+def account_json():
+    return os.path.join(HOME, ".claude.json") if CONFIG_ENV is None else os.path.join(
+        CONFIG, ".claude.json")
+
+
+def token_label():
+    """The account the sign-in in CONFIG is for now, read afresh as Claude
+    Code does on every request: the fake token's name (`demo-personal` →
+    `personal`), `signed out`, or `?` for a token that isn't a demo one."""
+    try:
+        with open(os.path.join(CONFIG, ".credentials.json")) as f:
+            token = (json.load(f).get("claudeAiOauth") or {}).get("accessToken") or ""
+    except (OSError, ValueError, AttributeError):
+        token = ""
+    if not token:
+        return "signed out"
+    return token[len("demo-"):] if token.startswith("demo-") else "?"
+
+
+def setup_demo():
+    """setup_demo.py, next to this script (a test) or in /opt/demo."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for folder in (here, "/opt/demo"):
+        if os.path.isfile(os.path.join(folder, "setup_demo.py")):
+            sys.path.insert(0, folder)
+            break
+    import setup_demo as module  # the same people as the seeded accounts
+
+    return module
+
+
+def sign_in_here(account_id):
+    """Sign in on CONFIG as `account_id`, with setup_demo's people."""
+    setup_demo().sign_in(CONFIG, account_json(), account_id)
+
+
+def account_from_code(code):
+    """A code naming a demo person (`personal`) or `as:<id>` (anyone, a new
+    account) signs in as that account; any other code as this folder's."""
+    if code.startswith("as:"):
+        code = code[3:]
+    elif code not in setup_demo().PEOPLE:
+        return ACCOUNT
+    return code if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", code) else ACCOUNT
+
+
+def auth_login():
+    sys.stdout.write("Opening browser to sign in…\n")
+    sys.stdout.write(
+        "If the browser didn't open, visit: https://claude.ai/oauth/authorize?code=true"
+        "&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code"
+        "&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"
+        "&scope=user%3Aprofile+user%3Ainference&code_challenge=demo&state=demo" + str(PID) + "\n")
+    sys.stdout.write("Paste code here if prompted > ")
+    sys.stdout.flush()
+    code = sys.stdin.readline().strip()
+    if not code:
+        sys.stdout.write("\nLogin cancelled.\n")
+        return 1
+    sign_in_here(account_from_code(code))
+    sys.stdout.write("\nLogin successful.\n")
+    time.sleep(1)
+    return 0
+
+
+def auth_status():
+    try:
+        with open(os.path.join(CONFIG, ".credentials.json")) as f:
+            signed = bool(json.load(f).get("claudeAiOauth", {}).get("accessToken"))
+    except (OSError, ValueError):
+        signed = False
+    print(json.dumps({"loggedIn": signed, "account": token_label()}))
+    return 0
+
+
+def slug(path):
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def find_transcript(session_id):
+    projects = os.path.join(CONFIG, "projects")
+    direct = os.path.join(projects, slug(os.getcwd()), session_id + ".jsonl")
+    if os.path.isfile(direct):
+        return direct
+    for folder in os.listdir(projects) if os.path.isdir(projects) else []:
+        path = os.path.join(projects, folder, session_id + ".jsonl")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+class Session:
+    def __init__(self, resume, skip):
+        self.skip = skip
+        self.started = int(time.time() * 1000)
+        self.lines = []
+        self.label = token_label()
+        if resume:
+            path = find_transcript(resume)
+            if path is None:
+                sys.stdout.write("No conversation found with session ID: %s\n" % resume)
+                sys.exit(1)
+            self.id = resume
+            self.transcript = path
+            self.title = "Claude Code"
+            with open(path) as f:
+                for raw in f:
+                    entry = json.loads(raw)
+                    if entry.get("type") == "summary":
+                        self.title = entry.get("summary") or self.title
+                    elif entry.get("type") in ("user", "assistant"):
+                        self.lines.append((entry["type"], entry["message"]["content"]))
+            self.append("assistant", "Resumed, signed in as %s." % self.label)
+        else:
+            self.id = str(uuid.uuid4())
+            self.transcript = os.path.join(CONFIG, "projects", slug(os.getcwd()), self.id + ".jsonl")
+            self.title = os.environ.get("FAKE_CLAUDE_TITLE") or "Claude Code"
+            os.makedirs(os.path.dirname(self.transcript), exist_ok=True)
+            with open(self.transcript, "a") as f:
+                f.write(json.dumps({"type": "summary", "summary": self.title}) + "\n")
+            self.append("user", self.title)
+            self.append("assistant", "Read(src/settings/LoginForm.tsx) · Read 182 lines")
+            self.append("assistant", "Done. The change keeps the session across reloads.")
+        self.state = os.environ.get("FAKE_CLAUDE_STATE", "idle")
+        self.limit_at = "18:10"
+        self.state_file = os.path.join(STATE_DIR, "%d.state" % PID)
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(self.state_file, "w") as f:
+            f.write(self.state)
+
+    def append(self, kind, text):
+        self.lines.append((kind, text))
+        with open(self.transcript, "a") as f:
+            f.write(json.dumps({"type": kind, "sessionId": self.id, "cwd": os.getcwd(),
+                                "message": {"role": kind, "content": text}}) + "\n")
+
+    def record(self):
+        status, waiting = {"working": ("busy", None), "waiting": ("waiting", "permission prompt"),
+                           "limit": ("idle", None)}.get(self.state, ("idle", None))
+        write_json(os.path.join(CONFIG, "sessions", "%d.json" % PID), {
+            "pid": PID, "sessionId": self.id, "cwd": os.getcwd(), "startedAt": self.started,
+            "procStart": PROC_START,
+            "version": "2.1.322-demo", "kind": "interactive", "status": status,
+            "waitingFor": waiting, "statusUpdatedAt": int(time.time() * 1000)})
+
+    def draw(self):
+        glyph = "⠂" if self.state == "working" else "✳"
+        out = ["\033]2;%s %s\033\\" % (glyph, self.title), "\033[2J\033[H"]
+        out.append("\033[1m✻ Claude Code\033[0m \033[2m(demo) · %s · %s\033[0m\r\n" % (
+            self.label, self.id[:8]))
+        out.append("\033[2m  %s\033[0m\r\n\r\n" % os.getcwd())
+        for kind, text in self.lines[-8:]:
+            prefix = "\033[2m>\033[0m " if kind == "user" else "\033[32m●\033[0m "
+            out.append(prefix + text + "\r\n")
+        out.append("\r\n")
+        if self.state == "working":
+            out.append("\033[33m✻ Writing the change… (12s · esc to interrupt)\033[0m\r\n")
+        elif self.state == "waiting":
+            out.append("Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No\r\n")
+        elif self.state == "limit":
+            out.append("\033[31m● 5-hour limit reached ∙ resets %s\033[0m\r\n" % self.limit_at)
+        out.append("╭──────────────────────────────────────────╮\r\n")
+        out.append("│ >                                        │\r\n")
+        out.append("╰──────────────────────────────────────────╯\r\n")
+        if self.skip:
+            out.append("\033[31m  ⏵⏵ bypass permissions on\033[0m\r\n")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def ask(self, text):
+        """One request: the sign-in read again now, as Claude Code does."""
+        self.append("user", text)
+        if text.split()[:1] == ["/login"]:
+            words = text.split()
+            sign_in_here(account_from_code(words[1]) if len(words) > 1 else ACCOUNT)
+            self.label = token_label()
+            self.append("assistant", "Login successful, as %s." % self.label)
+            return
+        self.label = token_label()
+        try:
+            with open(os.path.join(STATE_DIR, "requests.log"), "a") as f:
+                f.write("%d %s\n" % (PID, self.label))
+        except OSError:
+            pass
+        self.append("assistant", "(demo) Noted, as %s." % self.label)
+
+    def poll_state(self):
+        try:
+            with open(self.state_file) as f:
+                raw = f.read().split()
+        except OSError:
+            return False
+        if not raw:
+            return False
+        state, rest = raw[0], raw[1:]
+        changed = state != self.state or (rest and rest[0] != self.limit_at)
+        if changed:
+            self.state = state
+            if rest:
+                self.limit_at = rest[0]
+        return changed
+
+    def end(self, *_):
+        # <state>/<pid>.linger holds seconds to wait before ending, like a
+        # Claude Code whose SessionEnd hooks take long (tests only).
+        linger_file = os.path.join(STATE_DIR, "%d.linger" % PID)
+        try:
+            with open(linger_file) as f:
+                linger = float(f.read().strip() or 0)
+            os.remove(linger_file)
+        except (OSError, ValueError):
+            linger = 0
+        if linger > 0:
+            time.sleep(min(linger, 60))
+        for path in (os.path.join(CONFIG, "sessions", "%d.json" % PID), self.state_file):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        sys.stdout.write("\033]2;\033\\\r\nResume this session with:\r\nclaude --resume %s\r\n" % self.id)
+        sys.stdout.flush()
+        os._exit(143)
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] == ["--version"]:
+        print("2.1.322 (Claude Code)")
+        return 0
+    if args[:2] == ["auth", "login"]:
+        return auth_login()
+    if args[:2] == ["auth", "status"]:
+        return auth_status()
+    resume = None
+    if "--resume" in args:
+        resume = args[args.index("--resume") + 1]
+    skip = "--dangerously-skip-permissions" in args or (
+        "--permission-mode" in args and args[args.index("--permission-mode") + 1] == "bypassPermissions")
+    if skip and os.geteuid() == 0:
+        sys.stdout.write("--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\n")
+        return 1
+    session = Session(resume, skip)
+    signal.signal(signal.SIGTERM, session.end)
+    signal.signal(signal.SIGHUP, session.end)
+    signal.signal(signal.SIGINT, session.end)
+    session.record()
+    session.draw()
+    while True:
+        ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+        if ready:
+            line = sys.stdin.readline()
+            if not line:
+                session.end()
+            if line.strip():
+                session.ask(line.strip())
+                session.draw()
+        if session.poll_state():
+            session.record()
+            session.draw()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

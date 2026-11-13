@@ -15,11 +15,13 @@ pub const CAPTURE: &str = "tmux::panes::capture";
 pub const SPLIT: &str = "tmux::panes::split";
 pub const KILL: &str = "tmux::panes::kill";
 pub const RESPAWN: &str = "tmux::panes::respawn";
+pub const ACCOUNT: &str = "tmux::panes::account";
 
 const SELECT_DESC: &str = "Make a pane the active pane of its window. zoom sets the window's zoom, it never toggles: true zooms the window on this pane (or keeps it zoomed there), false unzooms it, and without zoom the window keeps its zoom state, moved to this pane. A window with one pane can't zoom: the answer says zoomed false. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).";
 const SPLIT_DESC: &str = "Split a pane in two: the new pane goes to its right or below it, starts in that pane's current directory (or cwd) and runs the default shell (or command). It becomes the window's active pane unless select is false. Like tmux, splitting a zoomed window unzooms it. With remain_on_exit, the new pane stays once its program ends, dead, for tmux::panes::respawn to restart it.";
 const KILL_DESC: &str = "Kill a pane and the program running in it. Killing a window's last pane closes the window, and its session's last window closes the session; the answer says which closed.";
 const RESPAWN_DESC: &str = "Start a pane's program again in the same pane: the command it was started with (or command), in its starting directory (or cwd). A pane whose program is still running is refused unless kill is true, which ends that program first.";
+const ACCOUNT_DESC: &str = "Choose the Claude Code account of a pane: `global` follows the global account (it runs on ~/.claude and switches with it, with no restart), an account id pins the pane there (on ~/.claude while that account is global, on its folder otherwise). When Claude Code has to run elsewhere for that (the account must be signed in), it moves: it stops and starts again there, resuming its conversation (copied there if the account doesn't share conversations). Pinning a pane on ~/.claude to the account that is global now restarts nothing. An idle pane moves now (looked at again right before it stops); one that is working or waiting moves once its turn ends (`after_turn`). Choosing what it already is changes no process, and cancels a move that waits (`cancelled`).";
 const CAPTURE_DESC: &str = "The visible screen of one pane as text with its colour and style escapes (capture-pane -e), plus the pane's size, cursor position and whether a full-screen program has the alternate screen. Read-only.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -429,6 +431,86 @@ pub async fn respawn(ctx: &Ctx, input: RespawnPaneInput) -> Result<RespawnedPane
     })
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PaneAccountInput {
+    /// Pane id, e.g. `%5`.
+    pub pane: String,
+    /// `global` (follow the global account) or an account id (pin to it).
+    pub account: String,
+}
+
+/// What became of the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneAccountState {
+    /// It follows the global account, which it already runs on (or Claude Code is not running).
+    Following,
+    /// It is pinned to the account it already runs on (or Claude Code is not running).
+    Pinned,
+    /// Claude Code was idle and now runs on the account.
+    Moved,
+    /// Claude Code is working or waiting: it moves once its turn ends.
+    AfterTurn,
+    /// A move that waited for the turn was called off.
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PaneAccountOutput {
+    pub state: PaneAccountState,
+    /// The account it runs on now, or will after its turn.
+    pub account: String,
+}
+
+pub async fn account(ctx: &Ctx, input: PaneAccountInput) -> Result<PaneAccountOutput, String> {
+    use crate::accounts::moves;
+    let pane = pane_arg(&input.pane)?.to_string();
+    ctx.tmux().await?;
+    // Never during a switch (it moves sign-ins between the folders), and
+    // planned on the panes as they are once it is over, on the server as
+    // configured then: pane ids are a server's own.
+    let collector = ctx.collector.clone();
+    let done = super::accounts::gated(ctx, move || async move {
+        let tmux = collector.tmux().await?;
+        let panes = collector
+            .claude_panes_checked()
+            .await
+            .map_err(|error| super::accounts::not_listed(&error, "nothing was moved."))?;
+        let state = panes.get(&pane).ok_or_else(|| {
+            format!("Claude Code is not running in pane {pane}, and it has no account.")
+        })?;
+        let accounts = collector.accounts();
+        let plan = moves::plan(state, &accounts.registry(), &input.account)?;
+        // Claude Code only moves to an account it can start on: that
+        // account's sign-in alone is read, now.
+        if let moves::Plan::Now { to, .. } | moves::Plan::AfterTurn { to, .. } = &plan {
+            accounts.load_accounts_now(vec![to.clone()]).await;
+            if !accounts.is_signed_in(to) {
+                return Err(moves::not_signed_in(accounts, to));
+            }
+        }
+        let done = moves::apply(&tmux, accounts, state, &plan).await?;
+        Ok((done, plan))
+    })
+    .await
+    .and_then(|done| done);
+    ctx.monitor.poke();
+    let (done, plan) = done?;
+    let state = match done {
+        "following" => PaneAccountState::Following,
+        "pinned" => PaneAccountState::Pinned,
+        "moved" => PaneAccountState::Moved,
+        "after_turn" => PaneAccountState::AfterTurn,
+        _ => PaneAccountState::Cancelled,
+    };
+    let account = match plan {
+        moves::Plan::Marks { to, .. }
+        | moves::Plan::Now { to, .. }
+        | moves::Plan::AfterTurn { to, .. } => to,
+    };
+    Ok(PaneAccountOutput { state, account })
+}
+
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SelectPaneInput, SelectedPane>(SELECT, SELECT_DESC),
@@ -436,6 +518,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<SplitPaneInput, NewPane>(SPLIT, SPLIT_DESC),
         spec::<PaneInput, KilledPane>(KILL, KILL_DESC),
         spec::<RespawnPaneInput, RespawnedPane>(RESPAWN, RESPAWN_DESC),
+        spec::<PaneAccountInput, PaneAccountOutput>(ACCOUNT, ACCOUNT_DESC),
     ]
 }
 
@@ -445,6 +528,7 @@ pub fn register(iii: &IIIClient, ctx: &Arc<Ctx>) {
     register_fn!(iii, ctx, SPLIT, SPLIT_DESC, SplitPaneInput, split);
     register_fn!(iii, ctx, KILL, KILL_DESC, PaneInput, kill);
     register_fn!(iii, ctx, RESPAWN, RESPAWN_DESC, RespawnPaneInput, respawn);
+    register_fn!(iii, ctx, ACCOUNT, ACCOUNT_DESC, PaneAccountInput, account);
 }
 
 #[cfg(test)]

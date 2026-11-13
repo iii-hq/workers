@@ -9,6 +9,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
@@ -21,6 +22,25 @@ BUNDLE_PRESET_IMAGES = frozenset({
     "docker.io/iiidev/python:latest",
     "docker.io/iiidev/node:latest",
 })
+
+
+def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | None:
+    """Return why a rust-binary manifest lacks an explicit `[profile.release]`, or None.
+
+    Every worker is its own Cargo workspace and ships the binary its root
+    manifest builds, so Cargo's default release profile (no cross-crate LTO,
+    16 codegen units, symbol table kept) would otherwise reach users.
+    """
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return f"{worker}: could not parse {manifest_path.name}: {error}"
+    if not isinstance(manifest.get("profile", {}).get("release"), dict):
+        return (
+            f"{worker}/{manifest_path.name} must declare [profile.release] "
+            '(the shared one is lto = "thin", codegen-units = 1, strip = true)'
+        )
+    return None
 
 
 def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
@@ -177,6 +197,10 @@ def main(argv: list[str] | None = None) -> int:
             if not manifest_path.is_file():
                 hard(f"{manifest_path} not found")
             else:
+                if spec.artifact_kind == "rust-binary" and manifest_path.name == "Cargo.toml":
+                    profile_error = release_profile_error(worker, manifest_path)
+                    if profile_error:
+                        hard(profile_error)
                 try:
                     current_version = _lib.read_version(manifest_path)
                 except (ValueError, FileNotFoundError) as error:

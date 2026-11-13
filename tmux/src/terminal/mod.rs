@@ -166,9 +166,18 @@ fn require_caller(stamped: Option<&str>, engine_observes: Option<bool>) -> Resul
         .ok_or_else(|| "terminal calls require engine-stamped caller identity".to_string())
 }
 
-/// `tmux [-L name | -S path] -u attach-session -t <session>`.
+/// `tmux [-L name | -S path] [-T hyperlinks] -u attach-session -t <session>`.
+///
+/// `-T hyperlinks` says the client's terminal takes OSC 8 links, as every
+/// Console terminal does (xterm.js; SwiftTerm in the Apple app): tmux knows
+/// neither by name, and without the feature it drops the link a program
+/// prints and draws only its text (Claude Code's `owner/repo#123`), which
+/// then has nowhere to open. tmux 3.4 brought OSC 8.
 pub fn attach_args(tmux: &Tmux, session_id: &str) -> Vec<String> {
     let mut args = tmux.socket.args();
+    if tmux.at_least(3, 4) {
+        args.extend(["-T", "hyperlinks"].map(str::to_string));
+    }
     args.extend(["-u", "attach-session", "-t", session_id].map(str::to_string));
     args
 }
@@ -900,15 +909,29 @@ mod tests {
     }
 
     #[test]
-    fn attach_uses_the_configured_socket() {
-        let tmux = Tmux {
+    fn attach_uses_the_configured_socket_and_declares_hyperlinks() {
+        let tmux = |version: &str| Tmux {
             path: "/usr/bin/tmux".into(),
             socket: Socket::Name("work".into()),
             timeout: Duration::from_secs(1),
-            version: "3.6".into(),
+            version: version.into(),
         };
         assert_eq!(
-            attach_args(&tmux, "$3"),
+            attach_args(&tmux("3.6"), "$3"),
+            vec![
+                "-L",
+                "work",
+                "-T",
+                "hyperlinks",
+                "-u",
+                "attach-session",
+                "-t",
+                "$3"
+            ]
+        );
+        // Before 3.4 tmux has no OSC 8, and before 3.2 no -T at all.
+        assert_eq!(
+            attach_args(&tmux("3.3a"), "$3"),
             vec!["-L", "work", "-u", "attach-session", "-t", "$3"]
         );
     }

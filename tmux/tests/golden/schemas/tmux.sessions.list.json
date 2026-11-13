@@ -117,6 +117,32 @@
         ],
         "type": "object"
       },
+      "Follow": {
+        "description": "How a pane's Claude Code account is chosen (agent-accounts G12).",
+        "oneOf": [
+          {
+            "description": "Runs on the global slot (`~/.claude`) and is not pinned, started by the worker or by hand: it switches with the global account on its next message.",
+            "enum": [
+              "global"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Pinned to an account: on its folder, or on the slot while that account is global (it restarts on its folder when the global one changes).",
+            "enum": [
+              "pinned"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Started by hand on an account's folder (`CLAUDE_CONFIG_DIR` set): no mark.",
+            "enum": [
+              "manual"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "Listener": {
         "description": "One TCP socket in LISTEN state.",
         "properties": {
@@ -241,6 +267,17 @@
             ],
             "description": "The agent CLI running in this pane, if any."
           },
+          "claude": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PaneClaude"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Claude Code account the pane runs on and how it follows the global one. Present when the pane runs Claude Code or carries an account mark; absent otherwise and from workers before 0.3."
+          },
           "command": {
             "description": "Foreground process name.",
             "type": "string"
@@ -316,6 +353,79 @@
           "ports",
           "title",
           "width"
+        ],
+        "type": "object"
+      },
+      "PaneClaude": {
+        "description": "The Claude Code account of one pane (agent-accounts D4, D5).",
+        "properties": {
+          "account": {
+            "default": null,
+            "description": "Id of the account the running Claude Code uses: the global account on the slot (`~/.claude`), else the account whose folder its `CLAUDE_CONFIG_DIR` names. Null when that folder is no registered account (see `config_dir`) or Claude Code is not running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_dir": {
+            "default": null,
+            "description": "The config folder the running Claude Code uses, `~` for the home folder. Null when Claude Code is not running.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "follow": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Follow"
+              }
+            ],
+            "description": "`global`, `pinned` or `manual`."
+          },
+          "movable": {
+            "description": "The worker can move this pane to another account.",
+            "type": "boolean"
+          },
+          "move_error": {
+            "description": "Why the last move of this pane (one that waited for its turn, or a switch of the global account) failed, in one sentence; cleared by the next account change of the pane.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "not_movable_reason": {
+            "description": "Why it can't, in one sentence, when `movable` is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending": {
+            "default": null,
+            "description": "The account the pane moves to when its turn ends (`global`: the slot).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "default": null,
+            "description": "Claude Code's session id, which a move resumes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skip_permissions": {
+            "description": "Claude Code runs without permission prompts (`--dangerously-skip-permissions` or `--permission-mode bypassPermissions`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "follow",
+          "movable",
+          "skip_permissions"
         ],
         "type": "object"
       },

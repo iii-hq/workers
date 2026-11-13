@@ -2,7 +2,7 @@
 
 [package]
 name = "provider-openai-codex"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -49,3 +49,11 @@ tokio-tungstenite = "0.28"
 [features]
 default = ["console-ui"]
 console-ui = ["dep:iii-console-ui"]
+
+# Release profile for published binaries: thin LTO with one codegen unit runs
+# faster than Cargo's default, and strip drops the symbol table for a smaller
+# download at no runtime cost.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

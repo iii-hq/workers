@@ -114,7 +114,12 @@ async fn observers_get_the_current_overview_and_every_change() {
         ..WorkerConfig::default()
     };
     let config = base.clone().into_shared();
-    let collector = Arc::new(Collector::new(config.clone(), ConsoleClients::default()));
+    let collector = Arc::new(Collector::sandboxed(
+        config.clone(),
+        ConsoleClients::default(),
+    ));
+    // No test reads this computer's Claude Code sign-in or reaches the network.
+    assert!(!collector.accounts().can_fetch());
     let monitor = Monitor::new(iii.clone(), collector);
     events::register(&iii, monitor.clone());
     monitor.spawn();

@@ -299,6 +299,11 @@
               "null"
             ]
           },
+          "provenance": {
+            "default": false,
+            "description": "Also return `input_indices` and `summary_origin` (default false). For a byte-level generation witness only; ordinary callers leave it off.",
+            "type": "boolean"
+          },
           "request_overhead_tokens": {
             "default": null,
             "description": "Estimated tokens for final provider request fields and framing not otherwise represented by the prompt, messages, or tools.",
@@ -1071,6 +1076,33 @@
         ],
         "type": "object"
       },
+      "AssemblySummary": {
+        "properties": {
+          "assembly_id": {
+            "type": "string"
+          },
+          "span": {
+            "$ref": "#/definitions/RenderedSummary"
+          },
+          "summarized_indices": {
+            "description": "Exact request indices actually handed to this compaction's summarizer. None means previous_summary; its authority belongs to the caller ledger.",
+            "items": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "assembly_id",
+          "span"
+        ],
+        "type": "object"
+      },
       "ByRoleTokens": {
         "description": "Per-role token breakdown of the `messages` array.",
         "properties": {
@@ -1301,6 +1333,34 @@
         ],
         "type": "string"
       },
+      "RenderedSummary": {
+        "description": "Byte span of the summary inside the rendered system prompt, plus the SHA-256 of the summary and of the whole prompt.",
+        "properties": {
+          "byte_end": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "byte_start": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "summary_sha256": {
+            "type": "string"
+          },
+          "system_sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "byte_end",
+          "byte_start",
+          "summary_sha256",
+          "system_sha256"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "description": "Why an assistant message stopped generating.",
         "enum": [
@@ -1379,6 +1439,18 @@
         "minimum": 0.0,
         "type": "integer"
       },
+      "input_indices": {
+        "description": "`options.provenance` only: output ordinal -> exact request index; absent if the bounded map cannot fit.",
+        "items": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "messages": {
         "description": "Budgeted, ready to send to llm-router.",
         "items": {
@@ -1388,6 +1460,17 @@
       },
       "model_resolved": {
         "$ref": "#/definitions/ModelResolvedWire"
+      },
+      "summary_origin": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AssemblySummary"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "`options.provenance` only: where the rendered summary sits."
       },
       "system_prompt": {
         "type": "string"

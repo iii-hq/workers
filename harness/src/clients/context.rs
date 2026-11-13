@@ -16,6 +16,10 @@ use crate::types::model::{AgentFunction, ThinkingLevel};
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssembleOutput {
     #[serde(default)]
+    pub input_indices: Option<Vec<usize>>,
+    #[serde(default)]
+    pub(crate) summary_origin: Option<crate::clients::router::generation_capture::AssemblySummary>,
+    #[serde(default)]
     pub system_prompt: String,
     #[serde(default)]
     pub messages: Vec<AgentMessage>,
@@ -92,6 +96,9 @@ pub struct AssembleParams {
     /// `false` keeps earlier function results as they were sent (no aged
     /// pruning); `None` leaves context-manager's default.
     pub allow_prune: Option<bool>,
+    /// Ask for `input_indices` / `summary_origin`: the generation capture
+    /// witness only, never a production assembly.
+    pub provenance: bool,
 }
 
 pub struct CountTokensParams {
@@ -263,6 +270,9 @@ fn assemble_payload(params: AssembleParams) -> Value {
     if let Some(allow) = params.allow_prune {
         options["allow_prune"] = json!(allow);
     }
+    if params.provenance {
+        options["provenance"] = json!(true);
+    }
     let mut payload = json!({
         "messages": params.messages,
         "model": model,
@@ -297,8 +307,10 @@ mod tests {
             tools: vec![],
             request_overhead_tokens: 0,
             allow_prune: None,
+            provenance: false,
         };
         let payload = assemble_payload(params(Some(json!({ "type": "json" }))));
+        assert!(payload["options"].get("provenance").is_none(), "{payload}");
         assert_eq!(payload["options"]["thinking_level"], "off");
         assert_eq!(
             payload["options"]["response_format"],

@@ -1,5 +1,5 @@
+import { TraceDetailSkeleton } from '@iii-dev/traces-ui/src/components/TraceDetailSkeleton'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { TraceDetailSkeleton } from '../components/TraceDetailSkeleton'
 
 /**
  * The trace-detail loading placeholder, rendered in a detail-shaped canvas.

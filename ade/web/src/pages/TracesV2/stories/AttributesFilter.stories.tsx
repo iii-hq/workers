@@ -1,6 +1,6 @@
+import { AttributesFilter } from '@iii-dev/traces-ui/src/components/AttributesFilter'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
-import { AttributesFilter } from '../components/AttributesFilter'
 
 // `AttributesFilter` is a controlled `value` + `onChange` pair: Storybook args
 // can't hold React state, so this wrapper owns the applied pairs and feeds them

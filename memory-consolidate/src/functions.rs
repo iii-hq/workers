@@ -6,7 +6,6 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -14,7 +13,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
-use crate::consolidate::{self, BankReport};
+use crate::consolidate::{self, BankReport, ConsolidationTransport};
 
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
@@ -115,31 +114,39 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
+pub(crate) async fn state_get<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    key: &str,
+) -> Option<Value> {
     state_try_get(iii, key).await.ok().flatten()
 }
 
 /// `state_get` that tells a failed read (`Err`) from an absent value
 /// (`Ok(None)`), for state whose loss must not read as "start over".
-pub(crate) async fn state_try_get(iii: &IIIClient, key: &str) -> Result<Option<Value>, String> {
-    iii.call(CallRequest {
-        function_id: "state::get".into(),
-        payload: json!({ "scope": STATE_SCOPE, "key": key }),
-        action: None,
-        timeout_ms: Some(5_000),
-    })
+pub(crate) async fn state_try_get<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    key: &str,
+) -> Result<Option<Value>, String> {
+    consolidate::call(
+        iii,
+        "state::get",
+        json!({ "scope": STATE_SCOPE, "key": key }),
+    )
     .await
     .map(|v| Some(v.get("value").cloned().unwrap_or(v)).filter(|v| !v.is_null()))
     .map_err(|e| format!("state::get {key}: {e}"))
 }
 
-pub(crate) async fn state_set(iii: &IIIClient, key: &str, value: Value) -> Result<(), String> {
-    iii.call(CallRequest {
-        function_id: "state::set".into(),
-        payload: json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
-        action: None,
-        timeout_ms: Some(5_000),
-    })
+pub(crate) async fn state_set<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    key: &str,
+    value: Value,
+) -> Result<(), String> {
+    consolidate::call(
+        iii,
+        "state::set",
+        json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
+    )
     .await
     .map(|_| ())
     .map_err(|e| format!("state::set {key}: {e}"))
@@ -157,13 +164,28 @@ pub async fn last_run_ms(iii: &IIIClient) -> u64 {
 /// scheduled tick: a manual run and a heartbeat pass must never
 /// interleave their writes.
 pub async fn run(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> {
+    run_with_transport(deps, req, deps.iii.as_ref()).await
+}
+
+/// The public handler body with its existing IO boundary supplied by the
+/// caller. It shares the production gate, planning, validation and writes;
+/// it does not introduce a second consolidation implementation.
+pub async fn run_with_transport<T: ConsolidationTransport + ?Sized>(
+    deps: &Deps,
+    req: RunRequest,
+    transport: &T,
+) -> Result<RunResponse, Error> {
     let _gate = deps.run_gate.lock().await;
-    run_locked(deps, req).await
+    run_locked(deps, req, transport).await
 }
 
 /// Pass body; caller MUST hold the run gate (tokio mutexes are not
 /// reentrant, so gate-holding paths call this directly).
-async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> {
+async fn run_locked<T: ConsolidationTransport + ?Sized>(
+    deps: &Deps,
+    req: RunRequest,
+    transport: &T,
+) -> Result<RunResponse, Error> {
     let cfg = deps.config().await;
     let dry_run = req.dry_run.unwrap_or(cfg.dry_run);
     let banks = match &req.bank {
@@ -175,7 +197,7 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
             }
             vec![bank.clone()]
         }
-        None => consolidate::list_banks(&deps.iii, &cfg.banks)
+        None => consolidate::list_banks(transport, &cfg.banks)
             .await
             .map_err(Error::Handler)?,
     };
@@ -183,34 +205,32 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
     let mut budget = cfg.max_supersedes_per_run;
     let mut reports = Vec::new();
     for bank in &banks {
-        let (mut report, rows) = consolidate::run_bank(&deps.iii, bank, dry_run, &mut budget).await;
+        let (mut report, rows) = consolidate::run_bank(transport, bank, dry_run, &mut budget).await;
         if cfg.llm_assist_enabled && !dry_run {
             let opts = consolidate::LlmOptions {
                 model: cfg.llm_model.clone(),
                 promote_threshold: cfg.promote_corroboration_threshold,
             };
-            consolidate::run_llm_tier(&deps.iii, bank, &rows, &mut report, &mut budget, &opts)
+            consolidate::run_llm_tier(transport, bank, &rows, &mut report, &mut budget, &opts)
                 .await;
         }
         // LAST, on its own fresh fetch: it must never see (or re-judge)
-        // records the tiers above retired in this pass. Dry runs still judge
-        // and report the plan; they never write or move the cursor.
-        if cfg.semantic_enabled {
+        // records the tiers above retired in this pass. A dry run returns
+        // deterministic candidates only, never an inferred semantic plan.
+        if dry_run && (cfg.semantic_enabled || cfg.llm_assist_enabled) {
+            report.notes.push(
+                "dry-run: optional judge and semantic tiers unevaluated; no recall, embedding, model or rule calls".into(),
+            );
+        }
+        if cfg.semantic_enabled && !dry_run {
             let opts = crate::semantic::SemanticOptions {
                 model: cfg.llm_model.clone(),
                 batch: cfg.semantic_batch,
                 candidates: cfg.semantic_candidates,
                 max_per_run: cfg.semantic_max_per_run,
             };
-            crate::semantic::run_semantic_tier(
-                &deps.iii,
-                bank,
-                &opts,
-                dry_run,
-                &mut budget,
-                &mut report,
-            )
-            .await;
+            crate::semantic::run_semantic_tier(transport, bank, &opts, &mut budget, &mut report)
+                .await;
         }
         reports.push(report);
     }
@@ -219,11 +239,21 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
     // The report is best-effort telemetry; the CHECKPOINT is not. Only a
     // clean pass (no bank errors) advances last_run — an errored or
     // checkpoint-failed pass stays due, so the schedule retries it
-    // instead of silently waiting out a full interval. Dry runs count:
-    // the operator chose planning mode.
+    // instead of silently waiting out a full interval. A configured dry run
+    // counts: the operator chose planning mode, and its plan must show up in
+    // `status`. Only an explicit `dry_run: true` call is purely
+    // observational: its response IS the report.
+    if req.dry_run == Some(true) {
+        return Ok(RunResponse {
+            dry_run,
+            banks: reports,
+            superseded,
+            checkpointed: false,
+        });
+    }
     let report_json = serde_json::to_value(&reports).unwrap_or(Value::Null);
     if let Err(e) = state_set(
-        &deps.iii,
+        transport,
         STATE_LAST_REPORT,
         json!({ "dry_run": dry_run, "banks": report_json }),
     )
@@ -233,7 +263,7 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
     }
     let clean = should_checkpoint(&reports);
     let checkpointed = if clean {
-        match state_set(&deps.iii, STATE_LAST_RUN, json!({ "ms": now_ms() })).await {
+        match state_set(transport, STATE_LAST_RUN, json!({ "ms": now_ms() })).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(error = %e, "last-run checkpoint failed; pass stays due");
@@ -271,7 +301,7 @@ pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, 
         dry_run: cfg.dry_run,
         last_run,
         due,
-        last_report: state_get(&deps.iii, STATE_LAST_REPORT).await,
+        last_report: state_get(deps.iii.as_ref(), STATE_LAST_REPORT).await,
     })
 }
 
@@ -311,7 +341,7 @@ pub async fn tick(deps: &Deps) -> Result<TickResponse, Error> {
         interval_hours = cfg.interval_hours,
         "scheduled consolidation pass due"
     );
-    let res = run_locked(deps, RunRequest::default()).await?;
+    let res = run_locked(deps, RunRequest::default(), deps.iii.as_ref()).await?;
     tracing::info!(
         superseded = res.superseded,
         dry_run = res.dry_run,
@@ -451,8 +481,7 @@ mod tests {
     #[test]
     fn notes_never_block_the_checkpoint() {
         // Pins only the checkpoint POLICY: notes are telemetry, errors block.
-        // (Routing soft skips into notes is untested until the router call
-        // has a test seam — see run_llm_tier.)
+        // Transport routing is exercised by the offline boundary tests.
         let mut noted = crate::consolidate::BankReport {
             bank: "a".into(),
             ..Default::default()

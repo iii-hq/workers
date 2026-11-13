@@ -1,0 +1,19 @@
+// knip config for the unused-dependency check in CI (warning only, run by
+// .github/scripts/unused_deps.py through the ci.yml `rust` and `node` jobs).
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    // A worker's injected console UI is built by its build.mjs through
+    // @iii-dev/console-ui/build-worker-ui, whose entryPoints are the .ts/.tsx
+    // files at the project root: knip cannot read them from the custom driver.
+    // The driver imports esbuild, which the consuming project provides.
+    "*/ui": {
+      "entry": ["*.{ts,tsx}"],
+      "ignoreDependencies": ["esbuild"]
+    },
+    "*/native-ui": {
+      "entry": ["*.{ts,tsx}"],
+      "ignoreDependencies": ["esbuild"]
+    }
+  }
+}

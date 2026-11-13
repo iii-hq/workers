@@ -1,7 +1,7 @@
+import { IconToggleButton } from '@iii-dev/traces-ui/src/components/IconToggleButton'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Eye } from 'lucide-react'
 import { useState } from 'react'
-import { IconToggleButton } from '../components/IconToggleButton'
 
 // `active` is a controlled prop, so Storybook args can't drive the toggle on
 // their own. This wrapper owns the state, seeds it from `active`, and renders

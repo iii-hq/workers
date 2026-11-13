@@ -78,7 +78,9 @@ fn world() -> World {
         ..WorkerConfig::default()
     }
     .into_shared();
-    let collector = Arc::new(Collector::new(config, ConsoleClients::default()));
+    let collector = Arc::new(Collector::sandboxed(config, ConsoleClients::default()));
+    // No test reads this computer's Claude Code sign-in or reaches the network.
+    assert!(!collector.accounts().can_fetch());
     let monitor = Monitor::new(
         iii_sdk::IIIClient::new("ws://stub-not-connected:0"),
         collector.clone(),
@@ -132,6 +134,7 @@ async fn sessions_and_windows_lifecycle() {
             command: None,
             window_name: Some("main".into()),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -147,6 +150,7 @@ async fn sessions_and_windows_lifecycle() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -517,6 +521,7 @@ async fn start_directories_are_taken_literally() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -856,6 +861,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
             ),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -871,6 +877,7 @@ async fn agents_and_ports_are_found_in_their_panes() {
             ),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -947,7 +954,7 @@ async fn console_terminal_is_a_live_tmux_client() {
 
     let sink = Arc::new(Captured::default());
     let console = ConsoleClients::default();
-    let collector = Arc::new(Collector::new(w.collector_config(), console.clone()));
+    let collector = Arc::new(Collector::sandboxed(w.collector_config(), console.clone()));
     // As on a 0.24 engine, which identifies the caller only in the payload.
     let manager = TerminalManager::new(
         sink.clone(),
@@ -1009,7 +1016,7 @@ async fn console_terminal_is_a_live_tmux_client() {
         })
         .await
         .unwrap();
-    eventually("the echoed output", || async {
+    let output = || async {
         let replay = manager
             .replay(ReplayRequest {
                 terminal: reference.clone(),
@@ -1022,8 +1029,30 @@ async fn console_terminal_is_a_live_tmux_client() {
             .iter()
             .flat_map(|frame| BASE64.decode(&frame.data).unwrap())
             .collect();
-        String::from_utf8_lossy(&text)
-            .contains("hi-from-42")
+        Some(String::from_utf8_lossy(&text).into_owned())
+    };
+    eventually("the echoed output", || async {
+        output().await?.contains("hi-from-42").then_some(())
+    })
+    .await;
+
+    // An OSC 8 link a program prints reaches the page as OSC 8, not only as
+    // its text: tmux keeps it for a client that declares `hyperlinks`.
+    manager
+        .write(WriteRequest {
+            terminal: reference.clone(),
+            data: BASE64.encode(
+                "printf '\\033]8;;https://example.com/pr\\033\\\\pr-text\\033]8;;\\033\\\\\\n'\r",
+            ),
+        })
+        .await
+        .unwrap();
+    eventually("the OSC 8 link", || async {
+        // The typed command echoes `\033`, not ESC: only the link has ESC.
+        // tmux names the link (`id=tmux1`) and closes it where it likes.
+        output()
+            .await?
+            .contains(";https://example.com/pr\x1b\\pr-text")
             .then_some(())
     })
     .await;
@@ -1157,6 +1186,7 @@ async fn panes_zoom_and_capture() {
             command: Some("bash -c \"printf '\\033[1mhello\\033[0m\\n'; exec sleep 60\"".into()),
             window_name: None,
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
@@ -1291,7 +1321,7 @@ async fn uploads_are_saved_for_the_terminal_that_asks() {
         let console = ConsoleClients::default();
         TerminalManager::new(
             Arc::new(Captured::default()),
-            Arc::new(Collector::new(w.collector_config(), console.clone())),
+            Arc::new(Collector::sandboxed(w.collector_config(), console.clone())),
             console,
             Arc::new(|| {}),
             Arc::new(|| Some(false)),
@@ -1494,6 +1524,7 @@ async fn panes_split_kill_and_respawn() {
             command: None,
             select: Some(false),
             remain_on_exit: false,
+            claude: None,
         },
     )
     .await
