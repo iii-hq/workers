@@ -360,7 +360,14 @@ pub async fn resolve(
         |bank| store.is_deleted(bank),
         turn_bank,
         |root| root_bank(Path::new(root)),
-        |id| session_metadata(&deps.iii, id),
+        |id| async move {
+            let meta = session_meta(&deps.iii, id.clone()).await?;
+            // The hook's header reads the same record: no second lookup.
+            if let Some(meta) = meta.as_ref().filter(|_| id == session_id) {
+                crate::hooks::remember_session(&id, meta);
+            }
+            Ok(meta.map(|meta| meta.get("metadata").cloned().unwrap_or(Value::Null)))
+        },
     )
     .await
 }
@@ -384,14 +391,6 @@ pub(crate) async fn session_meta(
         return Ok(None);
     }
     Ok(Some(reply.get("meta").cloned().unwrap_or(Value::Null)))
-}
-
-/// One session's metadata object (`Null` when it has none); `None` when
-/// the session does not exist.
-async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Option<Value>, String> {
-    Ok(session_meta(iii, session_id)
-        .await?
-        .map(|meta| meta.get("metadata").cloned().unwrap_or(Value::Null)))
 }
 
 /// The bank the hook stamped on `turn_id` (its `memory_bank`,
@@ -494,8 +493,9 @@ pub(crate) fn take_turn_bank(turn_id: &str) -> Option<Option<Resolved>> {
 /// Who is calling, from the invocation baggage the harness stamps on every
 /// turn step: `iii.session.id`, and `iii.message.id` (the turn id). It is
 /// caller-supplied and unattested, which is fine here: it only picks the
-/// default bank, one the caller could name with `bank` anyway. Read it
-/// inside the handler's future — outside it there is no invocation context.
+/// default bank and a save's source, both of which the caller could name in
+/// the request anyway. Read it inside the handler's future — outside it
+/// there is no invocation context.
 #[derive(Debug, Default)]
 pub(crate) struct Caller {
     pub session_id: Option<String>,
@@ -503,7 +503,7 @@ pub(crate) struct Caller {
 }
 
 impl Caller {
-    fn from_baggage() -> Self {
+    pub(crate) fn from_baggage() -> Self {
         let read = |key| {
             iii_helpers::observability::get_baggage_entry(key).filter(|v: &String| !v.is_empty())
         };

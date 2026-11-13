@@ -151,6 +151,19 @@
   --color-glyph-green: #15803d;
   --color-glyph-amber: #b7791f;
   --color-glyph-rose: #e11d48;
+  /* ── Syntax tones ─────────────────────────────────────────────────────
+     Token colours for read-only highlighted code (`CodeHighlight` /
+     `JsonHighlight`: fenced Markdown blocks, tool-card payloads). Light
+     takes GitHub's "prettylights" palette, dark takes Vesper (below), each
+     tone at least 4.5:1 (AA) against `bg`, the block's own background. Code text only: never a fill, a
+     border, chrome text or a status. Comments and punctuation stay on
+     `ink-faint`; diff lines reuse `ok` / `alert-strong`. */
+  --color-syntax-keyword: #cf222e;
+  --color-syntax-function: #8250df;
+  --color-syntax-constant: #0550ae;
+  --color-syntax-string: #0a3069;
+  --color-syntax-type: #953800;
+  --color-syntax-attribute: #116329;
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
@@ -386,6 +399,16 @@
   --color-worker-ink: #0a0a0a;
   --color-trace-error: #e5393e;
   --color-trace-error-ink: #ffffff;
+  /* Syntax tones, dark: Vesper, the palette the console's Monaco editor
+     (`lib/monaco.ts`) and the trace panes (`.code-theme-editor`) already
+     wear: grey keywords, mint strings, peach for everything that names or
+     counts. Each clears AA against `bg` (grey ≥ 7.3:1, peach ≥ 12.6:1, mint ≥ 16:1). */
+  --color-syntax-keyword: #a0a0a0;
+  --color-syntax-function: #ffc799;
+  --color-syntax-constant: #ffc799;
+  --color-syntax-string: #99ffe4;
+  --color-syntax-type: #ffc799;
+  --color-syntax-attribute: #ffc799;
 }
 
 @layer base {
@@ -1944,10 +1967,27 @@
     width: 28px;
     height: 28px;
   }
+}
 
+/* Send / stop is one 34px disc at every width: on a phone a 44px fill
+   outweighed the whole toolbar. A finger still gets 44px: the disc's
+   invisible ring (5px each side) takes the tap on touch screens. */
+.composer-shell .composer-action {
+  width: 34px;
+  height: 34px;
+}
+
+@media (pointer: coarse) {
   .composer-shell .composer-action {
-    width: 34px;
-    height: 34px;
+    position: relative;
+    margin-inline-start: 2px;
+  }
+
+  .composer-shell .composer-action::before {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 9999px;
   }
 }
 

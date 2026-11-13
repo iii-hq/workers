@@ -14,7 +14,17 @@ import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DictationController } from './dictation'
 import { useDictation } from './dictation'
-import { deepActiveElement, editableTarget, isChatComposer, typeInto } from './focus-target'
+import {
+  deepActiveElement,
+  editableTarget,
+  isChatComposer,
+  isTouchPointer,
+  dictationStartedByTouch,
+  releaseComposerFocus,
+  setDictationStartedByTouch,
+  takeFocusOnTouch,
+  typeInto,
+} from './focus-target'
 
 const HOLD_THRESHOLD_MS = 400
 const MESSAGE_DISPLAY_MS = 4000
@@ -30,6 +40,7 @@ export async function toggleDictation(
 ): Promise<void> {
   const status = controller.getState().status
   if (status === 'idle' || status === 'error') {
+    setDictationStartedByTouch(false)
     await controller.start()
     return
   }
@@ -124,7 +135,10 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
       if (heldRef.current) {
         heldRef.current = false
         const status = controller.getState().status
-        if (status === 'listening' || status === 'starting') void cancel()
+        if (status === 'listening' || status === 'starting') {
+          setDictationStartedByTouch(false)
+          void cancel()
+        }
       }
     },
   }
@@ -160,10 +174,20 @@ export function MicButton({
       aria-pressed={listening}
       style={{ '--voice-level': level } as React.CSSProperties}
       className={classes}
-      onPointerDown={pointer.onPointerDown}
+      onPointerDown={(event?: React.PointerEvent) => {
+        // Remember how a dictation that starts on this press was started.
+        if (state === 'idle' || state === 'error') setDictationStartedByTouch(isTouchPointer(event))
+        takeFocusOnTouch(event)
+        pointer.onPointerDown()
+      }}
       onPointerUp={pointer.onPointerUp}
       onPointerLeave={pointer.onPointerCancel}
       onPointerCancel={pointer.onPointerCancel}
+      // Starting swaps the recording bar in under the finger; the click a mobile
+      // browser synthesizes after the tap would then land on the composer and
+      // open the keyboard. Suppress that ghost click.
+      onTouchEnd={(event: React.TouchEvent) => event.preventDefault()}
+      onClick={(event: React.MouseEvent) => event.stopPropagation()}
       onContextMenu={(event: { preventDefault(): void }) => event.preventDefault()}
     >
       <Mic />
@@ -184,10 +208,14 @@ export async function deliverTranscript(
   text: string,
   target?: HTMLElement | null,
 ): Promise<'field' | 'composer' | 'clipboard' | 'failed'> {
+  // This dictation is over: the next one records how it starts.
+  const touch = dictationStartedByTouch()
+  setDictationStartedByTouch(false)
   const field = target?.isConnected ? target : editableTarget(deepActiveElement())
   if (field && !isChatComposer(field) && typeInto(field, text)) return 'field'
   if (host.chat?.compose) {
     host.chat.compose({ text: `${text} ` })
+    if (touch) releaseComposerFocus()
     return 'composer'
   }
   return (await copyText(text)) ? 'clipboard' : 'failed'

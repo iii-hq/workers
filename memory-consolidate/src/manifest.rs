@@ -25,6 +25,7 @@ pub fn build_manifest() -> ModuleManifest {
             "dry_run": false,
             "banks": [],
             "max_supersedes_per_run": 200,
+            "max_llm_calls_per_run": 200,
             "llm_assist_enabled": false,
             "llm_model": "",
             "promote_corroboration_threshold": 4,

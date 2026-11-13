@@ -43,7 +43,9 @@ pub const BANK_DELETE_DESC: &str =
 pub const SAVE_ID: &str = "memory::save";
 pub const SAVE_DESC: &str =
     "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
-     the existing memory instead of duplicating it. Use when the user says `remember this`.";
+     the existing memory instead of duplicating it. Called from a turn, it records that \
+     session and turn as the source. Needed where the `# Memory` header asks for it (a \
+     sub-agent, extraction off): save what a later session would need.";
 
 pub const GET_ID: &str = "memory::get";
 pub const GET_DESC: &str = "Fetch one memory by id, including superseded/tombstoned records.";
@@ -110,8 +112,9 @@ pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
     "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete \
      roundtrip, sibling reachability (router, session-manager, state), whether embeddings \
-     answer, and whether recent extraction passes failed. Reports degraded states explicitly, \
-     not a bare process-up health.";
+     answer, whether recent extraction passes failed, and what extraction spent (model calls, \
+     tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not \
+     a bare process-up health.";
 
 pub const RELOAD_ID: &str = "memory::reload";
 pub const RELOAD_DESC: &str =

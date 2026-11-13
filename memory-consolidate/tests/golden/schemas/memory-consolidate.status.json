@@ -1,5 +1,5 @@
 {
-  "description": "Check the consolidation schedule and last pass: enabled, interval, last run, due, and the latest per-bank results.",
+  "description": "Check the consolidation schedule and last pass: enabled, interval, last run, due, and the reports of the last 30 passes (newest first), each with per-bank results and LLM calls, tokens and cost; only the newest lists its groups and semantic actions.",
   "function_id": "memory-consolidate::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -24,12 +24,16 @@
         "minimum": 0.0,
         "type": "integer"
       },
-      "last_report": true,
       "last_run": {
         "description": "Milliseconds since epoch of the last completed pass; 0 = never.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "reports": {
+        "description": "The last 30 passes, newest first: `{ ms, dry_run, banks }`. Older passes' banks leave out `groups` and `semantic`.",
+        "items": true,
+        "type": "array"
       }
     },
     "required": [
@@ -37,7 +41,8 @@
       "due",
       "enabled",
       "interval_hours",
-      "last_run"
+      "last_run",
+      "reports"
     ],
     "title": "StatusResponse",
     "type": "object"

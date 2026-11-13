@@ -8,8 +8,9 @@
 //!   instruction only the assistant gave, a pasted document or a fetched
 //!   issue relayed, a harness notice, a transient error, a one-off
 //!   instruction, task progress, what a correction leaves behind, a learned
-//!   rule restated, a turn with nothing to keep. The report also counts the
-//!   trap hits the rule gate would still let into the bank.
+//!   rule restated, an explicit "remember X" answered with only X, a turn
+//!   with nothing to keep. The report also counts the trap hits the rule
+//!   gate would still let into the bank.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
 //!   listed, what the user tells one about its role's work must
@@ -35,6 +36,7 @@ const TS: u64 = 1_792_000_000_000;
 /// Categories whose excerpts hold nothing durable past their `want`: any
 /// other item returned is a trap hit, not an extra.
 const STRICT: &[&str] = &[
+    "asked",
     "assistant-only",
     "corrections",
     "errors",
@@ -1269,6 +1271,40 @@ const CASES: &[Case] = &[
             &[],
         ),
     ),
+    // The user asks for it to be remembered: kept though it reads as one-off.
+    case(
+        "asked-branch",
+        "asked",
+        &[
+            (
+                "user",
+                "Remember that the migration work is parked on the branch wip/ledger-split.",
+            ),
+            ("assistant", "Noted."),
+        ],
+        &[fact(&["ledger-split"], false)],
+    ),
+    case(
+        "asked-runner",
+        "asked",
+        &[
+            (
+                "user",
+                "Keep in mind for next time: the login test only fails on the ARM runner.",
+            ),
+            ("assistant", "Understood, I'll keep that in mind."),
+        ],
+        &[fact(&["arm", "login"], false)],
+    ),
+    case(
+        "asked-bike",
+        "asked",
+        &[
+            ("user", "Don't forget that I lent my road bike to Marta."),
+            ("assistant", "Got it."),
+        ],
+        &[fact(&["bike", "marta"], true)],
+    ),
 ];
 
 #[derive(Default)]
@@ -1381,6 +1417,7 @@ async fn extraction_eval() {
                 case.id,
                 repository,
                 false,
+                &mut PassTally::default(),
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));
