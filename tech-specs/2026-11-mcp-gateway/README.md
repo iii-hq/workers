@@ -303,11 +303,20 @@ lists it, `iii_unobserve` removes it, and ending the session disposes it.
   is refused with where its observations go instead.
 - **SSE.** `GET <api_path>` with `Mcp-Session-Id` keeps the response open:
   each SSE observation goes out as one SSE `message` event carrying the
-  JSON-RPC notification, with a keepalive comment every 15 s (the http
-  worker's default idle timeout is 30 s). While no stream is open,
-  observations wait in the session's buffer and are sent first when one
-  opens. A new `GET` replaces the previous stream; the stream ends with the
-  session.
+  JSON-RPC notification and an `id`. The response is the request's
+  `OutputStream` (call-native streams, iii-hq/iii#2561), kept open after the
+  handler returns. Delivery is resumable, as the MCP Streamable HTTP spec
+  allows: observations stay in the session after they are written (a write
+  the socket took proves nothing about the client), so a `GET` with
+  `Last-Event-ID: n` replays every SSE observation after `n`. A `GET`
+  without it gets only those no stream wrote. A dropped connection therefore
+  loses nothing; mcp notices it on the next write and stops, and the
+  client's reconnect resumes. mcp writes nothing on a schedule: a quiet
+  stream is ended by the http worker's idle timeout and the client
+  reconnects. Observations the cap dropped before the client got them are
+  announced first, as `notifications/iii/observations_dropped`
+  `{ after_event_id, through_event_id }`. A new `GET` replaces the previous
+  stream; ending the session ends it.
 - **Caps.** At most `max_sessions` (default 16) sessions and
   `max_observers_per_session` (default 100) observers each; over the cap,
   `initialize` gets 503 and observe tools a tool error.
