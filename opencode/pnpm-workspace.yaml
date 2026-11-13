@@ -1,0 +1,10 @@
+# Config only, no `packages`: this marks the worker its own project root, so
+# `pnpm install` here does not reach up into the shared console-UI workspace
+# at the repo root. Same split onboarding/ uses.
+# pnpm >=11 no longer reads package.json `pnpm`, and blocks dependency build
+# scripts unless allowed here.
+minimumReleaseAgeExclude:
+  - iii-sdk@0.26.0
+
+allowBuilds:
+  esbuild: true
