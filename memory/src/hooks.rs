@@ -396,6 +396,17 @@ pub async fn pre_generate(
             annotations: Some(annotations),
         });
     };
+    // Which header this session gets. A failed lookup degrades like a failed
+    // bank lookup: guessing would make a false promise or flip the header.
+    let capture = match turn_capture(deps, &cfg, &input.session_id).await {
+        Ok(capture) => capture,
+        Err(e) => {
+            tracing::warn!(session_id = %input.session_id, error = %e, "session lookup failed; injecting nothing new");
+            let mut kept = keep_told_section(&input);
+            kept.annotations = Some(annotations);
+            return Ok(kept);
+        }
+    };
     let layers = scope.layers(&cfg.default_bank);
     let bank_name = scope.bank;
 
@@ -409,6 +420,7 @@ pub async fn pre_generate(
         &bank_name,
         &layers,
         input.step == 0,
+        capture,
         query.as_deref(),
         &seen,
     )
@@ -554,27 +566,22 @@ impl Injection {
 
 /// The system-prompt section for `bank_name` and the rules it carries.
 ///
-/// The ambient header: without it, models apologize that they "can't save
-/// to memory" when a user asks them to remember something — capture is
-/// ambient and needs no function call. An unknown bank has nothing stored
-/// yet: with extraction on the header still goes in (the section does not
-/// change once extraction creates the bank); with it off nothing ever
-/// will, and the header's promise would be false.
+/// The ambient header ([`ambient_header`]) always opens it while memory is
+/// injected, an unknown bank's too (the first extraction or `memory::save`
+/// creates it): it tells the model this turn's `capture`, so a captured
+/// session acknowledges "remember X" instead of apologizing that it "can't
+/// save to memory", and a sub-agent saves what a later session needs.
 pub(crate) fn rules_section(
     cfg: &WorkerConfig,
     bank_name: &str,
-    bank_exists: bool,
+    capture: Capture,
     rules: &[crate::types::Rule],
 ) -> (String, usize, bool) {
     if !cfg.inject_rules && !cfg.inject_memories {
         return (String::new(), 0, false);
     }
-    let mut section = if bank_exists || cfg.extraction_enabled {
-        ambient_header(bank_name)
-    } else {
-        String::new()
-    };
-    if !cfg.inject_rules || !bank_exists || rules.is_empty() {
+    let mut section = ambient_header(bank_name, capture);
+    if !cfg.inject_rules || rules.is_empty() {
         return (section, 0, false);
     }
     let (rules_part, truncated) = build_rules_section(rules, cfg.max_rule_chars);
@@ -587,15 +594,18 @@ pub(crate) fn rules_section(
 /// bank's name so two `learned` rules never read as one, and the memories
 /// of theirs it reads (`scope::layer_keeps`) in the same recall.
 /// `opening` is the turn's first step, the one that carries the rules
-/// reminder; `query` is the user message to recall for (`None`: no recall,
+/// reminder; `capture` what its header says about capture;
+/// `query` is the user message to recall for (`None`: no recall,
 /// as on a turn's later steps or a notification), `seen` the memory texts
 /// the window already carries ([`injected_in_window`]).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
     layers: &[String],
     opening: bool,
+    capture: Capture,
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
@@ -623,8 +633,7 @@ pub(crate) async fn injection(
         bank.as_deref().map(rules_of).unwrap_or_default(),
         bank_name == cfg.default_bank,
     );
-    let (section, rules_count, rules_truncated) =
-        rules_section(cfg, bank_name, bank.is_some() || !layers.is_empty(), &rules);
+    let (section, rules_count, rules_truncated) = rules_section(cfg, bank_name, capture, &rules);
     let mut out = Injection {
         section,
         rules: rules_count,
@@ -1117,6 +1126,85 @@ struct ToldRules {
     used_ms: u64,
 }
 
+/// What a turn's memory header says about capture ([`ambient_header`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Capture {
+    /// The user's own session, extraction on: captured after each turn.
+    Extracted,
+    /// Working for the user but not extracted (a sub-agent, extraction
+    /// off): told to save what a later session needs.
+    Save,
+    /// A scripted run (automation, e2e) or an unknown session: nothing is
+    /// captured, and it is not invited to write into the user's memory.
+    Scripted,
+}
+
+/// Each session's [`Capture`] with extraction on ([`session_capture`]):
+/// its kind and parent are set when it is created.
+// shortcut: cleared whole at the cap, so a live session past it pays one
+// more `session::get`; evict by use if that shows up.
+static SESSION_CAPTURE: LazyLock<Mutex<HashMap<String, Capture>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Extracted: the user's own session (`extract::extracts`), not a
+/// sub-agent's, whose metadata names the parent `scope` walks. Turn-end
+/// skips the same two. A fork copies its source's metadata, parent
+/// included, but its turns carry no parent, so turn-end extracts them.
+fn session_capture(meta: &Value) -> Capture {
+    if !extract::extracts(meta.get("kind").and_then(Value::as_str)) {
+        return Capture::Scripted;
+    }
+    let top_level = meta["forked_from"].is_string()
+        || meta["metadata"]["parent_session_id"]
+            .as_str()
+            .is_none_or(str::is_empty);
+    if top_level {
+        Capture::Extracted
+    } else {
+        Capture::Save
+    }
+}
+
+/// Caches [`session_capture`] for `session_id` from its `meta` record;
+/// `scope::resolve` feeds it the record its walk already fetched.
+pub(crate) fn remember_session(session_id: &str, meta: &Value) -> Capture {
+    let capture = session_capture(meta);
+    let mut sessions = SESSION_CAPTURE.lock().unwrap_or_else(|e| e.into_inner());
+    if sessions.len() >= TOLD_RULES_CAP {
+        sessions.clear();
+    }
+    sessions.insert(session_id.to_string(), capture);
+    capture
+}
+
+/// This turn's [`Capture`]: its session's, with extraction off turning
+/// the user's own session into one that saves.
+async fn turn_capture(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+) -> Result<Capture, String> {
+    let cached = SESSION_CAPTURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session_id)
+        .copied();
+    let session = match cached {
+        Some(capture) => capture,
+        // Only when the resolver did not walk this session (a turn naming
+        // `memory_bank`). One that does not exist (yet) is not cached: it
+        // is told nothing is captured until its record says otherwise.
+        None => match crate::scope::session_meta(&deps.iii, session_id.to_string()).await? {
+            Some(meta) => remember_session(session_id, &meta),
+            None => Capture::Scripted,
+        },
+    };
+    Ok(match session {
+        Capture::Extracted if !cfg.extraction_enabled => Capture::Save,
+        capture => capture,
+    })
+}
+
 /// Opens the appended rules update. Starts like the recall message
 /// (`<memory `), so recall queries and extraction skip it.
 const RULES_UPDATE_OPEN: &str = "<memory update=\"rules\">";
@@ -1210,7 +1298,7 @@ fn latest_rules_update(messages: Option<&Value>) -> Option<String> {
 }
 
 /// The appended rules update: the whole current section, or a note that
-/// none applies (memory off, or an unknown bank with extraction off).
+/// none applies (memory off, or no bank applies).
 fn rules_update_message(section: &str) -> String {
     let section = if section.is_empty() {
         "\nNo memory section applies now.\n"
@@ -1380,20 +1468,42 @@ pub async fn session_deleted(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&input.session_id);
+        SESSION_CAPTURE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&input.session_id);
     }
     Ok(AckResponse { ok: true })
 }
 
-/// The always-present opening of the injected section: tells the
-/// model capture is ambient, so "remember X" gets an acknowledgment
-/// instead of a false "I cannot save to memory".
-pub(crate) fn ambient_header(bank_name: &str) -> String {
-    format!(
-        "\n\n# Memory — bank: {bank_name}\nMemory is automatic here: durable memories and \
-         preferences from this conversation are extracted and saved after each turn, and \
-         relevant memories are provided to you when they exist. When the user asks you to \
-         remember something, acknowledge it — no save call is needed.\n"
-    )
+/// The always-present opening of the injected section, true to this turn's
+/// [`Capture`]. Extracted: capture is ambient, so "remember X" gets an
+/// acknowledgment instead of a false "I cannot save to memory". Save:
+/// nothing is captured, so what a later session needs must be saved with
+/// `memory::save`, which the session's policy may not grant. Scripted:
+/// nothing is captured, and a scripted run is not asked to write into the
+/// user's memory (extraction keeps it out for the same reason).
+pub(crate) fn ambient_header(bank_name: &str, capture: Capture) -> String {
+    let body = match capture {
+        Capture::Extracted => {
+            "Memory is automatic here: durable memories and preferences from this conversation \
+             are extracted and saved after each turn, and relevant memories are provided to you \
+             when they exist. Later sessions in this bank start with only what is recalled from \
+             it. When the user asks you to remember something, acknowledge it — no save call is \
+             needed."
+        }
+        Capture::Save => {
+            "Relevant memories are provided to you when they exist, but nothing from this \
+             conversation is captured automatically. Later sessions in this bank start with only \
+             what is recalled from it: if `memory::save` is available to you, save what one would \
+             need with it."
+        }
+        Capture::Scripted => {
+            "Relevant memories are provided to you when they exist, but nothing from this \
+             conversation is captured automatically."
+        }
+    };
+    format!("\n\n# Memory — bank: {bank_name}\n{body}\n")
 }
 
 /// A rule as the model reads it. Redacted at render time too: a
@@ -1922,25 +2032,223 @@ mod tests {
     #[test]
     fn the_section_follows_the_injection_switches() {
         let rules = vec![rule("style", "No em-dashes.")];
-        let (section, n, _) = rules_section(&config(true, true, true), "b", true, &rules);
-        assert!(section.starts_with(&ambient_header("b")) && section.contains("No em-dashes."));
+        let (section, n, _) =
+            rules_section(&config(true, true, true), "b", Capture::Extracted, &rules);
+        assert!(
+            section.starts_with(&ambient_header("b", Capture::Extracted))
+                && section.contains("No em-dashes.")
+        );
         assert_eq!(n, 1);
-        let (section, n, _) = rules_section(&config(false, true, true), "b", true, &rules);
+        let (section, n, _) =
+            rules_section(&config(false, true, true), "b", Capture::Extracted, &rules);
         assert_eq!(
             (section, n),
-            (ambient_header("b"), 0),
+            (ambient_header("b", Capture::Extracted), 0),
             "rules off: header only"
         );
-        let (section, n, _) = rules_section(&config(false, false, true), "b", true, &rules);
+        let (section, n, _) =
+            rules_section(&config(false, false, true), "b", Capture::Extracted, &rules);
         assert_eq!((section.as_str(), n), ("", 0), "memory off: nothing");
     }
 
     #[test]
-    fn an_unknown_bank_gets_the_header_only_while_extraction_can_create_it() {
-        let (section, ..) = rules_section(&config(true, true, true), "new", false, &[]);
-        assert_eq!(section, ambient_header("new"));
-        let (section, ..) = rules_section(&config(true, true, false), "new", false, &[]);
-        assert_eq!(section, "");
+    fn an_unknown_bank_gets_the_header_too() {
+        let (section, ..) =
+            rules_section(&config(true, true, true), "new", Capture::Extracted, &[]);
+        assert_eq!(section, ambient_header("new", Capture::Extracted));
+        // Extraction off: told to save, which creates the bank.
+        let (section, ..) = rules_section(&config(true, true, false), "new", Capture::Save, &[]);
+        assert_eq!(section, ambient_header("new", Capture::Save));
+    }
+
+    #[test]
+    fn the_header_says_whether_the_turn_is_captured() {
+        let captured = ambient_header("b", Capture::Extracted);
+        for promise in [
+            "extracted and saved after each turn",
+            "start with only what is recalled from it",
+            "no save call is needed",
+        ] {
+            assert!(captured.contains(promise), "missing: {promise}");
+        }
+        let nothing = "nothing from this conversation is captured automatically";
+        let save = ambient_header("b", Capture::Save);
+        assert!(save.contains(nothing) && save.contains("`memory::save`"));
+        assert!(!save.contains("no save call"));
+        // A scripted run is told the truth but never invited to save.
+        let scripted = ambient_header("b", Capture::Scripted);
+        assert!(scripted.contains(nothing));
+        assert!(!scripted.contains("memory::save") && !scripted.contains("no save call"));
+    }
+
+    #[test]
+    fn each_session_kind_gets_its_capture() {
+        for (meta, capture) in [
+            (json!({ "kind": "user" }), Capture::Extracted),
+            (json!({}), Capture::Extracted),
+            (Value::Null, Capture::Extracted),
+            (
+                json!({ "metadata": { "parent_session_id": "" } }),
+                Capture::Extracted,
+            ),
+            // A fork of a sub-agent's session: its turns have no parent.
+            (
+                json!({ "forked_from": "child", "metadata": { "parent_session_id": "p" } }),
+                Capture::Extracted,
+            ),
+            (
+                json!({ "metadata": { "parent_session_id": "p" } }),
+                Capture::Save,
+            ),
+            (
+                json!({ "kind": "user", "metadata": { "parent_session_id": "p" } }),
+                Capture::Save,
+            ),
+            (json!({ "kind": "automation" }), Capture::Scripted),
+            (json!({ "kind": "e2e" }), Capture::Scripted),
+            (
+                json!({ "kind": "automation", "forked_from": "a" }),
+                Capture::Scripted,
+            ),
+            (
+                json!({ "kind": "automation", "metadata": { "parent_session_id": "p" } }),
+                Capture::Scripted,
+            ),
+        ] {
+            assert_eq!(session_capture(&meta), capture, "{meta}");
+        }
+    }
+
+    #[tokio::test]
+    async fn each_session_is_told_whether_its_turn_is_captured() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = |deps: Arc<Deps>, session: &'static str, meta: Value| async move {
+            let bank = deps.config().await.default_bank.clone();
+            // Seeded as the resolver's walk does; the pinned bank and a later
+            // step keep the hook off the engine.
+            remember_session(session, &meta);
+            let turn = format!("{session}-t");
+            crate::scope::remember_turn(&turn, Some(crate::scope::Resolved::named(&bank)));
+            let out = pre_generate(
+                &deps,
+                PreGenerateInput {
+                    session_id: session.into(),
+                    turn_id: Some(turn),
+                    step: 1,
+                    ..PreGenerateInput::default()
+                },
+            )
+            .await
+            .unwrap();
+            let prompt = out.mutations.and_then(|m| m.system_prompt);
+            (prompt, bank)
+        };
+        let on = Arc::new(offline_deps(dir.path(), offline_cfg(3)));
+        for (session, meta, capture) in [
+            ("hdr-user", json!({ "kind": "user" }), Capture::Extracted),
+            (
+                "hdr-sub",
+                json!({ "metadata": { "parent_session_id": "p" } }),
+                Capture::Save,
+            ),
+            (
+                "hdr-auto",
+                json!({ "kind": "automation" }),
+                Capture::Scripted,
+            ),
+            ("hdr-e2e", json!({ "kind": "e2e" }), Capture::Scripted),
+        ] {
+            let (prompt, bank) = header(on.clone(), session, meta).await;
+            assert_eq!(prompt, Some(ambient_header(&bank, capture)), "{session}");
+        }
+        let off_dir = tempfile::tempdir().unwrap();
+        let off = Arc::new(offline_deps(
+            off_dir.path(),
+            WorkerConfig {
+                extraction_enabled: false,
+                ..offline_cfg(3)
+            },
+        ));
+        for (session, meta, capture) in [
+            ("hdr-off", json!({ "kind": "user" }), Capture::Save),
+            (
+                "hdr-off-auto",
+                json!({ "kind": "automation" }),
+                Capture::Scripted,
+            ),
+        ] {
+            let (prompt, bank) = header(off.clone(), session, meta).await;
+            assert_eq!(prompt, Some(ambient_header(&bank, capture)), "{session}");
+        }
+    }
+
+    #[tokio::test]
+    async fn extraction_off_turns_the_users_own_session_into_one_that_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(3));
+        // No engine: cached sessions are answered without a `session::get`.
+        for (session, capture) in [
+            ("s-user", Capture::Extracted),
+            ("s-sub", Capture::Save),
+            ("s-auto", Capture::Scripted),
+        ] {
+            SESSION_CAPTURE
+                .lock()
+                .unwrap()
+                .insert(session.into(), capture);
+            assert_eq!(
+                turn_capture(&deps, &config(true, true, true), session).await,
+                Ok(capture),
+                "{session}"
+            );
+        }
+        let off = config(true, true, false);
+        assert_eq!(turn_capture(&deps, &off, "s-user").await, Ok(Capture::Save));
+        assert_eq!(turn_capture(&deps, &off, "s-sub").await, Ok(Capture::Save));
+        assert_eq!(
+            turn_capture(&deps, &off, "s-auto").await,
+            Ok(Capture::Scripted),
+            "a scripted run is never invited to save"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_save_from_a_turn_is_the_agents_note_with_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(3);
+        let bank = cfg.default_bank.clone();
+        let deps = offline_deps(dir.path(), cfg);
+        let request = |text: &str| crate::functions::items::SaveRequest {
+            bank: Some(bank.clone()),
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            pinned: false,
+            session_id: None,
+        };
+        let noted = iii_helpers::observability::run_with_baggage(
+            &[("iii.session.id", "s-1"), ("iii.message.id", "t-1")],
+            crate::functions::items::save(&deps, request("The deploy script lives in ops/.")),
+        )
+        .await
+        .unwrap()
+        .memory;
+        let source = noted.source.expect("a save from a turn records its source");
+        assert_eq!(
+            (source.session_id.as_deref(), source.turn_id.as_deref()),
+            (Some("s-1"), Some("t-1"))
+        );
+        assert!(
+            !noted.entities.iter().any(|e| e == "user"),
+            "{:?}",
+            noted.entities
+        );
+        let typed = crate::functions::items::save(&deps, request("The user prefers tea."))
+            .await
+            .unwrap()
+            .memory;
+        assert_eq!(typed.entities, ["user"], "the memory page's add field");
+        assert_eq!(typed.source, None);
     }
 
     #[test]
@@ -2214,6 +2522,7 @@ Formal."
             "w-abc123",
             &["agent-x".to_string()],
             true,
+            Capture::Extracted,
             Some("kiwi"),
             &HashSet::new(),
         )
@@ -2290,6 +2599,7 @@ Formal."
             "w-abc123",
             &["agent-x".to_string()],
             true,
+            Capture::Extracted,
             Some(query),
             &HashSet::new(),
         )
@@ -2311,6 +2621,7 @@ Formal."
             "w-abc123",
             &layers,
             true,
+            Capture::Extracted,
             Some(query),
             &HashSet::new(),
         )
@@ -2956,6 +3267,7 @@ Formal."
             "w-abc123",
             &[],
             true,
+            Capture::Extracted,
             recall_query(&input).as_deref(),
             &HashSet::new(),
         )
