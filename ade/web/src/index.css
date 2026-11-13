@@ -153,9 +153,9 @@
   --color-glyph-rose: #e11d48;
   /* ── Syntax tones ─────────────────────────────────────────────────────
      Token colours for read-only highlighted code (`CodeHighlight` /
-     `JsonHighlight`: fenced Markdown blocks, tool-card payloads). The
-     GitHub "prettylights" palette, each tone at least 4.5:1 (AA) against
-     `bg`, the block's own background. Code text only: never a fill, a
+     `JsonHighlight`: fenced Markdown blocks, tool-card payloads). Light
+     takes GitHub's "prettylights" palette, dark takes Vesper (below), each
+     tone at least 4.5:1 (AA) against `bg`, the block's own background. Code text only: never a fill, a
      border, chrome text or a status. Comments and punctuation stay on
      `ink-faint`; diff lines reuse `ok` / `alert-strong`. */
   --color-syntax-keyword: #cf222e;
@@ -399,13 +399,16 @@
   --color-worker-ink: #0a0a0a;
   --color-trace-error: #e5393e;
   --color-trace-error-ink: #ffffff;
-  /* Syntax tones: the dark prettylights set, AA against `bg`. */
-  --color-syntax-keyword: #ff7b72;
-  --color-syntax-function: #d2a8ff;
-  --color-syntax-constant: #79c0ff;
-  --color-syntax-string: #a5d6ff;
-  --color-syntax-type: #ffa657;
-  --color-syntax-attribute: #7ee787;
+  /* Syntax tones, dark: Vesper, the palette the console's Monaco editor
+     (`lib/monaco.ts`) and the trace panes (`.code-theme-editor`) already
+     wear: grey keywords, mint strings, peach for everything that names or
+     counts. Each clears AA against `bg` (grey ≥ 7.3:1, peach ≥ 12.6:1, mint ≥ 16:1). */
+  --color-syntax-keyword: #a0a0a0;
+  --color-syntax-function: #ffc799;
+  --color-syntax-constant: #ffc799;
+  --color-syntax-string: #99ffe4;
+  --color-syntax-type: #ffc799;
+  --color-syntax-attribute: #ffc799;
 }
 
 @layer base {

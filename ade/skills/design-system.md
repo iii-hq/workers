@@ -120,18 +120,19 @@ border, text or a selection/status state; `neutral` means the glyph keeps `ink-g
 ### Syntax tones
 
 Token colours for read-only highlighted code only — `CodeHighlight` / `JsonHighlight` in fenced
-Markdown blocks and tool-card payloads (`lib/syntax.tsx`). The GitHub "prettylights" palette,
-each tone at least 4.5:1 against `bg`, the block's background. Never a fill, a border, chrome
-text or a status. The Monaco `CodeEditor` keeps its monochrome theme.
+Markdown blocks and tool-card payloads (`lib/syntax.tsx`). Light uses GitHub's "prettylights"
+palette; dark uses Vesper, the same palette as the Monaco `CodeEditor` (`lib/monaco.ts`) and the
+trace panes (`.code-theme-editor`), so code reads the same across the app. Each tone is at least
+4.5:1 against `bg`, the block's background. Never a fill, a border, chrome text or a status.
 
 | Token | Light | Dark | Prism kinds |
 | --- | --- | --- | --- |
-| `syntax-keyword` | `#cf222e` | `#ff7b72` | `keyword` |
-| `syntax-function` | `#8250df` | `#d2a8ff` | `function`, `method`, `macro`, diff `coord` |
-| `syntax-constant` | `#0550ae` | `#79c0ff` | `number`, `boolean`, `null`, `constant`, `date` |
-| `syntax-string` | `#0a3069` | `#a5d6ff` | `string`, `char`, `regex`, `attr-value`, `url` |
-| `syntax-type` | `#953800` | `#ffa657` | `class-name`, `builtin`, `tag`, `selector`, TOML `table` |
-| `syntax-attribute` | `#116329` | `#7ee787` | `attribute`, `attr-name`, `decorator`, `lifetime-annotation`, YAML/TOML `key` |
+| `syntax-keyword` | `#cf222e` | `#a0a0a0` | `keyword` |
+| `syntax-function` | `#8250df` | `#ffc799` | `function`, `method`, `macro`, diff `coord` |
+| `syntax-constant` | `#0550ae` | `#ffc799` | `number`, `boolean`, `null`, `constant`, `date` |
+| `syntax-string` | `#0a3069` | `#99ffe4` | `string`, `char`, `regex`, `attr-value`, `url` |
+| `syntax-type` | `#953800` | `#ffc799` | `class-name`, `builtin`, `tag`, `selector`, TOML `table` |
+| `syntax-attribute` | `#116329` | `#ffc799` | `attribute`, `attr-name`, `decorator`, `lifetime-annotation`, YAML/TOML `key` |
 
 Comments and punctuation use `ink-faint`; diff lines reuse `ok` (added) and `alert-strong`
 (removed); everything else, JSON keys included, is plain `ink`.

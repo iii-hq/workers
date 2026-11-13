@@ -116,7 +116,8 @@ if (!prism.languages.json) {
 
 /* Token palette for read-only code. Every colour is a design token, so the
    palette flips with `[data-theme="dark"]`: the `syntax-*` tones (GitHub
-   "prettylights", AA against `bg`) carry the token kinds, comments and
+   "prettylights" in light, Vesper in dark, the editor's own dark theme; AA
+   against `bg`) carry the token kinds, comments and
    punctuation recede through the `--syntax-*` palette, and diff lines reuse the `ok` /
    `alert-strong` status tones. prism-react-renderer merges a nested token's
    styles parent -> child -> alias with the last one winning, so `property`
