@@ -8,7 +8,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@10.18.2",
+  "packageManager": "pnpm@11.13.1",
   "scripts": {
     "build:bundle": "node scripts/build-bundle.mjs",
     "check": "node --check src/index.mjs",
@@ -23,10 +23,5 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "esbuild": "^0.25.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }
