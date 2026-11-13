@@ -105,7 +105,7 @@ The request has these top-level keys: `idempotency_key`, `max_concurrency`, `def
  "nodes":{
   "kan-12-work":{"profile":"deepflow-worker","model":"<m>","schema":WORK,"task":"Mode: work. Ticket KAN-12, …","label":"KAN-12 · Summarize the API","phase":"work","timeout_ms":1320000,"retries":0,"on_error":"continue"},
   "kan-12-check":{"profile":"deepflow-verifier","model":"<m>","schema":VERDICT,"reads":"kan-12-work","task":"Mode: check. Ticket KAN-12, …","label":"verify:KAN-12","phase":"verify","timeout_ms":2520000,"retries":0,"on_error":"continue","loop":{"body":["kan-12-work"],"while":{"field":"verdict","equals":"fail"},"max_repeats":1}}},
- "output":["kan-12-check"]}
+ "output":["kan-12-check","kan-12-work"]}
 ```
 A refused start lists every shape problem at once, but only the first rule it breaks (labels, timeouts, loops, fanout, folders): fix that rule on every node, check the rest of the request against the rules above, and send it again.
 
@@ -262,7 +262,7 @@ In one reply: the budget gate. Do not read the board again: dependencies' lanes 
 
 Dev flow, cwd = root, per ticket: `git worktree list --porcelain` once; a listed W_K (a retry) is rebased: `git rebase --autostash <branch>` with cwd W_K, and on failure `git rebase --abort`, `git branch -m deepflow/<slug>-<k> deepflow/<slug>-<k>-r<N>` and `git worktree remove --force <W_K>`, treating it as unlisted; an unlisted W_K: `git worktree add -B deepflow/<slug>-<k> <W_K> <branch>`. A ticket whose git calls fail goes back to `todo` with the error as its next Retry reason.
 
-Then start the wave run (label `r<N>-w<b>`), `"max_concurrency": K`, `"output":[<every check node id, or every code node id in the dev flow>]`:
+Then start the wave run (label `r<N>-w<b>`), `"max_concurrency": K`, `"output":[<every check and work node id, or every code node id in the dev flow>]`:
 - **Plain flow**, per ticket:
   `"<k>-work":{"profile":"deepflow-worker","model":"<work model>","schema":WORK,"task":"Mode: work. Ticket <KEY>, run <run>, round <N>.\nDeadline: <deadline_min> min.\nNew items: at most <max_items − items created>.\n<Retry: <reasons of the last round>.\n>Functions: <Functions>","label":"<KEY> · <title>","phase":"work","timeout_ms":…}` and
   `"<k>-check":{"profile":"deepflow-verifier","model":"<check model>","schema":VERDICT,"reads":"<k>-work","task":"Mode: check. Ticket <KEY>, run <run>, round <N>. The input is the claim.\nDeadline: <verify_deadline_min> min.\nFunctions: <Functions>","label":"verify:<KEY>","phase":"verify","timeout_ms":…,"loop":<the check loop on <k>-work>}`.
@@ -280,9 +280,9 @@ First, on every wake: `state::get` the pointer's `active`. When its `session` is
 - **Kanban retry:** `[notification] df <R> kanban-retry <step>` (Step G): redo only what the failed call left undone.
 - **Anything else** is a user message (Step G). A turn with no new message replies one status line.
 
-**Read the run:** `workflow::status {"run_id":…}` gives `nodes` (every uid and its state; a loop pass is `<id>#it<k>`) and `node_errors`; `status.result` holds the output nodes' last results. A node that is not `done` has no result: its error is in `node_errors` (`node_timeout`, `send failed: …`, `cancelled`).
+**Read the run:** `workflow::status {"run_id":…}` gives `nodes` (every uid and its state; a loop pass is `<id>#it<k>`) and `node_errors`; `status.result` holds the output nodes' last results once the run is `completed` (the node's result itself for one id, an object keyed by node id for an array); a `cancelled` (stopped) or `failed` run has none. A node that is not `done` has no result: its error is in `node_errors` (`node_timeout`, `send failed: …`, `cancelled`).
 
-**Plain wave**, per ticket: verdict = the result of `<k>-check`; claim = `workflow::node-result {"run_id":…,"node_uid":"<k>-work"}`.result, its last pass (null when that pass is not done: every earlier pass was rejected by its check). Outcome:
+**Plain wave**, per ticket, from `status.result`: verdict = its `<k>-check`; claim = its `<k>-work`, the work's last pass (null when that pass is not done: every earlier pass was rejected by its check). When there is no `result` (the run was stopped or failed, or the `workflow::status` reply itself came back as an `<omitted: …>` marker), read the two with `workflow::node-result {"run_id":…,"node_uid":"<k>-check"}` and `workflow::node-result {"run_id":…,"node_uid":"<k>-work"}` instead (`.result`, null for a pass that is not done). An omitted reply also lost `node_errors`: read them with `fp::pipe {"through":[{"function":"workflow::status","payload":{"run_id":…}},{"function":"fp::get","payload":{"path":"/node_errors"}}],"preview_chars":20000}` for the Retry and deadline rules below. Outcome:
 
 | Claim and verdict | Outcome |
 |---|---|

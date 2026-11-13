@@ -9,9 +9,9 @@ tags: [orchestration, workflows, kanban, verification, sub-agents]
 workers:
   # The flat workflow::start request (`nodes` at the top level, `task` on a node; an older
   # worker refuses every run), node options (profile, model, label, phase, loop,
-  # filesystem_root), the caller folder, workflow::status details and the run-end observe
-  # (`next` + replay of workflow::on-run-completed): set the floor to the first release with
-  # all of them. No caret, like state and ide.
+  # filesystem_root), an `output` naming a loop body node, the caller folder, workflow::status
+  # details and the run-end observe (`next` + replay of workflow::on-run-completed): set the
+  # floor to the first release with all of them. No caret, like state and ide.
   workflow: ">=0.2.3"
   # 1.9.4 ends a parked node on workflow::stop without a spurious turn.
   harness: ^1.9.4
