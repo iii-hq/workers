@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn deserializes_builtin_shaped_config() {
-        let c: BridgeConfig = serde_yaml::from_str(
+        let c: BridgeConfig = serde_yaml_ng::from_str(
             "{url: 'ws://remote:49134', expose: [{local_function: a.b}], forward: [{local_function: f.local, remote_function: f.remote, timeout_ms: 5000}]}",
         )
         .unwrap();
@@ -108,13 +108,13 @@ mod tests {
     #[test]
     fn expose_remote_name_prefers_remote_function() {
         let e: ExposeEntry =
-            serde_yaml::from_str("{local_function: a.b, remote_function: c.d}").unwrap();
+            serde_yaml_ng::from_str("{local_function: a.b, remote_function: c.d}").unwrap();
         assert_eq!(e.remote_name(), "c.d");
     }
 
     #[test]
     fn url_fallback_chain_matches_builtin() {
-        let with_url: BridgeConfig = serde_yaml::from_str("{url: 'ws://cfg:1'}").unwrap();
+        let with_url: BridgeConfig = serde_yaml_ng::from_str("{url: 'ws://cfg:1'}").unwrap();
         let without: BridgeConfig = BridgeConfig::default();
         assert_eq!(
             with_url.effective_url_with(Some("ws://env:2".into())),
@@ -129,14 +129,15 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let r: Result<BridgeConfig, _> = serde_yaml::from_str("{url: x, wat: 1}");
+        let r: Result<BridgeConfig, _> = serde_yaml_ng::from_str("{url: x, wat: 1}");
         assert!(r.is_err(), "deny_unknown_fields must reject 'wat'");
     }
 
     #[test]
     fn json_roundtrip() {
         let c: BridgeConfig =
-            serde_yaml::from_str("{forward: [{local_function: a, remote_function: b}]}").unwrap();
+            serde_yaml_ng::from_str("{forward: [{local_function: a, remote_function: b}]}")
+                .unwrap();
         let back = BridgeConfig::from_json(&c.to_json()).unwrap();
         assert_eq!(back, c);
     }

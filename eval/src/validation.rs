@@ -518,23 +518,23 @@ fn stack_yaml(yaml: &str, commit: &str) -> Result<String, EvalError> {
             "e2e_unavailable: the E2E's `{BASE_TEMPLATE}` stack cannot be pinned: {why}"
         ))
     };
-    let mut stack: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|error| broken(error.to_string()))?;
+    let mut stack: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(yaml).map_err(|error| broken(error.to_string()))?;
     let containers = stack
         .get_mut("containers")
-        .and_then(serde_yaml::Value::as_mapping_mut)
+        .and_then(serde_yaml_ng::Value::as_mapping_mut)
         .filter(|containers| containers.contains_key("harness"))
         .ok_or_else(|| broken("it declares no `harness` container".into()))?;
     containers.insert(
         "harness".into(),
-        serde_yaml::to_value(json!({
+        serde_yaml_ng::to_value(json!({
             "worker": "package://harness",
             "commit": commit,
             "repository": REPOSITORY,
         }))
         .map_err(|error| broken(error.to_string()))?,
     );
-    serde_yaml::to_string(&stack).map_err(|error| broken(error.to_string()))
+    serde_yaml_ng::to_string(&stack).map_err(|error| broken(error.to_string()))
 }
 
 /// A name that tells the stack's purpose and is unique to its commit.
@@ -760,7 +760,7 @@ mod tests {
                     package://harness\n    version: latest\n  harness-e2e:\n    worker: \
                     package://harness-e2e\n    version: latest\nstartup_timeout: 5m\n";
         let pinned = stack_yaml(base, &"a".repeat(40)).unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&pinned).unwrap();
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&pinned).unwrap();
         assert_eq!(parsed["iii"], "latest");
         assert_eq!(parsed["template"], "harness");
         assert_eq!(parsed["startup_timeout"], "5m");

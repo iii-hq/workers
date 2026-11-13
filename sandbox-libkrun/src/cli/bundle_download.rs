@@ -13,7 +13,7 @@ pub use crate::core::error::WorkerOpError;
 
 /// Maximum size of the `iii.worker.yaml` manifest (64 KiB).
 ///
-/// The manifest is parsed in-process by `serde_yaml`, which (as of 0.9.x,
+/// The manifest is parsed in-process by `serde_yaml_ng`, which (as of 0.10.x,
 /// libyaml-based) does not gate exponential anchor/alias expansion. A small
 /// YAML file with chained aliases can balloon to gigabytes of in-memory
 /// `Value`. A 64 KiB cap means even a worst-case expansion stays under a few
@@ -37,8 +37,8 @@ pub fn bundle_workers_disabled() -> bool {
 /// [`MAX_BUNDLE_MANIFEST_BYTES`] of it.
 ///
 /// The cap keeps a publisher-controlled billion-laughs YAML (chained
-/// `&anchor` / `*alias` expansion) from reaching serde_yaml::from_str:
-/// serde_yaml 0.9.x is libyaml-based and does not gate exponential alias
+/// `&anchor` / `*alias` expansion) from reaching serde_yaml_ng::from_str:
+/// serde_yaml_ng 0.10.x is libyaml-based and does not gate exponential alias
 /// expansion in-tree. 64 KiB is plenty for a real manifest and bounds
 /// worst-case expansion to a few MiB. The install dir is the guest's
 /// read-write /workspace, so the manifest may also be a planted symlink to
@@ -89,8 +89,8 @@ pub fn validate_bundle_manifest(
     let manifest_path = manifest_dir.join("iii.worker.yaml");
     let content = read_bundle_manifest(manifest_dir)?;
 
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
             path: manifest_path.clone(),
             message: format!("invalid YAML: {e}"),
         })?;
@@ -238,13 +238,13 @@ pub fn parse_bundle_resources(
 ) -> Result<ResolvedBundleResources, WorkerOpError> {
     let manifest_path = manifest_dir.join("iii.worker.yaml");
     let content = read_bundle_manifest(manifest_dir)?;
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
+    let doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&content).map_err(|e| WorkerOpError::ConfigParse {
             path: manifest_path,
             message: format!("invalid YAML in resources block: {e}"),
         })?;
 
-    fn read_u32(doc: &serde_yaml::Value, key: &str, default: u32) -> u32 {
+    fn read_u32(doc: &serde_yaml_ng::Value, key: &str, default: u32) -> u32 {
         match doc
             .get("resources")
             .and_then(|r| r.get(key))

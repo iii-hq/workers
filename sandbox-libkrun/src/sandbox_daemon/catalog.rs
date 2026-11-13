@@ -245,7 +245,7 @@ mod tests {
                 yaml.push_str(&format!("  {k}: {v}\n"));
             }
         }
-        serde_yaml::from_str(&yaml).expect("parse SandboxConfig")
+        serde_yaml_ng::from_str(&yaml).expect("parse SandboxConfig")
     }
 
     #[test]

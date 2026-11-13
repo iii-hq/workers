@@ -41,7 +41,7 @@ async fn wait_for_shutdown_signal() -> Result<()> {
 fn read_seed(path: &str) -> Option<WorkerConfig> {
     let parsed = std::fs::read_to_string(path)
         .map_err(|e| e.to_string())
-        .and_then(|s| serde_yaml::from_str::<serde_json::Value>(&s).map_err(|e| e.to_string()))
+        .and_then(|s| serde_yaml_ng::from_str::<serde_json::Value>(&s).map_err(|e| e.to_string()))
         .and_then(|v| WorkerConfig::from_json(&v));
     match parsed {
         Ok(cfg) => Some(cfg),

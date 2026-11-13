@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         .config
         .map(|p| -> Result<Config> {
             let text = std::fs::read_to_string(p).context("reading config seed")?;
-            let config: Config = serde_yaml::from_str(&text).context("parsing config seed")?;
+            let config: Config = serde_yaml_ng::from_str(&text).context("parsing config seed")?;
             config.validate().map_err(anyhow::Error::msg)?;
             Ok(config)
         })

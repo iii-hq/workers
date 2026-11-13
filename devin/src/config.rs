@@ -86,7 +86,7 @@ impl Config {
     /// defaults; a parse error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_yaml::from_str(&expand_env(&text))?),
+            Ok(text) => Ok(serde_yaml_ng::from_str(&expand_env(&text))?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
@@ -143,4 +143,28 @@ fn expand_env(input: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaml_config_parses_after_env_expansion() {
+        let yaml = "api_key: \"${A35_DEVIN_TEST_UNSET_KEY}\"\nbase_url: https://example.test/v1\nrequest_timeout_secs: 30\ncli_extra_args: [\"--permission-mode\", \"auto\"]\nsession_recording: false\n";
+        let cfg: Config = serde_yaml_ng::from_str(&expand_env(yaml)).unwrap();
+        assert_eq!(cfg.api_key, "");
+        assert_eq!(cfg.base_url, "https://example.test/v1");
+        assert_eq!(cfg.request_timeout_secs, 30);
+        assert_eq!(cfg.cli_extra_args, vec!["--permission-mode", "auto"]);
+        assert!(!cfg.session_recording);
+        assert!(cfg.iii_context);
+
+        let back: Config =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&cfg).unwrap()
+        );
+    }
 }
