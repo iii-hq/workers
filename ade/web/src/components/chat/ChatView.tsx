@@ -96,7 +96,7 @@ import {
 } from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
-import { isCallSettled } from '@/lib/sessions/entry-mapper'
+import { isCallSettled, queuedRowText } from '@/lib/sessions/entry-mapper'
 import {
   expandSlashInvocations,
   loadedSkillIds,
@@ -830,7 +830,7 @@ export function ChatView({
     }))
     const server = serverQueued
       .filter((row) => !seen.has(row.id))
-      .map((row) => ({ id: row.id, text: row.text || '(notification)' }))
+      .map((row) => ({ id: row.id, text: queuedRowText(row) }))
     return [...drafts, ...server]
   }, [queuedDrafts, serverQueued, conversation.messages])
 

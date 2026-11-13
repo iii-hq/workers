@@ -5,7 +5,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
-import { resetFoldedGroups } from '@/lib/context-groups'
+import {
+  resetFoldedGroups,
+  setSectionHidden,
+  toggleGroup,
+} from '@/lib/context-groups'
 import { registerExtContextSection } from '@/lib/ui-slots'
 import type { Conversation, Message } from '@/types/chat'
 import type {
@@ -23,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   dismiss: vi.fn(),
   unregister: vi.fn(),
   autoFix: vi.fn(),
+  openConversation: vi.fn(),
 }))
 
 vi.mock('@/lib/iii-client', () => ({
@@ -33,6 +38,8 @@ vi.mock('@/lib/panel-context', () => ({
 }))
 
 import { ChatContextPanel } from './ChatContextPanel'
+import { resetWorkflowReads, WORKFLOW_RUN_LIMIT } from './ContextWorkflow'
+import { BATCH, LIVE } from './workflow/__tests__/run-fixtures'
 
 const GIT: Record<string, string> = {
   status: '## feat/x...origin/feat/x [ahead 2]\n M a.ts\n?? b.ts\n',
@@ -40,8 +47,13 @@ const GIT: Record<string, string> = {
   remote: 'git@github.com:o/r.git\n',
 }
 
+/** `workflow::status` replies by run id; a run left out reads as gone. */
+let RUNS: Record<string, unknown> = {}
+
 function respond(fn: string, payload: Record<string, unknown> = {}) {
   if (fn === 'ade::context::list') return Promise.resolve({ items: [] })
+  if (fn === 'workflow::status')
+    return Promise.resolve(RUNS[String(payload.run_id)] ?? null)
   if (fn === 'shell::exec') {
     const args = payload.args as string[]
     const verb = args.find((arg) => arg in GIT) ?? ''
@@ -161,7 +173,7 @@ async function render(
           connectionState="connected"
           observers={observers}
           onDisposeObserver={mocks.unregister}
-          onOpenConversation={() => {}}
+          onOpenConversation={mocks.openConversation}
           shellAvailable
           githubAvailable={githubAvailable}
           kanbanAvailable={kanbanAvailable}
@@ -197,6 +209,9 @@ beforeEach(() => {
   mocks.dismiss.mockReset()
   mocks.unregister.mockReset()
   mocks.autoFix.mockReset()
+  mocks.openConversation.mockReset()
+  RUNS = {}
+  resetWorkflowReads()
 })
 
 afterEach(() => {
@@ -824,6 +839,312 @@ describe('ChatContextPanel', () => {
     expect(view.textContent).toContain('No project folder')
     expect(mocks.call).toHaveBeenCalledExactlyOnceWith('ade::context::list', {
       session_id: 'main',
+    })
+  })
+
+  describe('workflow', () => {
+    const TITLE = 'Writing and checking batch regression tests'
+    const startCall = (
+      runId: string,
+      description: string,
+      at: number,
+    ): Message => ({
+      id: `start-${runId}`,
+      role: 'function-call',
+      functionId: 'workflow::start',
+      description,
+      input: {},
+      output: { content: [], details: { run_id: runId } },
+      createdAt: at,
+    })
+    const workflowSection = () =>
+      container?.querySelector(
+        'section[aria-label="Workflow"]',
+      ) as HTMLElement | null
+    const inSection = (selector: string) =>
+      workflowSection()?.querySelector(selector) as HTMLButtonElement | null
+    const statusCalls = () =>
+      mocks.call.mock.calls.filter(([fn]) => fn === 'workflow::status')
+    const FAILED = {
+      ...BATCH,
+      run_id: 'r_fail',
+      status: 'failed',
+      nodes: { 'batch-check': 'failed', 'batch-work': 'done' },
+      node_errors: { 'batch-check': 'verifier exited with code 2' },
+      result_error: 'node batch-check failed',
+      node_details: {
+        ...BATCH.node_details,
+        'batch-check': {
+          ...BATCH.node_details['batch-check'],
+          state: 'failed',
+        },
+      },
+    }
+
+    it('stays out of a chat that started no run', async () => {
+      const view = await render(chat('main'))
+      expect(workflowSection()).toBeNull()
+      expect(view.textContent).not.toContain('Workflow')
+      expect(statusCalls()).toEqual([])
+    })
+
+    it('shows a run by phase, its nodes in the order they ran', async () => {
+      RUNS.r_3f03 = BATCH
+      await render(chat('main', { messages: [startCall('r_3f03', TITLE, 2)] }))
+      expect(mocks.call).toHaveBeenCalledWith(
+        'workflow::status',
+        { run_id: 'r_3f03', details: true },
+        expect.anything(),
+      )
+      const text = workflowSection()?.textContent ?? ''
+      expect(text).toContain(TITLE)
+      expect(text).toContain('test → check · 292k tokens · 1m 51s')
+      expect(text).toContain('test · codex/gpt-6-luna · 256k tokens')
+      expect(text).toContain('1m 25s')
+      expect(text).toContain('25.9s')
+      // Phases live in the run's line and each node's, not in header rows.
+      expect(workflowSection()?.querySelectorAll('div.pl-6')).toHaveLength(0)
+      expect(
+        inSection('button[aria-label^="Open KAN-5 batch r1w1 tests"]')?.title,
+      ).toContain('deepflow-impl')
+      expect(text.indexOf('KAN-5 batch r1w1 tests')).toBeLessThan(
+        text.indexOf('KAN-5 batch r1w1 check'),
+      )
+      expect(
+        inSection('button[aria-expanded]')?.querySelector('span.tabular-nums')
+          ?.textContent,
+      ).toBe('1')
+    })
+
+    it("opens a node's session from its row", async () => {
+      RUNS.r_3f03 = BATCH
+      await render(chat('main', { messages: [startCall('r_3f03', TITLE, 2)] }))
+      act(() =>
+        inSection(
+          'button[aria-label="Open KAN-5 batch r1w1 tests in a new panel (done)"]',
+        )?.click(),
+      )
+      expect(mocks.openConversation).toHaveBeenCalledWith(
+        'wf_r_3f03_batch-work@r0',
+      )
+    })
+
+    it('finds a run through its node sessions alone', async () => {
+      RUNS.r_3f03 = BATCH
+      const main = chat('main')
+      const node = chat('wf_r_3f03_batch-work@r0', {
+        parentId: 'main',
+        status: 'done',
+        sessionMetadata: { workflow_run_id: 'r_3f03' },
+      })
+      const view = await render(main, { conversations: [main, node] })
+      // No start call names it: the run takes its nodes' shared label.
+      expect(workflowSection()?.textContent).toContain('KAN-5 batch r1w1')
+      const labels = [...view.querySelectorAll('section[data-reorder-item]')]
+        .filter((section) => !(section as HTMLElement).hidden)
+        .map((section) => section.getAttribute('aria-label'))
+      expect(labels.indexOf('Sub-agents')).toBe(labels.indexOf('Workflow') + 1)
+    })
+
+    it('marks a live run, its loop passes and its waiting nodes', async () => {
+      RUNS.r_live = LIVE
+      await render(
+        chat('main', {
+          messages: [startCall('r_live', 'Loop until clean', 2)],
+        }),
+      )
+      expect(inSection('button[aria-expanded]')?.textContent).toContain(
+        '1 running',
+      )
+      const suffixes = [
+        ...(workflowSection()?.querySelectorAll('span.font-mono') ?? []),
+      ].map((span) => span.textContent)
+      expect(suffixes).toContain('#it1')
+      expect(inSection('button[aria-label="plan (pending)"]')?.disabled).toBe(
+        true,
+      )
+    })
+
+    it('shows why a run and its node failed', async () => {
+      RUNS.r_fail = FAILED
+      await render(
+        chat('main', { messages: [startCall('r_fail', 'Batch', 2)] }),
+      )
+      expect(
+        inSection('button[aria-label="Batch (failed)"]')?.querySelector(
+          '.text-alert',
+        )?.textContent,
+      ).toBe('node batch-check failed')
+      const node = inSection(
+        'button[aria-label="Open KAN-5 batch r1w1 check in a new panel (failed)"]',
+      )
+      expect(node?.title).toContain('verifier exited with code 2')
+      expect(node?.querySelector('.text-alert')?.textContent).toBe(
+        'verifier exited with code 2',
+      )
+    })
+
+    it('folds older finished runs to one row', async () => {
+      RUNS.r_3f03 = BATCH
+      RUNS.r_base = {
+        run_id: 'r_base',
+        status: 'completed',
+        created_at: 1794407000000,
+        updated_at: 1794407012600,
+        nodes: { baseline: 'done' },
+        node_details: {
+          baseline: {
+            state: 'done',
+            label: 'KAN-5 baseline',
+            session_id: 'wf_r_base_baseline@r0',
+            started_at: 1794407000000,
+            finished_at: 1794407012600,
+          },
+        },
+      }
+      await render(
+        chat('main', {
+          messages: [
+            startCall('r_base', 'Running baseline tests', 1),
+            startCall('r_3f03', TITLE, 2),
+          ],
+        }),
+      )
+      const newest = inSection(`button[aria-label="${TITLE} (completed)"]`)
+      expect(newest?.getAttribute('aria-expanded')).toBe('true')
+      // A run of one node is that node's row: nothing to fold, it opens the session.
+      const older = inSection(
+        'button[aria-label="Open Running baseline tests in a new panel (completed)"]',
+      )
+      expect(older?.hasAttribute('aria-expanded')).toBe(false)
+      expect(older?.textContent).toContain('12.6s')
+      expect(workflowSection()?.textContent).not.toContain('KAN-5 baseline')
+      act(() => older?.click())
+      expect(mocks.openConversation).toHaveBeenCalledWith(
+        'wf_r_base_baseline@r0',
+      )
+      act(() => newest?.click())
+      expect(newest?.getAttribute('aria-expanded')).toBe('false')
+      expect(workflowSection()?.textContent).not.toContain('batch r1w1 tests')
+    })
+
+    it('keeps an older run open while it is going or after it failed', async () => {
+      const done = (runId: string) => ({ ...BATCH, run_id: runId })
+      RUNS.r_done = done('r_done')
+      RUNS.r_old = done('r_old')
+      RUNS.r_live = LIVE
+      RUNS.r_fail = FAILED
+      RUNS.r_new = done('r_new')
+      await render(
+        chat('main', {
+          messages: [
+            startCall('r_done', 'Done', 1),
+            startCall('r_old', 'Old', 2),
+            startCall('r_live', 'Live', 3),
+            startCall('r_fail', 'Failed', 4),
+            startCall('r_new', 'New', 5),
+          ],
+        }),
+      )
+      // Three runs show before "Show N more".
+      const more = [...(workflowSection()?.querySelectorAll('button') ?? [])]
+        .filter((button) => button.textContent === 'Show 2 more')
+        .at(-1)
+      act(() => more?.click())
+      const open = (label: string) =>
+        inSection(`button[aria-label="${label}"]`)?.getAttribute(
+          'aria-expanded',
+        )
+      expect([
+        open('New (completed)'),
+        open('Failed (failed)'),
+        open('Live (running)'),
+        open('Old (completed)'),
+        open('Done (completed)'),
+      ]).toEqual(['true', 'true', 'true', 'false', 'false'])
+    })
+
+    it('counts the runs and nodes it does not list', async () => {
+      RUNS.r_wide = {
+        ...BATCH,
+        run_id: 'r_wide',
+        nodes: { ...BATCH.nodes, more_a: 'done', more_b: 'done' },
+      }
+      const ids = Array.from(
+        { length: WORKFLOW_RUN_LIMIT + 1 },
+        (_, i) => `r_old${i}`,
+      )
+      await render(
+        chat('main', {
+          messages: [
+            ...ids.map((id, i) => startCall(id, id, i)),
+            startCall('r_wide', 'Wide', 100),
+          ],
+        }),
+      )
+      const text = workflowSection()?.textContent ?? ''
+      expect(text).toContain('2 earlier runs not listed')
+      expect(text).toContain('2 more nodes not listed')
+    })
+
+    it('caps the nodes of a run', async () => {
+      const uids = Array.from({ length: 12 }, (_, i) => `map#${i}`)
+      RUNS.r_map = {
+        run_id: 'r_map',
+        status: 'completed',
+        nodes: Object.fromEntries(uids.map((uid) => [uid, 'done'])),
+        node_details: Object.fromEntries(
+          uids.map((uid, i) => [
+            uid,
+            { state: 'done', session_id: `wf_${uid}`, started_at: 1000 + i },
+          ]),
+        ),
+      }
+      await render(chat('main', { messages: [startCall('r_map', 'Map', 2)] }))
+      const nodeRows = () =>
+        workflowSection()?.querySelectorAll('button[aria-label^="Open map #"]')
+          .length
+      expect(nodeRows()).toBe(8)
+      const more = [
+        ...(workflowSection()?.querySelectorAll('button') ?? []),
+      ].find((button) => button.textContent === 'Show 4 more')
+      act(() => more?.click())
+      expect(nodeRows()).toBe(12)
+    })
+
+    it('reads only the status of each run while folded', async () => {
+      RUNS.r_3f03 = BATCH
+      RUNS.r_fail = FAILED
+      toggleGroup('workflow')
+      await render(
+        chat('main', {
+          messages: [
+            startCall('r_3f03', TITLE, 1),
+            startCall('r_fail', 'Batch', 2),
+          ],
+        }),
+      )
+      expect(statusCalls().length).toBe(2)
+      for (const [, payload] of statusCalls())
+        expect(payload).toMatchObject({ details: false })
+      const header = inSection('button[aria-expanded]')
+      expect(header?.getAttribute('aria-expanded')).toBe('false')
+      expect(header?.textContent).toContain('1 failed · 1 completed')
+      expect(inSection('button[aria-label^="Open "]')).toBeNull()
+    })
+
+    it('makes no call when the section is hidden', async () => {
+      RUNS.r_3f03 = BATCH
+      setSectionHidden('workflow', true)
+      await render(chat('main', { messages: [startCall('r_3f03', TITLE, 2)] }))
+      expect(statusCalls()).toEqual([])
+      expect(workflowSection()).toBeNull()
+    })
+
+    it('leaves out a run the worker no longer has', async () => {
+      await render(chat('main', { messages: [startCall('r_3f03', TITLE, 2)] }))
+      expect(statusCalls().length).toBe(1)
+      expect(workflowSection()).toBeNull()
     })
   })
 })

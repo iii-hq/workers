@@ -59,6 +59,7 @@ describe('the Sections menu', () => {
       'tickets',
       'prs',
       'assets',
+      'workflow',
       'subagents',
       'observers',
       'links',
