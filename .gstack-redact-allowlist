@@ -1,0 +1,3 @@
+# Synthetic malformed endpoint rejected by mesh/internal/meshnet/shim_test.go.
+# example.invalid is reserved for tests; these are not real credentials.
+https://user:pass@example.invalid
