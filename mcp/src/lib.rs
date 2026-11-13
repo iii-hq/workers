@@ -27,11 +27,13 @@ pub mod engine;
 pub mod functions;
 pub mod gateway;
 pub mod handler;
+pub mod http_guard;
 pub mod jsonrpc;
 pub mod manifest;
 pub mod origin;
 pub mod rbac_guard;
 pub mod sessions;
+pub mod sink_guard;
 pub mod transport;
 
 #[cfg(test)]

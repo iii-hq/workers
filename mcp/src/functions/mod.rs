@@ -1,10 +1,12 @@
 //! The worker's functions and routes.
 //!
 //! - `mcp::handler` serves the MCP Streamable HTTP endpoint: it observes
-//!   `http::on-request` for `POST <api_path>` and `DELETE <api_path>`, runs
-//!   [`handle_http`], and streams the reply as one SSE event.
-//! - `mcp::observed` is the target of every observer an MCP session creates
-//!   with `iii_observe`; it hands each delivery to [`Sessions::deliver`].
+//!   `http::on-request` for `POST`, `GET` and `DELETE <api_path>`, runs
+//!   [`handle_http`], and streams the reply as one SSE event; a `GET` stays
+//!   open as the session's stream of SSE observations.
+//! - `mcp::observed` is the target of every poll and SSE observer an MCP
+//!   session creates; it admits deliveries through [`sink_guard::admit`] and
+//!   hands them to [`Sessions::deliver`].
 
 use std::sync::Arc;
 
@@ -22,7 +24,15 @@ use crate::engine::SdkEngine;
 use crate::handler::{handle_http, App, HttpReply};
 use crate::rbac_guard::RbacMode;
 use crate::sessions::Sessions;
-use crate::transport::encode_sse_jsonrpc;
+use crate::sink_guard;
+use crate::transport::{encode_sse_jsonrpc, encode_sse_observation, KEEPALIVE};
+
+/// The methods the endpoint serves on `api_path`.
+pub const ROUTE_METHODS: [&str; 3] = ["POST", "GET", "DELETE"];
+
+/// How often an open `GET` stream gets a keepalive; below the http worker's
+/// default idle timeout (30 s).
+const KEEPALIVE_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub const FUNCTION_ID: &str = "mcp::handler";
 pub const SINK_FUNCTION_ID: &str = "mcp::observed";
@@ -93,9 +103,9 @@ pub fn route_args(method: &str, api_path: &str) -> Value {
     json!({ "method": method, "path": api_path })
 }
 
-/// The `POST` and `DELETE` routes of the endpoint.
+/// The [`ROUTE_METHODS`] routes of the endpoint.
 pub fn observe_routes(iii: &IIIClient, api_path: &str) -> Vec<ObserverHandle> {
-    ["POST", "DELETE"]
+    ROUTE_METHODS
         .iter()
         .map(|m| {
             iii.observe(
@@ -145,20 +155,25 @@ fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {
 }
 
 fn register_sink(iii: &Arc<IIIClient>, ctx: &Ctx) {
-    let sessions = ctx.sessions.clone();
-    // Not `private`: the engine refuses a private observer target. Anything
-    // delivered here that is not one of a live session's observers is dropped.
+    let ctx = ctx.clone();
+    // Not `private`: the engine refuses a private observer target. Deliveries
+    // pass the caller check first; anything that is not one of a live
+    // session's observers is dropped.
     iii.register_function(
         SINK_FUNCTION_ID,
-        RegisterFunction::new_async(move |event: Value| {
-            let sessions = sessions.clone();
+        RegisterFunction::new_async(move |mut observation: Value| {
+            let ctx = ctx.clone();
             async move {
-                sessions.deliver(event);
+                if sink_guard::admit(&ctx.engine, &mut observation).await {
+                    ctx.sessions.deliver(observation);
+                } else {
+                    tracing::warn!("mcp: dropped a delivery to {SINK_FUNCTION_ID} from a worker that does not host the observed function");
+                }
                 Ok(json!({}))
             }
         })
         .metadata(json!({ "internal": true, "trace_hidden": true }))
-        .description("Receives invocations observed by MCP sessions (iii_observe); internal."),
+        .description("Receives the observations of MCP sessions' poll and SSE observers; internal."),
     );
 }
 
@@ -189,6 +204,9 @@ async fn respond(
             return Ok(Value::Null);
         }
     }
+    if let Some(sid) = reply.stream.clone() {
+        return open_stream(ctx, writer, sid).await;
+    }
     if let Some(rpc) = &reply.rpc {
         let frame = encode_sse_jsonrpc(rpc);
         if let Err(err) = writer.write(frame.as_bytes()).await {
@@ -201,9 +219,46 @@ async fn respond(
     Ok(Value::Null)
 }
 
+/// Keep a `GET` response open as the session's stream: its SSE observers'
+/// observations, then a keepalive whenever it is quiet. The first write
+/// starts the http worker's streamed response; the loop then runs on its own
+/// task, so the invocation returns at once. It ends when the client goes
+/// away (a write fails), the session ends, or another `GET` replaces it.
+async fn open_stream(ctx: &Ctx, writer: ChannelWriter, session_id: String) -> Result<Value, Error> {
+    let mut rx = match ctx.sessions.attach_stream(&session_id) {
+        Ok(rx) => rx,
+        Err(_) => {
+            let _ = writer.close().await;
+            return Ok(Value::Null);
+        }
+    };
+    if writer.write(KEEPALIVE.as_bytes()).await.is_err() {
+        return Ok(Value::Null);
+    }
+    tokio::spawn(async move {
+        loop {
+            let frame = match tokio::time::timeout(KEEPALIVE_EVERY, rx.recv()).await {
+                Ok(Some(observation)) => encode_sse_observation(&observation),
+                Ok(None) => break,
+                Err(_) => KEEPALIVE.to_string(),
+            };
+            if writer.write(frame.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+        let _ = writer.close().await;
+    });
+    Ok(Value::Null)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_endpoint_serves_post_get_and_delete() {
+        assert_eq!(ROUTE_METHODS, ["POST", "GET", "DELETE"]);
+    }
 
     #[test]
     fn routes_cover_post_and_delete_on_the_api_path() {

@@ -2,16 +2,19 @@
 
 Model Context Protocol (MCP) server for the [iii engine](https://iii.dev), as a
 single Rust binary worker. It serves MCP 2025-06-18 over **Streamable HTTP**
-(`POST` and `DELETE` on `/mcp`, through the `http` worker) and gives any MCP
-client (Claude Code, Codex, OpenCode, Cursor, ...) the whole engine through
-eleven tools:
+(`POST`, `GET` and `DELETE` on `/mcp`, through the `http` worker) and gives
+any MCP client (Claude Code, Codex, OpenCode, Cursor, ...) the whole engine
+through twelve tools:
 
 - **`iii_call`** calls any function by id;
 - **`iii_secret_store`** stores a credential in the
   [`secrets`](../secrets) vault and returns a `secret://NAME` reference for
   the agent to pass on instead of the value;
-- **`iii_observe`** observes a function, buffering every matching invocation
-  in the client's MCP session, read with **`iii_events`**;
+- **`iii_observe`** observes a function: each matching invocation becomes an
+  observation, buffered in the client's MCP session and read with
+  **`iii_observations_poll`**, or handed to a target function the engine
+  runs; **`iii_observations_sse`** streams observations on the session's
+  `GET` stream instead;
 - agent profiles and skills come from the `iii-directory` worker.
 
 It runs **behind [`rbac-proxy`](../rbac-proxy)**, so RBAC decides what MCP
@@ -30,6 +33,17 @@ iii call compose::add worker=mcp
 
 `mcp` declares `http`, `rbac-proxy` and `secrets` as dependencies, so they
 come with it.
+
+The http worker listens on every interface (`0.0.0.0`) by default, and `mcp`
+refuses to serve an endpoint other machines can reach. Bind it to loopback
+(its configuration entry is `default-http`; `iii call http::configuration-id`
+names it in other namespaces):
+
+```bash
+iii call configuration::get --json '{"id": "default-http"}'
+# then set the same value with "host": "127.0.0.1"
+iii call configuration::set --json '{"id": "default-http", "value": { ..., "host": "127.0.0.1" }}'
+```
 `mcp` will not start yet: it is not behind rbac-proxy until step 4.
 
 ### 2. Provide an auth function
@@ -55,8 +69,14 @@ iii.registerFunction(
     if (expected.length < 32 || token.length !== expected.length || !timingSafeEqual(token, expected)) {
       throw new Error('invalid token')
     }
-    // worker_names: mcp keeps its own name, so compose sees it start.
-    return { allowed_functions: [], allow_function_registration: true, worker_names: ['mcp'] }
+    return {
+      allowed_functions: [],
+      allow_function_registration: true,
+      // mcp keeps its own name, so compose sees it start.
+      worker_names: ['mcp'],
+      // Agents store secrets; nothing on the MCP server may read one back.
+      forbidden_functions: ['secrets::resolve'],
+    }
   },
   // It sees bearer tokens: nothing may observe it.
   { observable: false },
@@ -110,7 +130,10 @@ rbac-proxy applies it live. Two lists decide what gets through:
 - `expose_functions` is what MCP clients may reach:
   `match("*")` is everything; narrow it (`match("orders::*")`,
   `metadata: { public: true }`, ...) to limit agents. Keep `secrets::set`
-  in it for `iii_secret_store`.
+  in it for `iii_secret_store`, and keep `secrets::resolve` out: it returns a
+  secret's value, so any agent on the MCP server could read every secret.
+  `match("*")` and `match("secrets::*")` both include it, which is why the
+  auth function above forbids it.
 
 See [rbac-proxy](https://iii.dev/registry/workers/rbac-proxy) for the rules,
 scoped grants and hooks. Check it with `iii call rbac-proxy::status`:
@@ -150,8 +173,11 @@ The endpoint is the http worker's URL plus `/mcp`
 claude mcp add --transport http iii http://127.0.0.1:3111/mcp
 ```
 
-Ask the agent for `iii_status`: it reports `"rbac": "rbac-proxy"` and the
-proxy's policy.
+Ask the agent for `iii_status`: it reports `"access_control": "rbac-proxy"`
+and the rules in force.
+
+Several MCP servers can share one http worker: give each `mcp` its own
+`api_path` (and its own rbac-proxy and token, to give each different rules).
 
 ### Local development without RBAC
 
@@ -176,11 +202,11 @@ connection straight to the engine gets `function_not_found`.
 
 | Situation | Outcome |
 |---|---|
-| Behind rbac-proxy | Starts. If the proxy exposes every function **and** has no auth function, it logs a warning. |
+| Behind rbac-proxy | Starts. If the proxy's `expose_functions` include `match("*")` **and** it has no auth function, it logs a warning. |
 | Not behind rbac-proxy | Refuses to start (exit 1), with the message below. |
 | Not behind rbac-proxy, `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true` or `1` | Starts, warns in the log, `initialize` instructions and `iii_status`. |
 | `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` set to anything else | Refuses, naming the accepted values. |
-| Behind rbac-proxy with the flag set | Starts; the flag is ignored with a note. |
+| Behind rbac-proxy with the flag set | Starts; logs at `info` that the flag is ignored. |
 | The probe cannot be made (engine or proxy down, connection refused by auth, timeout) | Refuses to start. |
 
 ```text
@@ -202,36 +228,51 @@ can register functions on the engine directly could register a fake
 `rbac-proxy::session`. All MCP clients share the worker's one proxied
 identity, so RBAC decides what "agents via MCP" may do as a whole.
 
+Next, `mcp` reads `http::status`. If the http worker listens anywhere but
+loopback (`0.0.0.0`, `::`, a LAN or public address), it refuses to start and
+says how to bind it to `127.0.0.1`; `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true`
+(or `1`) serves anyway, with a warning. If `http::status` cannot be read, it
+starts with a warning.
+
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `iii_call` | Call a function by id with a JSON `payload` (default `{}`). `timeout_ms`; `void: true` to fire and forget; results over `max_chars` (default 100000) come back cut, with `truncated` and `total_chars`. `mcp::` functions (this worker's internals) and `secrets::resolve` are refused. |
-| `iii_secret_store` | Store a credential: `name` (`secret://<name>`), `value`, `consumers` (worker names allowed to resolve it, at least one, never `mcp`), `description`. Calls `secrets::set` and returns only `{ ref, hint, fingerprint, consumers }`. Storing an existing name rotates it. rbac-proxy must expose `secrets::set`. |
-| `iii_observe` | Observe a function: `function_id`, `filters`, `args`, `capture`, `namespace`, `max_events`, `expires_in_ms`. Returns `{ observer_id, function_id, state }`. Needs a session. |
-| `iii_events` | Read and remove buffered events, oldest first, for one `observer_id` or all of the session's; `max` (default 50). Returns `{ events, remaining, dropped }`. Needs a session. |
-| `iii_observers` | The session's observers with `state`, `buffered`, `received`, `dropped`. Needs a session. |
-| `iii_unobserve` | Remove one observer, discarding its unread events. Needs a session. |
-| `iii_status` | Server version, session id, and `rbac` (`rbac-proxy` with its policy, or `disabled` with a warning). |
+| `iii_call` | Call a function by id with a JSON `payload` (default `{}`). `timeout_ms`; `void: true` to fire and forget; results over `max_chars` (default 100000) come back cut, with `truncated` and `total_chars`. `mcp::` functions (this worker's internals) are refused; everything else is RBAC's decision. |
+| `iii_secret_store` | Store a credential: `name` (`secret://<name>`), `value`, `consumers` (worker names allowed to resolve it, at least one), `description`. Calls `secrets::set` and returns only `{ ref, hint, fingerprint, consumers }`. Storing an existing name rotates it. rbac-proxy must expose `secrets::set`. |
+| `iii_observe` | Observe a function: `function_id`, `filters`, `args`, `capture`, `namespace`, `max_observations`, `expires_in_ms`, and optionally `target_function_id`. Without a target, observations are buffered for `iii_observations_poll`. With one, the engine runs that function with each observation and nothing comes back to the session. Returns `{ observer_id, function_id, state, delivery, target_function_id? }`. Needs a session. |
+| `iii_observations_sse` | Same arguments without `target_function_id`: each observation is sent on the session's `GET` stream as a `notifications/iii/observation` message, and waits in the session while no stream is open. Needs a session. |
+| `iii_observations_poll` | Read and remove buffered observations of poll observers, oldest first, for one `observer_id` or all of them; `max` (default 50). Returns `{ observations, remaining, dropped }`. Needs a session. |
+| `iii_observers` | The session's observers with `delivery`, `state`, `buffered`, `received`, `dropped` (and `target_function_id`). Needs a session. |
+| `iii_unobserve` | Remove one observer, discarding its unread observations. Needs a session. |
+| `iii_status` | Server version, session id, and `access_control`: `rbac-proxy` with its `policy` (the exposed globs), or `disabled` with a warning. |
 | `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). |
 | `iii_list_skills`, `iii_get_skill` | Skills from `directory::skills::*` (`search`, `prefix`). |
 
+The server cannot register functions: the `initialize` instructions tell the
+agent to create or change a worker it controls and register them with the
+iii-sdk.
+
 Engine errors come back as tool results with `isError: true` and the engine's
-code, so the model reads them. Unknown tool names are tool errors too.
+code, as the MCP spec prescribes for tool execution errors, so the model reads
+them; JSON-RPC errors are kept for protocol errors. Unknown tool names are
+tool errors too.
 
 ## Secrets
 
 An agent that holds a credential stores it with `iii_secret_store` and passes
 the `secret://NAME` reference to the function that needs it, which resolves
-it through `secrets::resolve` if it is a listed consumer. To keep the value
+it through `secrets::resolve` if it is a listed consumer. A value is never
+retrievable through the MCP server: otherwise any agent connected to it could
+read every secret. rbac-proxy keeps `secrets::resolve` out (see setup step 2),
+and the `secrets` worker only resolves for listed consumers. To keep the value
 out of the engine's records:
 
 - `mcp::handler`, which receives every request body, is registered
   `observable: false`, so no observer gets a copy;
 - this worker turns off payload capture in its trace spans
   (`III_DISABLE_TRACE_PAYLOADS=1`);
-- tool results and error messages never contain the value, and `iii_call`
-  refuses `secrets::resolve`, so a value never goes back to a client.
+- tool results and error messages never contain the value.
 
 The value still crosses the `http` worker, and anything that records
 request bodies there (its own traces, a proxy in front of it) can see it.
@@ -246,20 +287,35 @@ with the header ends the session (200; 404 if unknown, 400 without the
 header). Requests without the header work for every tool except the observe
 ones.
 
-An MCP server cannot wake its client mid-turn, so observing is buffered:
+An observer delivers in one of three ways:
 
-- every observer targets `mcp::observed`, one sink for the worker, which
-  routes each delivery to its session by `observer_id`; deliveries for
-  observers that are not live are dropped;
-- each observer keeps up to `max_buffered_events` (default 500); beyond that
-  the oldest are dropped and counted;
-- a session idle for `session_idle_ttl_secs` (default 1800) is ended and its
-  observers disposed; the worker also disposes every observer on shutdown;
+- **poll** (`iii_observe`): the engine sends each observation to
+  `mcp::observed`, one sink for the worker, which routes it to its session by
+  `observer_id`; the client reads it with `iii_observations_poll`;
+- **sse** (`iii_observations_sse`): through the same sink, then out on the
+  session's `GET /mcp` stream (an SSE response that stays open, with a
+  keepalive comment every 15 s); held in the session while no stream is open;
+- **target** (`iii_observe` with `target_function_id`): the engine runs that
+  function with each observation; nothing reaches the session.
+
+Limits and cleanup:
+
+- at most `max_sessions` sessions (default 16; `initialize` beyond it gets
+  **503**) and `max_observers_per_session` observers (default 100);
+- each session holds up to `max_buffered_observations` (default 500) across
+  its observers; beyond that the oldest are dropped and counted;
+- the idle-session sweep, a task in `mcp` that runs once a minute, ends every
+  session idle for `session_idle_ttl_secs` (default 1800) and disposes its
+  observers; the worker also disposes every observer on shutdown;
 - an observer of a function nobody hosts yet stays `pending`; a refused one
   (bad filter, unknown capture, RBAC) is reported with the engine's code.
 
 `mcp::observed` is public because the engine refuses a private observer
-target; it is marked internal and hidden from traces.
+target; it is marked internal and hidden from traces. The engine stamps every
+call a worker makes with the caller's worker id, and its own deliveries carry
+no stamp, so the sink accepts a stamped delivery only from the worker that
+hosts the observed function. Another worker calling it with a forged
+`observer_id` is dropped.
 
 ## Origin
 
@@ -283,7 +339,9 @@ defaults with a warning):
 api_path: "/mcp"
 allowed_origins: []
 session_idle_ttl_secs: 1800
-max_buffered_events: 500
+max_sessions: 16
+max_observers_per_session: 100
+max_buffered_observations: 500
 ```
 
 | Environment | Meaning |
@@ -291,6 +349,7 @@ max_buffered_events: 500
 | `III_MCP_ENGINE_URL` | rbac-proxy's WebSocket URL (wins over `III_URL`; `--url` wins over both) |
 | `III_TOKEN` | Bearer token sent to rbac-proxy's auth function |
 | `III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC` | `true` or `1` to start without rbac-proxy (local development only) |
+| `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP` | `true` or `1` to serve on an http worker that is not bound to loopback |
 
 ## Development
 

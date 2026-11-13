@@ -15,14 +15,16 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "MCP 2025-06-18 Streamable HTTP server for the iii engine: iii_call / iii_observe gateway, behind rbac-proxy.".to_string(),
+        description: "MCP 2025-06-18 Streamable HTTP server for the iii engine: iii_call / iii_observe gateway (poll, SSE or target observers), behind rbac-proxy.".to_string(),
         default_config: {
             let cfg = McpConfig::default();
             serde_json::json!({
                 "api_path": cfg.api_path,
                 "allowed_origins": cfg.allowed_origins,
                 "session_idle_ttl_secs": cfg.session_idle_ttl_secs,
-                "max_buffered_events": cfg.max_buffered_events,
+                "max_sessions": cfg.max_sessions,
+                "max_observers_per_session": cfg.max_observers_per_session,
+                "max_buffered_observations": cfg.max_buffered_observations,
             })
         },
         supported_targets: vec![env!("TARGET").to_string()],
@@ -51,7 +53,9 @@ mod tests {
                 "api_path": cfg.api_path,
                 "allowed_origins": [],
                 "session_idle_ttl_secs": cfg.session_idle_ttl_secs,
-                "max_buffered_events": cfg.max_buffered_events,
+                "max_sessions": 16,
+                "max_observers_per_session": 100,
+                "max_buffered_observations": 500,
             })
         );
     }
