@@ -5,7 +5,6 @@ import {
   ChevronUp,
   ClipboardCheck,
   Loader2,
-  MoreHorizontal,
   Plus,
   Square,
 } from 'lucide-react'
@@ -1042,19 +1041,6 @@ export function Composer({
               <div onPointerDown={(event) => event.preventDefault()}>
                 {renderActionButton()}
               </div>
-              <input
-                ref={attachInputRef}
-                type="file"
-                multiple
-                hidden
-                onChange={async (event) => {
-                  const files = Array.from(event.target.files ?? [])
-                  event.target.value = ''
-                  if (files.length > 0) {
-                    handleAttach(await attachmentsFromFiles(files))
-                  }
-                }}
-              />
             </div>
           ) : (
             <>
@@ -1064,31 +1050,26 @@ export function Composer({
               blur folds the card to one line and drops the keyboard, so the
               tap would land on a surface that just moved. The pickers open on
               click, which a cancelled pointerdown leaves alone. */}
+              {/* One row at every phone width, never wrapping. Leading: what
+              the message goes out with — the + menu (attach, model,
+              permissions, memory, folder), the agent and the model, which
+              truncates first. Trailing: mic and send together, where the
+              thumb lands. */}
               <div
-                className="composer-mobile-toolbar flex min-w-0 flex-wrap items-center gap-1 px-2 pb-2 sm:hidden"
+                className="composer-mobile-toolbar flex min-w-0 flex-nowrap items-center gap-1 px-2 pb-2 sm:hidden"
                 onPointerDown={(event) => event.preventDefault()}
               >
-                <AttachmentButton
-                  onAttach={handleAttach}
-                  disabled={inputDisabled}
-                  className={toolbarIconButtonClass}
-                />
-                <ComposerActionsSlot layout="narrow">
-                  {agentPicker}
-                  {composerActions}
-                </ComposerActionsSlot>
                 <button
                   type="button"
                   onClick={() => setMobileSettingsOpen(true)}
-                  aria-label="chat settings"
-                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  aria-label="attach files, model and settings"
+                  className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
                 >
-                  <span
-                    className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                    aria-hidden="true"
-                  />
-                  <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+                  <Plus className="size-5 shrink-0" aria-hidden />
                 </button>
+                <ComposerActionsSlot layout="narrow">
+                  {agentPicker}
+                </ComposerActionsSlot>
                 {composerControls}
                 <ModelPicker
                   value={model}
@@ -1101,12 +1082,35 @@ export function Composer({
                   loading={catalogLoading}
                   showRefresh={false}
                   triggerAppearance="subtle"
-                  className="ml-auto min-w-0"
+                  className="composer-mobile-model min-w-0 shrink"
                 />
+                <span aria-hidden className="min-w-2 flex-1" />
+                {composerActions ? (
+                  <div className="flex shrink-0 items-center">
+                    <ComposerActionsSlot layout="narrow">
+                      {composerActions}
+                    </ComposerActionsSlot>
+                  </div>
+                ) : null}
                 {renderActionButton()}
               </div>
             </>
           )}
+          {mobileLayout ? (
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={async (event) => {
+                const files = Array.from(event.target.files ?? [])
+                event.target.value = ''
+                if (files.length > 0) {
+                  handleAttach(await attachmentsFromFiles(files))
+                }
+              }}
+            />
+          ) : null}
 
           {/* Desktop toolbar: what the message goes out as on the left —
             the model (with its provider), then the agent, memory and
@@ -1233,8 +1237,9 @@ export function Composer({
         onWorkingDirChange={onWorkingDirChange}
         onThinkingLevelChange={onThinkingLevelChange}
         onPermissionModeChange={onPermissionModeChange}
+        attachDisabled={inputDisabled}
         onAttachFiles={
-          compactRow
+          mobileLayout
             ? () => {
                 // Inside the tap, so the browser lets the picker open.
                 attachInputRef.current?.click()

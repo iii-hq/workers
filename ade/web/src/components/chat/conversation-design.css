@@ -836,6 +836,21 @@
   }
 }
 
+/* The phone toolbar never wraps, so on the narrowest panes (fold covers,
+   200% zoom) it sheds what has another way in before send can clip: the
+   model first (the + menu has it), then the agent. Mic and send stay. */
+@container (max-width: 300px) {
+  .composer-shell .composer-mobile-toolbar .composer-mobile-model {
+    display: none;
+  }
+}
+
+@container (max-width: 220px) {
+  .composer-shell .composer-mobile-toolbar .composer-agent-trigger {
+    display: none;
+  }
+}
+
 @media (pointer: coarse) {
   .composer-agent-trigger {
     min-height: 44px;
