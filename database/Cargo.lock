@@ -777,7 +777,7 @@ dependencies = [
  "serde_yml",
  "sqlformat",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
