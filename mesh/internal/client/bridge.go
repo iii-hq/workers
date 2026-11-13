@@ -220,7 +220,7 @@ func (b *Bridge) SetCatalog(c node.Catalog) {
 	b.setCatalog(c)
 }
 
-// setCatalog does not re-register a mirror whose schemas changed. Callers hold b.mu.
+// setCatalog does not re-register a mirror whose schemas or internal flag changed. Callers hold b.mu.
 func (b *Bridge) setCatalog(c node.Catalog) {
 	b.catalog = c
 	want := map[string]node.CatalogEntry{}
@@ -239,8 +239,11 @@ func (b *Bridge) setCatalog(c node.Catalog) {
 		if b.mirrors[id] != nil {
 			continue
 		}
-		// No metadata: what another machine sends must not mark a mirror internal or hidden.
-		ref, err := b.local.RegisterFunction(id, b.mirror(e), iii.RegisterFunctionOptions{Description: e.Description, RequestFormat: e.RequestFormat, ResponseFormat: e.ResponseFormat})
+		opts := iii.RegisterFunctionOptions{Description: e.Description, RequestFormat: e.RequestFormat, ResponseFormat: e.ResponseFormat}
+		if e.Internal { // the only metadata another machine's entry carries: an internal function stays out of agent catalogs here too
+			opts.Metadata = json.RawMessage(`{"internal":true}`)
+		}
+		ref, err := b.local.RegisterFunction(id, b.mirror(e), opts)
 		if err != nil {
 			log.Printf("mesh client: mirror %q: %v", id, err)
 			continue
@@ -332,7 +335,7 @@ func (b *Bridge) mirror(e node.CatalogEntry) iii.Handler {
 	}
 }
 
-// Sync re-lists the shared workers' functions and updates the hub registrations.
+// Sync re-lists the shared functions and updates the hub registrations.
 func (b *Bridge) Sync(ctx context.Context, share []string) error {
 	found := map[string]Function{}
 	var err error
@@ -340,18 +343,24 @@ func (b *Bridge) Sync(ctx context.Context, share []string) error {
 		b.mu.Lock()
 		known, mirrors := maps.Clone(b.functions), maps.Clone(b.mirrors)
 		b.mu.Unlock()
-		found, err = Discover(ctx, b.local, b.namespace, share, func(r Row) bool {
-			// The worker check also guards against an engine that ignores the workers filter.
+		ids, workers := SharesIDs(share), share
+		if ids {
+			workers = nil // an id names no worker: list them all
+		}
+		found, err = Discover(ctx, b.local, b.namespace, workers, ids, func(r Row) bool {
+			// The entry check also guards against an engine that ignores the workers filter.
 			// A mirror is never published back, whatever the mesh worker is named.
-			return r.Namespace == b.namespace && slices.Contains(share, r.WorkerName) && Bridgeable(r.FunctionID) && mirrors[r.FunctionID] == nil
+			return r.Namespace == b.namespace && ShareEntry(share, r.WorkerName, r.FunctionID, Internal(r.Metadata)) != "" && Bridgeable(r.FunctionID) && mirrors[r.FunctionID] == nil
 		}, known)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.share = slices.Clone(share)
 	if err != nil {
-		// Keep what is known, but an unshared worker leaves the hub at once.
-		maps.DeleteFunc(b.functions, func(_ string, f Function) bool { return !slices.Contains(share, f.Worker) })
+		// Keep what is known, but an unshared worker or id leaves the hub at once.
+		maps.DeleteFunc(b.functions, func(id string, f Function) bool {
+			return ShareEntry(share, f.Worker, id, Internal(f.Opts.Metadata)) == ""
+		})
 	} else {
 		b.functions = found
 	}
@@ -381,12 +390,19 @@ type detail struct {
 
 // Discover lists the functions of workers that keep accepts, with their schemas
 // read in namespace. An id known under the same worker is reused without a read.
-// workers must not be empty: the engine reads an empty filter as all workers.
-func Discover(ctx context.Context, engine caller, namespace string, workers []string, keep func(Row) bool, known map[string]Function) (map[string]Function, error) {
+// No workers lists every worker; internal adds the rows the engine hides by default.
+func Discover(ctx context.Context, engine caller, namespace string, workers []string, internal bool, keep func(Row) bool, known map[string]Function) (map[string]Function, error) {
 	var list struct {
 		Functions []Row `json:"functions"`
 	}
-	if err := call(ctx, engine, "engine::functions::list", map[string]any{"workers": workers}, &list); err != nil {
+	req := map[string]any{}
+	if len(workers) > 0 {
+		req["workers"] = workers
+	}
+	if internal {
+		req["include_internal"] = true
+	}
+	if err := call(ctx, engine, "engine::functions::list", req, &list); err != nil {
 		return nil, err
 	}
 	found := map[string]Function{}
@@ -395,7 +411,8 @@ func Discover(ctx context.Context, engine caller, namespace string, workers []st
 		if !keep(row) {
 			continue
 		}
-		if f, ok := known[row.FunctionID]; ok && f.Worker == row.WorkerName {
+		// A flipped internal flag reads a fresh copy: the keep rule and the status go by it.
+		if f, ok := known[row.FunctionID]; ok && f.Worker == row.WorkerName && Internal(f.Opts.Metadata) == Internal(row.Metadata) {
 			found[row.FunctionID] = f
 			continue
 		}
@@ -452,6 +469,7 @@ func Bridgeable(id string) bool {
 
 // register diffs the desired functions against the hub registrations. Changed
 // schemas of an existing id are not re-registered. Callers hold b.mu.
+// shortcut: nor a flipped internal flag (the hub row and mirrors keep the first until a restart); re-register on a flip if agent catalogs must follow it.
 func (b *Bridge) register() {
 	if b.remote == nil {
 		return
@@ -498,7 +516,7 @@ func (b *Bridge) shared(prefix string) []SharedStatus {
 		s := SharedStatus{Worker: w, State: "not running", Functions: []string{}}
 		registered := true
 		for id, f := range b.functions {
-			if f.Worker == w {
+			if ShareEntry(b.share, f.Worker, id, Internal(f.Opts.Metadata)) == w {
 				s.Functions = append(s.Functions, prefix+id)
 				registered = registered && b.refs[id] != nil
 			}

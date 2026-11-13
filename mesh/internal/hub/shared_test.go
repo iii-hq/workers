@@ -22,6 +22,7 @@ type fakeEngine struct {
 	rows   []map[string]any
 	fail   error
 	lists  int    // list calls, failed ones included
+	req    string // the last list call's payload
 	infos  int    // ids whose schemas were read
 	onList func() // runs once, after the next listing is read, under mu
 }
@@ -31,6 +32,7 @@ func (e *fakeEngine) Call(_ context.Context, r iii.CallRequest) (json.RawMessage
 	defer e.mu.Unlock()
 	if r.FunctionID == "engine::functions::list" {
 		e.lists++
+		e.req = string(r.Payload)
 	}
 	if e.fail != nil {
 		return nil, e.fail
@@ -151,6 +153,54 @@ func TestCatalogRows(t *testing.T) {
 	h.config.Share = nil
 	if err := h.refreshShared(t.Context()); err != nil || catalogOf(h).Rev != "" || len(catalogOf(h).Functions) != 0 {
 		t.Fatalf("empty catalog %+v %v", catalogOf(h), err)
+	}
+}
+
+func TestCatalogSharesFunctionsByID(t *testing.T) {
+	h, e, _ := sharedHub(t, "shell", "harness::send", "shell::grant", "laptop::x", "gone::coder::run")
+	internal := func(r map[string]any) map[string]any { r["metadata"] = map[string]any{"internal": true}; return r }
+	e.set(
+		fn("shell::exec", "project", "shell"),
+		internal(fn("shell::grant", "project", "shell")), // cited
+		internal(fn("shell::spawn", "project", "shell")), // a worker entry shares no internal function
+		internal(fn("harness::send", "project", "harness")),
+		internal(fn("harness::stop", "project", "harness")),
+		fn("harness::status", "project", "harness"),
+		internal(fn("laptop::coder::run", "project", bridgeWorker("laptop"))), // laptop shares it by id
+		fn("laptop::x", "project", "other"),                                   // a cited hub id under a machine's name
+		fn("gone::coder::run", "project", bridgeWorker("gone")),               // cited, but a removed machine's row
+	)
+	if err := h.refreshShared(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if e.req != `{"include_internal":true}` {
+		t.Fatalf("list payload %s", e.req)
+	}
+	internalOf := map[string]bool{}
+	for _, f := range catalogOf(h).Functions {
+		internalOf[f.Owner+" "+f.ID] = f.Internal
+	}
+	want := map[string]bool{"hub harness::send": true, "laptop laptop::coder::run": true, "hub shell::exec": false, "hub shell::grant": true}
+	if !reflect.DeepEqual(internalOf, want) {
+		t.Fatalf("catalog %v", internalOf)
+	}
+	status := []meshclient.SharedStatus{
+		{Worker: "shell", State: "shared", Functions: []string{"hub::shell::exec"}},
+		{Worker: "harness::send", State: "shared", Functions: []string{"hub::harness::send"}},
+		{Worker: "shell::grant", State: "shared", Functions: []string{"hub::shell::grant"}},
+		{Worker: "laptop::x", State: "name conflict", Functions: []string{}},
+		{Worker: "gone::coder::run", State: "not running", Functions: []string{}},
+	}
+	if s := h.Status(); !reflect.DeepEqual(s.Shared, status) {
+		t.Fatalf("status %+v", s.Shared)
+	}
+	// Without an id entry the hub still reads internal rows, a machine's shares by id, of the listed workers only.
+	h.config.Share = []string{"shell"}
+	if err := h.refreshShared(t.Context()); err != nil || e.req != `{"include_internal":true,"workers":["shell","rbac-proxy:laptop::mesh-bridge"]}` {
+		t.Fatalf("list payload %s %v", e.req, err)
+	}
+	if got := ids(catalogOf(h)); !reflect.DeepEqual(got, []string{"laptop laptop::coder::run", "hub shell::exec"}) {
+		t.Fatalf("catalog %v", got)
 	}
 }
 

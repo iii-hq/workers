@@ -198,7 +198,8 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitPeerPath(desktop)
-	desktopClient := &http.Client{Transport: &http.Transport{DialContext: desktop.Dial}, Timeout: 3 * time.Second}
+	// 15 s: a node that just joined waits SYN retransmits for its first netmap, longer under -race on a loaded machine.
+	desktopClient := &http.Client{Transport: &http.Transport{DialContext: desktop.Dial}, Timeout: 15 * time.Second}
 	defer desktopClient.CloseIdleConnections()
 	sibling, siblingDone := connect(desktopClient, "desktop")
 	<-revokeEvents

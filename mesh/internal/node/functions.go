@@ -33,6 +33,7 @@ type CatalogEntry struct {
 	Description    string          `json:"description,omitempty"`
 	RequestFormat  json.RawMessage `json:"request_format,omitempty"`
 	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	Internal       bool            `json:"internal,omitempty"` // the owner registered it internal: hidden from agent catalogs, called by id
 }
 
 // Catalog is what mesh-node::catalog::apply carries. Rev is "" for an empty one.

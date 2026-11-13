@@ -28,21 +28,25 @@ const (
 type shared struct {
 	catalog node.Catalog
 	rows    map[string]sharedRow               // catalog entries by hub-engine id
-	workers map[string]meshclient.SharedStatus // the share entries read, by worker
+	workers map[string]meshclient.SharedStatus // the share entries read, by entry
 	skipped []string                           // machines whose functions do not fit
 }
-type sharedRow struct{ owner, worker string }
+type sharedRow struct {
+	owner, worker string
+	internal      bool
+}
 
 func bridgeWorker(machine string) string { return "rbac-proxy:" + machine + "::mesh-bridge" }
 
 // refreshShared reads the catalog with no lock held and swaps it in: the hub's
-// shared workers' functions and those of every machine on the hub's version.
+// shared functions and those of every machine on the hub's version.
 func (h *Hub) refreshShared(ctx context.Context) error {
 	engine := h.engineRPC()
 	if engine == nil || h.Coordinator == nil {
 		return errors.New("hub engine is not connected")
 	}
 	share := h.Config().Share
+	ids := meshclient.SharesIDs(share)
 	joined, current := map[string]bool{}, map[string]bool{}
 	workers := slices.Clone(share)
 	for _, n := range h.Coordinator.Nodes() {
@@ -56,24 +60,34 @@ func (h *Hub) refreshShared(ctx context.Context) error {
 		}
 	}
 	found := map[string]meshclient.Function{}
-	conflict := map[string]bool{}
+	conflict := map[string]bool{}  // by share entry
+	entryOf := map[string]string{} // the share entry of each hub row kept, by id
 	kept := map[string]int{}
-	if len(workers) > 0 { // an empty filter lists every worker
+	if len(workers) > 0 || ids { // an empty filter lists every worker
+		if ids {
+			workers = nil // an id names no worker: list them all
+		}
 		var err error
-		found, err = meshclient.Discover(ctx, engine, h.Namespace, workers, func(r meshclient.Row) bool {
+		// Internal rows too: a machine's are the functions it shares by id.
+		found, err = meshclient.Discover(ctx, engine, h.Namespace, workers, true, func(r meshclient.Row) bool {
 			if r.Namespace != h.Namespace {
 				return false
 			}
 			owner, local, _ := strings.Cut(r.FunctionID, "::")
-			hubRow := slices.Contains(share, r.WorkerName)
-			keep := hubRow && meshclient.Bridgeable(r.FunctionID)
+			entry := meshclient.ShareEntry(share, r.WorkerName, r.FunctionID, meshclient.Internal(r.Metadata))
+			keep := entry != "" && meshclient.Bridgeable(r.FunctionID)
 			if joined[owner] {
 				// The owner comes from the id, proven by the bridge's worker name; a hub
-				// worker under a machine's name could be that machine's unnamed worker.
-				conflict[r.WorkerName] = conflict[r.WorkerName] || hubRow
+				// function under a machine's name could be that machine's unnamed worker's.
+				if entry != "" {
+					conflict[entry] = true
+				}
 				keep = current[owner] && r.WorkerName == bridgeWorker(owner) && meshclient.Bridgeable(local)
 			} else {
+				// A machine removed a moment ago may still have rows: its sessions' functions are never the hub's.
+				keep = keep && !strings.HasPrefix(r.WorkerName, "rbac-proxy:"+owner+"::")
 				owner = "hub"
+				entryOf[r.FunctionID] = entry
 			}
 			if keep {
 				kept[owner]++
@@ -93,19 +107,20 @@ func (h *Hub) refreshShared(ctx context.Context) error {
 	rows := map[string]sharedRow{}
 	for id, f := range found {
 		owner := "hub"
-		if !slices.Contains(share, f.Worker) {
+		if entryOf[id] == "" {
 			owner, _, _ = strings.Cut(id, "::")
-		} else if conflict[f.Worker] {
+		} else if conflict[entryOf[id]] {
 			continue
 		}
-		e := node.CatalogEntry{ID: id, Owner: owner, Description: f.Opts.Description, RequestFormat: f.Opts.RequestFormat, ResponseFormat: f.Opts.ResponseFormat}
+		internal := meshclient.Internal(f.Opts.Metadata)
+		e := node.CatalogEntry{ID: id, Owner: owner, Description: f.Opts.Description, RequestFormat: f.Opts.RequestFormat, ResponseFormat: f.Opts.ResponseFormat, Internal: internal}
 		b, _ := json.Marshal(e)
 		if byOwner[owner] == nil {
 			byOwner[owner] = &owned{}
 		}
 		byOwner[owner].entries = append(byOwner[owner].entries, e)
 		byOwner[owner].size += len(b)
-		rows[id] = sharedRow{owner, f.Worker}
+		rows[id] = sharedRow{owner, f.Worker, internal}
 	}
 	entries := []node.CatalogEntry{}
 	skipped := []string{}
@@ -136,8 +151,8 @@ func (h *Hub) refreshShared(ctx context.Context) error {
 	states := map[string]meshclient.SharedStatus{}
 	for _, w := range share {
 		s := meshclient.SharedStatus{Worker: w, State: "not running", Functions: []string{}}
-		for id, f := range found {
-			if f.Worker == w && !conflict[w] {
+		for id := range found {
+			if entryOf[id] == w && !conflict[w] {
 				s.State = "too large"
 				if !hubTooLarge {
 					s.State = "shared"

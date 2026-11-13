@@ -374,7 +374,7 @@ func TestCatalogPushedWhenTheRevisionDiffers(t *testing.T) {
 		t.Fatal("before the first read: ", err)
 	}
 	catalog := node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "shell::exec", Owner: "hub", Description: "run"}}}
-	h.shared = shared{catalog: catalog, rows: map[string]sharedRow{"shell::exec": {"hub", "shell"}}}
+	h.shared = shared{catalog: catalog, rows: map[string]sharedRow{"shell::exec": {"hub", "shell", false}}}
 	if err := online("workers::apply", "catalog::apply"); err != nil || !reflect.DeepEqual(*r.catalog, catalog) {
 		t.Fatalf("catalog %+v: %v", r.catalog, err)
 	}

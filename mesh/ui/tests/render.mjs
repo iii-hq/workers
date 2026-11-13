@@ -94,8 +94,39 @@ try {
   const longNodes = [{ ...nodes[2], name: 'engineering-workstation-archive', path: 'relay / ' + 'long-network-path/'.repeat(12), version: '0.1.0-build-' + '1234567890'.repeat(8),
     workers: [{ name: 'worker-with-a-very-long-name', state: 'waiting for the saved operator to sign in', functions: [longFunction.function_id] },
       { name: 'another-worker-with-a-long-name', state: 'shared', functions: [] }] }]
-  // Local workers the share lists offer; mesh, secrets and approval-gate are never shareable.
-  const localWorkers = ['shell', 'state', 'mesh', 'secrets', 'approval-gate']
+  // The local engine's own functions, as engine::functions::list reports them with include_internal. An id need not start
+  // with its worker's name (ide registers coder::, state registers harness::state::), and internal ones carry metadata.
+  const longLocal = { function_id: `state::snapshots::${'x'.repeat(92)}::export`, worker_name: 'state',
+    description: `Exports a snapshot to https://storage.example.com/v1/${'abcdef0123456789'.repeat(5)}` }
+  const localFunctions = [
+    { function_id: 'shell::exec', worker_name: 'shell', description: 'Runs a command' },
+    { function_id: 'shell::spawn', worker_name: 'shell' },
+    { function_id: 'state::get', worker_name: 'state', description: 'Reads a value' },
+    { function_id: 'state::set', worker_name: 'state', description: 'Writes a value' },
+    longLocal,
+    { function_id: 'state::on-config-change', worker_name: 'state', metadata: { internal: true } },
+    { function_id: 'harness::state::get', worker_name: 'state', description: 'Reads a session value', metadata: { internal: true } },
+    { function_id: 'harness::run', worker_name: 'harness', description: 'Starts a turn' },
+    { function_id: 'harness::sessions::list', worker_name: 'harness' },
+    { function_id: 'harness::stop', worker_name: 'harness' },
+    { function_id: 'harness::send', worker_name: 'harness', metadata: { internal: true } },
+    { function_id: 'harness::turn', worker_name: 'harness', metadata: { internal: true, trace_hidden: true } },
+    { function_id: 'coder::read-file', worker_name: 'ide', description: 'Reads a file from the workspace' },
+    // A worker with internal functions only: the picker is the one way to share them.
+    { function_id: 'telemetry::flush', worker_name: 'iii-telemetry', metadata: { internal: true } },
+  ]
+  // Never offered: the mesh's own, secrets and approval-gate, and the engine's own (listed only with include_internal).
+  const neverListed = [
+    { function_id: 'mesh::status', worker_name: 'mesh' }, { function_id: 'secrets::resolve', worker_name: 'secrets', metadata: { internal: true } },
+    { function_id: 'approval-gate::ask', worker_name: 'approval-gate' }, { function_id: 'engine::functions::list', worker_name: 'iii-engine-functions' },
+  ]
+  // Status rows keyed by entry, as the worker builds them: an id entry takes its function from its worker's row, a worker
+  // entry never covers an internal function, and an entry with no function is not running.
+  const shareRows = (share, prefix, state) => share.map((entry) => {
+    const ids = localFunctions.filter((fn) => entry.includes('::') ? fn.function_id === entry
+      : fn.worker_name === entry && !fn.metadata?.internal && !share.includes(fn.function_id)).map((fn) => prefix + fn.function_id)
+    return { worker: entry, state: ids.length ? state : 'not running', functions: ids }
+  })
   // A client registers what the mesh shares with it as its own functions, under the mesh worker.
   const mirrorFunctions = [
     { function_id: 'hub::shell::exec', worker_name: 'mesh', description: 'Runs a command' },
@@ -144,8 +175,7 @@ try {
         const tunnel = hub?.tunnel?.enabled !== true ? undefined
           : publicURL ? { enabled: true, tunnel_id: 'mesh', state: 'overridden' }
           : { enabled: true, tunnel_id: 'mesh', ...tunnelPhase }
-        const shared = (Array.isArray(hub?.share) ? hub.share : []).map((worker) => ({ worker, state: 'shared',
-          functions: worker === 'shell' ? ['hub::shell::exec', 'hub::shell::spawn'] : [] }))
+        const shared = shareRows(Array.isArray(hub?.share) ? hub.share : [], 'hub::', 'shared')
         return { version: '0.1.0', public_url: publicURL || tunnel?.url || '', ...(tunnel ? { tunnel } : {}), shared, catalog_skipped: [], ...hubExtra }
       }
       // Calls named in `hold` wait in `held` until release() answers them.
@@ -164,6 +194,8 @@ try {
       let clientExtra = {}
       // What a joined client can call; a client that is not joined holds nothing.
       let clientRemote = meshRemote
+      // Local functions a step registers for a while, beside localFunctions.
+      let extraLocal = []
       // Only a joined node has a name; a removed one says how to come back, and a left one keeps the leave's warning.
       const clientStatus = () => {
         const joined = ['connected', 'renaming', 'restart required'].includes(clientState)
@@ -171,8 +203,7 @@ try {
         return { mode: 'client', hub_url: joinedHub ?? config.client?.hub_url ?? '', namespace: 'project', node, state: clientState,
           ...(joined ? { requested_name: requestedName ?? config.client?.name ?? '' } : {}),
           error: clientState === 'removed by hub' ? 'the hub removed this machine; leave the hub, then join with a new join code' : clientState === 'left hub' ? leaveWarning : '',
-          shared: (appliedShare ?? config.client?.share ?? []).map((worker) => ({ worker, state: joined ? 'shared' : 'pending',
-            functions: worker === 'shell' ? ['shell::exec', 'shell::spawn'].map((id) => node ? `${node}::${id}` : id) : [] })),
+          shared: shareRows(appliedShare ?? config.client?.share ?? [], node ? `${node}::` : '', joined ? 'shared' : 'pending'),
           remote: joined ? clientRemote : [], ...clientExtra }
       }
       // One call of mesh::on-status-changed, delivered to the page's observer: the worker's current mesh::status.
@@ -220,7 +251,12 @@ try {
               case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
               case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
               case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
-              case 'engine::functions::list': return mode === 'functions-error' ? send(null, 'Engine function list is unavailable.') : send({ functions: [...localWorkers.map((worker) => ({ function_id: `${worker}::fixture`, worker_name: worker })), ...hubFunctions, ...mirrorFunctions] })
+              case 'engine::functions::list': {
+                if (mode === 'functions-error') return send(null, 'Engine function list is unavailable.')
+                const rows = [...(mode === 'no-workers' ? [] : [...localFunctions, ...extraLocal]), ...neverListed, ...hubFunctions, ...mirrorFunctions]
+                // Like the engine: internal functions and the engine's own only when asked for.
+                return send({ functions: frame.data?.include_internal ? rows : rows.filter((fn) => !fn.metadata?.internal && !fn.function_id.startsWith('engine::')) })
+              }
               case 'ade::ui-manifest': return send({ warnings: [], disabled: false })
               case 'harness::sessions::list': return send({ sessions: [] })
               default: return send({})
@@ -251,6 +287,22 @@ try {
       const dialog = page.getByRole('alertdialog')
       const inDialog = (name) => dialog.getByRole('button', { name, exact: true })
       const shareRow = (name) => page.locator('.mesh-ui-share > li').filter({ has: page.getByRole('switch', { name: `Share ${name}`, exact: true }) })
+      // A share row's disclosure, its inventory line, a state badge and its picker controls.
+      const rowDetails = (name) => shareRow(name).locator(':scope > details')
+      const rowSummary = (name) => shareRow(name).locator(':scope > details > summary')
+      const shareSummary = (name) => rowSummary(name).locator(':scope > .mesh-ui-muted')
+      const stateBadge = (name, text) => rowSummary(name).getByText(text, { exact: true })
+      const allPublic = (name) => shareRow(name).getByRole('checkbox', { name: 'All public functions', exact: true })
+      const fnBox = (id) => page.getByRole('checkbox', { name: id, exact: true })
+      const internals = (name) => shareRow(name).locator('details.mesh-ui-fns')
+      const shareSwitch = (name) => page.getByRole('switch', { name: `Share ${name}`, exact: true })
+      const otherShared = page.getByRole('list', { name: 'Other shared functions', exact: true })
+      const notes = {
+        all: 'Every public function is shared, including ones this worker registers later.',
+        picked: 'Only the checked functions are shared. Functions this worker registers later are not; check All public functions to include them.',
+      }
+      // The vertical gap between two elements, in px.
+      const gap = (above, below) => Promise.all([above.boundingBox(), below.boundingBox()]).then(([a, b]) => Math.round(b.y - (a.y + a.height)))
       // Page Save: only the edited basics change; every other key, templates included, is written back as read.
       const savePage = async (expected) => {
         const count = saved.length
@@ -284,10 +336,22 @@ try {
         await expect(button('Settings')).toBeFocused()
         mode = 'empty'; waiting.splice(0).forEach((answer) => answer())
         await expect(page.getByText('No machines joined', { exact: true })).toBeVisible()
+        // With no address yet, the empty hub says what is missing and leads there.
+        await expect(page.getByText('This hub has no address yet. Give it one under Hub address, then another engine can join.', { exact: true })).toBeVisible()
         await capture('empty')
+        // The host paints a placeholder like a value: an empty field must read empty.
+        assert.equal(await textbox('Public URL').getAttribute('placeholder'), null, 'Public URL has no placeholder')
+        await button('Go to Hub address').click()
+        await expect(page.getByRole('heading', { name: 'Hub address', exact: true })).toBeFocused()
+        // The scroll padding that keeps focus clear of the save bar also brings a heading near the bottom up with its fields.
+        await expect(page.getByRole('region', { name: 'Hub address', exact: true })).toBeInViewport({ ratio: 1 })
+        await page.locator('.mesh-ui-main').evaluate((el) => el.scrollTo(0, 0))
         mode = 'error'; await button('Refresh').click()
         await expect(page.getByText('Could not load machines')).toBeVisible()
-        await expect(page.getByText('Join instructions unavailable')).toBeVisible()
+        // No address: the join section says what to do, not the hub's refusal with a Retry that cannot help.
+        const noAddressLine = page.getByText('This hub has no address yet. Turn on the tunnel or set a Public URL under Hub address. The hub URL and join code appear here once it has one.', { exact: true })
+        await expect(noAddressLine).toBeVisible()
+        await expect(page.getByText('Join instructions unavailable')).toHaveCount(0)
         await capture('error')
         mode = 'populated'; await button('Retry').first().click()
         await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
@@ -296,6 +360,10 @@ try {
         await expect(workstation.getByText('Online', { exact: true })).toBeVisible()
         await expect(card('archive-laptop').getByText('Offline', { exact: true })).toBeVisible()
         await expect(page.locator('.mesh-ui-node h3')).toHaveText(['gpu-box', 'linux-workstation', 'archive-laptop', 'travel-laptop'])
+        // A narrow pane keeps the section title above the host's 16px field labels, and machine facts two to a row.
+        assert.equal(await page.locator('#mesh-nodes-title').evaluate((el) => getComputedStyle(el).fontSize), viewport.width === 390 ? '16px' : '14px')
+        const facts = await Promise.all([0, 1].map((i) => workstation.locator('.mesh-ui-details > div').nth(i).boundingBox()))
+        assert.equal(Math.round(facts[0].y), Math.round(facts[1].y), 'two machine facts share a row')
         // Each machine shows what it shares: one row per worker with its function count, the functions behind it.
         const open = (scope, worker) => scope.locator('summary').filter({ has: page.getByText(worker, { exact: true }) }).click()
         await expect(workstation.getByText('shared · 2 functions', { exact: true })).toBeVisible()
@@ -332,7 +400,8 @@ try {
           'Machines, then Shared workers, then Hub address in hub mode')
         await capture('populated')
         // The hub has no public URL yet: no join code, and the machines stay listed.
-        await expect(page.getByText('Join instructions unavailable')).toBeVisible()
+        await expect(noAddressLine).toBeVisible()
+        await expect(page.getByText('Join instructions unavailable')).toHaveCount(0)
         await expect(button('Copy Join code')).toHaveCount(0)
         await expect(button('Copy Hub URL')).toHaveCount(0)
         await expect(button('Generate new code')).toHaveCount(0)
@@ -365,13 +434,46 @@ try {
         // The hub shares its own workers: the ones running on its engine, never the mesh's own or approval-gate.
         const hubShares = page.getByRole('region', { name: 'Shared workers', exact: true })
         await expect(hubShares.getByText('Nothing shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
-        await expect(hubShares.getByRole('switch')).toHaveCount(2)
-        for (const name of ['shell', 'state']) await expect(hubShares.getByRole('switch', { name: `Share ${name}`, exact: true })).not.toBeChecked()
+        // One switch per worker this engine can share, internal-only ones included; none for the mesh's own, secrets,
+        // approval-gate, the engine's own, a mirror or a machine bridge.
+        const inventory = [['harness', '3 public · 2 internal'], ['ide', '1 public'], ['iii-telemetry', 'No public functions · 1 internal'], ['shell', '2 public'], ['state', '3 public · 2 internal']]
+        await expect(hubShares.getByRole('switch')).toHaveCount(inventory.length)
+        for (const [name, line] of inventory) {
+          await expect(shareSwitch(name)).not.toBeChecked()
+          // Rows start closed, with what the worker registers.
+          await expect(rowDetails(name)).not.toHaveAttribute('open', '')
+          await expect(shareSummary(name)).toHaveText(line)
+        }
+        // Mounted but hidden, so find-in-page can open a closed row.
+        await expect(shareRow('shell').getByRole('checkbox', { name: 'shell::exec', includeHidden: true })).toHaveCount(1)
+        await expect(shareRow('shell').getByRole('checkbox', { name: 'shell::exec', includeHidden: true })).toBeHidden()
+        // The picker replaced the free-text id.
+        await expect(page.getByRole('textbox', { name: 'Function id' })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Share function' })).toHaveCount(0)
+        assert.deepEqual([...new Set(calls.filter((call) => call.id === 'engine::functions::list').map((call) => JSON.stringify(call.data)))], ['{"include_internal":true}'],
+          'the page lists functions with their internal ones')
+        // Only never-shared workers: nothing to offer, said so, and its Refresh reads again.
+        mode = 'no-workers'; await button('Refresh').click()
+        await expect(hubShares.getByText('No workers to share', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('Start a worker in this project, then refresh.', { exact: true })).toBeVisible()
+        await expect(hubShares.getByRole('switch')).toHaveCount(0)
+        mode = 'populated'; await hubShares.getByRole('button', { name: 'Refresh', exact: true }).click()
+        await expect(hubShares.getByRole('switch')).toHaveCount(inventory.length)
         await expect(hubShares.getByText('Every machine joined to this hub can call what you share.', { exact: true })).toBeVisible()
         await expect(saveBar).toHaveCount(0)
         await capture('hub')
         await textbox('Public URL').fill('https://mesh.example.com')
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
+        // The sticky save region is opaque, so what scrolls under it never shows through.
+        const [regionFill, panelFill] = await page.locator('.mesh-ui-save').evaluate((el) => {
+          const probe = el.appendChild(document.createElement('div'))
+          probe.style.background = 'var(--color-panel)'
+          const fills = [getComputedStyle(el).backgroundColor, getComputedStyle(probe).backgroundColor]
+          probe.remove()
+          return fills
+        })
+        assert.equal(regionFill, panelFill, 'the save region is painted with --color-panel')
+        assert.notEqual(regionFill, 'rgba(0, 0, 0, 0)')
         await button('Discard').click()
         await expect(saveBar).toHaveCount(0)
         await expect(textbox('Public URL')).toHaveValue('')
@@ -391,6 +493,7 @@ try {
         await expect.poll(() => held.length).toBe(2)
         let stored = { ...initialConfig, tunnel: { enabled: true } }
         assert.deepEqual(saved.at(-1).value, stored, 'configuration::set receives the stored entry with only the changed keys')
+        await expect(page.getByText('Settings saved.', { exact: true })).toBeAttached()
         await expect(tunnelSwitch).toBeChecked()
         await expect(badge).toHaveCount(0)
         await expect(textbox('Public URL')).toHaveValue('https://mesh.example.com')
@@ -438,10 +541,25 @@ try {
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
         stored = await savePage({ ...stored, public_url: 'https://mesh.example.com' })
         await expect(page.getByRole('heading', { name: 'Connect another engine', exact: true })).toBeVisible()
-        await expect(page.getByText(/A machine that joins can call every worker shared by this hub and by the other machines\./)).toBeVisible()
+        // Three steps, then what joining means.
+        const connect = page.getByRole('region', { name: 'Connect another engine', exact: true })
+        await expect(connect.getByRole('listitem')).toHaveCount(3)
+        await expect(noAddressLine).toHaveCount(0)
+        await expect(page.getByText(/A machine that joins can call every worker shared by this hub and by the other machines/)).toBeVisible()
         await button('Copy Hub URL').click()
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('https://mesh.example.com')
         await capture('connect')
+        // An empty hub with an address points at its join code.
+        mode = 'empty'; await button('Refresh').click()
+        await expect(page.getByText('Open Mesh on another engine, choose Client, and paste this hub\'s URL and join code.', { exact: true })).toBeVisible()
+        await button('Show join code').click()
+        await expect(page.getByRole('heading', { name: 'Connect another engine', exact: true })).toBeFocused()
+        // With an address, a join code the hub cannot give is an error with a Retry.
+        mode = 'error'; await button('Refresh').click()
+        await expect(connect.getByText('Join instructions unavailable', { exact: true })).toBeVisible()
+        mode = 'populated'; await connect.getByRole('button', { name: 'Retry', exact: true }).click()
+        await expect(connect.getByText('Join instructions unavailable')).toHaveCount(0)
+        await expect(button('Copy Join code')).toBeVisible()
         // A new code replaces the old one before the page reads again, and is announced.
         const joinValue = page.locator('.mesh-ui-copy').filter({ has: button('Copy Join code') }).locator('code')
         const oldCode = joinCode
@@ -523,7 +641,17 @@ try {
         await expect(badge).toHaveCount(0)
         // A hub share writes the top-level share, warns about a command runner, and follows what the hub pushes.
         await hubShares.getByRole('switch', { name: 'Share shell', exact: true }).click()
+        // Switched on, the row opens on its picker with every public function checked, and focus stays on the switch.
+        await expect(shareSwitch('shell')).toBeFocused()
+        await expect(rowDetails('shell')).toHaveAttribute('open', '')
+        await expect(allPublic('shell')).toBeChecked()
+        for (const id of ['shell::exec', 'shell::spawn']) await expect(fnBox(id)).toBeChecked()
+        await expect(shareSummary('shell')).toHaveText('All public · 2')
+        await expect(shareRow('shell').getByText(notes.all, { exact: true })).toBeVisible()
         await expect(hubShares.getByText('shell can run commands on this hub', { exact: true })).toBeVisible()
+        // The audience is said above the choice, 12px from the list.
+        assert.equal(await gap(hubShares.locator(':scope > *').filter({ hasText: 'shell can run commands on this hub' }), hubShares.locator('.mesh-ui-share')), 12,
+          'the risk panel and the share list are 12px apart')
         await expect(hubShares.getByText('Every machine joined to this hub can call shared workers, and nothing asks here first, so sharing these gives each of them remote code execution with this project\'s access.', { exact: true })).toBeVisible()
         await expect(hubShares.getByText('Every machine joined to this hub can call what you share.')).toHaveCount(0)
         await expect(shareRow('shell').getByText('not saved yet', { exact: true })).toBeVisible()
@@ -533,28 +661,209 @@ try {
         applied = null
         pushStatus()
         await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
+        await expect(stateBadge('shell', 'shared')).toHaveAttribute('data-badge-variant', 'ok')
         await expect(hubShares.getByText('1 shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
-        await shareRow('shell').locator('summary').click()
-        await expect(hubShares.getByText('Ids start with hub::shell::', { exact: true })).toBeVisible()
-        await expect(hubShares.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
+        // The open row lists the worker's local functions, all checked under All public functions.
+        await expect(hubShares.getByRole('list', { name: 'shell public functions', exact: true }).locator('code')).toHaveText(['shell::exec', 'shell::spawn'])
+        await expect(hubShares.getByRole('list', { name: 'shell public functions', exact: true }).getByRole('checkbox', { checked: true })).toHaveCount(2)
         await capture('hub-shared')
         // The states the hub cannot share in, each with what to do, and a machine left out of the catalog on its own card.
         hubExtra = { shared: [{ worker: 'shell', state: 'name conflict', functions: [] }], catalog_skipped: ['gpu-box'] }
         pushStatus()
         await expect(shareRow('shell').getByText('name conflict', { exact: true })).toBeVisible()
-        await expect(shareRow('shell').getByText('A machine has the name these functions start with. Rename or remove it to share this worker.', { exact: true })).toBeVisible()
+        await expect(stateBadge('shell', 'name conflict')).toHaveAttribute('data-badge-variant', 'alert')
+        const conflictHelp = shareRow('shell').getByText('A machine has the name these functions start with. Rename or remove it to share them.', { exact: true })
+        await expect(conflictHelp).toBeVisible()
+        // In an open row the help sits right under the badge it explains, above the functions.
+        assert(await gap(rowSummary('shell'), conflictHelp) <= 16, 'the help line follows the summary of an open row')
         await expect(card('gpu-box').getByText('gpu-box shares more than the mesh carries; other machines cannot call it.', { exact: true })).toBeVisible()
         await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(1)
         await capture('hub-share-conflict')
         hubExtra = { shared: [{ worker: 'shell', state: 'too large', functions: [] }] }
         pushStatus()
         await expect(shareRow('shell').getByText('Too many functions to share.', { exact: true })).toBeVisible()
+        await expect(stateBadge('shell', 'too large')).toHaveAttribute('data-badge-variant', 'alert')
         await expect(shareRow('shell').getByText(/A machine has the name/)).toHaveCount(0)
         await expect(page.getByText(/shares more than the mesh carries/)).toHaveCount(0)
         hubExtra = {}
         pushStatus()
         await expect(shareRow('shell').getByText('shared', { exact: true })).toBeVisible()
         await expect(shareRow('shell').getByText('Too many functions to share.')).toHaveCount(0)
+        // The picker. Switched on, a worker shares all its public functions; its internal ones stay closed and unchecked.
+        const longId = longLocal.function_id
+        await shareSwitch('state').click()
+        await expect(shareSwitch('state')).toBeFocused()
+        await expect(allPublic('state')).toBeChecked()
+        for (const id of ['state::get', 'state::set', longId]) await expect(fnBox(id)).toBeChecked()
+        await expect(internals('state')).not.toHaveAttribute('open', '')
+        for (const id of ['state::on-config-change', 'harness::state::get']) await expect(shareRow('state').getByRole('checkbox', { name: id, includeHidden: true })).not.toBeChecked()
+        await expect(shareSummary('state')).toHaveText('All public · 3')
+        await expect(stateBadge('state', 'not saved yet')).toBeVisible()
+        // Tab never leaves the focused control under the sticky save region.
+        await page.locator('.mesh-ui-main').evaluate((el) => el.scrollTo(0, 0))
+        await shareSwitch('harness').focus()
+        for (let i = 0; i < 40 && !(await button('Discard').evaluate((el) => el === document.activeElement)); i++) {
+          const [bottom, top] = await page.evaluate(() => [document.activeElement.getBoundingClientRect().bottom, document.querySelector('.mesh-ui-save').getBoundingClientRect().top])
+          assert(bottom <= top + 1, `the focused control stays above the save region (${bottom} > ${top})`)
+          await page.keyboard.press('Tab')
+        }
+        await expect(button('Discard')).toBeFocused()
+        await shareSwitch('state').focus()
+        // The header box is the one bulk control, described by the note under it, in a group named for its worker.
+        await expect(allPublic('state')).toHaveAccessibleDescription(notes.all)
+        await expect(hubShares.getByRole('group', { name: 'state functions', exact: true })).toBeVisible()
+        // In a narrow pane a description wraps under its function's id, not under the checkbox.
+        const getRow = hubShares.getByRole('list', { name: 'state public functions', exact: true }).getByRole('listitem').filter({ has: fnBox('state::get') })
+        const [idBox, descBox] = await Promise.all([getRow.locator('code').boundingBox(), getRow.locator(':scope > .mesh-ui-muted').boundingBox()])
+        if (viewport.width === 390) assert.equal(Math.round(descBox.x), Math.round(idBox.x), 'a description lines up with its id')
+        await fnBox(longId).evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await capture('hub-picker')
+        stored = await savePage({ ...stored, share: ['shell', 'state'] })
+        // Unchecking one turns all public into the other ids, a fixed list: the header box is mixed and the note says so.
+        await fnBox('state::get').click()
+        await expect(fnBox('state::get')).toBeFocused()
+        await expect(allPublic('state')).toBeChecked({ indeterminate: true })
+        await expect(shareSummary('state')).toHaveText('2 of 3 public')
+        await expect(shareRow('state').getByText(notes.picked, { exact: true })).toBeVisible()
+        await expect(allPublic('state')).toHaveAccessibleDescription(notes.picked)
+        await fnBox(longId).evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await capture('hub-picker-picked')
+        stored = await savePage({ ...stored, share: ['shell', 'state::set', longId].sort() })
+        // Off removes every entry of the worker until the save; on again restores the saved picks, not all public.
+        await shareSwitch('state').click()
+        await expect(stateBadge('state', 'shared until you save')).toBeVisible()
+        await expect(fnBox('state::set')).not.toBeChecked()
+        await shareSwitch('state').click()
+        await expect(shareSummary('state')).toHaveText('2 of 3 public')
+        await expect(allPublic('state')).toBeChecked({ indeterminate: true })
+        await expect(saveBar).toHaveCount(0)
+        // Every public function picked one by one stays a fixed list: the page never widens it to the worker entry.
+        await fnBox('state::get').click()
+        await expect(shareSummary('state')).toHaveText('3 of 3 public')
+        await expect(allPublic('state')).toBeChecked({ indeterminate: true })
+        // An internal function is shared by its id alone, beside the public picks.
+        await internals('state').locator('summary').click()
+        await expect(internals('state').locator('summary')).toHaveText('Internal functions 2')
+        await expect(hubShares.getByRole('list', { name: 'state internal functions', exact: true })).toBeVisible()
+        await fnBox('state::on-config-change').click()
+        await expect(shareSummary('state')).toHaveText('3 of 3 public + 1 internal')
+        await expect(internals('state').locator('summary > .mesh-ui-muted')).toHaveText('1 of 2 shared')
+        // Saved and not applied yet, a picked function says so on its own row.
+        applied = config
+        stored = await savePage({ ...stored, share: ['shell', 'state::get', 'state::on-config-change', 'state::set', longId].sort() })
+        await expect(hubShares.getByRole('list', { name: 'state internal functions', exact: true }).getByRole('listitem')
+          .filter({ has: fnBox('state::on-config-change') }).getByText('applying…', { exact: true })).toBeVisible()
+        applied = null
+        pushStatus()
+        await expect(stateBadge('state', 'shared')).toBeVisible()
+        // The mixed header box shares all public again: the worker entry alone, internal ids kept.
+        await allPublic('state').click()
+        await expect(allPublic('state')).toBeChecked()
+        await expect(shareSummary('state')).toHaveText('All public · 3 + 1 internal')
+        stored = await savePage({ ...stored, share: ['shell', 'state', 'state::on-config-change'] })
+        // Cleared, the header box leaves no public entry; the switch stays on while an internal function is picked.
+        await allPublic('state').click()
+        for (const id of ['state::get', 'state::set', longId]) await expect(fnBox(id)).not.toBeChecked()
+        await expect(shareSummary('state')).toHaveText('1 of 2 internal')
+        await expect(shareSwitch('state')).toBeChecked()
+        await fnBox('state::on-config-change').click()
+        await expect(shareSwitch('state')).not.toBeChecked()
+        await expect(shareSummary('state')).toHaveText('3 public · 2 internal')
+        stored = await savePage({ ...stored, share: ['shell'] })
+        // A function whose prefix runs commands is marked under a worker that does not, and the headline names its id.
+        const sessionValue = hubShares.getByRole('list', { name: 'state internal functions', exact: true }).getByRole('listitem').filter({ has: fnBox('harness::state::get') })
+        await expect(sessionValue.getByText('runs commands', { exact: true })).toBeVisible()
+        await fnBox('harness::state::get').click()
+        await expect(hubShares.getByText('harness::state::get, shell can run commands on this hub', { exact: true })).toBeVisible()
+        await fnBox('harness::state::get').click()
+        await expect(saveBar).toHaveCount(0)
+        // From the keyboard a summary opens its row; a function checked there turns the switch on, and any number of
+        // harness ids name harness once.
+        await rowSummary('harness').focus()
+        await page.keyboard.press('Enter')
+        await expect(rowDetails('harness')).toHaveAttribute('open', '')
+        await fnBox('harness::run').click()
+        await expect(shareSwitch('harness')).toBeChecked()
+        await expect(shareSummary('harness')).toHaveText('1 of 3 public')
+        for (const id of ['harness::sessions::list', 'harness::stop']) await fnBox(id).click()
+        await internals('harness').locator('summary').click()
+        for (const id of ['harness::send', 'harness::turn']) await fnBox(id).click()
+        await expect(shareSummary('harness')).toHaveText('3 of 3 public + 2 internal')
+        await expect(hubShares.getByText('harness, shell can run commands on this hub', { exact: true })).toBeVisible()
+        await button('Discard').click()
+        await expect(shareSwitch('harness')).not.toBeChecked()
+        // An id belongs to the worker that registers it: coder::read-file sits under ide and warns as ide.
+        await rowSummary('ide').click()
+        await fnBox('coder::read-file').click()
+        await expect(stateBadge('ide', 'not saved yet')).toBeVisible()
+        await expect(hubShares.getByText('ide, shell can run commands on this hub', { exact: true })).toBeVisible()
+        stored = await savePage({ ...stored, share: ['coder::read-file', 'shell'] })
+        await expect(stateBadge('ide', 'shared')).toHaveAttribute('data-badge-variant', 'ok')
+        await fnBox('coder::read-file').click()
+        await expect(stateBadge('ide', 'shared until you save')).toBeVisible()
+        stored = await savePage({ ...stored, share: ['shell'] })
+        // A saved id no listed worker registers, and a stopped worker's name: both stay, with their state, to be turned off.
+        stored = { ...stored, share: ['cron', 'shell', 'tmux::send-keys'] }
+        config = structuredClone(stored)
+        await button('Refresh').click()
+        const orphan = otherShared.getByRole('checkbox', { name: 'tmux::send-keys', exact: true })
+        await expect(orphan).toBeChecked()
+        await expect(otherShared.getByText('not running', { exact: true })).toHaveAttribute('data-badge-variant', 'warn')
+        await expect(otherShared.getByText('runs commands', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('No worker listed above registers these now. Each is shared again when its worker registers it. Uncheck one to stop sharing it.', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('shell, tmux::send-keys can run commands on this hub', { exact: true })).toBeVisible()
+        await expect(shareSwitch('cron')).toBeChecked()
+        await expect(shareSummary('cron')).toHaveText('No functions registered')
+        await expect(stateBadge('cron', 'not running')).toHaveAttribute('data-badge-variant', 'warn')
+        await expect(shareRow('cron').getByText('No running worker registers a public function under this name. Sharing starts when one does.', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText('3 shared · joined machines call them as hub::function', { exact: true })).toBeVisible()
+        // A refresh keeps open rows open.
+        await expect(rowDetails('state')).toHaveAttribute('open', '')
+        await otherShared.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await capture('share-orphan')
+        // Without the function list, saved shares still show; Retry brings the picker back.
+        mode = 'functions-error'; await button('Refresh').click()
+        await expect(hubShares.getByText('Could not list this engine\'s functions', { exact: true })).toBeVisible()
+        await expect(hubShares.getByText(/Engine function list is unavailable\./)).toBeVisible()
+        await expect(orphan).toBeChecked()
+        await expect(shareSwitch('shell')).toBeChecked()
+        await expect(hubShares.getByText(/No worker listed above registers these now/)).toHaveCount(0)
+        // The page could not list functions, so it claims none for a saved worker: no inventory line, open or closed.
+        await expect(rowDetails('shell')).toHaveAttribute('open', '')
+        await expect(shareSummary('shell')).toHaveCount(0)
+        await expect(shareRow('shell').getByText(/No functions registered/)).toHaveCount(0)
+        mode = 'populated'; await hubShares.getByRole('button', { name: 'Retry', exact: true }).click()
+        await expect(hubShares.getByText('Could not list this engine\'s functions')).toHaveCount(0)
+        await expect(hubShares.getByRole('switch')).toHaveCount(inventory.length + 1)
+        // Unchecked, the orphan is shared until the save, then gone; so is the stopped worker switched off.
+        await orphan.click()
+        await expect(otherShared.getByText('shared until you save', { exact: true })).toBeVisible()
+        await shareSwitch('cron').click()
+        await expect(stateBadge('cron', 'shared until you save')).toBeVisible()
+        stored = await savePage({ ...stored, share: ['shell'] })
+        await expect(otherShared).toHaveCount(0)
+        await expect(shareSwitch('cron')).toHaveCount(0)
+        // A hand-ordered stored list: off then on again is no change, though every write sorts.
+        config = { ...stored, share: ['shell', 'harness'] }
+        await button('Refresh').click()
+        await expect(shareSwitch('harness')).toBeChecked()
+        await shareSwitch('shell').click()
+        await shareSwitch('shell').click()
+        await expect(shareSwitch('shell')).toBeChecked()
+        await expect(saveBar).toHaveCount(0)
+        // Back to the list stored below, so the kept edit matches it after the next read.
+        await shareSwitch('harness').click()
+        // A worker entry shares its public ids too: one under a command runner's prefix raises the headline by that id.
+        config = structuredClone(stored)
+        extraLocal = [{ function_id: 'tmux::send-keys', worker_name: 'cron' }]
+        await button('Refresh').click()
+        await shareSwitch('cron').click()
+        await expect(hubShares.getByText('shell, tmux::send-keys can run commands on this hub', { exact: true })).toBeVisible()
+        await shareSwitch('cron').click()
+        extraLocal = []
+        await button('Refresh').click()
+        await expect(shareSwitch('cron')).toHaveCount(0)
+        await expect(saveBar).toHaveCount(0)
         // A template that expands to nothing leaves the hub without an address: the page follows what the hub reports.
         config = { ...stored, public_url: '${MESH_PUBLIC_URL:}' }
         await button('Refresh').click()
@@ -587,7 +896,10 @@ try {
         await capture('raw-root')
         config = structuredClone(stored)
         await button('Refresh').click()
+        await expect(page.getByText('Could not save', { exact: true })).toBeVisible()
         await button('Discard').click()
+        // Discard also clears a failure: it no longer describes anything on the page.
+        await expect(page.getByText('Could not save', { exact: true })).toHaveCount(0)
         await expect(tunnelSwitch).not.toBeChecked()
         console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, hub shares saved, applying and pushed with their warning, conflict, size and skipped-machine lines, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
 
@@ -660,6 +972,10 @@ try {
         await expect(page.getByText('The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here.', { exact: true })).toBeVisible()
         // "not saved yet" means only that the form differs from the stored entry.
         await expect(shareRow('shell').getByText('not saved yet', { exact: true })).toBeVisible()
+        for (const field of ['Hub URL', 'Machine name']) assert.equal(await textbox(field).getAttribute('placeholder'), null, `${field} has no placeholder`)
+        // Discard and Save stay together, the message on its own line in a narrow pane.
+        const [discardBox, saveBox] = await Promise.all([button('Discard').boundingBox(), button('Save').boundingBox()])
+        assert.equal(Math.round(discardBox.y), Math.round(saveBox.y), 'Discard and Save share a row')
         await capture('client')
         stored = await savePage({ ...stored, mode: 'client', client: { hub_url: 'https://hub.example.com', name: 'laptop', share: ['shell'] } })
         await expect(page.getByText('Restart the mesh worker to switch to client mode', { exact: true })).toBeVisible()
@@ -671,11 +987,22 @@ try {
         assert(calls.some((call) => call.id === 'compose::restart'), 'Restart mesh calls compose::restart')
         await expect(page.getByRole('region', { name: 'Hub connection' }).getByText('connected', { exact: true })).toBeVisible()
         await expect(page.getByText('joined as')).toContainText('laptop')
-        // The shared worker's functions sit behind a count, with the machine and worker prefix said once.
-        await page.locator('.mesh-ui-share summary').filter({ hasText: '2 functions' }).click()
-        await expect(page.getByText('Ids start with laptop::shell::', { exact: true })).toBeVisible()
-        await expect(page.getByRole('list', { name: 'shell functions', exact: true }).getByRole('listitem')).toHaveText(['exec', 'spawn'])
+        // The row opened when it was switched on: the worker's local functions, all public ones checked.
+        await expect(page.getByRole('list', { name: 'shell public functions', exact: true }).locator('code')).toHaveText(['shell::exec', 'shell::spawn'])
+        await expect(allPublic('shell')).toBeChecked()
+        await rowSummary('state').click()
+        await expect(fnBox(longLocal.function_id)).toBeVisible()
+        await fnBox(longLocal.function_id).evaluate((el) => el.scrollIntoView({ block: 'center' }))
+        await capture('client-picker')
         await expect(page.getByText('1 shared · the hub calls them as laptop::function, other machines as peer::laptop::function', { exact: true })).toBeVisible()
+        // A function picked from its worker's row joins as its id, warned as that worker; unchecked before a save, nothing is left to save.
+        await rowSummary('ide').click()
+        await fnBox('coder::read-file').click()
+        await expect(stateBadge('ide', 'not saved yet')).toBeVisible()
+        await expect(page.getByText('ide, shell can run commands on this machine', { exact: true })).toBeVisible()
+        await fnBox('coder::read-file').click()
+        await expect(shareSwitch('ide')).not.toBeChecked()
+        await expect(saveBar).toHaveCount(0)
         // What the mesh shares with this machine, hub first, each owner behind a count, described from the local listing.
         await expect(remoteList.locator('summary')).toHaveText(['hub2 functions', 'gpu-box2 functions'])
         await remoteList.locator('summary').first().click()
@@ -792,7 +1119,7 @@ try {
         await expect(shareRow('state').getByText('stopping…', { exact: true })).toBeVisible()
         appliedShare = null
         pushStatus()
-        await expect(shareRow('state').locator('.mesh-ui-muted')).toHaveCount(0)
+        await expect(rowSummary('state').locator('[data-badge-variant]')).toHaveCount(0)
 
         // Peer to peer: the switch saves client.peer_to_peer, waits for the worker's status, and the risk text follows it.
         const p2pSwitch = page.getByRole('switch', { name: 'Peer to peer', exact: true })
@@ -856,8 +1183,7 @@ try {
         await expect(connection.getByText('The hub named this machine work-2: work is taken or reserved there.', { exact: true })).toBeVisible()
         await expect(panel('Renaming this machine…')).toHaveCount(0)
         // The shared function ids follow the name.
-        if (!(await shareRow('shell').locator('details').evaluate((el) => el.open))) await shareRow('shell').locator('summary').click()
-        await expect(page.getByText('Ids start with work-2::shell::', { exact: true })).toBeVisible()
+        await expect(page.getByText('1 shared · the hub calls them as work-2::function, other machines as peer::work-2::function', { exact: true })).toBeVisible()
         await capture('client-renamed')
         // A refused rename keeps the old name and says why.
         await textbox('Machine name').fill('desk')

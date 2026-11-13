@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import {
-  Badge, Button, ConfirmDialog, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
+  Badge, Button, Checkbox, ConfirmDialog, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
   RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch,
   type ConfigFormProps, type Host, type JsonValue, type PageRenderProps, type SecretKeyFieldProps, type StatusPanelProps,
 } from '@iii-dev/console-ui'
@@ -11,7 +11,8 @@ import { Network, RefreshCw } from 'lucide-react'
 
 // functions: the worker's hub function ids (<machine>::<local id>), sorted.
 type ComponentState = { name: string; state: string; functions?: string[] }
-type EngineFunction = { function_id: string; worker_name?: string; description?: string }
+type EngineFunction = { function_id: string; worker_name?: string; description?: string; metadata?: { internal?: boolean } }
+const internal = (fn: EngineFunction) => fn.metadata?.internal === true
 type Node = {
   name: string; address: string; os: string; arch: string; version: string
   online: boolean; last_seen: string; ephemeral: boolean; path: string
@@ -114,7 +115,8 @@ function basicsOf(config: JsonValue | null): Basics {
     tunnel: config !== null && at(config, BASIC_PATHS.tunnel) === true,
     hub_url: text(BASIC_PATHS.hub_url), join: text(BASIC_PATHS.join), name: text(BASIC_PATHS.name),
     peer_to_peer: config !== null && at(config, BASIC_PATHS.peer_to_peer) === true,
-    share: list(BASIC_PATHS.share), hub_share: list(BASIC_PATHS.hub_share),
+    // Sorted as every write is, so a hand-ordered list does not read as an unsaved change.
+    share: list(BASIC_PATHS.share).sort(), hub_share: list(BASIC_PATHS.hub_share).sort(),
   }
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
@@ -129,11 +131,19 @@ const MODE_HELP: Record<Mode, string> = {
 const NEVER_SHARED = new Set(['mesh', 'secrets', 'configuration', 'rbac-proxy', 'approval-gate'])
 // Sharing one of these lets every caller in the mesh run commands where it runs.
 const RUNS_COMMANDS = new Set(['ide', 'harness', 'shell', 'coder', 'tmux', 'code-runner'])
+// A share entry with "::" is one function id; its prefix stands for its worker.
+const runsCommands = (entry: string) => RUNS_COMMANDS.has(entry.split('::')[0])
+// The worker's ValidateShare rule for a function id, so the page never stores an entry that stops the worker.
+const FUNCTION_ID = /^[A-Za-z0-9_.-]+::[A-Za-z0-9_.:-]+$/
+const LOCAL_ONLY = ['engine', 'mesh', 'mesh-node', 'secrets', 'configuration', 'rbac-proxy', 'approval', 'hub', 'peer']
+const canShareId = (id: string) => id.length <= 256 && FUNCTION_ID.test(id) && !LOCAL_ONLY.includes(id.split('::')[0])
 // What a share state the hub reports asks of the person, beyond its name.
 const SHARE_HELP: Record<string, string> = {
-  'name conflict': 'A machine has the name these functions start with. Rename or remove it to share this worker.',
+  'name conflict': 'A machine has the name these functions start with. Rename or remove it to share them.',
   'too large': 'Too many functions to share.',
+  'not running': 'No running worker registers a public function under this name. Sharing starts when one does.',
 }
+const SHARE_BADGE: Record<string, 'ok' | 'warn' | 'alert'> = { shared: 'ok', 'not running': 'warn', 'name conflict': 'alert', 'too large': 'alert' }
 // A name the hub keeps as it is: no hyphen at the end or next to another.
 const NAME = /^(?=.{1,31}$)[a-z](?:-?[a-z0-9])*$/
 const RAW_CONFIG = 'The mesh settings are one raw value. Open Settings and replace it with individual settings first.'
@@ -193,41 +203,145 @@ function TunnelLine({ tunnel, stalled }: { tunnel?: Tunnel; stalled: boolean }) 
   return line ? <div role="listitem" aria-live="polite" className="mesh-ui-tunnel">{line}</div> : null
 }
 
-// The share switches of either mode. live: what the running worker reports; null while no worker of this mode runs.
-function ShareList({ share, saved, live, workers, machine, place, calls, risk, footer, onChange }: {
-  share: string[]; saved: string[]; live: Shared[] | null; workers: string[]; machine: string
+// The share list of either mode: a switch per local worker, its functions picked under it.
+// local: this engine's shareable functions. live: what the running worker reports; null while no worker of this mode runs.
+function ShareList({ share, saved, live, local, listError, onRetry, place, calls, risk, footer, onChange }: {
+  share: string[]; saved: string[]; live: Shared[] | null; local: EngineFunction[]; listError: string | null; onRetry: () => void
   place: string; calls: ReactNode; risk: string; footer: string; onChange: (next: string[]) => void
 }) {
   const shared = new Map((live ?? []).map((s) => [s.worker, s]))
-  // A shared name that is not running still needs its switch, to turn it off.
-  const names = [...new Set([...workers, ...share])].filter((n) => !NEVER_SHARED.has(n)).sort()
-  const risky = share.filter((n) => RUNS_COMMANDS.has(n))
-  // What the worker has not shown yet about a saved share switch.
+  const byWorker = new Map<string, { pub: EngineFunction[]; int: EngineFunction[] }>()
+  for (const fn of [...local].sort((a, b) => a.function_id < b.function_id ? -1 : 1)) {
+    const group = byWorker.get(fn.worker_name ?? '') ?? { pub: [], int: [] }
+    ;(internal(fn) ? group.int : group.pub).push(fn)
+    byWorker.set(fn.worker_name ?? '', group)
+  }
+  // An id's prefix is often not its worker's name (ide registers coder::), so an id entry belongs to the worker that registers it.
+  const owner = new Map(local.map((fn) => [fn.function_id, fn.worker_name ?? '']))
+  const ownerOf = (entry: string) => entry.includes('::') ? owner.get(entry) : entry
+  const entries = [...new Set([...share, ...saved])]
+  // A shared name that is not running still needs its switch, to turn it off; a saved one, to turn it back on.
+  const names = [...new Set([...byWorker.keys(), ...entries.flatMap((e) => ownerOf(e) ?? [])])].filter((n) => !NEVER_SHARED.has(n)).sort()
+  // Ids no listed worker registers now: kept visible so a saved one can still be turned off.
+  const orphans = entries.filter((e) => ownerOf(e) === undefined).sort()
+  const isOn = (name: string) => share.some((e) => ownerOf(e) === name)
+  const count = names.filter(isOn).length + orphans.filter((id) => share.includes(id)).length
+  // A command runner's entries are named by the worker; any other shared id with a runner's prefix by itself, a worker
+  // entry's public ids included.
+  const riskyNames = (entry: string) => {
+    const worker = entry.includes('::') ? owner.get(entry) : entry
+    if (worker && RUNS_COMMANDS.has(worker)) return [worker]
+    return (entry.includes('::') ? [entry] : (byWorker.get(entry)?.pub ?? []).map((fn) => fn.function_id)).filter(runsCommands)
+  }
+  const risky = [...new Set(share.flatMap(riskyNames))].sort()
+  const write = (next: string[]) => onChange([...new Set(next)].sort())
+  const setId = (id: string, on: boolean) => write(on ? [...share, id] : share.filter((e) => e !== id))
+  // What the worker has not shown yet about a saved share entry.
   const pending = (name: string, on: boolean) => on !== saved.includes(name) ? (on ? 'not saved yet' : 'shared until you save')
     : on ? (shared.get(name)?.state ?? (live ? 'applying…' : 'starts after the restart'))
     : shared.has(name) ? 'stopping…' : null
+  const badge = (state: string) => <Badge key={state} variant={SHARE_BADGE[state] ?? 'default'}>{state}</Badge>
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  // Returns the same set when it already agrees, so the toggle event of a programmatic open renders nothing more.
+  const show = (name: string, yes: boolean) => setOpen((prev) => {
+    if (prev.has(name) === yes) return prev
+    const next = new Set(prev)
+    if (yes) next.add(name)
+    else next.delete(name)
+    return next
+  })
+  const row = (name: string) => {
+    const { pub, int } = byWorker.get(name) ?? { pub: [], int: [] }
+    const pubIds = pub.map((fn) => fn.function_id)
+    const all = share.includes(name)
+    const k = pub.filter((fn) => all || share.includes(fn.function_id)).length
+    const m = int.filter((fn) => share.includes(fn.function_id)).length
+    const on = isOn(name)
+    const mine = [...new Set([...entries, ...shared.keys()])].filter((e) => ownerOf(e) === name)
+    const states = mine.some((e) => share.includes(e) !== saved.includes(e)) ? [on ? 'not saved yet' : 'shared until you save']
+      : [...new Set(mine.flatMap((e) => pending(e, share.includes(e)) ?? []))]
+    // Without the function list the page does not know what a saved worker registers.
+    const summary = !pub.length && !int.length ? (listError ? '' : 'No functions registered')
+      : all ? `All public · ${pub.length}${m ? ` + ${m} internal` : ''}`
+      : k ? `${k} of ${pub.length} public${m ? ` + ${m} internal` : ''}`
+      : m ? `${m} of ${int.length} internal`
+      : `${pub.length ? `${pub.length} public` : 'No public functions'}${int.length ? ` · ${int.length} internal` : ''}`
+    const note = all ? 'Every public function is shared, including ones this worker registers later.'
+      : k ? 'Only the checked functions are shared. Functions this worker registers later are not; check All public functions to include them.' : ''
+    const noteId = `mesh-share-note-${name}`
+    // Under the badge it explains: at the top of an open row, after the summary of a closed one.
+    const help = states.filter((s) => SHARE_HELP[s]).map((s) => <p key={s} className="mesh-ui-muted">{SHARE_HELP[s]}</p>)
+    // On again, the saved picks come back, so off then on never widens a fixed list to all public.
+    const turn = (yes: boolean) => {
+      const rest = share.filter((e) => ownerOf(e) !== name)
+      const restored = saved.filter((e) => ownerOf(e) === name)
+      if (yes) show(name, true)
+      write(yes ? [...rest, ...(restored.length ? restored : [name])] : rest)
+    }
+    const setAll = (yes: boolean) => write([...share.filter((e) => e !== name && !pubIds.includes(e)), ...(yes ? [name] : [])])
+    // Unchecking one of all public turns the worker entry into the other ids: a fixed list that never grows by itself.
+    const setPublic = (id: string, yes: boolean) => all && !yes ? write([...share.filter((e) => e !== name && e !== id), ...pubIds.filter((x) => x !== id)]) : setId(id, yes)
+    const fnRow = (fn: EngineFunction, checked: boolean, set: (yes: boolean) => void) => {
+      const id = fn.function_id
+      const state = share.includes(id) === saved.includes(id) ? pending(id, share.includes(id)) : null
+      const flags = [runsCommands(id) && !RUNS_COMMANDS.has(name) ? <Badge key="runs" variant="warn">runs commands</Badge> : null,
+        state && state !== 'shared' ? badge(state) : null].filter(Boolean)
+      return <li key={id}>
+        <Checkbox label={<code>{id}</code>} checked={checked} onChange={(e) => set(e.currentTarget.checked)} />
+        <span className="mesh-ui-muted" title={fn.description}>{fn.description}</span>
+        {flags.length ? <span className="mesh-ui-inline">{flags}</span> : null}
+      </li>
+    }
+    return <li key={name}>
+      {/* Outside the disclosure: a summary must not hold interactive content. */}
+      <span className="mesh-ui-share-switch"><Switch checked={on} aria-label={`Share ${name}`} onChange={(e) => turn(e.currentTarget.checked)} /></span>
+      <details open={open.has(name)} onToggle={(e) => show(name, e.currentTarget.open)}>
+        <summary><code>{name}</code>{RUNS_COMMANDS.has(name) ? <Badge variant="warn">runs commands</Badge> : null}
+          {summary ? <span className="mesh-ui-muted">{summary}</span> : null}{states.map(badge)}</summary>
+        <div className="mesh-ui-pick" role="group" aria-label={`${name} functions`}>
+          {open.has(name) ? help : null}
+          <Checkbox label="All public functions" checked={all} indeterminate={!all && k > 0} aria-describedby={noteId}
+            onChange={(e) => setAll(e.currentTarget.checked)} />
+          <p id={noteId} className="mesh-ui-muted" aria-live="polite">{note}</p>
+          {/* role="list": Safari drops list semantics from a list without markers. */}
+          {pub.length ? <ul role="list" className="mesh-ui-functions" aria-label={`${name} public functions`}>
+            {pub.map((fn) => fnRow(fn, all || share.includes(fn.function_id), (yes) => setPublic(fn.function_id, yes)))}
+          </ul> : listError ? null : <p className="mesh-ui-muted">{int.length ? 'No public functions registered now.' : 'No functions registered now.'}</p>}
+          {int.length ? <details className="mesh-ui-fns">
+            <summary>Internal functions <span className="mesh-ui-muted">{m ? `${m} of ${int.length} shared` : int.length}</span></summary>
+            <p className="mesh-ui-muted">Hidden from function listings. Each is shared only while checked; All public functions never includes them.</p>
+            <ul role="list" className="mesh-ui-functions" aria-label={`${name} internal functions`}>
+              {int.map((fn) => fnRow(fn, share.includes(fn.function_id), (yes) => setId(fn.function_id, yes)))}
+            </ul>
+          </details> : null}
+        </div>
+      </details>
+      {open.has(name) ? null : help}
+    </li>
+  }
   return <section className="mesh-ui-section" aria-labelledby="mesh-share-title">
     <div className="mesh-ui-section-head"><h2 id="mesh-share-title">Shared workers</h2>
-      <span className="mesh-ui-muted">{share.length ? `${share.length} shared` : 'Nothing shared'} · {calls}</span>
+      <span className="mesh-ui-muted">{count ? `${count} shared` : 'Nothing shared'} · {calls}</span>
     </div>
-    {risky.length ? <StatusPanel variant="warn" headline={`${risky.join(', ')} can run commands on ${place}`} detail={risk} /> : null}
-    {names.length === 0 ? <p className="mesh-ui-muted">No local workers found. Start a worker in this project to share it.</p> : null}
-    <ul className="mesh-ui-share">{names.map((name) => {
-      const on = share.includes(name)
-      const state = shared.get(name)
-      const label = pending(name, on)
-      return <li key={name}>
-        <label><Switch checked={on} aria-label={`Share ${name}`}
-          onChange={(e) => onChange(e.currentTarget.checked ? [...share, name].sort() : share.filter((n) => n !== name))} />
-          <code>{name}</code>
-          {RUNS_COMMANDS.has(name) ? <Badge variant="warn">runs commands</Badge> : null}
-          {label ? <span className="mesh-ui-muted">{label}</span> : null}
-        </label>
-        {on && state && SHARE_HELP[state.state] ? <p className="mesh-ui-muted">{SHARE_HELP[state.state]}</p> : null}
-        {on && state?.functions?.length ? <FunctionList worker={name} machine={machine} functions={state.functions.map((id) => ({ function_id: id }))} /> : null}
-      </li>
-    })}</ul>
-    {risky.length === 0 && names.length ? <p className="mesh-ui-muted">{footer}</p> : null}
+    {risky.length ? <StatusPanel variant="warn" headline={`${risky.join(', ')} can run commands on ${place}`} detail={risk} />
+      : names.length || orphans.length ? <p className="mesh-ui-muted">{footer}</p> : null}
+    {listError ? <StatusPanel variant="warn" headline="Could not list this engine's functions"
+      detail={said(listError, 'Saved shares still show below. Retry to pick functions.')} action={<Button onClick={onRetry}>Retry</Button>} /> : null}
+    {names.length || orphans.length ? <ul className="mesh-ui-share">
+      {names.map(row)}
+      {orphans.length ? <li className="mesh-ui-share-other">
+        <p className="mesh-ui-label" id="mesh-share-other-title">Other shared functions</p>
+        {listError ? null : <p className="mesh-ui-muted">No worker listed above registers these now. Each is shared again when its worker registers it. Uncheck one to stop sharing it.</p>}
+        <ul role="list" aria-labelledby="mesh-share-other-title">{orphans.map((id) => {
+          const state = pending(id, share.includes(id))
+          return <li key={id}>
+            <Checkbox label={<code>{id}</code>} checked={share.includes(id)} onChange={(e) => setId(id, e.currentTarget.checked)} />
+            {runsCommands(id) ? <Badge variant="warn">runs commands</Badge> : null}{state ? badge(state) : null}
+          </li>
+        })}</ul>
+      </li> : null}
+    </ul> : listError ? null : <EmptyState compact title="No workers to share" description="Start a worker in this project, then refresh."
+      action={{ label: 'Refresh', onClick: onRetry }} />}
   </section>
 }
 
@@ -237,9 +351,9 @@ const PATH_LABEL: Record<string, string> = {
 }
 const PEER_RISK = ' With peer to peer on, machines that also turned it on call this machine directly: the hub does not see, limit or log those calls, and a machine the hub removed keeps access for up to 10 minutes while this machine cannot reach the hub.'
 
-function ClientSetup({ basics, saved, edit, status, workers, functions, secretInput, onLeave }: {
+function ClientSetup({ basics, saved, edit, status, local, listError, onRetry, functions, secretInput, onLeave }: {
   basics: Basics; saved: Basics; edit: <K extends keyof Basics>(key: K, value: Basics[K]) => void
-  status: ClientStatus | null; workers: string[]; functions: EngineFunction[]; secretInput?: SecretInput
+  status: ClientStatus | null; local: EngineFunction[]; listError: string | null; onRetry: () => void; functions: EngineFunction[]; secretInput?: SecretInput
   onLeave: () => void
 }) {
   const remote = status?.remote ?? []
@@ -276,17 +390,17 @@ function ClientSetup({ basics, saved, edit, status, workers, functions, secretIn
         detail="Nothing is shared or available until this project's mesh worker runs the hub's version." /> : null}
       <SettingsList>
         <SettingsField label="Hub URL" field="client.hub_url" description="The address the hub gave you. Not needed when you join with a token."
-          renderControl={(props) => <Input {...props} placeholder="https://mesh.example.com" value={basics.hub_url} onChange={(next) => edit('hub_url', next)} />} />
+          renderControl={(props) => <Input {...props} value={basics.hub_url} onChange={(next) => edit('hub_url', next)} />} />
         <JoinField value={basics.join} onChange={(next) => edit('join', next)} secretInput={secretInput} />
         <SettingsField label="Machine name" field="client.name" description="How this project appears on the hub. The hub may add a suffix such as -2."
           error={basics.name && !NAME.test(basics.name) ? 'Use lowercase letters, digits and single hyphens, starting with a letter and not ending with a hyphen.' : undefined}
-          renderControl={(props) => <Input {...props} placeholder="my-laptop" value={basics.name} onChange={(next) => edit('name', next)} />} />
+          renderControl={(props) => <Input {...props} value={basics.name} onChange={(next) => edit('name', next)} />} />
         <SettingsField label="Peer to peer" field="client.peer_to_peer" description="Call machines that also turned this on directly, and take their calls the same way, without the hub project in between. The hub still introduces the machines and relays the encrypted traffic when they cannot reach each other. Those machines learn this machine's network addresses."
           renderControl={(props) => <span className="mesh-ui-inline"><Switch {...props} checked={basics.peer_to_peer} onChange={(e) => edit('peer_to_peer', e.currentTarget.checked)} />
             {p2pPending ? <span className="mesh-ui-muted" role="status">{p2pPending}</span> : null}</span>} />
       </SettingsList>
     </section>
-    <ShareList share={basics.share} saved={saved.share} live={status ? status.shared ?? [] : null} workers={workers} machine={status?.node ?? ''}
+    <ShareList share={basics.share} saved={saved.share} live={status ? status.shared ?? [] : null} local={local} listError={listError} onRetry={onRetry}
       place="this machine" calls={<>the hub calls them as <code>{node}::function</code>, other machines as <code>peer::{node}::function</code></>}
       risk={"The hub project and every machine joined to the hub can call shared workers, and nothing asks here first, so sharing these gives all of them remote code execution here." + (basics.peer_to_peer ? PEER_RISK : '')}
       footer={"The hub project and every machine joined to the hub can call what you share." + (basics.peer_to_peer ? PEER_RISK : '')} onChange={(next) => edit('share', next)} />
@@ -310,7 +424,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       host.iii.call<Partial<ClientStatus> & HubStatus>('mesh::status', {}),
       // Raw keeps ${VAR} templates intact when the entry is written back.
       host.iii.call<{ value: JsonValue }>('configuration::get', { id: configurationId, raw: true }),
-      host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', {}),
+      host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', { include_internal: true }),
     ])
     const engineFunctions = functions.status === 'fulfilled' ? functions.value.functions ?? [] : []
     return {
@@ -326,7 +440,10 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       rawConfig: config.status === 'fulfilled' && !isRecord(config.value?.value),
       configError: config.status === 'rejected' ? errorMessage(config.reason) : null,
       functions: engineFunctions,
-      workers: [...new Set(engineFunctions.map((f) => f.worker_name ?? '').filter((n) => /^[a-z0-9-]+$/.test(n)))],
+      // What this engine can share: no mirror, engine:: or mesh function, and no machine bridge on a hub.
+      // shortcut: a worker name or public id ValidateShare refuses as an entry is not listed; list it without a control if such names appear.
+      local: engineFunctions.filter((fn) => /^[a-z0-9-]+$/.test(fn.worker_name ?? '') && !NEVER_SHARED.has(fn.worker_name ?? '') && canShareId(fn.function_id)),
+      functionsError: functions.status === 'rejected' ? errorMessage(functions.reason) : null,
     }
   }, [host, configurationId])
   const { data, loading, error, refresh } = useWorkerLive({
@@ -377,6 +494,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
     for (const key of changed) next = setAt(next, BASIC_PATHS[key], edits[key] as JsonValue)
     await host.iii.call('configuration::set', { id: configurationId, value: next })
     setWritten(next)
+    announce('Settings saved.')
     // Edits typed while the save was in flight stay.
     setEdits((prev) => {
       const rest = { ...prev }
@@ -434,6 +552,9 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   }, [settling, written])
   // A template can expand to nothing; then the hub's own address decides.
   const hasAddress = saved.public_url.includes('${') && data?.hub ? Boolean(data.hub.public_url) : Boolean(saved.public_url)
+  // The hub reports no address: no machine can join yet, and no join code exists.
+  const noAddress = Boolean(data?.hub && !data.hub.public_url)
+  const focusHeading = (id: string) => document.getElementById(id)?.focus()
   return <PageShell className="mesh-ui-shell">
     <PageHeader icon={<Network />} title="Mesh" description={running === 'client' ? 'Sharing workers with a hub' : 'Your machines'} onClose={onRequestClose}
       actions={<Button variant="ghost" size="sm" disabled={loading} onClick={refresh}>
@@ -461,7 +582,10 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         {error || data?.nodesError ? <StatusPanel variant="alert" headline="Could not load machines"
           detail={error || data?.nodesError} action={<Button onClick={refresh}>Retry</Button>} /> : null}
         {data?.nodes?.length === 0 ? <EmptyState icon={Network} title="No machines joined"
-          description="Use the hub URL and join code below in another engine's Mesh page to connect it." /> : null}
+          description={noAddress ? 'This hub has no address yet. Give it one under Hub address, then another engine can join.'
+            : 'Open Mesh on another engine, choose Client, and paste this hub\'s URL and join code.'}
+          action={noAddress ? { label: 'Go to Hub address', onClick: () => focusHeading('mesh-address-title') }
+            : { label: 'Show join code', onClick: () => focusHeading('mesh-join-title') }} /> : null}
         <div className="mesh-ui-nodes">{data?.nodes?.map((node) => <article key={node.name} className="mesh-ui-node" aria-label={node.name}>
           <header className="mesh-ui-node-head"><h3><code>{node.name}</code></h3>
             <Badge variant={node.online ? 'ok' : 'default'}>{node.online ? 'Online' : 'Offline'}</Badge>
@@ -479,14 +603,14 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
         </article>)}</div>
       </section> : null}
       {raw ? null : basics.mode === 'client'
-        ? <ClientSetup basics={basics} saved={saved} edit={edit} status={data?.client ?? null} workers={data?.workers ?? []} functions={data?.functions ?? []}
+        ? <ClientSetup basics={basics} saved={saved} edit={edit} status={data?.client ?? null} local={data?.local ?? []} listError={data?.functionsError ?? null} onRetry={refresh} functions={data?.functions ?? []}
           secretInput={secretInput} onLeave={() => setLeaving(true)} />
-        : <><ShareList share={basics.hub_share} saved={saved.hub_share} live={data?.hub ? data.hub.shared ?? [] : null} workers={data?.workers ?? []} machine="hub"
+        : <><ShareList share={basics.hub_share} saved={saved.hub_share} live={data?.hub ? data.hub.shared ?? [] : null} local={data?.local ?? []} listError={data?.functionsError ?? null} onRetry={refresh}
           place="this hub" calls={<>joined machines call them as <code>hub::function</code></>}
           risk="Every machine joined to this hub can call shared workers, and nothing asks here first, so sharing these gives each of them remote code execution with this project's access."
           footer="Every machine joined to this hub can call what you share." onChange={(next) => edit('hub_share', next)} />
         <section className="mesh-ui-section" aria-labelledby="mesh-address-title">
-          <div className="mesh-ui-section-head"><h2 id="mesh-address-title">Hub address</h2>
+          <div className="mesh-ui-section-head"><h2 id="mesh-address-title" tabIndex={-1}>Hub address</h2>
             {hasAddress || saved.tunnel ? null : <Badge variant="warn">needed before machines can join</Badge>}
           </div>
           <SettingsList>
@@ -494,29 +618,37 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
               renderControl={(props) => <Switch {...props} checked={basics.tunnel} onChange={(e) => edit('tunnel', e.currentTarget.checked)} />} />
             <TunnelLine tunnel={tunnel} stalled={stalled && settling} />
             <SettingsField label="Public URL" field="public_url" description="A manual address. Overrides the tunnel."
-              renderControl={(props) => <Input {...props} placeholder="https://mesh.example.com" value={basics.public_url} onChange={(next) => edit('public_url', next)} />} />
+              renderControl={(props) => <Input {...props} value={basics.public_url} onChange={(next) => edit('public_url', next)} />} />
           </SettingsList>
         </section></>}
       {dirty || failure ? <section className="mesh-ui-section mesh-ui-save" aria-live="polite">
         {failure ? <StatusPanel variant="alert" headline="Could not save" detail={failure} /> : null}
         {dirty ? <div className="mesh-ui-save-bar">
           <span className="mesh-ui-muted">Unsaved changes{changed.includes('mode') || saved.mode !== running ? ' · applied after a restart' : ' · applied within a few seconds'}</span>
-          <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => setEdits({})}>Discard</Button>
+          <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => { setEdits({}); setFailure(null) }}>Discard</Button>
           <Button size="sm" disabled={busy !== null || (basics.mode === 'client' && basics.name !== '' && !NAME.test(basics.name))} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save'}</Button>
         </div> : null}
       </section> : null}
       {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
-        <div className="mesh-ui-section-head"><h2 id="mesh-join-title">Connect another engine</h2></div>
-        <p className="mesh-ui-muted">On the other machine, open Mesh in that project's Console, choose Client, and paste these into Hub URL and Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference. The code works once: after a machine joins with it, the hub replaces it. A machine that joins can call every worker shared by this hub and by the other machines. Share the join code only with people you trust.</p>
-        {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
-          action={<Button onClick={refresh}>Retry</Button>} /> : null}
-        {cycleError ? <StatusPanel variant="alert" headline="Could not generate a new code" detail={cycleError} /> : null}
-        {data?.join ? <div className="mesh-ui-join">
-          {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
-          <CopyValue label="Join code" value={cycled ?? data.join.code} action={<Button variant="ghost" size="sm" disabled={cycling} onClick={cycle}>
-            {cycling ? 'Generating…' : 'Generate new code'}
-          </Button>} />
-        </div> : null}
+        <div className="mesh-ui-section-head"><h2 id="mesh-join-title" tabIndex={-1}>Connect another engine</h2></div>
+        {/* Without an address the hub has no code to give: say what is missing instead of its refusal. */}
+        {noAddress ? <p className="mesh-ui-muted">This hub has no address yet. Turn on the tunnel or set a Public URL under Hub address. The hub URL and join code appear here once it has one.</p> : <>
+          <ol className="mesh-ui-steps">
+            <li>On the other machine, open Mesh in that project's Console and choose Client.</li>
+            <li>Paste the hub URL below into Hub URL.</li>
+            <li>Paste the join code into Join code or token. If that field takes only a secret://NAME reference, store the code in the secrets worker and enter the reference.</li>
+          </ol>
+          <p className="mesh-ui-muted">The code works once: after a machine joins with it, the hub replaces it. A machine that joins can call every worker shared by this hub and by the other machines, so share the join code only with people you trust.</p>
+          {data?.joinError ? <StatusPanel variant="warn" headline="Join instructions unavailable" detail={data.joinError}
+            action={<Button onClick={refresh}>Retry</Button>} /> : null}
+          {cycleError ? <StatusPanel variant="alert" headline="Could not generate a new code" detail={cycleError} /> : null}
+          {data?.join ? <div className="mesh-ui-join">
+            {data.hub?.public_url ? <CopyValue label="Hub URL" value={data.hub.public_url} /> : null}
+            <CopyValue label="Join code" value={cycled ?? data.join.code} action={<Button variant="ghost" size="sm" disabled={cycling} onClick={cycle}>
+              {cycling ? 'Generating…' : 'Generate new code'}
+            </Button>} />
+          </div> : null}
+        </>}
       </section> : null}
       <LiveRegion announcement={notice ? { ...notice, urgency: 'polite' } : null} />
       <ConfirmDialog open={removing !== null} onOpenChange={(open) => { if (!open) setRemoving(null) }} tone="danger"

@@ -274,9 +274,10 @@ func (h *Hub) refreshNames(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A shared worker that is not running yet keeps its name: a machine under it would take its ids.
+	// A shared worker or id that is not running yet keeps its prefix: a machine under it would take its ids.
 	for _, w := range h.Config().Share {
-		taken[w] = true
+		prefix, _, _ := strings.Cut(w, "::")
+		taken[prefix] = true
 	}
 	h.Coordinator.SetNameTaken(func(name string) bool { return taken[name] })
 	return nil

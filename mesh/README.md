@@ -107,8 +107,13 @@ Each card lists the workers that machine shares, each with its hub function ids
 and their descriptions, then its address, platform, version and connection path.
 A card also warns when that machine shares more than the mesh carries.
 **Remove** on a card removes that machine after a confirmation.
-Next comes **Shared workers**: a switch for each of the hub's own workers,
-which joined machines call as `hub::<function>`. A worker that runs commands is
+Next comes **Shared workers**: a row for each of the hub's own workers, whose
+functions joined machines call as `hub::<function>`. Its switch shares every
+public function of the worker, including ones it registers later. Open the row
+to pick functions one by one instead, internal ones included: that stores a
+fixed list of function ids. A shared id that no listed worker registers now
+stays under **Other shared functions**, so it can be turned off. A worker that
+runs commands, or a function whose id starts with such a worker's name, is
 marked. The **Hub address** section follows.
 The page does not poll. The worker calls the private `mesh::on-status-changed`
 with its `mesh::status` answer whenever that answer changes, and the page
@@ -118,9 +123,9 @@ hub's shared workers and a machine's shared workers, and
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
 code, to paste into the Mesh page of the other project in **Client** mode. If
-the public URL is missing, set **Public URL** or turn on **Expose through a
-tunnel** in the page's **Hub address** section, then refresh the join
-instructions.
+the public URL is missing, the section says so: set **Public URL** or turn on
+**Expose through a tunnel** in the page's **Hub address** section, and the URL
+and join code appear once the hub has an address.
 
 In **Client** mode the **Hub connection** section shows the client's state as
 the worker pushes it (`starting`, `waiting for join`, `joining`,
@@ -182,15 +187,20 @@ and enrollment state.
 
 `share` lists the hub workers that every joined machine may call; it is empty
 by default. As in `client.share`, `mesh`, `secrets`, `configuration` and
-`rbac-proxy` are refused. A machine that joins or renames cannot take a shared
-worker's name. `mesh::status` reports each entry under `shared`, with its
-function ids as machines call them (`hub::<function>`) and a state: `shared`,
-`not running`, `name conflict` (a joined machine has the name the worker's
-function ids start with) or `too large`. `catalog_skipped` lists the machines
-whose shares do not fit (see [Client mode](#client-mode)). A machine's call runs
-with this project's access and nothing on the hub asks first, so sharing
-`shell` or another worker that runs commands gives every joined machine remote
-code execution on the hub.
+`rbac-proxy` are refused. A worker's name shares its public functions, never
+those it registered with `metadata.internal: true`; an entry that is a function
+id, such as `harness::send`, shares that one function alone, internal or not,
+even when its worker is not shared. A machine mirrors an internal function as
+internal too: out of the default `engine::functions::list` and agent catalogs,
+called by id. A machine that joins or renames cannot take a shared worker's
+name or the prefix of a shared function id. `mesh::status` reports each entry
+under `shared`, with its function ids as machines call them (`hub::<function>`)
+and a state: `shared`, `not running`, `name conflict` (a joined machine has the
+name the worker's function ids start with) or `too large`. `catalog_skipped`
+lists the machines whose shares do not fit (see [Client mode](#client-mode)).
+A machine's call runs with this project's access and nothing on the hub asks
+first, so sharing `shell` or another worker that runs commands, or one of its
+functions by id, gives every joined machine remote code execution on the hub.
 
 Entries written before 2026-11-10 may hold `links`, `nodes` and `drives`. The
 hub accepts and ignores them, and nothing removes them.
@@ -431,7 +441,7 @@ client:
   hub_url: https://mesh.example.com   # needed with a join code; a token carries its URL
   join: secret://MESH_JOIN            # secret://NAME or env://NAME, never the code itself
   name: harness-mbp                   # requested; the hub may assign harness-mbp-2
-  share: [mesh-probe]                 # local workers the mesh may call; [] shares nothing
+  share: [mesh-probe]                 # local workers or single function ids the mesh may call; [] shares nothing
   peer_to_peer: false                 # true: call machines that also turned this on directly, without the hub
 ```
 
@@ -470,9 +480,12 @@ engine disconnected, a failed rename) is retried after 2 seconds and then at
 doubling intervals up to a minute, and `mesh::status` reports `retrying: true`
 meanwhile.
 
-`mesh::status` and the Console's Mesh page report the hub, assigned name
-(`node`), hub namespace, state, each shared worker with its hub function IDs
-and, under `remote`, what this machine can call in the mesh, hub first.
+`client.share` takes the same entries as the hub's `share`: a worker's name
+shares its public functions, and a function id shares that one function, internal
+ones included. `mesh::status` and the Console's Mesh page report the hub,
+assigned name (`node`), hub namespace, state, each share entry with its hub
+function IDs and, under `remote`, what this machine can call in the mesh, hub
+first.
 
 The client registers on its local engine a mirror for each function the hub or
 another machine shares: `hub::<function>` for the hub's and
@@ -613,9 +626,10 @@ entries named `<old>__*` are not moved. A client joined by an earlier build whos
 
 The hub project and every machine joined to the hub can call shared workers.
 Calls reach the local engine as caller `mesh`, and nothing asks here first.
-Sharing `ide`, `harness` or any worker that runs commands gives all of them
-remote code execution on this machine, so a join code is execute access to
-everything shared in the mesh. A machine writes the descriptions and schemas of
+Sharing `ide`, `harness` or any worker that runs commands, or one of their
+functions by id such as `harness::send`, gives all of them remote code
+execution on this machine, so a join code is execute access to everything
+shared in the mesh. A machine writes the descriptions and schemas of
 its own shared functions, and every other machine lists them under
 `peer::<its name>::`. `mesh`, `secrets`, `configuration` and `rbac-proxy`
 cannot be shared, and functions under `engine::`, `mesh::`, `mesh-node::`,
@@ -723,7 +737,8 @@ build shares nothing with a client of this one. To downgrade a hub to a build
 before 0.2.0, first remove the `share` key from its entry, even an empty list:
 an earlier build refuses the entry and stops at startup. Likewise remove
 `client.peer_to_peer`, even `false`, from a client before running a build
-before 0.3.0.
+before 0.3.0, and every function id from `share` and `client.share` before
+running a build before 0.3.1.
 
 ## Agent access
 

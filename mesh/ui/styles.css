@@ -1,4 +1,5 @@
-[data-iii-ui="mesh"] .mesh-ui-main { overflow: auto; padding: 24px; }
+/* Above the tallest sticky save region (with Could not save at 390px), so a control focused by Tab never lands under it. */
+[data-iii-ui="mesh"] .mesh-ui-main { overflow: auto; padding: 24px; scroll-padding-bottom: 220px; }
 [data-iii-ui="mesh"] .mesh-ui-section { width: 100%; box-sizing: border-box; max-width: 1100px; margin: 0 auto 32px; }
 [data-iii-ui="mesh"] .mesh-ui-section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
 [data-iii-ui="mesh"] h2 { font-size: 14px; font-weight: 600; margin: 0; }
@@ -16,7 +17,7 @@
 /* The hidden glyph lines a row that cannot open up with the disclosures' summary::before. */
 [data-iii-ui="mesh"] .mesh-ui-worker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 44px; }
 [data-iii-ui="mesh"] .mesh-ui-worker::before { content: '+'; font-family: var(--font-mono); visibility: hidden; }
-[data-iii-ui="mesh"] .mesh-ui-worker > code, [data-iii-ui="mesh"] .mesh-ui-fns > summary > code { font-size: 13px; font-weight: 500; }
+[data-iii-ui="mesh"] .mesh-ui-worker > code, [data-iii-ui="mesh"] .mesh-ui-fns > summary > code, [data-iii-ui="mesh"] .mesh-ui-share summary > code { font-size: 13px; font-weight: 500; }
 [data-iii-ui="mesh"] .mesh-ui-fns > summary .mesh-ui-muted { font-weight: 400; }
 [data-iii-ui="mesh"] .mesh-ui-fns > p { margin: 0 0 8px 16px; }
 [data-iii-ui="mesh"] .mesh-ui-functions { list-style: none; margin: 0; padding: 0 0 12px 16px; display: flex; flex-direction: column; gap: 4px; }
@@ -41,29 +42,36 @@
 [data-iii-ui="mesh"] .mesh-ui-copy > code { display: block; white-space: pre-wrap; user-select: text; }
 [data-iii-ui="mesh"] .mesh-ui-configuration { display: flex; flex-direction: column; gap: 24px; }
 [data-iii-ui="mesh"] summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+[data-iii-ui="mesh"] summary:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: -2px; border-radius: var(--radius-sm); }
 [data-iii-ui="mesh"] summary::before { content: '+'; font-family: var(--font-mono); color: var(--color-ink-faint); }
 [data-iii-ui="mesh"] details[open] > summary::before { content: '−'; }
 [data-iii-ui="mesh"] .mesh-ui-form-item { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
 [data-iii-ui="mesh"] .mesh-ui-form-item > div { flex: 1; min-width: 0; }
 [data-iii-ui="mesh"] .mesh-ui-form-empty { padding: 12px; color: var(--color-ink-faint); font-size: 12px; }
 [data-iii-ui="mesh"] .mesh-ui-advanced > section { margin-top: 16px; }
-@container (max-width: 560px) {
-  [data-iii-ui="mesh"] .mesh-ui-main { padding: 16px; }
-  [data-iii-ui="mesh"] .mesh-ui-details { grid-template-columns: minmax(0, 1fr); }
-  [data-iii-ui="mesh"] .mesh-ui-form-item { flex-wrap: wrap; padding: 8px; }
-  [data-iii-ui="mesh"] .mesh-ui-functions { gap: 8px; }
-  [data-iii-ui="mesh"] .mesh-ui-functions > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
-}
 [data-iii-ui="mesh"] .mesh-ui-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 24px; }
 [data-iii-ui="mesh"] .mesh-ui-mode > p { flex-basis: 100%; margin: 0; }
 [data-iii-ui="mesh"] .mesh-ui-share { list-style: none; margin: 0; padding: 0; border: 1px solid var(--color-edge); border-radius: var(--radius-lg); background: var(--color-panel-raised); }
-[data-iii-ui="mesh"] .mesh-ui-share > li { padding: 4px 16px; }
+[data-iii-ui="mesh"] .mesh-ui-share > li { padding: 4px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; }
 [data-iii-ui="mesh"] .mesh-ui-share > li + li { border-top: 1px solid var(--color-edge); }
-[data-iii-ui="mesh"] .mesh-ui-share label { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-height: 44px; cursor: pointer; }
-[data-iii-ui="mesh"] .mesh-ui-share .mesh-ui-fns { padding-left: 48px; }
-[data-iii-ui="mesh"] .mesh-ui-share > li > p { margin: 0 0 8px 48px; }
-[data-iii-ui="mesh"] .mesh-ui-share + p { margin: 8px 0 0; }
-[data-iii-ui="mesh"] .mesh-ui-save { position: sticky; bottom: 0; }
+/* Start-aligned: an open row is taller than the summary the switch sits beside. */
+[data-iii-ui="mesh"] .mesh-ui-share-switch { display: flex; align-items: center; min-height: 44px; align-self: start; }
+[data-iii-ui="mesh"] .mesh-ui-share summary { flex-wrap: wrap; row-gap: 4px; }
+[data-iii-ui="mesh"] .mesh-ui-share > li > p { grid-column: 2; margin: 0 0 8px 16px; }
+[data-iii-ui="mesh"] .mesh-ui-pick { display: grid; gap: 8px; padding: 0 0 12px 16px; }
+[data-iii-ui="mesh"] .mesh-ui-pick > label { justify-self: start; }
+[data-iii-ui="mesh"] .mesh-ui-pick > p { margin: 0; }
+[data-iii-ui="mesh"] .mesh-ui-pick > p:empty { display: none; }
+[data-iii-ui="mesh"] .mesh-ui-pick > .mesh-ui-functions { padding: 0; }
+[data-iii-ui="mesh"] .mesh-ui-pick .mesh-ui-functions > li { grid-template-columns: minmax(0, 20rem) minmax(0, 1fr) auto; align-items: center; }
+[data-iii-ui="mesh"] .mesh-ui-share > .mesh-ui-share-other { display: block; padding-top: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-share-other ul { list-style: none; margin: 0; padding: 0 0 8px; }
+[data-iii-ui="mesh"] .mesh-ui-share-other li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+[data-iii-ui="mesh"] .mesh-ui-steps { margin: 0; padding-left: 20px; list-style: decimal; }
+[data-iii-ui="mesh"] .mesh-ui-steps > li + li { margin-top: 4px; }
+[data-iii-ui="mesh"] .mesh-ui-section:not(.mesh-ui-mode) > * + * { margin-top: 12px; }
+/* lint-allow shadow: a fill, not elevation; it covers the pane's bottom padding, which the sticky region stops above. */
+[data-iii-ui="mesh"] .mesh-ui-save { position: sticky; bottom: 0; background: var(--color-panel); padding-block: 8px; box-shadow: 0 24px 0 var(--color-panel); }
 [data-iii-ui="mesh"] .mesh-ui-save-bar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px 16px; background: var(--color-panel-raised); border: 1px solid var(--color-edge); border-radius: var(--radius-lg); }
 [data-iii-ui="mesh"] .mesh-ui-save-bar > span { margin-right: auto; }
 [data-iii-ui="mesh"] .mesh-ui-tunnel { padding: 0 16px 12px; }
@@ -71,3 +79,18 @@
 [data-iii-ui="mesh"] .mesh-ui-progress { display: grid; gap: 8px; margin-bottom: 12px; }
 [data-iii-ui="mesh"] .mesh-ui-progress:empty { display: none; }
 [data-iii-ui="mesh"] .mesh-ui-progress > p { margin: 0; }
+/* Last: same-specificity rules above must not win over the narrow layout. */
+@container (max-width: 560px) {
+  [data-iii-ui="mesh"] .mesh-ui-main { padding: 16px; }
+  [data-iii-ui="mesh"] h2 { font-size: 16px; }
+  /* The base rules' selectors, so the narrow size wins over their specificity. */
+  [data-iii-ui="mesh"] h3 code, [data-iii-ui="mesh"] summary > code, [data-iii-ui="mesh"] .mesh-ui-worker > code, [data-iii-ui="mesh"] .mesh-ui-fns > summary > code, [data-iii-ui="mesh"] .mesh-ui-share summary > code { font-size: 14px; }
+  [data-iii-ui="mesh"] .mesh-ui-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  [data-iii-ui="mesh"] .mesh-ui-form-item { flex-wrap: wrap; padding: 8px; }
+  [data-iii-ui="mesh"] .mesh-ui-functions { gap: 8px; }
+  [data-iii-ui="mesh"] .mesh-ui-functions > li, [data-iii-ui="mesh"] .mesh-ui-pick .mesh-ui-functions > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  /* The host checkbox's box and gap, so a description starts under its id. */
+  [data-iii-ui="mesh"] .mesh-ui-pick .mesh-ui-functions > li > .mesh-ui-muted { margin-left: calc(1.125rem + 0.5rem); }
+  /* The message takes its own line, so Discard and Save stay together. */
+  [data-iii-ui="mesh"] .mesh-ui-save-bar > span { flex-basis: 100%; }
+}

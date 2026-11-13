@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -123,7 +122,7 @@ func (h *Hub) meshCall(ctx context.Context, client rpc, caller string, req Middl
 	// An action is refused: an enqueued call would run after a revocation.
 	allowed := req.Namespace == h.Namespace && req.Action == nil && ready && details.Version == h.Version &&
 		listed && row.owner == call.Owner && row.owner != caller &&
-		(row.owner != "hub" || slices.Contains(h.config.Share, row.worker)) // an unshared worker leaves before the next read
+		(row.owner != "hub" || meshclient.ShareEntry(h.config.Share, row.worker, call.FunctionID, row.internal) != "") // an unshared worker or id leaves before the next read
 	busy := allowed && h.inFlight[caller] >= maxCallsInFlight
 	if allowed && !busy {
 		if h.inFlight == nil {

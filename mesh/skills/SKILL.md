@@ -30,8 +30,10 @@ configured roots, using laptop's filesystem; the caller's paths and roots do
 not apply. For a `hub::` function the hub's filesystem and roots apply.
 Retrieve the usual tool's schema when its input fields are unknown.
 
-An offline machine has **no functions**. A machine exposes only the workers its
-owner shares; a missing tool means that worker is not shared. A machine's own
+An offline machine has **no functions**. A machine exposes only the workers and
+single functions its owner shares; a missing tool means it is not shared. A
+function shared alone may be internal: it is not in the default function list
+or tool catalog, but calling its `hub::` or `peer::` id works. A machine's own
 functions keep their local ids and never appear under `peer::`. A `hub::` or
 `peer::` call fails with `mesh_offline` while this machine is not connected or
 the hub, just restarted, has not read it yet, `FORBIDDEN` when the function is

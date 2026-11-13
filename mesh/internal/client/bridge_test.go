@@ -176,6 +176,107 @@ func TestSyncFiltersDeniesAndDiffs(t *testing.T) {
 	}
 }
 
+func TestValidateShare(t *testing.T) {
+	if err := ValidateShare([]string{"probe", "harness::send", "coder::create-file", "ade::watch::r1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"engine::functions::list", "mesh::status", "mesh-node::status", "secrets::resolve", "configuration::get",
+		"rbac-proxy::x", "approval::resolve", "hub::shell::exec", "peer::desk::coder::read-file", "harness::*", "*::send", " harness::send",
+		"harness::send ", "harness::", "::send", "rbac-proxy:laptop::mesh-bridge", "mesh", "Bad", strings.Repeat("a", 251) + "::send"} {
+		if err := ValidateShare([]string{bad}); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	if err := ValidateShare([]string{"mesh::status"}); err == nil || !strings.Contains(err.Error(), "never leave a machine") {
+		t.Fatalf("denied prefix error %v", err)
+	}
+}
+
+func internal(r map[string]any) map[string]any {
+	r["metadata"] = map[string]any{"internal": true}
+	return r
+}
+
+func TestSyncSharesFunctionsByID(t *testing.T) {
+	rows := []map[string]any{
+		row("probe::echo", "local", "probe"),
+		internal(row("probe::grant", "local", "probe")), // a worker entry shares no internal function
+		internal(row("harness::send", "local", "harness")),
+		internal(row("harness::stop", "local", "harness")),
+		row("harness::status", "local", "harness"),
+		internal(row("mesh::status", "local", "harness")), // cited, as a list ValidateShare never saw, yet never bridgeable
+		row("vault::get", "local", "secrets"),             // cited, but a denied worker's function under any id
+	}
+	local := engine(&rows)
+	b := newBridge(t, local)
+	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := registered(b); !slices.Equal(got, []string{"probe::echo"}) {
+		t.Fatalf("worker entry registered %v", got)
+	}
+	// An id names no worker, so the listing covers every worker and the rows the engine hides.
+	if err := b.Sync(context.Background(), []string{"probe", "harness::send", "probe::grant", "mesh::status", "vault::get"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := registered(b); !slices.Equal(got, []string{"harness::send", "probe::echo", "probe::grant"}) {
+		t.Fatalf("id entries registered %v", got)
+	}
+	if list := local.called("engine::functions::list"); string(list[len(list)-1].Payload) != `{"include_internal":true}` {
+		t.Fatalf("list payload %s", list[len(list)-1].Payload)
+	}
+	if f := b.functions["harness::send"]; f.Worker != "harness" || !Internal(f.Opts.Metadata) {
+		t.Fatalf("an id entry's copy is no longer internal: %+v", f)
+	}
+	want := []SharedStatus{
+		{Worker: "probe", State: "pending", Functions: []string{"laptop::probe::echo"}},
+		{Worker: "harness::send", State: "pending", Functions: []string{"laptop::harness::send"}},
+		{Worker: "probe::grant", State: "pending", Functions: []string{"laptop::probe::grant"}},
+		{Worker: "mesh::status", State: "not running", Functions: []string{}},
+		{Worker: "vault::get", State: "not running", Functions: []string{}},
+	}
+	if got := b.Shared("laptop"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("shared %+v", got)
+	}
+	// A failed read keeps what is known, but an id taken off the list leaves at once.
+	local.fn = func(iii.CallRequest) (json.RawMessage, error) { return nil, errors.New("down") }
+	if err := b.Sync(context.Background(), []string{"probe", "harness::send"}); err == nil {
+		t.Fatal("no error")
+	}
+	if got := registered(b); !slices.Equal(got, []string{"harness::send", "probe::echo"}) {
+		t.Fatalf("after a failed read registered %v", got)
+	}
+}
+
+// A known copy whose internal flag flipped is read again, so the status goes by the new flag.
+func TestSyncRereadsAFlippedInternalFlag(t *testing.T) {
+	rows := []map[string]any{internal(row("probe::grant", "local", "probe"))}
+	b := newBridge(t, engine(&rows))
+	if err := b.Sync(context.Background(), []string{"probe", "probe::grant"}); err != nil {
+		t.Fatal(err)
+	}
+	rows[0] = row("probe::grant", "local", "probe")
+	if err := b.Sync(context.Background(), []string{"probe"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Shared("laptop"); len(got) != 1 || !slices.Equal(got[0].Functions, []string{"laptop::probe::grant"}) {
+		t.Fatalf("shared %+v", got)
+	}
+}
+
+func TestCatalogMirrorKeepsInternal(t *testing.T) {
+	rows := []map[string]any{}
+	local := engine(&rows)
+	b := newBridge(t, local)
+	b.SetCatalog(node.Catalog{Rev: "r1", Functions: []node.CatalogEntry{{ID: "desk::harness::send", Owner: "desk", Internal: true}, {ID: "shell::exec", Owner: "hub"}}})
+	if o := local.opts["peer::desk::harness::send"]; string(o.Metadata) != `{"internal":true}` {
+		t.Fatalf("internal mirror options %+v", o)
+	}
+	if o := local.opts["hub::shell::exec"]; o.Metadata != nil {
+		t.Fatalf("mirror options %+v", o)
+	}
+}
+
 func TestInfoChunksOf32InLocalNamespace(t *testing.T) {
 	rows := []map[string]any{}
 	for i := range 40 {

@@ -29,20 +29,23 @@ func TestTakenIncludesEngineFunctionPrefixes(t *testing.T) {
 }
 
 // A machine named like a shared worker that is not running yet would take that worker's ids.
+// A shared function id reserves its prefix as a shared worker reserves its name.
 func TestJoinCannotTakeASharedWorkersName(t *testing.T) {
-	h, _, up := idleNodeCallHub(t)
-	h.engine = &fakeEngine{}
-	h.config.Share = []string{"laptop"}
-	if err := h.refreshNames(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	up()
-	names := []string{}
-	for _, n := range h.Coordinator.Nodes() {
-		names = append(names, n.Name)
-	}
-	if !slices.Equal(names, []string{"laptop-2"}) {
-		t.Fatalf("nodes %v", names)
+	for _, share := range [][]string{{"laptop"}, {"laptop::x"}} {
+		h, _, up := idleNodeCallHub(t)
+		h.engine = &fakeEngine{}
+		h.config.Share = share
+		if err := h.refreshNames(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		up()
+		names := []string{}
+		for _, n := range h.Coordinator.Nodes() {
+			names = append(names, n.Name)
+		}
+		if !slices.Equal(names, []string{"laptop-2"}) {
+			t.Fatalf("share %v: nodes %v", share, names)
+		}
 	}
 }
 

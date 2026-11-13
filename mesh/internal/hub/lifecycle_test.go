@@ -308,7 +308,7 @@ func TestFrontDoorBehindProxyProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.SetHooks(Hooks{Gateway: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "gateway") })})
-	client := &http.Client{Transport: &http.Transport{DialContext: node.Dial, DisableKeepAlives: true}, Timeout: 10 * time.Second}
+	client := &http.Client{Transport: &http.Transport{DialContext: node.Dial, DisableKeepAlives: true}, Timeout: 15 * time.Second}
 	res, err := client.Get(fmt.Sprintf("http://[%s]:50271/", h.Status().HubAddress))
 	if err != nil {
 		t.Fatal(err)

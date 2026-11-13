@@ -118,7 +118,7 @@ func meshHub() (*Hub, SessionContext) {
 	h := authHub()
 	h.Version = "0.2.0"
 	h.config.Share = []string{"shell"}
-	h.shared = shared{rows: map[string]sharedRow{"shell::exec": {"hub", "shell"}, "laptop::coder::read-file": {"laptop", bridgeWorker("laptop")}}}
+	h.shared = shared{rows: map[string]sharedRow{"shell::exec": {"hub", "shell", false}, "laptop::coder::read-file": {"laptop", bridgeWorker("laptop"), false}}}
 	h.nodeDetails = map[string]NodeDetails{"desk": {NodeEntry: NodeEntry{Version: "0.2.0"}}, "laptop": {NodeEntry: NodeEntry{Version: "0.2.0"}}}
 	return h, SessionContext{MeshNode: "desk", SessionKey: h.Sessions.Open("desk")}
 }
@@ -200,6 +200,29 @@ func TestMeshCallRefusals(t *testing.T) {
 	result := &resultRPC{out: json.RawMessage(`{"data":` + ref + `}`)}
 	if _, err := h.middleware(t.Context(), result, meshRequest(desk, "hub", "shell::exec", `{}`)); code(err) != "channels_unsupported" || h.inFlight["desk"] != 0 {
 		t.Fatalf("result with a channel ref: %v, %d in flight", err, h.inFlight["desk"])
+	}
+}
+
+// A function cited by id passes, internal or not; an internal one only its worker's entry covers never does.
+func TestMeshCallGatesFunctionsByID(t *testing.T) {
+	h, desk := meshHub()
+	h.config.Share = []string{"shell", "harness::send"}
+	h.shared.rows["harness::send"] = sharedRow{"hub", "harness", true}
+	h.shared.rows["shell::spawn"] = sharedRow{"hub", "shell", true} // as a read racing a re-registration could leave it
+	f := &forwardingRPC{}
+	if _, err := h.middleware(t.Context(), f, meshRequest(desk, "hub", "harness::send", `{}`)); err != nil || len(f.calls) != 1 || f.calls[0].FunctionID != "harness::send" {
+		t.Fatalf("cited internal function: %v %+v", err, f.calls)
+	}
+	for _, id := range []string{"shell::spawn", "shell::grant"} {
+		f = &forwardingRPC{}
+		if _, err := h.middleware(t.Context(), f, meshRequest(desk, "hub", id, `{}`)); code(err) != "FORBIDDEN" || len(f.calls) != 0 {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	// An id taken off the list leaves before the next read.
+	h.config.Share = []string{"shell"}
+	if _, err := h.middleware(t.Context(), f, meshRequest(desk, "hub", "harness::send", `{}`)); code(err) != "FORBIDDEN" || len(f.calls) != 0 {
+		t.Fatalf("uncited id: %v", err)
 	}
 }
 
