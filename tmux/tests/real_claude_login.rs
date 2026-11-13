@@ -9,7 +9,9 @@
 //! where it is asked to with `REAL_CLAUDE_LOGIN=1` and `REAL_CLAUDE_BIN`
 //! naming the binary: inside a throwaway container (`/.dockerenv`), or on a
 //! Mac with `REAL_CLAUDE_LOGIN_MAC=1` too (macOS opens links with `open`,
-//! which the worker must keep from running); anywhere else it skips.
+//! which the worker must keep from running). It is `#[ignore]`d: run it
+//! with `--ignored` there, where it fails when that environment is missing
+//! rather than pass without looking.
 //! Everything Claude Code writes is in a sandbox folder (`CLAUDE_CONFIG_DIR`
 //! and `HOME`); no real code is ever typed, so nothing is ever signed in.
 
@@ -43,11 +45,11 @@ fn script(path: &Path, text: &str) {
 }
 
 #[tokio::test]
+#[ignore = "the real Claude Code and Anthropic: REAL_CLAUDE_LOGIN=1 REAL_CLAUDE_BIN=<claude> in a throwaway container (or REAL_CLAUDE_LOGIN_MAC=1 on a Mac), then --ignored"]
 async fn the_real_claude_code_signs_in_through_the_worker_s_pty() {
-    let Some(claude) = real_claude() else {
-        eprintln!("not in a REAL_CLAUDE_LOGIN container; skipping");
-        return;
-    };
+    let claude = real_claude().expect(
+        "REAL_CLAUDE_LOGIN=1 and REAL_CLAUDE_BIN, in a container (/.dockerenv) or with REAL_CLAUDE_LOGIN_MAC=1 on a Mac",
+    );
     let dir =
         std::env::temp_dir().join(format!("tmux-real-login-{}", uuid::Uuid::new_v4().simple()));
     let home = dir.join("home");
@@ -101,7 +103,7 @@ async fn the_real_claude_code_signs_in_through_the_worker_s_pty() {
             ("DISABLE_AUTOUPDATER".into(), "1".into()),
         ],
         opener: Some(traps.join("opener")),
-        ttl_ms: None,
+        ..Default::default()
     });
     let collector = Arc::new(Collector::with_accounts(
         WorkerConfig {
