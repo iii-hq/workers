@@ -78,3 +78,35 @@ export function typeInto(element: HTMLElement, text: string): boolean {
   }
   return false
 }
+
+/** A phone or tablet: the primary pointer is a finger. */
+export function isTouchScreen(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+}
+
+/**
+ * Pointer-down on a voice control under a finger. The console cancels
+ * pointer-down on the composer toolbar so a tap keeps the caret, but on a
+ * phone a tap while the message box still holds focus (keyboard hidden, not
+ * blurred) brings the keyboard back. The control takes focus itself: a
+ * button raises no keyboard, and focus stays inside the composer, so its
+ * toolbar stays shown.
+ */
+export function takeFocusOnTouch(event: { pointerType?: string; currentTarget: EventTarget | null; preventDefault(): void } | undefined): void {
+  if (!event || event.pointerType === 'mouse') return
+  event.preventDefault()
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus({ preventScroll: true })
+}
+
+/** After text lands in the chat composer on a phone, drop the caret the
+    console gave it, so the keyboard does not cover the message. */
+export function releaseComposerFocusOnTouch(): void {
+  if (!isTouchScreen()) return
+  const release = () => {
+    const active = deepActiveElement()
+    if (active instanceof HTMLElement && isChatComposer(active)) active.blur()
+  }
+  // The console focuses the editor as its insert commits; blur after it.
+  window.setTimeout(release, 0)
+  window.setTimeout(release, 120)
+}

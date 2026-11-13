@@ -14,7 +14,14 @@ import type React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DictationController } from './dictation'
 import { useDictation } from './dictation'
-import { deepActiveElement, editableTarget, isChatComposer, typeInto } from './focus-target'
+import {
+  deepActiveElement,
+  editableTarget,
+  isChatComposer,
+  releaseComposerFocusOnTouch,
+  takeFocusOnTouch,
+  typeInto,
+} from './focus-target'
 
 const HOLD_THRESHOLD_MS = 400
 const MESSAGE_DISPLAY_MS = 4000
@@ -160,10 +167,18 @@ export function MicButton({
       aria-pressed={listening}
       style={{ '--voice-level': level } as React.CSSProperties}
       className={classes}
-      onPointerDown={pointer.onPointerDown}
+      onPointerDown={(event?: React.PointerEvent) => {
+        takeFocusOnTouch(event)
+        pointer.onPointerDown()
+      }}
       onPointerUp={pointer.onPointerUp}
       onPointerLeave={pointer.onPointerCancel}
       onPointerCancel={pointer.onPointerCancel}
+      // Starting swaps the recording bar in under the finger; the click a mobile
+      // browser synthesizes after the tap would then land on the composer and
+      // open the keyboard. Suppress that ghost click.
+      onTouchEnd={(event: React.TouchEvent) => event.preventDefault()}
+      onClick={(event: React.MouseEvent) => event.stopPropagation()}
       onContextMenu={(event: { preventDefault(): void }) => event.preventDefault()}
     >
       <Mic />
@@ -188,6 +203,7 @@ export async function deliverTranscript(
   if (field && !isChatComposer(field) && typeInto(field, text)) return 'field'
   if (host.chat?.compose) {
     host.chat.compose({ text: `${text} ` })
+    releaseComposerFocusOnTouch()
     return 'composer'
   }
   return (await copyText(text)) ? 'clipboard' : 'failed'

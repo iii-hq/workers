@@ -12,6 +12,7 @@ import { IconButton } from '@iii-dev/console-ui'
 import { Check, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DictationController, DictationStatus } from '../lib/dictation'
+import { deepActiveElement, editableTarget, isTouchScreen, takeFocusOnTouch } from '../lib/focus-target'
 import { formatClock } from '../lib/format'
 import { LiveWaveform } from '../lib/live-waveform'
 
@@ -33,9 +34,16 @@ export function RecordingBar({
   const stopping = status === 'stopping'
 
   // A click on the mic leaves focus on a control now under the bar: carry it to Done.
+  // On a touch screen the composer's editor can still hold focus with the
+  // keyboard merely hidden (Android's back key does that); the phone brings
+  // the keyboard back over the recording. Done takes focus instead: it keeps
+  // the toolbar shown (it lives in the composer) and no keyboard comes up.
   useEffect(() => {
-    const active = document.activeElement
-    if (active instanceof HTMLElement && active.closest('.voice-composer-btn')) doneRef.current?.focus()
+    const active = deepActiveElement()
+    if (!(active instanceof HTMLElement)) return
+    if (active.closest('.voice-composer-btn') || (isTouchScreen() && editableTarget(active))) {
+      doneRef.current?.focus({ preventScroll: true })
+    }
   }, [])
 
   return (
@@ -49,7 +57,7 @@ export function RecordingBar({
       <span className="voice-recording-time" aria-label={`${Math.floor(elapsed)} seconds`}>
         {formatClock(elapsed)}
       </span>
-      <IconButton label="Cancel dictation" tooltip="Discard" className="voice-recording-cancel" disabled={stopping} onClick={onCancel}>
+      <IconButton label="Cancel dictation" tooltip="Discard" className="voice-recording-cancel" disabled={stopping} onPointerDown={takeFocusOnTouch} onClick={onCancel}>
         <X />
       </IconButton>
       <IconButton
@@ -58,6 +66,7 @@ export function RecordingBar({
         tooltip={stopping ? 'Finishing…' : 'Insert the text'}
         className={['voice-recording-done', stopping ? 'is-stopping' : ''].filter(Boolean).join(' ')}
         aria-busy={stopping || undefined}
+        onPointerDown={takeFocusOnTouch}
         onClick={() => {
           if (!stopping) onDone()
         }}
