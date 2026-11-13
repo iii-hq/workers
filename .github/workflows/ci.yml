@@ -27,7 +27,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ ade/web/e2e/test_namespaced_provider_ports.py -v
@@ -651,6 +651,8 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
+      # Node 24, not the repo-wide 22: computer/ui runs its .ts tests straight
+      # through `node --test` (see the header of src/lib/computer.test.ts).
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
@@ -955,7 +957,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
@@ -1014,7 +1016,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
