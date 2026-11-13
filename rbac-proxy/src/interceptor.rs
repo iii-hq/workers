@@ -1151,7 +1151,8 @@ impl Interceptor {
             // worker never holds a trusted worker's name, and another
             // prefix's session declaring the same name is another worker, to
             // the engine's one-live-worker-per-name rule and to the
-            // replacement of a suspended observer (decision 51).
+            // replacement of a suspended observer (decision 51). A name the
+            // auth function granted in `worker_names` passes as declared.
             if let Some(Value::String(name)) = data.get_mut("name") {
                 *name = self.session.proxied_worker_name(name);
             }
@@ -1187,6 +1188,7 @@ impl Interceptor {
                 "proxy_version": env!("CARGO_PKG_VERSION"),
                 "session_id": self.session.session_id.to_string(),
                 "function_registration_prefix": self.session.function_registration_prefix,
+                "worker_names": self.session.worker_names,
                 "policy": {
                     "auth_function": rbac.auth_function_id.is_some(),
                     "expose_functions": rbac.expose_functions.len(),
@@ -1961,6 +1963,49 @@ mod tests {
             names.push(v["data"]["name"].clone());
         }
         assert_ne!(names[0], names[1]);
+    }
+
+    /// A name the auth function granted reaches the engine as declared, so
+    /// a supervisor that waits for the worker by name (compose) sees it.
+    #[tokio::test]
+    async fn a_granted_worker_name_is_forwarded_unchanged() {
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "mcp", "runtime": "rust" },
+            "action": { "type": "void" }
+        })
+        .to_string();
+        for prefix in [None, Some("tenant1")] {
+            let sess = Arc::new(ProxySession {
+                worker_names: vec!["mcp".to_string()],
+                ..(*session(prefix)).clone()
+            });
+            let i = interceptor(config_with(expose(&["api::*"]), None), sess);
+            let v = forwarded(i.handle_downstream(&frame).await);
+            assert_eq!(v["data"]["name"], "mcp");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_worker_name_is_pinned_even_with_other_grants() {
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "queue", "runtime": "rust" },
+            "action": { "type": "void" }
+        })
+        .to_string();
+        let sess = Arc::new(ProxySession {
+            worker_names: vec!["mcp".to_string()],
+            ..(*session(None)).clone()
+        });
+        let i = interceptor(config_with(expose(&["api::*"]), None), sess.clone());
+        let v = forwarded(i.handle_downstream(&frame).await);
+        assert_eq!(
+            v["data"]["name"],
+            format!("rbac-proxy:{}:queue", sess.session_id)
+        );
     }
 
     /// Decision 51 replaces a suspended observer from a connection under the
@@ -3472,8 +3517,20 @@ mod tests {
         let i = interceptor(config_with(rbac, None), session(Some("tenant1")));
         let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
         assert_eq!(res["function_registration_prefix"], "tenant1");
+        assert_eq!(res["worker_names"], json!([]));
         assert_eq!(res["policy"]["auth_function"], true);
         assert_eq!(res["policy"]["exposes_everything"], true);
+    }
+
+    #[tokio::test]
+    async fn session_probe_reports_granted_worker_names() {
+        let sess = Arc::new(ProxySession {
+            worker_names: vec!["mcp".to_string()],
+            ..(*session(None)).clone()
+        });
+        let i = interceptor(config_with(expose(&["api::*"]), None), sess);
+        let res = reply(i.handle_downstream(&probe_frame().to_string()).await)["result"].clone();
+        assert_eq!(res["worker_names"], json!(["mcp"]));
     }
 
     #[tokio::test]
