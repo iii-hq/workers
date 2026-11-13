@@ -40,12 +40,15 @@ rule; point-in-time information belongs in memories.
   `memory::save { "text": "...", "entities": [...] }`, one self-contained
   sentence each. It records your session and turn as its source; re-saving
   reinforces, never duplicates.
-- The user asks to keep something for good — if `memory::save` is available
-  to you, `memory::save { "text": "...", "pinned": true }` in this turn; add
-  `"entities": ["user"]` when it is a fact about the user: a save from a turn
-  is not tagged `user` on its own. In a captured session, extraction then
-  finds that pinned record and adds no copy of it. Without `memory::save`,
-  acknowledge it and `memory::pin` it once `memory::recall` shows it.
+- The user asks to keep something for good (not in a scripted run) — if
+  `memory::save` is available to you, `memory::save { "text": "...",
+  "pinned": true }` in this turn; add `"entities": ["user"]` when it is a fact
+  about the user: a save from a turn is not tagged `user` on its own. In a
+  captured session, extraction then skips a restatement of that record in the
+  same or nearly the same words; a looser rewording can still land beside it,
+  unpinned. Without `memory::save`, in a captured session acknowledge it and
+  `memory::pin` it once `memory::recall` shows it; anywhere else, tell the user
+  it cannot be saved from here.
 - The user asks what you remember about a topic — `memory::recall { "query": "..." }`
   ranks the bank's memories for it. A turn is given fewer: only the hits with
   evidence, one line per fact and the newer of a stated change;
