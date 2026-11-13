@@ -9,14 +9,16 @@
 //! CatalogCache), the live-connection gauge, and the actually-bound address
 //! (the source of truth `rbac-proxy::status` reports).
 
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::extract::ConnectInfo;
+use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::http::{HeaderMap, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Router};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -26,6 +28,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::configuration::ConfigCell;
+use crate::endpoints::{self, Endpoint};
 use crate::engine_overrides::CatalogCache;
 use crate::{channels, proxy};
 
@@ -61,15 +64,45 @@ impl ProxyState {
 
 /// Build the router. Exposed for tests so they can drive it without a socket.
 pub fn router(state: ProxyState) -> Router {
-    Router::new()
-        .route("/", get(proxy::ws_upgrade))
-        .route("/ws/channels/:channel_id", get(channels::channel_bridge))
-        .fallback(not_found)
-        .with_state(state)
+    Router::new().fallback(endpoint).with_state(state)
 }
 
-async fn not_found() -> (StatusCode, &'static str) {
-    (StatusCode::NOT_FOUND, "not found")
+/// Every request: refused with 403 unless `rbac.expose_endpoints` exposes its
+/// path, then handled as its [`Endpoint`] kind. Rules are read per request,
+/// so a configuration change applies to the next connection.
+async fn endpoint(
+    State(state): State<ProxyState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    uri: Uri,
+    headers: HeaderMap,
+    ws: Option<WebSocketUpgrade>,
+) -> Response {
+    let path = uri.path().to_string();
+    let cfg = state.config.read().await.clone();
+    if !endpoints::endpoint_exposed(&cfg.rbac.expose_endpoints, &path) {
+        return (StatusCode::FORBIDDEN, endpoints::not_exposed_message(&path)).into_response();
+    }
+    let Some(ws) = ws else {
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            "rbac-proxy: this endpoint takes a WebSocket upgrade",
+        )
+            .into_response();
+    };
+    match Endpoint::of(&path) {
+        Endpoint::Worker => {
+            ws.on_upgrade(move |socket| proxy::handle_connection(socket, state, peer, uri, headers))
+        }
+        Endpoint::Channel(_) => {
+            let query = uri.query().map(str::to_string);
+            ws.on_upgrade(move |socket| {
+                channels::channel(socket, cfg.engine_url.clone(), path, query)
+            })
+        }
+        Endpoint::Relay => ws.on_upgrade(move |socket| {
+            proxy::authenticated_relay(socket, state, peer, uri, headers)
+        }),
+    }
 }
 
 /// A rebindable public listener. Holds the shutdown trigger for the currently
@@ -274,6 +307,88 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         (serve_with_deadline(listener, state(), header_timeout), addr)
+    }
+
+    async fn serve_exposing(patterns: &[&str]) -> (watch::Sender<bool>, SocketAddr) {
+        let mut cfg = WorkerConfig::default();
+        cfg.rbac.expose_endpoints = serde_json::from_value(serde_json::json!(patterns
+            .iter()
+            .map(|p| format!("match(\"{p}\")"))
+            .collect::<Vec<_>>()))
+        .unwrap();
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = ProxyState::new(cell, iii);
+        (
+            serve_with_deadline(listener, state, Duration::from_secs(10)),
+            addr,
+        )
+    }
+
+    /// The response head and body to a GET of `path`, as a WebSocket upgrade
+    /// or a plain request.
+    async fn get(addr: SocketAddr, path: &str, upgrade: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let upgrade_headers = if upgrade {
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+        } else {
+            "Connection: close\r\n"
+        };
+        s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{upgrade_headers}\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    #[tokio::test]
+    async fn no_endpoint_is_served_until_one_is_exposed() {
+        let (tx, addr) = serve_exposing(&[]).await;
+        for path in ["/", "/otel", "/ws/channels/abc", "/nope"] {
+            for upgrade in [true, false] {
+                let res = get(addr, path, upgrade).await;
+                assert!(res.starts_with("HTTP/1.1 403"), "{path}: {res}");
+                assert!(
+                    res.contains("rbac.expose_endpoints")
+                        && res.contains(&crate::endpoints::suggested_rule(path)),
+                    "{path}: {res}"
+                );
+            }
+        }
+        let _ = tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn exposed_endpoints_upgrade_and_the_rest_stay_refused() {
+        let (tx, addr) = serve_exposing(&["/", "/otel", "/ws/channels/*"]).await;
+        for path in ["/", "/otel", "/ws/channels/abc"] {
+            let res = get(addr, path, true).await;
+            assert!(res.starts_with("HTTP/1.1 101"), "{path}: {res}");
+        }
+        assert!(get(addr, "/nope", true).await.starts_with("HTTP/1.1 403"));
+        let _ = tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn an_exposed_endpoint_still_needs_a_websocket() {
+        let (tx, addr) = serve_exposing(&["/otel"]).await;
+        let res = get(addr, "/otel", false).await;
+        assert!(
+            res.starts_with("HTTP/1.1 4") && !res.starts_with("HTTP/1.1 403"),
+            "{res}"
+        );
+        let _ = tx.send(true);
     }
 
     #[tokio::test]

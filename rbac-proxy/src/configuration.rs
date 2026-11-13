@@ -166,6 +166,9 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 
 /// Swap the config snapshot under the write lock.
 pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
+    if let Some(warning) = crate::endpoints::empty_warning(&cfg.rbac.expose_endpoints) {
+        tracing::warn!("{warning}");
+    }
     *cell.write().await = Arc::new(cfg);
 }
 

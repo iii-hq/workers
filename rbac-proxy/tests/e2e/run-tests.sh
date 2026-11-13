@@ -172,6 +172,10 @@ expose_worker_internals: false
 middleware_function_id: support::middleware
 rbac:
   auth_function_id: support::auth
+  expose_endpoints:
+    - match("/")
+    - match("/ws/channels/*")
+    - match("/otel")
   on_function_registration_function_id: support::on-fn-reg
   on_observer_registration_function_id: support::on-observer-reg
   expose_functions:

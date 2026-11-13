@@ -1,5 +1,5 @@
 {
-  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.",
+  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, which endpoints are exposed, and the live downstream connection count.",
   "function_id": "rbac-proxy::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -18,6 +18,13 @@
       "engine_url": {
         "description": "Upstream engine URL, with any `user:pass@` credentials redacted.",
         "type": "string"
+      },
+      "expose_endpoints": {
+        "description": "The `rbac.expose_endpoints` patterns: the paths the proxy serves. Empty: every connection is refused.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "host": {
         "description": "Bound public host.",
@@ -41,6 +48,7 @@
     "required": [
       "active_connections",
       "engine_url",
+      "expose_endpoints",
       "host",
       "port",
       "rbac_enabled",

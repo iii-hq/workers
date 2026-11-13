@@ -373,3 +373,27 @@ Bridge contract:
 > `mpsc` buffer remain the engine's `ChannelManager` concern; the proxy is a
 > dumb relay. An idle channel that neither side connects expires in the engine
 > (5-minute TTL) exactly as today.
+
+## Exposed endpoints
+
+The engine's worker port serves three WebSocket endpoints: `/`, `/otel` and
+`/ws/channels/{id}`. The proxy serves a path only when a rule in
+`rbac.expose_endpoints` matches it, with the `expose_functions` wildcard
+syntax (`match("/otel")`, `*` for any run of characters, anchored). The list
+is empty by default, so a proxy serves nothing until configured, the same
+default as `expose_functions`. An unlisted path gets `403` before the upgrade,
+with a body naming the rule to add; an empty list is logged at startup and on
+every config change. Rules are read per request.
+
+An exposed path is handled by its kind:
+
+| Path | Handling |
+|---|---|
+| `/` | authenticated with `auth_function_id`, then every frame through the interceptor |
+| `/ws/channels/{id}` (one segment) | relayed as is; the engine checks the `access_key` |
+| anything else (`/otel`) | authenticated with `auth_function_id`, then relayed as is to the same path and query on the engine |
+
+The engine authenticates `/otel` with its worker RBAC gate too, so OTel
+traffic through the proxy cannot skip authentication. Earlier versions
+always served `/` and the channels and never `/otel`: an upgrade must add
+`expose_endpoints` first.

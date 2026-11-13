@@ -116,6 +116,13 @@ fn register_support(engine_ws: &str) -> IIIClient {
         "test::auth",
         RegisterFunction::new_async(|input: Value| async move {
             let mut session = json!({ "context": { "tenant": "itest" } });
+            if input["headers"]["authorization"] == "Bearer reject" {
+                return Err(Error::Remote {
+                    code: "UNAUTHORIZED".to_string(),
+                    message: "rejected by test::auth".to_string(),
+                    stacktrace: None,
+                });
+            }
             if input["headers"]["authorization"] == "Bearer narrow" {
                 session["forbidden_functions"] = json!(["api::echo"]);
             }
@@ -168,7 +175,9 @@ async fn boot() -> Option<Harness> {
         &seed_path,
         format!(
             "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
-             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
+             rbac:\n  auth_function_id: test::auth\n  \
+             expose_endpoints:\n    - match(\"/\")\n    - match(\"/ws/channels/*\")\n    - match(\"/otel\")\n  \
+             expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
         ),
     )
     .ok()?;
@@ -593,6 +602,43 @@ async fn end_to_end_child() {
         let _ = first.close(None).await;
         let _ = second.close(None).await;
     }
+
+    // (k) /otel is relayed to the engine after the same auth function as `/`.
+    {
+        let mut refused = raw_client_at(proxy_port, "/otel", "Bearer reject").await;
+        let first = timeout(Duration::from_secs(5), refused.next())
+            .await
+            .expect("a refused /otel connection gets an answer");
+        match first {
+            Some(Ok(Message::Text(t))) => {
+                let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                assert_eq!(v["type"], "error", "got {v}");
+            }
+            other => panic!("expected an error frame, got {other:?}"),
+        }
+
+        let mut otel = raw_client_at(proxy_port, "/otel", "Bearer test-token").await;
+        otel.send(Message::Binary(b"not an otlp frame".to_vec()))
+            .await
+            .expect("an accepted /otel connection takes binary frames");
+        let quiet = timeout(Duration::from_millis(500), otel.next()).await;
+        assert!(
+            !matches!(&quiet, Ok(Some(Ok(Message::Text(_))))),
+            "an accepted /otel connection got a frame: {quiet:?}"
+        );
+        let _ = otel.close(None).await;
+    }
+
+    // (l) An endpoint not in expose_endpoints is refused before the upgrade.
+    {
+        let url = format!("ws://127.0.0.1:{proxy_port}/nope");
+        match tokio_tungstenite::connect_async(url.as_str()).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 403);
+            }
+            other => panic!("expected a 403, got {other:?}"),
+        }
+    }
 }
 
 type RawClient =
@@ -603,7 +649,11 @@ async fn raw_client(proxy_port: u16) -> RawClient {
 }
 
 async fn raw_client_with(proxy_port: u16, authorization: &str) -> RawClient {
-    let url = format!("ws://127.0.0.1:{proxy_port}/");
+    raw_client_at(proxy_port, "/", authorization).await
+}
+
+async fn raw_client_at(proxy_port: u16, path: &str, authorization: &str) -> RawClient {
+    let url = format!("ws://127.0.0.1:{proxy_port}{path}");
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             url.as_str(),
