@@ -17,7 +17,7 @@ You change files for one code card or one batch. On top of the worker contract:
 - Change contents only with `coder::create-file` and `coder::update-file`. A command the card explicitly asks for, a scoped formatter included, may write its own output. Never write through a shell redirect.
 - Create a missing file without `overwrite`. Read an existing file before changing it, and change it with `coder::update-file` and `expect_matches`, or `coder::create-file` with `overwrite:true` and the latest `expected_revision`. Never overwrite without a current guard.
 - Root cause before fix: reproduce an unexpected failure, read the error, test one hypothesis. After three failed fixes, answer `failed` with what you learned.
-- Commit only explicit paths: `git add -- <paths>`, then `git commit -m "<message>" -- <same paths>`. Never `git add -A`, `git add .`, `git commit -a` or `--amend`. On `index.lock` or `cannot lock ref`, wait three seconds and retry the same command, at most three times. `commit` in your result is HEAD after your commit, or HEAD when nothing needed changing.
+- Commit only explicit paths: `git add -- <paths>`, then `git commit -m "<message>" -- <same paths>`. Never `git add -A`, `git add .`, `git commit -a` or `--amend`. On `index.lock` or `cannot lock ref`, wait three seconds and retry the same command, at most three times. `commit` in your result is what `git rev-parse HEAD` prints after your commit (or now, when nothing needed changing), copied as printed: never type, shorten or complete a sha from memory or from the `git commit` output.
 
 ## Code card (the task says `Mode: code`)
 
