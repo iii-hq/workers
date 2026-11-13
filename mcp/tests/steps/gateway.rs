@@ -275,9 +275,9 @@ async fn set_state(world: &mut McpWorld) {
 }
 
 #[then(
-    regex = r#"^iii_events returns (\d+) events? for this scenario's scope within (\d+) seconds$"#
+    regex = r#"^iii_observations_poll returns (\d+) observations? for this scenario's scope within (\d+) seconds$"#
 )]
-async fn events_arrive(world: &mut McpWorld, want: usize, secs: u64) {
+async fn observations_arrive(world: &mut McpWorld, want: usize, secs: u64) {
     if world.iii.is_none() {
         return;
     }
@@ -290,16 +290,26 @@ async fn events_arrive(world: &mut McpWorld, want: usize, secs: u64) {
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut seen: Vec<Value> = vec![];
     while Instant::now() < deadline && seen.len() < want {
-        tool(world, "iii_events", json!({ "observer_id": oid })).await;
+        tool(
+            world,
+            "iii_observations_poll",
+            json!({ "observer_id": oid }),
+        )
+        .await;
         let v: Value = serde_json::from_str(&tool_text(world).1).unwrap_or_default();
-        seen.extend(v["events"].as_array().cloned().unwrap_or_default());
+        seen.extend(v["observations"].as_array().cloned().unwrap_or_default());
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
-    tool(world, "iii_events", json!({ "observer_id": oid })).await;
+    tool(
+        world,
+        "iii_observations_poll",
+        json!({ "observer_id": oid }),
+    )
+    .await;
     let v: Value = serde_json::from_str(&tool_text(world).1).unwrap_or_default();
-    seen.extend(v["events"].as_array().cloned().unwrap_or_default());
-    assert_eq!(seen.len(), want, "events: {seen:?}");
+    seen.extend(v["observations"].as_array().cloned().unwrap_or_default());
+    assert_eq!(seen.len(), want, "observations: {seen:?}");
     assert_eq!(seen[0]["input"]["scope"], scope(world));
 }
 

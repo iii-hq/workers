@@ -113,7 +113,7 @@ impl Observe for SdkEngine {
             }
         }
         let mut options = ObserverOptions::default();
-        if let Some(n) = req.max_events.filter(|n| *n > 0) {
+        if let Some(n) = req.max_observations.filter(|n| *n > 0) {
             options = options.max_fires(n);
         }
         if let Some(ms) = req.expires_in_ms.filter(|ms| *ms > 0) {

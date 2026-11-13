@@ -1,9 +1,10 @@
 //! The MCP Streamable HTTP endpoint: one HTTP request in, one reply out.
 //!
-//! Order of checks: Origin (403), HTTP method (`DELETE` ends a session,
-//! anything but `POST` is 405), session (`initialize` opens one and returns
-//! its id; an unknown `Mcp-Session-Id` is 404 so the client re-initializes),
-//! then JSON-RPC dispatch.
+//! Order of checks: Origin (403), HTTP method (`DELETE` ends a session, `GET`
+//! opens the session's SSE stream, anything but `POST` is 405), session
+//! (`initialize` opens one and returns its id, or 503 at `max_sessions`; an
+//! unknown `Mcp-Session-Id` is 404 so the client re-initializes), then
+//! JSON-RPC dispatch.
 
 use serde_json::{json, Value};
 
@@ -42,6 +43,8 @@ pub struct HttpReply {
     pub rpc: Option<JsonRpcResponse>,
     /// Set when `initialize` opened a session: the `Mcp-Session-Id` header.
     pub session_id: Option<String>,
+    /// Set for a `GET`: keep the response open as this session's SSE stream.
+    pub stream: Option<String>,
 }
 
 impl HttpReply {
@@ -50,6 +53,7 @@ impl HttpReply {
             status,
             rpc: Some(rpc),
             session_id: None,
+            stream: None,
         }
     }
     fn empty(status: u16) -> Self {
@@ -57,6 +61,7 @@ impl HttpReply {
             status,
             rpc: None,
             session_id: None,
+            stream: None,
         }
     }
 }
@@ -154,10 +159,20 @@ pub async fn handle_http<B: Bus + Observe>(
             Some(_) => refusal(404, "Session not found"),
         };
     }
+    if http_method.eq_ignore_ascii_case("GET") {
+        return match session_header {
+            None => refusal(400, "Bad Request: GET needs an Mcp-Session-Id header"),
+            Some(sid) if app.sessions.touch(&sid) => HttpReply {
+                stream: Some(sid),
+                ..HttpReply::empty(200)
+            },
+            Some(_) => refusal(404, "Session not found: initialize again"),
+        };
+    }
     if !http_method.eq_ignore_ascii_case("POST") {
         return refusal(
             405,
-            "Method Not Allowed: use POST (and DELETE to end a session)",
+            "Method Not Allowed: use POST, GET for the session's stream, and DELETE to end a session",
         );
     }
 
@@ -187,7 +202,10 @@ pub async fn handle_http<B: Bus + Observe>(
 
     let initializing = req.method == "initialize";
     let session_id = if initializing {
-        Some(app.sessions.create())
+        match app.sessions.create() {
+            Ok(sid) => Some(sid),
+            Err(message) => return refusal(503, &message),
+        }
     } else {
         match session_header {
             Some(sid) if app.sessions.touch(&sid) => Some(sid),
@@ -204,6 +222,7 @@ pub async fn handle_http<B: Bus + Observe>(
         status: 200,
         rpc: Some(rpc),
         session_id: if initializing { session_id } else { None },
+        stream: None,
     }
 }
 
@@ -528,11 +547,58 @@ mod tests {
     #[tokio::test]
     async fn other_http_methods_are_405() {
         let f = Fixture::new(FakeBus::new());
+        for m in ["PUT", "PATCH"] {
+            let r = handle_http(&f.app(), m, &json!({}), &Value::Null).await;
+            assert_eq!(r.status, 405);
+            assert!(rpc_error(&r)["message"].as_str().unwrap().contains("GET"));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_opens_the_sessions_stream() {
+        let f = Fixture::new(FakeBus::new());
+        let r = f.post(json!({}), rpc("initialize", json!({}))).await;
+        let sid = r.session_id.clone().unwrap();
+        let g = handle_http(
+            &f.app(),
+            "GET",
+            &json!({ "mcp-session-id": sid }),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(g.status, 200);
+        assert!(g.rpc.is_none());
+        assert_eq!(g.stream.as_deref(), Some(sid.as_str()));
+        let none = handle_http(&f.app(), "GET", &json!({}), &Value::Null).await;
+        assert_eq!(none.status, 400);
+        assert!(none.stream.is_none());
+        let unknown = handle_http(
+            &f.app(),
+            "GET",
+            &json!({ "mcp-session-id": "nope" }),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(unknown.status, 404);
+    }
+
+    #[tokio::test]
+    async fn initialize_past_max_sessions_is_refused_with_503() {
+        let mut f = Fixture::new(FakeBus::new());
+        f.sessions = Sessions::new(SessionLimits {
+            max_sessions: 1,
+            ..SessionLimits::default()
+        });
         assert_eq!(
-            handle_http(&f.app(), "GET", &json!({}), &Value::Null)
-                .await
-                .status,
-            405
+            f.post(json!({}), rpc("initialize", json!({}))).await.status,
+            200
         );
+        let r = f.post(json!({}), rpc("initialize", json!({}))).await;
+        assert_eq!(r.status, 503);
+        assert!(r.session_id.is_none());
+        assert!(rpc_error(&r)["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_sessions"));
     }
 }
