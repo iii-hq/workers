@@ -10,8 +10,15 @@ fn fixture(mode: &str) -> (tempfile::TempDir, Config) {
     std::fs::create_dir_all(&root).unwrap();
     let dir = tempfile::tempdir_in(root).unwrap();
     let executable = dir.path().join("fake-cloudflared");
-    std::fs::write(&executable, include_str!("fixtures/fake-cloudflared.py")).unwrap();
+    std::fs::write(&executable, include_str!("fixtures/fake-cloudflared.sh")).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS vets a new executable on its first exec (syspolicyd, ~150-250 ms).
+    // Pay that here with a run that exits at once, not inside a test's budget.
+    if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new(&executable)
+            .arg("--version")
+            .status();
+    }
     std::fs::write(dir.path().join("mode"), mode).unwrap();
     let config = Config {
         cloudflared: executable.to_str().unwrap().into(),
@@ -59,13 +66,19 @@ fn pids(dir: &Path) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+/// Signal 0 only probes: it succeeds for a running child and for a zombie, on
+/// Linux and macOS alike, and fails once the child is reaped.
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("/bin/kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
 fn reaped(dir: &Path) {
-    #[cfg(target_os = "linux")]
     for pid in pids(dir) {
-        assert!(
-            !Path::new(&format!("/proc/{pid}")).exists(),
-            "child {pid} not reaped"
-        );
+        assert!(!alive(&pid), "child {pid} not reaped");
     }
 }
 
@@ -83,6 +96,8 @@ async fn concurrent_acquire_is_idempotent_and_independent_leases_keep_child_aliv
     let other = manager.acquire(request("preview", 5000)).await.unwrap();
     event(&mut events, Status::Ready).await;
     assert_eq!(pids(dir.path()).len(), 1);
+    // Proves the probe behind `reaped` sees a live child on this platform.
+    assert!(alive(&pids(dir.path())[0]));
     manager
         .release(ReleaseRequest {
             lease_id: first.lease_id.clone(),
@@ -258,6 +273,7 @@ async fn corrupt_persistence_fails_closed_and_expired_leases_do_not_restart() {
         consumer_id: "github".into(),
         tunnel_id: "webhooks".into(),
         expires_at: Utc::now() - chrono::Duration::seconds(1),
+        proxy_protocol: None,
     };
     std::fs::write(
         &config.state_path,
@@ -313,6 +329,7 @@ async fn worker_startup_signals_reap_children_from_persisted_leases() {
             consumer_id: "github".into(),
             tunnel_id: "webhooks".into(),
             expires_at: Utc::now() + chrono::Duration::seconds(60),
+            proxy_protocol: None,
         };
         std::fs::write(
             &config.state_path,
