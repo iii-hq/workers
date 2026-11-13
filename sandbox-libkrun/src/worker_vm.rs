@@ -30,8 +30,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
 use crate::cli::local_worker::{
-    BootImage, VmOverride, bundle_vm_command, image_build_command, local_vm_command,
-    open_build_export, validate_source,
+    BootImage, VmOverride, binary_vm_command, bundle_vm_command, image_build_command,
+    local_vm_command, open_build_export, validate_binary, validate_source, validate_source_with,
 };
 use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
@@ -82,6 +82,9 @@ const BUILD_DIR_RECORD: &str = "build-dir";
 /// What the MAC of a `build-dir` record covers first, so it can never equal
 /// another MAC of the project token over the same bytes.
 const BUILD_DIR_DOMAIN: &[u8] = b"iii-sandbox/build-dir/v1\0";
+/// A binary package runs only from a build: no prepare, no start without `build`.
+const BINARY_NEEDS_A_BUILD: &str = "a binary source boots only a build: build it with \
+     worker::build (with base_image), then start it with `build`";
 /// A build's scratch dir in `<vm_id>/`: `build-<pid>-<seq>`.
 const BUILD_SCRATCH_PREFIX: &str = "build-";
 /// A build writes to its `logs` channel at least this often, a one-byte binary
@@ -210,10 +213,15 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth, req.state_key.as_deref())?;
-        let (package, host_path, run_override) = source_parts(&req.source);
-        let dir = self.admit(host_path)?;
-        let (project, kind) =
-            validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        let source = Source::of(&req.source);
+        if source.executable.is_some() {
+            return Err(SandboxError::SourceRejected(
+                BINARY_NEEDS_A_BUILD.to_string(),
+            ));
+        }
+        let dir = self.admit(source.host_path)?;
+        let (project, kind) = validate_source(&dir, source.package, source.run_override)
+            .map_err(SandboxError::SourceRejected)?;
         let rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
             .await
             .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
@@ -243,8 +251,13 @@ impl WorkerVms {
         self.authorize(&req.auth, Some(&req.state_key))?;
         // Compose presents the project token and supervises its VMs itself.
         let leased = !self.is_project_token(&req.auth);
-        let (package, host_path, run_override) = source_parts(&req.source);
-        let dir = self.admit(host_path)?;
+        let source = Source::of(&req.source);
+        if source.executable.is_some() && req.build.is_none() {
+            return Err(SandboxError::SourceRejected(
+                BINARY_NEEDS_A_BUILD.to_string(),
+            ));
+        }
+        let dir = self.admit(source.host_path)?;
         let image = match &req.build {
             Some(_) if !crate::cli::overlay::overlay_active() => {
                 return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
@@ -261,7 +274,8 @@ impl WorkerVms {
             slots.insert(id.clone(), Slot::Preparing(next, start, false));
         }
         let _unreserve = Unreserve(self, &id, start);
-        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        // A build's image is made: its base image no longer matters.
+        source.validate(&dir, req.build.is_none())?;
         let mut notes = Vec::new();
         let image = match image {
             Some(image) => {
@@ -287,9 +301,12 @@ impl WorkerVms {
             extra_env: req.env.into_iter().collect(),
             image,
         };
-        let built = match package {
-            Some(package) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
-            None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
+        let built = match (source.package, source.executable) {
+            (Some(package), Some(executable)) => {
+                binary_vm_command(package, executable, &req.worker_name, &dir, over).await
+            }
+            (Some(package), None) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
+            (None, _) => local_vm_command(&req.worker_name, &dir, source.run_override, over).await,
         }
         .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
@@ -373,8 +390,9 @@ impl WorkerVms {
         if !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
         }
-        let (package, host_path, run_override) = source_parts(&req.source);
-        let dir = self.admit(host_path)?;
+        let source = Source::of(&req.source);
+        let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
+        let dir = self.admit(source.host_path)?;
         let planned = self.plan_output(&req.output_dir)?;
         let id = vm_id(&req.state_key);
         // Dropped last of the locals below: the key is free only once the
@@ -384,7 +402,8 @@ impl WorkerVms {
         // writes, and before the directory exists: a refused token creates nothing.
         self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
         let out = self.create_output(&planned, &req.output_dir)?;
-        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
+        // A base image in the request stands in for the manifest's.
+        source.validate(&dir, base_image.is_none())?;
         let vm_dir = self.base.join(&id);
         sweep_build_scratch(&vm_dir);
         sweep_image_partials(&out);
@@ -403,8 +422,8 @@ impl WorkerVms {
         let job = BuildJob {
             worker_name: &req.worker_name,
             dir: &dir,
-            package,
-            run_override,
+            source,
+            base_image,
             out: &out,
             scratch: &scratch,
             tag: &tag,
@@ -818,7 +837,10 @@ impl WorkerVms {
         }
     }
 
-    /// Remove `state_key`'s VM state. S502 while it is preparing, running or
+    /// Remove `state_key`'s VM state. With `prune`, all of it; without, all but
+    /// the VM's data ([`remove_runtime_state`]), which a later start of the same
+    /// `state_key` boots over again; its build directory is free either way.
+    /// `destroyed` says whether anything went (runtime state, without `prune`). S502 while it is preparing, running or
     /// being destroyed. It blocks for the removal: call it off the async runtime.
     pub fn destroy(
         &self,
@@ -841,7 +863,16 @@ impl WorkerVms {
             let last = instance.max(stored_instance(&dir).unwrap_or(0));
             (slots.insert(id.clone(), Slot::Destroying(instance)), last)
         };
-        let removed = std::fs::remove_dir_all(&dir);
+        let removed = if req.prune {
+            std::fs::remove_dir_all(&dir).map(|()| true)
+        } else {
+            remove_runtime_state(&dir, &id).map(|(removed, kept)| {
+                for path in kept {
+                    tracing::info!(vm_id = %id, path = %path.display(), "worker::destroy kept the VM's data");
+                }
+                removed
+            })
+        };
         let mut slots = self.slots();
         slots.remove(&id);
         // Even on failure: the removal may have reached `state.json` already.
@@ -849,7 +880,7 @@ impl WorkerVms {
             self.destroyed().insert(id.clone(), last);
         }
         let destroyed = match removed {
-            Ok(()) => true,
+            Ok(removed) => removed,
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
             Err(e) => {
                 // Its state is still there, so keep reporting it.
@@ -992,8 +1023,9 @@ impl Drop for BuildHold<'_> {
 struct BuildJob<'a> {
     worker_name: &'a str,
     dir: &'a Path,
-    package: Option<&'a str>,
-    run_override: Option<&'a str>,
+    source: Source<'a>,
+    /// The request's base image, over the manifest's; a binary package's.
+    base_image: Option<&'a str>,
     out: &'a Path,
     scratch: &'a Path,
     /// Names the temporary image files: `<pid>-<seq>`.
@@ -1027,8 +1059,10 @@ impl BuildJob<'_> {
         .await?;
         let vm = image_build_command(
             self.dir,
-            self.package,
-            self.run_override,
+            self.source.package,
+            self.source.run_override,
+            self.source.executable,
+            self.base_image,
             self.scratch,
             self.env,
         )
@@ -1472,6 +1506,17 @@ fn read_image_id(dir: &Path) -> Option<String> {
 /// Removes a file or a directory tree when dropped, if it is still there.
 struct RemoveOnDrop(PathBuf);
 
+/// Remove `path` now, a directory tree or a file (a symlink itself, never its
+/// target); a path already gone is no error.
+fn remove_entry(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         match std::fs::symlink_metadata(&self.0) {
@@ -1519,29 +1564,103 @@ fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<Str
     let mut notes = Vec::new();
     let seal = vm_dir.join(BUILD_MODE_SEAL);
     if std::fs::symlink_metadata(&seal).is_err() {
-        let root = vm_dir.join("root");
-        let old_upper = root.join(crate::cli::upper::UPPER_NAME);
-        if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
-            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
-            std::fs::rename(&old_upper, &kept)?;
-            notes.push(format!(
-                "{worker}: kept the pre-build data disk at {}",
-                kept.display()
-            ));
+        let (kept, root_moved) = keep_pre_build(vm_dir, worker)?;
+        if root_moved {
+            std::fs::create_dir(vm_dir.join("root"))?;
         }
-        if is_rootfs_clone(&root) {
-            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
-            std::fs::rename(&root, &kept)?;
-            std::fs::create_dir(&root)?;
-            notes.push(format!(
-                "{worker}: kept the pre-build data disk at {}",
-                kept.display()
-            ));
-        }
+        notes = kept;
         write_new_file(&seal, b"1\n")?;
     }
     let upper = crate::cli::upper::ensure_upper_ext4(vm_dir)?;
     Ok((upper, notes))
+}
+
+/// Move the data an earlier adapter kept in `vm_dir/root/` beside it: a 0.26
+/// overlay disk `root/upper.ext4` to `upper.ext4.pre-build`, a legacy rootfs
+/// clone `root/` to `root.pre-build/` (or the first free `.<n>` of each).
+/// Returns the lines to log, and whether `root/` itself moved.
+fn keep_pre_build(vm_dir: &Path, worker: &str) -> io::Result<(Vec<String>, bool)> {
+    let mut notes = Vec::new();
+    let root = vm_dir.join("root");
+    let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+    if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
+        let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+        std::fs::rename(&old_upper, &kept)?;
+        notes.push(format!(
+            "{worker}: kept the pre-build data disk at {}",
+            kept.display()
+        ));
+    }
+    let root_moved = is_rootfs_clone(&root);
+    if root_moved {
+        let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+        std::fs::rename(&root, &kept)?;
+        notes.push(format!(
+            "{worker}: kept the pre-build data disk at {}",
+            kept.display()
+        ));
+    }
+    Ok((notes, root_moved))
+}
+
+/// What `worker::destroy` without `prune` removes from `vm_dir`: the VM's
+/// runtime state (`root/`, the console log, `state.json`, the state-key file,
+/// build scratch) and its `build-dir` record, which frees its build directory.
+/// What stays is the VM's data, the data disk `upper.ext4` and the disks an
+/// earlier adapter left (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`),
+/// with the seal `build-mode`: a later start of the same `state_key` boots over
+/// the same data. A VM not yet started on a build first moves its 0.26 disk or
+/// rootfs clone to those names, as that start would. A VM without data goes
+/// whole. Returns whether runtime state went (`false` for a VM that is gone, or
+/// holds data only), and the data paths kept.
+fn remove_runtime_state(vm_dir: &Path, worker: &str) -> io::Result<(bool, Vec<PathBuf>)> {
+    match std::fs::symlink_metadata(vm_dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((false, Vec::new())),
+        checked => checked?,
+    };
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    let sealed = std::fs::symlink_metadata(&seal).is_ok();
+    let mut removed = false;
+    if !sealed {
+        for note in keep_pre_build(vm_dir, worker)?.0 {
+            tracing::info!("{note}");
+        }
+    }
+    let mut kept = Vec::new();
+    for entry in std::fs::read_dir(vm_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_str().unwrap_or("");
+        if is_vm_data(name) {
+            kept.push(entry.path());
+        } else if name != BUILD_MODE_SEAL {
+            remove_entry(&entry.path())?;
+            removed = true;
+        }
+    }
+    if kept.is_empty() {
+        std::fs::remove_dir_all(vm_dir)?;
+        return Ok((true, kept));
+    }
+    if !sealed {
+        // What moved out of `root/` is pre-build data now: no start moves it again.
+        write_new_file(&seal, b"1\n")?;
+    }
+    kept.sort();
+    Ok((removed, kept))
+}
+
+/// A name in `<vm_id>/` that holds the VM's data: `upper.ext4`, and the
+/// pre-build copies `upper.ext4.pre-build[.<n>]` and `root.pre-build[.<n>]`.
+fn is_vm_data(name: &str) -> bool {
+    name == crate::cli::upper::UPPER_NAME
+        || [PRE_BUILD_DISK, PRE_BUILD_ROOT].iter().any(|kept| {
+            name == *kept
+                || name
+                    .strip_prefix(kept)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 /// `error`, followed by the paths a migration kept: a boot that fails after
@@ -1579,14 +1698,75 @@ pub fn vm_id(state_key: &str) -> String {
     hex::encode(Sha256::digest(state_key))[..32].to_string()
 }
 
-/// `(package, host_path, run_override)`; `package` is `Some` for a bundle.
-fn source_parts(source: &WorkerSource) -> (Option<&str>, &str, Option<&str>) {
-    match source {
-        WorkerSource::Bundle { package, host_path } => (Some(package), host_path, None),
-        WorkerSource::Local {
-            host_path,
-            run_override,
-        } => (None, host_path, run_override.as_deref()),
+/// A request's source. `package` is the manifest name of a bundle or a binary
+/// package; `executable`, set for a binary package only, its program relative
+/// to `host_path`.
+#[derive(Clone, Copy)]
+struct Source<'a> {
+    host_path: &'a str,
+    package: Option<&'a str>,
+    run_override: Option<&'a str>,
+    executable: Option<&'a str>,
+}
+
+impl<'a> Source<'a> {
+    fn of(source: &'a WorkerSource) -> Self {
+        match source {
+            WorkerSource::Bundle { package, host_path } => Self {
+                host_path,
+                package: Some(package),
+                run_override: None,
+                executable: None,
+            },
+            WorkerSource::Local {
+                host_path,
+                run_override,
+            } => Self {
+                host_path,
+                package: None,
+                run_override: run_override.as_deref(),
+                executable: None,
+            },
+            WorkerSource::Binary {
+                package,
+                host_path,
+                executable,
+            } => Self {
+                host_path,
+                package: Some(package),
+                run_override: None,
+                executable: Some(executable),
+            },
+        }
+    }
+
+    /// The checks of the source in `dir`, its admitted `host_path`: S501 when
+    /// it fails them. `need_base_image: false` lets a local worker's manifest
+    /// leave its base image out (a build that names one, a start of a build).
+    fn validate(&self, dir: &Path, need_base_image: bool) -> Result<(), SandboxError> {
+        match (self.package, self.executable) {
+            (Some(package), Some(executable)) => {
+                validate_binary(dir, package, executable).map(drop)
+            }
+            _ => validate_source_with(dir, self.package, self.run_override, need_base_image)
+                .map(drop),
+        }
+        .map_err(SandboxError::SourceRejected)
+    }
+}
+
+/// The base image a build request names, trimmed: S001 when it is not a
+/// plausible OCI image reference, or when a binary package's build names none.
+fn build_base_image(base_image: Option<&str>, binary: bool) -> Result<Option<&str>, SandboxError> {
+    match base_image.map(str::trim) {
+        Some(image) if crate::cli::project::is_plausible_image_ref(image) => Ok(Some(image)),
+        Some(image) => Err(SandboxError::InvalidRequest(format!(
+            "base_image {image:?} is not a plausible OCI image reference"
+        ))),
+        None if binary => Err(SandboxError::InvalidRequest(
+            "a binary source needs base_image: its package names no base image".to_string(),
+        )),
+        None => Ok(None),
     }
 }
 
@@ -2218,10 +2398,20 @@ mod tests {
         records.iter().map(|r| r.line.as_str()).collect()
     }
 
+    /// A destroy with `prune`: all the VM's state goes, as before contract 1.4.
     fn destroy_req(auth: &str, state_key: &str) -> WorkerDestroyRequest {
         WorkerDestroyRequest {
             auth: auth.to_string(),
             state_key: state_key.to_string(),
+            prune: true,
+        }
+    }
+
+    /// A destroy without `prune`: the VM's data stays.
+    fn keep_req(auth: &str, state_key: &str) -> WorkerDestroyRequest {
+        WorkerDestroyRequest {
+            prune: false,
+            ..destroy_req(auth, state_key)
         }
     }
 
@@ -3812,6 +4002,7 @@ mod tests {
                         access_key: "k".to_string(),
                         direction: ChannelDirection::Write,
                     },
+                    base_image: None,
                 },
             )
         };
@@ -3843,6 +4034,332 @@ mod tests {
         let own = read_build_dir(&t.join("workers"), &vm_id("a"), "t");
         assert_eq!(own, Some(out_a.canonicalize().unwrap()));
         assert_eq!(code(build("t", "a", &out_b).await), "S501");
+    }
+
+    /// A VM dir as a VM that booted builds leaves it, the earlier adapter's
+    /// disks kept beside it, and its runtime state.
+    fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
+        let vm = t.join("workers").join(vm_id(key));
+        std::fs::create_dir_all(vm.join("root/opt/iii")).unwrap();
+        std::fs::create_dir_all(vm.join("root.pre-build/bin")).unwrap();
+        std::fs::create_dir_all(vm.join("build-1-2/root")).unwrap();
+        for (name, body) in [
+            ("upper.ext4", "data"),
+            ("upper.ext4.pre-build", "0.26 disk"),
+            ("upper.ext4.pre-build.1", "older 0.26 disk"),
+            ("build-mode", "1\n"),
+            ("console.log", "log"),
+            ("console.log.1", "old log"),
+            ("state.json", r#"{"instance":3}"#),
+            ("state_key", key),
+            ("root/opt/iii/run.sh", "script"),
+        ] {
+            std::fs::write(vm.join(name), body).unwrap();
+        }
+        let dir = t.join("project/build").join(key);
+        std::fs::create_dir_all(&dir).unwrap();
+        claim(
+            vms,
+            &scoped_auth_token("t", key),
+            key,
+            &dir.canonicalize().unwrap(),
+        )
+        .unwrap();
+        vm
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Without `prune`, destroy removes the runtime state and the build-dir
+    /// record, and keeps the data: the data disk, the earlier adapter's disks
+    /// and the seal. The next start of the key boots over the same disk, and
+    /// the build directory is free.
+    #[test]
+    fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let vm = vm_with_data(t, &vms, "k");
+        let outside = t.join("outside");
+        std::fs::write(&outside, "keep me").unwrap();
+        std::os::unix::fs::symlink(&outside, vm.join("planted")).unwrap();
+
+        assert!(vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        assert_eq!(
+            names_in(&vm),
+            [
+                "build-mode",
+                "root.pre-build",
+                "upper.ext4",
+                "upper.ext4.pre-build",
+                "upper.ext4.pre-build.1"
+            ]
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
+        assert!(vm.join("root.pre-build/bin").is_dir());
+
+        // The next start: the seal stands, nothing moves, the same disk.
+        let (upper, notes) = adopt_build_mode(&vm, "w").unwrap();
+        assert_eq!(upper, vm.join("upper.ext4"));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(std::fs::read_to_string(&upper).unwrap(), "data");
+        // The build directory is free.
+        let dir = t.join("project/build/k").canonicalize().unwrap();
+        claim(&vms, &scoped_auth_token("t", "other"), "other", &dir).unwrap();
+        // A second destroy finds data only: it keeps it and removes nothing.
+        assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        assert!(vm.join("upper.ext4").is_file());
+    }
+
+    /// With `prune`, destroy leaves nothing, the data and the record included.
+    #[test]
+    fn a_destroy_with_prune_leaves_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let vm = vm_with_data(t, &vms, "k");
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!vm.exists());
+        assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
+        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+    }
+
+    /// A VM with no data (it never booted a build) goes whole without `prune`
+    /// too; a VM an earlier adapter ran keeps its disk as a pre-build copy, as
+    /// its first build start would have.
+    #[tokio::test]
+    async fn a_destroy_without_prune_keeps_only_what_holds_data() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let id = vms
+            .launch("empty", sh("exit 0"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+        assert!(vms.destroy(keep_req("t", "empty")).unwrap().destroyed);
+        assert!(!t.join("workers").join(&id).exists());
+        // The same key boots on, as after a destroy with prune.
+        let again = vms.launch("empty", sh("exit 0"), Vec::new(), None).unwrap();
+        assert_eq!(again.instance, 2);
+        wait_ended(&vms, &again.vm_id, 2).await;
+
+        // A 0.26 overlay VM: its disk is `root/upper.ext4`, no seal yet.
+        let old = t.join("workers").join(vm_id("old"));
+        std::fs::create_dir_all(old.join("root")).unwrap();
+        std::fs::write(old.join("root/upper.ext4"), "0.26 data").unwrap();
+        std::fs::write(old.join("console.log"), "log").unwrap();
+        assert!(vms.destroy(keep_req("t", "old")).unwrap().destroyed);
+        assert_eq!(names_in(&old), ["build-mode", "upper.ext4.pre-build"]);
+        assert_eq!(
+            std::fs::read_to_string(old.join("upper.ext4.pre-build")).unwrap(),
+            "0.26 data"
+        );
+        // A legacy rootfs clone: `root/` is the data.
+        let legacy = t.join("workers").join(vm_id("legacy"));
+        std::fs::create_dir_all(legacy.join("root/bin")).unwrap();
+        std::fs::write(legacy.join("root/bin/x"), "x").unwrap();
+        // Nothing but data there: the clone moves aside, and no runtime state goes.
+        assert!(!vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
+        assert_eq!(names_in(&legacy), ["build-mode", "root.pre-build"]);
+        assert!(legacy.join("root.pre-build/bin/x").is_file());
+    }
+
+    /// A binary package: `bin/worker`, executable, and optionally a manifest.
+    fn binary_package(dir: &Path) -> WorkerSource {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let exe = dir.join("bin/worker");
+        std::fs::write(&exe, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        WorkerSource::Binary {
+            package: "pkg".to_string(),
+            host_path: dir.display().to_string(),
+            executable: "bin/worker".to_string(),
+        }
+    }
+
+    /// The executable must be a relative path of plain components naming an
+    /// executable regular file inside the package, through no symlink; a
+    /// manifest is optional, and one the package ships passes the bundle gates.
+    #[test]
+    fn a_binary_package_runs_its_executable_and_nothing_else() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let pkg = t.path().join("pkg");
+        binary_package(&pkg);
+        let project = validate_binary(&pkg, "pkg", "bin/worker").unwrap();
+        assert_eq!(project.run_cmd, "exec '/workspace/bin/worker'");
+        assert_eq!(
+            (project.setup_cmd.as_str(), project.install_cmd.as_str()),
+            ("", "")
+        );
+        assert!(project.env.is_empty() && project.base_image.is_none());
+        let run = crate::cli::local_worker::build_image_run_script(&project, true);
+        let last = run.lines().last().unwrap();
+        assert!(
+            last.starts_with("exec /bin/sh -c ") && last.contains("/workspace/bin/worker"),
+            "{run}"
+        );
+        assert!(run.contains("code from the build image"), "{run}");
+        let build = crate::cli::local_worker::build_image_script(&project, true);
+        assert!(build.contains("--exclude=.iii"), "{build}");
+
+        std::fs::write(pkg.join("data"), "").unwrap();
+        std::fs::set_permissions(pkg.join("data"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink("bin/worker", pkg.join("link")).unwrap();
+        let outside = t.path().join("outside");
+        std::fs::write(&outside, "").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (refused, why) in [
+            ("", "relative path"),
+            ("/bin/sh", "relative path"),
+            ("../outside", "relative path"),
+            ("./bin/worker", "relative path"),
+            ("bin/missing", "cannot be read"),
+            ("bin", "not a regular file"),
+            ("data", "not executable"),
+            ("link", "symlink"),
+        ] {
+            let err = validate_binary(&pkg, "pkg", refused)
+                .err()
+                .expect("refused");
+            assert!(err.contains(why), "{refused:?}: {err}");
+        }
+
+        // A manifest: its install and env, under the bundle gates.
+        std::fs::write(
+            pkg.join("iii.worker.yaml"),
+            "name: pkg\nscripts:\n  install: \"echo installed\"\nenv:\n  MODE: vm\n",
+        )
+        .unwrap();
+        let project = validate_binary(&pkg, "pkg", "bin/worker").unwrap();
+        assert_eq!(project.install_cmd, "echo installed");
+        assert_eq!(project.env.get("MODE").map(String::as_str), Some("vm"));
+        let err = validate_binary(&pkg, "other", "bin/worker")
+            .err()
+            .expect("refused");
+        assert!(err.contains("manifest"), "{err}");
+        std::fs::write(
+            pkg.join("iii.worker.yaml"),
+            "name: pkg\nscripts:\n  setup: \"x\"\n",
+        )
+        .unwrap();
+        assert!(validate_binary(&pkg, "pkg", "bin/worker").is_err());
+    }
+
+    /// A build's base image: trimmed, a plausible reference, and required for a
+    /// binary package; S001 otherwise.
+    #[test]
+    fn a_builds_base_image_is_checked_and_required_for_a_binary() {
+        assert_eq!(build_base_image(None, false).unwrap(), None);
+        assert_eq!(
+            build_base_image(Some(" docker.io/iiidev/python:latest "), true).unwrap(),
+            Some("docker.io/iiidev/python:latest")
+        );
+        assert_eq!(code(build_base_image(None, true)), "S001");
+        assert_eq!(code(build_base_image(Some(""), false)), "S001");
+        assert_eq!(
+            code(build_base_image(Some("no spaces allowed"), false)),
+            "S001"
+        );
+    }
+
+    /// A binary package runs only from a build: prepare, and a start without
+    /// `build`, are S501 before anything is read.
+    #[tokio::test]
+    async fn a_binary_package_is_neither_prepared_nor_started_without_a_build() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let source = binary_package(&t.join("pkg"));
+        let err = vms
+            .prepare(WorkerPrepareRequest {
+                auth: "t".to_string(),
+                source: source.clone(),
+                state_key: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S501", "{err}");
+        assert!(err.to_string().contains("boots only a build"), "{err}");
+        let err = vms.start(start_req("t", "k", source)).await.unwrap_err();
+        assert_eq!(err.code().as_str(), "S501", "{err}");
+        assert!(err.to_string().contains("boots only a build"), "{err}");
+    }
+
+    /// `worker::build` of a binary package without a base image is S001 before
+    /// anything is created; with one, the build goes on to the package checks.
+    #[tokio::test]
+    async fn a_binary_build_needs_a_base_image() {
+        if !crate::cli::overlay::overlay_active() {
+            eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let iii = IIIClient::new("ws://127.0.0.1:9");
+        let pkg = t.join("pkg");
+        binary_package(&pkg);
+        let build = |executable: &str, base_image: Option<&str>| {
+            vms.build(
+                &iii,
+                WorkerBuildRequest {
+                    auth: "t".to_string(),
+                    state_key: "k".to_string(),
+                    worker_name: "w".to_string(),
+                    source: WorkerSource::Binary {
+                        package: "pkg".to_string(),
+                        host_path: pkg.display().to_string(),
+                        executable: executable.to_string(),
+                    },
+                    output_dir: t.join("out").display().to_string(),
+                    env: Default::default(),
+                    logs: StreamChannelRef {
+                        channel_id: "c".to_string(),
+                        access_key: "k".to_string(),
+                        direction: ChannelDirection::Write,
+                    },
+                    base_image: base_image.map(str::to_string),
+                },
+            )
+        };
+        let err = build("bin/worker", None).await.unwrap_err();
+        assert_eq!(err.code().as_str(), "S001", "{err}");
+        assert!(err.to_string().contains("needs base_image"), "{err}");
+        assert!(!t.join("out").exists());
+        let err = build("bin/missing", Some("docker.io/iiidev/python:latest"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S501", "{err}");
+        assert!(err.to_string().contains("bin/missing"), "{err}");
+    }
+
+    /// A base image named by the request, or a start of a build, lets a local
+    /// worker's manifest leave `runtime.base_image` out; nothing else does.
+    #[test]
+    fn a_local_manifest_needs_no_base_image_when_the_request_names_one() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("iii.worker.yaml"),
+            "name: w\nruntime:\n  kind: python\nscripts:\n  install: \"\"\n  start: \"python main.py\"\n",
+        )
+        .unwrap();
+        let err = validate_source(&dir, None, None).err().expect("refused");
+        assert!(err.contains("runtime.base_image"), "{err}");
+        let (project, _) = validate_source_with(&dir, None, None, false).unwrap();
+        assert_eq!(project.base_image, None);
     }
 
     /// What iii-init's export writes: "./" and a file.

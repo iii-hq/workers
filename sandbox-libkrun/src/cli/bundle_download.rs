@@ -45,7 +45,9 @@ pub fn bundle_workers_disabled() -> bool {
 /// a host file or to a device such as /dev/zero: it is opened without
 /// following links, must be a regular file, and the read itself stops past
 /// the cap rather than trusting a size checked beforehand.
-fn read_bundle_manifest(manifest_dir: &std::path::Path) -> Result<String, WorkerOpError> {
+pub(crate) fn read_bundle_manifest(
+    manifest_dir: &std::path::Path,
+) -> Result<String, WorkerOpError> {
     use std::io::Read;
 
     let name = std::path::Path::new("iii.worker.yaml");

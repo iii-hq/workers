@@ -688,16 +688,30 @@ pub fn open_build_export(root: &Path) -> std::io::Result<std::fs::File> {
 /// it) as the lower, a fresh upper in `scratch`, the worker's code shared
 /// read-only at `/mnt/host-src`, and [`build_image_script`] to run. Nothing is
 /// spawned. `env` is the caller's `guest_env`, over the manifest's own env.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn image_build_command(
     worker_dir: &Path,
     package: Option<&str>,
     run_override: Option<&str>,
+    executable: Option<&str>,
+    base_image: Option<&str>,
     scratch: &Path,
     env: HashMap<String, String>,
 ) -> Result<BuildVm, String> {
     use super::worker_manager::oci;
 
-    let (project, kind) = validate_source(worker_dir, package, run_override)?;
+    let (mut project, kind) = match (package, executable) {
+        (Some(package), Some(executable)) => (
+            validate_binary(worker_dir, package, executable)?,
+            String::new(),
+        ),
+        // A base image in the request stands in for the manifest's.
+        _ => validate_source_with(worker_dir, package, run_override, base_image.is_none())?,
+    };
+    if let Some(image) = base_image {
+        project.base_image = Some(image.to_string());
+    }
+    // A binary package is copied whole, as a bundle is.
     let is_bundle = package.is_some();
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
@@ -855,6 +869,11 @@ fn vm_resources(project_path: &Path, is_bundle: bool, worker_name: &str) -> (u32
     if !is_bundle {
         return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
     }
+    // A binary package may ship no manifest: the defaults, as for a local
+    // worker that asks for nothing.
+    if std::fs::symlink_metadata(project_path.join(WORKER_MANIFEST)).is_err() {
+        return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
+    }
     // Strict clamp at start-time so a publisher-controlled manifest
     // can't boot a libkrun guest with attacker-chosen resources:
     // the VM boot re-reads the manifest from the install dir, which
@@ -906,6 +925,18 @@ pub(crate) fn validate_source(
     worker_dir: &Path,
     package: Option<&str>,
     run_override: Option<&str>,
+) -> Result<(ProjectInfo, String), String> {
+    validate_source_with(worker_dir, package, run_override, true)
+}
+
+/// As [`validate_source`]; `need_base_image: false` drops the local worker's
+/// `runtime.base_image` requirement, for a build whose request names its base
+/// image and for a start that boots a build, whose image is already made.
+pub(crate) fn validate_source_with(
+    worker_dir: &Path,
+    package: Option<&str>,
+    run_override: Option<&str>,
+    need_base_image: bool,
 ) -> Result<(ProjectInfo, String), String> {
     let project_path = worker_dir;
     if let Some(package) = package
@@ -988,10 +1019,143 @@ pub(crate) fn validate_source(
         .unwrap_or("typescript")
         .to_string();
 
-    if package.is_none() {
+    if package.is_none() && need_base_image {
         validate_compose_base_image(&doc, &manifest_path)?;
     }
     Ok((project, kind))
+}
+
+/// The checks a binary package passes before it is built or booted.
+/// `executable` is a relative path of plain components naming a regular,
+/// executable file inside `worker_dir`, through no symlink. A manifest is
+/// optional; one the package ships passes the bundle gates (its name is
+/// `package`, no `scripts.setup`), and gives its `scripts.install` and `env`.
+/// The project runs `executable` from `/workspace`, where the build copies the
+/// package, with no argument.
+pub(crate) fn validate_binary(
+    worker_dir: &Path,
+    package: &str,
+    executable: &str,
+) -> Result<ProjectInfo, String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Component;
+
+    let root = worker_dir.canonicalize().map_err(|e| {
+        format!(
+            "binary package dir {} cannot be read: {e}",
+            worker_dir.display()
+        )
+    })?;
+    if !root.is_dir() {
+        return Err(format!(
+            "binary package dir {} is not a directory",
+            worker_dir.display()
+        ));
+    }
+    let relative = Path::new(executable);
+    if executable.is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(format!(
+            "executable {executable:?} must be a relative path inside the package, without `.` \
+             or `..`"
+        ));
+    }
+    let path = root.join(relative);
+    let resolved = path.canonicalize().map_err(|e| {
+        format!(
+            "executable {executable:?} cannot be read in {}: {e}",
+            root.display()
+        )
+    })?;
+    if resolved != path {
+        return Err(format!(
+            "executable {executable:?} goes through a symlink in {}",
+            root.display()
+        ));
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("executable {executable:?} is not a regular file"));
+    }
+    if meta.permissions().mode() & 0o111 == 0 {
+        return Err(format!("executable {executable:?} is not executable"));
+    }
+
+    let mut project = ProjectInfo {
+        name: package.to_string(),
+        kind: None,
+        setup_cmd: String::new(),
+        install_cmd: String::new(),
+        run_cmd: format!("exec {}", shell_quote(&format!("/workspace/{executable}"))),
+        env: HashMap::new(),
+        base_image: None,
+    };
+    if std::fs::symlink_metadata(root.join(WORKER_MANIFEST)).is_ok() {
+        // The bundle gates, but `scripts.start`: the executable is the program.
+        let rejected = |e: String| format!("binary package manifest rejected: {e}");
+        let content = super::bundle_download::read_bundle_manifest(&root)
+            .map_err(|e| rejected(e.to_string()))?;
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&content).map_err(|e| rejected(format!("invalid YAML: {e}")))?;
+        let manifest =
+            super::worker_manifest::WorkerManifest::from_value(&doc).map_err(rejected)?;
+        let name = manifest.name.as_deref().map(str::trim);
+        if name != Some(package) {
+            return Err(rejected(format!(
+                "it declares name {name:?}, not the package {package:?}"
+            )));
+        }
+        let scripts = manifest.scripts.as_ref();
+        if scripts
+            .and_then(|s| s.setup.as_deref())
+            .is_some_and(|setup| !setup.trim().is_empty())
+        {
+            return Err(rejected(
+                "a package must not declare scripts.setup; the base image provisions".to_string(),
+            ));
+        }
+        if let Some(install) = scripts.and_then(|s| s.install.as_deref()) {
+            project.install_cmd = install.trim().to_string();
+        }
+        project.env = manifest.env.unwrap_or_default().into_iter().collect();
+    }
+    Ok(project)
+}
+
+/// `s` as one single-quoted shell word.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Builds the VM of a binary package's build (`worker::start` with `build`)
+/// without starting it: the image holds the package, and the guest runs
+/// `executable`. A binary package boots only a build.
+pub async fn binary_vm_command(
+    package: &str,
+    executable: &str,
+    worker_name: &str,
+    package_dir: &Path,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let project = validate_binary(package_dir, package, executable)?;
+    if over.image.is_none() {
+        return Err(format!(
+            "binary package '{package}' boots only a build: worker::build it, then \
+             worker::start it with `build`"
+        ));
+    }
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw");
+    }
+    if !super::worker_manager::libkrun::libkrun_available() {
+        return Err("No runtime available.\n  \
+             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
+            .to_string());
+    }
+    image_run_command(worker_name, package_dir, &project, true, over)
 }
 
 /// Shared body for `local_vm_command` and `bundle_vm_command`: validates the
@@ -1011,7 +1175,9 @@ pub(crate) async fn start_worker_impl(
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
     let project_path = Path::new(worker_path);
-    let (project, kind) = validate_source(project_path, package, run_override)?;
+    // A build's image is made: the manifest need not name its base image.
+    let (project, kind) =
+        validate_source_with(project_path, package, run_override, over.image.is_none())?;
     let kind = kind.as_str();
     let is_bundle = package.is_some();
 

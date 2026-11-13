@@ -9,10 +9,18 @@
 //! setting `III_ROOTFS_MODE` races no other test.
 
 use sandbox_libkrun::sandbox_daemon::adapter_info;
-use sandbox_libkrun::wire::FEATURE_BUILD;
+use sandbox_libkrun::wire::{FEATURE_BINARY, FEATURE_BUILD, FEATURE_PRUNE};
+
+fn advertises(feature: &str) -> bool {
+    adapter_info().features.iter().any(|f| f == feature)
+}
 
 fn advertises_build() -> bool {
-    adapter_info().features.iter().any(|f| f == FEATURE_BUILD)
+    let build = advertises(FEATURE_BUILD);
+    // A binary package boots only a build; a destroy prunes or keeps in every mode.
+    assert_eq!(advertises(FEATURE_BINARY), build);
+    assert!(advertises(FEATURE_PRUNE));
+    build
 }
 
 #[test]

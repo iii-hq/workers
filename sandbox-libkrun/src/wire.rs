@@ -18,7 +18,7 @@ use sha2::Sha256;
 use std::collections::BTreeMap;
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 3;
+pub const CONTRACT_MINOR: u32 = 4;
 
 /// `worker::*` accepts a token scoped to one VM, [`scoped_auth_token`], besides the
 /// project token. Since contract 1.2.
@@ -33,6 +33,12 @@ pub const FEATURE_LOGS_FROM_END: &str = "worker.logs_from_end";
 /// An adapter advertises it only when it can boot a build (overlay mode); `sandbox-libkrun` in
 /// legacy mode (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) does not.
 pub const FEATURE_BUILD: &str = "worker.build";
+/// `worker::build` and `worker::start` take a [`WorkerSource::Binary`], and
+/// `worker::build` honours [`WorkerBuildRequest::base_image`]. Since contract 1.4.
+pub const FEATURE_BINARY: &str = "worker.binary";
+/// `worker::destroy` keeps the VM's data disk unless [`WorkerDestroyRequest::prune`] is
+/// set. Since contract 1.4.
+pub const FEATURE_PRUNE: &str = "worker.prune";
 
 /// What the scoped token's MAC covers before the state key, so it can never equal another MAC
 /// of the project token over the same bytes. A different derivation gets a new version.
@@ -118,11 +124,23 @@ pub enum WorkerSource {
     Bundle {
         /// Manifest name, not the container key.
         package: String,
-        /// The container's directory in the project's `.workers/`,
-        /// `<project>/.workers/<container>`. `worker::build` copies it into the image; a
+        /// The container's directory in the project's `.iii/workers/`,
+        /// `<project>/.iii/workers/<container>`. `worker::build` copies it into the image; a
         /// `worker::start` with `build` does not mount it. Before contract 1.3 it was the bundle
         /// in Compose's package cache.
         host_path: String,
+    },
+    /// A `binary` package's Linux build, run as the worker in the VM. Its build needs
+    /// [`WorkerBuildRequest::base_image`]. Since contract 1.4
+    /// ([`FEATURE_BINARY`]).
+    Binary {
+        /// Manifest name, not the container key.
+        package: String,
+        /// The container's package directory, as for `Bundle`, where Compose put the binary's
+        /// Linux build for the host's architecture. `worker::build` copies it into the image.
+        host_path: String,
+        /// Path of the executable, relative to `host_path`.
+        executable: String,
     },
     /// Local sources always sync into the VM.
     Local {
@@ -169,7 +187,7 @@ pub struct WorkerBuildRequest {
     /// Container key, for logs and errors.
     pub worker_name: String,
     pub source: WorkerSource,
-    /// Absolute host directory of the build: `<project>/.build/<container>`. Must be under the
+    /// Absolute host directory of the build: `<project>/.iii/build/<container>`. Must be under the
     /// adapter's host roots. The adapter writes `image.erofs` there through a temporary file
     /// and a rename.
     pub output_dir: String,
@@ -180,6 +198,13 @@ pub struct WorkerBuildRequest {
     /// write for 5 s, the adapter writes a one-byte binary frame to keep the channel alive;
     /// readers take records from text frames only.
     pub logs: StreamChannelRef,
+    /// The image reference the build starts from, instead of the manifest's
+    /// `runtime.base_image`; `None` keeps the manifest's. Required with a
+    /// [`WorkerSource::Binary`], whose package names no base image: without it the build gets
+    /// `S501`. An older adapter ignores the field, so a caller sends it only to one that
+    /// announces [`FEATURE_BINARY`]. Since contract 1.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
 }
 
 /// Reply of `worker::build`, once the image is in place. Since contract 1.3.
@@ -332,11 +357,19 @@ pub struct WorkerStopRequest {
     pub grace_ms: u64,
 }
 
-/// Refused while the VM is running.
+/// Refused while the VM is running. Deletes the VM's runtime state; `prune` says whether its
+/// data goes too.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
+    /// Delete the VM's data too, as every destroy did before contract 1.4. Without it the
+    /// adapter keeps the data disk (`upper.ext4`) and the copies the 0.26 migration kept
+    /// (`*.pre-build`), and a later `worker::start` of the same `state_key` reuses them. An older
+    /// adapter ignores the field and deletes everything, so a caller that means to keep the data
+    /// checks [`FEATURE_PRUNE`] first. Since contract 1.4.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prune: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

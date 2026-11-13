@@ -77,10 +77,15 @@ fn wire_examples_round_trip() {
             "LogRecord" => round_trips::<LogRecord>(name, example),
             "LogStream" => round_trips::<LogStream>(name, example),
             "WorkerStopRequest" => round_trips::<WorkerStopRequest>(name, example),
-            "WorkerDestroyRequest" => round_trips::<WorkerDestroyRequest>(name, example),
+            // A 1.3 caller's request, without the fields 1.4 added.
+            "WorkerDestroyRequest" | "WorkerDestroyRequest@1.3" => {
+                round_trips::<WorkerDestroyRequest>(name, example)
+            }
             "WorkerDestroyResponse" => round_trips::<WorkerDestroyResponse>(name, example),
             "WorkerBuildRef" => round_trips::<WorkerBuildRef>(name, example),
-            "WorkerBuildRequest" => round_trips::<WorkerBuildRequest>(name, example),
+            "WorkerBuildRequest" | "WorkerBuildRequest@1.3" => {
+                round_trips::<WorkerBuildRequest>(name, example)
+            }
             "WorkerBuildResponse" => round_trips::<WorkerBuildResponse>(name, example),
             "BaseImageRef" => round_trips::<BaseImageRef>(name, example),
             other => panic!("fixture type {other} has no copy in sandbox_libkrun::wire"),
@@ -334,17 +339,23 @@ fn constants_match_the_contract() {
     let fixture: serde_json::Map<String, Value> = serde_json::from_str(FIXTURE).unwrap();
     let version = serde_json::to_value(ContractVersion::CURRENT).unwrap();
     assert_eq!(version, fixture["ContractVersion"]);
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 3));
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 4));
     assert_eq!(
         fixture["AdapterInfo"]["features"],
         json!([
             FEATURE_SCOPED_AUTH,
             FEATURE_LEASE,
             FEATURE_LOGS_FROM_END,
-            FEATURE_BUILD
+            FEATURE_BUILD,
+            FEATURE_BINARY,
+            FEATURE_PRUNE
         ])
     );
     assert_eq!(FEATURE_BUILD, "worker.build");
+    assert_eq!(
+        (FEATURE_BINARY, FEATURE_PRUNE),
+        ("worker.binary", "worker.prune")
+    );
     assert_eq!(
         [
             WORKER_PREPARE,
