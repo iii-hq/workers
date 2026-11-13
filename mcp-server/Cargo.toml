@@ -1,0 +1,55 @@
+[workspace]
+
+[package]
+name = "mcp-server"
+version = "0.7.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "mcp-server"
+path = "src/main.rs"
+
+[lib]
+name = "iii_mcp_server"
+path = "src/lib.rs"
+
+[dependencies]
+# Call-native streams (iii-hq/iii#2561), by rev until it is released.
+iii-sdk = { git = "https://github.com/iii-hq/iii", rev = "e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a" }
+iii-helpers = { git = "https://github.com/iii-hq/iii", rev = "e95a4adb07d43816bc3dddb3dc5b26ef4e9e5f9a" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1"
+which = "8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# BDD test runner. Drives Gherkin .feature files under tests/features/.
+cucumber = "0.22"
+# Used by step defs that need to drive multiple awaits in fixed order.
+futures = "0.3"
+# Per-scenario unique ids so concurrent BDD runs don't collide.
+uuid = { version = "1", features = ["v4"] }
+
+# Single BDD entry point. cucumber needs full control of the runner, so
+# `harness = false` is required. All .feature files under
+# `tests/features/**` are discovered at runtime; tags (`@pure`, `@engine`,
+# `@manifest`, `@initialize`, ...) let you filter to a subset:
+#
+#   cargo test --test bdd                          # everything
+#   cargo test --test bdd -- --tags @pure          # no engine required
+#   cargo test --test bdd -- --tags @initialize    # one feature group
+[[test]]
+name = "bdd"
+harness = false

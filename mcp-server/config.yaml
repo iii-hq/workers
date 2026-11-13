@@ -1,0 +1,20 @@
+# HTTP path of the endpoint (POST; GET for the session's stream; DELETE to
+# end a session). Several mcp-server workers can share one http worker on different
+# paths.
+api_path: "/mcp"
+
+# Browser origins allowed besides loopback (localhost, 127.0.0.1, [::1] on
+# any port). Requests without an Origin header (CLI clients) always pass.
+allowed_origins: []
+
+# An MCP session idle this long is ended and its observers disposed.
+session_idle_ttl_secs: 1800
+
+# Live MCP sessions; initialize is refused beyond it.
+max_sessions: 16
+
+# Observers one session may have.
+max_observers_per_session: 100
+
+# Observations held per session; the oldest are dropped beyond it.
+max_buffered_observations: 500
