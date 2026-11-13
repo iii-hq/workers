@@ -785,7 +785,8 @@ like Claude Code's: the code `demo-ok#<anything>` signs the account in as its
 own person (`demo-ok:<id>#…` as account `<id>`), any other code is refused
 and ends the sign-in, and `demo/login.sh <engine-port> browser
 [demo-ok|demo-ok:<id>|deny]` plays the browser on the worker's computer
-coming back to it (`deny`: the person cancelled on the page);
+coming back to it (`deny`: the person cancelled on the page; the
+container's `BROWSER` only notes the link, so `browser: "host"` works there);
 `demo/run.sh --login-ttl <seconds>` shortens the 10 minutes. Nothing in it reads the host's own Claude Code or Codex, and its
 scripts that write files or call tmux refuse to run outside the container
 (they need `/.dockerenv` and `DEMO_CONTAINER=1`, which the image sets).
