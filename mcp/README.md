@@ -246,12 +246,25 @@ starts with a warning.
 | `iii_observers` | The session's observers with `delivery`, `state`, `buffered`, `received`, `dropped` (and `target_function_id`). Needs a session. |
 | `iii_unobserve` | Remove one observer, discarding its unread observations. Needs a session. |
 | `iii_status` | Server version, session id, and `access_control`: `rbac-proxy` with its `policy` (the exposed globs), or `disabled` with a warning. |
-| `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). |
+| `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). `iii_get_agent` without an `id` returns the `default` profile. |
 | `iii_list_skills`, `iii_get_skill` | Skills from `directory::skills::*` (`search`, `prefix`). |
 
-The server cannot register functions: the `initialize` instructions tell the
-agent to create or change a worker it controls and register them with the
-iii-sdk.
+The `initialize` instructions tell the agent, in this order, to:
+
+1. load the default profile with `iii_get_agent` (no arguments; it reads
+   `directory::agents::get {"id": "default"}` from iii-directory) and follow
+   it, reading its `agent_call` as `iii_call` and `harness::observe` as
+   `iii_observe`;
+2. discover the system with `iii_call`: `directory::search_functions` for
+   candidate ids by capability, `engine::functions::list`,
+   `engine::workers::list`, `directory::skills::index`, and
+   `engine::functions::info` for a contract before the first call;
+3. use higher-order functions, which call other functions for it: `fp::pipe`
+   chains calls worker-side (large values never pass through the agent) and
+   `fp::batch` runs independent calls at once.
+
+They also say the server cannot register functions: to add one, the agent
+creates or changes a worker it controls and registers it with the iii-sdk.
 
 Engine errors come back as tool results with `isError: true` and the engine's
 code, as the MCP spec prescribes for tool execution errors, so the model reads
