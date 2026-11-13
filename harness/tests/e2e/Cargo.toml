@@ -16,7 +16,8 @@ clap = { version = "4", features = ["derive", "env"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-axum = "0.7"
+# =0.8.8: last axum on tokio-tungstenite 0.28, the iii-sdk major; lift when iii-sdk moves to 0.29.
+axum = "=0.8.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 mime_guess = "2"
 rust-embed = { version = "8", features = ["include-exclude"] }

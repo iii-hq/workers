@@ -32,6 +32,19 @@ struct CatalogQuery {
     url: Option<String>,
 }
 
+fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/local/run", get(run_snapshot).post(start_run))
+        .route("/api/local/run/cancel", axum::routing::post(cancel_run))
+        .route("/api/local/catalog", get(catalog))
+        .route("/data.js", get(benchmark_data))
+        .route("/executions.js", get(execution_manifest))
+        .route("/runs/{id}", get(execution_detail))
+        .fallback(get(static_asset))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .with_state(state)
+}
+
 pub(super) async fn serve(args: DashboardArgs) -> Result<()> {
     if !args.listen.ip().is_loopback() {
         bail!("dashboard --listen must use a loopback address; use SSH port forwarding for remote access");
@@ -40,16 +53,7 @@ pub(super) async fn serve(args: DashboardArgs) -> Result<()> {
     let state = AppState {
         controller: Controller::new(args)?,
     };
-    let app = Router::new()
-        .route("/api/local/run", get(run_snapshot).post(start_run))
-        .route("/api/local/run/cancel", axum::routing::post(cancel_run))
-        .route("/api/local/catalog", get(catalog))
-        .route("/data.js", get(benchmark_data))
-        .route("/executions.js", get(execution_manifest))
-        .route("/runs/:id", get(execution_detail))
-        .fallback(get(static_asset))
-        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BYTES))
-        .with_state(state);
+    let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(listen)
         .await
@@ -196,4 +200,43 @@ async fn execution_detail(
     execution_detail_value(&metadata, &report)
         .map(Json)
         .map_err(ApiError::internal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// `/runs/{id}` builds under axum 0.8 syntax and hands `id` to its
+    /// handler, whose suffix check answers 400 (the fallback never does).
+    #[tokio::test]
+    async fn runs_route_captures_the_id() {
+        let runs = tempfile::tempdir().unwrap();
+        let state = AppState {
+            controller: Controller::new(DashboardArgs {
+                listen: "127.0.0.1:0".parse().unwrap(),
+                url: "ws://127.0.0.1:49134".to_string(),
+                runs_dir: runs.path().to_path_buf(),
+            })
+            .unwrap(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router(state)).await });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /runs/run-1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(
+            response.contains("execution detail must end in .json"),
+            "{response}"
+        );
+        server.abort();
+    }
 }
