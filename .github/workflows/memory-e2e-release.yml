@@ -6,6 +6,12 @@ name: Memory E2E on release
 # version gets a measured verdict. It warns and never gates: the release is
 # already out. A manual dispatch measures any published version.
 #
+# The gain arms run harness-e2e's `memory-gain` suite on the memory, memory-off
+# and memory-consolidated stacks for each model, and one report compares them:
+# how much better each class of case goes with memory than without it. The
+# report is advisory; it is what a person reads before turning the learned-rule
+# and verify-tier changes on by default.
+#
 # A release event runs this file as it exists at the tagged commit, so a memory
 # release of a commit that predates this workflow does not trigger it; dispatch
 # it by hand for that version.
@@ -18,21 +24,29 @@ on:
       version:
         description: Published memory version to measure (e.g. 0.2.22)
         required: true
+      models:
+        description: >-
+          JSON list of provider/model subjects for the gain arms; empty runs
+          ["deepseek/deepseek-flash","anthropic/claude-haiku-5-5"]
+        required: false
+      extraction_model:
+        description: >-
+          provider::model memory extracts with on the gain arms; empty keeps each
+          stack's deepseek::deepseek-flash. Its provider must be deepseek, zai or
+          the subject's.
+        required: false
 
 permissions: {}
 
 jobs:
-  memory-e2e:
-    name: memory e2e (${{ matrix.suite }})
+  version:
+    name: Name the published version
     if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'memory/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [memory, memory-learning]
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      versions: ${{ steps.version.outputs.versions }}
     steps:
       - name: Name the published version
         id: version
@@ -47,6 +61,18 @@ jobs:
           fi
           echo "versions={\"memory\":\"${version}\"}" >> "$GITHUB_OUTPUT"
 
+  memory-e2e:
+    name: memory e2e (${{ matrix.suite }})
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [memory, memory-learning]
+    steps:
       - name: Mint a token that can run iii-hq/harness-e2e
         id: app
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
@@ -62,7 +88,7 @@ jobs:
         uses: iii-hq/harness-e2e/.github/actions/verify-stack@36c41f00bf0b23919b82e75ab72c86aec101f485
         with:
           token: ${{ steps.app.outputs.token }}
-          versions: ${{ steps.version.outputs.versions }}
+          versions: ${{ needs.version.outputs.versions }}
           suite: ${{ matrix.suite }}
           stack: memory
 
@@ -74,3 +100,109 @@ jobs:
         run: |
           echo "::warning::Memory E2E (${SUITE}): ${SUMMARY:-no verdict}"
           exit 1
+
+  # One arm per model and stack. The memory-off arm fails its injection gates
+  # by design, so an arm's status says nothing here: the report compares them.
+  memory-gain:
+    name: memory gain (${{ matrix.model }}, ${{ matrix.stack }})
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        model: ${{ fromJSON(inputs.models || '["deepseek/deepseek-flash","anthropic/claude-haiku-5-5"]') }}
+        stack: [memory, memory-off, memory-consolidated]
+    steps:
+      - name: Mint a token that can run iii-hq/harness-e2e
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the memory-gain suite on the ${{ matrix.stack }} stack
+        id: e2e
+        # BUMP: the iii-hq/harness-e2e commit that merges the memory gain arms, once
+        # a harness-e2e release carries the memory-gain suite (the stacks run
+        # harness-e2e: latest). Until then the pin test fails on this placeholder.
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@0000000000000000000000000000000000000000
+        with:
+          token: ${{ steps.app.outputs.token }}
+          versions: ${{ needs.version.outputs.versions }}
+          suite: memory-gain
+          stack: ${{ matrix.stack }}
+          model: ${{ matrix.model }}
+          extraction-model: ${{ inputs.extraction_model }}
+
+      - name: Name the arm for the report
+        if: steps.e2e.outputs.run_url != ''
+        env:
+          MODEL: ${{ matrix.model }}
+          ARM: ${{ matrix.stack }}
+          RUN_URL: ${{ steps.e2e.outputs.run_url }}
+          INDEX: ${{ strategy.job-index }}
+        run: |
+          mkdir -p arm
+          jq -n --arg model "$MODEL" --arg arm "$ARM" --arg run_url "$RUN_URL" \
+            '{model: $model, arm: $arm, run_url: $run_url}' > "arm/arm-${INDEX}.json"
+
+      - name: Keep the arm for the report
+        if: steps.e2e.outputs.run_url != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: memory-gain-arm-${{ strategy.job-index }}
+          path: arm/arm-${{ strategy.job-index }}.json
+
+  memory-gain-report:
+    name: memory gain report
+    needs: memory-gain
+    if: always() && needs.memory-gain.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Collect the arms
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: memory-gain-arm-*
+          merge-multiple: true
+          path: arms
+
+      - name: List the arms
+        id: runs
+        run: echo "runs=$(jq -sc . arms/*.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Mint a token that can read iii-hq/harness-e2e runs
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: read
+
+      - name: Compare the arms
+        id: gain
+        # BUMP: the iii-hq/harness-e2e commit that merges the memory gain arms, once
+        # a harness-e2e release carries the memory-gain suite (the stacks run
+        # harness-e2e: latest). Until then the pin test fails on this placeholder.
+        uses: iii-hq/harness-e2e/.github/actions/memory-gain@0000000000000000000000000000000000000000
+        with:
+          token: ${{ steps.app.outputs.token }}
+          runs: ${{ steps.runs.outputs.runs }}
+
+      - name: Keep the report
+        if: always() && steps.gain.outputs.report != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: memory-gain-report
+          path: ${{ steps.gain.outputs.report }}
