@@ -70,6 +70,7 @@ impl ScenarioRunner<'_> {
             crate::trace_evidence::collect_available_for_sessions(
                 services.client(),
                 &session_ids,
+                active.harness_killed_at,
                 deadline,
             )
             .await
@@ -81,6 +82,7 @@ impl ScenarioRunner<'_> {
                 self.fixture.expected_terminal_turns,
                 self.fixture.expected_turn_statuses.len(),
                 active.trace_generation,
+                active.harness_killed_at,
                 deadline,
             )
             .await

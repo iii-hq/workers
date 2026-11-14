@@ -23,6 +23,7 @@ struct TraceGroup {
 /// descendants. The trace store groups by session, so a tree run must union
 /// every group before applying the stability oracle; otherwise child lifecycle
 /// spans disappear from the evidence floor.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn collect_for_sessions(
     client: &Client,
     probe: &ScenarioProbe,
@@ -30,6 +31,7 @@ pub(crate) async fn collect_for_sessions(
     expected_terminal_turns: usize,
     expected_total_turns: usize,
     after_generation: u64,
+    harness_killed_at: Option<u64>,
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
     let mut generation = probe
@@ -46,7 +48,7 @@ pub(crate) async fn collect_for_sessions(
                     .unwrap_or_else(|| "none".to_string())
             );
         }
-        let evidence = collect_once(client, session_ids, deadline).await?;
+        let evidence = collect_once(client, session_ids, harness_killed_at, deadline).await?;
         last_summary = Some(evidence.summary.clone());
         if evidence.is_stable_for(
             expected_terminal_turns,
@@ -74,14 +76,16 @@ pub(crate) async fn collect_for_sessions(
 pub(crate) async fn collect_available_for_sessions(
     client: &Client,
     session_ids: &[String],
+    harness_killed_at: Option<u64>,
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
-    collect_once(client, session_ids, deadline).await
+    collect_once(client, session_ids, harness_killed_at, deadline).await
 }
 
 async fn collect_once(
     client: &Client,
     session_ids: &[String],
+    harness_killed_at: Option<u64>,
     deadline: Deadline,
 ) -> anyhow::Result<TraceEvidenceV1> {
     let response = client
@@ -122,7 +126,13 @@ async fn collect_once(
             )
             .await
             .map_err(anyhow::Error::msg)?;
-        traces.push(TraceTreeV1::from_engine_response(trace_id, response)?);
+        let mut trace = TraceTreeV1::from_engine_response(trace_id, response)?;
+        if let Some(killed_at) = harness_killed_at {
+            for root in &mut trace.roots {
+                root.abandon_open_spans("harness", killed_at);
+            }
+        }
+        traces.push(trace);
     }
     // Scope the summary's turn ids to the owner when there IS one owner: the
     // floor matches declared statuses positionally, so a parked-then-woken run

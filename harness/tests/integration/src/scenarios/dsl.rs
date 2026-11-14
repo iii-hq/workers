@@ -116,7 +116,36 @@ impl Scenario {
     }
 
     pub(super) fn engine_sigkill(
+        self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        self.sigkill(
+            FaultKind::EngineSigkill,
+            function,
+            after_target_calls,
+            restart_delay_ms,
+        )
+    }
+
+    pub(super) fn harness_sigkill(
+        self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        self.sigkill(
+            FaultKind::HarnessSigkill,
+            function,
+            after_target_calls,
+            restart_delay_ms,
+        )
+    }
+
+    fn sigkill(
         mut self,
+        kind: FaultKind,
         function: &ControlledFunction,
         after_target_calls: u64,
         restart_delay_ms: u64,
@@ -126,7 +155,7 @@ impl Scenario {
             "fault target call count must be positive"
         );
         self.fault = Some(CompiledFaultV1 {
-            kind: FaultKind::EngineSigkill,
+            kind,
             function_id: function.id().to_string(),
             after_target_calls,
             restart_delay_ms,

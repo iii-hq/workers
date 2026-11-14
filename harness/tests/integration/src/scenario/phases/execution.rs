@@ -76,7 +76,7 @@ impl ScenarioRunner<'_> {
         stack: &mut Stack,
         services: &RunServices,
         prepared: &PreparedRun,
-        active: &ActiveTurn,
+        active: &mut ActiveTurn,
     ) -> Result<(), RunError> {
         let Some(fault) = &prepared.scenario.fault else {
             return Ok(());
@@ -84,7 +84,6 @@ impl ScenarioRunner<'_> {
         let phase = RunPhase::Fault;
         let deadline = active.deadline;
 
-        let FaultKind::EngineSigkill = fault.kind;
         let expected_calls = usize::try_from(fault.after_target_calls)
             .map_err(|error| RunError::runner(phase, "convert fault target call count", error))?;
         if let Err(error) = services
@@ -107,6 +106,11 @@ impl ScenarioRunner<'_> {
                 ),
                 error,
             ));
+        }
+        if fault.kind == FaultKind::HarnessSigkill {
+            return self
+                .restart_harness(stack, services, active, fault.restart_delay_ms)
+                .await;
         }
 
         // Keep context::assemble unavailable after the engine comes back so
@@ -216,4 +220,65 @@ impl ScenarioRunner<'_> {
             })?;
         Ok(())
     }
+
+    /// Kill the harness while its step waits on the held call, then start a
+    /// new harness process: the engine and every other worker stay up, so the
+    /// turn can only go on if the queue delivers the interrupted step again.
+    async fn restart_harness(
+        &mut self,
+        stack: &mut Stack,
+        services: &RunServices,
+        active: &mut ActiveTurn,
+        restart_delay_ms: u64,
+    ) -> Result<(), RunError> {
+        let phase = RunPhase::Fault;
+        let deadline = active.deadline;
+        let kill_result = stack.kill_worker("harness").await;
+        active.harness_killed_at = Some(unix_nanos_now());
+        services.probe().release_target_response();
+        kill_result
+            .map_err(|error| RunError::runner(phase, "kill harness for fault injection", error))?;
+        deadline
+            .timeout(
+                "fault restart delay",
+                tokio::time::sleep(Duration::from_millis(restart_delay_ms)),
+            )
+            .await
+            .map_err(|error| {
+                RunError::runner(
+                    phase,
+                    "fault restart delay exceeded scenario deadline",
+                    error,
+                )
+            })?;
+        stack
+            .spawn_harness(self.bins, &self.fixture.harness_env)
+            .map_err(|error| RunError::runner(phase, "respawn harness after fault", error))?;
+        discovery::wait_for_functions(
+            services.client(),
+            &["harness::turn", "harness::send"],
+            deadline,
+        )
+        .await
+        .map_err(|error| RunError::runner(phase, "wait for the respawned harness", error))?;
+        services
+            .probe()
+            .confirm_completion_binding(&self.session_id, deadline)
+            .await
+            .map_err(|error| {
+                RunError::runner(
+                    phase,
+                    "confirm completion observer after harness restart",
+                    error,
+                )
+            })
+    }
+}
+
+fn unix_nanos_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        })
 }
