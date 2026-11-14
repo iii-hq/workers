@@ -865,6 +865,21 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         (self.errored_traces(kept).await, dropped)
     }
 
+    /// A tick whose engine already named the traces that recorded an error:
+    /// queue those, with no read. Reading every active trace on each ~300 ms
+    /// tick made the engine decode whole traces several times a second
+    /// (MOT-5648). The ids are held for [`TICK_READ_DELAY`] first, as a tick
+    /// read is: the job reads the trace, and must not run before the engine
+    /// has stored the span that raised the tick.
+    pub async fn filter_errored_tick(&self, error_trace_ids: &[String]) -> (Vec<String>, u64) {
+        let (kept, dropped) = self.ring.filter(error_trace_ids.iter());
+        self.counters.add_phantom_ticks_dropped(dropped);
+        if !kept.is_empty() {
+            tokio::time::sleep(TICK_READ_DELAY).await;
+        }
+        (kept, dropped)
+    }
+
     /// The traces that hold an error, read in batches so a clean trace costs
     /// no job. One handler reads at a time and takes the ids every other tick
     /// added meanwhile. A failed read gives its ids back to the backlog and

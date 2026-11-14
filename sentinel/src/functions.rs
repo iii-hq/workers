@@ -62,7 +62,7 @@ pub const INGEST_ID: &str = "sentinel::ingest";
 pub const INGEST_DESC: &str =
     "Internal durable queue step: reads one trace or log and records what failed.";
 pub const ON_TRACE_ACTIVITY_ID: &str = "sentinel::on-trace-activity";
-pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; reads the tick's traces in one call and queues those that hold an error.";
+pub const ON_TRACE_ACTIVITY_DESC: &str = "Internal observer of observability::on-span; queues the traces the tick names in error_trace_ids, or, from an engine that does not name them, reads the tick's traces in one call and queues those that hold an error.";
 pub const ON_LOG_ID: &str = "sentinel::on-log";
 pub const ON_LOG_DESC: &str =
     "Internal observer of observability::on-log, filtered to ERROR records and above.";
@@ -106,12 +106,16 @@ pub const DIAGNOSIS_RECORD_DESC: &str = "Record what an investigation concluded 
 
 pub use crate::configuration::{CONFIG_CHANGE_DESC, CONFIG_CHANGE_ID};
 
-/// The `observability::on-span` event, delivered as output: trace ids only,
-/// coalesced.
+/// The `observability::on-span` event, delivered as output: the trace ids of
+/// one coalesced window.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct TraceActivityEventV1 {
     #[serde(default)]
     pub trace_ids: Vec<String>,
+    /// The traces of the window that recorded an error span. An engine that
+    /// names them spares the tick its read; `None` (an older engine) keeps it.
+    #[serde(default)]
+    pub error_trace_ids: Option<Vec<String>>,
 }
 
 /// One ERROR log as `observability::on-log` delivers it, as output.
@@ -552,9 +556,10 @@ async fn status<E: EngineRegistry>(deps: &Deps<E>) -> StatusResponseV1 {
 }
 
 /// The tick handler does as little as possible: the engine ignores its result,
-/// and a slow one holds an in-flight slot of the observer. Its one read is worth
-/// it because nearly every trace that ticks is clean, and a durable job for each
-/// costs far more than reading them all together.
+/// and a slow one holds an in-flight slot of the observer. A tick that names
+/// its errored traces has those queued with no read. From an older engine the
+/// tick's one read is worth it because nearly every trace that ticks is clean,
+/// and a durable job for each costs far more than reading them all together.
 async fn on_trace_activity<E: EngineRegistry + 'static>(
     deps: &Arc<Deps<E>>,
     event: TraceActivityEventV1,
@@ -566,7 +571,10 @@ async fn on_trace_activity<E: EngineRegistry + 'static>(
             phantom_dropped: 0,
         };
     }
-    let (wanted, phantom_dropped) = deps.ingest.filter_tick(&event.trace_ids).await;
+    let (wanted, phantom_dropped) = match &event.error_trace_ids {
+        Some(errored) => deps.ingest.filter_errored_tick(errored).await,
+        None => deps.ingest.filter_tick(&event.trace_ids).await,
+    };
     let queued = queue_traces(deps, wanted).await;
     drain_tick_backlog_later(deps);
     QueuedResponseV1 {

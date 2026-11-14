@@ -208,7 +208,7 @@ iii.observe(
 
 | Function | Args, filters | Target |
 |---|---|---|
-| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target reads the tick's traces in one call and queues those that hold an error. One tick reads at a time; ids that arrive meanwhile, or that a failed read gives back, wait (deduplicated, at most 4,096; past that the oldest are dropped and counted in `tick_backlog_dropped`) for one later read no sooner than 300 ms after their own tick, after a backoff of 1 s doubling to 30 s. Waiting ids live in memory only: a restart loses them uncounted | `sentinel::on-trace-activity` |
+| `observability::on-span` (`default` namespace) | none; every span-activity tick. The target queues the traces the tick names in `error_trace_ids`, with no read, 300 ms after the tick so the engine has stored the span. From an engine that does not name them, it reads the tick's traces and queues those that hold an error. One tick reads at a time; ids that arrive meanwhile, or that a failed read gives back, wait (deduplicated, at most 4,096; past that the oldest are dropped and counted in `tick_backlog_dropped`) for one later read no sooner than 300 ms after their own tick, after a backoff of 1 s doubling to 30 s. Waiting ids live in memory only: a restart loses them uncounted | `sentinel::on-trace-activity` |
 | `observability::on-log` (`default` namespace) | filter `{ "input.severity_number": { "$gte": 17 } }` (ERROR and above) | `sentinel::on-log` |
 | `harness::on-turn-completed` | none | `sentinel::on-turn-completed` |
 | `cron::on-tick` | args `{ expression: retention.cron }` | `sentinel::on-schedule` |
