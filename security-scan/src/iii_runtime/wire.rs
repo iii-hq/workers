@@ -1029,9 +1029,8 @@ fn completion_event(
     status: HarnessStatusWire,
     harness: &crate::HarnessRunV1,
 ) -> Result<Option<crate::TurnCompletedEventV1>, SecurityScanError> {
-    if status.turn_id.as_deref() != Some(harness.turn_id.as_str()) {
-        return Ok(None);
-    }
+    // The session's current turn, whichever it is: a finalize that drained a
+    // message goes on in a new turn, and that turn's end is the run's result.
     if status.expects_wake || matches!(status.status.as_str(), "running" | "awaiting_functions") {
         return Ok(None);
     }
@@ -1043,6 +1042,7 @@ fn completion_event(
     }
     Ok(Some(crate::TurnCompletedEventV1 {
         session_id: harness.session_id.clone(),
+        // The run's checkpoint, which `finish_analysis` matches; the result is the session's.
         turn_id: harness.turn_id.clone(),
         status: status.status,
         terminal: true,
