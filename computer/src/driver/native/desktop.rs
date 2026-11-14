@@ -159,10 +159,10 @@ fn resolve_monitor(pinned_id: Option<u32>, override_idx: Option<u32>) -> Result<
             .nth(i as usize)
             .ok_or_else(|| format!("display index {i} is out of range"));
     }
-    if let Some((cx, cy)) = cursor_point() {
-        if let Ok(m) = Monitor::from_point(cx, cy) {
-            return Ok(m);
-        }
+    if let Some((cx, cy)) = cursor_point()
+        && let Ok(m) = Monitor::from_point(cx, cy)
+    {
+        return Ok(m);
     }
     let mut first: Option<Monitor> = None;
     for m in monitors {
