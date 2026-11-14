@@ -38,7 +38,7 @@ const EDGE_HIDE_MS = 150
 /** The preview's exit motion — the `fast` duration token. */
 const EDGE_EXIT_MS = 120
 /** How close (px) a mouse has to come to an edge before its handle grows
-    into the `+` tab. */
+ into the `+` tab. */
 const EDGE_NEAR_PX = 48
 /** Existing columns the split schematic draws; more would not fit the card. */
 const SCHEMATIC_MAX = 3
@@ -277,7 +277,7 @@ interface SplitPreviewProps {
   nudge?: boolean
   disabled?: boolean
   /** Presence: mounting slides in from the edge; `closing` fades out before
-      the zone unmounts the card. */
+ the zone unmounts the card. */
   closing?: boolean
   buttonRef?: RefObject<HTMLButtonElement | null>
   onAdd: () => void
@@ -335,7 +335,7 @@ export function SplitPreview({
       )}
     >
       {/* The schematic: today's columns in alpha ink, the new one solid —
-          it arrives a beat after the card, the way the real pane will. */}
+ it arrives a beat after the card, the way the real pane will. */}
       <span
         aria-hidden
         className={cn(
@@ -366,7 +366,7 @@ export function SplitPreview({
       </span>
       {binding ? <KeyCombo binding={binding} /> : null}
       {nudge ? (
-        <span className="text-[11px] leading-snug text-ink-faint">
+        <span className="text-meta leading-snug text-ink-faint">
           The {side === 'left' ? 'right' : 'left'} edge works too.
         </span>
       ) : null}
@@ -378,14 +378,14 @@ interface EdgeAddZoneProps {
   side: 'left' | 'right'
   onAdd: () => void
   /** Columns the tab has now — the split preview draws them beside the new
-      one. */
+ one. */
   columns?: number
   /** Suspend interaction (and dismiss an open preview) during panel motion. */
   disabled?: boolean
   /** First-run discoverability: until the user grows a split once (either
-      side) the `+` tab stays out and shakes now and then, and the preview
-      mentions the other edge. Afterwards the edge rests as a slim handle
-      that grows into the tab when a mouse comes near. */
+ side) the `+` tab stays out and shakes now and then, and the preview
+ mentions the other edge. Afterwards the edge rests as a slim handle
+ that grows into the tab when a mouse comes near. */
   nudge?: boolean
 }
 
@@ -570,10 +570,10 @@ export function EdgeAddZone({
           className="group/edge relative h-full w-full cursor-default bg-transparent focus-visible:outline-none"
         >
           {/* The handle: a small pull tab at rest (the edge-side twin of the
-              reorder tab hanging from each pane's top), growing into a `+`
-              tab when a mouse is near, the edge has focus, or discovery is
-              still running. The tab is part of the button, so hovering it
-              dwells and clicking it reveals like the sliver. */}
+ reorder tab hanging from each pane's top), growing into a `+`
+ tab when a mouse is near, the edge has focus, or discovery is
+ still running. The tab is part of the button, so hovering it
+ dwells and clicking it reveals like the sliver. */}
           <span
             aria-hidden
             data-awake={near || nudge ? '' : undefined}
@@ -581,7 +581,7 @@ export function EdgeAddZone({
               'absolute top-1/2 flex -translate-y-1/2 items-center justify-center overflow-hidden',
               'iii-ui-motion-control transition-[width,height,background-color,border-color,color,box-shadow]',
               // Rest: 8×40px, no wider than the hover strip it sits in.
-              'h-10 w-2 border border-edge bg-panel-raised text-transparent shadow-sm dark:border-neutral-900 dark:bg-black',
+              'h-10 w-2 border border-edge bg-panel-raised text-transparent shadow-sm',
               // Flat against the screen edge, bordered on the other three.
               side === 'left'
                 ? 'left-0 rounded-r-sm border-l-0'

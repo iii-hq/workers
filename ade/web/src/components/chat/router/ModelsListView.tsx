@@ -41,9 +41,9 @@ export function ModelsListView({
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             listing models…
           </span>
           <RequestFilters
@@ -61,7 +61,7 @@ export function ModelsListView({
   const groups = groupByProvider(resp.models)
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={
@@ -81,15 +81,15 @@ export function ModelsListView({
         groups.map(([provider, models]) => (
           <div
             key={provider}
-            className="border-b border-rule-2 last:border-b-0"
+            className="border-b border-border last:border-b-0"
           >
-            <div className="flex items-baseline gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2">
+            <div className="flex items-baseline gap-2 px-3 py-1.5 bg-paper-2 border-b border-border">
               <span className="iii-ui-eyebrow">{provider}</span>
-              <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
+              <span className="font-mono text-meta text-ink-ghost tabular-nums">
                 {models.length}
               </span>
             </div>
-            <ul className="divide-y divide-rule-2">
+            <ul className="divide-y divide-border">
               {models.map((m) => (
                 <ModelRow key={`${m.provider}/${m.id}`} model={m} />
               ))}
@@ -111,12 +111,12 @@ function ModelRow({ model }: { model: RouterModel }) {
           {model.display_name ?? model.id}
         </span>
         {model.display_name ? (
-          <span className="font-mono text-[11px] text-ink-faint break-all">
+          <span className="font-mono text-meta text-ink-faint break-all">
             {model.id}
           </span>
         ) : null}
       </div>
-      <div className="flex items-baseline gap-2 flex-wrap font-mono text-[11px] text-ink-faint">
+      <div className="flex items-baseline gap-2 flex-wrap font-mono text-meta text-ink-faint">
         {ctx ? <span>ctx {ctx}</span> : null}
         {out ? <span>· out {out}</span> : null}
         {CAPABILITIES.map((c) =>
@@ -140,7 +140,7 @@ function Pricing({ model }: { model: RouterModel }) {
   if (typeof p.cache_write === 'number') cache.push(`$${p.cache_write} w`)
   if (parts.length === 0 && cache.length === 0) return null
   return (
-    <div className="font-mono text-[11px] text-ink-ghost">
+    <div className="font-mono text-meta text-ink-ghost">
       {parts.join(' · ')}
       {parts.length > 0 ? ' ' : ''}
       <span className="text-ink-faint">per Mtok</span>

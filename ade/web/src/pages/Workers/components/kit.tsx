@@ -36,9 +36,9 @@ const NOTICE: Record<
 > = {
   info: {
     icon: Info,
-    box: 'bg-neutral-50 outline-neutral-100 dark:bg-neutral-900/60 dark:outline-neutral-800',
-    icon_: 'text-neutral-500 dark:text-neutral-400',
-    title: 'text-neutral-900 dark:text-neutral-50',
+    box: 'bg-muted outline-border  ',
+    icon_: 'text-muted-foreground ',
+    title: 'text-foreground ',
   },
   success: {
     icon: CircleCheck,
@@ -69,7 +69,7 @@ export interface NoticeProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /** A status with copy: a tinted, bordered block with the headline in the
-    status colour and the detail below it. `role` passes through. */
+ status colour and the detail below it. `role` passes through. */
 export function Notice({
   variant = 'info',
   headline,
@@ -93,14 +93,14 @@ export function Notice({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div
           className={cn(
-            'text-[13px] font-medium leading-5 [overflow-wrap:anywhere]',
+            'text-body font-medium leading-5 [overflow-wrap:anywhere]',
             tone.title,
           )}
         >
           {headline}
         </div>
         {detail ? (
-          <div className="text-[13px] leading-5 text-neutral-600 [overflow-wrap:anywhere] dark:text-neutral-400">
+          <div className="text-body leading-5 text-muted-foreground [overflow-wrap:anywhere]">
             {detail}
           </div>
         ) : null}
@@ -138,21 +138,21 @@ export function Empty({
     return (
       <div
         className={cn(
-          'flex items-start gap-3 rounded-xl border border-neutral-100 px-4 py-3.5 font-inter dark:border-neutral-800',
+          'flex items-start gap-3 rounded-xl border border-border px-4 py-3.5 font-inter',
           className,
         )}
       >
         {Icon ? (
           <Icon
             aria-hidden
-            className="mt-0.5 size-4 shrink-0 text-neutral-500 dark:text-neutral-400"
+            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
           />
         ) : null}
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium leading-5 text-neutral-900 dark:text-neutral-50">
+          <p className="text-body font-medium leading-5 text-foreground">
             {title}
           </p>
-          <p className="text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          <p className="text-body leading-5 text-muted-foreground">
             {description}
           </p>
           {action ? (
@@ -176,14 +176,12 @@ export function Empty({
       )}
     >
       {Icon ? (
-        <span className="mb-1 flex size-10 items-center justify-center rounded-xl border border-neutral-100 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <span className="mb-1 flex size-10 items-center justify-center rounded-xl border border-border text-muted-foreground">
           <Icon aria-hidden className="size-4" />
         </span>
       ) : null}
-      <p className="text-[14px] font-medium leading-5 text-neutral-900 dark:text-neutral-50">
-        {title}
-      </p>
-      <p className="max-w-[40ch] text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+      <p className="text-sm font-medium leading-5 text-foreground">{title}</p>
+      <p className="max-w-[40ch] text-body leading-5 text-muted-foreground">
         {description}
       </p>
       {action ? (
@@ -235,7 +233,7 @@ export interface SearchBoxProps
 }
 
 /** A search field: leading magnifier, a clear button while non-empty,
-    Escape clears (and stops there so an enclosing dialog stays open). */
+ Escape clears (and stops there so an enclosing dialog stays open). */
 export const SearchBox = React.forwardRef<HTMLInputElement, SearchBoxProps>(
   (
     { value, onChange, className, onKeyDown, 'aria-label': ariaLabel, ...rest },
@@ -254,7 +252,7 @@ export const SearchBox = React.forwardRef<HTMLInputElement, SearchBoxProps>(
       <div className={cn('relative min-w-0', className)}>
         <Search
           aria-hidden
-          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-neutral-400 dark:text-neutral-500"
+          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-ghost"
         />
         <Input
           ref={setRef}
@@ -282,7 +280,7 @@ export const SearchBox = React.forwardRef<HTMLInputElement, SearchBoxProps>(
               onChange('')
               inner.current?.focus({ preventScroll: true })
             }}
-            className="absolute right-1.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-neutral-400 outline-none transition-colors duration-150 hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-50"
+            className="absolute right-1.5 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-ghost outline-none transition-colors duration-150 hover:bg-surface-hover/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <span
               className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -310,7 +308,7 @@ export function FieldLabel({
   return (
     <Tag
       className={cn(
-        'font-inter text-[12px] font-medium leading-4 text-neutral-500 dark:text-neutral-400',
+        'font-inter text-xs font-medium leading-4 text-muted-foreground',
         className,
       )}
       {...props}
@@ -370,16 +368,16 @@ function ConfirmBox({
         className="wk-surface wk-dialog-box gap-0 p-0 [--dialog-max-width:28rem]"
       >
         <div className="flex flex-col gap-2 px-6 pt-6 pb-5">
-          <DialogTitle className="pr-8 font-inter text-[16px] font-semibold leading-6 text-neutral-900 dark:text-neutral-50">
+          <DialogTitle className="pr-8 font-inter text-base font-semibold leading-6 text-foreground">
             {title}
           </DialogTitle>
           {description ? (
-            <DialogDescription className="font-inter text-[14px] leading-[22px] text-neutral-600 dark:text-neutral-400">
+            <DialogDescription className="font-inter text-sm leading-[22px] text-muted-foreground">
               {description}
             </DialogDescription>
           ) : null}
           {details && details.length > 0 ? (
-            <ul className="mt-2 flex flex-col gap-1 rounded-xl border border-neutral-100 px-3.5 py-3 text-[13px] leading-5 text-neutral-800 dark:border-neutral-800 dark:text-neutral-200">
+            <ul className="mt-2 flex flex-col gap-1 rounded-xl border border-border px-3.5 py-3 text-body leading-5 text-foreground">
               {details.map((line, index) => (
                 <li
                   // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional and may repeat
@@ -392,7 +390,7 @@ function ConfirmBox({
             </ul>
           ) : null}
         </div>
-        <div className="flex flex-wrap justify-end gap-2 border-t border-neutral-100 px-6 py-4 dark:border-neutral-800">
+        <div className="flex flex-wrap justify-end gap-2 border-t border-border px-6 py-4">
           <Button
             ref={cancelRef}
             type="button"

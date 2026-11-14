@@ -66,7 +66,7 @@ export class FileMentionNode extends DecoratorNode<JSX.Element> {
 
   /* Recreate the pill on HTML paste (cross-editor or external apps).
      `exportDOM` already stamps the `data-lexical-file-mention` flag and
-     a `data-file-path` attribute, so the round-trip is symmetrical. */
+ a `data-file-path` attribute, so the round-trip is symmetrical. */
   static importDOM(): DOMConversionMap | null {
     return {
       span: (el: HTMLElement): DOMConversion<HTMLElement> | null => {
@@ -169,11 +169,11 @@ interface PillProps {
   path: string
   range?: LineRange
   /** Visible-selected state. Defaults to false; only the Lexical decorator
-      wrapper passes a real value. Markdown renders never set this. */
+ wrapper passes a real value. Markdown renders never set this. */
   selected?: boolean
   /** Click-target ref; only the Lexical wrapper supplies one (so its
       `CLICK_COMMAND` handler can scope hit-tests to the pill). Markdown
-      renders leave this unset and the pill behaves as pure decoration. */
+ renders leave this unset and the pill behaves as pure decoration. */
   pillRef?: RefObject<HTMLSpanElement | null>
   /** Set when a click opens the file somewhere: the pill says so. */
   openable?: boolean
@@ -213,7 +213,7 @@ export function FileMentionPill({
       data-file-path={formatFileMentionInner({ path, range })}
       title={openable ? `open ${path} in the IDE` : path}
       className={cn(
-        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
+        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-body text-ink select-none transition-colors',
         selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',
         pillRef && 'cursor-pointer',
         openable && 'hover:bg-surface-hover',
@@ -280,8 +280,8 @@ function EditableFileMentionPill({ path, range, nodeKey }: EditablePillProps) {
             return false
           }
           /* preventDefault keeps the caret from landing inside the decorator
-             host; Lexical would otherwise place selection just before/after
-             the pill and fight our node selection. */
+ host; Lexical would otherwise place selection just before/after
+ the pill and fight our node selection. */
           event.preventDefault()
           if (openable && openFile && !event.shiftKey) {
             openFile({ path, range })

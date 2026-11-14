@@ -151,7 +151,7 @@ export interface DropdownMenuCheckboxItemProps
 }
 
 /** A toggle row: the mark sits at the end of the row (shadcn), or in a box
-    in the left gutter with `box`. */
+ in the left gutter with `box`. */
 export function DropdownMenuCheckboxItem({
   className,
   children,

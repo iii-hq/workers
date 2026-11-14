@@ -230,7 +230,7 @@ export function EmptyPane({
 
       <div className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 @2xl:px-6">
         {/* Anchored to the top, not centred: a centred column would slide
-            the search box down under the caret as a query shrinks the list. */}
+ the search box down under the caret as a query shrinks the list. */}
         <div className="mx-auto flex h-fit w-full max-w-[46rem] flex-col gap-7 pt-10 pb-12 @2xl:pt-16">
           <div className="flex flex-col items-center gap-2.5 text-center">
             <Wordmark
@@ -298,7 +298,7 @@ export function EmptyPane({
               >
                 <div
                   id={`${listId}-${group.key}`}
-                  className="flex items-baseline gap-2 px-3 text-[13px] font-medium text-ink-faint"
+                  className="flex items-baseline gap-2 px-3 text-body font-medium text-ink-faint"
                 >
                   {group.label}
                   <span aria-hidden className="tabular-nums text-ink-ghost">
@@ -336,7 +336,7 @@ export function EmptyPane({
                           setActiveIndex(index)
                         }}
                         onClick={() => onAttach(option.value)}
-                        className="flex min-h-12 w-full min-w-0 items-center gap-3.5 rounded-lg px-3 py-1.5 text-left transition-[background-color] duration-(--motion-duration-fast) ease-(--motion-ease-standard) active:bg-surface-active aria-selected:bg-surface-hover focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-rule-focus"
+                        className="flex min-h-12 w-full min-w-0 items-center gap-3.5 rounded-lg px-3 py-1.5 text-left transition-[background-color] duration-(--motion-duration-fast) ease-(--motion-ease-standard) active:bg-surface-active aria-selected:bg-surface-hover focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-ring"
                       >
                         <Icon
                           aria-hidden
@@ -350,7 +350,7 @@ export function EmptyPane({
                             {option.label}
                           </span>
                           {option.description ? (
-                            <span className="line-clamp-2 text-[13px]/[18px] text-ink-faint">
+                            <span className="line-clamp-2 text-body/[18px] text-ink-faint">
                               {option.description}
                             </span>
                           ) : null}

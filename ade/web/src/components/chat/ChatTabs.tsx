@@ -18,7 +18,7 @@ import type { Conversation } from '@/types/chat'
 const HISTORY_LIMIT = 12
 
 const ICON_BUTTON =
-  'flex size-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus'
+  'flex size-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50'
 
 function relative(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
@@ -132,7 +132,7 @@ export function ChatTabs({
                   }
                 }}
                 className={cn(
-                  'flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 text-left font-sans text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+                  'flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 text-left font-sans text-body font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
                   closable && 'chat-tab-label',
                 )}
               >
@@ -147,7 +147,7 @@ export function ChatTabs({
                   type="button"
                   aria-label={`close ${title}`}
                   onClick={() => onClose(tab.id)}
-                  className="absolute inset-y-0 right-0 flex items-center pr-1 pl-1.5 opacity-0 transition-opacity duration-[var(--motion-duration-fast)] focus-visible:opacity-100 focus-visible:outline-none group-hover/tab:opacity-100 pointer-coarse:opacity-100 [&:focus-visible>span]:ring-2 [&:focus-visible>span]:ring-rule-focus"
+                  className="absolute inset-y-0 right-0 flex items-center pr-1 pl-1.5 opacity-0 transition-opacity duration-[var(--motion-duration-fast)] focus-visible:opacity-100 focus-visible:outline-none group-hover/tab:opacity-100 pointer-coarse:opacity-100 [&:focus-visible>span]:ring-3 [&:focus-visible>span]:ring-ring/50"
                 >
                   <span className="flex size-5 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink">
                     <X aria-hidden className="size-4" />

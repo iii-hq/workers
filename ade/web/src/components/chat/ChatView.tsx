@@ -362,23 +362,23 @@ export function ChatView({
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [readOnly])
   /* With no model yet, setup does the whole job — find a signed-in CLI or a
-     key on this machine, add the worker, store the key — where the picker
-     can only list providers. The picker stays the fallback. */
+ key on this machine, add the worker, store the key — where the picker
+ can only list providers. The picker stays the fallback. */
   const handleConfigureProvider = useCallback(() => {
     if (onboardingWizardAvailable()) requestOnboardingWizard('models')
     else handleOpenModelPicker()
   }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel
      (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
-     effort control, not only to the model list). */
+ effort control, not only to the model list). */
   const modelLocked = Boolean(conversation.agentProfile?.model)
   const handleThinkingLevelChange = useCallback(
     (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
     [conversation.id, onUpdateThinkingLevel],
   )
   /* Lives on the conversation record, not in local state: the interactive
-     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
-     keys this view by conversation id) would be invisible. */
+ picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+ keys this view by conversation id) would be invisible. */
   const effectiveSystemPrompt =
     conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
@@ -582,9 +582,9 @@ export function ChatView({
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
 
   /* What the model on the other end can do with a picture, read at send time
-     rather than closed over: the send and edit-queued callbacks are built
-     before the catalog lookup below, and a model switched between typing and
-     sending has to be the one the guard judges. Filled in further down. */
+ rather than closed over: the send and edit-queued callbacks are built
+ before the catalog lookup below, and a model switched between typing and
+ sending has to be the one the guard judges. Filled in further down. */
   const visionRef = useRef<{ supports?: boolean; model: string | null }>({
     supports: undefined,
     model: null,
@@ -1099,9 +1099,9 @@ export function ChatView({
   }, [modelOptions, effectiveModel])
 
   /* What the send path may do with an attached picture. `undefined` when the
-     catalog has no row or the router said nothing — the attachment router
-     treats that as "send it", so a missing capability flag never silently
-     eats an image. */
+ catalog has no row or the router said nothing — the attachment router
+ treats that as "send it", so a missing capability flag never silently
+ eats an image. */
   const modelVision = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.supportsVision
@@ -2576,14 +2576,14 @@ export function ChatView({
     : `waiting for ${waitingModelLabel}…`
 
   /* Trace → message landing: a pending turn-focus for THIS session resolves
-     to the transcript row to center (see lib/turn-anchor), recomputed as the
-     transcript hydrates. Consumed when MessageList lands on it. A missing
-     anchor drops the request only when nothing can still produce it — the
-     transcript is hydrated AND no turn is running (a live turn writes its
-     durable rows as it goes, so the click means "land there once it
-     exists") — and only after a grace, because completion flips the status
-     idle before the turn's last rows reach the transcript. So a stale
-     request still can't fire on a later visit. */
+ to the transcript row to center (see lib/turn-anchor), recomputed as the
+ transcript hydrates. Consumed when MessageList lands on it. A missing
+ anchor drops the request only when nothing can still produce it — the
+ transcript is hydrated AND no turn is running (a live turn writes its
+ durable rows as it goes, so the click means "land there once it
+ exists") — and only after a grace, because completion flips the status
+ idle before the turn's last rows reach the transcript. So a stale
+ request still can't fire on a later visit. */
   const chatFocusEvent = useChatMessageFocus()
   const chatFocus =
     chatFocusEvent && chatFocusEvent.sessionId === conversation.id
@@ -2597,11 +2597,11 @@ export function ChatView({
     [chatFocus, conversation.messages],
   )
   /* The transcript is paged: the turn may be above the loaded window. When
-     no loaded row belongs to it and older history exists, ask for the pages
-     back to the turn's first entry (the server widens the page to that
-     block; no client cap), then let the landing below run on the result.
-     One attempt per request — a turn that never wrote that entry is a miss,
-     not a reason to keep paging — and the drop grace is held meanwhile. */
+ no loaded row belongs to it and older history exists, ask for the pages
+ back to the turn's first entry (the server widens the page to that
+ block; no client cap), then let the landing below run on the result.
+ One attempt per request — a turn that never wrote that entry is a miss,
+ not a reason to keep paging — and the drop grace is held meanwhile. */
   const loadingOlderHistory = conversation.history?.loadingOlder === true
   const historyFetchedForFocusRef = useRef<number | null>(null)
   useEffect(() => {
@@ -2653,8 +2653,8 @@ export function ChatView({
   chatFocusIdRef.current = chatFocus?.id ?? null
 
   /* Paged history: the list asks for the page above when the reader nears
-     the top, and for placeholder calls when a group expands. Both are
-     store actions; the view only forwards them with its conversation id. */
+ the top, and for placeholder calls when a group expands. Both are
+ store actions; the view only forwards them with its conversation id. */
   const loadOlderMessages = conversationsCtx?.loadOlderMessages
   const loadActivityEntries = conversationsCtx?.loadActivityEntries
   const handleLoadOlder = useMemo(
@@ -2779,9 +2779,9 @@ export function ChatView({
   )
 
   /* Same shape as the working-directory request above: the page asks, the
-     view that owns the session decides. `handleThinkingLevelChange` is the
-     one the picker calls, so a page and the picker leave the conversation in
-     the same state. */
+ view that owns the session decides. `handleThinkingLevelChange` is the
+ one the picker calls, so a page and the picker leave the conversation in
+ the same state. */
   useEffect(
     () =>
       onThinkingLevelChangeRequest(({ sessionId, level }) => {
@@ -3079,24 +3079,21 @@ export function ChatView({
       {side ? null : (
         <PageHeader
           /* Dark: the header sits on the chat's black canvas, framed by a
-             neutral-900 edge on its bottom and sides. */
-          className={cn(
-            headerPad,
-            'dark:bg-panel dark:border-x dark:border-b dark:border-neutral-900',
-          )}
+ neutral-900 edge on its bottom and sides. */
+          className={cn(headerPad, 'dark:bg-panel dark:border-x dark:border-b')}
           onClose={onRequestClose}
           actions={
             readOnly ? undefined : (
               <div className="flex items-center gap-1.5 font-sans text-sm">
                 {/* Header read-outs share ONE surface. This system draws no
-                lines (index.css:44-52 — rule/rule-2 are transparent in both
-                themes), so a group is a fill, not a run of dividers. It also
-                keeps the related session metadata visually together.
-                The group stays at every pane width; each read-out owns its
-                narrow form under a 30rem pane (`@container`, the design
-                system's narrow-container threshold): the context meter —
-                built-in or the harness chip — drops to its `used/usable`
-                counts, the sandbox chip is already `⬚ N`. */}
+ lines (index.css:44-52 — rule/rule-2 are transparent in both
+ themes), so a group is a fill, not a run of dividers. It also
+ keeps the related session metadata visually together.
+ The group stays at every pane width; each read-out owns its
+ narrow form under a 30rem pane (`@container`, the design
+ system's narrow-container threshold): the context meter —
+ built-in or the harness chip — drops to its `used/usable`
+ counts, the sandbox chip is already `⬚ N`. */}
                 <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5">
                   {sessionChips}
                   {hasInjectedContextChip ? null : (
@@ -3117,11 +3114,11 @@ export function ChatView({
                   </IconButton>
                 ) : null}
                 {/* Status sits OUTSIDE the group — it is state, not a control.
-                The dot alone carries it (green ready, pulsing accent
-                working, red error); the word lives in the tooltip and in an
-                sr-only role="status" span so transitions still announce.
+ The dot alone carries it (green ready, pulsing accent
+ working, red error); the word lives in the tooltip and in an
+ sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
-                target without letting an error widen the header. */}
+ target without letting an error widen the header. */}
                 <Hint
                   label={
                     conversation.status === 'error'
@@ -3163,7 +3160,7 @@ export function ChatView({
                   type="button"
                   onClick={onBack}
                   aria-label="back to chats"
-                  className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+                  className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:size-7"
                 >
                   <span
                     className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -3302,7 +3299,7 @@ export function ChatView({
             {fileOpenError ? (
               <p
                 role="alert"
-                className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
+                className="mx-auto max-w-[760px] break-words text-xs text-alert"
               >
                 {fileOpenError}
               </p>
@@ -3323,14 +3320,14 @@ export function ChatView({
                   aria-label="queued messages"
                 >
                   {/* The message being edited is pulled out of the queue and lives
-                  only in the composer — hidden here until it's saved back (in
-                  place, so it reappears at its spot) or removed. */}
+ only in the composer — hidden here until it's saved back (in
+ place, so it reappears at its spot) or removed. */}
                   {queuedStrip
                     .filter((row) => row.id !== browsedQueuedId)
                     .map((row) => (
                       <div
                         key={row.id}
-                        className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
+                        className="flex items-center gap-2 border-b border-border px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-xs"
                       >
                         <span className="min-w-0 flex-1 truncate">
                           {row.text}
@@ -3341,11 +3338,11 @@ export function ChatView({
                       </div>
                     ))}
                   {/* No edit hint while draining — the rows are being delivered,
-                  so inviting an edit would be a race the user loses. */}
+ so inviting an edit would be a race the user loses. */}
                   {backend.editQueued &&
                   queuedDrafts.length > 0 &&
                   !drainingQueue ? (
-                    <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
+                    <div className="px-3 py-0.5 text-right text-meta text-ink-ghost max-sm:hidden">
                       {browsedQueuedId
                         ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
                         : 'Press ↑ in the composer to edit queued messages'}

@@ -62,7 +62,7 @@ interface TabStripProps {
 }
 
 /** Touch: hold a tab still this long to pick it up for reordering (a
-    mouse/pen drag starts on movement alone — see the slop check). */
+ mouse/pen drag starts on movement alone — see the slop check). */
 const TOUCH_PICKUP_MS = 500
 /**
  * Pointer travel that decides the press: with a mouse/pen it BEGINS the
@@ -145,8 +145,8 @@ const TAB_LABEL =
  * sets the edge to the canvas, so there the stroke disappears.
  */
 const TAB_ACTIVE = [
-  'z-10 shrink-0 bg-bg text-neutral-900 dark:text-neutral-50',
-  '[--tab-edge:var(--color-neutral-200)] dark:[--tab-edge:var(--color-bg)]',
+  'z-10 shrink-0 bg-bg text-foreground',
+  '[--tab-edge:var(--border)]',
   'shadow-[inset_1px_1px_0_var(--tab-edge),inset_-1px_0_0_var(--tab-edge)]',
   'before:pointer-events-none before:absolute before:bottom-0 before:-left-[11px] before:size-[12px] before:bg-[radial-gradient(circle_at_0_0,transparent_10.5px,var(--tab-edge)_11px,var(--tab-edge)_11.5px,var(--color-bg)_12px)]',
   'after:pointer-events-none after:absolute after:bottom-0 after:-right-[11px] after:size-[12px] after:bg-[radial-gradient(circle_at_100%_0,transparent_10.5px,var(--tab-edge)_11px,var(--tab-edge)_11.5px,var(--color-bg)_12px)]',
@@ -495,7 +495,7 @@ export function TabStrip({
               <span
                 aria-hidden
                 className={cn(
-                  'h-4 w-px shrink-0 self-center bg-neutral-300 transition-opacity duration-[var(--motion-duration-control)] dark:bg-neutral-700',
+                  'h-4 w-px shrink-0 self-center bg-secondary transition-opacity duration-[var(--motion-duration-control)]',
                   !divider && 'opacity-0',
                 )}
               />
@@ -625,26 +625,24 @@ export function TabStrip({
                 }}
                 style={transform ? { transform } : undefined}
                 className={cn(
-                  'group/tab relative isolate flex h-12 min-w-14 max-w-56 shrink basis-auto cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                  'group/tab relative isolate flex h-12 min-w-14 max-w-56 shrink basis-auto cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3',
                   tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
                   // The active tab keeps its natural width and the others
                   // absorb the squeeze, so its label is always whole.
                   active
                     ? TAB_ACTIVE
                     : cn(
-                        'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100',
+                        'text-muted-foreground hover:text-foreground',
                         INACTIVE_WASH,
-                        'hover:after:bg-neutral-200 dark:hover:after:bg-neutral-800',
+                        'hover:after:bg-surface-hover',
                       ),
                   dragging && !isDragged && 'transition-transform',
                   isDragged && 'z-20 cursor-grabbing transition-none',
-                  isDragged &&
-                    !active &&
-                    'text-neutral-900 after:bg-neutral-200 dark:text-neutral-50 dark:after:bg-neutral-800',
+                  isDragged && !active && 'text-foreground after:bg-accent',
                 )}
               >
                 <Icon
-                  className="size-4 shrink-0 text-neutral-500 dark:text-neutral-400"
+                  className="size-4 shrink-0 text-muted-foreground"
                   aria-hidden
                 />
                 {renamingId === tab.id ? (
@@ -677,7 +675,7 @@ export function TabStrip({
                         closeTab(tab.id)
                       }}
                       className={cn(
-                        'icon-host relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                        'icon-host relative flex size-10 items-center justify-center rounded-lg text-ink-ghost transition-colors duration-[var(--motion-duration-control)] hover:bg-secondary/60 hover:text-foreground sm:size-6',
                         !active &&
                           'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
                       )}
@@ -721,7 +719,7 @@ export function TabStrip({
           }
           onClick={onCreate}
           /* learn-iii-new-tab: tour anchor (workers/learn-iii). Do not remove. */
-          className="learn-iii-new-tab icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+          className="learn-iii-new-tab icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 sm:size-8"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -854,7 +852,7 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
       onBlur={() => settle(true)}
       aria-label="Rename workspace"
       name="tab-name"
-      className="w-[160px] bg-transparent font-inter text-sm text-neutral-900 outline-none dark:text-neutral-50"
+      className="w-[160px] bg-transparent font-inter text-sm text-foreground outline-none"
     />
   )
 }
@@ -899,7 +897,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left font-inter text-sm text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
+    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left font-inter text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground'
 
   return createPortal(
     <div

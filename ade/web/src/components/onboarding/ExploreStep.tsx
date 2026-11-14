@@ -62,11 +62,10 @@ function promptIcon(
  */
 
 const PICK_CLASS =
-  'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-white px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none dark:bg-neutral-950 dark:focus-visible:ring-offset-neutral-950'
-const PICK_IDLE =
-  'border-neutral-100 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:border-neutral-700 dark:hover:bg-neutral-900'
+  'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-card px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none'
+const PICK_IDLE = 'border-border hover:border-input hover:bg-muted'
 const PICK_CHECKED =
-  'border-ink bg-neutral-50 shadow-[inset_0_0_0_1px_var(--color-ink)] dark:bg-neutral-900'
+  'border-ink bg-muted shadow-[inset_0_0_0_1px_var(--color-ink)]'
 
 /** Rows rise in one after another as the screen opens; nothing waits on it. */
 const ROW_ENTER = { duration: 0.2, ease: [0.23, 1, 0.32, 1] as const }
@@ -79,9 +78,7 @@ function Dot({ checked }: { checked: boolean }) {
       aria-hidden
       className={cn(
         'flex size-[18px] shrink-0 items-center justify-center rounded-full border transition-colors duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
-        checked
-          ? 'border-ink'
-          : 'border-neutral-300 group-hover:border-neutral-400 dark:border-neutral-600 dark:group-hover:border-neutral-500',
+        checked ? 'border-ink' : 'border-input group-hover:border-input  ',
       )}
     >
       <span
@@ -142,7 +139,7 @@ function Pick({
             {title}
           </span>
           {body ? (
-            <span className="text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+            <span className="text-pretty text-base leading-6 text-muted-foreground">
               {body}
             </span>
           ) : null}
@@ -298,7 +295,7 @@ export function ExampleList({
         <h2 className="text-balance text-xl font-semibold leading-7 tracking-[-0.01em] text-ink">
           Build an example project
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
           Pick one, and a new chat starts building it.
         </p>
       </header>
@@ -479,7 +476,7 @@ export function ExploreStep({
         <h2 className="text-balance text-xl font-semibold leading-7 tracking-[-0.01em] text-ink">
           Explore iii
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
           {connected
             ? 'Choose where to start.'
             : 'Connect a model first. The model picker in the composer connects one any time.'}

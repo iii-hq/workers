@@ -26,26 +26,16 @@
   font-size: 0.75rem;
 }
 
-/* One selected wash for the sidebar: the nav rows' hover uses the same
-   neutral-200/70 and neutral-900 (ConversationSidebar's NAV_ROW). Hover
-   is a lighter step of it, so the open chat still reads as selected; the
-   selected rules come last so a hovered open chat keeps its wash. */
+/* One wash for the sidebar, from the palette: hover is the `accent` tint
+   (the nav rows use the same, ConversationSidebar's NAV_ROW) and the open
+   chat is the `secondary` step, so it still reads as selected under the
+   pointer; the selected rule comes last so a hovered open chat keeps it. */
 .conversation-tree .iii-ui-tree-item:hover {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"]) .conversation-tree .iii-ui-tree-item:hover {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 .conversation-tree .iii-ui-tree-item[aria-current="page"] {
-  background: color-mix(in oklab, var(--color-neutral-200) 70%, transparent);
-}
-
-:where([data-theme="dark"])
-  .conversation-tree
-  .iii-ui-tree-item[aria-current="page"] {
-  background: var(--color-neutral-900);
+  background: var(--secondary);
 }
 
 /* ── row menu and pin ─────────────────────────────────────────────── */
@@ -54,13 +44,7 @@
    keep the cluster in flow and the row washed so the trigger does not
    vanish from under its own menu. */
 .conversation-tree .iii-ui-tree-item[data-menu-open] {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"])
-  .conversation-tree
-  .iii-ui-tree-item[data-menu-open] {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 .conversation-tree .iii-ui-tree-item[data-menu-open] .iii-ui-tree-item__action {
@@ -241,11 +225,7 @@
 }
 
 .conversation-project-header:hover {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"]) .conversation-project-header:hover {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 /* The plus shows with the pointer on the project; touch keeps it visible. */

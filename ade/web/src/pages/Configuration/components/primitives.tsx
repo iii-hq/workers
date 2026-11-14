@@ -8,11 +8,11 @@ function hasContent(value: React.ReactNode): boolean {
 }
 
 /* The settings page vocabulary, after Linear: a plain title at the top of a
-   left-aligned column, sections with a medium-weight heading, and hairline
-   divided rows inside one bordered group. Inter throughout; 18px for the
-   page title, 16px for section headings, 14px for everything else, with the
-   neutral ramp carrying the hierarchy. The column is a container, so the
-   gutters widen with the pane rather than the viewport. */
+ left-aligned column, sections with a medium-weight heading, and hairline
+ divided rows inside one bordered group. Inter throughout; 18px for the
+ page title, 16px for section headings, 14px for everything else, with the
+ neutral ramp carrying the hierarchy. The column is a container, so the
+ gutters widen with the pane rather than the viewport. */
 
 const GUTTER = 'px-5 @3xl:px-14'
 
@@ -20,9 +20,9 @@ export const SETTINGS_COLUMN = 'w-full max-w-[1120px]'
 
 /* A settings search result lands on its row and tints it for a moment
    (`data-search-flash`, set by the search); the tint runs past the row's
-   edges as a side-only shadow so the hairlines between rows stay put. */
+ edges as a side-only shadow so the hairlines between rows stay put. */
 const SEARCH_FLASH =
-  'transition-[background-color,box-shadow] duration-500 ease-out [--search-flash:var(--color-neutral-100)] dark:[--search-flash:var(--color-neutral-900)]'
+  'transition-[background-color,box-shadow] duration-500 ease-out [--search-flash:var(--accent)]'
 
 interface SettingsPageHeaderProps {
   title: React.ReactNode
@@ -54,7 +54,7 @@ export function SettingsPageHeader({
         <button
           type="button"
           onClick={onBack}
-          className="-ml-1.5 mb-3 inline-flex h-8 items-center gap-1 rounded-md pr-2 pl-1 text-sm text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-neutral-100 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11 dark:hover:bg-neutral-900"
+          className="-ml-1.5 mb-3 inline-flex h-8 items-center gap-1 rounded-md pr-2 pl-1 text-sm text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11"
         >
           <ChevronLeft className="size-4" aria-hidden />
           Settings
@@ -151,8 +151,8 @@ export function SettingsList({
     <ul
       role={role}
       className={cn(
-        'min-w-0 list-none border-y border-neutral-100 dark:border-neutral-800',
-        '[&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800',
+        'min-w-0 list-none border-y border-border',
+        '[&>*+*]:border-t [&>*+*]:border-border',
         className,
       )}
       {...props}
@@ -226,7 +226,7 @@ export function SettingsRow({
             </div>
           ) : null}
           {hasContent(meta) ? (
-            <div className="mt-1 text-sm leading-5 tabular-nums text-neutral-400 dark:text-neutral-500">
+            <div className="mt-1 text-sm leading-5 tabular-nums text-ink-ghost">
               {meta}
             </div>
           ) : null}

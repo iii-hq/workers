@@ -83,12 +83,12 @@ interface MessageProps {
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
   /** Copy payload for an assistant turn (prose + its function calls). Lazy so
-      the string is built on click, not on every streaming re-render. */
+ the string is built on click, not on every streaming re-render. */
   copyText?: string | (() => string)
   /** Render function-call cards already expanded (showcase surfaces). */
   defaultOpenCalls?: boolean
   /** Hydrate an unloaded function-call card when it opens; other roles
-      ignore it. May resolve to whether the read succeeded. */
+ ignore it. May resolve to whether the read succeeded. */
   onLoadDetails?: () => Promise<boolean> | undefined
   /** Registration detail for an observer-fired or notification message
       (resolved in MessageList). */
@@ -262,14 +262,14 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
                 </span>
               </>
             ) : null}
-            <span className="text-ink-ghost normal-case tracking-normal text-[11px]">
+            <span className="text-ink-ghost normal-case tracking-normal text-meta">
               show summary
             </span>
           </Eyebrow>
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (
-          <pre className="mt-3 mx-9 p-3 bg-panel border border-rule-2 font-mono text-[11px] leading-relaxed text-ink-faint whitespace-pre-wrap">
+          <pre className="mt-3 mx-9 p-3 bg-panel border border-border font-mono text-meta leading-relaxed text-ink-faint whitespace-pre-wrap">
             {summary}
           </pre>
         ) : null}
@@ -318,7 +318,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
       <Eyebrow as="header" className="text-ink-ghost">
         <Prompt symbol="⚡">Observer · reaction task</Prompt>
       </Eyebrow>
-      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+      <div className="max-w-[80%] border-l border-border pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
           {message.content}
         </Markdown>
@@ -332,12 +332,12 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
             >
               firing event
               {hint ? ` · ${hint}` : ''}
-              <span className="normal-case tracking-normal text-[11px]">
+              <span className="normal-case tracking-normal text-meta">
                 {' '}
                 · show json
               </span>
             </summary>
-            <div className="mt-1 max-h-64 overflow-auto border border-rule-2">
+            <div className="mt-1 max-h-64 overflow-auto border border-border">
               <JsonHighlight code={event.json} wrap />
             </div>
           </details>
@@ -360,7 +360,7 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
       <Eyebrow as="header" className="text-ink-ghost">
         <Prompt symbol="⟳">Validator · corrective prompt</Prompt>
       </Eyebrow>
-      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
+      <div className="max-w-[80%] border-l border-border pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
           {message.content}
         </Markdown>
@@ -457,9 +457,9 @@ function UserMessage({
   const attachments = message.attachments ?? []
   /* A skill invocation already renders as a command pill inside the prose
      (the markdown turns `/skill:<id>` into one wherever it sits), so its
-     expansion chip would only repeat the same name one row below the
-     bubble. A chip whose command is not in the text (shouldn't happen)
-     keeps the strip as a fallback. */
+ expansion chip would only repeat the same name one row below the
+ bubble. A chip whose command is not in the text (shouldn't happen)
+ keeps the strip as a fallback. */
   const inline = new Set(
     parseSlashInvocations(message.content).map(invocationCommand),
   )
@@ -483,12 +483,12 @@ function UserMessage({
           onClick={() => sideQuotes.jump(quoted.quote)}
           aria-label="Show the quoted message"
           title="Show the quoted message"
-          className="flex max-w-[92%] flex-col gap-1 rounded-md bg-surface px-3 py-2 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus @2xl:max-w-[80%]"
+          className="flex max-w-[92%] flex-col gap-1 rounded-md bg-surface px-3 py-2 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 @2xl:max-w-[80%]"
         >
           <Eyebrow className="text-ink-ghost">
             Quoted · {quoted.quote.agent || 'Agent'}
           </Eyebrow>
-          <span className="line-clamp-3 text-[12px] leading-[18px] text-ink-faint">
+          <span className="line-clamp-3 text-xs leading-[18px] text-ink-faint">
             {quoted.quote.text}
           </span>
         </button>
@@ -502,7 +502,7 @@ function UserMessage({
               </Markdown>
             </div>
             {/* The copy affordance rides the bubble's top-right edge and
-                shows on hover; the bubble's shape already says who spoke. */}
+ shows on hover; the bubble's shape already says who spoke. */}
             <Hint label="Copy message" side="top">
               <CopyMessageButton
                 text={message.content}
@@ -567,7 +567,7 @@ function AssistantMessage({
           {showHeader ? (
             <>
               {/* The model's mark leads the line so a reader can tell replies
-                from different models apart at a glance. */}
+ from different models apart at a glance. */}
               <span className="chat-agent-mark" aria-hidden="true">
                 <ModelMark
                   modelId={message.model ?? null}
@@ -577,9 +577,9 @@ function AssistantMessage({
                 />
               </span>
               {/* An agent worker names itself on the message; the harness's own
-                turns do not. Fall back to the session's configured profile
-                name, then to the literal "Agent" — a model id is not a name,
-                since two agents can run the same model. */}
+ turns do not. Fall back to the session's configured profile
+ name, then to the literal "Agent" — a model id is not a name,
+ since two agents can run the same model. */}
               <span className="chat-agent-name">
                 {message.agent || agentName || 'Agent'}
               </span>
@@ -593,7 +593,7 @@ function AssistantMessage({
           {message.memory ? <MemoryChip memory={message.memory} /> : null}
           {quoted ? (
             <span
-              className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
+              className="inline-flex items-center gap-1 text-meta text-ink-faint"
               data-quoted-in-side-chat=""
             >
               <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
@@ -611,7 +611,7 @@ function AssistantMessage({
             onRevealingChange={setRevealing}
           />
         ) : (
-          <div className="font-sans text-[13px] text-ink-faint thinking-shimmer">
+          <div className="font-sans text-body text-ink-faint thinking-shimmer">
             thinking…
           </div>
         )}

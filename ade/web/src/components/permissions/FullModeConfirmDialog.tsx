@@ -78,9 +78,7 @@ export function FullModeConfirmDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
-        <DialogTitle className="text-[14px]">
-          enable full permissions
-        </DialogTitle>
+        <DialogTitle className="text-sm">enable full permissions</DialogTitle>
         <FullModeConfirmContent
           scope={scope}
           className="mt-3"

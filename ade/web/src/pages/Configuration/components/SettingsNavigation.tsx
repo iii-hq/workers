@@ -173,10 +173,10 @@ export function SettingsNavigation({
   return (
     <aside
       className={cn(
-        'flex min-h-0 flex-col bg-neutral-50 dark:bg-black',
+        'flex min-h-0 flex-col bg-muted',
         narrow
           ? 'min-w-0 flex-1'
-          : 'w-[250px] shrink-0 border-r border-neutral-100 dark:border-neutral-800',
+          : 'w-[250px] shrink-0 border-r border-border ',
       )}
       aria-label="Settings navigation"
     >
@@ -186,7 +186,7 @@ export function SettingsNavigation({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[15px] text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-neutral-200/60 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11 dark:hover:bg-neutral-900"
+              className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md px-2 text-[15px] text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-surface-hover/60 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11"
             >
               <ArrowLeft className="size-4 shrink-0" aria-hidden />
               Back
@@ -199,7 +199,7 @@ export function SettingsNavigation({
         )}
         <div className="relative mt-3">
           <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-4 shrink-0 -translate-y-1/2 text-neutral-400 dark:text-neutral-500"
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 shrink-0 -translate-y-1/2 text-ink-ghost"
             aria-hidden
           />
           <Input
@@ -222,7 +222,7 @@ export function SettingsNavigation({
             aria-keyshortcuts="/"
             autoComplete="off"
             spellCheck={false}
-            className="h-9 rounded-md border-neutral-200 bg-white pl-8 pr-8 text-[15px] shadow-none placeholder:text-neutral-400 pointer-coarse:h-11 dark:border-neutral-900 dark:bg-black dark:placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
+            className="h-9 rounded-md border-border bg-card pl-8 pr-8 text-[15px] shadow-none placeholder:text-ink-ghost pointer-coarse:h-11 [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
               if (event.key === 'Escape' && query) {
                 // Clear first; a second Escape closes settings.
@@ -260,7 +260,7 @@ export function SettingsNavigation({
             </button>
           ) : (
             <kbd
-              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-xs text-neutral-400 pointer-coarse:hidden dark:border-neutral-900 dark:bg-black dark:text-neutral-500"
+              className="pointer-events-none absolute right-2 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-border bg-muted px-1 font-inter text-xs text-ink-ghost pointer-coarse:hidden"
               aria-hidden
             >
               /
@@ -283,7 +283,7 @@ export function SettingsNavigation({
               label="Results"
               aside={
                 <span
-                  className="tabular-nums text-neutral-400 dark:text-neutral-500"
+                  className="tabular-nums text-ink-ghost"
                   aria-live="polite"
                   aria-atomic="true"
                 >
@@ -332,7 +332,7 @@ export function SettingsNavigation({
                       />
                     </span>
                     {more > 0 ? (
-                      <span className="shrink-0 text-sm tabular-nums text-neutral-400 dark:text-neutral-500">
+                      <span className="shrink-0 text-sm tabular-nums text-ink-ghost">
                         +{more}
                       </span>
                     ) : isActive ? (
@@ -350,7 +350,7 @@ export function SettingsNavigation({
                     onHover={() => setActive(index)}
                   >
                     {/* The setting first, its section after: a narrow
-                        sidebar truncates the trail, never the name. */}
+ sidebar truncates the trail, never the name. */}
                     <span
                       className="min-w-0 flex-1 truncate"
                       title={[...option.field.trail, option.field.label].join(
@@ -362,7 +362,7 @@ export function SettingsNavigation({
                         query={deferredQuery}
                       />
                       {option.field.trail.length > 0 ? (
-                        <span className="text-neutral-400 dark:text-neutral-500">
+                        <span className="text-ink-ghost">
                           {' · '}
                           {option.field.trail.join(' › ')}
                         </span>
@@ -399,7 +399,7 @@ export function SettingsNavigation({
               label="Workers"
               aside={
                 !isLoading && !isError ? (
-                  <span className="tabular-nums text-neutral-400 dark:text-neutral-500">
+                  <span className="tabular-nums text-ink-ghost">
                     {entries.length}
                   </span>
                 ) : null
@@ -500,8 +500,8 @@ function NavItem({
           ROW_BASE,
           'h-9 text-[15px] focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11',
           selected
-            ? 'bg-neutral-200/70 text-foreground dark:bg-neutral-800/70'
-            : 'text-neutral-600 hover:bg-neutral-200/50 hover:text-foreground dark:text-neutral-400 dark:hover:bg-neutral-900',
+            ? 'bg-surface-selected/70 text-foreground '
+            : 'text-muted-foreground hover:bg-surface-hover/50 hover:text-foreground  ',
         )}
       >
         <PageIcon icon={Icon} selected={selected} />
@@ -522,7 +522,7 @@ function PageIcon({
     <Icon
       className={cn(
         'size-4 shrink-0',
-        selected ? 'text-foreground' : 'text-neutral-500 dark:text-neutral-500',
+        selected ? 'text-foreground' : 'text-muted-foreground ',
       )}
       aria-hidden
     />
@@ -579,10 +579,10 @@ function ResultRow({
           ? 'h-8 pl-[34px] text-sm pointer-coarse:h-10'
           : 'h-9 text-[15px] pointer-coarse:h-11',
         selected
-          ? 'bg-neutral-200/70 text-foreground dark:bg-neutral-800/70'
+          ? 'bg-surface-selected/70 text-foreground '
           : active
-            ? 'bg-neutral-200/50 text-foreground dark:bg-neutral-900'
-            : 'text-neutral-600 dark:text-neutral-400',
+            ? 'bg-surface-selected/50 text-foreground '
+            : 'text-muted-foreground ',
       )}
     >
       {children}
@@ -593,7 +593,7 @@ function ResultRow({
 function ReturnHint() {
   return (
     <CornerDownLeft
-      className="size-4 shrink-0 text-neutral-400 pointer-coarse:hidden dark:text-neutral-500"
+      className="size-4 shrink-0 text-ink-ghost pointer-coarse:hidden"
       aria-hidden
     />
   )
@@ -638,11 +638,8 @@ function SearchEmptyState({
       className="flex flex-col items-center px-3 pt-8 pb-4 text-center"
       role="status"
     >
-      <div className="mb-4 flex size-11 items-center justify-center rounded-xl border border-neutral-100 bg-white shadow-xs dark:border-neutral-800 dark:bg-neutral-900">
-        <SearchX
-          className="size-5 text-neutral-500 dark:text-neutral-400"
-          aria-hidden
-        />
+      <div className="mb-4 flex size-11 items-center justify-center rounded-xl border border-border bg-card shadow-xs">
+        <SearchX className="size-5 text-muted-foreground" aria-hidden />
       </div>
       <p className="max-w-full text-[15px] font-medium leading-5 text-foreground [overflow-wrap:anywhere]">
         No results for “{query}”
@@ -653,7 +650,7 @@ function SearchEmptyState({
           <button
             type="button"
             onClick={() => onSuggest(suggestion)}
-            className="rounded-sm font-medium text-foreground underline decoration-neutral-300 underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-3 focus-visible:ring-ring/50 dark:decoration-neutral-700"
+            className="rounded-sm font-medium text-foreground underline decoration-ink-ghost underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             {suggestion}
           </button>

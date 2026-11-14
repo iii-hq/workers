@@ -462,8 +462,8 @@ export function App({
   )
 
   /* Every global shortcut the console has, dispatched from the registry.
-     Which keys reach here while the caret is in a field, and which stand
-     down, is the registry's call — not this component's. */
+ Which keys reach here while the caret is in a field, and which stand
+ down, is the registry's call — not this component's. */
   useKeybindings({
     'palette.toggle': () => {
       setPaletteQuery('')
@@ -1715,7 +1715,7 @@ interface ScreenBodyProps {
 }
 
 /** One workspace-tab column: the page (or chat view) the screen names.
-    Configuration never appears here — it opens as an overlay page. */
+ Configuration never appears here — it opens as an overlay page. */
 function ScreenBody({
   screen,
   panelSide,
@@ -1819,7 +1819,7 @@ export function ConfigurationOverlay({
           document.querySelector<HTMLElement>('[data-settings-focus-root]') ??
           true
         }
-        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-white p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none dark:bg-black"
+        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-card p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none"
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">

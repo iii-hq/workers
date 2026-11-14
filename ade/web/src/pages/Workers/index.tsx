@@ -526,11 +526,11 @@ function WorkersPage({
       className="wk-sidebar"
       header={
         <span className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="truncate font-inter text-[13px] font-medium text-neutral-900 dark:text-neutral-50">
+          <span className="truncate font-inter text-body font-medium text-foreground">
             Workers
           </span>
           {data ? (
-            <span className="font-inter text-[12px] tabular-nums text-neutral-500 dark:text-neutral-400">
+            <span className="font-inter text-xs tabular-nums text-muted-foreground">
               {containers.length + outsideCount}
             </span>
           ) : null}
@@ -576,7 +576,7 @@ function WorkersPage({
         actions={
           <>
             <span
-              className="wk-live mr-1 inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-inter text-[12px] text-neutral-500 dark:text-neutral-400"
+              className="wk-live mr-1 inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-inter text-xs text-muted-foreground"
               role="status"
             >
               <span
@@ -587,7 +587,7 @@ function WorkersPage({
                     ? 'bg-warn'
                     : live.live
                       ? 'bg-ok pulse-dot'
-                      : 'bg-neutral-400 dark:bg-neutral-600',
+                      : 'bg-ink-ghost ',
                 )}
               />
               {live.error

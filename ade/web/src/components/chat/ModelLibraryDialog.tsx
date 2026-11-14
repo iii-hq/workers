@@ -240,11 +240,11 @@ export function ModelLibraryDialog({
               onScroll={onCatalogScroll}
             >
               {/* The slots stay put while the catalog scrolls under them:
-                  a model found far down a long column is still one drag
-                  up to a slot that is on screen. The sticky block wears
-                  the dialog's own surface, full-bleed, so the rows pass
-                  behind it; a hairline appears at its foot once anything
-                  has scrolled under. */}
+ a model found far down a long column is still one drag
+ up to a slot that is on screen. The sticky block wears
+ the dialog's own surface, full-bleed, so the rows pass
+ behind it; a hairline appears at its foot once anything
+ has scrolled under. */}
               <div
                 data-pinned-slots
                 data-scrolled={scrolled || undefined}
@@ -294,7 +294,7 @@ export function ModelLibraryDialog({
                         className="relative h-28"
                       >
                         {/* The card is what moves: a pin that changes slot
-                          slides to its new place. */}
+ slides to its new place. */}
                         <motion.div
                           layoutId={slot ? `pinned-${slot.id}` : undefined}
                           layout={
@@ -309,9 +309,9 @@ export function ModelLibraryDialog({
                           className={cn(
                             'group absolute inset-0 flex flex-col items-center justify-center gap-1.5 rounded-xl p-3 text-center transition-colors',
                             slot
-                              ? 'cursor-grab bg-panel-raised border border-neutral-200 active:cursor-grabbing dark:border-edge'
-                              : 'border border-dashed border-neutral-200 dark:border-edge',
-                            over && 'bg-surface-hover ring-rule-focus',
+                              ? 'cursor-grab bg-panel-raised border border-border active:cursor-grabbing dark:border-edge'
+                              : 'border border-dashed border-border dark:border-edge',
+                            over && 'bg-surface-hover ring-ring/50',
                             slot && dragId === slot.id && 'opacity-50',
                           )}
                         >
@@ -356,7 +356,7 @@ export function ModelLibraryDialog({
                                   onClick={() =>
                                     onPinnedChange(unpinModel(pinned, slot.id))
                                   }
-                                  className="absolute top-1.5 right-1.5 flex size-7 items-center justify-center rounded-md text-ink-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-ink focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus group-hover:opacity-100"
+                                  className="absolute top-1.5 right-1.5 flex size-7 items-center justify-center rounded-md text-ink-faint opacity-0 transition-opacity hover:bg-surface-hover hover:text-ink focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 group-hover:opacity-100"
                                 >
                                   <X className="size-4" aria-hidden />
                                 </button>
@@ -403,7 +403,7 @@ export function ModelLibraryDialog({
                           onClick={() =>
                             setView({ kind: 'provider', id: column.id })
                           }
-                          className="ml-auto shrink-0 rounded-sm text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                          className="ml-auto shrink-0 rounded-sm text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                         >
                           Configure
                         </button>
@@ -424,7 +424,7 @@ export function ModelLibraryDialog({
                               }
                               onDragEnd={onDragEnd}
                               className={cn(
-                                'flex h-11 items-center gap-2 rounded-lg bg-panel-raised pr-1.5 pl-3 ring-1 ring-neutral-200 dark:ring-edge',
+                                'flex h-11 items-center gap-2 rounded-lg bg-panel-raised pr-1.5 pl-3 ring-1 ring-border dark:ring-edge',
                                 canPin && 'cursor-grab active:cursor-grabbing',
                                 dragId === option.id && 'opacity-50',
                                 column.unavailable && 'opacity-50',
@@ -468,7 +468,7 @@ export function ModelLibraryDialog({
                         onClick={() =>
                           setView({ kind: 'provider', id: column.id })
                         }
-                        className="flex h-11 w-full items-center justify-center rounded-lg px-3 text-sm text-ink-faint border border-dashed border-neutral-200 dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+                        className="flex h-11 w-full items-center justify-center rounded-lg px-3 text-sm text-ink-faint border border-dashed border-border dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
                       >
                         {column.unavailable
                           ? `${column.label} not loaded`
@@ -486,7 +486,7 @@ export function ModelLibraryDialog({
                     aria-label="Add a provider"
                     disabled={disabled}
                     onClick={() => setView({ kind: 'add-provider' })}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm text-ink-faint border border-dashed border-neutral-200 dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg px-3 text-sm text-ink-faint border border-dashed border-border dark:border-edge hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
                   >
                     <Plus className="size-4" aria-hidden />
                     Add a provider
@@ -504,7 +504,7 @@ export function ModelLibraryDialog({
                 onClick={() =>
                   guard.tryNavigate(() => setView({ kind: 'library' }))
                 }
-                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 <ArrowLeft className="size-4" aria-hidden />
               </button>
@@ -528,7 +528,7 @@ export function ModelLibraryDialog({
                       view.id)
                     : 'Add a provider'}
                 </DialogTitle>
-                <DialogDescription className="text-[13px] text-ink-faint">
+                <DialogDescription className="text-body text-ink-faint">
                   {view.kind === 'provider'
                     ? 'Credentials and provider-specific settings.'
                     : 'Provider workers from the workers registry.'}

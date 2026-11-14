@@ -150,7 +150,7 @@ export function ScopedExtension({
 export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-sm bg-alert-muted px-2 py-0.5 font-mono text-[11px] text-alert"
+      className="inline-flex items-center gap-1 rounded-sm bg-alert-muted px-2 py-0.5 font-mono text-meta text-alert"
       title={error.message}
     >
       extension crashed · {path}

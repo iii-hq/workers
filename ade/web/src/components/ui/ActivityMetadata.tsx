@@ -85,7 +85,7 @@ export function MetaRow({
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-1.5 border-b border-rule-2 bg-paper-2 px-3 py-1.5',
+        'flex flex-wrap items-center gap-1.5 border-b border-border bg-paper-2 px-3 py-1.5',
         className,
       )}
       {...props}
@@ -130,7 +130,7 @@ export function ActionLine({
   return (
     <div
       className={cn(
-        'flex items-start gap-2 border-b border-rule-2 bg-bg px-3 py-2',
+        'flex items-start gap-2 border-b border-border bg-bg px-3 py-2',
         className,
       )}
       {...props}
@@ -145,7 +145,7 @@ export function ActionLine({
         {icon}
       </span>
       {/* Wrap at word boundaries; break inside a word only when one (a long
-          function id) cannot fit the line on its own. */}
+ function id) cannot fit the line on its own. */}
       <div className="min-w-0 text-ink [overflow-wrap:anywhere]">
         {children}
       </div>

@@ -123,7 +123,7 @@ export function SystemPromptPickerPanel({
             <label
               key={option.value}
               className={cn(
-                'flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
+                'flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-ring/50',
                 selected && 'bg-surface-selected',
                 disabled && 'pointer-events-none opacity-40',
               )}
@@ -174,9 +174,9 @@ export function SystemPromptPicker({
   const mobileSheet = useMediaQuery('(max-width: 767px)')
 
   /* Fetch on EVERY open (keeping the last list while loading): a prompt
-     added on disk or written by `directory::system-prompts::create` shows
-     up on the next open with no cache-invalidation plumbing. A failed load degrades to
-     default + custom only (directory worker absent ≠ broken chat). */
+ added on disk or written by `directory::system-prompts::create` shows
+ up on the next open with no cache-invalidation plumbing. A failed load degrades to
+ default + custom only (directory worker absent ≠ broken chat). */
   const handleOpenChange = useCallback(async (nextOpen: boolean) => {
     setOpen(nextOpen)
     if (!nextOpen) return
@@ -218,8 +218,8 @@ export function SystemPromptPicker({
 
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-sm'
-      : 'inline-flex h-9 w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 font-inter text-sm text-ink transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active',
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-ink sm:text-sm'
+      : 'inline-flex h-9 w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 font-inter text-sm text-ink transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-surface-active',
     disabled && 'pointer-events-none opacity-40',
     className,
   )

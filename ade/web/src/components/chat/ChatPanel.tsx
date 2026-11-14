@@ -651,10 +651,10 @@ export function ChatPanel({
           <PageSidebar
             // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
-              'learn-iii-conversations bg-white dark:bg-black',
+              'learn-iii-conversations bg-card',
               /* An edge where the list meets the chat: neutral-200 in
-                 light, neutral-900 in dark. */
-              'border-neutral-200 dark:border-neutral-900',
+ light, neutral-900 in dark. */
+              'border-border',
               panelSide === 'right' ? 'border-l' : 'border-r',
             )}
             label="Chats"
@@ -667,10 +667,10 @@ export function ChatPanel({
             resizable
             narrow={narrow}
             /* The toggle leads the top row from the outer edge; New chat,
-               search and import are navigation rows inside the sidebar. */
+ search and import are navigation rows inside the sidebar. */
             togglePlacement="outer"
             /* The shadcn sidebar trigger: one panel glyph for both states,
-               on the edge the pane hugs, at the nav rows' 16px stroke. */
+ on the edge the pane hugs, at the nav rows' 16px stroke. */
             toggleIcons={
               panelSide === 'right'
                 ? { expanded: PanelRight, collapsed: PanelRight }

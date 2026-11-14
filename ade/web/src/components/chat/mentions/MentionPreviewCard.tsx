@@ -127,7 +127,7 @@ export function GenericMentionCard({
           <button
             type="button"
             onClick={onOpen}
-            className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-xs px-1 text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-xs px-1 text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             open
             <ArrowUpRight aria-hidden className="size-4" />

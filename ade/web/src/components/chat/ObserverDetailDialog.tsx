@@ -271,7 +271,7 @@ function CopyableId({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
-      <span className="font-mono text-[13px] break-all text-ink">{value}</span>
+      <span className="font-mono text-body break-all text-ink">{value}</span>
       <Hint label={copied ? 'Copied' : 'Copy ID'}>
         <button
           type="button"
@@ -513,7 +513,7 @@ export function ObserverDetailDialog({
                       <div className="text-xs font-medium text-ink-faint">
                         Namespace
                       </div>
-                      <span className="font-mono text-[13px] text-ink">
+                      <span className="font-mono text-body text-ink">
                         {observer.namespace}
                       </span>
                     </div>

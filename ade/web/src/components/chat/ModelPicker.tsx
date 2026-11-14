@@ -130,7 +130,7 @@ function PickerSubpageHeader({
           type="button"
           aria-label="back to models"
           onClick={onBack}
-          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -436,8 +436,8 @@ export function ModelPicker({
         subtle
           ? // Quiet text that reads as part of the composer surface; the
             // hover/open chip is background only, with a disclosure chevron.
-            'flex h-10 min-w-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-sm text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-hover sm:h-8'
-          : 'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-lg px-3 font-inter text-base text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface sm:h-9 sm:text-sm',
+            'flex h-10 min-w-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-sm text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-surface-hover sm:h-8'
+          : 'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-lg px-3 font-inter text-base text-ink hover:bg-surface-hover focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-surface sm:h-9 sm:text-sm',
         pickerDisabled && 'pointer-events-none opacity-40',
         triggerClassName,
       )}
@@ -722,7 +722,7 @@ interface ModelPickerPanelProps {
   className?: string
   contentClassName?: string
   /** Put the caret in the filter on mount: the dropdown does, a sheet page
-      that opens under a finger does not. */
+ that opens under a finger does not. */
   autoFocusFilter?: boolean
 }
 
@@ -879,7 +879,7 @@ export function ModelPickerPanel({
           autoCorrect="off"
           autoComplete="off"
           spellCheck={false}
-          className="h-9 w-full rounded-lg bg-surface px-3 font-inter text-sm text-ink outline-none placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
+          className="h-9 w-full rounded-lg bg-surface px-3 font-inter text-sm text-ink outline-none placeholder:text-ink-faint focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
         />
       </div>
       <div
@@ -916,7 +916,7 @@ export function ModelPickerPanel({
               >
                 {/* The group label: the provider's mark and its own name
                     (`Anthropic`, `Claude Code (subscription)`), so the same
-                    model family under two credentials reads as two. */}
+ model family under two credentials reads as two. */}
                 <div className="flex h-8 items-center justify-between gap-3 px-2">
                   <h3 className="flex min-w-0 items-center gap-2 font-inter text-xs font-medium text-ink-faint">
                     <ProviderIcon
@@ -931,7 +931,7 @@ export function ModelPickerPanel({
                     <button
                       type="button"
                       onClick={() => onConfigureProvider(group.label)}
-                      className="shrink-0 rounded-sm font-inter text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                      className="shrink-0 rounded-sm font-inter text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
                       Configure
                     </button>
@@ -949,7 +949,7 @@ export function ModelPickerPanel({
                     type="button"
                     disabled={disabled}
                     onClick={() => onConfigureProvider(group.label)}
-                    className="flex min-h-14 w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-12 sm:text-sm"
+                    className="flex min-h-14 w-full min-w-0 items-center gap-3 rounded-md px-2 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 sm:min-h-12 sm:text-sm"
                   >
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="font-medium">Configure provider</span>
@@ -1021,7 +1021,7 @@ export function ModelPickerPanel({
             disabled={disabled}
             onClick={onAddProvider}
             className={cn(
-              'flex min-h-11 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
+              'flex min-h-11 w-full items-center gap-3 rounded-md px-2 py-1.5 text-left font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40 sm:min-h-8 sm:text-sm',
               groups.length > 0 && 'mt-2',
             )}
           >

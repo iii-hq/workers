@@ -21,7 +21,7 @@ export interface BreadcrumbProps
 }
 
 const segmentClassName =
-  'inline-flex h-5 min-w-0 items-center rounded-md px-1 font-mono text-[11px]'
+  'inline-flex h-5 min-w-0 items-center rounded-md px-1 font-mono text-meta'
 
 /**
  * A horizontal path: root › … › current, in the mono voice, inside a
@@ -79,7 +79,7 @@ export function Breadcrumb({
                   onClick={item.onClick}
                   className={cn(
                     segmentClassName,
-                    'truncate cursor-pointer border-0 bg-transparent hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus focus-visible:-outline-offset-2',
+                    'truncate cursor-pointer border-0 bg-transparent hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2',
                     emphasis ? 'font-semibold text-ink' : 'text-ink-faint',
                   )}
                 >

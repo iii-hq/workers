@@ -47,11 +47,11 @@ export function MoveView({ input, output, running, preview }: MoveViewProps) {
   const pending = preview || running
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="files">{req.files.length}</Chip>
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · moving…
           </span>
         ) : null}
@@ -104,7 +104,7 @@ export function MoveView({ input, output, running, preview }: MoveViewProps) {
                         ) : null}
                       </div>
                       {result?.error ? (
-                        <div className="mt-1 break-words text-[11px] text-warn">
+                        <div className="mt-1 break-words text-meta text-warn">
                           {result.error.message}
                         </div>
                       ) : null}

@@ -386,10 +386,9 @@ export function Configuration({
         ref={rootRef}
         className={cn(
           NEUTRAL_SURFACE,
-          'configuration-surface flex min-h-0 min-w-0 flex-1 bg-white font-inter text-sm text-foreground antialiased dark:bg-black',
+          'configuration-surface flex min-h-0 min-w-0 flex-1 bg-card font-inter text-sm text-foreground antialiased',
           // A neutral focus stroke: the console's light accent ring is burnt
           // orange, which the neutral settings page has no other use for.
-          '[--ring:var(--color-neutral-500)] [--color-rule-focus:var(--color-neutral-500)] dark:[--ring:var(--color-neutral-400)] dark:[--color-rule-focus:var(--color-neutral-400)]',
         )}
       >
         {showNavigation ? (

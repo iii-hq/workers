@@ -26,10 +26,10 @@ export const CopyMessageButton = forwardRef<
   HTMLButtonElement,
   {
     /** A thunk defers building large payloads (e.g. serialized function calls)
-        until the click, keeping streaming re-renders free. */
+ until the click, keeping streaming re-renders free. */
     text: string | (() => string)
     /** Accessible name while idle; flips to "copied". The caller wraps
-        the button in a `Hint` for the hover label. */
+ the button in a `Hint` for the hover label. */
     label?: string
     className?: string
   }

@@ -29,7 +29,7 @@ export function WorkerInfoView({
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
           {req ? (
@@ -53,7 +53,7 @@ export function WorkerInfoView({
   const observers = resp.observers ?? []
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={worker.status}
@@ -84,12 +84,12 @@ export function WorkerInfoView({
         ) : null}
       </MetaRow>
       <ActionLine icon={<SquareFunction />} tone="accent">
-        <span className="font-mono text-[13px] text-accent break-all">
+        <span className="font-mono text-body text-accent break-all">
           {worker.name ?? worker.id}
         </span>
       </ActionLine>
       {worker.description ? (
-        <div className="px-3 py-2 border-b border-rule-2 font-mono text-[12px] text-ink-faint leading-[1.55]">
+        <div className="px-3 py-2 border-b border-border font-mono text-xs text-ink-faint leading-[1.55]">
           {worker.description}
         </div>
       ) : null}
@@ -129,7 +129,7 @@ function IdentityRow({ worker }: { worker: WorkerInfoResponse['worker'] }) {
   bits.push(`fns: ${worker.function_count}`)
   bits.push(formatConnectedFor(worker.connected_at_ms))
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
+    <div className="px-3 py-1.5 border-b border-border bg-paper-2 font-mono text-meta text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
       {bits.map((b) => (
         <span key={b}>{b}</span>
       ))}
@@ -176,7 +176,7 @@ function MetricsRow({ metrics }: { metrics: WorkerMetrics }) {
   }
   if (cells.length === 0) return null
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 flex flex-wrap gap-1.5">
+    <div className="px-3 py-1.5 border-b border-border bg-paper-2 flex flex-wrap gap-1.5">
       {cells.map((c) => (
         <Chip key={c.key}>
           <span className="iii-ui-eyebrow">{c.label}</span>
@@ -195,8 +195,8 @@ interface SubListProps {
 
 function SubList({ title, empty, items }: SubListProps) {
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 iii-ui-eyebrow">
+    <div className="border-b border-border">
+      <div className="px-3 py-1.5 bg-paper-2 border-b border-border iii-ui-eyebrow">
         {title} · {items.length}
       </div>
       {items.length === 0 ? (
@@ -204,10 +204,10 @@ function SubList({ title, empty, items }: SubListProps) {
           · {empty}
         </div>
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="divide-y divide-border">
           {items.map((it) => (
             <li key={it.key} className="px-3 py-1.5 flex flex-col gap-0.5">
-              <span className="font-mono text-[12px] text-accent break-all">
+              <span className="font-mono text-xs text-accent break-all">
                 {it.left}
               </span>
               {it.right ? (

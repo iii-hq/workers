@@ -128,13 +128,23 @@ const TOOL_HINTS: Record<AnnotationTool, string> = {
   rect: 'Drag a rectangle, then add a note to it.',
   arrow: 'Drag from tail to head, then add a note to it.',
 }
-const SHAPE_COLORS = [
-  '#e5484d',
-  '#f5a623',
-  '#30a46c',
-  '#0091ff',
-  '#8e4ec6',
+/* One glyph tone per shape, read from the console's palette so annotations
+   wear the same identity tints as the rest of the ADE; the hexes are the
+   fallbacks for a canvas drawn before the tokens resolve. */
+const SHAPE_TONES = [
+  ['--color-glyph-rose', '#e11d48'],
+  ['--color-glyph-amber', '#b7791f'],
+  ['--color-glyph-green', '#15803d'],
+  ['--color-glyph-blue', '#2563eb'],
+  ['--color-glyph-purple', '#7c3aed'],
 ] as const
+const SHAPE_COLORS = SHAPE_TONES.map(([token, fallback]) => {
+  if (typeof getComputedStyle !== 'function') return fallback
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(token)
+    .trim()
+  return value === '' ? fallback : value
+})
 const HANDOFF_FN = 'iii::browser-ui::handoff'
 const HANDOFF_RESOLVED_FN = 'iii::browser-ui::handoff-resolved'
 const NAVIGATED_FN = 'iii::browser-ui::navigated'

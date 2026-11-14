@@ -50,7 +50,7 @@ export function WelcomeStep({
             ADE
           </abbr>
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
           Your agentic development environment. Connect a model and give your
           agent access to everything your backend can do.
         </p>
@@ -61,7 +61,7 @@ export function WelcomeStep({
           return (
             <li key={pillar.id} className="flex items-start gap-3.5 px-4 py-3">
               <Icon
-                className="mt-0.5 size-5 shrink-0 text-neutral-500 dark:text-neutral-400"
+                className="mt-0.5 size-5 shrink-0 text-muted-foreground"
                 strokeWidth={1.75}
                 aria-hidden
               />
@@ -69,7 +69,7 @@ export function WelcomeStep({
                 <span className="text-[16.5px] font-medium leading-6 text-ink">
                   {pillar.title}
                 </span>
-                <span className="text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+                <span className="text-pretty text-base leading-6 text-muted-foreground">
                   {pillar.line}
                 </span>
               </span>

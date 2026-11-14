@@ -59,7 +59,7 @@ export function RenameConversationDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-[min(26rem,calc(100vw-2rem))] gap-0 bg-dialog-surface p-0 text-neutral-900 ring-1 ring-dialog-edge [--dialog-max-width:26rem] dark:text-neutral-50"
+        className="w-[min(26rem,calc(100vw-2rem))] gap-0 bg-dialog-surface p-0 text-foreground ring-1 ring-dialog-edge [--dialog-max-width:26rem]"
         initialFocus={inputRef}
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
@@ -80,7 +80,7 @@ export function RenameConversationDialog({
             <DialogTitle className="text-[15px] leading-5 font-semibold">
               Rename chat
             </DialogTitle>
-            <DialogDescription className="text-[13px] text-neutral-500 dark:text-neutral-400">
+            <DialogDescription className="text-body text-muted-foreground">
               Keep it short and recognizable
             </DialogDescription>
           </div>
@@ -92,7 +92,7 @@ export function RenameConversationDialog({
             onChange={(e) => setDraft(e.currentTarget.value)}
             autoComplete="off"
             spellCheck={false}
-            className="h-10 w-full rounded-lg bg-neutral-100 px-3 text-[14px] text-neutral-900 ring-1 ring-transparent outline-none transition-[box-shadow] duration-[var(--motion-duration-control)] selection:bg-neutral-900 selection:text-neutral-50 placeholder:text-neutral-400 focus-visible:ring-neutral-400 dark:bg-neutral-800 dark:text-neutral-50 dark:selection:bg-white dark:selection:text-neutral-900 dark:placeholder:text-neutral-500 dark:focus-visible:ring-neutral-500"
+            className="h-10 w-full rounded-lg bg-muted px-3 text-sm text-foreground ring-1 ring-transparent outline-none transition-[box-shadow] duration-[var(--motion-duration-control)] selection:bg-primary selection:text-primary-foreground placeholder:text-ink-ghost focus-visible:ring-ring/50"
           />
           <div className="flex items-center justify-end gap-2">
             <Button

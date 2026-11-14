@@ -57,10 +57,8 @@ export function EmptyState({
           <Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-faint" />
         ) : null}
         <div className="min-w-0 flex-1">
-          <p className="font-sans text-[13px] font-semibold text-ink">
-            {title}
-          </p>
-          <p className="font-sans text-[12px] text-ink-faint">{description}</p>
+          <p className="font-sans text-body font-semibold text-ink">{title}</p>
+          <p className="font-sans text-xs text-ink-faint">{description}</p>
           {buttons}
         </div>
       </div>
@@ -80,8 +78,8 @@ export function EmptyState({
           <Icon aria-hidden className="size-5" />
         </div>
       ) : null}
-      <p className="text-balance text-[14px] font-medium text-ink">{title}</p>
-      <p className="mt-1 max-w-[44ch] text-pretty text-[14px] leading-relaxed text-ink-faint">
+      <p className="text-balance text-sm font-medium text-ink">{title}</p>
+      <p className="mt-1 max-w-[44ch] text-pretty text-sm leading-relaxed text-ink-faint">
         {description}
       </p>
       {buttons}

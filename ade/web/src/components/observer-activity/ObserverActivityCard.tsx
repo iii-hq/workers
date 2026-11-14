@@ -498,7 +498,7 @@ function ObserverTarget({
           className={cn(
             'min-w-0',
             call
-              ? 'font-mono text-[13px] break-all text-ink'
+              ? 'font-mono text-body break-all text-ink'
               : 'font-sans text-base text-ink-faint sm:text-sm',
           )}
         >

@@ -120,7 +120,7 @@ export interface TooltipContentProps
 }
 
 /** Bottom by default: most legacy triggers sit in top bars, where a
-    top-side tooltip pops over the tab strip. Collisions still flip it. */
+ top-side tooltip pops over the tab strip. Collisions still flip it. */
 export function TooltipContent({
   side = 'bottom',
   sideOffset = 6,

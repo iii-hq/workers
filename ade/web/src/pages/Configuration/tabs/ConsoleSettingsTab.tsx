@@ -84,7 +84,7 @@ const NEW_CHAT_MODE_OPTIONS: { value: NewChatMode; label: string }[] = [
 ]
 
 /* Spelled out rather than as key caps, so the closed trigger reads at a
-   glance; Cmd on a Mac, Ctrl everywhere else. */
+ glance; Cmd on a Mac, Ctrl everywhere else. */
 function buildSendKeyOptions(): { value: SendKey; label: string }[] {
   const mod = shortcutPlatform() === 'mac' ? 'Cmd' : 'Ctrl'
   return [
@@ -101,9 +101,9 @@ const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
 ]
 
 /* A row's dropdown: the shadcn trigger at Linear's width, white on the
-   card so it reads as a control and not a chip. */
+ card so it reads as a control and not a chip. */
 const ROW_SELECT_TRIGGER =
-  'h-9 min-w-40 border-neutral-200 bg-white text-[15px] hover:bg-neutral-50 dark:border-neutral-900 dark:bg-black dark:hover:bg-neutral-900'
+  'h-9 min-w-40 border-border bg-card text-[15px] hover:bg-muted'
 
 interface ConsoleSettingsTabProps {
   theme: ThemePreference
@@ -470,7 +470,7 @@ export function ConsoleSettingsTab({
               Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-100 p-2 dark:border-neutral-800">
+          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-border p-2">
             <FunctionAllowlistTree
               functions={allowlistCandidates}
               allowlist={allowlistSet}

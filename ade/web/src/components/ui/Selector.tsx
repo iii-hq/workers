@@ -317,9 +317,9 @@ export function Selector<T extends string>({
         />
       ) : null}
       {/* Modal, like Radix's own Select and DropdownMenu. A modal Dialog
-          locks scrolling to its content, and this list is portalled outside
-          it: without a lock of its own on top, every wheel and touch scroll
-          over the list is cancelled and a long catalog cannot be reached. */}
+ locks scrolling to its content, and this list is portalled outside
+ it: without a lock of its own on top, every wheel and touch scroll
+ over the list is cancelled and a long catalog cannot be reached. */}
       <PopoverPrimitive.Root
         open={open}
         onOpenChange={(next) => setOpen(next)}
@@ -339,8 +339,8 @@ export function Selector<T extends string>({
               aria-invalid={invalidState}
               aria-describedby={describedBy || undefined}
               className={cn(
-                'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-sm',
-                open && 'border-rule-focus',
+                'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-sm',
+                open && 'border-ring',
                 invalidVisual && 'bg-alert-muted',
               )}
             >
@@ -407,7 +407,7 @@ export function Selector<T extends string>({
                         : `${listboxId}-option-${activeIndex}`
                     }
                     aria-describedby={statusId}
-                    className="iii-ui-selector-search w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-ink outline-none placeholder:text-ink focus:border-rule-focus"
+                    className="iii-ui-selector-search w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-ink outline-none placeholder:text-ink focus:border-ring"
                   />
                 </div>
 

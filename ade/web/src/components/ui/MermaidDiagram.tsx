@@ -106,10 +106,10 @@ export function MermaidDiagram({ source }: { source: string }) {
   return (
     <figure
       ref={figureRef}
-      className="my-4 min-w-0 max-w-full rounded-xl border border-rule-2 bg-bg"
+      className="my-4 min-w-0 max-w-full rounded-xl border border-border bg-bg"
       data-mermaid-diagram=""
     >
-      <figcaption className="flex flex-wrap items-center justify-between gap-2 border-b border-rule-2 px-4 py-2 text-xs text-ink-faint">
+      <figcaption className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 text-xs text-ink-faint">
         <span>Mermaid</span>
         {current?.url ? (
           <div className="flex items-center gap-1">
@@ -160,7 +160,7 @@ export function MermaidDiagram({ source }: { source: string }) {
           <section
             ref={viewportRef}
             style={{ maxHeight: previewHeight + 32 }}
-            className="max-w-full overflow-auto p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-rule-focus"
+            className="max-w-full overflow-auto p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
             aria-label="Mermaid diagram viewport"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll wide diagrams.
             tabIndex={0}
@@ -177,7 +177,7 @@ export function MermaidDiagram({ source }: { source: string }) {
               }}
             />
           </section>
-          <details className="border-t border-rule-2">
+          <details className="border-t border-border">
             <summary className="cursor-pointer px-4 py-2 text-xs text-ink-faint">
               View source
             </summary>

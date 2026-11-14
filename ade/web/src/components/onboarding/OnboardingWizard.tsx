@@ -496,10 +496,10 @@ export function OnboardingWizardHost() {
             <DialogDescription className="sr-only">
               Connect a model provider and see what the harness can do.
             </DialogDescription>
-            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-neutral-100 bg-neutral-50 px-5 pt-5 pb-5 dark:border-neutral-800 dark:bg-neutral-900/50 @lg:flex">
+            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-border bg-muted px-5 pt-5 pb-5 @lg:flex">
               <div
                 aria-hidden
-                className="flex h-6 items-center gap-2 text-[13px] font-medium leading-none text-ink"
+                className="flex h-6 items-center gap-2 text-body font-medium leading-none text-ink"
               >
                 <Wordmark className="size-4" />
                 Set up the harness
@@ -518,8 +518,8 @@ export function OnboardingWizardHost() {
               <div className="hidden h-12 shrink-0 items-start justify-end px-4 pt-4 @lg:flex">
                 <CloseButton />
               </div>
-              <header className="flex shrink-0 flex-col gap-3 border-b border-neutral-100 px-4 pt-3 pb-3.5 dark:border-neutral-800 @md:px-6 @lg:hidden">
-                <div className="flex h-8 items-center gap-2 text-[13px] font-medium leading-none text-ink">
+              <header className="flex shrink-0 flex-col gap-3 border-b border-border px-4 pt-3 pb-3.5 @md:px-6 @lg:hidden">
+                <div className="flex h-8 items-center gap-2 text-body font-medium leading-none text-ink">
                   <Wordmark className="size-4" aria-hidden />
                   <span aria-hidden>Set up the harness</span>
                   <CloseButton className="ml-auto" />
@@ -609,7 +609,7 @@ function CloseButton({ className }: { className?: string }) {
     <DialogClose
       aria-label="Close"
       className={cn(
-        'flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:text-neutral-400 dark:focus-visible:ring-offset-neutral-950',
+        'flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
         className,
       )}
     >

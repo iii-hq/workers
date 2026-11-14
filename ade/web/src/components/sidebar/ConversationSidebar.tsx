@@ -109,7 +109,7 @@ const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
  * and a label on a rounded-xl wash that only paints on hover or focus.
  */
 const NAV_ROW =
-  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-muted-foreground transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
 
 /**
  * A row's shortcut, spelled plainly (⌘K, ⌃N) and shown only while the row
@@ -124,7 +124,7 @@ function ShortcutHint({ id }: { id: KeybindingActionId }) {
   return (
     <span
       aria-hidden
-      className="ml-auto shrink-0 translate-x-1 pl-2 font-inter text-[11px] font-medium text-neutral-400 opacity-0 transition-[opacity,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] group-hover/row:translate-x-0 group-hover/row:opacity-100 group-focus-visible/row:translate-x-0 group-focus-visible/row:opacity-100 dark:text-neutral-500"
+      className="ml-auto shrink-0 translate-x-1 pl-2 font-inter text-meta font-medium text-ink-ghost opacity-0 transition-[opacity,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] group-hover/row:translate-x-0 group-hover/row:opacity-100 group-focus-visible/row:translate-x-0 group-focus-visible/row:opacity-100"
     >
       {platform === 'mac' ? caps.join('') : caps.join('+')}
     </span>
@@ -133,7 +133,7 @@ function ShortcutHint({ id }: { id: KeybindingActionId }) {
 
 /** The quiet icon buttons beside the list title and along the bottom row. */
 const QUIET_ACTION =
-  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+  'inline-flex shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-surface-hover/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()
@@ -184,7 +184,7 @@ export function ConversationSidebar({
   onRemove,
 }: ConversationSidebarProps) {
   /* Per-node tree collapse state, persisted so a folded sub-agent subtree
-     stays folded across reloads. Default expanded. */
+ stays folded across reloads. Default expanded. */
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(() =>
     loadStringSet(TREE_COLLAPSED_KEY),
   )
@@ -210,7 +210,7 @@ export function ConversationSidebar({
   }, [])
 
   /* Section collapse state. Group keys carry their mode, so one set covers
-     both groupings without either overwriting the other. */
+ both groupings without either overwriting the other. */
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() =>
     loadStringSet(GROUPS_COLLAPSED_KEY),
   )
@@ -223,8 +223,8 @@ export function ConversationSidebar({
   const { pinned, togglePin, movePin } = usePinnedConversations()
 
   /* Pinned chats rearrange by drag: the dragged id, and the row edge it
-     would land on. A drag can end anywhere (outside the list, with Escape),
-     and the window hears every end, so neither outlives it. */
+ would land on. A drag can end anywhere (outside the list, with Escape),
+ and the window hears every end, so neither outlives it. */
   const [pinDrag, setPinDrag] = useState<string | null>(null)
   const [pinDrop, setPinDrop] = useState<{
     id: string
@@ -320,9 +320,9 @@ export function ConversationSidebar({
   }, [])
 
   /* A chat joins the list on its first send: an unsent "new chat" is a
-     local draft with nothing to show yet. The kind filter runs on the flat
-     list before the tree is built, judging each row by its root's kind, so
-     hiding a kind hides whole subtrees and search matches inside them alike. */
+ local draft with nothing to show yet. The kind filter runs on the flat
+ list before the tree is built, judging each row by its root's kind, so
+ hiding a kind hides whole subtrees and search matches inside them alike. */
   const started = useMemo(
     // A side chat (and what it spawned) lives in its conversation's side
     // panel until it is kept.
@@ -338,20 +338,20 @@ export function ConversationSidebar({
     [conversations],
   )
   /* A row wears its kind only when the list mixes kinds; with one kind on
-     show the tag would just repeat the filter. */
+ show the tag would just repeat the filter. */
   const tagKinds = view.kinds.length > 1
 
   /* Finding a chat by name is the palette's job (the Search row opens it);
-     the list itself always shows the whole tree. */
+ the list itself always shows the whole tree. */
   const roots = useMemo<ConvNode[]>(
     () => sortConversationRoots(buildConversationTree(visible), view.sort),
     [visible, view.sort],
   )
 
   /* `Date.now()` is read here rather than held in state: the bucket a chat
-     falls into is only ever read beside its own relative timestamp, which the
-     row computes the same way, and both refresh on the next conversation
-     update. */
+ falls into is only ever read beside its own relative timestamp, which the
+ row computes the same way, and both refresh on the next conversation
+ update. */
   const sections = useMemo(
     () =>
       groupConversationRoots(roots, view.grouping, Date.now(), pinned).map(
@@ -379,21 +379,21 @@ export function ConversationSidebar({
     ],
   )
   /* The flat list has one section and no header to collapse it by — unless
-     pins split it, when both halves need naming. */
+ pins split it, when both halves need naming. */
   const headers = view.grouping !== 'none' || pinned.size > 0
   /* Once any row carries a sub-agent caret at its end, every row keeps that
-     column so timestamps and actions line up down the list. */
+ column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
     section.rows.some((row) => !isInactiveToggle(row) && row.hasChildren),
   )
 
   /* Windowed: only the rows around the viewport are mounted, in normal flow,
-     with a spacer for each run of the others. Sections are flattened for it, and
-     a row is its own child of the list. The active row stays, as does the last
-     one focused, which covers its menu and rename dialog: their focus reaches it
-     through the portal. A dragged row stays too, or its dragend never fires. No
-     ResizeObserver means no layout to window against (SSR, jsdom), so every row
-     renders. */
+ with a spacer for each run of the others. Sections are flattened for it, and
+ a row is its own child of the list. The active row stays, as does the last
+ one focused, which covers its menu and rename dialog: their focus reaches it
+ through the portal. A dragged row stays too, or its dragend never fires. No
+ ResizeObserver means no layout to window against (SSR, jsdom), so every row
+ renders. */
   const windowed = typeof ResizeObserver !== 'undefined'
   const items = useMemo(
     () =>
@@ -598,7 +598,7 @@ export function ConversationSidebar({
   )
 
   /* The 8px gutter plus the nav row's own 10px inset puts every glyph, the
-     heading and the empty copy on one 18px column. */
+ heading and the empty copy on one 18px column. */
   return (
     <div
       className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_SURFACE)}
@@ -616,7 +616,7 @@ export function ConversationSidebar({
           >
             {/* A compose mark, not a plus: the header's plus already means
                 "new workspace", and the phone header spells new chat this
-                way too. */}
+ way too. */}
             <SquarePen className="size-4 shrink-0" aria-hidden />
             <span className="min-w-0 flex-1 truncate">New chat</span>
             {narrow ? null : <ShortcutHint id="chat.new" />}
@@ -635,7 +635,7 @@ export function ConversationSidebar({
           </button>
         ) : null}
         {/* Search is the console's one search: the ⌘K palette, which lists
-            every chat by name beside pages and commands. */}
+ every chat by name beside pages and commands. */}
         <button
           type="button"
           onClick={() => requestPaletteOpen()}
@@ -650,7 +650,7 @@ export function ConversationSidebar({
       </nav>
 
       <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
-        <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-sm dark:text-neutral-400">
+        <h2 className="min-w-0 truncate font-inter text-base font-medium text-muted-foreground sm:text-sm">
           Chats
         </h2>
         <div className="flex items-center gap-0.5">
@@ -688,12 +688,12 @@ export function ConversationSidebar({
             ) : (
               <>
                 {/* Every chat is hidden by the kind filter, not missing:
-                    say so, and put the way back one click away. */}
+ say so, and put the way back one click away. */}
                 No chats match these filters.
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="-ml-3 h-7 px-3 text-[12px]"
+                  className="-ml-3 h-7 px-3 text-xs"
                   onClick={() => setView(DEFAULT_CONVERSATION_LIST_VIEW)}
                 >
                   Clear filters
@@ -731,7 +731,7 @@ export function ConversationSidebar({
       </div>
 
       {/* The bottom row: help on the left of settings, nothing else. Help
-          opens the shortcuts reference outright, not a palette search. */}
+ opens the shortcuts reference outright, not a palette search. */}
       <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
         <Hint
           label="Keyboard shortcuts"
@@ -801,7 +801,7 @@ function InactiveToggle({
       onClick={onToggle}
     >
       {/* A disclosure chevron in the glyph column, like the parent's caret:
-          right while folded, down once the inactive rows show under it. */}
+ right while folded, down once the inactive rows show under it. */}
       <span className={uiClasses.treeItemIcon}>
         <ChevronRight aria-hidden />
       </span>

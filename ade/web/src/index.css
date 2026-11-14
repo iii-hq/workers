@@ -408,6 +408,13 @@
   --text-swap-blur: var(--blur-small);
   --text-swap-ease: var(--ease-in-out);
 
+  /* Type scale, by role. Sizes only (no line-height), so `text-body` renders
+     exactly what the brackets it replaces did. `xs` and `sm` are Tailwind's
+     12 / 14px; `meta` is the 11px floor (metadata, eyebrows, key caps) and
+     `body` the 13px console body (rows, labels, buttons). Never a bracket. */
+  --text-meta: 0.6875rem;
+  --text-body: 0.8125rem;
+
   /* Letter-spacing: the design system's slightly tight default. */
   --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
   --tracking-tight: calc(var(--tracking-normal) - 0.025em);
@@ -716,13 +723,13 @@
 
 .configuration-surface .iii-ui-settings-list {
   border-width: 1px 0;
-  border-color: var(--color-neutral-100);
+  border-color: var(--muted);
   border-radius: 0;
   background: transparent;
 }
 
 .configuration-surface .iii-ui-settings-row + .iii-ui-settings-row {
-  border-top-color: var(--color-neutral-100);
+  border-top-color: var(--muted);
 }
 
 .configuration-surface .iii-ui-settings-row__inner {
@@ -738,7 +745,7 @@
 .configuration-surface .iii-ui-segmented {
   border-radius: var(--radius-lg);
   padding: 2px;
-  background: var(--color-neutral-100);
+  background: var(--muted);
 }
 
 .configuration-surface .iii-ui-segmented__item {
@@ -752,14 +759,14 @@
     [aria-selected="true"],
     [aria-checked="true"]
   ) {
-  background: var(--color-white);
+  background: var(--card);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.08),
     0 0 0 1px rgb(0 0 0 / 0.04);
 }
 
 [data-theme="dark"] .configuration-surface .iii-ui-settings-list {
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
   background: transparent;
 }
 
@@ -767,11 +774,11 @@
   .configuration-surface
   .iii-ui-settings-row
   + .iii-ui-settings-row {
-  border-top-color: var(--color-neutral-800);
+  border-top-color: var(--border);
 }
 
 [data-theme="dark"] .configuration-surface .iii-ui-segmented {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 [data-theme="dark"]
@@ -781,7 +788,7 @@
     [aria-selected="true"],
     [aria-checked="true"]
   ) {
-  background: var(--color-neutral-700);
+  background: var(--input);
   box-shadow: none;
 }
 
@@ -809,14 +816,14 @@
 .configuration-surface .iii-observability-ui {
   --obs-bg: transparent;
   --obs-card: transparent;
-  --obs-surface: var(--color-neutral-100);
-  --obs-surface-strong: var(--color-neutral-200);
-  --obs-border: var(--color-neutral-100);
-  --obs-border-soft: var(--color-neutral-100);
-  --obs-border-strong: var(--color-neutral-300);
-  --obs-accent: var(--color-neutral-900);
-  --obs-accent-muted: var(--color-neutral-100);
-  --obs-accent-border: var(--color-neutral-300);
+  --obs-surface: var(--muted);
+  --obs-surface-strong: var(--secondary);
+  --obs-border: var(--border);
+  --obs-border-soft: var(--border);
+  --obs-border-strong: var(--input);
+  --obs-accent: var(--primary);
+  --obs-accent-muted: var(--muted);
+  --obs-accent-border: var(--input);
   --obs-mono: var(--font-geist-mono);
   max-width: calc(1120px + 2 * 20px);
   padding: 0 20px 48px;
@@ -882,7 +889,7 @@
 }
 
 .configuration-surface .iii-observability-ui .obs-tabs button.is-active {
-  background: var(--color-white);
+  background: var(--card);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.08),
     0 0 0 1px rgb(0 0 0 / 0.04);
@@ -979,35 +986,35 @@
 .configuration-surface .iii-observability-ui .obs-field select:focus,
 .configuration-surface .iii-observability-ui .obs-field textarea:focus,
 .configuration-surface .iii-observability-ui .obs-rule input:focus {
-  border-color: var(--color-neutral-500);
+  border-color: var(--muted-foreground);
   box-shadow: 0 0 0 3px
-    color-mix(in oklab, var(--color-neutral-500) 25%, transparent);
+    color-mix(in oklab, var(--muted-foreground) 25%, transparent);
 }
 
 .configuration-surface .iii-observability-ui .obs-toggle__track {
   width: 40px;
   height: 24px;
-  background: var(--color-neutral-300);
+  background: var(--input);
 }
 
 .configuration-surface .iii-observability-ui .obs-toggle__thumb {
   width: 20px;
   height: 20px;
-  background: var(--color-white);
+  background: var(--card);
 }
 
 .configuration-surface
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__track {
-  background: var(--color-neutral-900);
+  background: var(--primary);
 }
 
 .configuration-surface
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__thumb {
-  background: var(--color-white);
+  background: var(--card);
   transform: translateX(16px);
 }
 
@@ -1039,14 +1046,14 @@
 }
 
 [data-theme="dark"] .configuration-surface .iii-observability-ui {
-  --obs-surface: var(--color-neutral-900);
-  --obs-surface-strong: var(--color-neutral-800);
-  --obs-border: var(--color-neutral-800);
-  --obs-border-soft: var(--color-neutral-800);
-  --obs-border-strong: var(--color-neutral-700);
-  --obs-accent: var(--color-neutral-100);
-  --obs-accent-muted: var(--color-neutral-900);
-  --obs-accent-border: var(--color-neutral-700);
+  --obs-surface: var(--muted);
+  --obs-surface-strong: var(--secondary);
+  --obs-border: var(--border);
+  --obs-border-soft: var(--border);
+  --obs-border-strong: var(--input);
+  --obs-accent: var(--primary);
+  --obs-accent-muted: var(--muted);
+  --obs-accent-border: var(--input);
 }
 
 [data-theme="dark"]
@@ -1054,7 +1061,7 @@
   .iii-observability-ui
   .obs-tabs
   button.is-active {
-  background: var(--color-neutral-700);
+  background: var(--input);
   box-shadow: none;
 }
 
@@ -1062,14 +1069,14 @@
   .configuration-surface
   .iii-observability-ui
   .obs-toggle__track {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 [data-theme="dark"]
   .configuration-surface
   .iii-observability-ui
   .obs-toggle__thumb {
-  background: var(--color-neutral-400);
+  background: var(--color-ink-ghost);
 }
 
 [data-theme="dark"]
@@ -1077,7 +1084,7 @@
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__track {
-  background: var(--color-neutral-300);
+  background: var(--muted-foreground);
 }
 
 [data-theme="dark"]
@@ -1085,7 +1092,7 @@
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__thumb {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 /* Chat uses Inter for UI chrome; Monaco only on semantic code surfaces. */

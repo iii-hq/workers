@@ -19,7 +19,7 @@ export function FullPermissionsBanner({
       aria-live="polite"
       className="flex items-center justify-between gap-3 bg-alert-muted px-4 py-2"
     >
-      <p className="font-mono text-[12px] text-ink">
+      <p className="font-mono text-xs text-ink">
         <span className="font-semibold text-alert">
           full permissions active
         </span>

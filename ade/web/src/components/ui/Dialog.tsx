@@ -124,7 +124,7 @@ export function DialogTitle({
 }: ComponentProps<typeof BaseDialogTitle>) {
   return (
     <BaseDialogTitle
-      className={cn('text-[13px] font-semibold', className)}
+      className={cn('text-body font-semibold', className)}
       {...props}
     />
   )

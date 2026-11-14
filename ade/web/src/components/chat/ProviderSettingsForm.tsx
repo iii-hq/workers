@@ -72,7 +72,7 @@ function fieldError(
 
 function FieldMessage({ message }: { message?: string }) {
   return message ? (
-    <p className="text-[13px] leading-relaxed text-alert-strong" role="alert">
+    <p className="text-body leading-relaxed text-alert-strong" role="alert">
       {message}
     </p>
   ) : null
@@ -106,7 +106,7 @@ function Field({
           {label}
         </label>
         {description ? (
-          <p className="text-[13px] leading-relaxed text-ink-faint">
+          <p className="text-body leading-relaxed text-ink-faint">
             {description}
           </p>
         ) : null}
@@ -119,7 +119,7 @@ function Field({
 
 /** The control itself: a field that reads as one on the card. */
 const fieldInputClass =
-  'h-10 rounded-lg bg-panel px-3.5 text-[15px] text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost hover:bg-panel focus:border-transparent focus:ring-rule-focus sm:h-10 sm:text-[15px]'
+  'h-10 rounded-lg bg-panel px-3.5 text-[15px] text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost hover:bg-panel focus:border-transparent focus:ring-ring/50 sm:h-10 sm:text-[15px]'
 
 /**
  * Friendly fallback for the router's common provider settings. An API-key
@@ -198,7 +198,7 @@ export function ProviderSettingsForm({
           />
           <h3
             id="provider-settings-heading"
-            className="text-[13px] font-medium text-ink-faint"
+            className="text-body font-medium text-ink-faint"
           >
             Provider settings
           </h3>
@@ -274,7 +274,7 @@ export function ProviderSettingsForm({
                   <span className="block text-[15px] font-medium text-ink">
                     Custom system prompt
                   </span>
-                  <span className="block text-[13px] leading-relaxed text-ink-faint">
+                  <span className="block text-body leading-relaxed text-ink-faint">
                     Leave off to use the prompt supplied by the provider.
                   </span>
                 </span>
@@ -300,7 +300,7 @@ export function ProviderSettingsForm({
                   }
                   rows={6}
                   placeholder="Enter a provider-specific system prompt"
-                  className="w-full resize-y rounded-lg bg-panel px-3.5 py-2.5 text-[15px] leading-relaxed text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost focus:outline-none focus:ring-rule-focus"
+                  className="w-full resize-y rounded-lg bg-panel px-3.5 py-2.5 text-[15px] leading-relaxed text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost focus:outline-none focus:ring-ring/50"
                 />
               ) : null}
               <FieldMessage message={fieldError(errors, 'system_prompt')} />

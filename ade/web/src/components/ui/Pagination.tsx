@@ -28,16 +28,16 @@ export function Pagination({
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-4 font-sans text-[12px] text-ink-faint',
+        'flex items-center justify-between gap-4 font-sans text-xs text-ink-faint',
         className,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-medium">Show</span>
+        <span className="text-meta font-medium">Show</span>
         <select
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="rounded-sm border border-transparent bg-surface px-1.5 py-0.5 font-sans text-[12px] text-ink focus:border-rule-focus focus:outline-none"
+          className="rounded-sm border border-transparent bg-surface px-1.5 py-0.5 font-sans text-xs text-ink focus:border-ring focus:outline-none"
         >
           {pageSizeOptions.map((opt) => (
             <option key={opt} value={opt}>
@@ -59,7 +59,7 @@ export function Pagination({
         >
           <ChevronLeft className="size-4" />
         </Button>
-        <span className="text-[11px] font-medium">
+        <span className="text-meta font-medium">
           page {currentPage} of {totalPages}
         </span>
         <Button

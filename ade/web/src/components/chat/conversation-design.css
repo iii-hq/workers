@@ -6,44 +6,16 @@
   font-family: var(--font-inter);
 }
 
+/* The chat reads the design-system palette like every other surface: the
+   canvas is `background`, raised cards are `card`, fills are `muted` and
+   the hover wash is `accent`. Nothing is pinned here any more. */
 .conversation-surface {
-  --color-panel: #fcfcfc;
-  --color-panel-raised: #ffffff;
-  --color-ink: #242424;
-  --color-ink-faint: #686868;
-  --color-ink-ghost: #737373;
-  --color-muted-foreground: #686868;
-  --color-rule-focus: #858585;
-  --color-surface: #f0f0f0;
-  --color-surface-hover: #e9e9e9;
   background: var(--color-panel);
 }
 
-/* Dark chat is black all the way down: the canvas, the raised cards (header,
-   composer, tool cards, code) and the quiet fills are all black, and every
-   region is drawn by a neutral-900 line instead of a grey step. Hover and
-   selection are the only fills, neutral-900. */
-[data-theme="dark"] .conversation-surface {
-  --color-panel: #000000;
-  --color-panel-raised: #000000;
-  --color-ink: #e8e8e8;
-  --color-ink-faint: #adadad;
-  --color-ink-ghost: #979797;
-  --color-muted-foreground: #adadad;
-  --color-rule-focus: #8c8c8c;
-  --color-surface: #000000;
-  --color-surface-hover: var(--color-neutral-900);
-  --color-surface-selected: var(--color-neutral-900);
-  --color-edge: var(--color-neutral-900);
-  /* Legacy names some chat chrome still paints with: the raised alias goes
-     black and the once-invisible rule becomes the neutral-900 line. */
-  --color-paper-2: #000000;
-  --color-rule-2: var(--color-neutral-900);
-}
-
-/* Code panes set their own surface; in the dark chat it is black too. */
-[data-theme="dark"] .conversation-surface .code-theme-editor {
-  --code-surface: #000000;
+/* Code panes set their own surface; in the chat it is the canvas. */
+.conversation-surface .code-theme-editor {
+  --code-surface: var(--background);
 }
 
 .chat-message,
@@ -136,13 +108,11 @@
   background: var(--color-surface);
 }
 
-/* Dark: the chat is black, so what you sent is the one filled shape in it —
-   a neutral-900 bubble with a faint neutral-800 edge that keeps it crisp
-   against the canvas. */
+/* Dark: what you sent is the one raised shape in the chat — a `card`
+   bubble with a `border` edge that keeps it crisp against the canvas. */
 [data-theme="dark"] .chat-user-bubble {
-  background: var(--color-neutral-900);
-  box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--color-neutral-800) 70%, transparent);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--border);
   color: var(--color-ink);
 }
 
@@ -164,8 +134,8 @@
 }
 
 [data-theme="dark"] .chat-user-copy {
-  background: var(--color-black);
-  box-shadow: 0 0 0 1px var(--color-neutral-800);
+  background: var(--background);
+  box-shadow: 0 0 0 1px var(--border);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -281,10 +251,10 @@
   overflow-wrap: anywhere;
 }
 
-/* Dark: inline code is black on a neutral-900 line, like the code blocks. */
+/* Dark: inline code sits on the canvas with a `border` line, like the code blocks. */
 [data-theme="dark"] .chat-prose :not(pre) > code {
-  background: var(--color-black);
-  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .chat-prose .chat-prose-link {
@@ -321,7 +291,7 @@
 
   [data-theme="dark"] .chat-prose .chat-inline-code-link:hover code,
   [data-theme="dark"] .chat-prose .chat-inline-file-button:hover code {
-    background: var(--color-neutral-900);
+    background: var(--muted);
   }
 }
 
@@ -695,22 +665,22 @@
 
 .composer-shell .composer-card:focus-within {
   box-shadow:
-    inset 0 0 0 1px var(--color-neutral-200),
+    inset 0 0 0 1px var(--ring),
     0 5px 24px -8px rgb(0 0 0 / 16%);
 }
 
-/* Dark: a black card on a neutral-900 line, the line one step brighter
-   while you type in it. */
+/* Dark: a `card` on a `border` line, the line one step brighter while you
+   type in it. */
 [data-theme="dark"] .composer-shell .composer-card {
-  background: var(--color-black);
+  background: var(--card);
   box-shadow:
-    inset 0 0 0 1px var(--color-neutral-900),
+    inset 0 0 0 1px var(--border),
     0 4px 20px -8px rgb(0 0 0 / 12%);
 }
 
 [data-theme="dark"] .composer-shell .composer-card:focus-within {
   box-shadow:
-    inset 0 0 0 1px var(--color-neutral-800),
+    inset 0 0 0 1px var(--ring),
     0 5px 24px -8px rgb(0 0 0 / 16%);
 }
 
@@ -743,15 +713,15 @@
    inside its 12px padding, on the dialog's own surface. */
 .new-chat-dialog-toolbar [data-iii-ui="voice"] .voice-recording-bar {
   inset: 0 12px;
-  background: var(--color-white);
+  background: var(--background);
 }
 
 :where([data-theme="dark"])
   .new-chat-dialog-toolbar
   [data-iii-ui="voice"]
   .voice-recording-bar {
-  background: var(--color-black);
-  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
+  background: var(--background);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 @container (max-width: 480px) {
@@ -927,5 +897,5 @@
 [data-theme="dark"] .conversation-surface [data-badge-variant="accent"],
 [data-theme="dark"] .conversation-surface [data-badge-variant="default"] {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
+  box-shadow: inset 0 0 0 1px var(--border);
 }

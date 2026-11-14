@@ -26,8 +26,8 @@ export interface ConfirmDialogProps {
   /** The confirm control's label while an async `onConfirm` runs. */
   busyLabel?: string
   /** Why the action failed, from outside the dialog (it opens on the failure,
-      the confirm control then tries again). A rejected `onConfirm` sets its
-      own. While one shows, the controls read `Retry …` and `Close`. */
+ the confirm control then tries again). A rejected `onConfirm` sets its
+ own. While one shows, the controls read `Retry …` and `Close`. */
   error?: string | null
 }
 
@@ -103,35 +103,35 @@ export function ConfirmDialog({
         initialFocus={() => cancelRef.current}
       >
         {/* The text scrolls when it is taller than the dialog (at most 85vh), so
-            the actions below always stay on screen. Its tab stop lets a
-            keyboard scroll it (Safari focuses no scroll container itself). */}
+ the actions below always stay on screen. Its tab stop lets a
+ keyboard scroll it (Safari focuses no scroll container itself). */}
         <section
           aria-labelledby={titleId}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
           tabIndex={0}
-          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset"
         >
           <DialogTitle
             id={titleId}
-            className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words"
+            className="pr-8 font-inter text-base leading-6 font-semibold break-words"
           >
             {title}
           </DialogTitle>
           {description ? (
-            <DialogDescription className="mt-1.5 font-inter text-[14px] leading-[22px] break-words">
+            <DialogDescription className="mt-1.5 font-inter text-sm leading-[22px] break-words">
               {description}
             </DialogDescription>
           ) : null}
         </section>
         {/* Why the action failed stays in sight, above the actions, however
-            far the text above is scrolled; on a very short screen it shrinks
-            and scrolls before the actions do. */}
+ far the text above is scrolled; on a very short screen it shrinks
+ and scrolls before the actions do. */}
         {error ? (
           <p
             role="alert"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: the error scrolls when long and must be reachable by keyboard
             tabIndex={0}
-            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 font-inter text-sm leading-[22px] break-words text-alert focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset"
           >
             {error}
           </p>

@@ -28,7 +28,7 @@ import {
  * every control in the chrome answers the pointer the same way.
  */
 const GHOST_CONTROL =
-  'icon-host inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300/70 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
+  'icon-host inline-flex shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:bg-secondary/70'
 
 export interface WorkspaceHeaderProps {
   workspace: UseWorkspaceTabsReturn
@@ -85,7 +85,7 @@ export function WorkspaceHeader({
 
   return (
     <>
-      <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center bg-white px-2 font-inter text-neutral-900 sm:hidden dark:bg-neutral-950 dark:text-neutral-50">
+      <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center bg-card px-2 font-inter text-foreground sm:hidden">
         <div className="flex items-center">
           <button
             type="button"
@@ -115,15 +115,15 @@ export function WorkspaceHeader({
                     className={cn(
                       'size-1.5 rounded-full transition-colors duration-[var(--motion-duration-control)]',
                       index === mobilePanelIndex
-                        ? 'bg-neutral-900 dark:bg-neutral-50'
-                        : 'bg-neutral-300 dark:bg-neutral-700',
+                        ? 'bg-primary '
+                        : 'bg-secondary ',
                     )}
                     aria-hidden
                   />
                 ))
               ) : (
                 <span
-                  className="font-mono text-[13px] text-neutral-500 tabular-nums dark:text-neutral-400"
+                  className="font-mono text-body text-muted-foreground tabular-nums"
                   aria-hidden
                 >
                   {mobilePanelIndex + 1} / {columns}
@@ -135,8 +135,8 @@ export function WorkspaceHeader({
 
         <div className="flex items-center justify-end">
           {/* A phone has no ⌘K. Search is the console's way of reaching
-              anything, so it gets a first-class affordance rather than a row
-              buried in the workspace menu. */}
+ anything, so it gets a first-class affordance rather than a row
+ buried in the workspace menu. */}
           <button
             type="button"
             onClick={onOpenPalette}
@@ -197,14 +197,14 @@ export function WorkspaceHeader({
       />
 
       {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
-          not styling. Do not remove. */}
+ not styling. Do not remove. */}
       {/* The bar is the browser's frame; the active tab (canvas-coloured,
-          flared at its feet) reads as the sheet the workspace is drawn on.
-          Light: the bar is neutral-100 like the canvas, so a neutral-200
-          hairline along its foot separates it from the page — an inset
-          shadow, so the active tab paints over it and opens into the page.
-          Dark: the bar is a step lighter than the canvas; no line. */}
-      <header className="learn-iii-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-100 px-3 font-inter text-neutral-900 shadow-[inset_0_-1px_0_var(--color-neutral-200)] sm:grid dark:bg-neutral-900 dark:shadow-none dark:text-neutral-50">
+ flared at its feet) reads as the sheet the workspace is drawn on.
+ Light: the bar is neutral-100 like the canvas, so a neutral-200
+ hairline along its foot separates it from the page — an inset
+ shadow, so the active tab paints over it and opens into the page.
+ Dark: the bar is a step lighter than the canvas; no line. */}
+      <header className="learn-iii-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-muted px-3 font-inter text-foreground shadow-[inset_0_-1px_0_var(--border)] sm:grid">
         <div className="flex h-full min-w-0 items-end gap-1">
           <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
@@ -226,9 +226,9 @@ export function WorkspaceHeader({
         </div>
 
         {/* The bar's right-hand cluster: search, then the theme. Search
-            keeps a fixed pill and carries its own chord (the caps teach ⌘K
-            on sight); it sits right, not centre, so the tab strip gets every
-            other pixel of the bar. */}
+ keeps a fixed pill and carries its own chord (the caps teach ⌘K
+ on sight); it sits right, not centre, so the tab strip gets every
+ other pixel of the bar. */}
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -236,7 +236,7 @@ export function WorkspaceHeader({
             aria-label={paletteTitle}
             title={paletteTitle}
             /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
-            className="learn-iii-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
+            className="learn-iii-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-card pr-1.5 pl-3 text-body font-medium text-muted-foreground transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] gap-4"
           >
             <Search
               className="icon-motion icon-motion--search size-4 shrink-0"
@@ -246,7 +246,7 @@ export function WorkspaceHeader({
             <KeyCombo
               binding={paletteBinding}
               className="gap-2"
-              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-100 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+              capClassName="min-w-5 rounded-md bg-muted px-1 py-px text-meta font-medium text-muted-foreground shadow-none ring-1 ring-border   "
             />
           </button>
           <ThemeSwitch value={theme} onChange={onThemeChange} />

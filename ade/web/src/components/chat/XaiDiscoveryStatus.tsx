@@ -147,7 +147,7 @@ export function XaiDiscoveryStatus({
                 </Button>
               </div>
               <details>
-                <summary className="cursor-pointer rounded-sm py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus">
+                <summary className="cursor-pointer rounded-sm py-3 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                   Technical details
                 </summary>
                 <p>

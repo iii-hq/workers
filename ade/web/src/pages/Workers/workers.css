@@ -3,59 +3,11 @@
    add dialog portals out of the page, so rules key on the wk- prefix alone. */
 
 /* ── surface ─────────────────────────────────────────────────────────────
-   The page is set in Inter on a neutral ramp: white and near-white in
-   light, black and near-black in dark. The shared components read the
-   console tokens, so the ramp is remapped here (and shadcn's semantic
-   variables with it, because `--card` and friends are resolved on :root
-   and would not follow the token change on their own). Machine values —
+   The page is set in Inter on the design-system palette: `background`,
+   `card`, `muted` and `border` like every other screen. Machine values —
    paths, versions, pids, the engine URL — stay in Geist Mono at 12–13px. */
 .wk-surface {
   font-family: var(--font-inter);
-  --color-bg: #fafafa;
-  --color-sidebar: #fafafa;
-  --color-panel: #ffffff;
-  --color-panel-raised: #ffffff;
-  --color-surface: rgba(10, 10, 10, 0.05);
-  --color-surface-hover: rgba(10, 10, 10, 0.08);
-  --color-surface-selected: rgba(10, 10, 10, 0.1);
-  --color-surface-active: rgba(10, 10, 10, 0.1);
-  --color-edge: var(--color-neutral-100);
-  --color-rule-focus: #737373;
-  --background: var(--color-bg);
-  --card: var(--color-panel);
-  --popover: var(--color-panel);
-  --secondary: var(--color-surface);
-  --muted: var(--color-surface);
-  --border: var(--color-edge);
-  --input: var(--color-surface);
-  --ring: var(--color-rule-focus);
-  --shadow-raised: none;
-  --shadow-floating: none;
-  letter-spacing: 0;
-}
-
-[data-theme="dark"] .wk-surface {
-  --color-bg: #000000;
-  --color-sidebar: #000000;
-  --color-panel: #0a0a0a;
-  --color-panel-raised: #000000;
-  --color-paper-2: #141414;
-  --color-surface: rgba(255, 255, 255, 0.06);
-  --color-surface-hover: rgba(255, 255, 255, 0.09);
-  --color-surface-selected: rgba(255, 255, 255, 0.12);
-  --color-surface-active: rgba(255, 255, 255, 0.12);
-  --color-edge: #262626;
-  --color-ink: #fafafa;
-  --color-ink-faint: #a3a3a3;
-  --color-rule-focus: #a3a3a3;
-  --background: var(--color-bg);
-  --card: var(--color-panel);
-  --popover: #141414;
-  --secondary: var(--color-surface);
-  --muted: var(--color-surface);
-  --border: var(--color-edge);
-  --input: var(--color-surface);
-  --ring: var(--color-rule-focus);
 }
 
 /* Press feedback for the page's buttons and pills: 0.96 over 150ms,
@@ -127,11 +79,11 @@
    faint ink, which falls under AA on a selected row; the sidebar's own
    neutral step holds 4.5:1 at rest, hovered and selected. */
 .wk-surface .wk-sidebar .wk-row-detail {
-  color: var(--color-neutral-600);
+  color: var(--muted-foreground);
 }
 
 [data-theme="dark"] .wk-surface .wk-sidebar .wk-row-detail {
-  color: var(--color-neutral-400);
+  color: var(--muted-foreground);
 }
 
 .wk-surface .wk-sidebar .wk-row-detail[data-failed] {
@@ -307,15 +259,15 @@
 }
 
 .wk-surface [data-slot="badge"][class~="bg-secondary"] {
-  border-color: var(--color-neutral-100);
-  background: var(--color-neutral-100);
-  color: var(--color-neutral-700);
+  border-color: var(--muted);
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 [data-theme="dark"] .wk-surface [data-slot="badge"][class~="bg-secondary"] {
-  border-color: var(--color-neutral-800);
-  background: var(--color-neutral-900);
-  color: var(--color-neutral-300);
+  border-color: var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .wk-surface [data-slot="badge"][class~="bg-destructive/10"] {
@@ -1399,7 +1351,7 @@
   background: transparent;
   color: inherit;
   text-decoration: underline;
-  text-decoration-color: var(--color-neutral-400);
+  text-decoration-color: var(--color-ink-ghost);
   text-underline-offset: 2px;
 }
 
@@ -1485,7 +1437,7 @@
 .wk-surface .wk-select,
 .wk-surface button[aria-haspopup="listbox"] {
   height: 2.25rem;
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   background: transparent;
   color: var(--color-ink);
@@ -1507,18 +1459,18 @@
 
 .wk-surface [data-slot="input"]::placeholder,
 .wk-surface button[aria-haspopup="listbox"] .text-ink-faint {
-  color: var(--color-neutral-400);
+  color: var(--color-ink-ghost);
 }
 
 .wk-surface [data-slot="input"]:hover,
 .wk-surface button[aria-haspopup="listbox"]:hover {
-  background: var(--color-neutral-50);
+  background: var(--muted);
 }
 
 .wk-surface [data-slot="input"]:focus-visible,
 .wk-surface button[aria-haspopup="listbox"]:focus-visible,
 .wk-surface button[aria-haspopup="listbox"][aria-expanded="true"] {
-  border-color: var(--color-neutral-400);
+  border-color: var(--color-ink-ghost);
   box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.06);
   outline: none;
 }
@@ -1532,7 +1484,7 @@
 [data-theme="dark"] .wk-surface [data-slot="input"],
 [data-theme="dark"] .wk-surface .wk-select,
 [data-theme="dark"] .wk-surface button[aria-haspopup="listbox"] {
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
   background: rgba(255, 255, 255, 0.02);
 }
 
@@ -1541,7 +1493,7 @@
   .wk-surface
   button[aria-haspopup="listbox"]
   .text-ink-faint {
-  color: var(--color-neutral-500);
+  color: var(--muted-foreground);
 }
 
 [data-theme="dark"] .wk-surface [data-slot="input"]:hover,
@@ -1554,7 +1506,7 @@
 [data-theme="dark"]
   .wk-surface
   button[aria-haspopup="listbox"][aria-expanded="true"] {
-  border-color: var(--color-neutral-500);
+  border-color: var(--muted-foreground);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.07);
 }
 
@@ -1586,7 +1538,7 @@
   padding: 0 0.125rem;
   border-radius: 0;
   background: transparent;
-  color: var(--color-neutral-500);
+  color: var(--muted-foreground);
   font-family: var(--font-inter);
   font-size: 13px;
   font-weight: 500;
@@ -1596,7 +1548,7 @@
 }
 
 [data-theme="dark"] .wk-surface .wk-tablist [data-slot="tabs-trigger"] {
-  color: var(--color-neutral-400);
+  color: var(--muted-foreground);
 }
 
 .wk-surface .wk-tablist [data-slot="tabs-trigger"]:hover,
@@ -1621,15 +1573,15 @@
 .wk-surface .iii-ui-segmented {
   gap: 2px;
   padding: 3px;
-  border: 1px solid var(--color-neutral-100);
+  border: 1px solid var(--muted);
   border-radius: 0.5rem;
-  background: var(--color-neutral-100);
+  background: var(--muted);
   box-shadow: none;
 }
 
 [data-theme="dark"] .wk-surface .iii-ui-segmented {
-  border-color: var(--color-neutral-800);
-  background: var(--color-neutral-900);
+  border-color: var(--border);
+  background: var(--muted);
 }
 
 .wk-surface .iii-ui-segmented__item {
@@ -1638,7 +1590,7 @@
   border: 0;
   border-radius: 0.375rem;
   background: transparent;
-  color: var(--color-neutral-600);
+  color: var(--muted-foreground);
   font-family: var(--font-inter);
   font-size: 13px;
   font-weight: 500;
@@ -1646,7 +1598,7 @@
 }
 
 [data-theme="dark"] .wk-surface .iii-ui-segmented__item {
-  color: var(--color-neutral-400);
+  color: var(--muted-foreground);
 }
 
 .wk-surface .iii-ui-segmented__item:hover {
@@ -1656,14 +1608,14 @@
 .wk-surface .iii-ui-segmented__item[aria-checked="true"],
 .wk-surface .iii-ui-segmented__item[aria-selected="true"],
 .wk-surface .iii-ui-segmented__item[data-selected="true"] {
-  background: var(--color-white);
+  background: var(--card);
   color: var(--color-ink);
 }
 
 [data-theme="dark"] .wk-surface .iii-ui-segmented__item[aria-checked="true"],
 [data-theme="dark"] .wk-surface .iii-ui-segmented__item[aria-selected="true"],
 [data-theme="dark"] .wk-surface .iii-ui-segmented__item[data-selected="true"] {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 /* settings sections, lists and rows */
@@ -1755,20 +1707,20 @@
 
 .wk-surface .iii-ui-list-item:not([aria-disabled="true"]):not(:disabled):hover,
 .wk-surface .iii-ui-list-item[data-highlighted="true"] {
-  background: var(--color-neutral-100);
+  background: var(--muted);
 }
 
 [data-theme="dark"]
   .wk-surface
   .iii-ui-list-item:not([aria-disabled="true"]):not(:disabled):hover,
 [data-theme="dark"] .wk-surface .iii-ui-list-item[data-highlighted="true"] {
-  background: var(--color-neutral-900);
+  background: var(--muted);
 }
 
 .wk-surface .iii-ui-list-item[data-selected="true"],
 .wk-surface .iii-ui-list-item[aria-selected="true"] {
   border-color: transparent;
-  background: var(--color-neutral-100);
+  background: var(--muted);
   box-shadow: none;
 }
 
@@ -1778,7 +1730,7 @@
 
 [data-theme="dark"] .wk-surface .iii-ui-list-item[data-selected="true"],
 [data-theme="dark"] .wk-surface .iii-ui-list-item[aria-selected="true"] {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 .wk-surface .iii-ui-list-group__label {
@@ -1893,14 +1845,14 @@
 .wk-menu {
   min-width: 13rem;
   padding: 0.25rem;
-  border: 1px solid var(--color-neutral-100);
+  border: 1px solid var(--muted);
   border-radius: 0.75rem;
   box-shadow: none;
   --tw-ring-shadow: 0 0 #0000;
 }
 
 [data-theme="dark"] .wk-menu {
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
   background: #0f0f0f;
 }
 
@@ -1931,19 +1883,19 @@
 /* popovers: the version select and the searchable pickers */
 .wk-popover,
 .iii-ui-panel.wk-popover {
-  border: 1px solid var(--color-neutral-100);
+  border: 1px solid var(--border);
   border-radius: 0.75rem;
-  background: var(--color-white);
+  background: var(--popover);
   box-shadow: none;
   --tw-ring-shadow: 0 0 #0000;
-  --color-panel-raised: var(--color-white);
+  --color-panel-raised: var(--popover);
   font-family: var(--font-inter);
 }
 
 [data-theme="dark"] .wk-popover,
 [data-theme="dark"] .iii-ui-panel.wk-popover {
   --color-panel-raised: #0f0f0f;
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
   background: #0f0f0f;
 }
 
@@ -1955,18 +1907,18 @@
 }
 
 .iii-ui-panel.wk-popover .iii-ui-selector-search {
-  border: 1px solid var(--color-neutral-200);
+  border: 1px solid var(--border);
   border-radius: 0.5rem;
   background: transparent;
   font-family: var(--font-inter);
 }
 
 [data-theme="dark"] .iii-ui-panel.wk-popover .iii-ui-selector-search {
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
 }
 
 .iii-ui-panel.wk-popover .iii-ui-selector-search::placeholder {
-  color: var(--color-neutral-400);
+  color: var(--color-ink-ghost);
 }
 
 .iii-ui-panel.wk-popover .iii-ui-list-item {
@@ -1991,7 +1943,7 @@
 .iii-ui-panel.wk-popover .iii-ui-list-item[data-selected="true"],
 .iii-ui-panel.wk-popover .iii-ui-list-item[aria-selected="true"] {
   border-color: transparent;
-  background: var(--color-neutral-100);
+  background: var(--muted);
   box-shadow: none;
 }
 
@@ -2004,7 +1956,7 @@
 [data-theme="dark"]
   .iii-ui-panel.wk-popover
   .iii-ui-list-item[aria-selected="true"] {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 /* ── phones: the disclosures grow to 48px touch targets ─────────────── */

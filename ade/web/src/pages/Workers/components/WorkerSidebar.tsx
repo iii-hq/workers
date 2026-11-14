@@ -126,7 +126,7 @@ export function WorkerSidebar({
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative shrink-0 px-3 pt-1 pb-2">
         <Search
-          className="pointer-events-none absolute left-[22px] top-1/2 size-4 shrink-0 -translate-y-1/2 text-neutral-400 dark:text-neutral-500"
+          className="pointer-events-none absolute left-[22px] top-1/2 size-4 shrink-0 -translate-y-1/2 text-ink-ghost"
           aria-hidden
         />
         <Input
@@ -147,7 +147,7 @@ export function WorkerSidebar({
           spellCheck={false}
           value={query}
           onChange={(event) => onQueryChange(event.currentTarget.value)}
-          className="wk-search h-8 rounded-lg border-neutral-200 bg-white pl-8 pr-8 text-[13px] shadow-none placeholder:text-neutral-400 pointer-coarse:h-11 dark:border-neutral-800 dark:bg-neutral-900/70 dark:placeholder:text-neutral-500 [&::-webkit-search-cancel-button]:hidden"
+          className="wk-search h-8 rounded-lg border-border bg-card pl-8 pr-8 text-body shadow-none placeholder:text-ink-ghost pointer-coarse:h-11 [&::-webkit-search-cancel-button]:hidden"
           onKeyDown={(event) => {
             if (event.key === 'Escape' && query) {
               event.preventDefault()
@@ -173,7 +173,7 @@ export function WorkerSidebar({
             type="button"
             aria-label="Clear"
             onClick={clear}
-            className="absolute right-4 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-neutral-400 outline-none transition-colors duration-150 hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-50"
+            className="absolute right-4 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-ghost outline-none transition-colors duration-150 hover:bg-surface-hover/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <span
               className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -183,7 +183,7 @@ export function WorkerSidebar({
           </button>
         ) : (
           <kbd
-            className="pointer-events-none absolute right-5 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-[11px] text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
+            className="pointer-events-none absolute right-5 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-border bg-muted px-1 font-inter text-meta text-ink-ghost pointer-coarse:hidden"
             aria-hidden
           >
             /
@@ -214,7 +214,7 @@ export function WorkerSidebar({
                 label="Results"
                 aside={
                   <span
-                    className="tabular-nums text-neutral-400 dark:text-neutral-500"
+                    className="tabular-nums text-ink-ghost"
                     aria-live="polite"
                     aria-atomic="true"
                   >
@@ -267,14 +267,14 @@ export function WorkerSidebar({
                     onClick={() => onSelect(PROJECT)}
                     className={cn(ROW, selection === PROJECT && ROW_SELECTED)}
                   >
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-neutral-200/70 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-surface-selected/70 text-muted-foreground">
                       <Layers className="size-4" aria-hidden />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[13px] font-medium leading-5">
+                      <span className="block truncate text-body font-medium leading-5">
                         Project
                       </span>
-                      <span className="block truncate text-[12px] leading-4 text-neutral-600 dark:text-neutral-400">
+                      <span className="block truncate text-xs leading-4 text-muted-foreground">
                         {project.ready} of {project.total} ready
                         {project.updates
                           ? ` · ${project.updates} update${project.updates === 1 ? '' : 's'}`
@@ -292,7 +292,7 @@ export function WorkerSidebar({
                   key={group.id}
                   label={group.label}
                   aside={
-                    <span className="tabular-nums text-neutral-400 dark:text-neutral-500">
+                    <span className="tabular-nums text-ink-ghost">
                       {group.items.length}
                     </span>
                   }
@@ -309,7 +309,7 @@ export function WorkerSidebar({
                 </Group>
               ))}
               {total === 0 ? (
-                <p className="px-3 pt-6 text-center text-[13px] text-neutral-500 dark:text-neutral-400">
+                <p className="px-3 pt-6 text-center text-body text-muted-foreground">
                   No workers yet.
                 </p>
               ) : null}
@@ -322,11 +322,9 @@ export function WorkerSidebar({
 }
 
 const ROW =
-  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left font-inter text-neutral-700 transition-colors duration-150 ease-out outline-none hover:bg-neutral-200/60 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-500 pointer-coarse:min-h-12 dark:text-neutral-300 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
-const ROW_SELECTED =
-  'bg-neutral-200/80 text-neutral-900 hover:bg-neutral-200/80 dark:bg-neutral-800/80 dark:text-neutral-50 dark:hover:bg-neutral-800/80'
-const ROW_ACTIVE =
-  'bg-neutral-200/60 text-neutral-900 dark:bg-neutral-900 dark:text-neutral-50'
+  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left font-inter text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-surface-hover/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-12'
+const ROW_SELECTED = 'bg-accent/80 text-foreground hover:bg-accent/80'
+const ROW_ACTIVE = 'bg-surface-selected/60 text-foreground'
 
 function Group({
   label,
@@ -341,7 +339,7 @@ function Group({
 }) {
   return (
     <section className="mb-3">
-      <div className="flex items-center justify-between px-3 pb-1 pt-1 text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+      <div className="flex items-center justify-between px-3 pb-1 pt-1 text-xs font-medium text-muted-foreground">
         <span>{label}</span>
         {aside}
       </div>
@@ -410,11 +408,11 @@ const Row = React.forwardRef<
         />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium leading-5">
+        <span className="block truncate text-body font-medium leading-5">
           <Highlight text={item.name} ranges={nameRanges} />
         </span>
         <span
-          className="iii-ui-list-item__description wk-row-detail block truncate text-[12px] leading-4"
+          className="iii-ui-list-item__description wk-row-detail block truncate text-xs leading-4"
           data-failed={item.failed || undefined}
         >
           {item.detail === item.state ? (
@@ -425,12 +423,7 @@ const Row = React.forwardRef<
               <Highlight text={item.detail} ranges={detailRanges} />
             </>
           )}
-          {group ? (
-            <span className="text-neutral-400 dark:text-neutral-600">
-              {' '}
-              · {group}
-            </span>
-          ) : null}
+          {group ? <span className="text-ink-ghost"> · {group}</span> : null}
         </span>
       </span>
       <span className="flex shrink-0 items-center gap-1">
@@ -450,9 +443,9 @@ const DOT: Record<string, string> = {
   accent: 'bg-ok',
   alert: 'bg-alert',
   warn: 'bg-warn',
-  ink: 'bg-neutral-400 dark:bg-neutral-600',
+  ink: 'bg-ink-ghost ',
   ok: 'bg-ok',
-  ghost: 'bg-neutral-300 dark:bg-neutral-700',
+  ghost: 'bg-secondary ',
 }
 
 function Pill({
@@ -465,13 +458,12 @@ function Pill({
   return (
     <span
       className={cn(
-        'inline-flex h-6 items-center rounded-lg border px-2 font-inter text-[12px] font-medium tabular-nums',
-        tone === 'default' &&
-          'border-neutral-100 bg-neutral-100 text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300',
+        'inline-flex h-6 items-center rounded-lg border px-2 font-inter text-xs font-medium tabular-nums',
+        tone === 'default' && 'border-border bg-muted text-muted-foreground',
         // An update: the neutral chip with the version in green, so the
         // list reads calm and the new version still stands out.
         tone === 'accent' &&
-          'border-neutral-100 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400',
+          'border-border bg-muted text-emerald-700 dark:text-emerald-400',
         tone === 'alert' && 'border-alert/25 bg-alert-muted text-alert-strong',
         className,
       )}
@@ -495,7 +487,7 @@ function Highlight({
           <mark
             // biome-ignore lint/suspicious/noArrayIndexKey: static split of one string
             key={index}
-            className="rounded-[2px] bg-transparent text-neutral-900 underline decoration-neutral-400 decoration-1 underline-offset-2 dark:text-neutral-50 dark:decoration-neutral-500"
+            className="rounded-[2px] bg-transparent text-foreground underline decoration-ink-ghost decoration-1 underline-offset-2"
           >
             {piece.text}
           </mark>
@@ -521,20 +513,18 @@ function NoMatch({
 }) {
   return (
     <div className="flex flex-col items-center gap-2 px-3 pt-8 text-center">
-      <span className="flex size-9 items-center justify-center rounded-lg bg-neutral-200/60 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
+      <span className="flex size-9 items-center justify-center rounded-lg bg-surface-selected/60 text-muted-foreground">
         <Boxes className="size-4" aria-hidden />
       </span>
-      <p className="text-[13px] font-medium text-neutral-900 dark:text-neutral-50">
-        No worker matches
-      </p>
-      <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
+      <p className="text-body font-medium text-foreground">No worker matches</p>
+      <p className="text-xs text-muted-foreground">
         Nothing is called “{query.trim()}”.
       </p>
       {suggestion ? (
         <button
           type="button"
           onClick={() => onSuggest(suggestion)}
-          className="mt-1 rounded-md px-2 py-1 text-[12px] text-neutral-700 underline decoration-neutral-400 underline-offset-2 transition-colors duration-150 hover:text-neutral-900 dark:text-neutral-300 dark:hover:text-neutral-50"
+          className="mt-1 rounded-md px-2 py-1 text-xs text-muted-foreground underline decoration-ink-ghost underline-offset-2 transition-colors duration-150 hover:text-foreground"
         >
           Did you mean {suggestion}?
         </button>
@@ -542,7 +532,7 @@ function NoMatch({
       <button
         type="button"
         onClick={onClear}
-        className="mt-1 h-7 rounded-md px-2.5 text-[12px] font-medium text-neutral-600 transition-colors duration-150 hover:bg-neutral-200/70 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-50"
+        className="mt-1 h-7 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors duration-150 hover:bg-surface-hover/70 hover:text-foreground"
       >
         Clear search
       </button>

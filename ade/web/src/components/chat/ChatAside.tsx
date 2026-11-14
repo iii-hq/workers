@@ -104,7 +104,7 @@ const SIDE_CHAT_LIFETIME =
  *  one on the header's bottom edge, quiet otherwise. The weight never
  *  changes between states, so switching tabs shifts nothing. */
 const ASIDE_TAB =
-  'h-full flex-none gap-1.5 rounded-none px-2 text-[13px] font-medium text-muted-foreground hover:text-foreground data-active:text-foreground data-active:shadow-none group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0.5 dark:data-active:border-transparent dark:data-active:bg-transparent'
+  'h-full flex-none gap-1.5 rounded-none px-2 text-body font-medium text-muted-foreground hover:text-foreground data-active:text-foreground data-active:shadow-none group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0.5 dark:data-active:border-transparent dark:data-active:bg-transparent'
 
 function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString([], {
@@ -993,7 +993,7 @@ export function QuoteChip({
           className="size-4 shrink-0 text-muted-foreground"
         />
         <span className="sr-only">Quoted · {quote.agent || 'Agent'}: </span>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-body text-muted-foreground">
           {quote.text}
         </span>
         {onRemove ? (
@@ -1021,7 +1021,7 @@ export function QuoteChip({
         <span className="text-xs font-medium text-muted-foreground">
           Quoted · {quote.agent || 'Agent'}
         </span>
-        <span className="line-clamp-2 text-[13px] leading-[18px] text-foreground">
+        <span className="line-clamp-2 text-body leading-[18px] text-foreground">
           {quote.text}
         </span>
       </div>
@@ -1043,7 +1043,7 @@ export function QuoteChip({
 /** Half the toolbar's width, to keep it on screen near the edges. */
 const TOOLBAR_HALF = 112
 const toolbarButton =
-  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-[13px] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent [&>svg]:size-4 [&>svg]:shrink-0'
+  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-body text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent [&>svg]:size-4 [&>svg]:shrink-0'
 
 /** What a selection toolbar points at: the quote, where it is, and the
  *  transcript box it must stay inside. */
@@ -1242,7 +1242,7 @@ function PhonePanelContent({
       <DialogPrimitive.Title className="sr-only">
         Side panel
       </DialogPrimitive.Title>
-      <div className="flex h-13 shrink-0 items-center gap-1 border-b border-rule-2 bg-panel-raised px-1">
+      <div className="flex h-13 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-1">
         <DialogPrimitive.Close
           render={
             <IconButton label="Back to the chat" className="size-11 shrink-0">

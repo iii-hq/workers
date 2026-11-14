@@ -139,8 +139,8 @@ export function ModelWaitingIndicator({
         className="chat-model-waiting__label-stack min-w-0 font-sans text-base font-medium sm:text-[0.8125rem]"
       >
         {/* Sized to the label on screen (the longer of the two while they
-            swap), so the timer sits right after it instead of after the
-            longest label the turn has shown. */}
+ swap), so the timer sits right after it instead of after the
+ longest label the turn has shown. */}
         <span className="chat-model-waiting__label-sizer">
           {labelState.outgoing &&
           labelState.outgoing.length > labelState.current.length

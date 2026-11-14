@@ -67,7 +67,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
             key={section.id}
             data-reorder-item={section.id}
             className={cn(
-              'flex items-center gap-1 rounded-sm data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:bg-panel-raised data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+              'flex items-center gap-1 rounded-sm data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:bg-panel-raised data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-ring/50',
               phone ? 'h-12 pl-3' : 'h-8 pr-2',
             )}
           >
@@ -102,7 +102,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
       type="button"
       onClick={resetSectionOrder}
       className={cn(
-        'flex items-center rounded-sm px-2 text-left text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+        'flex items-center rounded-sm px-2 text-left text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
         phone ? 'h-12 px-3' : 'h-8',
       )}
     >
@@ -130,7 +130,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
               <button
                 type="button"
                 onClick={() => foldAllGroups(!allFolded, ids)}
-                className="flex h-11 items-center self-start rounded-sm bg-surface-hover px-3 text-sm hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                className="flex h-11 items-center self-start rounded-sm bg-surface-hover px-3 text-sm hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 {allFolded ? 'Expand all' : 'Collapse all'}
               </button>

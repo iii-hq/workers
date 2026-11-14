@@ -110,7 +110,7 @@ export function ObserverTraceNode({
             className={cn(
               'min-w-0 break-all text-ink',
               mono
-                ? 'font-mono text-[13px]'
+                ? 'font-mono text-body'
                 : 'font-sans text-base font-medium sm:text-sm',
             )}
           >
@@ -152,7 +152,7 @@ export function ObserverStats({ items }: { items: readonly ObserverStat[] }) {
             className={cn(
               'min-w-0 text-ink tabular-nums',
               item.mono
-                ? 'truncate font-mono text-[13px]'
+                ? 'truncate font-mono text-body'
                 : 'wrap-anywhere font-sans text-base sm:text-sm',
             )}
             title={item.mono ? item.value : undefined}

@@ -61,7 +61,7 @@ export interface CodeEditorQuickEdit {
   /** Chord that opens the prompt on a selection, in the console's syntax. Default `Mod+I`. */
   shortcut?: string
   /** The model the card starts on (`provider::model`), e.g. the chat's;
-      the card's picker can change it. */
+ the card's picker can change it. */
   model?: string | null
   /** Label for the model when the console has no catalog to pick from. */
   modelLabel?: string | null
@@ -321,7 +321,7 @@ export function QuickEditCard({
             type="button"
             aria-label="Close quick edit"
             onClick={phase === 'review' ? onReject : running ? onStop : onClose}
-            className="-mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            className="-mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             <X aria-hidden className="size-4" />
           </button>
@@ -382,7 +382,7 @@ export function QuickEditCard({
             <DropdownMenu>
               <DropdownMenuTrigger
                 disabled={running}
-                className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none"
+                className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none"
               >
                 {SCOPE_LABELS[scope]}
                 <ChevronDown aria-hidden className="size-4" />
@@ -414,7 +414,7 @@ export function QuickEditCard({
                   type="button"
                   aria-label="Stop"
                   onClick={onStop}
-                  className="inline-flex size-7 items-center justify-center rounded-full bg-surface-hover text-ink hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  className="inline-flex size-7 items-center justify-center rounded-full bg-surface-hover text-ink hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   <Square aria-hidden className="size-4 fill-current" />
                 </button>
@@ -427,7 +427,7 @@ export function QuickEditCard({
                   disabled={!canSend}
                   onClick={onSubmit}
                   className={cn(
-                    'inline-flex size-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+                    'inline-flex size-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
                     canSend
                       ? 'bg-foreground text-background hover:opacity-90'
                       : 'bg-surface-hover text-ink-faint',

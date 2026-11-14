@@ -7,10 +7,10 @@
  * keeps the console's Tailwind reset from touching the host page.
  *
  * URL params:
- *   ?theme=dark|light   follow the host page's theme (default light)
- *   ?loop=1             replay forever instead of holding the finished turn
- *   ?paused=1           mount paused; the host posts `{type:'iii-demo',
- *                       active:true}` when the frame is actually on screen
+ *   ?theme=dark|light  follow the host page's theme (default light)
+ *   ?loop=1  replay forever instead of holding the finished turn
+ *   ?paused=1  mount paused; the host posts `{type:'iii-demo',
+ *  active:true}` when the frame is actually on screen
  */
 
 import { StrictMode } from 'react'
@@ -26,7 +26,7 @@ document.documentElement.dataset.theme =
   params.get('theme') === 'dark' ? 'dark' : 'light'
 
 /* Reduced motion: fill the turn in at once and hold it, rather than
-   animating a minute of typing at someone who asked for less of that. */
+ animating a minute of typing at someone who asked for less of that. */
 if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
   setScenarioSpeed(0.02)
 }
@@ -136,8 +136,8 @@ function mount() {
   })
 
   /* Once the viewer clicks inside the frame (the approval buttons are real),
-     keystrokes land here, not on the host page — forward the one the host
-     cares about so Escape keeps closing the overlay. */
+ keystrokes land here, not on the host page — forward the one the host
+ cares about so Escape keeps closing the overlay. */
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       window.parent?.postMessage({ type: 'iii-demo-close' }, '*')

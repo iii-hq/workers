@@ -63,12 +63,12 @@ function GenericObserverSource({
     >
       <div
         className={cn(
-          'flex flex-col gap-1.5 border-b border-rule-2 px-3 py-2',
+          'flex flex-col gap-1.5 border-b border-border px-3 py-2',
           presentation === 'compact' && 'border-b-0 p-0',
         )}
       >
         {presentation === 'default' ? (
-          <span className="font-mono text-[13px] break-all text-ink">
+          <span className="font-mono text-body break-all text-ink">
             {activity.functionId}
           </span>
         ) : null}
@@ -91,7 +91,7 @@ function GenericObserverSource({
           </div>
         ) : null}
         {empty ? (
-          <span className="font-mono text-[11px] text-ink-ghost">
+          <span className="font-mono text-meta text-ink-ghost">
             · every call
           </span>
         ) : null}
@@ -165,7 +165,7 @@ function SourceJson({
         'max-h-64 overflow-auto',
         compact
           ? 'rounded-sm border border-edge bg-bg'
-          : 'border-b border-rule-2',
+          : 'border-b border-border',
       )}
     >
       <JsonHighlight code={json} wrap />
@@ -207,7 +207,7 @@ export function ObserverSourceSection({
 }) {
   return (
     <>
-      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 font-sans text-[11px] font-semibold text-ink-faint">
+      <div className="border-b border-border bg-paper-2 px-3 py-1.5 font-sans text-meta font-semibold text-ink-faint">
         {label}
       </div>
       <ObserverSource activity={activity} />

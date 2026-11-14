@@ -142,7 +142,7 @@ import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class
  * sets its own colour unlayered, so a colour utility on it would lose.
  */
-const deltaClassName = 'font-mono text-[11px] leading-4 tabular-nums'
+const deltaClassName = 'font-mono text-meta leading-4 tabular-nums'
 
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
@@ -872,7 +872,7 @@ export function ChatContextPanel({
                   type="button"
                   aria-label={`Show ${imageRows.hidden} more images`}
                   onClick={() => toggle('images')}
-                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   +{imageRows.hidden}
                 </button>
@@ -913,7 +913,7 @@ export function ChatContextPanel({
           count={subagents.length}
           extra={
             activeCount > 0 ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-normal text-ink">
+              <span className="flex items-center gap-1.5 text-meta font-normal text-ink">
                 <StatusDot tone="accent" pulse />
                 {activeCount} active
               </span>
@@ -1184,7 +1184,7 @@ function SubagentStatus({
   return (
     <>
       <StatusDot tone={tone} pulse={status === 'working'} />
-      <span className="text-[11px] leading-4 text-ink">{status}</span>
+      <span className="text-meta leading-4 text-ink">{status}</span>
     </>
   )
 }
@@ -1340,7 +1340,7 @@ function PullRequestMenu({
   const ids = useId()
   const reason = (key: string, text: string | null) =>
     text ? (
-      <span id={`${ids}-${key}`} className="ml-auto pl-3 text-[11px]">
+      <span id={`${ids}-${key}`} className="ml-auto pl-3 text-meta">
         {text}
       </span>
     ) : null
@@ -1485,7 +1485,7 @@ function Section({
       data-reorder-item={id}
       hidden={hidden}
       className={cn(
-        'group/section flex shrink-0 flex-col rounded-xl border border-card-edge bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+        'group/section flex shrink-0 flex-col rounded-xl border border-card-edge bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-ring/50',
         open && 'pb-1',
       )}
     >
@@ -1496,7 +1496,7 @@ function Section({
           onClick={() => toggleGroup(id)}
           className={cn(
             uiClasses.listGroupLabel,
-            'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
+            'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
             // Folded, the header is the whole card: room to read and to hit.
             // Important: the recipe's padding is unlayered and would win.
             !open && 'py-2.5!',
@@ -1504,16 +1504,16 @@ function Section({
         >
           <span className="shrink-0">{label}</span>
           {source ? (
-            <span className="shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
+            <span className="shrink-0 font-mono text-meta font-normal text-ink-ghost">
               {source}
             </span>
           ) : null}
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-[11px] font-normal whitespace-nowrap">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-meta font-normal whitespace-nowrap">
             {open ? null : brief}
           </span>
           {extra}
           {count !== undefined ? (
-            <span className="font-mono text-[11px] font-normal text-ink-ghost tabular-nums">
+            <span className="font-mono text-meta font-normal text-ink-ghost tabular-nums">
               {count}
             </span>
           ) : null}
@@ -1647,7 +1647,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
     >
       {label}
       {suffix ? (
-        <span className="ml-2 font-mono text-[11px] font-normal text-ink-ghost">
+        <span className="ml-2 font-mono text-meta font-normal text-ink-ghost">
           {suffix}
         </span>
       ) : null}
@@ -1661,7 +1661,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
       {description ? (
         <span className="flex min-w-0 flex-1 flex-col">
           {labelNode}
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] font-normal text-ink-faint">
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-meta font-normal text-ink-faint">
             {description}
           </span>
         </span>
@@ -1705,7 +1705,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
         type="button"
         title={title}
         aria-label={ariaLabel}
-        className="flex min-w-0 flex-1 items-center self-stretch rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+        className="flex min-w-0 flex-1 items-center self-stretch rounded-sm text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         onClick={activate}
         {...rest}
       >

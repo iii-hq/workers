@@ -188,7 +188,7 @@ export function ObserveView({
           >
             <div className="flex min-w-0 flex-col gap-2">
               {target ? (
-                <div className="min-w-0 font-mono text-[13px] break-all text-ink">
+                <div className="min-w-0 font-mono text-body break-all text-ink">
                   {target.function_id}
                 </div>
               ) : (
@@ -334,7 +334,7 @@ export function ObserverAddedDisplay({
         </div>
       </div>
 
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-2 pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
         <ActivityStatus
           label={active ? 'Active' : 'Inactive'}
           detail={
@@ -390,7 +390,7 @@ function ConditionRow({
         className={cn(
           'min-w-0 break-all text-ink',
           condition.function_id
-            ? 'font-mono text-[13px]'
+            ? 'font-mono text-body'
             : 'font-sans text-base font-medium sm:text-sm',
         )}
       >

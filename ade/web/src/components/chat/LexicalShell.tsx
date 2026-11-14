@@ -84,7 +84,7 @@ interface LexicalShellProps {
   lexicalEditorRef?: RefObject<LexicalEditor | null>
   onChange: (text: string) => void
   /** Called on the chosen send key (see `lib/send-key`); the send button is
-      the other way in. */
+ the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -97,7 +97,7 @@ interface LexicalShellProps {
    */
   externalInput?: boolean
   /** The composer's address on the insert bus: only inserts and focus
-      requests sent to it land here. */
+ requests sent to it land here. */
   composerId?: string
 }
 
@@ -722,7 +722,7 @@ export function LexicalShell({
   mentionContext,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
-     so the initializer callback identity doesn't trigger a remount on re-render. */
+ so the initializer callback identity doesn't trigger a remount on re-render. */
   // biome-ignore lint/correctness/useExhaustiveDependencies: initialContent is a one-shot mount initializer; capturing later changes would force a remount and lose editor state.
   const initialConfig = useMemo(
     () => ({
@@ -742,7 +742,7 @@ export function LexicalShell({
   return (
     <LexicalComposer initialConfig={initialConfig}>
       {/* The pills render through a portal from inside the editor, so the
-          provider has to sit inside the composer for them to see it. */}
+ provider has to sit inside the composer for them to see it. */}
       <ComposerMentionContext.Provider value={mentionActions}>
         <div ref={frameRef} className="relative">
           <RichTextPlugin
@@ -770,7 +770,7 @@ export function LexicalShell({
         <ClearOnDemandPlugin token={clearToken} />
         <ChangePlugin onChange={onChange} />
         {/* The WYSIWYG blocks: `- ` / `1. ` start a list, "``` " a code
-            block, `` `x` `` inline code (see lexical/composer-markdown). */}
+ block, `` `x` `` inline code (see lexical/composer-markdown). */}
         <ListPlugin />
         <MarkdownShortcutPlugin transformers={COMPOSER_SHORTCUT_TRANSFORMERS} />
         <ComposerTabPlugin />
@@ -784,9 +784,9 @@ export function LexicalShell({
           <ExternalInsertPlugin composerId={composerId} />
         ) : null}
         {/* Opening a session is a request to write in it, so the first
-          keystroke should land in the message rather than be spent aiming.
-          Lexical's own plugin waits for the editable node, which a bare
-          focus() call on mount does not. */}
+ keystroke should land in the message rather than be spent aiming.
+ Lexical's own plugin waits for the editable node, which a bare
+ focus() call on mount does not. */}
         {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
         <FocusOnRequestPlugin
           enabled={disabled !== true && externalInput}

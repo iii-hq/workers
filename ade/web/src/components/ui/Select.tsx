@@ -159,8 +159,8 @@ export function Select<T extends string>({
   const chevronVisible = showChevron ?? appearance === 'default'
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-sm'
-      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none data-[state=open]:border-rule-focus data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-ink sm:text-sm'
+      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',
     className,
   )
@@ -370,8 +370,8 @@ export function Select<T extends string>({
           className={triggerClassName}
         >
           {/* The wrapper is the flex item (`flex-1 min-w-0`) and owns the
-              ellipsis, keeping the label on one line so the trigger stays at
-              its fixed height. */}
+ ellipsis, keeping the label on one line so the trigger stays at
+ its fixed height. */}
           <span className="min-w-0 flex-1 truncate text-left">
             <SelectPrimitive.Value placeholder={placeholder}>
               {selected?.label}
@@ -394,7 +394,7 @@ export function Select<T extends string>({
         </SelectPrimitive.Trigger>
 
         {/* The shadcn (Base UI) list: portalled under the worker's scope,
-            aligned to the trigger, with the scroll arrows built in. */}
+ aligned to the trigger, with the scroll arrows built in. */}
         <SelectContent
           align="start"
           alignItemWithTrigger={false}
@@ -483,7 +483,7 @@ function SelectSheetPanel<T extends string>({
           onChange(option.value)
         }}
         className={cn(
-          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
+          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-ring/50',
           (disabled || option.disabled) &&
             'pointer-events-none cursor-default opacity-40',
         )}

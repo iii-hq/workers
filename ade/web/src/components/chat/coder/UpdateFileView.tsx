@@ -114,12 +114,12 @@ export function firstEchoLine(result: UpdateFileResult): number | undefined {
 }
 
 /** Mirror of `update_file.rs::ECHO_CONTEXT` — context lines above/below a
-    line op's region; load-bearing for `postRegionFirst` reconstruction. */
+ line op's region; load-bearing for `postRegionFirst` reconstruction. */
 const ECHO_CONTEXT = 2
 
 /** Mirror of `update_file.rs::anchor` — a line op's first affected
-    ORIGINAL line (the bottom-up application sort key). Replace ops have
-    no line anchor. */
+ ORIGINAL line (the bottom-up application sort key). Replace ops have
+ no line anchor. */
 function lineOpAnchor(op: UpdateOp): number | null {
   switch (op.op) {
     case 'insert':
@@ -134,7 +134,7 @@ function lineOpAnchor(op: UpdateOp): number | null {
 
 /** Mirror of the `MutationEvent` delta a line op records
     (`record_line_op_events`): the line-count change it causes. Replace
-    deltas depend on server-side match positions — not computable here. */
+ deltas depend on server-side match positions — not computable here. */
 function lineOpDelta(op: UpdateOp): number | null {
   switch (op.op) {
     case 'insert':
@@ -255,7 +255,7 @@ function deletionStub(
 }
 
 /** Place the stub at the diff seam: before the first row at/after the
-    post-apply seam line (i.e. between leading context and the additions). */
+ post-apply seam line (i.e. between leading context and the additions). */
 function insertStub(
   rows: readonly EchoRow[],
   stub: EchoRow,
@@ -326,13 +326,11 @@ function EchoLines({
   const rows = echoRows(echo, op, fileOps)
   if (rows.length === 0) {
     return (
-      <div className="px-3 font-mono text-[12px] text-ink-ghost">
-        · empty echo
-      </div>
+      <div className="px-3 font-mono text-xs text-ink-ghost">· empty echo</div>
     )
   }
   return (
-    <div className="font-mono text-[12px] leading-[1.55]">
+    <div className="font-mono text-xs leading-[1.55]">
       {rows.map((row) => {
         if (row.kind === 'elision') {
           return (
@@ -409,7 +407,7 @@ function EchoGroupBlock({
       : 0
 
   return (
-    <div className="border-b border-rule-2 last:border-b-0 py-1.5 space-y-1">
+    <div className="border-b border-border last:border-b-0 py-1.5 space-y-1">
       <div className="px-3 flex flex-wrap items-center gap-1.5">
         {op ? (
           <Hint
@@ -428,7 +426,7 @@ function EchoGroupBlock({
         <div
           /* Two matches on the same line (e.g. replacing `foo` in
              `foo(foo)`) echo identical from_line AND lines, so content
-             keys collide — the site ordinal is unique by construction. */
+ keys collide — the site ordinal is unique by construction. */
           // biome-ignore lint/suspicious/noArrayIndexKey: echoes are a static wire snapshot; sites never reorder or get removed
           key={`${echo.from_line}:${i}`}
           className="space-y-0.5"
@@ -443,7 +441,7 @@ function EchoGroupBlock({
       ))}
       {extra > 0 ? (
         // Sites are capped at 5 — extras have NO echo, only this count.
-        <div className="px-3 font-mono text-[11px] text-ink-ghost">
+        <div className="px-3 font-mono text-meta text-ink-ghost">
           · {extra} more {extra === 1 ? 'replacement' : 'replacements'} not
           echoed
         </div>
@@ -453,11 +451,11 @@ function EchoGroupBlock({
 }
 
 /** Failed file: echoes is [] and only `error` is populated; applied /
-    new_line_count are on the wire but meaningless — grayed out. The
-    prescriptive message renders in full (never swallow agent guidance). */
+ new_line_count are on the wire but meaningless — grayed out. The
+ prescriptive message renders in full (never swallow agent guidance). */
 function FileFailureRow({ result }: { result: UpdateFileResult }) {
   return (
-    <div className="border-b border-rule-2 last:border-b-0 px-3 py-2 font-mono text-[12px]">
+    <div className="border-b border-border last:border-b-0 px-3 py-2 font-mono text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-ink">{result.path}</span>
         {result.error ? (
@@ -483,7 +481,7 @@ function FileFailureRow({ result }: { result: UpdateFileResult }) {
         </Chip>
       </div>
       {result.error ? (
-        <div className="mt-1 font-mono text-[11px] text-warn break-words">
+        <div className="mt-1 font-mono text-meta text-warn break-words">
           {result.error.message}
         </div>
       ) : null}
@@ -502,10 +500,10 @@ function FileEchoSection({
   const groups = groupEchoesByOp(result.echoes)
 
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-1.5 flex flex-wrap items-center gap-1.5">
+    <div className="border-b border-border last:border-b-0">
+      <div className="bg-paper-2 border-b border-border px-3 py-1.5 flex flex-wrap items-center gap-1.5">
         {/* Canonical absolute path from the result, not the request. */}
-        <span className="font-mono text-[12px] text-ink">{result.path}</span>
+        <span className="font-mono text-xs text-ink">{result.path}</span>
         <OpenInEditorButton path={result.path} line={firstEchoLine(result)} />
         <Chip label="ops">{file.ops.length}</Chip>
         <Chip label="applied">{result.applied}</Chip>
@@ -526,12 +524,12 @@ function FileEchoSection({
           />
         ))
       ) : (
-        <div className="px-3 py-2 font-mono text-[12px] text-ink-ghost">
+        <div className="px-3 py-2 font-mono text-xs text-ink-ghost">
           · no echoes
         </div>
       )}
       {result.echoes_truncated ? (
-        <div className="bg-paper-2 border-t border-rule-2 px-3 py-1.5 font-mono text-[11px] text-warn">
+        <div className="bg-paper-2 border-t border-border px-3 py-1.5 font-mono text-meta text-warn">
           ⋯ echo budget (~4 KiB) exhausted before all ops — coder::read-file to
           inspect
         </div>
@@ -602,8 +600,8 @@ export function UpdateFileView({
   const failedCount = resp?.results.filter((r) => !r.success).length ?? 0
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="files">{req.files.length}</Chip>
         {showEchoes && failedCount > 0 ? (
           <Chip label="failed" className="bg-warn-muted text-warn">
@@ -611,7 +609,7 @@ export function UpdateFileView({
           </Chip>
         ) : null}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · applying…
           </span>
         ) : null}
@@ -624,7 +622,7 @@ export function UpdateFileView({
             return (
               <div
                 key={file.path}
-                className="border-b border-rule-2 last:border-b-0 px-3 py-2 font-mono text-[12px] text-ink-faint"
+                className="border-b border-border last:border-b-0 px-3 py-2 font-mono text-xs text-ink-faint"
               >
                 {file.path} · no result
               </div>

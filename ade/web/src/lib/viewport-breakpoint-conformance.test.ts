@@ -138,7 +138,10 @@ function walk(ext: string): string[] {
   const traces = readdirSync(tracesRoot, { recursive: true, encoding: 'utf8' })
     .filter((file) => !file.startsWith('ui/shadcn/'))
     .map((file) => relative(srcRoot, join(tracesRoot, file)))
-  return [...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }), ...traces]
+  return [
+    ...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }),
+    ...traces,
+  ]
     .filter((file) => file.endsWith(ext))
     .map((file) => relative(srcRoot, join(srcRoot, file)))
     .filter(

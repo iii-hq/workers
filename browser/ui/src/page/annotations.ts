@@ -410,7 +410,8 @@ function accentColor(): string {
           .getPropertyValue('--color-accent')
           .trim()
       : ''
-  return value === '' ? '#b8420f' : value
+  // The palette's primary (the console accent) when the token is unreadable.
+  return value === '' ? '#000000' : value
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {

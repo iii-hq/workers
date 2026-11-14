@@ -27,12 +27,12 @@ export type {
 export interface CodeEditorHandle {
   focus(): void
   /** Put the cursor on `line` (1-based, clamped), scroll the pane that
-      holds the editor so the line sits centered, and focus. Before Monaco
-      mounts the request is kept and replayed once it does. */
+ holds the editor so the line sits centered, and focus. Before Monaco
+ mounts the request is kept and replayed once it does. */
   revealLine(line: number, column?: number): void
   /** Select whole lines `from`..`to` (1-based, inclusive, clamped), scroll
-      them into view and focus — how a `#file(path:from-to)` reference
-      opens. Kept and replayed like `revealLine` before Monaco mounts. */
+ them into view and focus — how a `#file(path:from-to)` reference
+ opens. Kept and replayed like `revealLine` before Monaco mounts. */
   revealLines(from: number, to: number): void
 }
 
@@ -51,8 +51,8 @@ export interface CodeEditorSelectionAction {
   label: string
   icon?: React.ReactNode
   /** A chord that runs the action while text is selected and the editor
-      has focus, in the console's shortcut syntax (`Mod+L`); the bar shows
-      it beside the label. */
+ has focus, in the console's shortcut syntax (`Mod+L`); the bar shows
+ it beside the label. */
   shortcut?: string
   run(selection: CodeEditorSelection): void
 }
@@ -61,7 +61,7 @@ export interface CodeEditorProps {
   value: string
   onChange: (next: string) => void
   /** Monaco language id (`'markdown'`, `'json'`, `'yaml'`, …). Unknown
-      ids degrade to plain text with the same chrome. */
+ ids degrade to plain text with the same chrome. */
   language: string
   /** Class for the outer wrapper (borders, min-height, width). */
   className?: string
@@ -77,21 +77,21 @@ export interface CodeEditorProps {
   'aria-describedby'?: React.AriaAttributes['aria-describedby']
   'aria-errormessage'?: React.AriaAttributes['aria-errormessage']
   /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
-      Monaco consumes for editing never reach it. */
+ Monaco consumes for editing never reach it. */
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
   /** Domain identifiers to autocomplete (e.g. SQL table/column names +
-      keywords). Non-empty turns on the as-you-type suggest popup (otherwise
-      the editor stays prose-quiet) and registers a completion provider for
-      the current `language` offering these words. Disposed on unmount. */
+ keywords). Non-empty turns on the as-you-type suggest popup (otherwise
+ the editor stays prose-quiet) and registers a completion provider for
+ the current `language` offering these words. Disposed on unmount. */
   completions?: readonly string[]
   /** Fill the container and own vertical scrolling instead of growing with
-      content. The default grows so a short field reads like a textarea; a
-      file of thousands of lines needs the editor to virtualize its own
-      viewport — with `fill` only visible lines are rendered. Decided at
-      mount. */
+ content. The default grows so a short field reads like a textarea; a
+ file of thousands of lines needs the editor to virtualize its own
+ viewport — with `fill` only visible lines are rendered. Decided at
+ mount. */
   fill?: boolean
   /** Show the line-number gutter, folding and current-line highlight — the
-      code-file presentation. Off by default (prose fields). */
+ code-file presentation. Off by default (prose fields). */
   lineNumbers?: boolean
   /** Soft-wrap long lines. Default true. */
   wordWrap?: boolean
@@ -103,29 +103,29 @@ export interface CodeEditorProps {
       ("Reference in chat", …). Empty or absent: no bar. */
   selectionActions?: readonly CodeEditorSelectionAction[]
   /** Offer Quick Edit on a selection (⌘I by default, and a "Quick Edit"
-      button in the selection bar): an inline prompt whose answer, from
+ button in the selection bar): an inline prompt whose answer, from
       `run`, replaces the selected code. Absent: no Quick Edit. */
   quickEdit?: CodeEditorQuickEdit
   /** The editor's right-click menu, VS Code's: Go to Definition, Rename,
-      Format Document, Refactor…, Cut / Copy / Paste, Command Palette, and
-      the selection actions and Quick Edit. Off by default (prose fields). */
+ Format Document, Refactor…, Cut / Copy / Paste, Command Palette, and
+ the selection actions and Quick Edit. Off by default (prose fields). */
   contextMenu?: boolean
   /** Where the reader was (scroll, cursor, selection), from an earlier
       `onViewStateChange`: restored once, when the editor mounts. Opaque. */
   initialViewState?: unknown
   /** The reader's place, reported as they scroll or move the cursor and
-      once more as the editor goes away, so a remount can come back to it. */
+ once more as the editor goes away, so a remount can come back to it. */
   onViewStateChange?: (state: unknown) => void
 }
 
 /* The pre-Monaco fallback (and permanent degraded mode if the editor chunk
-   ever fails to load) renders the same typography the editor is configured
-   with, so the swap-in doesn't reflow the text. */
+ ever fails to load) renders the same typography the editor is configured
+ with, so the swap-in doesn't reflow the text. */
 const EDITOR_TYPOGRAPHY =
   'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-code text-[12.5px] leading-[19px]'
 
 /** Presentation knobs that map straight onto Monaco options. Applied at
-    mount and again whenever the props change. */
+ mount and again whenever the props change. */
 function presentationOptions({
   fill,
   lineNumbers,
@@ -247,8 +247,8 @@ const QUICK_EDIT_MAX_WIDTH = 640
 const QUICK_EDIT_GAP_PX = 6
 
 /** A remembered view state without its folds: a region folded once (or
-    by a stray click on the gutter) must not come back folded on its own and
-    leave the line numbers looking like lines went missing. */
+ by a stray click on the gutter) must not come back folded on its own and
+ leave the line numbers looking like lines went missing. */
 function withoutFolds(
   state: monacoNs.editor.ICodeEditorViewState,
 ): monacoNs.editor.ICodeEditorViewState {
@@ -262,7 +262,7 @@ function withoutFolds(
 }
 
 /** `Mod+L` as a Monaco keybinding (letters and digits only), for the label
-    the right-click menu shows beside an action. */
+ the right-click menu shows beside an action. */
 function monacoKeybinding(
   monaco: typeof monacoNs,
   binding: string,
@@ -1641,7 +1641,7 @@ function SelectionActionBar({
             action.run(selection)
             onRun()
           }}
-          className="inline-flex h-7 items-center gap-2 rounded-md px-2 text-sm text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-faint"
+          className="inline-flex h-7 items-center gap-2 rounded-md px-2 text-sm text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-faint"
         >
           {action.icon}
           {action.label}

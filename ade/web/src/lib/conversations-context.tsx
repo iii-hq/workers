@@ -136,7 +136,7 @@ interface ConversationsProviderProps {
   children: ReactNode
   injectableUiRuntime?: Promise<InjectableUiRuntime>
   /** Called when an injected page asks for a conversation, so the host can
-      place the chat pane when none is open. */
+ place the chat pane when none is open. */
   onConversationRequested?: (sessionId: string) => void
   /** Called when chat UI requests a dedicated, session-pinned panel. */
   onConversationPanelRequested?: (sessionId: string) => void

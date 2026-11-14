@@ -124,11 +124,11 @@ interface PillProps {
   /** The literal command: `/compact` or `/skill:<id>`. */
   command: string
   /** Visible-selected state. Defaults to false; only the Lexical decorator
-      wrapper passes a real value. Markdown renders never set this. */
+ wrapper passes a real value. Markdown renders never set this. */
   selected?: boolean
   /** Click-target ref; only the Lexical wrapper supplies one (so its
       `CLICK_COMMAND` handler can scope hit-tests to the pill). Markdown
-      renders leave this unset and the pill behaves as pure decoration. */
+ renders leave this unset and the pill behaves as pure decoration. */
   pillRef?: RefObject<HTMLSpanElement | null>
 }
 
@@ -148,7 +148,7 @@ export function SlashCommandPill({ command, selected, pillRef }: PillProps) {
       contentEditable={false}
       data-slash-command={command}
       className={cn(
-        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
+        'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-body text-ink select-none transition-colors',
         selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',
         pillRef && 'cursor-pointer',
       )}

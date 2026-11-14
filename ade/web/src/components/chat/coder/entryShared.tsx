@@ -27,7 +27,7 @@ export function LockedBadge() {
 }
 
 /** Mirror FsLsView's icon picks: symlink → link, dir → folder, known
-    text/code extensions → FileText, everything else (incl. "other") → File. */
+ text/code extensions → FileText, everything else (incl. "other") → File. */
 export function iconForEntry(kind: EntryKind, name: string) {
   if (kind === 'symlink') return LinkIcon
   if (kind === 'dir') return FolderOpen

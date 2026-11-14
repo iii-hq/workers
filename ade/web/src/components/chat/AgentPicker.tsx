@@ -93,8 +93,8 @@ export function AgentPicker({
   const [entries, setEntries] = useState<AgentEntry[] | null>(null)
 
   /* Fetch on EVERY open (keeping the last list while loading): an agent
-     authored in the directory UI shows up on the next open with no
-     cache-invalidation plumbing. A failed load degrades to Default only
+ authored in the directory UI shows up on the next open with no
+ cache-invalidation plumbing. A failed load degrades to Default only
      (directory worker absent ≠ broken chat). */
   const handleOpenChange = useCallback(async (open: boolean) => {
     if (!open) return
@@ -114,7 +114,7 @@ export function AgentPicker({
         return
       }
       /* Store only the id; the harness resolves the profile on the first
-         send (`options.agent`) and freezes it server-side. */
+ send (`options.agent`) and freezes it server-side. */
       const id = v.slice(`named:${AGENT_CHOICE_PREFIX}`.length)
       onChange(withAgentChoice(value, id))
     },

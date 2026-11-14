@@ -77,7 +77,7 @@ export function StepHeader({
         {action}
       </div>
       {lead ? (
-        <p className="max-w-[60ch] text-pretty font-sans text-sm leading-5 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[60ch] text-pretty font-sans text-sm leading-5 text-muted-foreground">
           {lead}
         </p>
       ) : null}
@@ -103,7 +103,7 @@ export function Section({
         <h3 className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 font-sans text-lg font-medium leading-7 text-ink">
           <span className="shrink-0">{title}</span>
           {hint ? (
-            <span className="truncate text-xs font-normal text-neutral-500 dark:text-neutral-400">
+            <span className="truncate text-xs font-normal text-muted-foreground">
               {hint}
             </span>
           ) : null}
@@ -128,7 +128,7 @@ export function Rows({
   return (
     <Tag
       className={cn(
-        'flex flex-col divide-y divide-neutral-100 overflow-hidden rounded-xl border border-neutral-100 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-950',
+        'flex flex-col divide-y divide-border overflow-hidden rounded-xl border border-border bg-card',
         className,
       )}
     >
@@ -153,7 +153,7 @@ export function StatusChip({
   return (
     <span
       data-tone={tone}
-      className="inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-neutral-100 bg-neutral-50 px-2 font-sans text-[12px] font-medium leading-none text-neutral-600 dark:border-neutral-900 dark:bg-black dark:text-neutral-300"
+      className="inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-muted px-2 font-sans text-xs font-medium leading-none text-muted-foreground"
     >
       {tone === 'ok' || tone === 'warn' ? (
         <span
@@ -204,7 +204,7 @@ export function Disclosure({
         aria-expanded={open}
         aria-controls={body}
         onClick={toggle}
-        className="group -mx-1.5 flex h-8 items-center gap-1.5 rounded-md px-1.5 text-left font-sans text-[13px] font-medium text-neutral-600 transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus dark:text-neutral-400"
+        className="group -mx-1.5 flex h-8 items-center gap-1.5 rounded-md px-1.5 text-left font-sans text-body font-medium text-muted-foreground transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <ChevronRight
           aria-hidden
@@ -314,13 +314,13 @@ export function EngineLog({
         <span className="truncate text-ink">{last.title}</span>
       </>
     ) : queued.length > 0 ? (
-      <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400">
+      <span className="font-mono tabular-nums text-muted-foreground">
         {queued.length} queued
       </span>
     ) : (
       <>
         <LogGlyph status="done" />
-        <span className="font-mono tabular-nums text-neutral-500 dark:text-neutral-400">
+        <span className="font-mono tabular-nums text-muted-foreground">
           {doneCount} done
         </span>
       </>
@@ -329,7 +329,7 @@ export function EngineLog({
   return (
     <div ref={section} className="flex scroll-mt-4 flex-col gap-2">
       {/* Outside the folded (inert) log, so progress is announced while it
-          is shut; no seconds in it, or it would speak every second. */}
+ is shut; no seconds in it, or it would speak every second. */}
       <span role="status" aria-live="polite" className="sr-only">
         {announcement(last, running, doneCount)}
       </span>
@@ -345,7 +345,7 @@ export function EngineLog({
         <ol
           ref={list}
           aria-label="Engine log"
-          className={cn(TERMINAL_SURFACE, 'gap-3 text-[13px] leading-5')}
+          className={cn(TERMINAL_SURFACE, 'gap-3 text-body leading-5')}
         >
           {entries.map((entry) => (
             <li key={entry.id} className="flex gap-2.5">
@@ -366,7 +366,7 @@ export function EngineLog({
                       'break-words',
                       entry.status === 'failed'
                         ? 'text-rose-700 dark:text-rose-300'
-                        : 'text-neutral-600 dark:text-neutral-400',
+                        : 'text-muted-foreground ',
                     )}
                   >
                     {entry.status === 'failed' ? '✗ ' : '→ '}
@@ -389,7 +389,7 @@ export function EngineLog({
                 <LogLine title={title} command={detail} tone="queued">
                   {step.kind === 'add-workers'
                     ? step.workers.map((worker) => (
-                        <span key={worker} className="text-neutral-500">
+                        <span key={worker} className="text-muted-foreground">
                           # {worker}: {step.why[worker]}
                         </span>
                       ))
@@ -422,23 +422,21 @@ function LogLine({
       <span className="flex items-baseline justify-between gap-3">
         <span
           className={cn(
-            'font-sans text-[13px] font-medium',
-            tone === 'queued'
-              ? 'text-neutral-500 dark:text-neutral-400'
-              : 'text-ink',
+            'font-sans text-body font-medium',
+            tone === 'queued' ? 'text-muted-foreground ' : 'text-ink',
           )}
         >
           {title}
         </span>
         {trailing ? (
-          <span className="shrink-0 tabular-nums text-neutral-500">
+          <span className="shrink-0 tabular-nums text-muted-foreground">
             {trailing}
           </span>
         ) : null}
       </span>
       {command ? (
-        <span className="break-all text-neutral-600 dark:text-neutral-400">
-          <span aria-hidden className="select-none text-neutral-500">
+        <span className="break-all text-muted-foreground">
+          <span aria-hidden className="select-none text-muted-foreground">
             ${' '}
           </span>
           {command}
@@ -538,15 +536,15 @@ function RunningLine({
     now - entry.startedAt >= SLOW_STEP_MS
   return (
     <div className={CARD}>
-      <p className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5 font-sans text-[13px] leading-5 text-ink">
+      <p className="flex min-w-0 items-center gap-2.5 px-3.5 py-2.5 font-sans text-body leading-5 text-ink">
         <LoaderCircle
           strokeWidth={1.5}
-          className="size-4 shrink-0 animate-spin text-neutral-500 motion-reduce:animate-none dark:text-neutral-400"
+          className="size-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
           aria-hidden
         />
         <span className="min-w-0 truncate">
           {entry.note ?? entry.title}{' '}
-          <span className="font-mono text-[12px] tabular-nums text-neutral-500 dark:text-neutral-400">
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">
             ({seconds(now, entry.noteAt ?? entry.startedAt)})
           </span>
         </span>
@@ -561,10 +559,7 @@ function RunningLine({
       >
         <div className="min-h-0 overflow-hidden">
           {onSkip ? (
-            <SlowRow
-              onSkip={onSkip}
-              className="border-t border-neutral-100 dark:border-neutral-800"
-            />
+            <SlowRow onSkip={onSkip} className="border-t border-border" />
           ) : null}
         </div>
       </div>
@@ -574,7 +569,7 @@ function RunningLine({
 
 /** The setup's card surface: the same frame `Rows` draws. */
 const CARD =
-  'flex flex-col overflow-hidden rounded-xl border border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950'
+  'flex flex-col overflow-hidden rounded-xl border border-border bg-card'
 
 /**
  * A step past `SLOW_STEP_MS`, on its own card (the Browser step's download).
@@ -598,7 +593,7 @@ function SlowRow({
   return (
     <div
       className={cn(
-        'flex items-center gap-3 px-3.5 py-2.5 font-sans text-[13px] leading-5',
+        'flex items-center gap-3 px-3.5 py-2.5 font-sans text-body leading-5',
         className,
       )}
     >
@@ -611,7 +606,7 @@ function SlowRow({
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="font-medium text-ink">Taking longer than usual</span>
-        <span className="text-pretty text-neutral-600 dark:text-neutral-400">
+        <span className="text-pretty text-muted-foreground">
           Skip to carry on. It can finish in the background.
         </span>
       </span>
@@ -657,7 +652,7 @@ function LogGlyph({
     return (
       <SkipForward
         aria-label="skipped"
-        className={cn(className, 'p-px text-neutral-500 dark:text-neutral-400')}
+        className={cn(className, 'p-px text-muted-foreground')}
       />
     )
   }
@@ -668,9 +663,7 @@ function LogGlyph({
         className={cn(
           className,
           'p-[3px]',
-          terminal
-            ? 'text-neutral-600'
-            : 'text-neutral-400 dark:text-neutral-500',
+          terminal ? 'text-muted-foreground' : 'text-ink-ghost ',
         )}
       />
     )
@@ -722,7 +715,7 @@ export function Terminal({ children }: { children: React.ReactNode }) {
 
 /** The code surface: one neutral step off the dialog in either theme. */
 const TERMINAL_SURFACE =
-  'flex flex-col rounded-xl border border-neutral-100 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-900 dark:bg-black'
+  'flex flex-col rounded-xl border border-border bg-muted px-4 py-3 font-code text-ink'
 
 export function CommandLine({
   command,
@@ -752,7 +745,7 @@ export function CommandLine({
   return (
     <div className="flex min-w-0 items-center gap-3">
       <code className="min-w-0 flex-1 truncate">
-        <span aria-hidden className="select-none text-neutral-500">
+        <span aria-hidden className="select-none text-muted-foreground">
           ${' '}
         </span>
         <span className="font-medium text-emerald-700 dark:text-emerald-400">
@@ -773,7 +766,7 @@ export function CommandLine({
           </span>
         ))}
         {note ? (
-          <span className="text-neutral-500">
+          <span className="text-muted-foreground">
             {'  '}# {note}
           </span>
         ) : null}
@@ -781,7 +774,7 @@ export function CommandLine({
       {copied ? (
         <span
           aria-hidden
-          className="shrink-0 font-sans text-[12px] font-medium text-emerald-700 dark:text-emerald-400"
+          className="shrink-0 font-sans text-xs font-medium text-emerald-700 dark:text-emerald-400"
         >
           Copied
         </span>
@@ -790,7 +783,7 @@ export function CommandLine({
         type="button"
         onClick={copy}
         aria-label={`Copy ${command}`}
-        className="relative -my-1 flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors duration-150 hover:bg-neutral-200/70 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:text-neutral-400 dark:hover:bg-white/10 dark:focus-visible:ring-offset-neutral-900"
+        className="relative -my-1 flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-surface-hover/70 hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <Copy
           aria-hidden
@@ -840,7 +833,7 @@ export function KeyField({
   return (
     <div
       className={cn(
-        'flex flex-col gap-2.5 text-[13px] [&_a]:text-[13px] [&_button]:text-[13px] [&_fieldset]:gap-2 [&_input]:rounded-md [&_input]:border-neutral-200 [&_input]:bg-white [&_input]:font-sans dark:[&_input]:border-neutral-800 dark:[&_input]:bg-neutral-950',
+        'flex flex-col gap-2.5 text-body [&_a]:text-body [&_button]:text-body [&_fieldset]:gap-2 [&_input]:rounded-md [&_input]:border-border [&_input]:bg-white [&_input]:font-sans',
         className,
       )}
     >
@@ -853,7 +846,7 @@ export function KeyField({
         stores={stores}
         envFile={envFile}
       />
-      <p className="font-sans text-[13px] leading-5 text-neutral-500 dark:text-neutral-400">
+      <p className="font-sans text-body leading-5 text-muted-foreground">
         {keyStore(value ?? defaultKeyInput(detection)) === 'env'
           ? `Kept in this project's ${envFile ?? DEFAULT_ENV_FILE} file.`
           : 'Stored encrypted on this machine. It never lands in a file you commit.'}
@@ -890,7 +883,7 @@ export function StepLayout({
           {children}
         </div>
       </div>
-      <footer className="flex h-14 shrink-0 items-center justify-between gap-2 border-t border-neutral-100 bg-white px-4 dark:border-neutral-800 dark:bg-neutral-950 @md:px-5">
+      <footer className="flex h-14 shrink-0 items-center justify-between gap-2 border-t border-border bg-card px-4 @md:px-5">
         {footer}
       </footer>
     </div>

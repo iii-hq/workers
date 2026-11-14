@@ -110,7 +110,7 @@ export function ReadyStep({
           <h2 className="font-sans text-lg font-semibold leading-7 tracking-[-0.01em] text-ink">
             {connected.length > 0 ? 'Your harness is ready' : 'You’re all set'}
           </h2>
-          <p className="max-w-[48ch] text-pretty font-sans text-sm leading-5 text-neutral-600 dark:text-neutral-400">
+          <p className="max-w-[48ch] text-pretty font-sans text-sm leading-5 text-muted-foreground">
             {connected.length > 0 ? (
               <>
                 <span className="font-medium tabular-nums text-ink">
@@ -153,11 +153,11 @@ export function ReadyStep({
                 )}
               </span>
               <span className="flex min-w-0 flex-col gap-px">
-                <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+                <span className="font-sans text-body font-medium leading-5 text-ink">
                   {line.title}
                 </span>
                 {line.detail ? (
-                  <span className="break-words font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+                  <span className="break-words font-sans text-body leading-5 text-muted-foreground">
                     {line.detail}
                   </span>
                 ) : null}
@@ -182,13 +182,10 @@ export function ReadyStep({
 
       {added.length > 0 ? (
         <Disclosure label="Workers added" summary={`${added.length} installed`}>
-          <ul className="grid gap-x-4 gap-y-1 rounded-xl border border-neutral-100 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-900 dark:bg-black @md:grid-cols-2">
+          <ul className="grid gap-x-4 gap-y-1 rounded-xl border border-border bg-muted px-3.5 py-2.5 font-mono text-xs leading-5 @md:grid-cols-2">
             {added.map((worker) => (
               <li key={worker} className="flex min-w-0 items-center gap-2">
-                <span
-                  aria-hidden
-                  className="select-none text-neutral-500 dark:text-neutral-400"
-                >
+                <span aria-hidden className="select-none text-muted-foreground">
                   +
                 </span>
                 <span className="truncate text-ink">{worker}</span>
@@ -239,7 +236,7 @@ function KitRow({
       <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
         {install.state === 'installing' ? (
           <LoaderCircle
-            className="size-4 animate-spin text-neutral-500 motion-reduce:animate-none"
+            className="size-4 animate-spin text-muted-foreground motion-reduce:animate-none"
             aria-hidden
           />
         ) : install.state === 'installed' ? (
@@ -249,10 +246,10 @@ function KitRow({
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-px">
-        <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+        <span className="font-sans text-body font-medium leading-5 text-ink">
           {text.title(install.kit)}
         </span>
-        <span className="break-words font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+        <span className="break-words font-sans text-body leading-5 text-muted-foreground">
           {install.message ?? text.detail}
         </span>
       </span>

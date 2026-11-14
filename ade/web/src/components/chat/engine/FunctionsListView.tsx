@@ -23,7 +23,7 @@ export function FunctionsListView({
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <ListHeader
           count={0}
           noun="functions"
@@ -41,7 +41,7 @@ export function FunctionsListView({
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <ListHeader
         count={resp.functions.length}
         noun="functions"
@@ -52,7 +52,7 @@ export function FunctionsListView({
           · no functions returned
         </div>
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="divide-y divide-border">
           {resp.functions.map((fn) => (
             <li
               key={`${fn.worker_name}:${fn.function_id}`}
@@ -62,12 +62,12 @@ export function FunctionsListView({
                 <span className="font-mono text-[12.5px] text-accent break-all">
                   {fn.function_id}
                 </span>
-                <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+                <span className="iii-ui-eyebrow border border-border bg-paper-2 px-1.5 py-0.5">
                   {fn.worker_name}
                 </span>
               </div>
               {fn.description ? (
-                <div className="font-mono text-[12px] text-ink-faint leading-[1.55]">
+                <div className="font-mono text-xs text-ink-faint leading-[1.55]">
                   {fn.description}
                 </div>
               ) : null}

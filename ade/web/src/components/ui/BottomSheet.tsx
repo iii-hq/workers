@@ -105,8 +105,8 @@ export const BottomSheetContent = React.forwardRef<
         setPageDescribedBy(describedBy ?? null)
 
         /* Page side-by-side needs the incoming page to reach its inactive
-           offset for one paint before data-active flips. Mounting and
-           activating in the same commit skips the transition entirely. */
+ offset for one paint before data-active flips. Mounting and
+ activating in the same commit skips the transition entirely. */
         setActivePageId(null)
         if (
           typeof window === 'undefined' ||
@@ -239,7 +239,7 @@ export const BottomSheetContent = React.forwardRef<
 
             <DialogPrimitive.Close
               ref={closeButtonRef}
-              className="absolute right-2 top-2 flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              className="absolute right-2 top-2 flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <X className="size-5" aria-hidden />
               <span className="sr-only">{closeLabel}</span>
