@@ -16,15 +16,15 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::summarize::{summarize_head, PromptSteering};
+use super::summarize::{PromptSteering, summarize_head};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
+use crate::core::estimate::{Estimator, by_role_from_sizes, estimator_for_model};
 use crate::core::lease;
 use crate::core::prune::{
-    cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
+    PruneParams, cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes,
 };
 use crate::core::selection::select;
-use crate::core::summary::{render_system_prompt, render_system_prompt_with_span, RenderedSummary};
+use crate::core::summary::{RenderedSummary, render_system_prompt, render_system_prompt_with_span};
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, TurnKnobs};

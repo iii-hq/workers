@@ -17,10 +17,10 @@
 //! appear nowhere in the primary floor; its generations being consumed and
 //! the parent actually WAKING are the evidence it ran and wrote.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";

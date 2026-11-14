@@ -2,9 +2,9 @@ use futures_util::{SinkExt, StreamExt};
 #[allow(dead_code)]
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use judge_openai::{DecisionsClient, OpenAiConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -79,9 +79,11 @@ async fn models_registration_has_strict_schemas_and_accepts_root_metadata() {
     assert!(registration["request_format"]["properties"]["request_id"].is_object());
     assert!(registration["request_format"]["properties"]["options"].is_object());
     for field in ["api_key", "endpoint", "_caller_worker_id", "model"] {
-        assert!(registration["request_format"]["properties"]
-            .get(field)
-            .is_none());
+        assert!(
+            registration["request_format"]["properties"]
+                .get(field)
+                .is_none()
+        );
     }
     assert_eq!(
         registration["response_format"]["oneOf"]
@@ -179,12 +181,16 @@ async fn registered_function_has_typed_schemas_and_returns_missing_key_envelope(
     assert!(registration["request_format"]["properties"]["evaluations"].is_object());
     assert!(registration["request_format"]["properties"]["request_id"].is_object());
     assert!(registration["request_format"]["properties"]["options"].is_object());
-    assert!(registration["request_format"]["properties"]
-        .get("api_key")
-        .is_none());
-    assert!(registration["request_format"]["properties"]
-        .get("endpoint")
-        .is_none());
+    assert!(
+        registration["request_format"]["properties"]
+            .get("api_key")
+            .is_none()
+    );
+    assert!(
+        registration["request_format"]["properties"]
+            .get("endpoint")
+            .is_none()
+    );
     let variants = registration["response_format"]["oneOf"].as_array().unwrap();
     assert_eq!(variants.len(), 2);
     assert!(response.get("error").is_none());
@@ -199,9 +205,11 @@ async fn engine_caller_metadata_is_removed_only_at_registration_boundary() {
     payload["_caller_worker_id"] = json!("00000000-0000-0000-0000-000000000002");
     assert!(serde_json::from_value::<judge_contract::EvaluateRequest>(payload.clone()).is_err());
     let (registration, response) = invoke(payload).await;
-    assert!(registration["request_format"]["properties"]
-        .get("_caller_worker_id")
-        .is_none());
+    assert!(
+        registration["request_format"]["properties"]
+            .get("_caller_worker_id")
+            .is_none()
+    );
     assert_eq!(
         registration["request_format"]["additionalProperties"],
         false
@@ -258,9 +266,11 @@ async fn cancel_registration_has_strict_schemas_and_unknown_ids_return_false() {
         registration["request_format"]["properties"]["request_id"]["type"],
         "string"
     );
-    assert!(registration["request_format"]["properties"]
-        .get("_caller_worker_id")
-        .is_none());
+    assert!(
+        registration["request_format"]["properties"]
+            .get("_caller_worker_id")
+            .is_none()
+    );
     assert_eq!(
         registration["response_format"]["oneOf"]
             .as_array()
@@ -626,8 +636,8 @@ async fn bus_callers_with_the_same_id_can_only_cancel_their_own_call() {
 #[test]
 fn provider_ids_follow_the_hub_convention() {
     use judge_contract::{
-        provider_function_id, CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID,
-        STATUS_FUNCTION_ID,
+        CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID, STATUS_FUNCTION_ID,
+        provider_function_id,
     };
     use judge_openai::{CANCEL_ID, EVALUATE_ID, MODELS_ID, PROVIDER, STATUS_ID};
     assert_eq!(provider_function_id(PROVIDER, FUNCTION_ID), EVALUATE_ID);

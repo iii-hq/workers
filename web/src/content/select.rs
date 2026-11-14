@@ -3,7 +3,7 @@
 //! regions. Selectors use the tl subset (tag/.class/#id). tag boundaries fall
 //! on ASCII `<`/`>`, so byte-offset slicing is always on char boundaries.
 
-use tl::{parse, ParserOptions};
+use tl::{ParserOptions, parse};
 
 /// Splice out the given byte ranges (inclusive start, end) from `html`.
 /// Ranges are sorted and merged before removal.
@@ -84,10 +84,10 @@ pub fn scope_to_targets(html: &str, targets: &[String]) -> Option<String> {
     ranges.sort_by_key(|r| r.0);
     let mut kept: Vec<(usize, usize)> = Vec::new();
     for (s, e) in ranges {
-        if let Some(last) = kept.last() {
-            if s <= last.1 {
-                continue; // contained in / overlapping a kept outer range
-            }
+        if let Some(last) = kept.last()
+            && s <= last.1
+        {
+            continue; // contained in / overlapping a kept outer range
         }
         kept.push((s, e));
     }

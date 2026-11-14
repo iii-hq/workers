@@ -18,7 +18,7 @@
 
 mod support;
 
-use approval_gate::functions::{catalog, event_catalog, FunctionSpec};
+use approval_gate::functions::{FunctionSpec, catalog, event_catalog};
 
 fn golden_file_name(id: &str) -> String {
     format!("schemas/{}.json", id.replace("::", "."))

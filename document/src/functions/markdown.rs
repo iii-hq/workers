@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
 use crate::format::{self, DetectedFrom, Family, Format};
-use crate::source::{describe_error, Body, DocumentSource};
+use crate::source::{Body, DocumentSource, describe_error};
 
 pub const ID: &str = "document::to-markdown";
 pub const DESC: &str = "Convert a Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV or PDF \
@@ -121,8 +121,8 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
 
 #[cfg(test)]
 mod tests {
-    use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
     use super::*;
 

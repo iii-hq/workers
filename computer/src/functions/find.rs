@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::invalid;
 use super::observe::TreeScope;
 use crate::semantic::{
-    parse_selector, Code, SemanticError, SnapshotOut, FIND_POLL, MAX_FIND_TIMEOUT_MS,
+    Code, FIND_POLL, MAX_FIND_TIMEOUT_MS, SemanticError, SnapshotOut, parse_selector,
 };
 use crate::session::Session;
 
@@ -119,8 +119,8 @@ pub(crate) async fn handle(session: &Arc<Session>, req: FindInput) -> Result<Fin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::fake::FakeTree;
     use crate::semantic::SemanticSession;
+    use crate::semantic::fake::FakeTree;
     use crate::test_support::{code, session_with};
     use std::sync::Arc;
     use std::time::{Duration, Instant};

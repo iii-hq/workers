@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::contract::*;
 use crate::diagnostics;
 use crate::error::EvalError;
-use crate::runtime::{suggestion_at, Deps};
+use crate::runtime::{Deps, suggestion_at};
 use crate::{ids, state};
 
 const MAX_TEXT_CHARS: usize = 500;
@@ -347,12 +347,12 @@ fn set_lifecycle(
         return Err(invalid("version only applies to a shipped suggestion"));
     }
     let version = version.or_else(|| current.version.clone().filter(|_| shipped));
-    if let Some(version) = &version {
-        if Version::parse(version).is_none() {
-            return Err(invalid(format!(
-                "version `{version}` is not a semantic version like 1.8.43"
-            )));
-        }
+    if let Some(version) = &version
+        && Version::parse(version).is_none()
+    {
+        return Err(invalid(format!(
+            "version `{version}` is not a semantic version like 1.8.43"
+        )));
     }
     let reason = text("reason", request.reason.as_deref(), MAX_TEXT_CHARS)?;
     let duplicate_of = text(
@@ -435,7 +435,7 @@ pub fn register_criterion(
                 } else {
                     row.patterns.join(", ")
                 }
-            )))
+            )));
         }
         (_, Some(_)) => return Err(invalid("pattern only applies to signal_per_run")),
         (_, None) => {}
@@ -499,10 +499,10 @@ fn set_verdict(
         .iter()
         .map(|control| required("a control", Some(control), MAX_TEXT_CHARS))
         .collect::<Result<Vec<_>, _>>()?;
-    if outcome == ValidationOutcomeV1::ValidatedImprovement {
-        if let Some(reason) = improvement_refusal(row, assets) {
-            return Err(EvalError::Conflict(format!("verdict_refused: {reason}")));
-        }
+    if outcome == ValidationOutcomeV1::ValidatedImprovement
+        && let Some(reason) = improvement_refusal(row, assets)
+    {
+        return Err(EvalError::Conflict(format!("verdict_refused: {reason}")));
     }
     row.verdict = Some(VerdictV1 {
         outcome,
@@ -664,11 +664,9 @@ pub async fn record_evidence(
         row.evidence = Some(computed);
         changed = true;
     }
-    if attached {
-        if let Some(run) = row.run.as_mut() {
-            run.state = ValidationRunStateV1::Attached;
-            run.error = None;
-        }
+    if attached && let Some(run) = row.run.as_mut() {
+        run.state = ValidationRunStateV1::Attached;
+        run.error = None;
     }
     if changed {
         state::put_review(&deps.iii, &row).await?;
@@ -1320,9 +1318,11 @@ mod tests {
         let blind: Vec<_> = (0..3).map(|_| run(true, None, "passed")).collect();
         assert_eq!(outcome(signals(&[3, 3, 3]), blind, &decrease).2, (3, 0));
         // No run of the scenario.
-        assert!(outcome(vec![], signals(&[0, 0, 0]), &decrease)
-            .1
-            .contains("no run of s"));
+        assert!(
+            outcome(vec![], signals(&[0, 0, 0]), &decrease)
+                .1
+                .contains("no run of s")
+        );
         // No criterion: counted, not judged.
         let mut evidence = evidence_of(signals(&[1, 1]), signals(&[0]));
         judge(&mut evidence, None);
@@ -1494,12 +1494,16 @@ mod tests {
         .unwrap();
         assert_eq!(row.lifecycle.duplicate_of.as_deref(), Some("#1290"));
         // Shipping needs the pr (already recorded here) and a semantic version.
-        assert!(lifecycle(&mut row, Shipped, |request| request.version =
-            Some("latest".into()))
-        .is_err());
-        assert!(lifecycle(&mut row, InProgress, |request| request.version =
-            Some("1.8.43".into()))
-        .is_err());
+        assert!(
+            lifecycle(&mut row, Shipped, |request| request.version =
+                Some("latest".into()))
+            .is_err()
+        );
+        assert!(
+            lifecycle(&mut row, InProgress, |request| request.version =
+                Some("1.8.43".into()))
+            .is_err()
+        );
         lifecycle(&mut row, Shipped, |_| {}).unwrap();
         assert_eq!(
             (row.lifecycle.status, row.lifecycle.duplicate_of.clone()),
@@ -1524,13 +1528,16 @@ mod tests {
             .collect();
         assert_eq!(
             statuses,
-            [Accepted, InProgress, Rejected, Accepted, Duplicate, Shipped, Shipped]
+            [
+                Accepted, InProgress, Rejected, Accepted, Duplicate, Shipped, Shipped
+            ]
         );
-        assert!(row
-            .lifecycle
-            .history
-            .iter()
-            .all(|event| event.by == "ana" && event.at == 5));
+        assert!(
+            row.lifecycle
+                .history
+                .iter()
+                .all(|event| event.by == "ana" && event.at == 5)
+        );
         // A shipped suggestion with no pr anywhere is refused.
         let mut fresh = self::row();
         assert!(lifecycle(&mut fresh, Shipped, |_| {}).is_err());
@@ -1587,9 +1594,11 @@ mod tests {
             "{refusal}"
         );
         let later = assets(vec![link(1_000, [Some(600), Some(700)])]);
-        assert!(!improvement_refusal(&row, &later)
-            .unwrap()
-            .contains("registered after"));
+        assert!(
+            !improvement_refusal(&row, &later)
+                .unwrap()
+                .contains("registered after")
+        );
     }
 
     #[test]
@@ -1636,7 +1645,7 @@ mod tests {
         use harness::types::content::ContentBlock;
         use harness::types::event::StopReason;
         use harness::types::message::{
-            empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
+            AgentMessage, FunctionResultMessage, FunctionResultRoleTag, empty_assistant,
         };
         let info = "engine::functions::info";
         let contract = json!({"function_id": "crm::profile", "request_schema": {"type": "object"},

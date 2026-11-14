@@ -99,17 +99,17 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
 
     let row_count = result.rows.len();
     // Fire and forget — a history line must never fail the query.
-    if req.record_history {
-        if let Some(iii) = state.client() {
-            crate::handlers::saved::record(
-                iii.clone(),
-                state.config.clone(),
-                db,
-                &req.sql,
-                started.elapsed().as_millis() as u64,
-                row_count,
-            );
-        }
+    if req.record_history
+        && let Some(iii) = state.client()
+    {
+        crate::handlers::saved::record(
+            iii.clone(),
+            state.config.clone(),
+            db,
+            &req.sql,
+            started.elapsed().as_millis() as u64,
+            row_count,
+        );
     }
     let rows = rows_to_objects(&result.columns, result.rows);
     Ok(QueryResp {

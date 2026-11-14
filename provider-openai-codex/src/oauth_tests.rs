@@ -1,6 +1,6 @@
 use super::*;
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -65,7 +65,10 @@ impl Stub {
                     .collect::<String>();
                 let response = format!(
                     "HTTP/1.1 {} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
-                    reply.status, reply.body.len(), extra, reply.body
+                    reply.status,
+                    reply.body.len(),
+                    extra,
+                    reply.body
                 );
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
@@ -214,7 +217,10 @@ async fn start_404_explains_how_to_enable_device_login() {
     .await;
     let err = stub.client().start().await.unwrap_err();
     assert_eq!(err.code, "device_login_disabled");
-    assert_eq!(err.message, "Enable device code login in ChatGPT security settings or ask your workspace administrator.");
+    assert_eq!(
+        err.message,
+        "Enable device code login in ChatGPT security settings or ask your workspace administrator."
+    );
     assert!(err.permanent);
     assert!(!format!("{err:?}").contains("server-secret"));
 }
@@ -230,7 +236,10 @@ async fn start_unauthorized_requires_an_explicit_device_login_disabled_code() {
             let stub = Stub::new(vec![Reply::json(status, body)]).await;
             let err = stub.client().start().await.unwrap_err();
             assert_eq!(err.code, "device_login_disabled");
-            assert_eq!(err.message, "Enable device code login in ChatGPT security settings or ask your workspace administrator.");
+            assert_eq!(
+                err.message,
+                "Enable device code login in ChatGPT security settings or ask your workspace administrator."
+            );
             assert!(err.permanent);
             assert!(!format!("{err:?}").contains("server-secret"));
         }
@@ -256,7 +265,7 @@ async fn pending_uses_the_larger_of_poll_interval_and_retry_after() {
         (404, "bad", 7, 7),
     ] {
         let mut stub = Stub::new(vec![
-            Reply::json(status, json!({"error": "pending"})).retry_after(header)
+            Reply::json(status, json!({"error": "pending"})).retry_after(header),
         ])
         .await;
         let mut device = device();
@@ -683,11 +692,13 @@ async fn retry_after_accepts_http_dates_and_normalizes_zero() {
             Some(1)
         );
     }
-    let stub = Stub::new(vec![Reply::json(
-        200,
-        json!({"device_auth_id": "device", "user_code": "code", "interval": 3}),
-    )
-    .retry_after("10")])
+    let stub = Stub::new(vec![
+        Reply::json(
+            200,
+            json!({"device_auth_id": "device", "user_code": "code", "interval": 3}),
+        )
+        .retry_after("10"),
+    ])
     .await;
     assert_eq!(stub.client().start().await.unwrap().interval, 10);
 }

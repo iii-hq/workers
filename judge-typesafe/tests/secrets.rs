@@ -4,14 +4,14 @@
 //! `missing_key` that never falls back to the boot key.
 #[path = "support/fake_engine.rs"]
 mod fake_engine;
-use iii_sdk::{register_worker, InitOptions};
-use judge_typesafe::{configuration, JevClient, JevConfig};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use judge_typesafe::{JevClient, JevConfig, configuration};
+use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 use wiremock::{
-    matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{header, method, path},
 };
 
 /// Call `function_id` once with `api_key` configured; `secrets::resolve`

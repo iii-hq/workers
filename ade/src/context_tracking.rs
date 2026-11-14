@@ -2,10 +2,10 @@
 //! Stored beside workspace.json; serialize mutations and fail closed on corrupt data.
 use crate::functions::working_directory::PRE_CALL_HOOK_FN;
 use crate::workspace_store::WorkspaceStore;
-use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::Arc,
@@ -413,18 +413,22 @@ mod tests {
             .unwrap();
         let reopened = WorkspaceStore::new(dir.path().into());
         assert_eq!(list(&reopened, &a).await.unwrap().items.len(), 1);
-        assert!(list(&store, &t("s2", "/p1"))
+        assert!(
+            list(&store, &t("s2", "/p1"))
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(
+            save(
+                &store,
+                &t("s2", "/p1"),
+                request(Scope::Project, Some(item.id.clone()))
+            )
             .await
-            .unwrap()
-            .items
-            .is_empty());
-        assert!(save(
-            &store,
-            &t("s2", "/p1"),
-            request(Scope::Project, Some(item.id.clone()))
-        )
-        .await
-        .is_err());
+            .is_err()
+        );
         assert!(
             !remove(&store, &t("s2", "/p1"), &item.id)
                 .await
@@ -436,11 +440,13 @@ mod tests {
             .unwrap();
         assert_eq!(moved.id, item.id);
         assert_eq!(list(&store, &t("s2", "/p1")).await.unwrap().items.len(), 1);
-        assert!(list(&store, &t("s2", "/p2"))
-            .await
-            .unwrap()
-            .items
-            .is_empty());
+        assert!(
+            list(&store, &t("s2", "/p2"))
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
         assert!(remove(&store, &a, &item.id).await.unwrap().removed);
         assert!(list(&store, &a).await.unwrap().items.is_empty());
     }
@@ -463,22 +469,26 @@ mod tests {
             r.snapshot.source.as_mut().unwrap().url = Some(url.into());
             assert!(save(&store, &a, r).await.is_err());
         }
-        assert!(save(
-            &store,
-            &Target {
-                session: "s1".into(),
-                project: None
-            },
-            request(Scope::Project, None)
-        )
-        .await
-        .is_err());
+        assert!(
+            save(
+                &store,
+                &Target {
+                    session: "s1".into(),
+                    project: None
+                },
+                request(Scope::Project, None)
+            )
+            .await
+            .is_err()
+        );
         tokio::fs::write(dir.path().join(FILE), "broken")
             .await
             .unwrap();
-        assert!(save(&store, &a, request(Scope::Conversation, None))
-            .await
-            .is_err());
+        assert!(
+            save(&store, &a, request(Scope::Conversation, None))
+                .await
+                .is_err()
+        );
         assert_eq!(
             tokio::fs::read_to_string(dir.path().join(FILE))
                 .await

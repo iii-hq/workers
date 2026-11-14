@@ -8,13 +8,13 @@
 //! other transition — which is what makes "a person clicking Resolve beats a
 //! diagnosis still in flight" true rather than merely intended.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{integer, is_conflict, number, text, Db, Statement, Store};
+use super::{Db, Statement, Store, integer, is_conflict, number, text};
 use crate::{
-    ids, lifecycle, DiagnosisRecordV1, DiagnosisSourceV1, DiagnosisV1, GroupStatusV1,
-    InvestigationCountsV1, InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
-    NamedRow, SentinelError,
+    DiagnosisRecordV1, DiagnosisSourceV1, DiagnosisV1, GroupStatusV1, InvestigationCountsV1,
+    InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1, NamedRow, SentinelError,
+    ids, lifecycle,
 };
 
 /// A new investigation, before the harness has been told anything.

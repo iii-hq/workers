@@ -10,12 +10,12 @@
 //! * INT-042, an agent's stop: the session still ends on its next wake, the deadline
 //!   notice included. Agents rely on that to run their own fallback.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::evidence_data::RunEvidence;
 use crate::fixtures::ScenarioFixture;
 

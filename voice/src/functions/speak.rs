@@ -16,8 +16,7 @@ pub const DESC: &str = "Synthesize text and return audio_base64 plus mime to the
                         set text_format=plain for literal text. host uses say/espeak; piper uses a local neural voice.";
 
 pub const STOP_ID: &str = "voice::speak::stop";
-pub const STOP_DESC: &str =
-    "Legacy server-playback stop (returns stopped=0). Audio is now returned \
+pub const STOP_DESC: &str = "Legacy server-playback stop (returns stopped=0). Audio is now returned \
                             to the caller; stop its local audio element to stop browser playback.";
 
 #[derive(Debug, Deserialize, JsonSchema)]

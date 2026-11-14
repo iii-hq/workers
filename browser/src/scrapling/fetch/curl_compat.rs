@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::ffi::{c_char, c_long, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_long, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use curl_impersonate_sys as curl;
 use serde_json::{Map, Value};
 
-use super::{charset_of_raw, python_scalar, Body, HttpOptions};
+use super::{Body, HttpOptions, charset_of_raw, python_scalar};
 use crate::scrapling::page::PageData;
 
 static GLOBAL: OnceLock<Result<(), String>> = OnceLock::new();

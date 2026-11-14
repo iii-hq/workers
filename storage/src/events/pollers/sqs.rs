@@ -1,7 +1,7 @@
 //! S3 → SQS poller. Long-polls SQS, normalizes the S3 event JSON,
 //! and yields `ObjectEventNormalized`s for the dispatcher to deliver.
 
-use crate::events::normalize::{normalize_s3, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{EventKind, NormalizeError, ObjectEventNormalized, normalize_s3};
 use aws_sdk_sqs::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -95,26 +95,24 @@ impl SqsPoller {
                     }
                 }
             }
-            if all_acked {
-                if let Some(rh) = msg.receipt_handle {
-                    if let Err(e) = self
-                        .client
-                        .delete_message()
-                        .queue_url(&self.queue_url)
-                        .receipt_handle(&rh)
-                        .send()
-                        .await
-                    {
-                        // Non-fatal: SQS will redeliver after visibility
-                        // timeout. Log so operators can spot a stuck queue.
-                        tracing::warn!(
-                            error = %e,
-                            queue_url = %self.queue_url,
-                            receipt_handle = %rh,
-                            "sqs delete_message failed; message will redeliver"
-                        );
-                    }
-                }
+            if all_acked
+                && let Some(rh) = msg.receipt_handle
+                && let Err(e) = self
+                    .client
+                    .delete_message()
+                    .queue_url(&self.queue_url)
+                    .receipt_handle(&rh)
+                    .send()
+                    .await
+            {
+                // Non-fatal: SQS will redeliver after visibility
+                // timeout. Log so operators can spot a stuck queue.
+                tracing::warn!(
+                    error = %e,
+                    queue_url = %self.queue_url,
+                    receipt_handle = %rh,
+                    "sqs delete_message failed; message will redeliver"
+                );
             }
         }
         count
@@ -127,7 +125,7 @@ pub async fn run_loop<D>(poller: SqsPoller, dispatcher: std::sync::Arc<D>)
 where
     D: crate::events::dispatcher::EventDispatcher + 'static,
 {
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     loop {
         let count = poller
             .poll_once(Duration::from_secs(60), |ev| {

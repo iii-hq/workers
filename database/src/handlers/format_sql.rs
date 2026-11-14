@@ -17,8 +17,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 
-use super::query::err_to_str;
 use super::AppState;
+use super::query::err_to_str;
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::Pool;
@@ -69,7 +69,7 @@ pub async fn handle(state: &AppState, req: FormatSqlReq) -> Result<FormatSqlResp
             return Err(err_to_str(DbError::InvalidParam {
                 index: 0,
                 reason: "formatSql needs `db` or `driver` to know the dialect".into(),
-            }))
+            }));
         }
     };
     let sql = format(

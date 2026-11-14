@@ -21,9 +21,9 @@ use harness::skills;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Capture, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+    Capture, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Notify, RwLock};
 
 const SESSION: &str = "s-parent";
@@ -628,14 +628,22 @@ async fn failures_reach_every_client_as_a_notice_and_an_event() {
         let started = format!("e_{}_started", outcome.compaction_id);
         let ended = format!("e_{}_outcome", outcome.compaction_id);
         assert_eq!(outcome.entry_ids, vec![started.clone(), ended.clone()]);
-        assert_eq!(custom_of(&world, &started)["data"]["message"], "compacting the conversation…");
+        assert_eq!(
+            custom_of(&world, &started)["data"]["message"],
+            "compacting the conversation…"
+        );
         let notice = custom_of(&world, &ended);
         assert_eq!(notice["custom_type"], "notice");
         assert_eq!(notice["data"]["message"], message);
         assert_eq!(done[0]["status"], status);
         // The session's last turn model writes the summary.
         assert_eq!(world.compact_requests[0]["model"]["id"], "claude-x");
-        assert!(!world.appended.iter().any(|p| p["custom"]["custom_type"] == "compaction"));
+        assert!(
+            !world
+                .appended
+                .iter()
+                .any(|p| p["custom"]["custom_type"] == "compaction")
+        );
         // A waiting caller shows its own progress: the status line is untouched.
         assert!(world.statuses.is_empty(), "{:?}", world.statuses);
     }

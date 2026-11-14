@@ -4,14 +4,14 @@
 //! with or without it. Mirrors the console's `useApprovalGateStatus` /
 //! `isApprovalGateAvailable` pattern.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Engine worker name for the standalone approval-gate worker.
 pub const APPROVAL_GATE_WORKER_NAME: &str = "approval-gate";

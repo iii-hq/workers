@@ -13,9 +13,9 @@ use harness::config::WorkerConfig;
 use harness::deps::Deps;
 use harness::types::message::AgentMessage;
 use harness::types::turn::FunctionPolicy;
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as Frame;
 
 #[derive(Default)]
@@ -368,11 +368,13 @@ async fn a_binding_that_fires_before_its_deadline_cancels_its_timer() {
         !stack.deps.expiry_timers.is_armed("sub_fired"),
         "retiring the record must cancel its deadline"
     );
-    assert!(!stack
-        .store
-        .lock()
-        .unwrap()
-        .appended("e_obsexpired_sub_fired"));
+    assert!(
+        !stack
+            .store
+            .lock()
+            .unwrap()
+            .appended("e_obsexpired_sub_fired")
+    );
 }
 
 /// The e2e regression: a once Compose wake's terminal event reached the

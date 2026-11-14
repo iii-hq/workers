@@ -3,7 +3,7 @@
 [package]
 name = "mention-contract"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Worker-defined chat mentions: the provider descriptor carried in function metadata, the search/get wire types, and the @<name>(id=\"…\") token grammar"

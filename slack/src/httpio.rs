@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
+use iii_sdk::IIIClient;
 use iii_sdk::channels::{ChannelDirection, ChannelReader, ChannelWriter};
 use iii_sdk::errors::Error;
-use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct Incoming {
     pub raw: Vec<u8>,

@@ -288,7 +288,7 @@ pub struct NodeCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// The whole point of the doc comments on the definition types: `engine::
     /// functions::info` must serve a self-documenting WorkflowDef schema so an

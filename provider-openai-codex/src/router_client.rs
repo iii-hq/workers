@@ -1,13 +1,13 @@
 //! Provider-scoped router shims and optional compatibility with an external
 //! credential vault. Native authentication is owned by `session::AuthManager`.
 use crate::PROVIDER_ID;
+use iii_sdk::IIIClient;
 use iii_sdk::engine::EngineFunctions;
 use iii_sdk::errors::Error;
-use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::router_client::{self as scaffold, call};
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const AUTH_GET_TOKEN_FN: &str = "auth::get_token";
 

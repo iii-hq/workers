@@ -14,8 +14,7 @@ use serde_json::Value;
 /// SENTENCE of a description (capped at 160 bytes), so the RETURNING rule has
 /// to live in the opening sentence or the model never learns it — which is
 /// exactly how MOT-4777 happened.
-pub const DESCRIPTION: &str =
-    "Run a write statement (INSERT/UPDATE/DELETE/DDL); put RETURNING in the SQL to get rows \
+pub const DESCRIPTION: &str = "Run a write statement (INSERT/UPDATE/DELETE/DDL); put RETURNING in the SQL to get rows \
      back and into row-changed events. The `returning` option never adds the clause.";
 
 #[derive(Deserialize, JsonSchema)]

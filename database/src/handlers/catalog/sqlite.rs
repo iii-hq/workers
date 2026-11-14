@@ -7,8 +7,8 @@
 //! a bare `PRAGMA table_info(x)` cannot bind `x`.
 
 use super::{
-    bool_at, fold_index_rows, i64_at, run, str_at, ColumnDesc, ForeignKeyRef, IndexDesc,
-    TableFilter, TableKey, TableKind, TableRef,
+    ColumnDesc, ForeignKeyRef, IndexDesc, TableFilter, TableKey, TableKind, TableRef, bool_at,
+    fold_index_rows, i64_at, run, str_at,
 };
 use crate::handlers::AppState;
 use serde_json::Value;
@@ -110,10 +110,11 @@ pub async fn columns(
             .filter(|(_, c)| c.primary_key)
             .map(|(i, _)| i)
             .collect();
-        if let [only] = pk.as_slice() {
-            if cols[*only].ty.eq_ignore_ascii_case("INTEGER") && !without_rowid.contains(table) {
-                cols[*only].auto_increment = true;
-            }
+        if let [only] = pk.as_slice()
+            && cols[*only].ty.eq_ignore_ascii_case("INTEGER")
+            && !without_rowid.contains(table)
+        {
+            cols[*only].auto_increment = true;
         }
     }
 
@@ -200,14 +201,14 @@ async fn merge_foreign_keys(
                 None => continue,
             },
         };
-        if let Some(cols) = columns.get_mut(&(None, table)) {
-            if let Some(col) = cols.iter_mut().find(|c| c.name == src) {
-                col.foreign_key = Some(ForeignKeyRef {
-                    schema: None,
-                    table: ref_table,
-                    column: ref_column,
-                });
-            }
+        if let Some(cols) = columns.get_mut(&(None, table))
+            && let Some(col) = cols.iter_mut().find(|c| c.name == src)
+        {
+            col.foreign_key = Some(ForeignKeyRef {
+                schema: None,
+                table: ref_table,
+                column: ref_column,
+            });
         }
     }
     Ok(())

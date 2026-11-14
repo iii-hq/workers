@@ -6,7 +6,7 @@ use crate::wire::tools::{functions_to_responses_wire, functions_to_wire};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::{PromptSection, ResponseFormat};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct BodyArgs {
     pub model: String,
@@ -277,9 +277,11 @@ mod tests {
             "explicit"
         );
         assert_eq!(input[1]["role"], "developer");
-        assert!(input[1]["content"][0]
-            .get("prompt_cache_breakpoint")
-            .is_none());
+        assert!(
+            input[1]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
         assert_eq!(input[2]["role"], "user");
         // implicit caching stays on: no mode override on the request
         assert!(body.get("prompt_cache_options").is_none());
@@ -292,9 +294,11 @@ mod tests {
         let flat = build_body(&a, ApiMode::Responses);
         assert_eq!(flat["input"][0]["role"], "system");
         assert_eq!(flat["input"][0]["content"][0]["text"], "be brief");
-        assert!(flat["input"][0]["content"][0]
-            .get("prompt_cache_breakpoint")
-            .is_none());
+        assert!(
+            flat["input"][0]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
     }
 
     #[test]
@@ -469,9 +473,11 @@ mod tests {
             "24h"
         );
         a.cache_retention = None;
-        assert!(build_body(&a, ApiMode::Responses)
-            .get("prompt_cache_retention")
-            .is_none());
+        assert!(
+            build_body(&a, ApiMode::Responses)
+                .get("prompt_cache_retention")
+                .is_none()
+        );
     }
 
     #[test]

@@ -69,10 +69,10 @@ pub fn render_thinking_text(message: &AgentMessage) -> Option<String> {
     }
     let mut out = Vec::new();
     for block in &message.content {
-        if let ContentBlock::Thinking { text } = block {
-            if !text.is_empty() {
-                out.push(text.clone());
-            }
+        if let ContentBlock::Thinking { text } = block
+            && !text.is_empty()
+        {
+            out.push(text.clone());
         }
     }
     if out.is_empty() {

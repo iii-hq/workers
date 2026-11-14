@@ -89,13 +89,13 @@ impl WorkerConfig {
                     repository.id
                 )));
             }
-            if let Some(github) = &repository.github {
-                if !is_valid_github_full_name(&github.full_name) {
-                    return Err(invalid(format!(
-                        "repository {} github.full_name must be exactly owner/name using letters, digits, '.', '_' or '-'",
-                        repository.id
-                    )));
-                }
+            if let Some(github) = &repository.github
+                && !is_valid_github_full_name(&github.full_name)
+            {
+                return Err(invalid(format!(
+                    "repository {} github.full_name must be exactly owner/name using letters, digits, '.', '_' or '-'",
+                    repository.id
+                )));
             }
             if let Some(schedule) = &repository.schedule {
                 validate_schedule(&repository.id, schedule)?;

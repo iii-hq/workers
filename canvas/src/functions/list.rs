@@ -39,10 +39,10 @@ pub async fn handle(store: &Store, req: Request, cfg: &WorkerConfig) -> Result<R
         if canvases.len() >= cfg.max_list {
             break;
         }
-        if let Some(format) = req.format {
-            if entry.format != format {
-                continue;
-            }
+        if let Some(format) = req.format
+            && entry.format != format
+        {
+            continue;
         }
         // An index row whose record vanished (an interrupted delete) is
         // skipped rather than failing the whole listing.

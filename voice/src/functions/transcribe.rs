@@ -9,8 +9,7 @@ use crate::config::SttBackend;
 use crate::engine::Segment;
 
 pub const ID: &str = "voice::transcribe";
-pub const DESC: &str =
-    "Transcribe a WAV file to text with timestamped segments. Pass a path on the \
+pub const DESC: &str = "Transcribe a WAV file to text with timestamped segments. Pass a path on the \
                         worker's host or the file itself as base64 (up to max_audio_bytes). Any \
                         sample rate and channel count; the audio is downmixed and resampled.";
 

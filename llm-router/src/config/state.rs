@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
-use crate::settings::{parse_settings, RouterSettings};
+use crate::settings::{RouterSettings, parse_settings};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigSnapshot {

@@ -12,8 +12,8 @@
 
 use crate::configuration::{OnConfigChangeEvent, OnConfigChangeResponse};
 use crate::events::{
-    ClaimedEvent, CreatedEvent, LandBlockedEvent, LandedEvent, ReleasedEvent, RemovedEvent,
-    ON_CLAIMED_FN, ON_CREATED_FN, ON_LANDED_FN, ON_LAND_BLOCKED_FN, ON_RELEASED_FN, ON_REMOVED_FN,
+    ClaimedEvent, CreatedEvent, LandBlockedEvent, LandedEvent, ON_CLAIMED_FN, ON_CREATED_FN,
+    ON_LAND_BLOCKED_FN, ON_LANDED_FN, ON_RELEASED_FN, ON_REMOVED_FN, ReleasedEvent, RemovedEvent,
 };
 use crate::functions::{
     claim, create, get, land, land_step, list, prune, release, remove, rest, status, validate,

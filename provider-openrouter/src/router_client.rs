@@ -5,7 +5,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
     iii.call(CallRequest {

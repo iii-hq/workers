@@ -6,7 +6,7 @@ use crate::surface;
 use crate::{PROVIDER_ID, STATE_SCOPE};
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
-use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
+use llm_router::provider_scaffold::aborts::{StreamAborts, make_abort};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::provider_scaffold::router_client::observe_router_ready;
@@ -14,7 +14,7 @@ use llm_router::provider_scaffold::{router_client, state};
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -70,10 +70,10 @@ pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
         payload["token"] = json!(token);
     }
     let response = router_client::register(iii, payload).await?;
-    if let Some(issued) = response.get("registration_token").and_then(Value::as_str) {
-        if token.as_deref() != Some(issued) {
-            persist_token(iii, issued).await?;
-        }
+    if let Some(issued) = response.get("registration_token").and_then(Value::as_str)
+        && token.as_deref() != Some(issued)
+    {
+        persist_token(iii, issued).await?;
     }
     Ok(())
 }

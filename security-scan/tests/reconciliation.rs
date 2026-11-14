@@ -454,11 +454,13 @@ async fn harness_and_github_counts_remain_non_additive_and_alerts_dedupe_by_sour
         code.health.commit_sha.as_deref(),
         Some(first.target_sha.as_str())
     );
-    assert!(first
-        .records
-        .iter()
-        .filter(|record| record.source == ReconciliationSourceV1::CodeScanning)
-        .all(|record| record.scope == ReconciliationScopeV1::RepositorySnapshot));
+    assert!(
+        first
+            .records
+            .iter()
+            .filter(|record| record.source == ReconciliationSourceV1::CodeScanning)
+            .all(|record| record.scope == ReconciliationScopeV1::RepositorySnapshot)
+    );
 
     let mut next = SecurityScanReconciliationRequestV1::new("sec_reconciliation".into());
     next.cursor = first.next_cursor.clone();

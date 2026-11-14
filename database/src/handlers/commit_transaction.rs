@@ -107,7 +107,7 @@ pub async fn handle(state: &AppState, req: CommitTxReq) -> Result<CommitTxResp, 
 mod tests {
     use super::*;
     use crate::handlers::begin_transaction::tests::state;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn req(v: Value) -> CommitTxReq {
         serde_json::from_value(v).unwrap()

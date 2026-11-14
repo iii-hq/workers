@@ -12,8 +12,8 @@ use std::fmt;
 use chrono::Local;
 use colored::Colorize;
 use tracing::{
-    field::{Field, Visit},
     Event, Level, Subscriber,
+    field::{Field, Visit},
 };
 use tracing_subscriber::{
     fmt::{self as tracing_fmt, FmtContext, FormatEvent, FormatFields},

@@ -1,9 +1,9 @@
 //! A credential value in memory: zeroized on drop, redacted in `Debug`.
 use std::fmt;
 
-use schemars::gen::SchemaGenerator;
-use schemars::schema::Schema;
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::Schema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 

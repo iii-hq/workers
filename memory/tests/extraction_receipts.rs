@@ -30,9 +30,11 @@ fn retained_ranges_survive_reopen_and_never_evict_unprocessed_source_at_bound() 
             .retain_extraction_range("session", captured_range(&format!("opaque-{n}")), false)
             .unwrap();
     }
-    assert!(store
-        .retain_extraction_range("session", captured_range("overflow"), false)
-        .is_err());
+    assert!(
+        store
+            .retain_extraction_range("session", captured_range("overflow"), false)
+            .is_err()
+    );
     let before = store.extraction_ranges("session").unwrap();
     assert_eq!(before.len(), 128);
     assert_eq!(before[0].pending, original);
@@ -77,9 +79,11 @@ fn retained_schema_is_versioned_fail_closed_and_io_failure_keeps_pending_source(
     let before = std::fs::read(&path).unwrap();
     let blocker = path.with_file_name(format!(".{hash:016x}.json.tmp"));
     std::fs::create_dir(&blocker).unwrap();
-    assert!(store
-        .retain_extraction_range("session", original.clone(), true)
-        .is_err());
+    assert!(
+        store
+            .retain_extraction_range("session", original.clone(), true)
+            .is_err()
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(
         store.pending_extraction("session").unwrap(),
@@ -113,9 +117,11 @@ fn retained_schema_is_versioned_fail_closed_and_io_failure_keeps_pending_source(
         std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
         let reopened = Store::open(dir.path().into()).unwrap();
         assert!(reopened.extraction_ranges("session").is_err());
-        assert!(reopened
-            .retain_extraction_range("session", original.clone(), true)
-            .is_err());
+        assert!(
+            reopened
+                .retain_extraction_range("session", original.clone(), true)
+                .is_err()
+        );
         assert_eq!(
             reopened.pending_extraction("session").unwrap(),
             Some(value.clone())
@@ -177,16 +183,18 @@ async fn receipt_survives_reopen_and_blocks_a_repeated_revision() {
     reinforced.corroboration = 1;
     reinforced.revision = 1;
     let receipt = "source/bank/job/entry/effect";
-    assert!(bank
-        .extraction_expected(receipt, reinforced.clone(), Some(&original), None)
-        .await
-        .unwrap()
-        .is_some());
-    assert!(bank
-        .extraction_expected(receipt, reinforced.clone(), Some(&original), None)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        bank.extraction_expected(receipt, reinforced.clone(), Some(&original), None)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        bank.extraction_expected(receipt, reinforced.clone(), Some(&original), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let path = dir.path().join("private/memories.jsonl");
     let bytes = std::fs::read(&path).unwrap();
     let reopened = Store::open(dir.path().into()).unwrap();
@@ -199,11 +207,12 @@ async fn receipt_survives_reopen_and_blocks_a_repeated_revision() {
     );
     assert_eq!(bank.get(&original.id).await.unwrap(), reinforced);
     // The replayed receipt still blocks the same effect after a restart.
-    assert!(bank
-        .extraction_expected(receipt, reinforced.clone(), Some(&reinforced), None)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        bank.extraction_expected(receipt, reinforced.clone(), Some(&reinforced), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     let (other, _) = reopened.ensure_bank("other", None).await.unwrap();
     assert!(!other.extraction_seen(receipt).await);
@@ -223,20 +232,22 @@ async fn correction_and_receipt_fail_together_then_reopen_as_one_transition() {
     let path = dir.path().join("private/memories.jsonl");
     let before = std::fs::read(&path).unwrap();
     read_only(&path, true);
-    assert!(bank
-        .extraction_expected("correction", replacement.clone(), None, Some(&original))
-        .await
-        .is_err());
+    assert!(
+        bank.extraction_expected("correction", replacement.clone(), None, Some(&original))
+            .await
+            .is_err()
+    );
     read_only(&path, false);
     assert!(!bank.extraction_seen("correction").await);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(bank.get(&original.id).await.unwrap(), original);
     assert!(bank.get(&replacement.id).await.is_none());
-    assert!(bank
-        .extraction_expected("correction", replacement.clone(), None, Some(&original))
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        bank.extraction_expected("correction", replacement.clone(), None, Some(&original))
+            .await
+            .unwrap()
+            .is_some()
+    );
     let store = Store::open(dir.path().into()).unwrap();
     let bank = store.bank("private").await.unwrap();
     let old = bank.get(&original.id).await.unwrap();
@@ -244,11 +255,12 @@ async fn correction_and_receipt_fail_together_then_reopen_as_one_transition() {
     assert_eq!(old.revision, 1);
     assert_eq!(old.superseded_by.as_deref(), Some("replacement"));
     assert_eq!(bank.get("replacement").await.unwrap(), replacement);
-    assert!(bank
-        .extraction_expected("correction", replacement, None, Some(&original))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        bank.extraction_expected("correction", replacement, None, Some(&original))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(bank.list(10, 0, false, None).await.0.len(), 1);
 }
 
@@ -328,9 +340,11 @@ async fn plan_is_exact_source_bound_and_decision_cannot_be_replaced_after_reopen
         Some(plan.clone())
     );
     assert_eq!(store.extraction_plan("session/A/[entry]").unwrap(), None);
-    assert!(store
-        .save_extraction_plan("Session/A/[entry]", &serde_json::json!({"items":[1]}))
-        .is_err());
+    assert!(
+        store
+            .save_extraction_plan("Session/A/[entry]", &serde_json::json!({"items":[1]}))
+            .is_err()
+    );
     assert_eq!(
         store.extraction_plan("Session/A/[entry]").unwrap(),
         Some(plan)
@@ -366,11 +380,12 @@ async fn stale_effect_records_terminal_conflict_without_overwriting_the_change()
         replacement.text = "Amber instruments now require silver calibration.".into();
         let receipt =
             serde_json::json!(["source-session", "private", ["e_request", "e_end"], 0]).to_string();
-        assert!(bank
-            .extraction_expected(&receipt, replacement.clone(), None, Some(&original))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            bank.extraction_expected(&receipt, replacement.clone(), None, Some(&original))
+                .await
+                .unwrap()
+                .is_none()
+        );
         let reopened = Store::open(dir.path().into()).unwrap();
         let bank = reopened.bank("private").await.unwrap();
         assert_eq!(bank.get(&original.id).await.unwrap(), changed);
@@ -390,20 +405,22 @@ async fn stale_effect_records_terminal_conflict_without_overwriting_the_change()
         let before = std::fs::read(&path).unwrap();
         // The stale plan stays a no-op after restart: neither a late
         // correction nor a second corroboration can be published.
-        assert!(bank
-            .extraction_expected(&receipt, replacement.clone(), None, Some(&original))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            bank.extraction_expected(&receipt, replacement.clone(), None, Some(&original))
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let mut unrelated = record();
         unrelated.id = "unrelated".into();
         unrelated.text = "Birch archives retain monthly invoices.".into();
-        assert!(bank
-            .extraction_expected("different-effect", unrelated.clone(), None, None)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            bank.extraction_expected("different-effect", unrelated.clone(), None, None)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(bank.get(&unrelated.id).await.unwrap(), unrelated);
         assert_eq!(bank.get(&original.id).await.unwrap(), changed);
         let (other, _) = reopened.ensure_bank("other", None).await.unwrap();
@@ -458,19 +475,21 @@ async fn conflict_receipt_io_failure_is_not_swallowed_as_a_skipped_effect() {
     let path = bank.dir().join("memories.jsonl");
     let before = std::fs::read(&path).unwrap();
     read_only(&path, true);
-    assert!(bank
-        .extraction_expected("conflict", replacement.clone(), None, Some(&original))
-        .await
-        .is_err());
+    assert!(
+        bank.extraction_expected("conflict", replacement.clone(), None, Some(&original))
+            .await
+            .is_err()
+    );
     read_only(&path, false);
     assert!(!bank.extraction_seen("conflict").await);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(bank.get(&original.id).await.unwrap(), changed);
-    assert!(bank
-        .extraction_expected("conflict", replacement, None, Some(&original))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        bank.extraction_expected("conflict", replacement, None, Some(&original))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(bank.extraction_seen("conflict").await);
 }
 
@@ -502,11 +521,12 @@ async fn extraction_effects_only_append_to_a_large_log() {
         fact.id = format!("fact-{n}");
         fact.text = format!("Synthetic fact number {n} is appended.");
         let receipt = format!("source/private/{n}");
-        assert!(bank
-            .extraction_expected(&receipt, fact.clone(), None, None)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            bank.extraction_expected(&receipt, fact.clone(), None, None)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!(meta.ino(), inode, "the log was replaced, not appended");
         let mut appended = serde_json::to_vec(&fact).unwrap();
@@ -527,11 +547,12 @@ async fn extraction_effects_only_append_to_a_large_log() {
         fact.text = format!("Synthetic fact number {n} is appended.");
         assert!(bank.extraction_seen(&format!("source/private/{n}")).await);
         // A redelivered job creates no new revision.
-        assert!(bank
-            .extraction_expected(&format!("source/private/{n}"), fact, None, None)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            bank.extraction_expected(&format!("source/private/{n}"), fact, None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
     assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
 }
@@ -577,11 +598,12 @@ async fn a_stored_record_never_fails_an_extraction_effect() {
     let mut reinforced = flagged.clone();
     reinforced.corroboration = 1;
     reinforced.revision = 1;
-    assert!(bank
-        .extraction_expected("twin", reinforced, Some(&flagged), None)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        bank.extraction_expected("twin", reinforced, Some(&flagged), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let bank = Store::open(dir.path().into())
         .unwrap()

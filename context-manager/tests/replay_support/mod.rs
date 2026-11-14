@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use context_manager::config::WorkerConfig;
 use context_manager::functions::assemble::{self, AssembleOptions, AssembleRequest};
-use context_manager::ports::{lease_cell, Deps};
+use context_manager::ports::{Deps, lease_cell};
 use context_manager::types::{AgentMessage, ContentBlock, Model, ModelInput, ModelLimits, Role};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -202,7 +202,7 @@ pub async fn compare_decay_four(history: &ReplayHistory) -> Result<ReplayCompari
 /// only as the caller iterates, so one history is in memory at a time.
 pub fn read_directory(
     directory: &Path,
-) -> Result<impl Iterator<Item = Result<(String, ReplayHistory), String>>, String> {
+) -> Result<impl Iterator<Item = Result<(String, ReplayHistory), String>> + use<>, String> {
     let mut paths = session_paths(directory)?;
     paths.sort();
     Ok(paths.into_iter().map(|path| {

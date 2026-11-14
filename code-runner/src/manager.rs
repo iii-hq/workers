@@ -16,7 +16,7 @@ use iii_node_core::manager::RuntimeManager;
 use iii_python_core::manager::Manager as PythonManager;
 
 use crate::config::SharedConfig;
-use crate::error::{redact_unheld, CodeRunnerError};
+use crate::error::{CodeRunnerError, redact_unheld};
 use crate::functions::register::{RegisterRequest, RegisterResponse};
 use crate::functions::run::{RunRequest, RunResponse};
 use crate::functions::teardown::{TeardownRequest, TeardownResponse};
@@ -94,13 +94,13 @@ impl Manager {
                 let owner = self
                     .owner_of(id)
                     .ok_or_else(|| CodeRunnerError::RuntimeNotFound(id.clone()))?;
-                if let Some(asked) = asked {
-                    if asked != owner {
-                        return Err(CodeRunnerError::InvalidRequest(format!(
-                            "this runtime runs {owner}; omit `lang` or pass the matching one \
+                if let Some(asked) = asked
+                    && asked != owner
+                {
+                    return Err(CodeRunnerError::InvalidRequest(format!(
+                        "this runtime runs {owner}; omit `lang` or pass the matching one \
                              — languages cannot be mixed in one runtime"
-                        )));
-                    }
+                    )));
                 }
                 Ok(owner)
             }
@@ -339,13 +339,13 @@ impl Manager {
                 req.function_id.len()
             )));
         }
-        if let Some(d) = &req.description {
-            if d.len() > MAX_DESCRIPTION_BYTES {
-                return Err(invalid(format!(
-                    "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
-                    d.len()
-                )));
-            }
+        if let Some(d) = &req.description
+            && d.len() > MAX_DESCRIPTION_BYTES
+        {
+            return Err(invalid(format!(
+                "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
+                d.len()
+            )));
         }
 
         // The namespace IS the first segment; an id with no `::` cannot name
@@ -356,7 +356,7 @@ impl Manager {
                 return Err(invalid(format!(
                     "function id {:?} has no namespace; pass something like \"my-app::greet\"",
                     req.function_id
-                )))
+                )));
             }
         };
         // node-core's validator, shared rather than copied: the two languages
@@ -1551,13 +1551,14 @@ mod router_tests {
             "a failed registration left a pinned interpreter behind"
         );
         // And the namespace does not exist, so teardown says so.
-        assert!(m
-            .teardown(TeardownRequest {
+        assert!(
+            m.teardown(TeardownRequest {
                 runtime_id: None,
                 namespace: Some("pyorphan".into()),
             })
             .await
-            .is_err());
+            .is_err()
+        );
     }
 
     /// A non-callable `handler` is the same failure as a missing one — binding
@@ -1621,11 +1622,12 @@ mod router_tests {
         })
         .await
         .unwrap();
-        assert!(m
-            .node
-            .ids()
-            .claim_all(&["shared::fn".to_string()], "some-other-owner")
-            .is_ok());
+        assert!(
+            m.node
+                .ids()
+                .claim_all(&["shared::fn".to_string()], "some-other-owner")
+                .is_ok()
+        );
     }
 
     /// A registered function's runtime is exempt from the idle sweep: its

@@ -19,13 +19,13 @@
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::bus::{describe_bus_failure, Bus};
+use crate::bus::{Bus, describe_bus_failure};
 use crate::config::WorkerConfig;
 use crate::format::{self, Format};
 use crate::source::{Body, DocumentSource};
@@ -356,7 +356,7 @@ async fn render_pdf(
 
     let pages = match &req.pages {
         Some(pages) if pages.is_empty() => {
-            return Err("`pages` was empty; omit it to read the whole document".to_string())
+            return Err("`pages` was empty; omit it to read the whole document".to_string());
         }
         Some(pages) => {
             if pages.contains(&0) {
@@ -469,10 +469,10 @@ pub fn image_from_screenshot(value: &Value) -> Option<(String, String)> {
     for block in blocks {
         let data = block.get("data").and_then(Value::as_str);
         let mime = block.get("mime").and_then(Value::as_str);
-        if let (Some(mime), Some(data)) = (mime, data) {
-            if !data.is_empty() {
-                return Some((mime.to_string(), data.to_string()));
-            }
+        if let (Some(mime), Some(data)) = (mime, data)
+            && !data.is_empty()
+        {
+            return Some((mime.to_string(), data.to_string()));
         }
     }
     None

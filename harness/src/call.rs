@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use jsonschema::JSONSchema;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::clients::EngineClient;
@@ -370,10 +370,10 @@ pub(crate) fn compact_schema(schema: &mut Value) -> bool {
                 reachable.insert(name, body.clone());
             }
         }
-        if !reachable.is_empty() {
-            if let Some(object) = schema.as_object_mut() {
-                object.insert(key.to_string(), Value::Object(reachable));
-            }
+        if !reachable.is_empty()
+            && let Some(object) = schema.as_object_mut()
+        {
+            object.insert(key.to_string(), Value::Object(reachable));
         }
     }
     changed | strip_schema_boilerplate(schema)
@@ -502,21 +502,22 @@ fn inline_single_refs(
         .and_then(definition_name)
         .map(str::to_string);
     if let Some(name) = target {
-        if counts.get(&name) == Some(&1) && !stack.contains(&name) {
-            if let Some(body) = definitions.get(&name) {
-                let mut inlined = body.clone();
-                if let (Value::Object(target), Value::Object(site)) = (&mut inlined, &*node) {
-                    for (key, value) in site {
-                        if key != "$ref" {
-                            target.insert(key.clone(), value.clone());
-                        }
+        if counts.get(&name) == Some(&1)
+            && !stack.contains(&name)
+            && let Some(body) = definitions.get(&name)
+        {
+            let mut inlined = body.clone();
+            if let (Value::Object(target), Value::Object(site)) = (&mut inlined, &*node) {
+                for (key, value) in site {
+                    if key != "$ref" {
+                        target.insert(key.clone(), value.clone());
                     }
                 }
-                *node = inlined;
-                stack.push(name);
-                inline_single_refs(node, definitions, counts, stack);
-                stack.pop();
             }
+            *node = inlined;
+            stack.push(name);
+            inline_single_refs(node, definitions, counts, stack);
+            stack.pop();
         }
         return;
     }
@@ -1226,12 +1227,11 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
     if let Value::String(s) = value {
         return (vec![ContentBlock::text(s.clone())], is_error);
     }
-    if let Some(blocks) = value.get("content") {
-        if let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(blocks.clone()) {
-            if !parsed.is_empty() {
-                return (parsed, is_error);
-            }
-        }
+    if let Some(blocks) = value.get("content")
+        && let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(blocks.clone())
+        && !parsed.is_empty()
+    {
+        return (parsed, is_error);
     }
     let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
     (vec![ContentBlock::text(rendered)], is_error)
@@ -1406,10 +1406,12 @@ mod tests {
             "request_schema": { "required": ["source"] }
         });
         post_filter_info(&mut info, &policy);
-        assert!(info["description"]
-            .as_str()
-            .unwrap()
-            .contains("omit `target`"));
+        assert!(
+            info["description"]
+                .as_str()
+                .unwrap()
+                .contains("omit `target`")
+        );
         let schema = serde_json::to_string(&info["request_schema"]).unwrap();
         assert!(
             schema.contains("lifecycle"),
@@ -1421,10 +1423,12 @@ mod tests {
             { "function_id": "state::get", "description": "Get a value from state" }
         ]});
         post_filter_discovery(&mut list, &policy);
-        assert!(list["functions"][0]["description"]
-            .as_str()
-            .unwrap()
-            .contains("omit `target`"));
+        assert!(
+            list["functions"][0]["description"]
+                .as_str()
+                .unwrap()
+                .contains("omit `target`")
+        );
         assert_eq!(
             list["functions"][1]["description"],
             "Get a value from state"
@@ -1701,10 +1705,12 @@ mod tests {
             prepare_info_result("call_3", &arguments, &data, &ledger("call_2", 2), true);
         let third = shown(&third);
         assert_eq!(third["contract_status"], "unchanged_in_context");
-        assert!(third["note"]
-            .as_str()
-            .unwrap()
-            .contains("call worker::function now"));
+        assert!(
+            third["note"]
+                .as_str()
+                .unwrap()
+                .contains("call worker::function now")
+        );
         assert_eq!(
             updates,
             vec![("worker::function".to_string(), entry("call_2", 3))]
@@ -1756,10 +1762,12 @@ mod tests {
         let (next, _) = prepare_info_result("call_4", &arguments, &data, &ledger, true);
         let next: Value = serde_json::from_str(&ContentBlock::join_text(&next.content)).unwrap();
         assert_eq!(next["contract_status"], "unchanged_in_context");
-        assert!(next["note"]
-            .as_str()
-            .unwrap()
-            .contains("call worker::function now"));
+        assert!(
+            next["note"]
+                .as_str()
+                .unwrap()
+                .contains("call worker::function now")
+        );
     }
 
     #[test]
@@ -2909,9 +2917,11 @@ mod tests {
         // id nothing permitted resembles.
         assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
         assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
-        assert!(!denied_result("web::fetch").details["message"]
-            .as_str()
-            .unwrap()
-            .contains("did you mean"));
+        assert!(
+            !denied_result("web::fetch").details["message"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean")
+        );
     }
 }

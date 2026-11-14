@@ -914,7 +914,8 @@ impl ShellConfig {
     /// JSON Schema registered with the configuration worker so operators get
     /// a typed editing surface.
     pub fn json_schema() -> serde_json::Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
+        let root =
+            schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
         serde_json::to_value(root).expect("ShellConfig JSON Schema serializes")
     }
 }
@@ -992,9 +993,10 @@ mod tests {
     #[test]
     fn test_denylist_blocks_dangerous_form_but_not_benign() {
         let c = cfg_with_deny(vec![r"--checkpoint-action"]);
-        assert!(c
-            .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
-            .is_ok());
+        assert!(
+            c.is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
+                .is_ok()
+        );
         let err = c
             .is_command_allowed(&[
                 "tar".into(),

@@ -11,7 +11,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const FS_SCOPE_FIELD: &str = "fs_scope";
 pub const FILESYSTEM_ACCESS_WATCH_ID: &str = "approval::filesystem-access-watch";

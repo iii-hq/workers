@@ -27,12 +27,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::CodeRunnerConfig;
 use crate::engine::{Engine, UnregisterFn};
 use crate::error::{
-    classify_probe_error, classify_sandbox_error, CodeRunnerError, ProbeOutcome, SandboxFailure,
+    CodeRunnerError, ProbeOutcome, SandboxFailure, classify_probe_error, classify_sandbox_error,
 };
 use crate::events::{Emitter, Event};
 use crate::functions::list_runtimes::{ListRuntimesResponse, RuntimeSummary};
@@ -493,17 +493,16 @@ impl RuntimeManager {
                     FS_TIMEOUT_MS,
                 )
                 .await
+                && !matches!(classify_sandbox_error(&stop_raw), SandboxFailure::Gone)
             {
-                if !matches!(classify_sandbox_error(&stop_raw), SandboxFailure::Gone) {
-                    // No caller ever received this runtime's id, so a
-                    // failed stop here leaks a daemon slot for the full
-                    // idle TTL silently.
-                    tracing::warn!(
-                        error = %stop_raw,
-                        "sandbox::stop failed after a failed runner plant; it will hold a \
-                         daemon slot until its own idle TTL"
-                    );
-                }
+                // No caller ever received this runtime's id, so a
+                // failed stop here leaks a daemon slot for the full
+                // idle TTL silently.
+                tracing::warn!(
+                    error = %stop_raw,
+                    "sandbox::stop failed after a failed runner plant; it will hold a \
+                     daemon slot until its own idle TTL"
+                );
             }
             return Err(Self::map_failure(&raw));
         }
@@ -600,14 +599,14 @@ impl RuntimeManager {
 
         if let Some(id) = &req.runtime_id {
             let record = self.get(id)?;
-            if let Some(lang) = req.lang {
-                if lang != record.lang {
-                    return Err(CodeRunnerError::InvalidRequest(format!(
-                        "this runtime runs {:?}; omit `lang` or pass the matching one — \
+            if let Some(lang) = req.lang
+                && lang != record.lang
+            {
+                return Err(CodeRunnerError::InvalidRequest(format!(
+                    "this runtime runs {:?}; omit `lang` or pass the matching one — \
                          languages cannot be mixed in one runtime",
-                        record.lang
-                    )));
-                }
+                    record.lang
+                )));
             }
             let mut resp = self.run_into(id, &record, &req.code, timeout_ms).await?;
             resp.runtime_id = Some(id.clone());
@@ -805,13 +804,12 @@ impl RuntimeManager {
                 FS_TIMEOUT_MS,
             )
             .await
+            && !matches!(classify_sandbox_error(&raw), SandboxFailure::Gone)
         {
-            if !matches!(classify_sandbox_error(&raw), SandboxFailure::Gone) {
-                tracing::warn!(
-                    error = %raw,
-                    "sandbox::stop failed during teardown; the daemon's idle reaper is the backstop"
-                );
-            }
+            tracing::warn!(
+                error = %raw,
+                "sandbox::stop failed during teardown; the daemon's idle reaper is the backstop"
+            );
         }
 
         Ok(unregistered)
@@ -971,13 +969,13 @@ impl RuntimeManager {
         let mut namespace = record.namespace.lock().unwrap();
         let functions = record.functions.lock().unwrap();
 
-        if let Some(existing) = namespace.as_ref() {
-            if existing != ns {
-                return Err(CodeRunnerError::InvalidRequest(format!(
-                    "registered id {function_id:?} must start with this runtime's namespace \
+        if let Some(existing) = namespace.as_ref()
+            && existing != ns
+        {
+            return Err(CodeRunnerError::InvalidRequest(format!(
+                "registered id {function_id:?} must start with this runtime's namespace \
                      {existing:?} — rename the id, or use a runtime whose namespace covers it"
-                )));
-            }
+            )));
         }
         if claims.contains_key(function_id) {
             return Err(CodeRunnerError::InvalidRequest(format!(
@@ -1035,12 +1033,12 @@ impl RuntimeManager {
                 "function id is longer than {MAX_FUNCTION_ID_BYTES} bytes"
             )));
         }
-        if let Some(d) = &req.description {
-            if d.len() > MAX_DESCRIPTION_BYTES {
-                return Err(CodeRunnerError::InvalidRequest(format!(
-                    "description is longer than {MAX_DESCRIPTION_BYTES} bytes"
-                )));
-            }
+        if let Some(d) = &req.description
+            && d.len() > MAX_DESCRIPTION_BYTES
+        {
+            return Err(CodeRunnerError::InvalidRequest(format!(
+                "description is longer than {MAX_DESCRIPTION_BYTES} bytes"
+            )));
         }
         let ns = namespace_of(&req.function_id).map_err(CodeRunnerError::InvalidRequest)?;
 
@@ -1134,7 +1132,7 @@ impl RuntimeManager {
                 return Err(CodeRunnerError::InvalidRequest(format!(
                     "function id {} is already registered on the bus",
                     req.function_id
-                )))
+                )));
             }
             Err(raw) => {
                 // `classify_probe_error` distinguishes "the target id is
@@ -1424,10 +1422,12 @@ mod tests {
                 args[0], "/opt/sandbox-code-runner/run.mjs",
                 "code runs UNDER THE RUN WRAPPER, never the bare interpreter"
             );
-            assert!(args[1]
-                .as_str()
-                .unwrap()
-                .starts_with("/tmp/sandbox-code-runner/run-"));
+            assert!(
+                args[1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/tmp/sandbox-code-runner/run-")
+            );
             Ok(ok_exec())
         });
         let m = RuntimeManager::new(cfg(), fake.clone(), "ws://127.0.0.1:1");
@@ -2331,10 +2331,12 @@ mod tests {
             let args = payload["args"].as_array().expect("argv array");
             assert_eq!(args.len(), 2, "the sentinel must NOT be in argv: {args:?}");
             assert_eq!(args[0], "/opt/sandbox-code-runner/invoke.mjs");
-            assert!(args[1]
-                .as_str()
-                .unwrap()
-                .starts_with("/opt/sandbox-code-runner/fns/"));
+            assert!(
+                args[1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/opt/sandbox-code-runner/fns/")
+            );
             let env = decode_envelope(payload);
             let sentinel = env["sentinel"]
                 .as_str()
@@ -3135,8 +3137,9 @@ mod tests {
         let seen = recorder.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|e| e["kind"] == "teardown"));
-        assert!(seen
-            .iter()
-            .all(|e| e["runtime_id"].as_str().unwrap().starts_with("rt-")));
+        assert!(
+            seen.iter()
+                .all(|e| e["runtime_id"].as_str().unwrap().starts_with("rt-"))
+        );
     }
 }

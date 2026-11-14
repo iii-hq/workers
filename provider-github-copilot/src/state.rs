@@ -5,7 +5,7 @@
 //! is cheap to re-exchange on boot.
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const STATE_SCOPE: &str = "provider-github-copilot";
 const TOKEN_KEY: &str = "registration_token";

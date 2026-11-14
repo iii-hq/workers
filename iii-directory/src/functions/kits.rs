@@ -14,7 +14,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::events;
@@ -284,7 +284,7 @@ impl Ctx {
         &self,
         plan_id: String,
         kit: String,
-    ) -> impl Fn(&ApplyProgress) + Send + Sync {
+    ) -> impl Fn(&ApplyProgress) + Send + Sync + use<> {
         let iii = self.iii.clone();
         let kits = self.sources.kits;
         let rt = tokio::runtime::Handle::current();
@@ -828,11 +828,12 @@ mod tests {
         let old = cell
             .get_with(&cfg, || async { Some("0.25.1".to_string()) })
             .await;
-        assert!(old
-            .detail("a/k", "latest")
-            .await
-            .unwrap_err()
-            .starts_with("D521"));
+        assert!(
+            old.detail("a/k", "latest")
+                .await
+                .unwrap_err()
+                .starts_with("D521")
+        );
         let new = cell
             .get_with(&cfg, || async { Some("0.26.0".to_string()) })
             .await;

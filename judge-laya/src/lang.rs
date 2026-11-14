@@ -9,8 +9,8 @@
 //! they differ from Python's only on characters Unicode 16 leaves unassigned,
 //! and on `ʕ` (see `is_lower`). Lengths and slices count characters, as
 //! Python does.
-use icu_properties::props::CanonicalCombiningClass;
 use icu_properties::CodePointMapData;
+use icu_properties::props::CanonicalCombiningClass;
 use regex::{Captures, Regex};
 use serde_json::Value;
 use std::cmp::Reverse;
@@ -592,11 +592,11 @@ fn has_non_latin_word(text: &str) -> bool {
         .filter(|&c| ccc.get(c) == CanonicalCombiningClass::NotReordered)
     {
         let script = script_of(ch);
-        if let Some((current, _, len)) = &mut run {
-            if Some(*current) == script {
-                *len += 1;
-                continue;
-            }
+        if let Some((current, _, len)) = &mut run
+            && Some(*current) == script
+        {
+            *len += 1;
+            continue;
         }
         if is_word(run) {
             return true;
@@ -889,13 +889,12 @@ pub fn analyse(state: &Value) -> Detection {
     if detection.script == "latin"
         && detection.is_english
         && (leaves.len() > 1 || leaves.iter().any(|leaf| leaf.contains('\n')))
+        && let Some((language, segment)) = non_english_segment(&leaves)
     {
-        if let Some((language, segment)) = non_english_segment(&leaves) {
-            detection.language = Some(language);
-            detection.is_english = false;
-            detection.language_undecided = false;
-            detection.mixed_segment = Some(segment);
-        }
+        detection.language = Some(language);
+        detection.is_english = false;
+        detection.language_undecided = false;
+        detection.mixed_segment = Some(segment);
     }
     // A plain string was read whole. A structured state can still hide a
     // message past the 4000-character window (a long English note sorting

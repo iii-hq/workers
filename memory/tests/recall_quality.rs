@@ -35,8 +35,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use memory::config::WorkerConfig;
-use memory::store::{Store, STOPWORDS};
-use memory::types::{fingerprint, now_ms, Confidence, Memory};
+use memory::store::{STOPWORDS, Store};
+use memory::types::{Confidence, Memory, fingerprint, now_ms};
 use serde::{Deserialize, Serialize};
 
 /// Embedding model the cached vectors come from, and the prefix of it kept.

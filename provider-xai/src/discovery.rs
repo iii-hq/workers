@@ -8,8 +8,8 @@ use crate::curated::{base_id, enrich, is_legacy_generation};
 use crate::errors::upstream_unavailable;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::model::Model;
 use llm_router::types::router::{
     DiscoveryCode, DiscoveryOutcome, DiscoveryRefreshResponse, DiscoveryReport,
@@ -195,10 +195,14 @@ async fn fetch_live_models(
             }
             Ok(None) => break,
             Ok(Some(_)) => {
-                return FetchOutcome::failure(DiscoveryOutcome::InvalidResponse, Some(status), None)
+                return FetchOutcome::failure(
+                    DiscoveryOutcome::InvalidResponse,
+                    Some(status),
+                    None,
+                );
             }
             Err(_) => {
-                return FetchOutcome::failure(DiscoveryOutcome::Unavailable, Some(status), None)
+                return FetchOutcome::failure(DiscoveryOutcome::Unavailable, Some(status), None);
             }
         }
     }
@@ -286,9 +290,9 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<DiscoveryRefreshResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move { refresh_models(&iii, &http).await })

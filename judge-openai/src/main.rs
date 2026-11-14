@@ -1,7 +1,7 @@
 //! Boot the OpenAI Decisions provider using the shared configuration-client lifecycle.
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_openai::{configuration, register, DecisionsClient};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
+use judge_openai::{DecisionsClient, configuration, register};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -19,7 +19,8 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     // The SDK records every handler's input and output as span events; inputs
     // here are caller content. Set before the runtime spawns any thread.
-    std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1");
+    // SAFETY: runs first in main, before the runtime or any other thread starts.
+    unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -73,7 +74,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("OpenAI judge worker ready");

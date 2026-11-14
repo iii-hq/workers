@@ -434,10 +434,12 @@ async fn registry_judge_failure_uses_the_available_hybrid_ranking() {
     );
     cfg.function_search_mode = FunctionSearchMode::Lexical;
     deps.config.store(Arc::new(cfg));
-    assert!(ask(&deps, &["compose an email"])
-        .await
-        .installable
-        .is_empty());
+    assert!(
+        ask(&deps, &["compose an email"])
+            .await
+            .installable
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -445,10 +447,12 @@ async fn exact_ids_and_intrinsic_capabilities_need_no_remote_call() {
     let (judge, requests) = scoring(0.9);
     let deps = deps(judge);
     assert_eq!(ids(&ask(&deps, &["mail::send"]).await), ["mail::send"]);
-    assert!(ask(&deps, &["summarize provided text"])
-        .await
-        .workers
-        .is_empty());
+    assert!(
+        ask(&deps, &["summarize provided text"])
+            .await
+            .workers
+            .is_empty()
+    );
     assert!(requests.lock().unwrap().is_empty());
 }
 
@@ -582,16 +586,20 @@ async fn judge_registry_candidates_preserve_owners_and_limits() {
     assert_eq!(worker.version, "1.2.3");
     assert_eq!(worker.install.payload, json!({"worker":"courier"}));
     assert_eq!(worker.functions.len(), MAX_INSTALLABLE_FUNCTIONS);
-    assert!(worker
-        .functions
-        .iter()
-        .all(|f| f.function_id.starts_with("courier::send")));
+    assert!(
+        worker
+            .functions
+            .iter()
+            .all(|f| f.function_id.starts_with("courier::send"))
+    );
     assert!(ids(&response).iter().all(|id| !id.starts_with("courier::")));
     let bodies = bodies(&requests);
     assert_eq!(bodies.len(), 2);
-    assert!(bodies
-        .iter()
-        .all(|body| !body.to_string().contains("courier::private")));
+    assert!(
+        bodies
+            .iter()
+            .all(|body| !body.to_string().contains("courier::private"))
+    );
 }
 
 #[tokio::test]
@@ -661,7 +669,7 @@ async fn registry_judge_failure_preserves_an_exact_lane_among_lexical_matches() 
 
 #[tokio::test]
 async fn mode_reload_waits_for_an_in_progress_hybrid_activation() {
-    use crate::configuration::{apply_config, SharedState};
+    use crate::configuration::{SharedState, apply_config};
     use crate::functions::skills::RegisteredWorkersCache;
     let deps = deps(JudgeSearch::default());
     deps.semantic.set_enabled(false);
@@ -738,7 +746,7 @@ async fn concurrent_refreshes_keep_the_requested_index_on_the_current_catalog() 
 
 #[tokio::test]
 async fn switching_from_lexical_to_judge_prepares_hybrid_and_keeps_the_index_fresh() {
-    use crate::configuration::{apply_config, SharedState};
+    use crate::configuration::{SharedState, apply_config};
     use crate::functions::skills::RegisteredWorkersCache;
     let deps = deps(JudgeSearch::default());
     deps.semantic.set_enabled(false);
@@ -847,9 +855,11 @@ async fn judge_lists_installed_skills_matching_the_capabilities() {
             "How to compose and send a message with mail::send."
         )]
     );
-    assert!(response
-        .guidance
-        .contains("directory::skills::get { \"id\": \"<id>\" }"));
+    assert!(
+        response
+            .guidance
+            .contains("directory::skills::get { \"id\": \"<id>\" }")
+    );
     let bodies = bodies(&requests);
     let skill_block = bodies
         .iter()
@@ -864,10 +874,12 @@ async fn judge_lists_installed_skills_matching_the_capabilities() {
         "Compose mail: How to compose and send a message with mail::send."
     );
     assert!(skill_block["state"].get("functions").is_none());
-    assert!(skill_block["questions"]["c0_f0"]["instructions"]
-        .as_str()
-        .unwrap()
-        .starts_with("Does the skill document described in state.skills.f0"));
+    assert!(
+        skill_block["questions"]["c0_f0"]["instructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("Does the skill document described in state.skills.f0")
+    );
     // The function evaluation is untouched by the skills corpus.
     let function_block = bodies
         .iter()
@@ -967,18 +979,24 @@ async fn judge_ranks_observers_through_the_observers_corpus() {
     let bodies = bodies(&requests);
     assert_eq!(bodies.len(), 1);
     let body = &bodies[0];
-    assert!(body["state"]["observers"]["f0"]["description"]
-        .as_str()
-        .unwrap()
-        .starts_with("cron::on-tick observer runs harness::sweep-pending"));
-    assert!(body["state"]["observers"]["f0"]
-        .get("observer_id")
-        .is_none());
+    assert!(
+        body["state"]["observers"]["f0"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("cron::on-tick observer runs harness::sweep-pending")
+    );
+    assert!(
+        body["state"]["observers"]["f0"]
+            .get("observer_id")
+            .is_none()
+    );
     assert!(body["state"].get("functions").is_none());
-    assert!(body["questions"]["c0_f0"]["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("state.observers.f0"));
+    assert!(
+        body["questions"]["c0_f0"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("state.observers.f0")
+    );
 }
 
 #[tokio::test]

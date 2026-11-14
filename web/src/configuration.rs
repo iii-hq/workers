@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use iii_config_client as config_client;
 use iii_sdk::{IIIClient, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{SharedConfig, WebConfig};
 use crate::functions::inject_guidance;
@@ -88,8 +88,7 @@ fn spec() -> config_client::EntrySpec {
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "web",
-        description:
-            "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
+        description: "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
         schema: WebConfig::json_schema(),
         default_value: WebConfig::default().to_json(),
     }

@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use iii_sdk::{CallAction, CallRequest, IIIClient};
 use std::sync::Arc;
 
-use super::new_mail::{NewMailEvent, ON_NEW_MAIL_FN};
 use super::Event;
+use super::new_mail::{NewMailEvent, ON_NEW_MAIL_FN};
 
 #[async_trait]
 pub trait EventDispatcher: Send + Sync {

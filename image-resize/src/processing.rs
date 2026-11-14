@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use image::codecs::jpeg::JpegEncoder;
-use image::{imageops::FilterType, DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
@@ -480,10 +480,12 @@ mod tests {
         };
         let result = resolve_params(&config, &metadata);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unsupported format"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported format")
+        );
     }
 
     #[test]

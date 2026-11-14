@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 
 #[derive(Debug, Clone)]
 pub struct GitOutput {
@@ -56,15 +56,15 @@ async fn run_git_inner(
         let mut child = cmd
             .spawn()
             .map_err(|e| WError::new(codes::GIT_SPAWN, format!("spawn git: {e}")))?;
-        if let Some(data) = stdin_data {
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                stdin
-                    .write_all(data)
-                    .await
-                    .map_err(|e| WError::new(codes::GIT_SPAWN, format!("write git stdin: {e}")))?;
-                drop(stdin);
-            }
+        if let Some(data) = stdin_data
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(data)
+                .await
+                .map_err(|e| WError::new(codes::GIT_SPAWN, format!("write git stdin: {e}")))?;
+            drop(stdin);
         }
         child
             .wait_with_output()

@@ -8,7 +8,7 @@ use std::time::Duration;
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use iii_sdk::{CallRequest, Capture, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use session_manager::events::EventKind;
 

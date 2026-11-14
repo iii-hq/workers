@@ -168,11 +168,12 @@ pub fn spawn_project(deps: &Deps, record: TurnRecord) {
         if deps.compactions.is_running(&record.session_id) {
             return;
         }
-        if let Some(current) = current {
-            if current.turn_id == record.turn_id && current.status.is_terminal() {
-                let session = deps.session().await;
-                project(&session, &current).await;
-            }
+        if let Some(current) = current
+            && current.turn_id == record.turn_id
+            && current.status.is_terminal()
+        {
+            let session = deps.session().await;
+            project(&session, &current).await;
         }
     });
 }

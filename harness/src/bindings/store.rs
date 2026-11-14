@@ -142,7 +142,7 @@ impl BindingStore {
                 return Err(HarnessError::State(format!(
                     "binding id {} already exists",
                     binding.id
-                )))
+                )));
             }
         }
 
@@ -320,7 +320,7 @@ impl BindingStore {
                             return Err(HarnessError::State(format!(
                                 "binding {} is unreadable mid-claim: {e}",
                                 binding.id
-                            )))
+                            )));
                         }
                     }
                 }
@@ -545,9 +545,11 @@ mod tests {
     fn a_keyless_binding_never_matches_a_duplicate_probe() {
         let key = json!({ "function_id": "cron::on-tick" });
         let all = vec![binding("a", "s1", None)];
-        assert!(owned(&all, "s1")
-            .into_iter()
-            .all(|b| b.dedup_key.as_ref() != Some(&key)));
+        assert!(
+            owned(&all, "s1")
+                .into_iter()
+                .all(|b| b.dedup_key.as_ref() != Some(&key))
+        );
     }
 
     #[test]

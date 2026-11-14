@@ -208,7 +208,7 @@ pub async fn start_rabbitmq() -> Option<RabbitMqContainer> {
 
 #[cfg(feature = "rabbitmq")]
 async fn wait_until_amqp_ready(container: &RabbitMqContainer) -> bool {
-    use tokio::time::{sleep, Duration, Instant};
+    use tokio::time::{Duration, Instant, sleep};
 
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use nix::errno::Errno;
-use nix::sys::signal::{kill, killpg, Signal};
+use nix::sys::signal::{Signal, kill, killpg};
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
 

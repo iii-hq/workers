@@ -3,7 +3,7 @@
 [package]
 name = "sentinel"
 version = "0.2.4"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]

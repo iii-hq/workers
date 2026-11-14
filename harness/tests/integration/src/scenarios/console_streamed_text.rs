@@ -1,7 +1,7 @@
 //! UI-001 — Playwright sends a Console turn and validates the rendered result.
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send, Tool};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send, Tool};
 use crate::fixtures::ScenarioFixture;
 
 pub(super) fn scenario() -> ScenarioFixture {

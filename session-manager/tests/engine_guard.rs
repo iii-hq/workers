@@ -9,7 +9,7 @@ use engine_guard::{
     harness_worker_name, skip_after_probe, skip_after_registering, skip_before_registering,
 };
 use iii_sdk::runtime::IIIConnectionState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const URL: &str = "ws://127.0.0.1:49611";
 const HARNESS: &str = "session-manager-bdd:4242";
@@ -79,8 +79,11 @@ fn an_engine_running_session_manager_skips_them() {
          `session-manager` is connected; worker `session-manager` already serves \
          `session::create` and 2 more `session::*` function(s))."
     ));
-    assert!(why
-        .ends_with("with no session-manager (e.g. a bare `iii --config <file>` on a free port)."));
+    assert!(
+        why.ends_with(
+            "with no session-manager (e.g. a bare `iii --config <file>` on a free port)."
+        )
+    );
 }
 
 // A session-manager under another name (III_WORKER_NAME, a compose
@@ -232,12 +235,16 @@ fn after_registering_a_session_function_without_a_worker_skips_them() {
 
 #[test]
 fn after_registering_an_unreadable_listing_skips_them() {
-    assert!(after(Err("timeout".into()))
-        .expect("must skip")
-        .contains("engine::functions::list failed (timeout)"));
-    assert!(after(Ok(json!({ "functions": null })))
-        .expect("must skip")
-        .contains("answered without a `functions` list"));
+    assert!(
+        after(Err("timeout".into()))
+            .expect("must skip")
+            .contains("engine::functions::list failed (timeout)")
+    );
+    assert!(
+        after(Ok(json!({ "functions": null })))
+            .expect("must skip")
+            .contains("answered without a `functions` list")
+    );
 }
 
 #[test]

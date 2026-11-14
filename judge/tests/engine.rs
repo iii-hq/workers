@@ -5,10 +5,10 @@ mod support;
 
 use std::{sync::Arc, time::Duration};
 
-use judge_contract::{EvaluateResponse, CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID};
+use judge_contract::{CANCEL_FUNCTION_ID, EvaluateResponse, FUNCTION_ID, MODELS_FUNCTION_ID};
 use judge_typesafe::{JevClient, JevConfig};
-use serde_json::{json, Value};
-use support::{connect, invoke, wait_for, Engine};
+use serde_json::{Value, json};
+use support::{Engine, connect, invoke, wait_for};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -156,7 +156,7 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
 #[tokio::test]
 #[ignore = "requires III_ENGINE_BIN; starts an isolated real engine, uses only local mocked HTTP"]
 async fn hub_routes_judge_openai_by_provider_and_session_baggage() {
-    use opentelemetry::{baggage::BaggageExt, context::FutureExt, Context, KeyValue};
+    use opentelemetry::{Context, KeyValue, baggage::BaggageExt, context::FutureExt};
     // What the harness stamps per turn for the calling session's judge.
     let session = |provider: &'static str| {
         Context::current_with_baggage(vec![KeyValue::new(

@@ -12,7 +12,7 @@ mod tui;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::compose::Compose;
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
 fn watch_for_termination(compose: Arc<Compose>) {
     #[cfg(unix)]
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let (Ok(mut term), Ok(mut hup)) = (
             signal(SignalKind::terminate()),
             signal(SignalKind::hangup()),

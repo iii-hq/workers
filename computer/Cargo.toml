@@ -6,7 +6,7 @@ exclude = ["vendor/xa11y-linux", "vendor/xa11y-macos"]
 [package]
 name = "computer"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use tokio::sync::OnceCell;
 
 static ENGINE: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();

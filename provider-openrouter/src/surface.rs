@@ -19,8 +19,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::openrouter::stream";
-pub const STREAM_DESC: &str =
-    "Stream an OpenRouter chat completion: resolve credentials, call the upstream \
+pub const STREAM_DESC: &str = "Stream an OpenRouter chat completion: resolve credentials, call the upstream \
      Chat Completions API, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::openrouter::abort";
@@ -28,14 +27,12 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::openrouter::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the OpenRouter catalog slice from GET /api/v1/models — ids, context \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenRouter catalog slice from GET /api/v1/models — ids, context \
      windows, pricing, and capabilities all come from the live listing — and \
      reconcile it through the router; returns the model count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openrouter::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

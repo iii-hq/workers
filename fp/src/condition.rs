@@ -28,11 +28,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::util::{when, WhenOp};
+use crate::util::{WhenOp, when};
 
 pub const CONDITION_ID: &str = "fp::condition";
-pub const CONDITION_DESC: &str =
-    "Harness observer guard: compare a JSON pointer inside the observed event and answer \
+pub const CONDITION_DESC: &str = "Harness observer guard: compare a JSON pointer inside the observed event and answer \
      { decision: \"allow\" | \"skip\", reason }; config is { path?, op, to?, negate? } with \
      the fp::when ops. A pointer that resolves to nothing SKIPS rather than erroring.";
 // Filters one event at a time — not a fan-in gate (that is state::barrier).
@@ -282,10 +281,12 @@ mod tests {
 
     #[test]
     fn the_envelope_requires_an_event_and_config() {
-        assert!(serde_json::from_value::<ConditionInput>(json!({
-            "condition_config": { "op": "exists" }
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ConditionInput>(json!({
+                "condition_config": { "op": "exists" }
+            }))
+            .is_err()
+        );
 
         let input: ConditionInput = serde_json::from_value(json!({ "event": { "n": 1 } })).unwrap();
         let err = evaluate(input).unwrap_err();

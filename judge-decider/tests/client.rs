@@ -2,7 +2,7 @@
 mod support;
 
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use support::tiny_client;
 
 fn request(extra: Value) -> EvaluateRequest {

@@ -4,8 +4,8 @@
 
 use std::collections::HashSet;
 
-use xmloxide::tree::NodeKind;
 use xmloxide::NodeId;
+use xmloxide::tree::NodeKind;
 
 use crate::scrapling::dom::{self, Doc, ElementRef};
 use crate::scrapling::query;

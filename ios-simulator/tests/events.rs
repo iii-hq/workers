@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use ios_simulator::events::{
     Events, FrameArgs, ON_ACTIVITY_FN, ON_DEVICE_CHANGED_FN, ON_FRAME_EVENT_FN, ON_MEDIA_CHANGED_FN,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;

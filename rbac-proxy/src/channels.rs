@@ -69,10 +69,10 @@ async fn bridge(client: WebSocket, engine_url: String, channel_id: String, query
     let client_to_engine = async {
         while let Some(Ok(msg)) = client_rx.next().await {
             let is_close = matches!(msg, AxumMessage::Close(_));
-            if let Some(out) = axum_to_tungstenite(msg) {
-                if engine_tx.send(out).await.is_err() {
-                    break;
-                }
+            if let Some(out) = axum_to_tungstenite(msg)
+                && engine_tx.send(out).await.is_err()
+            {
+                break;
             }
             if is_close {
                 break;
@@ -84,10 +84,10 @@ async fn bridge(client: WebSocket, engine_url: String, channel_id: String, query
     let engine_to_client = async {
         while let Some(Ok(msg)) = engine_rx.next().await {
             let is_close = matches!(msg, TungMessage::Close(_));
-            if let Some(out) = tungstenite_to_axum(msg) {
-                if client_tx.send(out).await.is_err() {
-                    break;
-                }
+            if let Some(out) = tungstenite_to_axum(msg)
+                && client_tx.send(out).await.is_err()
+            {
+                break;
             }
             if is_close {
                 break;

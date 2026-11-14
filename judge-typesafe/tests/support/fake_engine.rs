@@ -3,7 +3,7 @@
 //! text frame to `handle` and sends back the frames it returns.
 //! Shared by the hub and provider test crates through `#[path]`.
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 

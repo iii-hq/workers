@@ -2,7 +2,7 @@
 //! scrapling/src/schemas.py (goldens are generated FROM that file — this
 //! module must match it, key order included; serde_json preserve_order).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct FunctionSpec {
     pub function_id: &'static str,

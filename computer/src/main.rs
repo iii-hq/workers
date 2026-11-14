@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 
 use computer::config::WorkerConfig;
 use computer::events::{self, IiiEventSink};
@@ -178,14 +178,17 @@ mod tests {
     #[test]
     fn cli_reads_iii_url_from_environment() {
         let previous = std::env::var_os("III_URL");
-        std::env::set_var("III_URL", "ws://127.0.0.1:49234");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("III_URL", "ws://127.0.0.1:49234") };
 
         let cli = Cli::try_parse_from(["computer"]).expect("parse computer CLI");
 
         if let Some(value) = previous {
-            std::env::set_var("III_URL", value);
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            unsafe { std::env::set_var("III_URL", value) };
         } else {
-            std::env::remove_var("III_URL");
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            unsafe { std::env::remove_var("III_URL") };
         }
 
         assert_eq!(cli.url, "ws://127.0.0.1:49234");

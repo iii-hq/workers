@@ -2,13 +2,13 @@ use judge_contract::{
     Answer, EvaluateRequest, EvaluateResponse, Evaluation, ModelsRequest, ModelsResponse, Question,
     Stats,
 };
-use judge_typesafe::{ExecutionLimits, JevClient, RetryPolicy, DEFAULT_MODEL, DEFAULT_RETRY};
-use serde_json::{json, Value};
+use judge_typesafe::{DEFAULT_MODEL, DEFAULT_RETRY, ExecutionLimits, JevClient, RetryPolicy};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -782,9 +782,11 @@ async fn models_get_uses_origin_credentials_and_returns_unfiltered_cards_without
     let seen = server.observed.requests.lock().unwrap();
     assert!(seen[0].0.is_null());
     assert!(seen[0].1.starts_with("get /v1/models http/1.1\r\n"));
-    assert!(seen[0]
-        .1
-        .contains("authorization: bearer snapshot-test-key"));
+    assert!(
+        seen[0]
+            .1
+            .contains("authorization: bearer snapshot-test-key")
+    );
 }
 
 #[tokio::test]
@@ -1262,7 +1264,11 @@ async fn streaming_bodies_cannot_bypass_configured_response_limits() {
             };
             body["metadata"] = json!("x".repeat(1024));
             let body = body.to_string();
-            let wire = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",body.len(),body);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                body.len(),
+                body
+            );
             stream.write_all(wire.as_bytes()).await.unwrap();
         }
     });

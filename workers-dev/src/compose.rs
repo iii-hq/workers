@@ -11,14 +11,14 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use iii_sdk::runtime::{FunctionRef, IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverState,
-    RegisterFunction, Source, WorkerIdentityMode,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverState, RegisterFunction,
+    Source, WorkerIdentityMode, register_worker,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::sync::OnceCell;
 use tokio::time;
@@ -772,18 +772,17 @@ impl Compose {
     async fn await_daemon(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(DAEMON_READY_TIMEOUT_MS);
         loop {
-            if let Some(daemon) = self.daemon.lock().await.as_mut() {
-                if let Some(child) = daemon.child.as_mut() {
-                    if let Ok(Some(exit)) = child.try_wait() {
-                        let tail = crate::logs::tail_file(&self.config.daemon_log_path, 4096);
-                        let reason = tail.iter().rev().take(8).rev().cloned().collect::<Vec<_>>();
-                        bail!(
-                            "iii compose exited ({exit}) before serving {}:\n{}",
-                            self.config.namespace,
-                            reason.join("\n")
-                        );
-                    }
-                }
+            if let Some(daemon) = self.daemon.lock().await.as_mut()
+                && let Some(child) = daemon.child.as_mut()
+                && let Ok(Some(exit)) = child.try_wait()
+            {
+                let tail = crate::logs::tail_file(&self.config.daemon_log_path, 4096);
+                let reason = tail.iter().rev().take(8).rev().cloned().collect::<Vec<_>>();
+                bail!(
+                    "iii compose exited ({exit}) before serving {}:\n{}",
+                    self.config.namespace,
+                    reason.join("\n")
+                );
             }
             if self.wait_for_daemon(1).await.is_ok() {
                 return Ok(());
@@ -808,7 +807,7 @@ impl Compose {
                     return Ok(value
                         .get("daemon_pid")
                         .and_then(Value::as_u64)
-                        .unwrap_or_default() as u32)
+                        .unwrap_or_default() as u32);
                 }
                 Err(error) => {
                     let missing = is_missing_daemon(&error);
@@ -871,13 +870,13 @@ impl Compose {
         let Some(ui_dir) = self.ui_dir(worker) else {
             bail!("{worker} ships no watchable ui/");
         };
-        if let Some(daemon) = self.daemon.lock().await.as_ref() {
-            if !daemon.ours {
-                bail!(
-                    "this compose daemon was not started by workers-dev — it resolved its env \
+        if let Some(daemon) = self.daemon.lock().await.as_ref()
+            && !daemon.ours
+        {
+            bail!(
+                "this compose daemon was not started by workers-dev — it resolved its env \
                      file at its own launch, so UI watch cannot be toggled from here"
-                );
-            }
+            );
         }
 
         let on = {
@@ -1267,9 +1266,11 @@ mod tests {
         let flags = read_watch_flags(&path).unwrap();
         assert_eq!(flags.get("III_CONSOLE_UI_WATCH"), Some(&true));
         assert_eq!(flags.get("III_HARNESS_UI_WATCH"), Some(&false));
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("DEEPSEEK_API_KEY=sk-secret"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("DEEPSEEK_API_KEY=sk-secret")
+        );
         // no temp file left where `git status` would show it
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         // the file carries credentials
@@ -1285,10 +1286,14 @@ mod tests {
     /// reads one `KEY=VALUE` per line with no escaping.
     #[test]
     fn only_well_formed_api_keys_are_forwarded() {
-        std::env::set_var("WORKERS_DEV_TEST_API_KEY", "sk-good");
-        std::env::set_var("WORKERS_DEV_EMPTY_API_KEY", "");
-        std::env::set_var("WORKERS_DEV_MULTILINE_API_KEY", "sk-bad\nSHELL=/x");
-        std::env::set_var("WORKERS_DEV_TEST_TOKEN", "not-a-key");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WORKERS_DEV_TEST_API_KEY", "sk-good") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WORKERS_DEV_EMPTY_API_KEY", "") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WORKERS_DEV_MULTILINE_API_KEY", "sk-bad\nSHELL=/x") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WORKERS_DEV_TEST_TOKEN", "not-a-key") };
         let keys = forwarded_api_keys();
         assert!(keys.contains(&(
             "WORKERS_DEV_TEST_API_KEY".to_string(),

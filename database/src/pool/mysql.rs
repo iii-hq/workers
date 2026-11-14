@@ -4,8 +4,8 @@ use crate::config::{PoolConfig, TlsConfig};
 use crate::connector::Connector;
 use crate::error::DbError;
 use mysql_async::{Pool as MyPool, PoolConstraints, PoolOpts};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -76,7 +76,7 @@ impl MysqlPool {
             (None, None) => {
                 return Err(DbError::ConfigError {
                     message: "internal: mysql connector without options".into(),
-                })
+                });
             }
         };
         Ok(Self {

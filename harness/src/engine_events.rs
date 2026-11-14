@@ -30,7 +30,7 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, RegisterFunction, Source};
 
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 use serde_json::json;
 use tokio::sync::Notify;
 

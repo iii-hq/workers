@@ -18,12 +18,12 @@
 use std::sync::Arc;
 
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 
 use crate::config::{StorageAdapter, WorkerConfig};
 use crate::configuration::ConfigCell;
 use crate::events::{
-    attach_bridge_relay, BridgeRelay, Emitter, EventSink, IiiDeliverer, RemotePublisher,
+    BridgeRelay, Emitter, EventSink, IiiDeliverer, RemotePublisher, attach_bridge_relay,
 };
 use crate::service::SessionService;
 use crate::store::{BridgeStore, FsStore, SessionStore};

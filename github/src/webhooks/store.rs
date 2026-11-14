@@ -32,7 +32,7 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-use super::{types::Data, Failure, Result};
+use super::{Failure, Result, types::Data};
 
 /// SQLite is a transactional inbox/outbox, not an execution queue. Execution is
 /// delegated to the installed queue worker. FULL sync precedes every HTTP ack.

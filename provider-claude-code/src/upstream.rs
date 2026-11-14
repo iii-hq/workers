@@ -1,16 +1,16 @@
 //! POST /v1/messages (stream:true) → SSE → mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
-use crate::errors::{classify, REQUEST_REFUSED, SIGN_IN_REJECTED};
-use crate::sse::{
-    build_partial, handle_sse_event, synthetic_error_event, synthetic_error_event_from_state,
-    PartialState,
-};
 use crate::PROVIDER_ID;
+use crate::errors::{REQUEST_REFUSED, SIGN_IN_REJECTED, classify};
+use crate::sse::{
+    PartialState, build_partial, handle_sse_event, synthetic_error_event,
+    synthetic_error_event_from_state,
+};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, tail_frame_is_partial,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
+    error_chain, tail_frame_is_partial, truncated_stream_error,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;

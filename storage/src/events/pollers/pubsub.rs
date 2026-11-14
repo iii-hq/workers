@@ -1,7 +1,7 @@
 //! GCS → Pub/Sub poller. Pulls from a subscription, normalizes the GCS
 //! notification JSON, dispatches.
 
-use crate::events::normalize::{normalize_gcs, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{EventKind, NormalizeError, ObjectEventNormalized, normalize_gcs};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,7 +63,7 @@ pub async fn run_loop<D>(
 ) where
     D: crate::events::dispatcher::EventDispatcher + 'static,
 {
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     let subscription = pubsub_client.subscription(&poller.subscription);
     loop {
         // batch=10, no retry on the pull itself — let the outer loop retry.

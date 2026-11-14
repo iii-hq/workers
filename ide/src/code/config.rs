@@ -558,14 +558,16 @@ search_response_budget_bytes: 11
         let _env_lock = crate::config::ENV_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob") };
         let yaml = "non_accessible_globs:\n  - \"${CODER_TEST_ROOT}\"\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
         assert_eq!(
             cfg.non_accessible_globs,
             vec!["/tmp/expanded-glob".to_string()]
         );
-        std::env::remove_var("CODER_TEST_ROOT");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("CODER_TEST_ROOT") };
     }
 
     #[test]

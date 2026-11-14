@@ -4,16 +4,16 @@
 //! drops that provider and kills its refs.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use xa11y_core::{App, ElementData, Provider, Role, SelectorGroup};
 
-use super::outline::{app_line, element_line, label, Outline};
+use super::outline::{Outline, app_line, element_line, label};
 use super::refs::next_ref;
 use super::walk::{Budget, Walk};
-use super::{map_act_error, map_read_error, Code, ProviderFactory, SemanticError, MAX_FIND_LINES};
+use super::{Code, MAX_FIND_LINES, ProviderFactory, SemanticError, map_act_error, map_read_error};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
@@ -394,7 +394,7 @@ impl Engine {
                 return Err(SemanticError::new(
                     Code::InvalidInput,
                     "set_value needs `text`",
-                ))
+                ));
             }
             (Verb::Toggle, _) => p.toggle(el),
             (Verb::Select, _) => p.select(el),
@@ -943,11 +943,12 @@ mod tests {
         );
         q.scope.app_pid = None;
         q.scope.app_name = Some("Other".into());
-        assert!(e
-            .snapshot(&q, deadline(), true)
-            .unwrap()
-            .text
-            .contains("Third"));
+        assert!(
+            e.snapshot(&q, deadline(), true)
+                .unwrap()
+                .text
+                .contains("Third")
+        );
         q.scope.app_name = Some("doc".into());
         let err = e.snapshot(&q, deadline(), true).unwrap_err();
         assert_eq!(err.code, Code::InvalidInput);

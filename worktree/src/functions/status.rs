@@ -8,8 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WError;
-use crate::functions::create::{require_dir, require_record};
 use crate::functions::Deps;
+use crate::functions::create::{require_dir, require_record};
 use crate::git::ops;
 use crate::types::{Lifecycle, WorktreeRecord, WorktreeStatus};
 

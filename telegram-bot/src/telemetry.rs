@@ -1,6 +1,6 @@
 //! OpenTelemetry baggage helpers — correlate Telegram ingress with harness turns.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Metadata forwarded on `harness::send` `options.metadata` for trace propagation.
 pub fn tracing_metadata(session_id: &str, message_id: &str) -> Value {

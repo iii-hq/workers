@@ -20,16 +20,15 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
 
 pub const BANK_CREATE_ID: &str = "memory::bank::create";
-pub const BANK_CREATE_DESC: &str =
-    "Create a named memory bank: an isolated scope of rules and memories, e.g. one per \
+pub const BANK_CREATE_DESC: &str = "Create a named memory bank: an isolated scope of rules and memories, e.g. one per \
      project or persona; its description tells extraction what the bank is for, narrowing \
      what is kept. Idempotent; sessions select it via metadata `memory_bank`.";
 
@@ -41,8 +40,7 @@ pub const BANK_DELETE_DESC: &str =
     "Delete a memory bank: the folder moves to the store's .trash, recoverable by hand.";
 
 pub const SAVE_ID: &str = "memory::save";
-pub const SAVE_DESC: &str =
-    "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
+pub const SAVE_DESC: &str = "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces \
      the existing memory instead of duplicating it. Called from a turn, it records that \
      session and turn as the source. Needed where the `# Memory` header asks for it (a \
      sub-agent, extraction off): save what a later session would need.";
@@ -51,74 +49,62 @@ pub const GET_ID: &str = "memory::get";
 pub const GET_DESC: &str = "Fetch one memory by id, including superseded/tombstoned records.";
 
 pub const LIST_ID: &str = "memory::list";
-pub const LIST_DESC: &str =
-    "List a bank's memories page by page, newest first. `include_superseded` shows history \
+pub const LIST_DESC: &str = "List a bank's memories page by page, newest first. `include_superseded` shows history \
      too.";
 
 pub const UPDATE_ID: &str = "memory::update";
-pub const UPDATE_DESC: &str =
-    "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the \
+pub const UPDATE_DESC: &str = "Revise a memory's text, entities, or pin flag in place (same id, bumped revision; the \
      prior revision stays in the on-disk log).";
 
 pub const DELETE_ID: &str = "memory::delete";
-pub const DELETE_DESC: &str =
-    "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays \
+pub const DELETE_DESC: &str = "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays \
      on disk, readable with include_superseded.";
 
 pub const PIN_ID: &str = "memory::pin";
-pub const PIN_DESC: &str =
-    "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
+pub const PIN_DESC: &str = "Pin or unpin a memory. Pinned memories rank higher in recall and are untouchable by \
      every automatic path.";
 
 pub const SUPERSEDE_ID: &str = "memory::supersede";
-pub const SUPERSEDE_DESC: &str =
-    "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
+pub const SUPERSEDE_DESC: &str = "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
      plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce \
      makes it a merge (the non-pinned survivor absorbs the retired record's observations); \
      reason is carried on the memory::on-item-changed events.";
 
 pub const TAGS_ID: &str = "memory::tags";
-pub const TAGS_DESC: &str =
-    "List the tags across a bank's live memories with usage counts, most used first — the \
+pub const TAGS_DESC: &str = "List the tags across a bank's live memories with usage counts, most used first — the \
      filter source for tag-scoped list/recall.";
 
 pub const PREVIEW_ID: &str = "memory::preview";
-pub const PREVIEW_DESC: &str =
-    "Preview the memory injection for a hypothetical chat message: the exact system-prompt \
+pub const PREVIEW_DESC: &str = "Preview the memory injection for a hypothetical chat message: the exact system-prompt \
      memory section a new session gets (rules, budgets, truncation markers; running sessions \
      receive changes as an appended update), the memories the turn would be handed (past \
      the relevance cut and token budget), and the appended message verbatim. Runs the \
      pre-generate hook's own code.";
 
 pub const RECALL_ID: &str = "memory::recall";
-pub const RECALL_DESC: &str =
-    "Search a bank's memories relevant to a query (BM25 + entities + corroboration + \
+pub const RECALL_DESC: &str = "Search a bank's memories relevant to a query (BM25 + entities + corroboration + \
      recency; no LLM). The same scorer the pre-generate hook uses; the hook injects only \
      the hits with evidence, one line per fact and the newer of a stated change, and \
      memory::preview shows exactly what it injects. mode lexical/semantic returns one raw \
      arm (plain BM25, or cosine).";
 
 pub const RULE_LIST_ID: &str = "memory::rule::list";
-pub const RULE_LIST_DESC: &str =
-    "List a bank's rules (markdown, injected whole into the system prompt on every turn). \
+pub const RULE_LIST_DESC: &str = "List a bank's rules (markdown, injected whole into the system prompt on every turn). \
      Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent.";
 
 pub const RULE_SET_ID: &str = "memory::rule::set";
-pub const RULE_SET_DESC: &str =
-    "Create or replace one rule (atomic write; empty content removes it). Rules are plain \
+pub const RULE_SET_DESC: &str = "Create or replace one rule (atomic write; empty content removes it). Rules are plain \
      markdown files under the bank's rules/ folder.";
 
 pub const DOCTOR_ID: &str = "memory::doctor";
-pub const DOCTOR_DESC: &str =
-    "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete \
+pub const DOCTOR_DESC: &str = "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete \
      roundtrip, sibling reachability (router, session-manager, state), whether embeddings \
      answer, whether recent extraction passes failed, and what extraction spent (model calls, \
      tokens, the router's cost) and wrote since boot. Reports degraded states explicitly, not \
      a bare process-up health.";
 
 pub const RELOAD_ID: &str = "memory::reload";
-pub const RELOAD_DESC: &str =
-    "Drop all in-RAM state and reload every bank from disk — the recovery hatch after editing \
+pub const RELOAD_DESC: &str = "Drop all in-RAM state and reload every bank from disk — the recovery hatch after editing \
      bank files by hand.";
 
 /// Register one typed handler under `id`, mapping `MemoryError` into the

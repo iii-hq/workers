@@ -3,7 +3,7 @@
 [package]
 name = "workflow"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]

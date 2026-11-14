@@ -14,8 +14,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::deepseek::stream";
-pub const STREAM_DESC: &str =
-    "Stream a DeepSeek chat completion: resolve credentials, call the upstream Chat \
+pub const STREAM_DESC: &str = "Stream a DeepSeek chat completion: resolve credentials, call the upstream Chat \
      Completions API, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::deepseek::abort";
@@ -23,19 +22,16 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::deepseek::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Reconcile the DeepSeek catalog slice through the router: list the upstream models, \
+pub const REFRESH_MODELS_DESC: &str = "Reconcile the DeepSeek catalog slice through the router: list the upstream models, \
      enrich each with local metadata, and return the model count written.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::deepseek::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, \
      response_format?} locally with DeepSeek's own published vocabulary; never runs the model \
      and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::deepseek::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

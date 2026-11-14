@@ -59,7 +59,7 @@ pub fn validate_refs(code_root: Option<&str>, refs: &[CodeRefV1]) -> Vec<String>
         Err(error) => {
             return vec![format!(
                 "the code directory {root} is not readable: {error}"
-            )]
+            )];
         }
     };
     refs.iter()
@@ -213,15 +213,17 @@ mod tests {
     fn references_to_real_lines_inside_the_directory_pass() {
         let tree = Tree::new();
         let root = tree.root();
-        assert!(validate_refs(
-            Some(&root),
-            &[
-                reference("a.rs", 1, 3),
-                reference("src/b.rs", 2, 2),
-                reference("./src/b.rs", 1, 2),
-            ]
-        )
-        .is_empty());
+        assert!(
+            validate_refs(
+                Some(&root),
+                &[
+                    reference("a.rs", 1, 3),
+                    reference("src/b.rs", 2, 2),
+                    reference("./src/b.rs", 1, 2),
+                ]
+            )
+            .is_empty()
+        );
         assert!(validate_refs(Some(&root), &[]).is_empty());
         assert!(validate_refs(None, &[]).is_empty());
         let limit: Vec<_> = (0..MAX_CODE_REFS)
@@ -259,9 +261,13 @@ mod tests {
         .unwrap();
         symlink(tree.base.join("outside"), tree.base.join("root/src/out")).unwrap();
         symlink("a.rs", tree.base.join("root/alias.rs")).unwrap();
-        assert!(rejected(&root, reference("leak.txt", 1, 2)).contains("outside the code directory"));
-        assert!(rejected(&root, reference("src/out/secret.txt", 1, 2))
-            .contains("outside the code directory"));
+        assert!(
+            rejected(&root, reference("leak.txt", 1, 2)).contains("outside the code directory")
+        );
+        assert!(
+            rejected(&root, reference("src/out/secret.txt", 1, 2))
+                .contains("outside the code directory")
+        );
         // A link that stays inside the directory is just another name.
         assert!(validate_refs(Some(&root), &[reference("alias.rs", 1, 3)]).is_empty());
         // A directory reached through a link is judged by where it resolves.

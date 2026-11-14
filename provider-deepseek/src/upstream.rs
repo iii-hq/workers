@@ -2,13 +2,13 @@
 //! mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
-use crate::errors::classify;
-use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
 use crate::PROVIDER_ID;
+use crate::errors::classify;
+use crate::sse::{PartialState, build_final, build_partial, handle_chunk, synthetic_error_event};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
+    error_chain, flush_tail, truncated_stream_error,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -307,8 +307,17 @@ mod tests {
             let error = single_terminal_error(&events);
             assert_eq!(error.error_kind, Some(ErrorKind::Transient));
             assert_eq!(error.model, "deepseek-test");
-            assert!(error.content.is_empty(), "a startup timeout is not model output");
-            assert!(error.error_message.as_deref().unwrap().contains("did not start generating"));
+            assert!(
+                error.content.is_empty(),
+                "a startup timeout is not model output"
+            );
+            assert!(
+                error
+                    .error_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("did not start generating")
+            );
             tokio::time::timeout(Duration::from_secs(1), peer)
                 .await
                 .expect("timing out must close the upstream HTTP request")
@@ -337,11 +346,13 @@ mod tests {
         let error = single_terminal_error(&events);
         assert!(error.content.is_empty());
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
-        assert!(error
-            .error_message
-            .as_deref()
-            .unwrap()
-            .contains("did not start generating"));
+        assert!(
+            error
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("did not start generating")
+        );
         tokio::time::timeout(Duration::from_secs(1), peer)
             .await
             .expect("the timed-out upstream must close")
@@ -370,11 +381,13 @@ mod tests {
                 .expect("a silent body must hit the transport timeout");
         let error = single_terminal_error(&events);
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
-        assert!(error
-            .error_message
-            .as_deref()
-            .unwrap()
-            .contains("stream read failed"));
+        assert!(
+            error
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("stream read failed")
+        );
         assert!(matches!(&error.content[..], [
             llm_router::types::content::ContentBlock::Thinking { text: thinking, .. },
             llm_router::types::content::ContentBlock::Text { text },

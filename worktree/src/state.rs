@@ -12,9 +12,9 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::types::{LandJob, Lifecycle, WorktreeRecord};
 
 pub const SCOPE_RECORD: &str = "worktree";
@@ -60,11 +60,7 @@ impl StateStore for IiiStateStore {
                     format!("state::get {scope}/{key}: {e}"),
                 )
             })?;
-        if v.is_null() {
-            Ok(None)
-        } else {
-            Ok(Some(v))
-        }
+        if v.is_null() { Ok(None) } else { Ok(Some(v)) }
     }
 
     async fn set(&self, scope: &str, key: &str, value: Value) -> Result<(), WError> {

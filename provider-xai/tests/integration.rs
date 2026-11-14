@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use provider_xai::register::register_provider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
@@ -66,7 +66,7 @@ struct StubUpstream {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
-    use iii_sdk::{errors::Error, Capture, RegisterFunction, Source};
+    use iii_sdk::{Capture, RegisterFunction, Source, errors::Error};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let engine = engine_or_skip!();
     let iii = register_worker(&engine.url, test_init_options());
@@ -176,29 +176,37 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
             json!({"id":"xai", "token":token, "begin_discovery":true}),
         )
     };
-    assert!(call(
-        &iii,
-        "router::provider::resolve",
-        json!({"id":"xai", "begin_discovery":true})
-    )
-    .await
-    .is_err());
+    assert!(
+        call(
+            &iii,
+            "router::provider::resolve",
+            json!({"id":"xai", "begin_discovery":true})
+        )
+        .await
+        .is_err()
+    );
     let first = begin().await.unwrap()["discovery_attempt"].clone();
     let latest = begin().await.unwrap()["discovery_attempt"].clone();
     let report = |attempt: Value| json!({"provider":"xai", "token":token, "models":[], "discovery":{"attempt":attempt, "outcome":"empty", "http_status":200}});
     let mut unauthorized = report(latest.clone());
     unauthorized["token"] = json!("wrong-token");
-    assert!(call(&iii, "router::models::reconcile", unauthorized)
-        .await
-        .is_err());
-    assert!(call(&iii, "router::models::reconcile", report(first))
-        .await
-        .is_err());
+    assert!(
+        call(&iii, "router::models::reconcile", unauthorized)
+            .await
+            .is_err()
+    );
+    assert!(
+        call(&iii, "router::models::reconcile", report(first))
+            .await
+            .is_err()
+    );
     let mut unsafe_code = report(latest.clone());
     unsafe_code["discovery"]["code"] = json!("sk-PRIVATE");
-    assert!(call(&iii, "router::models::reconcile", unsafe_code)
-        .await
-        .is_err());
+    assert!(
+        call(&iii, "router::models::reconcile", unsafe_code)
+            .await
+            .is_err()
+    );
     call(&iii, "router::models::reconcile", report(latest))
         .await
         .unwrap();
@@ -246,9 +254,11 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
     )
     .await
     .unwrap();
-    assert!(call(&iii, "router::models::reconcile", report(old_config))
-        .await
-        .is_err());
+    assert!(
+        call(&iii, "router::models::reconcile", report(old_config))
+            .await
+            .is_err()
+    );
     *response.lock().unwrap() = (200, json!({"data":[]}).to_string());
     let empty = provider_xai::discovery::refresh_models(&iii, &http)
         .await

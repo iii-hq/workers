@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&OpenAiConfig>) -> Re
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge OpenAI",
-        description:
-            "OpenAI Decisions provider for judge: API key, default model and execution limits.",
+        description: "OpenAI Decisions provider for judge: API key, default model and execution limits.",
         schema: OpenAiConfig::json_schema(),
         default_value: OpenAiConfig::default().to_json(),
     };

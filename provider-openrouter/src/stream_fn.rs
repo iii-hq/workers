@@ -4,13 +4,13 @@
 use crate::catalog::upstream_id;
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
@@ -42,9 +42,9 @@ pub fn make_stream(
     http: reqwest::Client,
     aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, aborts) = (iii.clone(), http.clone(), aborts.clone());
         Box::pin(async move {
@@ -462,7 +462,7 @@ mod tests {
         .await
         .unwrap();
         pump(rx, &ch.writer, Duration::from_secs(30)).await; // returns immediately
-                                                             // the receiver was consumed and dropped by pump → upstream send fails
+        // the receiver was consumed and dropped by pump → upstream send fails
         assert!(tx.send(done_event()).await.is_err());
     }
 }

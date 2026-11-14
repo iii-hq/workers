@@ -1,6 +1,6 @@
 //! Test helpers: the committed tiny checkpoint (random weights, real tokenizer).
 #![allow(dead_code)]
-use judge_laya::{download, engine::Options, LayaClient};
+use judge_laya::{LayaClient, download, engine::Options};
 use std::{
     collections::BTreeMap,
     path::PathBuf,

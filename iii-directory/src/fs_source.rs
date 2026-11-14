@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::functions::prompts::validate_name;
-use crate::functions::skills::{validate_id, SKILL_BODY_MAX_BYTES};
+use crate::functions::skills::{SKILL_BODY_MAX_BYTES, validate_id};
 
 /// One filesystem-backed skill entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -589,26 +589,25 @@ pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String
     if let Some(logo) = fm.logo.as_deref() {
         validate_agent_logo(logo)?;
     }
-    if let Some(icon) = fm.icon.as_deref().map(str::trim).filter(|i| !i.is_empty()) {
-        if !AGENT_ICON_TOKENS.contains(&icon) {
-            return Err(format!(
-                "`icon` must be one of {} (got {icon:?})",
-                AGENT_ICON_TOKENS.join(", ")
-            ));
-        }
+    if let Some(icon) = fm.icon.as_deref().map(str::trim).filter(|i| !i.is_empty())
+        && !AGENT_ICON_TOKENS.contains(&icon)
+    {
+        return Err(format!(
+            "`icon` must be one of {} (got {icon:?})",
+            AGENT_ICON_TOKENS.join(", ")
+        ));
     }
     if let Some(color) = fm
         .color
         .as_deref()
         .map(str::trim)
         .filter(|color| !color.is_empty())
+        && !AGENT_COLOR_TOKENS.contains(&color)
     {
-        if !AGENT_COLOR_TOKENS.contains(&color) {
-            return Err(format!(
-                "`color` must be one of {} (got {color:?})",
-                AGENT_COLOR_TOKENS.join(", ")
-            ));
-        }
+        return Err(format!(
+            "`color` must be one of {} (got {color:?})",
+            AGENT_COLOR_TOKENS.join(", ")
+        ));
     }
     for function_id in &fm.functions {
         validate_function_id(function_id)?;
@@ -946,10 +945,10 @@ pub(crate) fn top_level_namespaces(root: &Path) -> Vec<String> {
         Err(_) => return ns,
     };
     for entry in entries.flatten() {
-        if entry.path().is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                ns.push(name.to_string());
-            }
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            ns.push(name.to_string());
         }
     }
     ns.sort();
@@ -2248,14 +2247,18 @@ mod tests {
             .iter()
             .map(|s| s.reason.as_str())
             .collect::<Vec<_>>();
-        assert!(reasons
-            .iter()
-            .any(|r| r.contains("missing YAML frontmatter")));
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("missing YAML frontmatter"))
+        );
         assert!(reasons.iter().any(|r| r.contains("non-empty `name`")));
         assert!(reasons.iter().any(|r| r.contains("emoji only")));
-        assert!(reasons
-            .iter()
-            .any(|r| r.contains("invalid agent profile id")));
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.contains("invalid agent profile id"))
+        );
     }
 
     #[test]

@@ -13,9 +13,9 @@ use harness::functions::delete_session_tree::{
 use harness::functions::on_session_deleted::{self, SessionDeletedEvent};
 use harness::functions::teardown::{self, TeardownRequestV1};
 use harness::types::turn::TurnRecord;
-use iii_sdk::{register_worker, InitOptions, Source};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+use iii_sdk::{InitOptions, Source, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{Notify, RwLock, mpsc, oneshot};
 
 mod support;
 use support::host;
@@ -462,14 +462,18 @@ async fn deletion_accepts_engine_caller_metadata_through_command_runner_and_stat
             .unwrap(),
         Some(done)
     );
-    assert!(serde_json::from_value::<DeleteRequest>(json!({
-        "_caller_worker_id": "test-console-worker"
-    }))
-    .is_err());
-    assert!(serde_json::from_value::<StatusRequest>(json!({
-        "_caller_worker_id": "test-console-worker"
-    }))
-    .is_err());
+    assert!(
+        serde_json::from_value::<DeleteRequest>(json!({
+            "_caller_worker_id": "test-console-worker"
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<StatusRequest>(json!({
+            "_caller_worker_id": "test-console-worker"
+        }))
+        .is_err()
+    );
     let store = stack.store.lock().unwrap();
     assert!(store.sessions.contains_key("parent"));
     assert!(store.sessions.contains_key("child1"));
@@ -599,10 +603,12 @@ async fn absent_or_deleting_parent_is_not_recreated_or_notified() {
             DeletionStatus::Completed
         );
         let store = stack.store.lock().unwrap();
-        assert!(!store
-            .state
-            .keys()
-            .any(|(scope, _)| scope == "harness_queue"));
+        assert!(
+            !store
+                .state
+                .keys()
+                .any(|(scope, _)| scope == "harness_queue")
+        );
         assert_eq!(store.sessions.contains_key("parent"), !absent);
     }
 }
@@ -651,13 +657,17 @@ async fn expired_deadline_preserves_data_and_guards_send_spawn_and_queue_recover
         DeletionStatus::Failed
     );
     let send = serde_json::from_value(json!({"session_id":"grandchild1","message":"no"})).unwrap();
-    assert!(harness::functions::send::handle(&stack.deps, send)
-        .await
-        .is_err());
+    assert!(
+        harness::functions::send::handle(&stack.deps, send)
+            .await
+            .is_err()
+    );
     let spawn=serde_json::from_value(json!({"session_id":"new-child","parent_session_id":"grandchild1","task":"no","model":"fake"})).unwrap();
-    assert!(harness::subagent::spawn_child(&stack.deps, &spawn, None)
-        .await
-        .is_err());
+    assert!(
+        harness::subagent::spawn_child(&stack.deps, &spawn, None)
+            .await
+            .is_err()
+    );
     let store = stack.store.lock().unwrap();
     assert_eq!(store.sessions.len(), 4);
     assert!(!store.calls.iter().any(|(id, _)| id == "session::delete"
@@ -720,13 +730,15 @@ async fn in_flight_tool_lock_must_exit_before_deletion_and_late_descendants_are_
         .wait_for(|s| s.state(deletion::GUARDS, "late-child").is_string())
         .await;
     assert!(!job.is_finished());
-    assert!(!stack
-        .store
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .any(|(f, _)| f == "session::delete"));
+    assert!(
+        !stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(f, _)| f == "session::delete")
+    );
     drop(held);
     let done = tokio::time::timeout(Duration::from_secs(3), job)
         .await
@@ -813,13 +825,15 @@ async fn recovery_reenqueues_persisted_operation_after_lost_enqueue_ack() {
     let accepted = stack.request("child2").await;
     stack.store.lock().unwrap().calls.clear();
     deletion::recover(&stack.deps).await.unwrap();
-    assert!(stack
-        .store
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id));
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id)
+    );
     assert_eq!(
         stack.run(&accepted.operation_id).await.status,
         DeletionStatus::Completed
@@ -1106,12 +1120,14 @@ async fn child_first_rejects_ancestor_before_tombstone_and_keeps_parent_notifiab
     assert_eq!(parent.status, DeletionStatus::Failed);
     assert!(parent.error.as_deref().unwrap().contains("overlapping"));
     for id in ["parent", "child1"] {
-        assert!(stack
-            .store
-            .lock()
-            .unwrap()
-            .state(deletion::GUARDS, id)
-            .is_null());
+        assert!(
+            stack
+                .store
+                .lock()
+                .unwrap()
+                .state(deletion::GUARDS, id)
+                .is_null()
+        );
         let work = harness::functions::send::inject(
             &stack.deps,
             id,
@@ -1186,11 +1202,13 @@ async fn recovery_repairs_legacy_unplanned_ancestor_guard_without_losing_child_n
     );
     let store = stack.store.lock().unwrap();
     assert!(store.state(deletion::GUARDS, "parent").is_null());
-    assert!(store
-        .state
-        .iter()
-        .any(|((scope, _), row)| scope == "harness_queue"
-            && row["origin"]["deletion_operation_id"] == child.operation_id));
+    assert!(
+        store
+            .state
+            .iter()
+            .any(|((scope, _), row)| scope == "harness_queue"
+                && row["origin"]["deletion_operation_id"] == child.operation_id)
+    );
     assert_eq!(
         store.state(deletion::OPERATIONS, &parent.operation_id)["snapshot"]["status"],
         "failed"
@@ -1213,12 +1231,14 @@ async fn partial_guard_recovery_rejects_conflict_without_overwriting_foreign_own
         stack.run(&parent.operation_id).await.status,
         DeletionStatus::Failed
     );
-    assert!(stack
-        .store
-        .lock()
-        .unwrap()
-        .state(deletion::GUARDS, "parent")
-        .is_null());
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state(deletion::GUARDS, "parent")
+            .is_null()
+    );
     assert_eq!(
         stack
             .store
@@ -1284,9 +1304,11 @@ async fn concurrent_retry_increments_once_and_late_terminal_event_keeps_old_atte
         .filter(|(f, _)| f == "test::deletion-event")
         .map(|(_, p)| p.clone())
         .collect::<Vec<_>>();
-    assert!(emitted
-        .iter()
-        .all(|p| p["attempt"] == 1 && p["status"] == "failed"));
+    assert!(
+        emitted
+            .iter()
+            .all(|p| p["attempt"] == 1 && p["status"] == "failed")
+    );
     assert_eq!(stack.run(&a.operation_id).await.attempt, 2);
     assert_eq!(stack.request("child2").await.attempt, 2);
 }
@@ -1304,9 +1326,11 @@ async fn retry_waits_for_old_runner_before_writing_new_attempt() {
     }
     let retry = stack.request("child2");
     tokio::pin!(retry);
-    assert!(tokio::time::timeout(Duration::from_millis(20), &mut retry)
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut retry)
+            .await
+            .is_err()
+    );
     assert_eq!(
         stack
             .store
@@ -1333,18 +1357,22 @@ async fn invalid_or_contradictory_delete_ack_does_not_report_deleted() {
         let failed = stack.run(&op.operation_id).await;
         assert_eq!(failed.status, DeletionStatus::Failed);
         assert!(failed.deleted_session_ids.is_empty());
-        assert!(stack
-            .store
-            .lock()
-            .unwrap()
-            .sessions
-            .contains_key("grandchild1"));
-        assert!(!stack
-            .store
-            .lock()
-            .unwrap()
-            .state("harness_turn", "grandchild1")
-            .is_null());
+        assert!(
+            stack
+                .store
+                .lock()
+                .unwrap()
+                .sessions
+                .contains_key("grandchild1")
+        );
+        assert!(
+            !stack
+                .store
+                .lock()
+                .unwrap()
+                .state("harness_turn", "grandchild1")
+                .is_null()
+        );
     }
 }
 
@@ -1450,10 +1478,12 @@ async fn corrupted_zero_attempt_status_and_run_fail_closed_without_side_effects(
         before
     );
     assert_eq!(store.sessions.len(), 4);
-    assert!(!store
-        .calls
-        .iter()
-        .any(|(function, _)| function == "session::delete"));
+    assert!(
+        !store
+            .calls
+            .iter()
+            .any(|(function, _)| function == "session::delete")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1472,14 +1502,16 @@ async fn zero_attempt_command_does_not_normalize_or_retry_and_max_attempt_overfl
         .lock()
         .unwrap()
         .put(deletion::OPERATIONS, &accepted.operation_id, corrupt);
-    assert!(deletion::handle(
-        &stack.deps,
-        DeleteRequest {
-            session_id: "child2".into()
-        }
-    )
-    .await
-    .is_err());
+    assert!(
+        deletion::handle(
+            &stack.deps,
+            DeleteRequest {
+                session_id: "child2".into()
+            }
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         stack
             .store
@@ -1500,14 +1532,16 @@ async fn zero_attempt_command_does_not_normalize_or_retry_and_max_attempt_overfl
         .lock()
         .unwrap()
         .put(deletion::OPERATIONS, &accepted.operation_id, exhausted);
-    assert!(deletion::handle(
-        &stack.deps,
-        DeleteRequest {
-            session_id: "child2".into()
-        }
-    )
-    .await
-    .is_err());
+    assert!(
+        deletion::handle(
+            &stack.deps,
+            DeleteRequest {
+                session_id: "child2".into()
+            }
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         stack
             .store
@@ -1540,13 +1574,15 @@ async fn recovery_resumes_checkpointed_partial_plan_and_preserves_parent_and_sib
     }
     stack.reset_runtime();
     deletion::recover(&stack.deps).await.unwrap();
-    assert!(stack
-        .store
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id));
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(f, p)| f == deletion::RUN_ID && p["operation_id"] == accepted.operation_id)
+    );
     let done = stack.run(&accepted.operation_id).await;
     assert_eq!(done.status, DeletionStatus::Completed);
     assert_eq!(done.attempt, accepted.attempt);
@@ -1639,10 +1675,12 @@ async fn persisted_parent_notification_retries_once_after_ack_loss() {
             .count(),
         1
     );
-    assert!(!store
-        .state
-        .iter()
-        .any(|((scope, _), row)| scope == "harness_queue" && row["entry_id"] == queue_id));
+    assert!(
+        !store
+            .state
+            .iter()
+            .any(|((scope, _), row)| scope == "harness_queue" && row["entry_id"] == queue_id)
+    );
     let context = store
         .calls
         .iter()
@@ -1717,14 +1755,18 @@ async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree
     {
         let store = stack.store.lock().unwrap();
         // Consumed without a model-visible result or a resumed step.
-        assert!(!store
-            .messages
-            .get("grandchild1")
-            .is_some_and(|m| m.iter().any(|e| e.to_string().contains("late result"))));
-        assert!(!store
-            .calls
-            .iter()
-            .any(|(f, p)| f == "harness::turn" && p["session_id"] == "grandchild1"));
+        assert!(
+            !store
+                .messages
+                .get("grandchild1")
+                .is_some_and(|m| m.iter().any(|e| e.to_string().contains("late result")))
+        );
+        assert!(
+            !store
+                .calls
+                .iter()
+                .any(|(f, p)| f == "harness::turn" && p["session_id"] == "grandchild1")
+        );
     }
 
     let retry = stack.request("child2").await;
@@ -2298,10 +2340,12 @@ async fn a_failing_recall_ledger_purge_does_not_fail_deletion() {
                 "{scope} not purged for {id}"
             );
         }
-        assert!(store
-            .calls
-            .iter()
-            .any(|(f, data)| f == "approval::on-session-deleted" && data["session_id"] == id));
+        assert!(
+            store
+                .calls
+                .iter()
+                .any(|(f, data)| f == "approval::on-session-deleted" && data["session_id"] == id)
+        );
     }
 }
 
@@ -2323,12 +2367,14 @@ async fn a_failing_recall_ledger_purge_still_acknowledges_session_deleted() {
     .await
     .unwrap();
     assert!(ack.ok);
-    assert!(stack
-        .store
-        .lock()
-        .unwrap()
-        .state("harness_turn", "child2")
-        .is_null());
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .state("harness_turn", "child2")
+            .is_null()
+    );
 }
 
 /// A step holds its record in memory and writes it back when it ends. The

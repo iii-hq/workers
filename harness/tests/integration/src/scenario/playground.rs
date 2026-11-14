@@ -117,10 +117,10 @@ pub async fn playground_scenario(
         let _ = write_json(&run_root, &result_path, &result);
     }
 
-    if classification == Classification::Pass {
-        if let Some(sink) = &runner.sink {
-            sink.trim_passing_run();
-        }
+    if classification == Classification::Pass
+        && let Some(sink) = &runner.sink
+    {
+        sink.trim_passing_run();
     }
 
     PlaygroundOutcome {

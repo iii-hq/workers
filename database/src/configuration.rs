@@ -6,7 +6,7 @@ use crate::handlers::AppState;
 use crate::pool::{self, Pool};
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -182,10 +182,10 @@ pub async fn apply_config(
         async move {
             let material = Material::resolve(db, |key| runtime.secrets.lookup(key))?;
             let fingerprint = connector::fingerprint(db, &material);
-            if let Some((pool, built_from)) = current {
-                if built_from.fingerprint == fingerprint {
-                    return Ok((pool, built_from));
-                }
+            if let Some((pool, built_from)) = current
+                && built_from.fingerprint == fingerprint
+            {
+                return Ok((pool, built_from));
             }
             let connector = Connector::build(name, db, &material)?;
             connector.check_tunnel().await?;

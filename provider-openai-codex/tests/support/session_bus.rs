@@ -1,7 +1,7 @@
 //! Scriptable storage boundary; production SessionStore talks through the SDK.
 use futures::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};

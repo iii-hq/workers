@@ -12,10 +12,10 @@ fn jsonl_files(world: &SessionWorld) -> Vec<String> {
     let mut names = Vec::new();
     for dent in std::fs::read_dir(&world.fs_dir).expect("read scenario data_dir") {
         let name = dent.expect("dir entry").file_name();
-        if let Some(name) = name.to_str() {
-            if name.ends_with(".jsonl") {
-                names.push(name.to_string());
-            }
+        if let Some(name) = name.to_str()
+            && name.ends_with(".jsonl")
+        {
+            names.push(name.to_string());
         }
     }
     names.sort();

@@ -1,5 +1,5 @@
 use iii_sdk::channels::ChannelWriter;
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

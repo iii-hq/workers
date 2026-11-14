@@ -111,7 +111,8 @@ async fn teardown_kills_descendants_in_the_process_group() {
 #[tokio::test]
 async fn children_see_only_the_environment_allowlist() {
     // A canary secret in the runner's environment must not reach children.
-    std::env::set_var("INTEGRATION_TEST_SECRET", "leak-me");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("INTEGRATION_TEST_SECRET", "leak-me") };
     let dir = tempfile::tempdir().unwrap();
     let (mut stack, paths) = stub_stack(&dir);
     let (bin, args) = sh("env");
@@ -141,10 +142,10 @@ async fn children_see_only_the_environment_allowlist() {
 
 async fn wait_for_pid(path: &std::path::Path) -> u32 {
     for _ in 0..50 {
-        if let Ok(raw) = std::fs::read_to_string(path) {
-            if let Ok(pid) = raw.trim().parse() {
-                return pid;
-            }
+        if let Ok(raw) = std::fs::read_to_string(path)
+            && let Ok(pid) = raw.trim().parse()
+        {
+            return pid;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

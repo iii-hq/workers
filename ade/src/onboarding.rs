@@ -36,7 +36,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::workspace_store::WorkspaceStore;
@@ -533,7 +533,7 @@ fn prompt_entry(value: serde_yaml_ng::Value) -> Result<ExamplePrompt, String> {
         Some(agent) => {
             return Err(format!(
                 "{title:?} names an invalid agent profile {agent:?}"
-            ))
+            ));
         }
     };
     let raw_models = raw.models.unwrap_or_default();

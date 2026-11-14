@@ -422,10 +422,12 @@ fn actionable_coalesces_failures_comments_and_reviews_into_one_debounced_digest(
         ]
     );
     assert_eq!(payload.items[0].failure.as_ref().unwrap().name, "clippy");
-    assert!(serde_json::to_value(payload)
-        .unwrap()
-        .get("snapshot")
-        .is_none());
+    assert!(
+        serde_json::to_value(payload)
+            .unwrap()
+            .get("snapshot")
+            .is_none()
+    );
     route(
         &mut data,
         &comment("reviewer", "issue_comment:created", "please rename", "7"),
@@ -521,19 +523,23 @@ fn actionable_delivery_drops_failures_of_a_superseded_head_but_keeps_comments() 
 #[test]
 fn actionable_policy_validates_windows_and_rejects_runtime_fields() {
     assert!(actionable().validate().is_ok());
-    assert!(NotificationPolicy {
-        quiet_ms: 200_000,
-        max_wait_ms: 100_000,
-        ..actionable()
-    }
-    .validate()
-    .is_err());
-    assert!(NotificationPolicy {
-        max_items: 0,
-        ..actionable()
-    }
-    .validate()
-    .is_err());
+    assert!(
+        NotificationPolicy {
+            quiet_ms: 200_000,
+            max_wait_ms: 100_000,
+            ..actionable()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        NotificationPolicy {
+            max_items: 0,
+            ..actionable()
+        }
+        .validate()
+        .is_err()
+    );
     let parsed: NotificationPolicy =
         serde_json::from_value(json!({"profile":"agent_actionable","ignore_self":true})).unwrap();
     assert_eq!(parsed.profile, NotificationProfile::AgentActionable);

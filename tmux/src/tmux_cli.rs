@@ -289,11 +289,7 @@ impl Tmux {
     /// `-p` (pane options) from tmux 3.0; tmux 2.x has no pane options, so
     /// there a pane's options are its window's.
     pub fn pane_scope(&self) -> &'static str {
-        if self.at_least(3, 0) {
-            "-p"
-        } else {
-            "-w"
-        }
+        if self.at_least(3, 0) { "-p" } else { "-w" }
     }
 
     /// Sets `options` on new pane `pane` (made running [`HOLD`]), then

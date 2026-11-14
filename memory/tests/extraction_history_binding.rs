@@ -3,9 +3,9 @@
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::{CallRequest, Source};
 use memory::{config::WorkerConfig, deps::Deps, events::Emitter, hook_binding, store::Store};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 struct Request {
@@ -247,13 +247,15 @@ async fn registered_receiver_persists_only_actual_active_owner_activation_and_re
     stack
         .invoke(input("foreign"), "foreign", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_none());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_none()
+    );
     stack
         .invoke(input("valid"), "owner-one", Some(stack.handle.id()))
         .await;
@@ -354,26 +356,30 @@ async fn registered_receiver_rejects_digest_fork_bounds_and_preserves_missing_ba
     stack
         .invoke(forged, "owner-one", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_none());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_none()
+    );
     let mut wrong_session = input("session");
     wrong_session["recall_context"]["extraction_history"]["rows"][0]["attestation"]["session_id"] =
         json!("fork");
     stack
         .invoke(wrong_session, "owner-one", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_none());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_none()
+    );
     stack
         .invoke(input("valid"), "owner-one", Some(stack.handle.id()))
         .await;
@@ -414,13 +420,15 @@ async fn registered_receiver_rejects_digest_fork_bounds_and_preserves_missing_ba
     assert_eq!(quarantined[3]["source_kind"], "notification");
     assert_eq!(quarantined[3]["attestation"]["bank"], "new-bank");
     // None of these rows is a queue authorization or a source-origin upgrade.
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_ranges("synthetic-session")
-        .unwrap()
-        .is_empty());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_ranges("synthetic-session")
+            .unwrap()
+            .is_empty()
+    );
     let before = Some(quarantined);
     let mut invalid = input("bounds");
     invalid["recall_context"]["extraction_history"]["retention"]["delivery_entries"] = json!(129);
@@ -503,19 +511,21 @@ async fn a_delivery_with_nothing_new_to_recover_costs_no_lookup() {
             .any(|c| c == "engine::functions::info" || c == "session::messages")
     };
     let mut completed = input("completed");
-    completed["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
-        ["status"] = json!("completed");
+    completed["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]["status"] =
+        json!("completed");
     stack
         .invoke(completed, "owner-one", Some(stack.handle.id()))
         .await;
     assert!(!looked_up());
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_none());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_none()
+    );
     stack
         .invoke(input("failed"), "owner-one", Some(stack.handle.id()))
         .await;
@@ -577,9 +587,11 @@ async fn authenticated_failed_request_recovers_original_bank_after_restart_and_e
             .await;
         let queued = stack.fixture.lock().unwrap().queued.clone();
         assert_eq!(queued.len(), usize::from(policy == "on"));
-        assert!(queued
-            .iter()
-            .all(|v| v.get("history").is_none() && v.get("extraction_history").is_none()));
+        assert!(
+            queued
+                .iter()
+                .all(|v| v.get("history").is_none() && v.get("extraction_history").is_none())
+        );
         // A fresh Store reads the exact authenticated proof, never the public job.
         *stack.deps.store.write().await = Arc::new(Store::open(dir.path().into()).unwrap());
         let next_job = memory::hooks::ExtractJobInput {
@@ -796,12 +808,12 @@ async fn registered_receiver_validates_full_128_by_8_digest_blocks_and_atomic_bo
         let mut invalid = delivery.clone();
         match bad {
             "turn" => {
-                invalid["recall_context"]["extraction_history"]["rows"][1]["attestation"]
-                    ["turn_id"] = json!("turn-0-0")
+                invalid["recall_context"]["extraction_history"]["rows"][1]["attestation"]["turn_id"] =
+                    json!("turn-0-0")
             }
             "terminal" => {
-                invalid["recall_context"]["extraction_history"]["rows"][0]["attestation"]
-                    ["terminal"]["status"] = json!("running")
+                invalid["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
+                    ["status"] = json!("running")
             }
             "source" => {
                 invalid["recall_context"]["extraction_history"]["rows"][0]["source_kind"] =
@@ -812,8 +824,8 @@ async fn registered_receiver_validates_full_128_by_8_digest_blocks_and_atomic_bo
                 .unwrap()
                 .push(rows[0].clone()),
             "turn-count" => {
-                invalid["recall_context"]["extraction_history"]["rows"][8]["attestation"]
-                    ["entry_id"] = json!("entry-0")
+                invalid["recall_context"]["extraction_history"]["rows"][8]["attestation"]["entry_id"] =
+                    json!("entry-0")
             }
             _ => unreachable!(),
         }
@@ -898,8 +910,8 @@ async fn registered_receiver_byte_rejections_preserve_store_cursor_and_allow_ret
             }
             "metadata" => delivery["recall_context"]["metadata"] = json!("x".repeat(710000)),
             "id" => {
-                delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]
-                    ["turn_id"] = json!("x".repeat(257))
+                delivery["recall_context"]["extraction_history"]["rows"][0]["attestation"]["turn_id"] =
+                    json!("x".repeat(257))
             }
             "overflow" => {
                 delivery["recall_context"]["extraction_history"]["retention"]["delivery_entries"] =
@@ -1080,13 +1092,15 @@ async fn a_cancelled_request_after_a_layer_rotation_closes_unextracted() {
     stack
         .invoke(delivery, "owner-one", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_some());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_some()
+    );
     *stack.deps.store.write().await = Arc::new(Store::open(dir.path().into()).unwrap());
     enable_extraction(&stack).await;
     let mut cfg = (*stack.deps.config().await).clone();
@@ -1126,8 +1140,8 @@ async fn an_unfinished_turn_never_authorizes_recovery_nor_stops_the_next_turn() 
     let stack = Stack::new(dir.path()).await;
     enable_extraction(&stack).await;
     let mut unfinished = input("unfinished");
-    unfinished["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]
-        ["exchange_finished"] = json!(false);
+    unfinished["recall_context"]["extraction_history"]["rows"][0]["attestation"]["terminal"]["exchange_finished"] =
+        json!(false);
     stack
         .invoke(unfinished, "owner-one", Some(stack.handle.id()))
         .await;
@@ -1176,13 +1190,15 @@ async fn a_failed_turn_with_an_assistant_step_extracts_and_the_next_turn_follows
     stack
         .invoke(delivery, "owner-one", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_some());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_some()
+    );
     // The row is no cut (an assistant step follows): the stamped step takes
     // the request into its own turn's bank, then the next turn runs.
     let next = next_turn(&stack, vec![request, step]);
@@ -1377,13 +1393,15 @@ async fn a_deleted_session_keeps_no_ledger_and_is_not_extracted() {
     stack
         .invoke(input("gone"), "owner-one", Some(stack.handle.id()))
         .await;
-    assert!(stack
-        .deps
-        .store()
-        .await
-        .extraction_plan(&key())
-        .unwrap()
-        .is_none());
+    assert!(
+        stack
+            .deps
+            .store()
+            .await
+            .extraction_plan(&key())
+            .unwrap()
+            .is_none()
+    );
     // A job queued before the deletion writes no cursor back.
     let job = serde_json::from_value(
         json!({"session_id":"synthetic-session","bank":"main","until":"opaque-entry"}),
@@ -1575,9 +1593,11 @@ async fn a_deleted_session_forgets_the_rows_its_cursor_passed() {
     )
     .await
     .unwrap();
-    assert!(std::fs::read_dir(dir.path().join(".extraction"))
-        .map(|files| files.count() == 0)
-        .unwrap_or(true));
+    assert!(
+        std::fs::read_dir(dir.path().join(".extraction"))
+            .map(|files| files.count() == 0)
+            .unwrap_or(true)
+    );
     // Nothing of the session is left to skip a delivery with.
     stack
         .invoke(same_history("t3"), "owner-one", Some(stack.handle.id()))

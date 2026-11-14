@@ -62,8 +62,10 @@ fn controls_reject_unknown_fields_and_advertise_cancellation_and_usage() {
     let cancel: judge_contract::CancelRequest =
         serde_json::from_value(json!({"request_id":"job-42"})).unwrap();
     assert_eq!(cancel.request_id, "job-42");
-    assert!(serde_json::from_value::<judge_contract::CancelRequest>(
-        json!({"request_id":"job-42","caller_id":"someone-else"})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<judge_contract::CancelRequest>(
+            json!({"request_id":"job-42","caller_id":"someone-else"})
+        )
+        .is_err()
+    );
 }

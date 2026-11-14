@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value as Json};
+use serde_json::{Map, Value as Json, json};
 use serde_yaml_ng::{Mapping, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -307,9 +307,11 @@ containers:
             worker: Some("path:///home/me/harness-e2e-benchmarks".into()),
             ..ok
         };
-        assert!(container_object(FILE, &renamed)
-            .unwrap_err()
-            .starts_with("KEY_MISMATCH"));
+        assert!(
+            container_object(FILE, &renamed)
+                .unwrap_err()
+                .starts_with("KEY_MISMATCH")
+        );
     }
 
     #[test]
@@ -318,12 +320,16 @@ containers:
             container: "database".into(),
             ..EditInput::default()
         };
-        assert!(container_object(FILE, &empty)
-            .unwrap_err()
-            .starts_with("NOTHING_TO_CHANGE"));
-        assert!(read_entry(FILE, "nope")
-            .unwrap_err()
-            .starts_with("UNKNOWN_CONTAINER"));
+        assert!(
+            container_object(FILE, &empty)
+                .unwrap_err()
+                .starts_with("NOTHING_TO_CHANGE")
+        );
+        assert!(
+            read_entry(FILE, "nope")
+                .unwrap_err()
+                .starts_with("UNKNOWN_CONTAINER")
+        );
     }
 
     #[test]

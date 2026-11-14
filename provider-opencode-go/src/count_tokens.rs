@@ -17,11 +17,11 @@
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::chat_framing::Framed;
 use llm_router::provider_scaffold::deepseek_v41::{
-    self, effort_budget, Mode, DEFAULT_EFFORT_BUDGET,
+    self, DEFAULT_EFFORT_BUDGET, Mode, effort_budget,
 };
-use llm_router::provider_scaffold::tiktoken_count::{encoder_for, ESTIMATOR_TIKTOKEN};
+use llm_router::provider_scaffold::tiktoken_count::{ESTIMATOR_TIKTOKEN, encoder_for};
 use llm_router::provider_scaffold::vocabulary_count::{
-    resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
+    ESTIMATOR_TOKENIZER, VocabularyRef, resolve,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::{AgentFunction, ThinkingLevel};
@@ -119,7 +119,7 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
             return Err(no_counter(format!(
                 "no published vocabulary for {}",
                 req.model
-            )))
+            )));
         }
         Some(Counter::Tiktoken) => {
             let bpe = encoder_for(&req.model);
@@ -464,7 +464,8 @@ mod tests {
             for id in ["deepseek-ai--DeepSeek-V4.1-Flash", "zai-org--GLM-5"] {
                 std::fs::write(dir.join(format!("{id}.json")), tokenizer.to_string()).unwrap();
             }
-            std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir);
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            unsafe { std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir) };
             dir
         });
     }

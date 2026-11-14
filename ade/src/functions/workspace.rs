@@ -31,7 +31,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::for_observer;
 use crate::workspace_store::{self, WorkspaceStore};
@@ -82,11 +82,12 @@ impl Tab {
     }
 
     fn normalized_sizes(&self, columns: usize) -> Vec<f64> {
-        if let Some(stored) = &self.sizes {
-            if stored.len() == columns && stored.iter().all(|s| s.is_finite() && *s > 0.0) {
-                let total: f64 = stored.iter().sum();
-                return stored.iter().map(|s| s / total).collect();
-            }
+        if let Some(stored) = &self.sizes
+            && stored.len() == columns
+            && stored.iter().all(|s| s.is_finite() && *s > 0.0)
+        {
+            let total: f64 = stored.iter().sum();
+            return stored.iter().map(|s| s / total).collect();
         }
         vec![1.0 / columns as f64; columns]
     }

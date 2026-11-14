@@ -1,8 +1,8 @@
 //! `approval::*` — resolve held tool calls (optional `approval-gate` worker).
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use serde_json::json;
 
 pub async fn resolve(

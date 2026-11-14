@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::{register_worker, CallRequest, Error, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{CallRequest, Error, IIIClient, InitOptions, RegisterFunction, register_worker};
 use tokio::sync::RwLock;
 
 use crate::config::BridgeConfig;

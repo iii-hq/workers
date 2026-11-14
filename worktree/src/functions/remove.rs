@@ -6,10 +6,10 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::events::{EventKind, RemovedEvent};
-use crate::functions::create::require_record;
 use crate::functions::Deps;
+use crate::functions::create::require_record;
 use crate::git::ops;
 use crate::state;
 use crate::types::now_ms;

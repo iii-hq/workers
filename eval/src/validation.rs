@@ -5,12 +5,12 @@
 
 use std::process::{Command, Stdio};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::contract::*;
 use crate::error::EvalError;
 use crate::review;
-use crate::runtime::{call, fetch_link, save_link, suggestion_at, Deps, BUS_TIMEOUT_MS};
+use crate::runtime::{BUS_TIMEOUT_MS, Deps, call, fetch_link, save_link, suggestion_at};
 use crate::{ids, state};
 
 const DEFAULT_RUNS: u32 = 5;
@@ -755,8 +755,7 @@ mod tests {
 
     #[test]
     fn only_the_harness_container_is_replaced() {
-        let base =
-            "# header\niii: latest\ntemplate: harness\ncontainers:\n  harness:\n    worker: \
+        let base = "# header\niii: latest\ntemplate: harness\ncontainers:\n  harness:\n    worker: \
                     package://harness\n    version: latest\n  harness-e2e:\n    worker: \
                     package://harness-e2e\n    version: latest\nstartup_timeout: 5m\n";
         let pinned = stack_yaml(base, &"a".repeat(40)).unwrap();

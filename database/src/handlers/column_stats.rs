@@ -16,9 +16,9 @@
 //! instead — that is what it is for, and duplicating it here would be worse
 //! on both counts.
 
-use super::filter::{quote_ident, quote_table};
-use super::query::{self, err_to_str, QueryReq};
 use super::AppState;
+use super::filter::{quote_ident, quote_table};
+use super::query::{self, QueryReq, err_to_str};
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::Pool;
@@ -208,18 +208,18 @@ pub async fn handle(state: &AppState, req: ColumnStatsReq) -> Result<ColumnStats
     // Refuse an exact profile of a very large table rather than starting a
     // scan the caller cannot cancel — on sqlite the driver drops `timeout_ms`
     // entirely, so a row-count guard is the only brake available.
-    if let Some(est) = described.row_count_estimate {
-        if est > EXACT_ROW_CEILING {
-            return Err(err_to_str(DbError::InvalidParam {
-                index: 0,
-                reason: format!(
-                    "`{}` has roughly {est} rows; an exact profile would scan all of \
+    if let Some(est) = described.row_count_estimate
+        && est > EXACT_ROW_CEILING
+    {
+        return Err(err_to_str(DbError::InvalidParam {
+            index: 0,
+            reason: format!(
+                "`{}` has roughly {est} rows; an exact profile would scan all of \
                      them. Re-run without `exact` for planner statistics, or profile \
                      a filtered subset.",
-                    described.table
-                ),
-            }));
-        }
+                described.table
+            ),
+        }));
     }
 
     let mut columns = Vec::new();

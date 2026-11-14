@@ -22,11 +22,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::WorkerConfig;
-use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
+use crate::rbac::{self, DEFAULT_NAMESPACE, ProxySession};
 
 /// The six discovery functions whose results are rewritten.
 /// `engine::workers::register` is a carve-out write, not a discovery surface,
@@ -374,36 +374,36 @@ fn functions_info(
     // `{ function_ids: [...] }` answers with a batch envelope: one entry per id,
     // each the detail or `{ function_id, error }`. A denied detail becomes the
     // engine's own per-id `forbidden` entry, so the batch keeps its shape.
-    if result.get("function_id").is_none() {
-        if let Some(entries) = result.get("functions").and_then(Value::as_array) {
-            let entries: Vec<Value> = entries
-                .iter()
-                .map(|entry| {
-                    let id = entry
-                        .get("function_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if entry.get("error").is_some() {
-                        let mut entry = entry.clone();
-                        if let Some(obj) = entry.as_object_mut() {
-                            strip_str_field(obj, "function_id", session);
-                        }
-                        entry
-                    } else if !entry_allowed(cfg, session, entry) {
-                        json!({ "function_id": strip(session, id), "error": "forbidden" })
-                    } else {
-                        let mut entry = entry.clone();
-                        if let Some(obj) = entry.as_object_mut() {
-                            strip_str_field(obj, "function_id", session);
-                            strip_str_field(obj, "worker_name", session);
-                        }
-                        entry
+    if result.get("function_id").is_none()
+        && let Some(entries) = result.get("functions").and_then(Value::as_array)
+    {
+        let entries: Vec<Value> = entries
+            .iter()
+            .map(|entry| {
+                let id = entry
+                    .get("function_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if entry.get("error").is_some() {
+                    let mut entry = entry.clone();
+                    if let Some(obj) = entry.as_object_mut() {
+                        strip_str_field(obj, "function_id", session);
                     }
-                })
-                .collect();
-            result["functions"] = Value::Array(entries);
-            return OverrideOutcome::Result(result);
-        }
+                    entry
+                } else if !entry_allowed(cfg, session, entry) {
+                    json!({ "function_id": strip(session, id), "error": "forbidden" })
+                } else {
+                    let mut entry = entry.clone();
+                    if let Some(obj) = entry.as_object_mut() {
+                        strip_str_field(obj, "function_id", session);
+                        strip_str_field(obj, "worker_name", session);
+                    }
+                    entry
+                }
+            })
+            .collect();
+        result["functions"] = Value::Array(entries);
+        return OverrideOutcome::Result(result);
     }
 
     let id = result

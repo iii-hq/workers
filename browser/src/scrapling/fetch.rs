@@ -15,10 +15,10 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::scrapling::page::PageData;
-use crate::ssrf::{check_target, parse_target, SsrfPolicy};
+use crate::ssrf::{SsrfPolicy, check_target, parse_target};
 
 #[cfg(feature = "scrapling-compat")]
 mod curl_compat;
@@ -597,12 +597,12 @@ fn checked_body_len(current: usize, incoming: usize) -> Option<usize> {
 }
 
 async fn bounded_body(mut response: reqwest::Response, url: &str) -> Result<Vec<u8>, String> {
-    if let Some(len) = response.content_length() {
-        if len > MAX_BODY_BYTES as u64 {
-            return Err(format!(
-                "response body is {len} bytes, over the {MAX_BODY_BYTES}-byte cap ({url})"
-            ));
-        }
+    if let Some(len) = response.content_length()
+        && len > MAX_BODY_BYTES as u64
+    {
+        return Err(format!(
+            "response body is {len} bytes, over the {MAX_BODY_BYTES}-byte cap ({url})"
+        ));
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
@@ -724,12 +724,12 @@ async fn attempt(
         // here or they would be silently suppressed by per-request cookies.
         if let Some(session_jar) = &opts.jar {
             use reqwest::cookie::CookieStore;
-            if let Some(header) = session_jar.cookies(&target.url) {
-                if let Ok(s) = header.to_str() {
-                    for pair in s.split("; ") {
-                        if let Some((k, v)) = pair.split_once('=') {
-                            jar.insert(k.to_string(), json!(v));
-                        }
+            if let Some(header) = session_jar.cookies(&target.url)
+                && let Ok(s) = header.to_str()
+            {
+                for pair in s.split("; ") {
+                    if let Some((k, v)) = pair.split_once('=') {
+                        jar.insert(k.to_string(), json!(v));
                     }
                 }
             }
@@ -757,10 +757,8 @@ async fn attempt(
         if hop == 0 && !opts.params.is_empty() {
             req = req.query(&opts.params);
         }
-        if !cross_origin {
-            if let Some((username, password)) = &opts.auth {
-                req = req.basic_auth(username, Some(password));
-            }
+        if !cross_origin && let Some((username, password)) = &opts.auth {
+            req = req.basic_auth(username, Some(password));
         }
         // The wrapper forwards data/json for POST, PUT, and DELETE. DELETE
         // bodies are unusual but explicitly supported by Scrapling.
@@ -806,19 +804,19 @@ async fn attempt(
             cookies.insert(k, v);
         }
 
-        if opts.follow_redirects && status.is_redirection() {
-            if let Some(loc) = headers
+        if opts.follow_redirects
+            && status.is_redirection()
+            && let Some(loc) = headers
                 .get(reqwest::header::LOCATION)
                 .and_then(|l| l.to_str().ok())
-            {
-                (method, send_body) = redirected_request(status.as_u16(), &method, send_body);
-                current = target
-                    .url
-                    .join(loc)
-                    .map_err(|e| format!("bad redirect target {loc}: {e}"))?
-                    .to_string();
-                continue;
-            }
+        {
+            (method, send_body) = redirected_request(status.as_u16(), &method, send_body);
+            current = target
+                .url
+                .join(loc)
+                .map_err(|e| format!("bad redirect target {loc}: {e}"))?
+                .to_string();
+            continue;
         }
 
         let encoding = charset_of(&headers);
@@ -934,19 +932,19 @@ mod tests {
         loop {
             let read = stream.read(&mut chunk).unwrap();
             request.extend_from_slice(&chunk[..read]);
-            if expected.is_none() {
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..end]);
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .and_then(|value| value.trim().parse::<usize>().ok())
-                        })
-                        .unwrap_or(0);
-                    expected = Some(end + 4 + length);
-                }
+            if expected.is_none()
+                && let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+            {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                expected = Some(end + 4 + length);
             }
             if read == 0 || expected.is_some_and(|length| request.len() >= length) {
                 break;
@@ -1003,17 +1001,15 @@ mod tests {
             let error = HttpOptions::from_payload_for_mode(&payload, HttpMode::Safe).unwrap_err();
             assert!(error.contains(option), "{option}: {error}");
         }
-        assert!(HttpOptions::from_payload_for_mode(
-            &json!({"impersonate": "chrome"}),
-            HttpMode::Safe
-        )
-        .is_ok());
-        assert!(HttpOptions::from_payload_for_mode(
-            &json!({"impersonate": "firefox"}),
-            HttpMode::Safe
-        )
-        .unwrap_err()
-        .contains("impersonate"));
+        assert!(
+            HttpOptions::from_payload_for_mode(&json!({"impersonate": "chrome"}), HttpMode::Safe)
+                .is_ok()
+        );
+        assert!(
+            HttpOptions::from_payload_for_mode(&json!({"impersonate": "firefox"}), HttpMode::Safe)
+                .unwrap_err()
+                .contains("impersonate")
+        );
     }
 
     #[test]
@@ -1173,14 +1169,18 @@ mod tests {
             HttpOptions::from_payload_for_mode(&json!({"impersonate": ""}), HttpMode::Compat)
                 .unwrap();
         assert_eq!(generated.impersonate, None);
-        assert!(generated
-            .headers
-            .iter()
-            .any(|(name, value)| name == "referer" && value == "https://www.google.com/"));
-        assert!(generated
-            .headers
-            .iter()
-            .any(|(name, value)| name == "User-Agent" && value.contains("Mozilla/5.0")));
+        assert!(
+            generated
+                .headers
+                .iter()
+                .any(|(name, value)| name == "referer" && value == "https://www.google.com/")
+        );
+        assert!(
+            generated
+                .headers
+                .iter()
+                .any(|(name, value)| name == "User-Agent" && value.contains("Mozilla/5.0"))
+        );
 
         let without_stealth = HttpOptions::from_payload_for_mode(
             &json!({"impersonate": "", "stealthy_headers": false}),
@@ -1375,9 +1375,11 @@ mod tests {
 
         let first = requests.recv().unwrap();
         assert!(first.starts_with("POST /start?q=1 HTTP/1.1\r\n"), "{first}");
-        assert!(first
-            .to_ascii_lowercase()
-            .contains("authorization: basic dtpw"));
+        assert!(
+            first
+                .to_ascii_lowercase()
+                .contains("authorization: basic dtpw")
+        );
         assert!(first.to_ascii_lowercase().contains("cookie: sid=x"));
         assert!(first.ends_with("a=b"), "{first}");
 
@@ -1491,27 +1493,31 @@ mod tests {
     #[tokio::test]
     async fn no_proxy_configured_is_not_an_error() {
         let opts = HttpOptions::from_payload(&json!({})).unwrap();
-        assert!(check_proxy(
-            &opts,
-            &SsrfPolicy {
-                allow_loopback: false
-            }
-        )
-        .await
-        .is_ok());
+        assert!(
+            check_proxy(
+                &opts,
+                &SsrfPolicy {
+                    allow_loopback: false
+                }
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn a_public_proxy_passes_the_check() {
         let opts = options_with_proxy_for_validation("http://1.1.1.1:8080");
-        assert!(check_proxy(
-            &opts,
-            &SsrfPolicy {
-                allow_loopback: false
-            }
-        )
-        .await
-        .is_ok());
+        assert!(
+            check_proxy(
+                &opts,
+                &SsrfPolicy {
+                    allow_loopback: false
+                }
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]

@@ -8,14 +8,14 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::call::ResultData;
 use crate::clients::SessionClient;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::functions::send::{self as send, normalize_message, TurnLineage};
+use crate::functions::send::{self as send, TurnLineage, normalize_message};
 use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
@@ -24,7 +24,7 @@ use crate::types::content::ContentBlock;
 use crate::types::message::AgentMessage;
 use crate::types::model::ThinkingLevel;
 use crate::types::turn::{
-    fs_scope_metadata, ExposeMode, FunctionPolicy, ParentLink, TurnOptions, TurnRecord,
+    ExposeMode, FunctionPolicy, ParentLink, TurnOptions, TurnRecord, fs_scope_metadata,
 };
 
 /// The ids of a freshly-seeded child turn.
@@ -201,11 +201,9 @@ fn child_functions(
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested),
         None => requested.cloned().or_else(|| cfg.default_functions.clone()),
     };
-    if !orchestrator {
-        if let Some(p) = functions.as_mut() {
-            p.deny
-                .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
-        }
+    if !orchestrator && let Some(p) = functions.as_mut() {
+        p.deny
+            .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
     }
     let mut dispatch_only = Vec::new();
     if let Some(p) = functions.as_mut() {
@@ -2020,9 +2018,11 @@ mod tests {
         let error = enforce_fanout(8, 8, false).unwrap_err();
         assert!(error.is_error);
         assert_eq!(error.details["error"], "harness/spawn_fanout_exceeded");
-        assert!(error.details["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("8 child sessions created this turn")));
+        assert!(
+            error.details["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("8 child sessions created this turn"))
+        );
     }
 
     fn resolved_agent(name: &str, icon: Option<SubagentIcon>) -> crate::agents::ResolvedAgent {
@@ -2116,9 +2116,11 @@ mod tests {
             assert_eq!(seed.contains("### `harness::unobserve`"), orchestrator);
             assert_eq!(digests.contains_key("harness::unobserve"), orchestrator);
             assert!(policy.allows("engine::functions::info"));
-            assert!(child
-                .dispatch_only
-                .contains(&"engine::functions::info".into()));
+            assert!(
+                child
+                    .dispatch_only
+                    .contains(&"engine::functions::info".into())
+            );
         }
         let denied = crate::policy::CompiledPolicy::from(None);
         assert_eq!(

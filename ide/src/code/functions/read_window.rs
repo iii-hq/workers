@@ -133,7 +133,7 @@ pub fn read_window<R: BufRead>(
                 lines_returned: 0,
                 total_lines: Some(total),
                 more_lines: false,
-            })
+            });
         }
         SkipOutcome::Reached { consumed } => consumed,
     };
@@ -249,7 +249,7 @@ pub fn read_window_wire<R: BufRead>(
                 lines_returned: 0,
                 total_lines: Some(total),
                 more_lines: false,
-            })
+            });
         }
         SkipOutcome::Reached { consumed } => consumed,
     };

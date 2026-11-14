@@ -38,11 +38,10 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const ON_FRAME_CHANGED_FN: &str = "computer::on-frame-changed";
-pub const ON_FRAME_CHANGED_DESC: &str =
-    "The newest screencast frame of one session changed (a new frame was stored, or the frame was \
+pub const ON_FRAME_CHANGED_DESC: &str = "The newest screencast frame of one session changed (a new frame was stored, or the frame was \
      cleared because the screencast or session stopped). Args: { session_id } (required). \
      Each observer's target receives { session_id, epoch, frame_seq, change, width, height, mime?, \
      bytes?, timestamp }; no image: read it with computer::frame. Latest state only: intermediate \

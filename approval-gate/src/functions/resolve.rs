@@ -17,7 +17,7 @@
 //! the `shell` deployment configuration. `access_duration` on a plain `function`
 //! record — or on a `deny` decision — is ignored (logged).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Deps;
 use crate::denial::{render_text, user_deny_envelope};
@@ -27,8 +27,8 @@ use crate::harness;
 use crate::pending;
 use crate::shell_config;
 use crate::types::{
-    now_ms, validate_id, AccessDuration, AccessRequest, PendingApprovalRecord, PendingKind,
-    PendingResolvedEvent, ResolveDecision, ResolveRequest, ResolveResponse, ResolvedOutcome,
+    AccessDuration, AccessRequest, PendingApprovalRecord, PendingKind, PendingResolvedEvent,
+    ResolveDecision, ResolveRequest, ResolveResponse, ResolvedOutcome, now_ms, validate_id,
 };
 
 pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse, ApprovalError> {
@@ -285,18 +285,17 @@ async fn build_grant_deny_payload(
         .access_request
         .as_ref()
         .map(|g| g.requested_root.as_str());
-    if let Some(requested_root) = requested_root {
-        if let Err(e) =
+    if let Some(requested_root) = requested_root
+        && let Err(e) =
             filesystem_access_state::add_denied(deps.iii.as_ref(), &req.session_id, requested_root)
                 .await
-        {
-            tracing::warn!(
-                session_id = %req.session_id,
-                requested_root,
-                error = %e,
-                "denied-memory write failed; filesystem-access-watch may re-ask for this root again"
-            );
-        }
+    {
+        tracing::warn!(
+            session_id = %req.session_id,
+            requested_root,
+            error = %e,
+            "denied-memory write failed; filesystem-access-watch may re-ask for this root again"
+        );
     }
 
     let default_reason =
@@ -316,7 +315,7 @@ mod tests {
     use super::*;
     use crate::pending::PENDING_SCOPE;
     use crate::testkit::{
-        log_push, log_snapshot, state_get, state_set, with_stack, BootOpts, TestStack,
+        BootOpts, TestStack, log_push, log_snapshot, state_get, state_set, with_stack,
     };
 
     async fn seed_record(iii: &iii_sdk::IIIClient) {
@@ -390,9 +389,11 @@ mod tests {
             assert_eq!(harness.len(), 1);
             assert_eq!(harness[0]["action"], json!("execute"));
             assert_eq!(harness[0]["turn_id"], json!("t_9"));
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                    .await
+                    .is_null()
+            );
         })
         .await;
     }
@@ -665,9 +666,11 @@ mod tests {
                 .unwrap();
 
             let calls = log_snapshot(&stack.harness_calls);
-            assert!(calls
-                .iter()
-                .any(|c| c["__fn"] == json!("harness::filesystem::grant")));
+            assert!(
+                calls
+                    .iter()
+                    .any(|c| c["__fn"] == json!("harness::filesystem::grant"))
+            );
             let execute_call = calls
                 .iter()
                 .find(|c| c["action"] == json!("execute"))

@@ -1,11 +1,11 @@
 //! Telegram update ingress supervisor — polling loop or webhook route.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use iii_sdk::errors::Error;
 use iii_sdk::ObserverHandle;
-use tokio::time::{sleep, timeout, Duration};
+use iii_sdk::errors::Error;
+use tokio::time::{Duration, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
 use crate::clients::telegram;

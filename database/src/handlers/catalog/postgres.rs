@@ -12,8 +12,8 @@
 //! Arrays are unnested into scalar rows and regrouped in Rust.
 
 use super::{
-    bool_at, fold_index_rows, i64_at, run, str_at, ColumnDesc, ForeignKeyRef, IndexDesc,
-    TableFilter, TableKey, TableKind, TableRef,
+    ColumnDesc, ForeignKeyRef, IndexDesc, TableFilter, TableKey, TableKind, TableRef, bool_at,
+    fold_index_rows, i64_at, run, str_at,
 };
 use crate::handlers::AppState;
 use serde_json::Value;
@@ -146,10 +146,10 @@ async fn mark_primary_keys(
         let (Some(key), Some(col)) = (key_of(&r), str_at(&r, "column_name")) else {
             continue;
         };
-        if let Some(cols) = columns.get_mut(&key) {
-            if let Some(c) = cols.iter_mut().find(|c| c.name == col) {
-                c.primary_key = true;
-            }
+        if let Some(cols) = columns.get_mut(&key)
+            && let Some(c) = cols.iter_mut().find(|c| c.name == col)
+        {
+            c.primary_key = true;
         }
     }
     Ok(())
@@ -190,14 +190,14 @@ async fn merge_foreign_keys(
         ) else {
             continue;
         };
-        if let Some(cols) = columns.get_mut(&key) {
-            if let Some(c) = cols.iter_mut().find(|c| c.name == src) {
-                c.foreign_key = Some(ForeignKeyRef {
-                    schema: str_at(&r, "ref_schema"),
-                    table: ref_table,
-                    column: ref_column,
-                });
-            }
+        if let Some(cols) = columns.get_mut(&key)
+            && let Some(c) = cols.iter_mut().find(|c| c.name == src)
+        {
+            c.foreign_key = Some(ForeignKeyRef {
+                schema: str_at(&r, "ref_schema"),
+                table: ref_table,
+                column: ref_column,
+            });
         }
     }
     Ok(())
@@ -248,10 +248,10 @@ pub async fn row_estimates(
     );
     let mut out = HashMap::new();
     for r in run(state, db, sql, params, timeout_ms).await? {
-        if let (Some(key), Some(est)) = (key_of(&r), i64_at(&r, "estimate")) {
-            if est >= 0 {
-                out.insert(key, est);
-            }
+        if let (Some(key), Some(est)) = (key_of(&r), i64_at(&r, "estimate"))
+            && est >= 0
+        {
+            out.insert(key, est);
         }
     }
     Ok(out)

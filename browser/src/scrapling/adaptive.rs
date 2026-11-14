@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
-use rusqlite::{params, types::ValueRef, Connection};
+use rusqlite::{Connection, params, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
@@ -217,10 +217,8 @@ impl Storage {
             return Ok(Vec::new());
         };
         let relocated = relocate(doc, &saved);
-        if auto_save {
-            if let Some(first) = relocated.first().copied() {
-                self.save(first, identifier)?;
-            }
+        if auto_save && let Some(first) = relocated.first().copied() {
+            self.save(first, identifier)?;
         }
         Ok(relocated.into_iter().map(QueryResult::Element).collect())
     }
@@ -343,11 +341,11 @@ fn frozen_registrable_domain(host: &str) -> Option<String> {
     if host.ends_with(".cns.joyent.com") {
         return Some("joyent.com".to_string());
     }
-    if let Some(prefix) = host.strip_suffix(".kh") {
-        if !prefix.is_empty() {
-            let label = prefix.rsplit('.').next()?;
-            return Some(format!("{label}.kh"));
-        }
+    if let Some(prefix) = host.strip_suffix(".kh")
+        && !prefix.is_empty()
+    {
+        let label = prefix.rsplit('.').next()?;
+        return Some(format!("{label}.kh"));
     }
 
     let suffix = psl::suffix(host.as_bytes())?;
@@ -497,20 +495,19 @@ fn similarity(original: &ElementData, candidate: &ElementData) -> f64 {
         .parent_name
         .as_deref()
         .filter(|value| !value.is_empty())
+        && let Some(candidate_parent) = candidate.parent_name.as_deref()
     {
-        if let Some(candidate_parent) = candidate.parent_name.as_deref() {
-            score += string_ratio(parent_name, candidate_parent);
+        score += string_ratio(parent_name, candidate_parent);
+        checks += 1;
+        score += map_ratio(&original.parent_attribs, &candidate.parent_attribs);
+        checks += 1;
+        if let Some(parent_text) = original
+            .parent_text
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            score += string_ratio(parent_text, candidate.parent_text.as_deref().unwrap_or(""));
             checks += 1;
-            score += map_ratio(&original.parent_attribs, &candidate.parent_attribs);
-            checks += 1;
-            if let Some(parent_text) = original
-                .parent_text
-                .as_deref()
-                .filter(|value| !value.is_empty())
-            {
-                score += string_ratio(parent_text, candidate.parent_text.as_deref().unwrap_or(""));
-                checks += 1;
-            }
         }
     }
 

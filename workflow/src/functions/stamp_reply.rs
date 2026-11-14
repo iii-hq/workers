@@ -16,7 +16,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const STAMP_REPLY_ID: &str = "workflow::stamp-reply";
 

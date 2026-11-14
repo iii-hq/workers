@@ -23,8 +23,8 @@
 
 use serde_json::Value;
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 const LEAD_PROFILE: &str = "---

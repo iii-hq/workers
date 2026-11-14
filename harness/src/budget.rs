@@ -263,7 +263,7 @@ pub async fn reserve(
             Err(reason) => {
                 return Ok(ReserveOutcome::Rejected(BudgetRejection::Unavailable(
                     reason,
-                )))
+                )));
             }
         }
     } else {
@@ -518,17 +518,21 @@ mod tests {
             output: Some(10.0),
             ..Pricing::default()
         };
-        assert!(maximum_cost_microusd(1_000, 100, &no_input)
-            .unwrap_err()
-            .contains("input pricing"));
+        assert!(
+            maximum_cost_microusd(1_000, 100, &no_input)
+                .unwrap_err()
+                .contains("input pricing")
+        );
 
         let no_output = Pricing {
             input: Some(2.0),
             ..Pricing::default()
         };
-        assert!(maximum_cost_microusd(1_000, 100, &no_output)
-            .unwrap_err()
-            .contains("output pricing"));
+        assert!(
+            maximum_cost_microusd(1_000, 100, &no_output)
+                .unwrap_err()
+                .contains("output pricing")
+        );
     }
 
     #[test]

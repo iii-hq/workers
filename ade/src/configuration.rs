@@ -25,12 +25,12 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::server::{self, AppState, ServerControlCell};
 use crate::ui_assets::UiControl;
-use crate::workspace_store::{default_data_dir, WorkspaceStore};
+use crate::workspace_store::{WorkspaceStore, default_data_dir};
 
 /// Live port snapshot used by `ade::status` and the rebind path.
 pub type PortCell = Arc<RwLock<u16>>;
@@ -339,7 +339,9 @@ fn runtime_config_from(
                 "stored `console.http_port` must be an integer from 0 to 65535".to_string()
             })?,
         Some(_) => {
-            return Err("stored `console.http_port` must be an integer from 0 to 65535".to_string())
+            return Err(
+                "stored `console.http_port` must be an integer from 0 to 65535".to_string(),
+            );
         }
     };
 
@@ -851,10 +853,12 @@ mod tests {
     fn seed_starts_with_no_disabled_workers() {
         let v = default_value(3113, "data/ade");
         assert!(disabled_workers_from(&v).is_empty());
-        assert!(v["injectableUi"]["disabledWorkers"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            v["injectableUi"]["disabledWorkers"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     async fn wait_for_connection(port: u16, expected: bool) -> bool {
@@ -906,9 +910,11 @@ mod tests {
         let old_port = handle.local_addr.port();
         let port = new_port_cell(old_port);
 
-        assert!(rebind(&port, &state, &handle.control, occupied_port)
-            .await
-            .is_err());
+        assert!(
+            rebind(&port, &state, &handle.control, occupied_port)
+                .await
+                .is_err()
+        );
         assert_eq!(*port.read().await, old_port);
         assert_eq!(handle.current_addr().await.unwrap().port(), old_port);
         assert!(wait_for_connection(old_port, true).await);

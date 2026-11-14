@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{SecurityMode, SharedConfig, WorkerConfig};
 use crate::scrapling::crawl::{self, CrawlOpts, CrawlOutcome};
@@ -17,7 +17,7 @@ use crate::scrapling::crawl_feed::{self, CrawlFeedHub, FeedSummary, IiiFeedSink}
 use crate::scrapling::fetch::{self, HttpMode, HttpOptions};
 use crate::scrapling::page::{self, PageData};
 use crate::scrapling::raw_browser::{RawBrowser, RawBrowserOptions};
-use crate::scrapling::sessions::{parse_type, uses_compat_only_options, Registry};
+use crate::scrapling::sessions::{Registry, parse_type, uses_compat_only_options};
 use crate::session::Sessions;
 use crate::ssrf::SsrfPolicy;
 
@@ -615,12 +615,16 @@ mod tests {
         let (echo, id) = crawl_identity(&json!({})).unwrap();
         assert_eq!(echo, json!(id));
         assert_eq!(id.len(), 32);
-        assert!(crawl_identity(&json!({"crawl_id": 7}))
-            .unwrap_err()
-            .contains("must be a string"));
-        assert!(crawl_identity(&json!({"crawl_id": "x".repeat(300)}))
-            .unwrap_err()
-            .contains("longer than"));
+        assert!(
+            crawl_identity(&json!({"crawl_id": 7}))
+                .unwrap_err()
+                .contains("must be a string")
+        );
+        assert!(
+            crawl_identity(&json!({"crawl_id": "x".repeat(300)}))
+                .unwrap_err()
+                .contains("longer than")
+        );
     }
 
     #[test]
@@ -659,9 +663,11 @@ mod tests {
         config.scrapling.security_mode = SecurityMode::Compat;
         let compat = one_shot_payload(&config, &json!({}), true);
         assert_eq!(compat["proxy"], "http://configured");
-        assert!(one_shot_payload(&config, &json!({}), false)
-            .get("include_html")
-            .is_none());
+        assert!(
+            one_shot_payload(&config, &json!({}), false)
+                .get("include_html")
+                .is_none()
+        );
     }
 
     #[test]
@@ -678,9 +684,11 @@ mod tests {
             let (value, generated) = crawl_group_id(&payload);
             assert_eq!(value, generated);
             assert_eq!(generated.len(), 32);
-            assert!(generated
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+            assert!(
+                generated
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            );
             assert_eq!(&generated[12..13], "4");
         }
     }

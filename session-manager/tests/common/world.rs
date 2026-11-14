@@ -28,9 +28,9 @@ use session_manager::config::WorkerConfig;
 use session_manager::error::SessionError;
 use session_manager::events::Emitter;
 use session_manager::functions::{
-    append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
-    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
-    set_active_leaf, set_draft, set_meta, set_status, update_message, Deps,
+    Deps, append, append_many, create, delete, delete_attachment, ensure, fork, get,
+    get_attachment, get_message, list, list_attachments, messages, messages_range, messages_tail,
+    put_attachment, set_active_leaf, set_draft, set_meta, set_status, update_message,
 };
 use session_manager::service::SessionService;
 use session_manager::store::FsStore;

@@ -1,9 +1,9 @@
 use crate::analyzer::{
-    byte_col_to_utf16_col, extract_method_name, is_arguments, is_call, is_call_alias,
-    is_call_method, is_object, is_observe_method, rust_constructor_context, strip_quotes,
-    type_name, CompletionContext, Language,
+    CompletionContext, Language, byte_col_to_utf16_col, extract_method_name, is_arguments, is_call,
+    is_call_alias, is_call_method, is_object, is_observe_method, rust_constructor_context,
+    strip_quotes, type_name,
 };
-use crate::engine_client::{engine_source, EngineClient};
+use crate::engine_client::{EngineClient, engine_source};
 use crate::engine_introspection::FunctionInfo;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
@@ -116,11 +116,11 @@ fn method_name_node(call: Node) -> Option<Node> {
 /// The non-comment arguments of a call.
 fn argument_nodes<'a>(arguments: Node<'a>) -> Vec<Node<'a>> {
     let mut cursor = arguments.walk();
-    let nodes = arguments
+
+    arguments
         .named_children(&mut cursor)
         .filter(|argument| !argument.kind().contains("comment"))
-        .collect();
-    nodes
+        .collect()
 }
 
 // --- Call extraction ---
@@ -162,22 +162,21 @@ fn extract_call_site(call: Node, source: &str) -> Option<CallSite> {
     }
 
     // Try a Rust constructor: CallRequest::new("x", payload)
-    if let Some(first) = argument_nodes(arguments).first() {
-        if let Some((function_id, function_id_range, constructor)) =
+    if let Some(first) = argument_nodes(arguments).first()
+        && let Some((function_id, function_id_range, constructor)) =
             find_constructor_argument(*first, source, &CompletionContext::FunctionId)
-        {
-            if alias.is_none() {
-                alias = constructor_alias(constructor, source);
-            }
-            return Some(CallSite {
-                function_id,
-                function_id_range,
-                payload_keys: Vec::new(),
-                payload_range: to_range(*first, source),
-                has_payload: false,
-                alias,
-            });
+    {
+        if alias.is_none() {
+            alias = constructor_alias(constructor, source);
         }
+        return Some(CallSite {
+            function_id,
+            function_id_range,
+            payload_keys: Vec::new(),
+            payload_range: to_range(*first, source),
+            has_payload: false,
+            alias,
+        });
     }
 
     // Try keyword-argument style (Python)
@@ -287,14 +286,14 @@ fn extract_observe_site(call: Node, source: &str) -> Option<ObserveSite> {
 /// shorthand `{ key }`, or a spread (`...rest`, `**rest`).
 fn has_opaque_entry(object: Node, key: &str, source: &str) -> bool {
     let mut cursor = object.walk();
-    let opaque = object
+
+    object
         .children(&mut cursor)
         .any(|child| match child.kind() {
             "spread_element" | "dictionary_splat" => true,
             "shorthand_property_identifier" => child.utf8_text(source.as_bytes()) == Ok(key),
             _ => false,
-        });
-    opaque
+        })
 }
 
 fn is_string(kind: &str) -> bool {
@@ -455,19 +454,16 @@ fn object_details(object: Node, source: &str) -> ObjectDetails {
 fn find_kwarg_string(arg_list: Node, name: &str, source: &str) -> Option<(String, Range)> {
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
-        if child.kind() == "keyword_argument" {
-            if let Some(n) = child.child_by_field_name("name") {
-                if n.utf8_text(source.as_bytes()).ok()? == name {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "string" {
-                            return Some((
-                                extract_string_content(value, source),
-                                to_range(value, source),
-                            ));
-                        }
-                    }
-                }
-            }
+        if child.kind() == "keyword_argument"
+            && let Some(n) = child.child_by_field_name("name")
+            && n.utf8_text(source.as_bytes()).ok()? == name
+            && let Some(value) = child.child_by_field_name("value")
+            && value.kind() == "string"
+        {
+            return Some((
+                extract_string_content(value, source),
+                to_range(value, source),
+            ));
         }
     }
     None
@@ -476,19 +472,15 @@ fn find_kwarg_string(arg_list: Node, name: &str, source: &str) -> Option<(String
 fn find_kwarg_object(arg_list: Node, names: &[&str], source: &str) -> Option<(Vec<String>, Range)> {
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
-        if child.kind() == "keyword_argument" {
-            if let Some(n) = child.child_by_field_name("name") {
-                let arg_name = n.utf8_text(source.as_bytes()).ok()?;
-                if names.contains(&arg_name) {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if is_object(value.kind()) {
-                            return Some((
-                                extract_object_keys(value, source),
-                                to_range(value, source),
-                            ));
-                        }
-                    }
-                }
+        if child.kind() == "keyword_argument"
+            && let Some(n) = child.child_by_field_name("name")
+        {
+            let arg_name = n.utf8_text(source.as_bytes()).ok()?;
+            if names.contains(&arg_name)
+                && let Some(value) = child.child_by_field_name("value")
+                && is_object(value.kind())
+            {
+                return Some((extract_object_keys(value, source), to_range(value, source)));
             }
         }
     }
@@ -501,12 +493,11 @@ fn extract_object_keys(object: Node, source: &str) -> Vec<String> {
     let mut keys = Vec::new();
     let mut cursor = object.walk();
     for child in object.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key) = child.child_by_field_name("key") {
-                if let Ok(text) = key.utf8_text(source.as_bytes()) {
-                    keys.push(strip_quotes(text));
-                }
-            }
+        if child.kind() == "pair"
+            && let Some(key) = child.child_by_field_name("key")
+            && let Ok(text) = key.utf8_text(source.as_bytes())
+        {
+            keys.push(strip_quotes(text));
         }
     }
     keys
@@ -516,17 +507,15 @@ fn extract_object_string_values(object: Node, source: &str) -> Vec<(String, Stri
     let mut kvs = Vec::new();
     let mut cursor = object.walk();
     for child in object.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key) = child.child_by_field_name("key") {
-                if let Some(value) = child.child_by_field_name("value") {
-                    if let (Ok(k), Ok(v)) = (
-                        key.utf8_text(source.as_bytes()),
-                        value.utf8_text(source.as_bytes()),
-                    ) {
-                        kvs.push((strip_quotes(k), strip_quotes(v)));
-                    }
-                }
-            }
+        if child.kind() == "pair"
+            && let Some(key) = child.child_by_field_name("key")
+            && let Some(value) = child.child_by_field_name("value")
+            && let (Ok(k), Ok(v)) = (
+                key.utf8_text(source.as_bytes()),
+                value.utf8_text(source.as_bytes()),
+            )
+        {
+            kvs.push((strip_quotes(k), strip_quotes(v)));
         }
     }
     kvs
@@ -653,17 +642,17 @@ fn check_call(
 
     if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for req in required {
-            if let Some(name) = req.as_str() {
-                if !call.payload_keys.contains(&name.to_string()) {
-                    diagnostics.push(diagnostic(
-                        call.payload_range,
-                        DiagnosticSeverity::ERROR,
-                        format!(
-                            "Missing required property '{}' for '{}'",
-                            name, call.function_id
-                        ),
-                    ));
-                }
+            if let Some(name) = req.as_str()
+                && !call.payload_keys.contains(&name.to_string())
+            {
+                diagnostics.push(diagnostic(
+                    call.payload_range,
+                    DiagnosticSeverity::ERROR,
+                    format!(
+                        "Missing required property '{}' for '{}'",
+                        name, call.function_id
+                    ),
+                ));
             }
         }
     }
@@ -915,12 +904,14 @@ mod tests {
     #[test]
     fn ts_observe_args_variable_is_unknown() {
         let source = "iii.observe({ function_id: 'cron::on-tick', args }, 'reports::daily')";
-        assert!(diagnose_with(
-            source,
-            Language::TypeScript,
-            &[cron(), function("reports::daily")]
-        )
-        .is_empty());
+        assert!(
+            diagnose_with(
+                source,
+                Language::TypeScript,
+                &[cron(), function("reports::daily")]
+            )
+            .is_empty()
+        );
     }
 
     // --- Python dict-style tests ---
@@ -1107,7 +1098,9 @@ mod tests {
         let with_args = "iii.observe({ function_id: 'engine::on-functions-changed', args: { a: 'b' } }, 'w::r')";
         assert_eq!(
             diagnose_with(with_args, Language::TypeScript, &[function("w::r")]),
-            vec!["Function 'engine::on-functions-changed' takes no args: select its calls with filters on input"]
+            vec![
+                "Function 'engine::on-functions-changed' takes no args: select its calls with filters on input"
+            ]
         );
     }
 
@@ -1121,7 +1114,9 @@ mod tests {
         let five = "iii.observe({ function_id: 'cron::on-tick', args: { expression: '0 9 * * *' } }, 'r::d')";
         assert_eq!(
             diagnose_with(five, Language::TypeScript, &functions),
-            vec!["Cron expression must have 6 fields (sec min hour day month weekday) and an optional year, got 5"]
+            vec![
+                "Cron expression must have 6 fields (sec min hour day month weekday) and an optional year, got 5"
+            ]
         );
     }
 
@@ -1138,7 +1133,9 @@ mod tests {
         let bad = "iii.observe({ function_id: 'http::on-request', args: { method: 'FETCH', path: '/users' } }, 'api::users')";
         assert_eq!(
             diagnose_with(bad, Language::TypeScript, &functions),
-            vec!["Invalid HTTP method 'FETCH'. Expected one of: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS"]
+            vec![
+                "Invalid HTTP method 'FETCH'. Expected one of: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS"
+            ]
         );
     }
 

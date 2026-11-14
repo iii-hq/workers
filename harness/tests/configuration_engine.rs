@@ -9,8 +9,8 @@ use engine::{isolated_engine, worker_options};
 use harness::config::WorkerConfig;
 use harness::configuration;
 use harness::types::turn::ExposeMode;
-use iii_sdk::{register_worker, CallRequest, IIIClient};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
+use serde_json::{Value, json};
 
 async fn call(iii: &IIIClient, function: &str, payload: Value) -> Value {
     iii.call(CallRequest {

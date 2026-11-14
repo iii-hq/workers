@@ -6,10 +6,10 @@ mod history;
 use std::collections::VecDeque;
 
 use history::{
-    classify_root, Bounds, ClassificationReason, DeltaReader, FetchFailure, HistoryError, Outcome,
-    RootClassification,
+    Bounds, ClassificationReason, DeltaReader, FetchFailure, HistoryError, Outcome,
+    RootClassification, classify_root,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn entry(id: &str) -> Value {
     json!({"entry_id": id, "message": {"role": "user", "content": [
@@ -116,10 +116,12 @@ fn thousand_entry_prefix_reads_only_thirty_new_entries() {
     assert_eq!(delta.watermark, "delta-29");
     assert_eq!(delta.entries[0].entry_id, "delta-0");
     assert_eq!(delta.entries[29].entry_id, "delta-29");
-    assert!(delta
-        .entries
-        .iter()
-        .all(|item| !item.entry_id.starts_with("old-")));
+    assert!(
+        delta
+            .entries
+            .iter()
+            .all(|item| !item.entry_id.starts_with("old-"))
+    );
     assert_eq!(delta.entries[0].item["origin"], json!({"synthetic": true}));
 }
 
@@ -145,9 +147,12 @@ fn more_than_thousand_new_entries_keep_every_page_and_prefix() {
             "cursor": "opaque-page/101"
         })
     );
-    assert!(transport.requests[1..]
-        .iter()
-        .all(|request| request.get("after_entry_id").is_none() && request.get("cursor").is_some()));
+    assert!(
+        transport.requests[1..]
+            .iter()
+            .all(|request| request.get("after_entry_id").is_none()
+                && request.get("cursor").is_some())
+    );
     assert!(transport
         .requests
         .iter()
@@ -865,10 +870,10 @@ mod productive {
         async fn new_in(mut script: Script, dir: tempfile::TempDir) -> Self {
             if script.persistent_cursor {
                 let path = dir.path().join("synthetic-cursor.json");
-                if !path.exists() {
-                    if let Some(id) = &script.cursor {
-                        std::fs::write(&path, json!({"last_entry_id":id}).to_string()).unwrap();
-                    }
+                if !path.exists()
+                    && let Some(id) = &script.cursor
+                {
+                    std::fs::write(&path, json!({"last_entry_id":id}).to_string()).unwrap();
                 }
                 script.cursor_file = Some(path);
             }
@@ -1108,10 +1113,12 @@ mod productive {
     #[test]
     fn strict_log_assertion_excludes_only_typed_receipts() {
         assert!(strict_memory_record(r#"{"extraction_receipt":"source"}"#).is_none());
-        assert!(strict_memory_record(
-            r#"{"extraction_receipt":"source","disposition":"expected_conflict"}"#
-        )
-        .is_none());
+        assert!(
+            strict_memory_record(
+                r#"{"extraction_receipt":"source","disposition":"expected_conflict"}"#
+            )
+            .is_none()
+        );
         for malformed in [
             "not-json",
             r#"{"extraction_receipt":null}"#,
@@ -1746,11 +1753,13 @@ mod productive {
                 ..Script::default()
             })
             .await;
-            assert!(stack
-                .run(&job("end"))
-                .await
-                .unwrap_err()
-                .contains("state::get"));
+            assert!(
+                stack
+                    .run(&job("end"))
+                    .await
+                    .unwrap_err()
+                    .contains("state::get")
+            );
             let s = stack.script.lock().unwrap();
             assert_eq!(s.requests().len(), 0);
             assert_eq!(s.count("router::complete"), 0);
@@ -1824,11 +1833,13 @@ mod productive {
             ..Script::default()
         })
         .await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("state::set"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("state::set")
+        );
         let s = stack.script.lock().unwrap();
         assert_eq!(s.requests().len(), 1);
         assert_eq!(s.count("router::complete"), 1);
@@ -1883,11 +1894,13 @@ mod productive {
             ..Script::default()
         })
         .await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("state::set"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("state::set")
+        );
         let s = stack.script.lock().unwrap();
         assert_eq!(
             s.requests(),
@@ -1914,11 +1927,13 @@ mod productive {
                 ..Script::default()
             })
             .await;
-            assert!(stack
-                .run(&job("missing-until"))
-                .await
-                .unwrap_err()
-                .contains("boundary pending"));
+            assert!(
+                stack
+                    .run(&job("missing-until"))
+                    .await
+                    .unwrap_err()
+                    .contains("boundary pending")
+            );
             let s = stack.script.lock().unwrap();
             assert_eq!(s.requests().len(), if bootstrap { 1 } else { 2 });
             assert_eq!(s.count("state::get"), 1);
@@ -2148,11 +2163,13 @@ mod productive {
             std::fs::set_permissions(&path, permissions).unwrap();
         };
         read_only(true);
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("memory commit failed"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("memory commit failed")
+        );
         read_only(false);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let bank = stack.deps.store().await.bank("private").await.unwrap();
@@ -2282,13 +2299,15 @@ mod productive {
                 None
             );
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .is_none());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none()
+            );
             let script = stack.script.lock().unwrap();
             assert_eq!(script.count("router::complete"), 0);
             assert_eq!(script.count("memory::on-item-changed"), 0);
@@ -2309,11 +2328,13 @@ mod productive {
             ..Script::default()
         })
         .await;
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("state::set"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("state::set")
+        );
         let original = stack.log_records("private")[0].clone();
         assert_eq!(original.corroboration, 0);
         assert_eq!(
@@ -2369,11 +2390,13 @@ mod productive {
                 s.model_items = VecDeque::from([fact(&original.text)]);
             }
             stack.script.lock().unwrap().state_write_error = true;
-            assert!(stack
-                .run(&job("end"))
-                .await
-                .unwrap_err()
-                .contains("state::set"));
+            assert!(
+                stack
+                    .run(&job("end"))
+                    .await
+                    .unwrap_err()
+                    .contains("state::set")
+            );
             let committed = stack.log_records("private");
             assert_eq!(committed.len(), if correction { 3 } else { 2 });
             if !correction {
@@ -2540,11 +2563,13 @@ mod productive {
         .await;
         let mut earlier = job("first-end");
         earlier.turn_id = Some("first-turn".into());
-        assert!(stack
-            .run(&earlier)
-            .await
-            .unwrap_err()
-            .contains("state::set"));
+        assert!(
+            stack
+                .run(&earlier)
+                .await
+                .unwrap_err()
+                .contains("state::set")
+        );
         let original = stack.log_records("private")[0].clone();
         stack.script.lock().unwrap().state_write_error = false;
         let stack = stack.restart().await;
@@ -2598,14 +2623,18 @@ mod productive {
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"large-end"}));
         assert_eq!(stack.log_records("private").len(), 1);
         let store = stack.deps.store().await;
-        assert!(store
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
-        assert!(store
-            .pending_extraction("incremental-fixture")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2653,13 +2682,15 @@ mod productive {
         assert_eq!(records[0].text, long);
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 131);
         // Every range was acknowledged: the ledger is empty.
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2722,13 +2753,15 @@ mod productive {
             assert_eq!(stack.log_records("private").len(), 130);
             // Three failures, the dead-lettered run once, then every turn.
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 134);
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .is_none());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 
@@ -2756,11 +2789,13 @@ mod productive {
             .await;
             let mut earlier = job("first-end");
             earlier.turn_id = Some("first-turn".into());
-            assert!(stack
-                .run(&earlier)
-                .await
-                .unwrap_err()
-                .contains("state::set"));
+            assert!(
+                stack
+                    .run(&earlier)
+                    .await
+                    .unwrap_err()
+                    .contains("state::set")
+            );
             stack.script.lock().unwrap().state_write_error = false;
             let stack = stack.restart().await;
             let store = stack.deps.store().await;
@@ -2890,13 +2925,15 @@ mod productive {
             );
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 3);
             assert!(stack.script.lock().unwrap().inputs()[1].len() < 16_000);
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .extraction_ranges("incremental-fixture")
-                .unwrap()
-                .is_empty());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .extraction_ranges("incremental-fixture")
+                    .unwrap()
+                    .is_empty()
+            );
             let texts: Vec<_> = stack
                 .log_records("private")
                 .into_iter()
@@ -2936,11 +2973,13 @@ mod productive {
                 "bank" => invalid.bank = Some(huge),
                 _ => invalid.agent = Some(huge),
             }
-            assert!(stack
-                .run(&invalid)
-                .await
-                .unwrap_err()
-                .contains("byte bound"));
+            assert!(
+                stack
+                    .run(&invalid)
+                    .await
+                    .unwrap_err()
+                    .contains("byte bound")
+            );
         }
         assert!(stack.script.lock().unwrap().calls.is_empty());
         stack.script.lock().unwrap().cursor_reply = Some(json!({"last_entry_id":"c".repeat(257)}));
@@ -2965,11 +3004,13 @@ mod productive {
         let mut cfg = (*stack.deps.config().await).clone();
         cfg.rule_learning_enabled = true;
         *stack.deps.config.write().await = Arc::new(cfg);
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("state::set"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("state::set")
+        );
         let bank = stack.deps.store().await.bank("private").await.unwrap();
         let learned = bank.list_rules().unwrap();
         assert_eq!(learned.len(), 1);
@@ -3045,11 +3086,13 @@ mod productive {
         let before = std::fs::read(&path).unwrap();
         let blocker = bank.dir().join("rules/.learned.md.tmp");
         std::fs::create_dir(&blocker).unwrap();
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("learned rule write failed"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("learned rule write failed")
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
         assert_eq!(
@@ -3122,11 +3165,13 @@ mod productive {
             std::fs::set_permissions(&log, permissions).unwrap();
         };
         read_only(true);
-        assert!(stack
-            .run(&job("end"))
-            .await
-            .unwrap_err()
-            .contains("memory commit failed"));
+        assert!(
+            stack
+                .run(&job("end"))
+                .await
+                .unwrap_err()
+                .contains("memory commit failed")
+        );
         read_only(false);
         // A human removes the rule before the retry.
         let human = "- Human-authored instruction only.\n";
@@ -3199,13 +3244,15 @@ mod productive {
         assert!(stack.log_records("private").is_empty());
         assert_eq!(stack.log_records("other")[0].text, text);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .pending_extraction("incremental-fixture")
-            .unwrap()
-            .is_none());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -3234,11 +3281,13 @@ mod productive {
         .await;
         let mut latest = job("end-5");
         latest.turn_id = Some("turn-5".into());
-        assert!(stack
-            .run(&latest)
-            .await
-            .unwrap_err()
-            .contains("remaining runs require retry"));
+        assert!(
+            stack
+                .run(&latest)
+                .await
+                .unwrap_err()
+                .contains("remaining runs require retry")
+        );
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-3"}));
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
         let stack = stack.restart().await;
@@ -3246,9 +3295,11 @@ mod productive {
         stack.run(&latest).await.unwrap();
         let records = stack.log_records("private");
         assert_eq!(records.len(), 6);
-        assert!(records
-            .iter()
-            .all(|m| m.corroboration == 0 && m.revision == 0));
+        assert!(
+            records
+                .iter()
+                .all(|m| m.corroboration == 0 && m.revision == 0)
+        );
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end-5"}));
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 2);
@@ -3308,11 +3359,13 @@ mod productive {
         .await;
         let mut input = job("end");
         input.turn_id = Some("different-turn".into());
-        assert!(stack
-            .run(&input)
-            .await
-            .unwrap_err()
-            .contains("job/source turn mismatch"));
+        assert!(
+            stack
+                .run(&input)
+                .await
+                .unwrap_err()
+                .contains("job/source turn mismatch")
+        );
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 0);
         assert_eq!(s.count("state::set"), 0);
@@ -3405,13 +3458,15 @@ mod productive {
                 "{position}"
             );
             assert_eq!(stack.commits(), 0);
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .is_none());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none()
+            );
             let s = stack.script.lock().unwrap();
             assert_eq!(
                 s.count("router::complete"),
@@ -3502,13 +3557,15 @@ mod productive {
             let records = stack.log_records(bank);
             assert_eq!(records.len(), usize::from(enabled));
             assert!(records.iter().all(|r| r.text == later));
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .is_none());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none()
+            );
             let script = stack.script.lock().unwrap();
             assert_eq!(script.path, original_path);
             // The restart cleared the first run's calls; the rerun is a no-op.
@@ -3630,13 +3687,15 @@ mod productive {
                     assert_eq!(recovered, records);
                 }
                 assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-                assert!(stack
-                    .deps
-                    .store()
-                    .await
-                    .pending_extraction("incremental-fixture")
-                    .unwrap()
-                    .is_none());
+                assert!(
+                    stack
+                        .deps
+                        .store()
+                        .await
+                        .pending_extraction("incremental-fixture")
+                        .unwrap()
+                        .is_none()
+                );
                 let s = stack.script.lock().unwrap();
                 assert_eq!(s.count("router::complete"), usize::from(!published));
                 assert_eq!(s.count("memory::on-item-changed"), usize::from(!published));
@@ -3767,8 +3826,8 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn exhausted_owner_run_waits_through_off_and_the_next_eligible_job_runs_it_across_restart(
-    ) {
+    async fn exhausted_owner_run_waits_through_off_and_the_next_eligible_job_runs_it_across_restart()
+     {
         for later_bank in ["private", "other"] {
             let first = "ORIGINAL_SOURCE_CANARY copper calibration remains mandatory.";
             let second = "Birch archives retain monthly invoices.";
@@ -3794,11 +3853,13 @@ mod productive {
             let mut first_job = job("first-end");
             first_job.turn_id = Some("first-turn".into());
             for _ in 0..3 {
-                assert!(stack
-                    .run(&first_job)
-                    .await
-                    .unwrap_err()
-                    .contains("provider error"));
+                assert!(
+                    stack
+                        .run(&first_job)
+                        .await
+                        .unwrap_err()
+                        .contains("provider error")
+                );
             }
             assert_eq!(stack.script.lock().unwrap().count("router::complete"), 3);
             let saved = stack
@@ -3818,13 +3879,15 @@ mod productive {
             off.skip = true;
             stack.run(&off).await.unwrap();
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"anchor"}));
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .pending_extraction("incremental-fixture")
-                .unwrap()
-                .is_none());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .pending_extraction("incremental-fixture")
+                    .unwrap()
+                    .is_none()
+            );
             let ranges = stack
                 .deps
                 .store()
@@ -3847,17 +3910,21 @@ mod productive {
             stack.run(&later).await.unwrap();
             stack.run(&later).await.unwrap();
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"later-end"}));
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .extraction_ranges("incremental-fixture")
-                .unwrap()
-                .is_empty());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .extraction_ranges("incremental-fixture")
+                    .unwrap()
+                    .is_empty()
+            );
             let private = stack.log_records("private");
-            assert!(private
-                .iter()
-                .any(|r| r.text == first && r.revision == 0 && r.corroboration == 0));
+            assert!(
+                private
+                    .iter()
+                    .any(|r| r.text == first && r.revision == 0 && r.corroboration == 0)
+            );
             assert_eq!(private.len(), if later_bank == "private" { 2 } else { 1 });
             assert_eq!(stack.log_records(later_bank).last().unwrap().text, second);
             {
@@ -4035,13 +4102,15 @@ mod productive {
         // A deleted bank's run is closed unextracted: nothing pins the cursor
         // and none of its text stays retained.
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 1);
         assert_eq!(s.count("memory::on-item-changed"), 1);
@@ -4158,27 +4227,33 @@ mod productive {
         stack.run(&later).await.unwrap();
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .pending_extraction("incremental-fixture")
-            .unwrap()
-            .is_none());
-        assert!(stack
-            .script
-            .lock()
-            .unwrap()
-            .inputs()
-            .iter()
-            .all(|p| !p.contains("RETAINED_CANARY")));
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            stack
+                .script
+                .lock()
+                .unwrap()
+                .inputs()
+                .iter()
+                .all(|p| !p.contains("RETAINED_CANARY"))
+        );
     }
 
     #[tokio::test]
@@ -4235,37 +4310,45 @@ mod productive {
         later.bank = Some("other".into());
         // The exhausted run goes first, under its own bank, then three of the
         // later turn's five runs: four calls, then a retry.
-        assert!(stack
-            .run(&later)
-            .await
-            .unwrap_err()
-            .contains("remaining runs"));
+        assert!(
+            stack
+                .run(&later)
+                .await
+                .unwrap_err()
+                .contains("remaining runs")
+        );
         {
             let s = stack.script.lock().unwrap();
             assert_eq!(s.count("router::complete"), 4);
             assert!(s.inputs()[0].contains("RETAINED_PREFIX_CANARY"));
-            assert!(s.inputs()[1..]
-                .iter()
-                .all(|input| !input.contains("RETAINED_PREFIX_CANARY")));
+            assert!(
+                s.inputs()[1..]
+                    .iter()
+                    .all(|input| !input.contains("RETAINED_PREFIX_CANARY"))
+            );
         }
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"new-32"}));
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         let stack = stack.restart().await;
         stack.run(&later).await.unwrap();
         stack.run(&later).await.unwrap();
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         assert!(stack.log_records("private").is_empty());
         assert!(stack.log_records("other").is_empty());
@@ -4325,13 +4408,15 @@ mod productive {
         // The saved run no longer matches the raw source: it is dropped, and
         // the edited run runs as the path holds it now.
         stack.run(&later).await.unwrap();
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(stack.log_records("other")[0].text, later_text);
         assert_eq!(stack.log_records("other").len(), 1);
         assert!(stack.log_records("private").is_empty());
@@ -4369,11 +4454,13 @@ mod productive {
                 ..Script::default()
             })
             .await;
-            assert!(stack
-                .run(&job("end"))
-                .await
-                .unwrap_err()
-                .contains("state::set"));
+            assert!(
+                stack
+                    .run(&job("end"))
+                    .await
+                    .unwrap_err()
+                    .contains("state::set")
+            );
             let records = stack.log_records("private");
             let source =
                 json!(["incremental-fixture", "private", false, null, null, ["end"]]).to_string();
@@ -4460,13 +4547,15 @@ mod productive {
             later.turn_id = Some("new-turn".into());
             later.bank = Some("other".into());
             stack.run(&later).await.unwrap();
-            assert!(stack
-                .deps
-                .store()
-                .await
-                .extraction_ranges("incremental-fixture")
-                .unwrap()
-                .is_empty());
+            assert!(
+                stack
+                    .deps
+                    .store()
+                    .await
+                    .extraction_ranges("incremental-fixture")
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
             assert!(stack.log_records("private").is_empty());
             assert_eq!(stack.log_records("other").len(), 1);
@@ -4515,11 +4604,13 @@ mod productive {
         let mut first_job = job("first-end");
         first_job.turn_id = Some("first-turn".into());
         for _ in 0..3 {
-            assert!(stack
-                .run(&first_job)
-                .await
-                .unwrap_err()
-                .contains("state::set"));
+            assert!(
+                stack
+                    .run(&first_job)
+                    .await
+                    .unwrap_err()
+                    .contains("state::set")
+            );
         }
         let original = stack.log_records("private");
         assert_eq!(original.len(), 1);
@@ -4612,13 +4703,15 @@ mod productive {
         assert_eq!(stack.log_records("private"), records);
         assert_eq!(stack.log_records("other").len(), 1);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         let s = stack.script.lock().unwrap();
         // Only the later turn asks the model: the completed run is not replayed.
         assert_eq!(s.count("router::complete"), 1);
@@ -4753,13 +4846,15 @@ mod productive {
         stack.run(&later).await.unwrap();
         assert_eq!(stack.log_records("other"), records);
         // The deleted bank's text is not retained anywhere.
-        assert!(stack
-            .deps
-            .store()
-            .await
-            .extraction_ranges("incremental-fixture")
-            .unwrap()
-            .is_empty());
+        assert!(
+            stack
+                .deps
+                .store()
+                .await
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         let s = stack.script.lock().unwrap();
         assert_eq!(s.count("router::complete"), 0);

@@ -69,17 +69,17 @@ pub enum Question {
 }
 
 pub(crate) fn questions_schema(
-    generator: &mut schemars::gen::SchemaGenerator,
+    generator: &mut schemars::r#gen::SchemaGenerator,
 ) -> schemars::schema::Schema {
     map_schema::<Question>(generator, 1, None)
 }
 fn choice_criteria_schema(
-    generator: &mut schemars::gen::SchemaGenerator,
+    generator: &mut schemars::r#gen::SchemaGenerator,
 ) -> schemars::schema::Schema {
     map_schema::<Content>(generator, 1, Some(255))
 }
 fn map_schema<T: JsonSchema>(
-    generator: &mut schemars::gen::SchemaGenerator,
+    generator: &mut schemars::r#gen::SchemaGenerator,
     min: u32,
     max: Option<u32>,
 ) -> schemars::schema::Schema {
@@ -90,7 +90,7 @@ fn map_schema<T: JsonSchema>(
     schema.into()
 }
 fn noul_criteria_schema(
-    generator: &mut schemars::gen::SchemaGenerator,
+    generator: &mut schemars::r#gen::SchemaGenerator,
 ) -> schemars::schema::Schema {
     use schemars::schema::{
         InstanceType, ObjectValidation, Schema, SchemaObject, SubschemaValidation,

@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::launch::{MARK_ACCOUNT, MARK_PENDING, MARK_SKIP};
-use super::panes::{MoveKind, PaneState, NOT_RUNNING, NO_SESSION};
+use super::panes::{MoveKind, NO_SESSION, NOT_RUNNING, PaneState};
 use super::registry::{self, Registry};
 use super::slot::Place;
 use super::{Accounts, GLOBAL};
@@ -742,10 +742,10 @@ impl Stopped {
     /// Leave the pane without Claude Code: its shell, or the pane dead
     /// with remain-on-exit as it was.
     pub async fn leave(self, tmux: &Tmux) {
-        if matches!(self.kind, MoveKind::Respawn) {
-            if let Err(error) = tmux.run(&self.restore).await {
-                tracing::warn!(pane = %self.pane_id, error = %error.sentence(), "remain-on-exit not put back");
-            }
+        if matches!(self.kind, MoveKind::Respawn)
+            && let Err(error) = tmux.run(&self.restore).await
+        {
+            tracing::warn!(pane = %self.pane_id, error = %error.sentence(), "remain-on-exit not put back");
         }
     }
 
@@ -1595,9 +1595,11 @@ mod tests {
                 "%1",
                 "@iii_skip_permissions"
             ]));
-        assert!(cleared
-            .windows(6)
-            .any(|w| w == ["set-option", "-w", "-u", "-t", "%1", "@iii_claude_pending"]));
+        assert!(
+            cleared
+                .windows(6)
+                .any(|w| w == ["set-option", "-w", "-u", "-t", "%1", "@iii_claude_pending"])
+        );
     }
 
     #[test]

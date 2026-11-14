@@ -6,28 +6,28 @@
 //! `predict_tournament`.
 use crate::{
     download::Checkpoint,
-    encode::{render_options, Encoder, QType, Question as Rendered, Sequence, State},
+    encode::{Encoder, QType, Question as Rendered, Sequence, State, render_options},
     engine::{self, Engine, Stop},
     lang,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use judge_contract::{
-    confidence, validate_answer, validate_request_with_limits, Answer, CancelRequest,
-    CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
+    Answer, CancelRequest, CancelResponse, Content, DEFAULT_MAX_REQUEST_BYTES,
+    DEFAULT_MAX_TIMEOUT_MS, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
-    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+    confidence, validate_answer, validate_request_with_limits,
 };
 use judge_provider::cancellation::{CallGuard, CancellationRegistry};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{Instant, timeout_at};
 
 /// With `Routing::choice_tournament`, choices wider than this play laya's
 /// `predict_tournament` (#950) instead of being asked as one row. A row's options share the head's budget: past ~20

@@ -193,11 +193,13 @@ mod tests {
     fn orchestrator_round_trips_unset_and_both_values() {
         let unset: SpawnOptions = serde_json::from_value(json!({})).unwrap();
         assert_eq!(unset.orchestrator, None);
-        assert!(!serde_json::to_value(&unset)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("orchestrator"));
+        assert!(
+            !serde_json::to_value(&unset)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("orchestrator")
+        );
         for value in [true, false] {
             let opts: SpawnOptions =
                 serde_json::from_value(json!({ "orchestrator": value })).unwrap();
@@ -217,11 +219,13 @@ mod tests {
         assert_eq!(display.icon, Some(SubagentIcon::Code));
         assert_eq!(display.color, Some(SubagentColor::Blue));
 
-        assert!(serde_json::from_value::<SpawnRequest>(json!({
-            "task": "x",
-            "display": { "name": "Unsafe", "icon": "<svg>" }
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<SpawnRequest>(json!({
+                "task": "x",
+                "display": { "name": "Unsafe", "icon": "<svg>" }
+            }))
+            .is_err()
+        );
         // Colour is display-only: an unknown token degrades to `neutral`
         // rather than rejecting the spawn.
         let off_palette: SpawnRequest = serde_json::from_value(json!({

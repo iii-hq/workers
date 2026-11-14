@@ -378,10 +378,10 @@ async fn disk_watchdog(out_dir: PathBuf, work_dir: Option<PathBuf>) -> &'static 
         if dir_over_budget(&out_dir, MAX_OUT_DIR_BYTES, MAX_OUT_DIR_ENTRIES) {
             return "/out";
         }
-        if let Some(w) = &work_dir {
-            if dir_over_budget(w, MAX_WORK_DIR_BYTES, MAX_WORK_DIR_ENTRIES) {
-                return "/work";
-            }
+        if let Some(w) = &work_dir
+            && dir_over_budget(w, MAX_WORK_DIR_BYTES, MAX_WORK_DIR_ENTRIES)
+        {
+            return "/work";
         }
     }
 }
@@ -713,7 +713,7 @@ async fn answer_guest_call(
             return reply(
                 false,
                 serde_json::json!(format!("malformed iii request: {e}")),
-            )
+            );
         }
     };
     if call.function_id.len() > MAX_FUNCTION_ID_BYTES {
@@ -893,9 +893,11 @@ impl Runner {
         let ticker_engine = engine.clone();
         std::thread::Builder::new()
             .name("python-engine-epoch".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
-                ticker_engine.increment_epoch();
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
+                    ticker_engine.increment_epoch();
+                }
             })
             .context("spawning epoch ticker")?;
 

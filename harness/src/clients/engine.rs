@@ -3,12 +3,12 @@
 //! exposure, and generic function dispatch (`iii.call`) for the target of
 //! an `agent_call` call.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
+use serde_json::{Value, json};
 
 /// The message a dispatch interrupted by an engine restart resolves with —
 /// it becomes the synthesized error `function_result` that closes the call
@@ -313,12 +313,11 @@ impl ComposeScope {
                 }
                 _ => false,
             };
-            if compose_only {
-                if let (Some(namespace), Some(arguments)) =
+            if compose_only
+                && let (Some(namespace), Some(arguments)) =
                     (&self.namespace, payload.as_object_mut())
-                {
-                    arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
-                }
+            {
+                arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
             }
             // The engine built-in stays in its own namespace; only the lookup
             // target is scoped. A compose file is not an introspection argument.

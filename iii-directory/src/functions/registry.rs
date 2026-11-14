@@ -37,8 +37,8 @@
 //!   * `GET {base}/w/{slug}/skills?version=…` →
 //!     `{ name, version, skills: [{path, content}] }`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
@@ -49,7 +49,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::{SharedConfig, SkillsConfig};
-use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
+use crate::functions::error::{NextAction, invalid_input_message, not_found_message};
 use crate::functions::search_index::excluded_from_search;
 use crate::sources::build_http_client;
 use crate::sources::registry::validate_worker_name;
@@ -923,18 +923,22 @@ mod tests {
         assert!(source.request_schema.is_none() && source.response_schema.is_none());
         // Dropped schemas leave the wire entirely.
         let wire = serde_json::to_value(&card).unwrap();
-        assert!(wire["api_reference"]["functions"][0]
-            .get("request_schema")
-            .is_none());
+        assert!(
+            wire["api_reference"]["functions"][0]
+                .get("request_schema")
+                .is_none()
+        );
         assert!(wire.get("readme").is_none());
 
         let with_readme =
             parse_worker_info_response("browser", &detail, &json!({})).into_card(true);
-        assert!(with_readme
-            .readme
-            .as_deref()
-            .unwrap()
-            .starts_with("# Browser"));
+        assert!(
+            with_readme
+                .readme
+                .as_deref()
+                .unwrap()
+                .starts_with("# Browser")
+        );
     }
 
     #[test]

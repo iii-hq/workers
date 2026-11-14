@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The configuration worker's change event, observed by [`on_change`].
 const ON_UPDATED_FN: &str = "configuration::on-updated";

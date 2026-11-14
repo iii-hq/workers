@@ -13,9 +13,9 @@
 //! Hence the ladder below: fail-open presence probe, OK-shaped existence
 //! check, and only then the direct get.
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::protocol::CallRequest;
+use serde_json::{Value, json};
 
 use crate::trace_tags::run_hidden;
 

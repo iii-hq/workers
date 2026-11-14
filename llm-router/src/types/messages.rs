@@ -115,13 +115,12 @@ pub fn reorder_displaced_results(messages: &[AgentMessage]) -> Vec<&AgentMessage
     let mut attached: HashMap<usize, Vec<&AgentMessage>> = HashMap::new();
     let mut moved: HashSet<usize> = HashSet::new();
     for (i, m) in messages.iter().enumerate() {
-        if let AgentMessage::FunctionResult(r) = m {
-            if let Some(&owner) = call_owner.get(r.function_call_id.as_str()) {
-                if owner < i {
-                    attached.entry(owner).or_default().push(m);
-                    moved.insert(i);
-                }
-            }
+        if let AgentMessage::FunctionResult(r) = m
+            && let Some(&owner) = call_owner.get(r.function_call_id.as_str())
+            && owner < i
+        {
+            attached.entry(owner).or_default().push(m);
+            moved.insert(i);
         }
     }
     if moved.is_empty() {
@@ -291,19 +290,25 @@ mod tests {
         assert_eq!(value["path"], "web/App.tsx");
         let invalid = &value["_invalid"];
         assert_eq!(invalid["offset"], args.len() - 2);
-        assert!(invalid["error"]
-            .as_str()
-            .unwrap()
-            .contains("after the root value"));
-        assert!(invalid["context"]
-            .as_str()
-            .unwrap()
-            .ends_with("App.tsx\"}]}"));
+        assert!(
+            invalid["error"]
+                .as_str()
+                .unwrap()
+                .contains("after the root value")
+        );
+        assert!(
+            invalid["context"]
+                .as_str()
+                .unwrap()
+                .ends_with("App.tsx\"}]}")
+        );
 
         // Text that was only cut off is incomplete, not invalid.
-        assert!(degraded_arguments(r#"{"function":"state::se"#)
-            .get("_invalid")
-            .is_none());
+        assert!(
+            degraded_arguments(r#"{"function":"state::se"#)
+                .get("_invalid")
+                .is_none()
+        );
     }
 
     #[test]
@@ -318,10 +323,12 @@ mod tests {
         let value = degraded_arguments(args);
         assert_eq!(value["_partial"], true);
         assert_eq!(value["_invalid"]["offset"], args.len() - 1);
-        assert!(value["_invalid"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("after the root value"));
+        assert!(
+            value["_invalid"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("after the root value")
+        );
         assert_eq!(value["payload"]["loose_ends"], serde_json::json!(["a"]));
         assert!(value["payload"]["value"].get("loose_ends").is_none());
     }

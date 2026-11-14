@@ -17,7 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A worker the compose file declares.
 #[derive(Debug, Clone, PartialEq, Eq)]

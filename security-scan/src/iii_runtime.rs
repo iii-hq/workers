@@ -1,28 +1,28 @@
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use async_trait::async_trait;
 use iii_sdk::{CallAction, CallRequest, IIIClient};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 
 use crate::events::{
     ActionChangedEventV1, ChangeFeed, ChangeKind, ReconciliationChangedEventV1, RunChangedEventV1,
 };
 use crate::{
-    archive, AnalysisHandle, AnalysisPlan, ArchiveConfigV1, CreateRunOutcome, EnqueueRequest,
+    AnalysisHandle, AnalysisPlan, ArchiveConfigV1, CreateRunOutcome, EnqueueRequest,
     ExecutionRuntime, MaterializationRequest, MaterializedTargetV1, PublicRunSummaryV1,
     ReconciliationAlertV1, ReconciliationHealthStatusV1, ReconciliationLifecycleV1,
     ReconciliationScopeV1, ReconciliationSnapshotV1, ReconciliationSourceCollectionV1,
     ReconciliationSourceHealthV1, ReconciliationSourceStatusV1, ReconciliationSourceSummaryV1,
     ReconciliationSourceV1, RepositoryConfigV1, RunRecordV1, RunStatusV1, SecurityRuntime,
-    SecurityScanError, SeverityV1,
+    SecurityScanError, SeverityV1, archive,
 };
 
 mod archive_gateway;
@@ -203,12 +203,11 @@ impl IiiRuntime {
             .filter(needs_full_reconciliation);
         let mut runs = Vec::new();
         for candidate in candidates {
-            if let Some(run) = self.get_run(&candidate.summary.run_id).await? {
-                if run.status == RunStatusV1::Analyzing
-                    || (is_terminal(run.status) && run.materialized.is_some())
-                {
-                    runs.push(run);
-                }
+            if let Some(run) = self.get_run(&candidate.summary.run_id).await?
+                && (run.status == RunStatusV1::Analyzing
+                    || (is_terminal(run.status) && run.materialized.is_some()))
+            {
+                runs.push(run);
             }
         }
         Ok(runs)

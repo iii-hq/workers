@@ -12,7 +12,7 @@
 //! `engine/src/workers/telemetry/environment.rs`) but cannot see its config.
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 const SETTINGS_FN: &str = "iii-telemetry::settings";

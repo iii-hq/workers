@@ -19,7 +19,7 @@
 
 use crate::core::estimate::{Estimator, IMAGE_TOKEN_BUDGET};
 use crate::types::{AgentMessage, ContentBlock, Role};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -1522,9 +1522,11 @@ mod tests {
                 .count()
                 <= EMERGENCY_PREVIEW_CHARS + 1
         );
-        assert!(details["context_reference"]["sha256"]
-            .as_str()
-            .is_some_and(|hash| hash.len() == 64));
+        assert!(
+            details["context_reference"]["sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
     }
 
     #[test]
@@ -1638,17 +1640,19 @@ mod tests {
 
     #[test]
     fn cap_preserves_provider_separators_between_text_blocks() {
-        let mut messages = vec![serde_json::from_value(json!({
-            "role": "function_result",
-            "function_call_id": "c1",
-            "function_id": "shell::run",
-            "content": [
-                { "type": "text", "text": "header" },
-                { "type": "text", "text": "x".repeat(100_000) }
-            ],
-            "timestamp": 1
-        }))
-        .unwrap()];
+        let mut messages = vec![
+            serde_json::from_value(json!({
+                "role": "function_result",
+                "function_call_id": "c1",
+                "function_id": "shell::run",
+                "content": [
+                    { "type": "text", "text": "header" },
+                    { "type": "text", "text": "x".repeat(100_000) }
+                ],
+                "timestamp": 1
+            }))
+            .unwrap(),
+        ];
         let mut sizes = sizes_of(&messages);
 
         cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);
@@ -1658,16 +1662,18 @@ mod tests {
 
     #[test]
     fn cap_counts_image_cost_in_the_result_ceiling() {
-        let mut messages = vec![serde_json::from_value(json!({
-            "role": "function_result",
-            "function_call_id": "c1",
-            "function_id": "browser::screenshots",
-            "content": (0..5).map(|_| json!({
-                "type": "image", "mime": "image/png", "data": "AAAA"
-            })).collect::<Vec<_>>(),
-            "timestamp": 1
-        }))
-        .unwrap()];
+        let mut messages = vec![
+            serde_json::from_value(json!({
+                "role": "function_result",
+                "function_call_id": "c1",
+                "function_id": "browser::screenshots",
+                "content": (0..5).map(|_| json!({
+                    "type": "image", "mime": "image/png", "data": "AAAA"
+                })).collect::<Vec<_>>(),
+                "timestamp": 1
+            }))
+            .unwrap(),
+        ];
         let mut sizes = sizes_of(&messages);
 
         let stats = cap_results_with_sizes(&mut messages, &mut sizes, 20_000, &HeuristicEstimator);

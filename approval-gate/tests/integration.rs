@@ -4,7 +4,7 @@
 use serde_json::json;
 
 use approval_gate::testkit::{
-    call, hook_input, log_snapshot, settle, wait_for, with_stack, BootOpts,
+    BootOpts, call, hook_input, log_snapshot, settle, wait_for, with_stack,
 };
 use approval_gate::types::PermissionMode;
 

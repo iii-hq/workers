@@ -439,7 +439,8 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_and_preserves_worker_placeholders() {
-        std::env::set_var("SM_TEST_LIMIT", "123");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("SM_TEST_LIMIT", "123") };
         let yaml = "default_list_limit: ${SM_TEST_LIMIT}\nadapter:\n  name: fs\n  config:\n    data_dir: \"${SM_UNSET_DIR:/var/data}\"";
         let cfg = WorkerConfig::from_yaml(yaml).unwrap();
         assert_eq!(cfg.default_list_limit, 123);
@@ -448,6 +449,7 @@ mod tests {
             panic!("expected fs adapter");
         };
         assert_eq!(fs.data_dir, "${SM_UNSET_DIR:/var/data}");
-        std::env::remove_var("SM_TEST_LIMIT");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("SM_TEST_LIMIT") };
     }
 }

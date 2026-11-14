@@ -6,11 +6,11 @@
 
 use std::collections::HashSet;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::events_types::{ThreadEvent, ThreadItemDetails};
 use crate::map;
-use crate::wire::{assistant_message, ContentBlock, Usage};
+use crate::wire::{ContentBlock, Usage, assistant_message};
 
 #[derive(Default)]
 pub struct TurnState {

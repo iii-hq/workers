@@ -1,7 +1,7 @@
 //! Delivery provenance for recall. Only the internal delivery path writes
 //! receipts; transcript origin and caller metadata are never authority.
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::clients::session::LoadedEntry;
@@ -751,10 +751,12 @@ mod tests {
             serde_json::to_value(row(true)).unwrap()["derived"],
             json!(true)
         );
-        assert!(serde_json::to_value(row(false))
-            .unwrap()
-            .get("derived")
-            .is_none());
+        assert!(
+            serde_json::to_value(row(false))
+                .unwrap()
+                .get("derived")
+                .is_none()
+        );
     }
     #[test]
     fn acknowledgement_input_keeps_what_the_ack_reads_and_drops_the_prompt() {
@@ -804,9 +806,11 @@ mod tests {
         assert_eq!(rows.len(), 128);
         assert_eq!(rows.first().unwrap().entry_id, "e2");
         assert_eq!(rows.last().unwrap().entry_id, "e129");
-        assert!(!serde_json::to_string(&rows)
-            .unwrap()
-            .contains("Sensitive topic"));
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("Sensitive topic")
+        );
     }
     #[test]
     fn recall_provenance_requires_receipt_not_writer_origin() {

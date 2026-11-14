@@ -1,7 +1,7 @@
 //! Prompt extraction + config loading tests.
 
 use grok::config::Config;
-use grok::functions::types::{extract_prompt, RunRequest};
+use grok::functions::types::{RunRequest, extract_prompt};
 use serde_json::json;
 
 #[test]
@@ -131,10 +131,12 @@ fn schema_and_manifest_carry_no_stream_keys() {
     let defaults = manifest["default_config"].as_object().unwrap();
     assert!(!defaults.contains_key("events_stream"));
     assert!(!defaults.contains_key("raw_events_stream"));
-    assert!(!manifest["description"]
-        .as_str()
-        .unwrap()
-        .contains("agent::events"));
+    assert!(
+        !manifest["description"]
+            .as_str()
+            .unwrap()
+            .contains("agent::events")
+    );
     // the seed file shipped next to the binary parses and matches the defaults
     let seed = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml")).unwrap();
     assert_eq!(seed.to_json(), Config::default().to_json());

@@ -1,5 +1,5 @@
-use schemars::schema::RootSchema;
 use schemars::JsonSchema;
+use schemars::schema::RootSchema;
 
 use crate::configuration::{ConfigChangeAck, ConfigChangeRequest};
 use crate::functions::bindings::message_added::BindingAck;
@@ -18,7 +18,7 @@ pub struct FunctionSpec {
 }
 
 fn schema_of<T: JsonSchema>() -> RootSchema {
-    schemars::gen::SchemaSettings::draft07()
+    schemars::r#gen::SchemaSettings::draft07()
         .into_generator()
         .into_root_schema_for::<T>()
 }

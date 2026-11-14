@@ -9,7 +9,7 @@
 
 mod support;
 
-use browser::scrapling::schemas::{catalog, FunctionSpec};
+use browser::scrapling::schemas::{FunctionSpec, catalog};
 
 fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     let value = serde_json::json!({
@@ -85,7 +85,9 @@ fn static_ids_are_catalog_plus_guidance_hook() {
 
 #[test]
 fn registered_wire_ids_do_not_use_the_old_nested_namespace() {
-    assert!(browser::scrapling::STATIC_IDS
-        .iter()
-        .all(|id| !id.starts_with("browser::scrapling::")));
+    assert!(
+        browser::scrapling::STATIC_IDS
+            .iter()
+            .all(|id| !id.starts_with("browser::scrapling::"))
+    );
 }

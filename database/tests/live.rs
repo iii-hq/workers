@@ -17,13 +17,13 @@ use database::config::WorkerConfig;
 use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{
-    browse, execute, insert_row, list_databases, query, schema, test_connection, AppState,
+    AppState, browse, execute, insert_row, list_databases, query, schema, test_connection,
 };
 use database::runtime::Runtime;
 use database::secrets::{Fetch, SecretCache, SecretError, SecretValue};
 use database::transaction::TxRegistry;
 use iii_helpers::observability::Logger;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -906,19 +906,23 @@ async fn an_unresolvable_secret_fails_only_its_connection() {
         .iter()
         .find(|d| d.name == "missing")
         .unwrap();
-    assert!(missing_info
-        .error
-        .as_deref()
-        .unwrap()
-        .contains("secret://WCORE_MISSING"));
+    assert!(
+        missing_info
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("secret://WCORE_MISSING")
+    );
     assert!(missing_info.uses_secrets);
-    assert!(listed
-        .databases
-        .iter()
-        .find(|d| d.name == "good")
-        .unwrap()
-        .error
-        .is_none());
+    assert!(
+        listed
+            .databases
+            .iter()
+            .find(|d| d.name == "good")
+            .unwrap()
+            .error
+            .is_none()
+    );
     assert!(!serde_json::to_string(&listed).unwrap().contains(PG_PW));
 
     // Storing the secret and re-reading it brings the connection up; the

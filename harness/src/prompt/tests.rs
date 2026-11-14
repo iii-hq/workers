@@ -1,4 +1,4 @@
-use super::{resolve_system_prompt, variants, SystemPromptStrategy};
+use super::{SystemPromptStrategy, resolve_system_prompt, variants};
 
 fn default_prompt() -> String {
     variants::DEFAULT.to_string()
@@ -421,8 +421,10 @@ fn progress_updates_are_phase_scoped_and_keep_descriptions_and_final_text() {
             normalized.contains("separate the result and next action into two short paragraphs")
         );
         assert!(normalized.contains("still needs its concise `description`"));
-        assert!(normalized
-            .contains("return the final result through the turn's required output contract"));
+        assert!(
+            normalized
+                .contains("return the final result through the turn's required output contract")
+        );
         assert!(normalized.contains("For the ordinary text contract, use normal assistant text"));
         assert!(normalized.contains("a progress update never replaces the final answer"));
     }

@@ -1,5 +1,5 @@
 //! Session-bound source reads. No profile field can name a root or grant.
-use super::{record::Caller, Investigations};
+use super::{Investigations, record::Caller};
 use crate::{Db, SentinelError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -143,8 +143,8 @@ impl<D: Db> Investigations<D> {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn jailed_open(root: &str, relative: &str) -> Result<std::fs::File, SentinelError> {
     use libc::{
-        openat, O_CLOEXEC as CLOEXEC, O_DIRECTORY as DIRECTORY, O_NOFOLLOW as NOFOLLOW,
-        O_NONBLOCK as NONBLOCK,
+        O_CLOEXEC as CLOEXEC, O_DIRECTORY as DIRECTORY, O_NOFOLLOW as NOFOLLOW,
+        O_NONBLOCK as NONBLOCK, openat,
     };
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -260,9 +260,11 @@ mod tests {
         .unwrap();
         symlink(outside.join("synthetic.rs"), root.join("linked.rs")).unwrap();
         symlink(&outside, root.join("linked-directory")).unwrap();
-        assert!(std::fs::read_to_string(root.join("linked.rs"))
-            .unwrap()
-            .contains("SYNTHETIC_OUTSIDE"));
+        assert!(
+            std::fs::read_to_string(root.join("linked.rs"))
+                .unwrap()
+                .contains("SYNTHETIC_OUTSIDE")
+        );
         assert!(jailed_open(root.to_str().unwrap(), "linked.rs").is_err());
         assert!(jailed_open(root.to_str().unwrap(), "linked-directory/synthetic.rs").is_err());
     }

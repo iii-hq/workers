@@ -23,8 +23,7 @@ pub const SESSION_STARTED_DESC: &str =
     "A desktop session connected and is ready to drive. No args; filter on input.session_id.";
 pub const SESSION_STOPPED_DESC: &str =
     "A desktop session ended (stopped or idle). No args; filter on input.session_id.";
-pub const ACTIVITY_DESC: &str =
-    "A caller drove a desktop session (computer::act or computer::run); the console's live \
+pub const ACTIVITY_DESC: &str = "A caller drove a desktop session (computer::act or computer::run); the console's live \
      preview shows that session. No args; filter on input.session_id.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

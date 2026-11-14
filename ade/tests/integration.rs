@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::runtime::{IIIConnectionState, WorkerIdentityMode, WorkerMetadata};
-use iii_sdk::{register_worker, IIIClient, InitOptions, ObserverHandle, ObserverState};
 use iii_sdk::{CallRequest, Capture, Error, RegisterFunction, Source};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, ObserverHandle, ObserverState, register_worker};
+use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;

@@ -8,8 +8,8 @@
 //! `;`, so `/* */COMMIT` and `--\nCOMMIT` are rejected too. See
 //! [`super::tx_sql_guard`] for the full coverage and rationale.
 
-use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
+use super::tx_sql_guard::is_transaction_control_sql;
 use crate::driver;
 use crate::error::DbError;
 use crate::handle::PinnedConn;
@@ -18,7 +18,7 @@ use crate::transaction::driver_system;
 use crate::value::JsonParam;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxExecuteReq {
@@ -169,7 +169,7 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
 mod tests {
     use super::*;
     use crate::handlers::begin_transaction::tests::state;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn req(v: Value) -> TxExecuteReq {
         serde_json::from_value(v).unwrap()

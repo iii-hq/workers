@@ -1,6 +1,6 @@
 //! scrapling::regex — regex over the visible text of the document.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::require_str;
 use crate::scrapling::{dom, text};

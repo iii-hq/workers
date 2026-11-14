@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 use security_scan::events::{
-    self, ActionChangedEventV1, ChangeFeed, ChangeKind, RunChangedEventV1, ON_ACTION_CHANGED_FN,
-    ON_RECONCILIATION_CHANGED_FN, ON_RUN_CHANGED_FN,
+    self, ActionChangedEventV1, ChangeFeed, ChangeKind, ON_ACTION_CHANGED_FN,
+    ON_RECONCILIATION_CHANGED_FN, ON_RUN_CHANGED_FN, RunChangedEventV1,
 };
 use security_scan::{
     RunRecordV1, RunStatusV1, ScanModeV1, SecurityActionKindV1, SecurityActionRecordV1,

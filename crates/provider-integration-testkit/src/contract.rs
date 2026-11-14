@@ -3,16 +3,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use axum::http::StatusCode;
 use iii_sdk::errors::Error as IiiError;
-use iii_sdk::{register_worker, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, register_worker};
 use llm_router::register::register_router;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::case::{CredentialMode, ProtocolFamily, ProviderCase};
 use crate::protocol::{auth_response, happy_sse, quota_response, truncated_sse};
-use crate::runtime::{call, provider_init_options, test_init_options, Engine};
+use crate::runtime::{Engine, call, provider_init_options, test_init_options};
 use crate::stub::{CapturedRequest, StubResponse, StubUpstream};
 
 const API_KEY: &str = "provider-contract-api-key";
@@ -244,12 +244,17 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
     eprintln!("provider contract: {} ({})", case.id, case.family.id());
     let engine = Engine::start().await?;
     let isolated_home = tempfile::tempdir()?;
-    std::env::set_var("HOME", isolated_home.path());
-    std::env::set_var("CODEX_HOME", isolated_home.path().join("codex"));
-    std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude"));
-    std::env::set_var("PROVIDER_READ_TIMEOUT_SECS", "5");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("CODEX_HOME", isolated_home.path().join("codex")) };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude")) };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("PROVIDER_READ_TIMEOUT_SECS", "5") };
     if case.id == "command-code" {
-        std::env::set_var("CMD_ZDR", "0");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("CMD_ZDR", "0") };
     }
 
     let stub = StubUpstream::start(case).await?;
@@ -592,15 +597,17 @@ fn assert_request(
 /// zero-refusal proof.
 #[cfg(all(test, feature = "provider-claude-code"))]
 pub(crate) async fn claude_code_first_boot_registration() -> anyhow::Result<()> {
-    use provider_claude_code::register::{declare_once, DeclareLock};
+    use provider_claude_code::register::{DeclareLock, declare_once};
 
     let case = crate::case::enabled_cases()
         .into_iter()
         .find(|case| case.id == provider_claude_code::PROVIDER_ID)
         .context("claude-code case")?;
     let isolated_home = tempfile::tempdir()?;
-    std::env::set_var("HOME", isolated_home.path());
-    std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude"));
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", isolated_home.path().join("claude")) };
 
     {
         let engine = Engine::start().await?;

@@ -12,7 +12,7 @@
 //! children-write signalling, and the custom `retry_prompt` inside a child
 //! session.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

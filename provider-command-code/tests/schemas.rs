@@ -1,6 +1,6 @@
 mod support;
 
-use provider_command_code::surface::{catalog, FunctionSpec};
+use provider_command_code::surface::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

@@ -38,9 +38,9 @@ use iii_sdk::{
 use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tokio::sync::mpsc::error::TrySendError;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
@@ -195,8 +195,8 @@ pub(crate) fn kind_of(kind: &notify::EventKind) -> &'static str {
 /// them would turn every `cat` and `chmod` into a phantom modification.
 /// Content writes carry their own Data events regardless.
 pub(crate) fn is_noise_kind(kind: &notify::EventKind) -> bool {
-    use notify::event::ModifyKind;
     use notify::EventKind;
+    use notify::event::ModifyKind;
     matches!(
         kind,
         EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
@@ -483,7 +483,7 @@ fn walk(
     dirs: &[PathBuf],
     files: bool,
     all: bool,
-) -> impl Iterator<Item = ignore::DirEntry> {
+) -> impl Iterator<Item = ignore::DirEntry> + use<> {
     let plain = if all || in_repo(root) {
         None
     } else {

@@ -128,13 +128,13 @@ pub fn spawn(emit: impl Fn(HotkeyAction) + Send + 'static) {
 mod mac {
     use std::ffi::c_void;
 
-    use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease};
+    use core_foundation_sys::base::{CFRelease, kCFAllocatorDefault};
     use core_foundation_sys::mach_port::{CFMachPortCreateRunLoopSource, CFMachPortRef};
     use core_foundation_sys::runloop::{
-        kCFRunLoopCommonModes, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRun,
+        CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRun, kCFRunLoopCommonModes,
     };
 
-    use super::{set_status, FnTracker, HotkeyAction, HotkeyStatus};
+    use super::{FnTracker, HotkeyAction, HotkeyStatus, set_status};
 
     type CGEventRef = *mut c_void;
     type CGEventTapProxy = *mut c_void;
@@ -158,7 +158,7 @@ mod mac {
     const KCG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
 
     #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGEventTapCreate(
             tap: u32,
             place: u32,

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::WorkerConfig;
@@ -642,9 +642,10 @@ mod tests {
             .unwrap();
         let sid = id(&opened);
         assert_eq!(sid.len(), 32);
-        assert!(sid
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert!(
+            sid.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
         assert_eq!(&sid[12..13], "4");
         assert_eq!(
             registry

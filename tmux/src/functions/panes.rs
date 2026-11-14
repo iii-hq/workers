@@ -4,10 +4,10 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{register_fn, spec, Ctx, FunctionSpec};
+use super::{Ctx, FunctionSpec, register_fn, spec};
 use crate::tmux_cli::{
-    format_literal, is_pane_id, resolve_cwd, unescape_separators, validate_command, Tmux,
-    TmuxError, HOLD, SEP,
+    HOLD, SEP, Tmux, TmuxError, format_literal, is_pane_id, resolve_cwd, unescape_separators,
+    validate_command,
 };
 
 pub const SELECT: &str = "tmux::panes::select";

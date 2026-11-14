@@ -748,7 +748,7 @@ pub struct RouterAck {
 
 #[cfg(test)]
 mod icon_svg_tests {
-    use super::{accepted_icon_svg, PROVIDER_ICON_SVG_MAX_BYTES};
+    use super::{PROVIDER_ICON_SVG_MAX_BYTES, accepted_icon_svg};
 
     #[test]
     fn keeps_a_plain_svg_document() {

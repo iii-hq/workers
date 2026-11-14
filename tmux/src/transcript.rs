@@ -888,7 +888,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             view.prompt.as_deref(),
-            Some("Message Type: NEW_TASK\nTask name: /root/review\nSender: /root\nPayload:\n[encrypted]")
+            Some(
+                "Message Type: NEW_TASK\nTask name: /root/review\nSender: /root\nPayload:\n[encrypted]"
+            )
         );
         assert_eq!(
             kinds(&view),

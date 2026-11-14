@@ -3,7 +3,7 @@
 [package]
 name = "ide"
 version = "0.13.5"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]

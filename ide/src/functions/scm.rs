@@ -9,12 +9,12 @@
 //! `document::ocr` does, so it needs no permission entry of its own.
 
 use async_trait::async_trait;
+use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{CommitMessagesConfig, CommitThinking};
 
@@ -487,8 +487,11 @@ mod tests {
         assert!(
             base.starts_with("You write git commit messages for the change the user shows you.\n")
         );
-        assert!(base
-            .ends_with("Match the style of the repository's recent subjects when they are given."));
+        assert!(
+            base.ends_with(
+                "Match the style of the repository's recent subjects when they are given."
+            )
+        );
         assert_eq!(system_prompt("  \n "), base);
 
         let with = system_prompt("Use Conventional Commits");
@@ -671,10 +674,12 @@ mod tests {
         assert_eq!(seen[0]["thinking_level"], "high");
         assert_eq!(seen[0]["max_output_tokens"], 1024);
         assert_eq!(seen[0]["messages"][0]["timestamp"], 99);
-        assert!(seen[0]["system_prompt"]
-            .as_str()
-            .unwrap()
-            .ends_with("Use Conventional Commits"));
+        assert!(
+            seen[0]["system_prompt"]
+                .as_str()
+                .unwrap()
+                .ends_with("Use Conventional Commits")
+        );
         assert_eq!(
             seen[0]["messages"][0]["content"][0]["text"],
             "Recent commit subjects in this repository:\n- feat: x\n\nThe change to describe:\nDIFF"

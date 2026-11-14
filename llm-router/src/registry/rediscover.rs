@@ -23,7 +23,7 @@
 //! which makes it both the discovery key and the thing to call.
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 /// The handler suffix that identifies a provider and receives the nudge.

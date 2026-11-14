@@ -2,7 +2,7 @@ use std::env;
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::store::load_runs;
 use super::{JobStatus, RunMetadata};

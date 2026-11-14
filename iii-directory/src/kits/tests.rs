@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::apply::{ApplyTiming, DecisionInput};
 use super::compose::ComposeControl;
-use super::lock::{sha256_hex, FileState, KitsLock};
+use super::lock::{FileState, KitsLock, sha256_hex};
 use super::origin::SourceKind;
 use super::plan::{Change, Decision, KitsEnv, LocalState, PlanKind, WorkerAction};
 use super::registry::{
@@ -441,11 +441,15 @@ fn kanban_shipped_reviewer(p: &Project, content: &str) {
 fn compose_declares(p: &Project, kanban_selector: &str, kanban_resolved: &str) {
     write(
         &p.env.compose_file,
-        &format!("containers:\n  kanban:\n    worker: package://api.workers.iii.dev/kanban\n    version: \"{kanban_selector}\"\n"),
+        &format!(
+            "containers:\n  kanban:\n    worker: package://api.workers.iii.dev/kanban\n    version: \"{kanban_selector}\"\n"
+        ),
     );
     write(
         &p.root.join("worker-compose.lock"),
-        &format!("version: 1\ncontainers:\n  kanban:\n    worker: package://api.workers.iii.dev/kanban\n    requested: \"{kanban_selector}\"\n    resolved:\n      name: kanban\n      version: {kanban_resolved}\n"),
+        &format!(
+            "version: 1\ncontainers:\n  kanban:\n    worker: package://api.workers.iii.dev/kanban\n    requested: \"{kanban_selector}\"\n    resolved:\n      name: kanban\n      version: {kanban_resolved}\n"
+        ),
     );
 }
 
@@ -552,10 +556,12 @@ async fn install_plan_classifies_collisions_and_workers() {
     let record = store::load(&p.env.plans_dir, &plan.plan_id)
         .unwrap()
         .unwrap();
-    assert!(record
-        .contents
-        .blobs
-        .contains_key(&sha256_hex(PLANNER_V1.as_bytes())));
+    assert!(
+        record
+            .contents
+            .blobs
+            .contains_key(&sha256_hex(PLANNER_V1.as_bytes()))
+    );
     assert!(record.contents.ours.contains_key("agents/reviewer.md"));
 }
 
@@ -688,13 +694,17 @@ async fn apply_install_runs_workers_then_files_then_lock() {
         sha256_hex(FLOW_V1.as_bytes())
     );
     // The plan is gone once applied; agents the kit now provides are listed.
-    assert!(store::load(&p.env.plans_dir, &plan.plan_id)
-        .unwrap()
-        .is_none());
+    assert!(
+        store::load(&p.env.plans_dir, &plan.plan_id)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(report.agents, vec!["planner"]);
-    assert!(report
-        .files_kept
-        .contains(&"agents/reviewer.md".to_string()));
+    assert!(
+        report
+            .files_kept
+            .contains(&"agents/reviewer.md".to_string())
+    );
 
     // A second download of the same version is a no-op.
     let again = plan_download(&p, KIT).await;
@@ -986,11 +996,12 @@ async fn update_plan_merges_edits_and_flags_conflicts() {
     assert_eq!(read(&flow), resolved);
     assert_eq!(read(&p.env.agents_folder.join("planner.md")), PLANNER_V2);
     assert_eq!(read(&old), "# Legacy\n\nmy notes\n");
-    assert!(p
-        .env
-        .skills_folder
-        .join("acme/team/tickets/triage.md")
-        .exists());
+    assert!(
+        p.env
+            .skills_folder
+            .join("acme/team/tickets/triage.md")
+            .exists()
+    );
 
     // Rejected applies counted nothing; one compose::add for the new worker
     // and the moved declaration.
@@ -1128,10 +1139,11 @@ async fn taking_a_profile_from_another_kit_marks_it_skipped_there() {
     let c = planner.collision.as_ref().unwrap();
     assert_eq!(c.owner, SourceKind::Kit);
     assert_eq!(c.kit.as_deref(), Some("other/kit"));
-    assert!(plan
-        .warnings
-        .iter()
-        .any(|w| w.code == "agent_overwrite_kit"));
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.code == "agent_overwrite_kit")
+    );
     apply(&p, &plan.plan_id, BTreeMap::new()).await.unwrap();
     let lock = KitsLock::read(&p.env.lock_path).unwrap();
     assert!(lock.kits["other/kit"].files["agents/planner.md"].skipped);
@@ -1199,11 +1211,12 @@ async fn removal_deletes_intact_files_keeps_edited_and_drops_the_lock() {
     .unwrap();
     let report = out.report.unwrap();
     assert_eq!(report.workers_removed, vec!["kanban"]);
-    assert!(p
-        .log
-        .lock()
-        .unwrap()
-        .contains(&"compose::remove kanban".to_string()));
+    assert!(
+        p.log
+            .lock()
+            .unwrap()
+            .contains(&"compose::remove kanban".to_string())
+    );
     assert!(!p.env.agents_folder.join("planner.md").exists());
     assert_eq!(read(&flow), "# Flow\n\nmine\n");
     // Last kit removed: the lock file goes away.
@@ -1245,11 +1258,13 @@ async fn check_updates_honours_ignored_versions_and_list_counts_attention() {
     assert_eq!(cache.kits[KIT].available, None);
     assert_eq!(cache.kits[KIT].ignored.as_deref(), Some("1.1.0"));
     assert_eq!(service::list(&p.env).unwrap().attention, 0);
-    assert!(KitsLock::read(&p.env.lock_path)
-        .unwrap()
-        .render()
-        .unwrap()
-        .contains("ignored_versions"));
+    assert!(
+        KitsLock::read(&p.env.lock_path)
+            .unwrap()
+            .render()
+            .unwrap()
+            .contains("ignored_versions")
+    );
 }
 
 #[tokio::test]

@@ -28,15 +28,13 @@ use serde_json::Value;
 use crate::types::Memory;
 
 pub const ON_ITEM_CHANGED_FN: &str = "memory::on-item-changed";
-pub const ON_ITEM_CHANGED_DESC: &str =
-    "Called when a memory is created, updated, superseded, or deleted in a memory bank. \
+pub const ON_ITEM_CHANGED_DESC: &str = "Called when a memory is created, updated, superseded, or deleted in a memory bank. \
      Returns the event: { event_type, bank, memory, reason? } (reason on consolidation changes, \
      and `redacted: <labels>` when secrets or invisible characters were removed on save/update). \
      Observe it for console/live views; filter on input.bank or input.event_type.";
 
 pub const ON_BANK_CHANGED_FN: &str = "memory::on-bank-changed";
-pub const ON_BANK_CHANGED_DESC: &str =
-    "Called when a memory bank is created or trashed, or its rules change. Returns the event: \
+pub const ON_BANK_CHANGED_DESC: &str = "Called when a memory bank is created or trashed, or its rules change. Returns the event: \
      { event_type: created | trashed | rules-changed, bank }. Observe it; filter on input.bank \
      or input.event_type.";
 

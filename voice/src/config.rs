@@ -794,7 +794,8 @@ mod tests {
 
     #[test]
     fn yaml_seed_expands_env() {
-        std::env::set_var("VOICE_TEST_KEY", "secret");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("VOICE_TEST_KEY", "secret") };
         let cfg = WorkerConfig::from_yaml(
             "stt:\n  backend: openai\n  openai:\n    api_key: ${VOICE_TEST_KEY}\n",
         )

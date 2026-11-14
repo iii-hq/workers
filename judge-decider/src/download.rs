@@ -1,6 +1,6 @@
 //! Fetch a pinned GGUF from the Hugging Face Hub into hf-hub's cache
 //! (`$HF_HOME`, default `~/.cache/huggingface`). No token: the repos are public.
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 use std::path::{Path, PathBuf};

@@ -52,10 +52,7 @@ fn compile_function_matcher(
         return Ok((pattern.to_string(), None));
     }
     let glob = compile_function_glob(pattern).map_err(|mut e| {
-        let CompileError::Rule {
-            index: _,
-            ref mut message,
-        } = &mut e;
+        let CompileError::Rule { index: _, message } = &mut e;
         *message = format!("rule {index}: {message}");
         e
     })?;

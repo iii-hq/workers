@@ -597,10 +597,10 @@ impl<T: Clone> FileCache<T> {
         let stamp = std::fs::metadata(path)
             .ok()
             .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
-        if let Some((seen, value)) = self.entries.get(path) {
-            if *seen == stamp {
-                return value.clone();
-            }
+        if let Some((seen, value)) = self.entries.get(path)
+            && *seen == stamp
+        {
+            return value.clone();
         }
         let value = stamp
             .and_then(|_| std::fs::read_to_string(path).ok())
@@ -799,11 +799,13 @@ mod tests {
         assert_eq!(store.read_raw(&slot, None).unwrap(), None);
         // The file is the fallback.
         std::fs::write(folder.join(CREDENTIALS_FILE), FILE).unwrap();
-        assert!(store
-            .read(&folder, Some(&env))
-            .unwrap()
-            .unwrap()
-            .signed_in());
+        assert!(
+            store
+                .read(&folder, Some(&env))
+                .unwrap()
+                .unwrap()
+                .signed_in()
+        );
         let raw: Raw = serde_json::from_str(FILE).unwrap();
         store.write_raw(&slot, None, &raw).unwrap();
         assert!(

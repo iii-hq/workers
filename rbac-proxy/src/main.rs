@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 
 use rbac_proxy::config::{self, WorkerConfig};
@@ -153,7 +153,7 @@ fn load_seed(path: &str) -> Result<WorkerConfig> {
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = tokio::signal::ctrl_c() => r,

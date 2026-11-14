@@ -1,7 +1,7 @@
 //! Unit tests for the pure request/config helpers — no engine required.
 
 use devin::config::Config;
-use devin::functions::types::{extract_prompt, Message, RunRequest, SessionCreateRequest};
+use devin::functions::types::{Message, RunRequest, SessionCreateRequest, extract_prompt};
 use serde_json::json;
 
 #[test]
@@ -24,8 +24,10 @@ fn config_schema_serializes() {
 
 #[test]
 fn load_expands_env_and_unset_org_is_empty() {
-    std::env::set_var("DEVIN_TEST_KEY_XYZ", "secret123");
-    std::env::remove_var("DEVIN_TEST_ORG_XYZ");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("DEVIN_TEST_KEY_XYZ", "secret123") };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var("DEVIN_TEST_ORG_XYZ") };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");
     std::fs::write(
@@ -37,7 +39,8 @@ fn load_expands_env_and_unset_org_is_empty() {
     assert_eq!(cfg.api_key, "secret123");
     // An unset org var expands to empty, which selects the v1 (personal) mode.
     assert_eq!(cfg.org_id, "");
-    std::env::remove_var("DEVIN_TEST_KEY_XYZ");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var("DEVIN_TEST_KEY_XYZ") };
 }
 
 #[test]

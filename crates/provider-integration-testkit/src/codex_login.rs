@@ -2,28 +2,28 @@
 //! Never render credential-bearing RPC values or captured requests on failure.
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, ensure, Context};
+use anyhow::{Context, anyhow, ensure};
 use iii_sdk::errors::Error;
-use iii_sdk::{register_worker, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use provider_openai_codex::credential_store::{
-    PrivateStateStore, SecretsSessionStore, SessionRecord, SessionStore, AUTH_SCOPE,
+    AUTH_SCOPE, PrivateStateStore, SecretsSessionStore, SessionRecord, SessionStore,
 };
 use provider_openai_codex::oauth::{Credential, DeviceCode, OAuthError, PollOutcome};
 use provider_openai_codex::session::{
     AuthManager, LegacySource, OAuthTransport, ResolvedCredential, SessionError,
 };
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, Semaphore};
+use serde_json::{Value, json};
+use tokio::sync::{Semaphore, mpsc};
 
-use crate::case::{enabled_cases, ProviderCase};
+use crate::case::{ProviderCase, enabled_cases};
 use crate::contract::{chat, configure, wait_for_provider, wait_for_registration_token};
 use crate::protocol::happy_sse;
 use crate::runtime::{
-    call, provider_init_options, test_init_options, wait_for_codex_state, Engine,
+    Engine, call, provider_init_options, test_init_options, wait_for_codex_state,
 };
 use crate::stub::{StubResponse, StubUpstream};
 

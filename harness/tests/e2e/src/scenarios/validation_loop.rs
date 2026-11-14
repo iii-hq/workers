@@ -10,7 +10,7 @@
 //! the verbatim `retry_prompt` nudge, and bounded convergence — all with the
 //! default validation-retry budget (one denial needed, two available).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

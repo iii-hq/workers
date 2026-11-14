@@ -7,9 +7,9 @@
 //! that is an equality filter at `page_size: 1` — so there is no separate
 //! read-a-row function.
 
-use super::filter::{self, FilterSpec, SortSpec};
-use super::query::{self, err_to_str, QueryReq};
 use super::AppState;
+use super::filter::{self, FilterSpec, SortSpec};
+use super::query::{self, QueryReq, err_to_str};
 use crate::config::DriverKind;
 use crate::driver::ColumnMeta;
 use crate::error::DbError;

@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::clients::{EngineClient, FunctionDescriptor};

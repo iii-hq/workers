@@ -14,12 +14,12 @@ use iii_sdk::{
     Call, CallRequest, Error, IIIClient, Match, ObserveRejection, Observer, RegisterFunction,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -343,10 +343,11 @@ impl Tunnel {
         let other = json!({"tunnel_id":"other","status":"ready"});
         for obs in observers {
             // The observer selects its tunnel with a filter on input.tunnel_id.
-            assert!(obs
-                .args_value()
-                .as_object()
-                .is_none_or(|args| args.is_empty()));
+            assert!(
+                obs.args_value()
+                    .as_object()
+                    .is_none_or(|args| args.is_empty())
+            );
             assert!(!obs.matches(&event_call(other.clone())));
             assert!(obs.matches(&event_call(value.clone())));
         }

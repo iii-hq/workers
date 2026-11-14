@@ -13,7 +13,7 @@ use std::time::Duration;
 use iii_sdk::{
     CallRequest, Capture, Error, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 
 use common::engine;

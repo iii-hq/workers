@@ -42,8 +42,7 @@ pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is
 by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls \
 or final response.\n\nOtherwise, output directly after </think> with tool calls or final \
 response.\n\n### Available Tool Schemas\n\n";
-pub const TOOLS_FOOTER: &str =
-    "\n\nYou MUST strictly follow the above defined tool name and parameter \
+pub const TOOLS_FOOTER: &str = "\n\nYou MUST strictly follow the above defined tool name and parameter \
 schemas to invoke tool calls.\n";
 
 /// What the encoder's `response_format_template` puts before the format's

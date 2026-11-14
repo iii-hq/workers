@@ -1,6 +1,6 @@
 use super::*;
 use crate::clients::router::{ChatParams, RouterClient, StreamSink};
-use crate::types::message::{empty_assistant, AssistantMessage};
+use crate::types::message::{AssistantMessage, empty_assistant};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -137,10 +137,10 @@ async fn loopback_with_capture(
             if message["type"] == "observerack" {
                 regs.lock().unwrap().push(message.clone());
                 observer_acks += 1;
-                if observer_acks == 9 {
-                    if let Some(tx) = registered_tx.take() {
-                        let _ = tx.send(());
-                    }
+                if observer_acks == 9
+                    && let Some(tx) = registered_tx.take()
+                {
+                    let _ = tx.send(());
                 }
                 continue;
             }
@@ -762,23 +762,27 @@ fn synthetic_memory_native_ledger_equality_eviction_and_fresh_authority() {
     }
     let mut previous = origin.clone();
     previous.summarized_indices = None;
-    assert!(bind_summary(
-        session,
-        &previous,
-        text,
-        &[],
-        Some(("summary-entry", &origin.span.summary_sha256))
-    )
-    .is_none());
+    assert!(
+        bind_summary(
+            session,
+            &previous,
+            text,
+            &[],
+            Some(("summary-entry", &origin.span.summary_sha256))
+        )
+        .is_none()
+    );
     remember_summary(session, "summary-entry", &witness);
-    assert!(bind_summary(
-        session,
-        &previous,
-        text,
-        &[],
-        Some(("summary-entry", &origin.span.summary_sha256))
-    )
-    .is_some());
+    assert!(
+        bind_summary(
+            session,
+            &previous,
+            text,
+            &[],
+            Some(("summary-entry", &origin.span.summary_sha256))
+        )
+        .is_some()
+    );
     for (s, entry, digest) in [
         (
             "fresh-session",
@@ -800,27 +804,31 @@ fn synthetic_memory_native_ledger_equality_eviction_and_fresh_authority() {
     assert_eq!(with_summary_ledger(|l| l.len()), Some(MAX_LINES));
     assert!(replay_slot(session, &slot.entry_id, &value, 0).is_none());
     assert!(bind_summary(session, &origin, text, &candidate, None).is_none());
-    assert!(bind_summary(
-        session,
-        &previous,
-        text,
-        &[],
-        Some(("summary-entry", &origin.span.summary_sha256))
-    )
-    .is_none());
-    std::thread::spawn(move || {
-        TEST_SLOT_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
-        TEST_SUMMARY_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
-        let _fresh = Isolated;
-        assert!(replay_slot(session, &slot.entry_id, &value, 0).is_none());
-        assert!(bind_summary(
+    assert!(
+        bind_summary(
             session,
             &previous,
             text,
             &[],
             Some(("summary-entry", &origin.span.summary_sha256))
         )
-        .is_none());
+        .is_none()
+    );
+    std::thread::spawn(move || {
+        TEST_SLOT_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
+        TEST_SUMMARY_LEDGER.with(|l| *l.borrow_mut() = Some(Default::default()));
+        let _fresh = Isolated;
+        assert!(replay_slot(session, &slot.entry_id, &value, 0).is_none());
+        assert!(
+            bind_summary(
+                session,
+                &previous,
+                text,
+                &[],
+                Some(("summary-entry", &origin.span.summary_sha256))
+            )
+            .is_none()
+        );
     })
     .join()
     .unwrap();
@@ -1023,10 +1031,12 @@ async fn synthetic_memory_receipt_native_fixtures() {
             assert_eq!(request["step"], 0);
             assert_eq!(request["generation_id"], terminals[index]["generation_id"]);
             assert_eq!(terminals[index]["phase"], "success");
-            assert!(updates
-                .iter()
-                .any(|u| u["origin"]["generation_id"] == request["generation_id"]
-                    && u["entry_id"] == request["assistant_entry_id"]));
+            assert!(
+                updates
+                    .iter()
+                    .any(|u| u["origin"]["generation_id"] == request["generation_id"]
+                        && u["entry_id"] == request["assistant_entry_id"])
+            );
             let slots = request["sources"].as_array().unwrap();
             let removed = index > 0 && mode.ends_with("removed");
             assert_eq!(
@@ -1154,15 +1164,19 @@ async fn synthetic_memory_receipt_native_fixtures() {
             );
         }
         if mode.ends_with("lost_notice") {
-            assert!(requests[1]["sources"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|s| s["message_index"] != 0));
+            assert!(
+                requests[1]["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|s| s["message_index"] != 0)
+            );
         }
-        assert!(registrations
-            .iter()
-            .any(|r| r["id"] == MEMORY_RECEIPT && r["private"] == true));
+        assert!(
+            registrations
+                .iter()
+                .any(|r| r["id"] == MEMORY_RECEIPT && r["private"] == true)
+        );
         std::fs::write(
             dir.join(format!("{mode}.json")),
             serde_json::to_vec_pretty(&json!({"calls":calls,"registrations":registrations}))
@@ -1395,22 +1409,26 @@ fn source_summary_active_receipt_replay_late_and_serialization_mismatch() {
     let mut replay = origin.clone();
     replay.summarized_indices = None;
     replay.assembly_id = "next-assembly".into();
-    assert!(bind_summary(
-        session,
-        &replay,
-        system,
-        &[],
-        Some(("active-compaction", &origin.span.summary_sha256))
-    )
-    .is_some());
-    assert!(bind_summary(
-        session,
-        &replay,
-        system,
-        &[],
-        Some(("wrong-path-entry", &origin.span.summary_sha256))
-    )
-    .is_none());
+    assert!(
+        bind_summary(
+            session,
+            &replay,
+            system,
+            &[],
+            Some(("active-compaction", &origin.span.summary_sha256))
+        )
+        .is_some()
+    );
+    assert!(
+        bind_summary(
+            session,
+            &replay,
+            system,
+            &[],
+            Some(("wrong-path-entry", &origin.span.summary_sha256))
+        )
+        .is_none()
+    );
     let payload = json!({"messages":[{"role":"user","content":"tail"}],"system_prompt":system});
     let hints = SourceHints {
         invalid: false,
@@ -1539,9 +1557,11 @@ async fn current_authenticated_assistant_update_replaces_stale_retry_origin() {
         .filter(|c| c["function_id"] == "router::chat")
         .collect();
     assert_eq!(dispatches.len(), 3);
-    assert!(dispatches
-        .iter()
-        .all(|c| c["data"]["request_id"] == dispatches[0]["data"]["request_id"]));
+    assert!(
+        dispatches
+            .iter()
+            .all(|c| c["data"]["request_id"] == dispatches[0]["data"]["request_id"])
+    );
     // All updates above are outbound SDK calls from this Harness connection,
     // not values trusted from the stale transcript or caller-provided origin.
 }
@@ -1573,8 +1593,8 @@ async fn saturated_and_failed_telemetry_is_bounded_private_and_non_panicking() {
         }
     }
     use iii_helpers::observability::opentelemetry::{
-        trace::{TraceContextExt, Tracer, TracerProvider},
         Context,
+        trace::{TraceContextExt, Tracer, TracerProvider},
     };
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -1772,10 +1792,12 @@ async fn actual_sdk_final_payload_private_registration_and_retry_binding() {
     for id in [REQUEST, RESPONSE] {
         let descriptor = registrations.iter().find(|r| r["id"] == id).unwrap();
         assert_eq!(descriptor["private"], true);
-        assert!(descriptor["description"]
-            .as_str()
-            .unwrap()
-            .contains("dictionary"));
+        assert!(
+            descriptor["description"]
+                .as_str()
+                .unwrap()
+                .contains("dictionary")
+        );
         assert!(descriptor["args_format"].is_object());
         assert!(descriptor["request_format"].is_object());
         assert!(descriptor["response_format"].is_object());
@@ -1899,19 +1921,23 @@ async fn actual_sdk_final_payload_private_registration_and_retry_binding() {
         ] {
             assert!(!serialized.contains(forbidden));
         }
-        assert!(request
-            .lines
-            .iter()
-            .any(|line| line.role == "system" && line.location.is_empty()));
+        assert!(
+            request
+                .lines
+                .iter()
+                .any(|line| line.role == "system" && line.location.is_empty())
+        );
     }
 }
 
 #[tokio::test]
 async fn absent_observers_and_failures_do_not_certify_success() {
     let (calls, _, _) = loopback(false, "success").await;
-    assert!(!calls
-        .iter()
-        .any(|c| [REQUEST, RESPONSE].iter().any(|id| c["function_id"] == *id)));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| [REQUEST, RESPONSE].iter().any(|id| c["function_id"] == *id))
+    );
     // The stream sends done before the error RPC completes: completion of
     // the stream alone must never upgrade the error outcome to success.
     for mode in ["before", "error", "cancel"] {
@@ -1929,9 +1955,11 @@ async fn absent_observers_and_failures_do_not_certify_success() {
         } else {
             assert_eq!(requests.len(), 3);
             assert_eq!(terminals.len(), 3);
-            assert!(terminals
-                .iter()
-                .all(|c| !c["data"].to_string().contains("synthetic failure")));
+            assert!(
+                terminals
+                    .iter()
+                    .all(|c| !c["data"].to_string().contains("synthetic failure"))
+            );
             assert!(terminals.iter().all(|c| c["data"]["phase"]
                 == if mode == "cancel" {
                     "cancelled"
@@ -1959,9 +1987,11 @@ async fn disabled_capture_step_carries_no_provenance_witness_or_generation_id() 
             assert_eq!(call["data"]["options"].get("provenance").is_some(), on);
         }
         let updates = of("session::update-message");
-        assert!(updates
-            .iter()
-            .all(|c| on || c["data"]["origin"].get("generation_id").is_none()));
+        assert!(
+            updates
+                .iter()
+                .all(|c| on || c["data"]["origin"].get("generation_id").is_none())
+        );
         // The final assistant update carries the generate origin (`req`).
         let finals: Vec<_> = updates
             .iter()
@@ -2053,9 +2083,11 @@ async fn disabled_capture_registers_no_witness_and_mints_no_generation_id() {
             .count(),
         3
     );
-    assert!(!calls
-        .iter()
-        .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE)
+    );
 }
 
 #[tokio::test]
@@ -2066,16 +2098,20 @@ async fn observer_race_and_partial_observation_are_unavailable_not_generation_fa
     assert!(!calls.iter().any(|c| c["function_id"] == RESPONSE));
     let (calls, _, ids) = loopback(true, "request_only").await;
     assert_eq!(ids.len(), 3);
-    assert!(!calls
-        .iter()
-        .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE)
+    );
     let (calls, registrations, ids) =
         loopback_with_capture(true, "forged_snapshot", CaptureMode::Disabled).await;
     assert!(ids.is_empty());
     assert_no_capture_events(&registrations);
-    assert!(!calls
-        .iter()
-        .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c["function_id"] == REQUEST || c["function_id"] == RESPONSE)
+    );
 }
 
 #[test]
@@ -2124,10 +2160,12 @@ fn normalization_bounds_and_malformed_payload_fail_closed() {
         let mut boundary = GenerationEvent::new("s", "t", 0);
         boundary.capture(&json!({"messages":[{"role":"function_result","content":nested}]}));
         assert_eq!(boundary.complete, depth <= MAX_DEPTH);
-        assert!(boundary
-            .lines
-            .iter()
-            .all(|line| line.location.len() <= MAX_DEPTH));
+        assert!(
+            boundary
+                .lines
+                .iter()
+                .all(|line| line.location.len() <= MAX_DEPTH)
+        );
     }
     let mut nested = json!("synthetic");
     for _ in 0..=MAX_DEPTH {

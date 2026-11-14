@@ -236,7 +236,7 @@ fn quoted(text: &str, start: usize, quote: char) -> Option<(SecretString, usize)
                 return Some((
                     SecretString::new(std::mem::take(&mut out)),
                     start + offset + 1,
-                ))
+                ));
             }
             '\\' if quote == '"' => match chars.next()? {
                 (_, 'n') => out.push('\n'),
@@ -558,9 +558,11 @@ DUP=second
         );
         assert!(started.elapsed() < Duration::from_secs(5));
         let missing = root.path().join("does-not-exist");
-        assert!(read_login_shell(&missing, &names, Duration::from_secs(1))
-            .await
-            .is_empty());
+        assert!(
+            read_login_shell(&missing, &names, Duration::from_secs(1))
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]

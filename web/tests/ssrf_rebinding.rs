@@ -2,7 +2,7 @@ use serde_json::json;
 use web::config::WebConfig;
 use web::fetch::execute_fetch;
 use web::schemas::FetchPayload;
-use web::ssrf::{check_target, parse_target, SsrfPolicy};
+use web::ssrf::{SsrfPolicy, check_target, parse_target};
 
 fn payload(j: serde_json::Value) -> FetchPayload {
     serde_json::from_value(j).unwrap()

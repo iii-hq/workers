@@ -3,14 +3,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 
 use slack::clients::slack as slack_client;
 use slack::configuration::{self, ConfigCell};
 use slack::deps::Deps;
 use slack::functions::{self, bindings};
-use slack::{ingress, WorkerConfig};
+use slack::{WorkerConfig, ingress};
 
 #[derive(Parser, Debug)]
 #[command(

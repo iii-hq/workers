@@ -1,12 +1,12 @@
 //! Typed bus registration and console configuration-form assets.
 use crate::{client::JevClient, configuration::SharedConfig};
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
     ModelsResponse, ProviderError, Stats, StatusResponse,
 };
-use judge_provider::secrets::{bus_fetch, SecretCache};
-use serde_json::{json, Value};
+use judge_provider::secrets::{SecretCache, bus_fetch};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Register evaluation, model listing and caller-scoped cancellation. Provider
@@ -52,7 +52,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
                         provider_error: Some(credential_error(reason)),
                         retry_after_ms: None,
                         stats: Stats::default(),
-                    })
+                    });
                 }
             };
             Ok::<EvaluateResponse, Error>(
@@ -86,7 +86,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
                         provider_error: None,
                         retry_after_ms: None,
                         stats: Stats::default(),
-                    })
+                    });
                 }
             };
             let snapshot = config.read().await.clone();
@@ -99,7 +99,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
                         provider_error: Some(credential_error(reason)),
                         retry_after_ms: None,
                         stats: Stats::default(),
-                    })
+                    });
                 }
             };
             Ok::<ModelsResponse, Error>(
@@ -165,8 +165,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
 }
 
 /// `status` when neither the configuration nor the boot environment holds a key.
-const MISSING_KEY: &str =
-    "no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it";
+const MISSING_KEY: &str = "no API key: save one in the judge-typesafe settings, or export TYPESAFE_API_KEY in its process and restart it";
 
 /// `missing_key` diagnostics for a configured key that cannot be used (an unresolved
 /// `secret://` reference or an unsupported `scheme://` value): the reason names the

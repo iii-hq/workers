@@ -17,7 +17,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
-use crate::source::{describe_error, to_parser_page, to_wire_page, PdfSource};
+use crate::source::{PdfSource, describe_error, to_parser_page, to_wire_page};
 
 pub const ID: &str = "pdf::extract-regions";
 pub const DESC: &str = "Extract the text inside bounding boxes on given pages, as text or a \

@@ -6,9 +6,9 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{register_fn, spec, Ctx, EmptyInput, EmptyOutput, FunctionSpec};
+use super::{Ctx, EmptyInput, EmptyOutput, FunctionSpec, register_fn, spec};
 use crate::accounts::launch::Launch;
-use crate::accounts::{tmux_env, GLOBAL};
+use crate::accounts::{GLOBAL, tmux_env};
 use crate::model::{
     ClaudeAccount, ClaudeSnapshot, LoginBrowser, RulesMode, SwitchRules, Threshold,
 };
@@ -307,7 +307,7 @@ pub(crate) fn not_listed(error: &str, what: &str) -> String {
 }
 
 pub async fn global(ctx: &Ctx, input: GlobalInput) -> Result<GlobalOutput, String> {
-    use crate::accounts::switch::{switch_locked, By, SwitchError};
+    use crate::accounts::switch::{By, SwitchError, switch_locked};
     ctx.tmux().await?;
     let collector = ctx.collector.clone();
     let switched = gated(ctx, move || async move {

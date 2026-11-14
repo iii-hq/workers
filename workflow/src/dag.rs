@@ -313,10 +313,11 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
             if let Some(items) = record.fanout_src.get(node_id.as_str()) {
                 for i in 0..items.len() {
                     let uid = node_uid(node_id, Some(i as u32));
-                    if let Some(cp) = record.nodes.get(&uid) {
-                        if cp.state == NodeState::Pending && deps_done(def, record, node_id) {
-                            frontier.push(uid);
-                        }
+                    if let Some(cp) = record.nodes.get(&uid)
+                        && cp.state == NodeState::Pending
+                        && deps_done(def, record, node_id)
+                    {
+                        frontier.push(uid);
                     }
                 }
             }

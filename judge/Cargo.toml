@@ -3,7 +3,7 @@
 [package]
 name = "judge"
 version = "0.3.3"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Provider-neutral judge hub: forwards typed Noul, Choice and Score evaluations to judge-<provider> workers."

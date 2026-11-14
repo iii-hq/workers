@@ -11,7 +11,7 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const ON_COUNTER_CHANGED_FN: &str = "demo::on-counter-changed";
 /// Bound fan-out: observers beyond this are rejected when they are added.

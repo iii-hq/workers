@@ -32,20 +32,20 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::{
+    Extension,
     body::Body,
     extract::Query,
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    Extension,
 };
 use colored::Colorize;
-use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_helpers::observability::opentelemetry::KeyValue;
+use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -84,11 +84,7 @@ const FRAME_BUFFER: usize = 64;
 /// not (a 3xx redirect is a normal outcome, not a failure). Mirrors the
 /// engine's `otel_status_for` (`views.rs`).
 fn otel_status_for(status_code: u16) -> &'static str {
-    if status_code < 400 {
-        "OK"
-    } else {
-        "ERROR"
-    }
+    if status_code < 400 { "OK" } else { "ERROR" }
 }
 
 /// Per-request OTEL request counter (`iii.http.requests`), created once from the
@@ -295,8 +291,8 @@ pub async fn dynamic_handler(
     // emit a `traceparent.propagated` event carrying the parent trace id, so the
     // link is visible in the OTel export (field names identical to the engine).
     if traceparent.is_some() || baggage.is_some() {
-        use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
         use iii_helpers::observability::opentelemetry::KeyValue;
+        use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
         use tracing_opentelemetry::OpenTelemetrySpanExt;
 
         let parent_cx =

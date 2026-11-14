@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
 use quick_tunnel::{
     config::{self, Config},
     manager::Manager,

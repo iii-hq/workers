@@ -1,26 +1,26 @@
 //! Atomic OpenAI Decisions calls with worker-wide concurrency and cancellation.
 use crate::decisions::{self, Decoded};
 use judge_contract::{
-    validate_request_with_limits, CancelRequest, CancelResponse, ErrorCode, EvaluateRequest,
-    EvaluateResponse, Evaluation, EvaluationResult, ModelsRequest, ModelsResponse, ProviderError,
-    RequestOptions, Stats, Usage,
+    CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
+    EvaluationResult, ModelsRequest, ModelsResponse, ProviderError, RequestOptions, Stats, Usage,
+    validate_request_with_limits,
 };
 use judge_provider::{
     cancellation::CancellationRegistry,
-    transport::{self, check_deadline, ExecutionLimits, Failure, RetryPolicy, DEFAULT_RETRY},
+    transport::{self, DEFAULT_RETRY, ExecutionLimits, Failure, RetryPolicy, check_deadline},
 };
 use serde_json::json;
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::{
     sync::Semaphore,
     task::JoinSet,
-    time::{timeout_at, Instant},
+    time::{Instant, timeout_at},
 };
 
 const ENDPOINT: &str = "https://api.openai.com/v1/decisions";
@@ -187,7 +187,7 @@ impl DecisionsClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let call = Arc::new(CallContext::new(deadline, request.options.clone()));
@@ -203,7 +203,7 @@ impl DecisionsClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         // Replies echo the model; a batch answered without HTTP reports this one.
@@ -387,7 +387,7 @@ impl DecisionsClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let call = CallContext::new(deadline, request.options);
@@ -403,7 +403,7 @@ impl DecisionsClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let result = tokio::select! {

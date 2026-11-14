@@ -13,8 +13,8 @@
 
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
@@ -175,8 +175,7 @@ pub(crate) fn decode_base64(data: &str) -> Result<Vec<u8>, Error> {
 /// Message returned when a non-authoritative (bridge-mode) instance is asked to
 /// serve the raw store protocol. Only an fs-main instance is the durable store;
 /// a bridge forwarding these to itself would recurse.
-const BRIDGE_MODE_REJECT: &str =
-    "session::store::* is served only by an authoritative (fs-mode) instance; \
+const BRIDGE_MODE_REJECT: &str = "session::store::* is served only by an authoritative (fs-mode) instance; \
      this instance is currently in bridge mode";
 
 /// The live store, or a rejection when the instance is not fs-main. Snapshotted
@@ -535,7 +534,7 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
 mod tests {
     use super::*;
     use crate::config::{BridgeBackendConfig, StorageAdapter, WorkerConfig};
-    use crate::runtime::{build_runtime, SessionBuildContext};
+    use crate::runtime::{SessionBuildContext, build_runtime};
 
     #[tokio::test]
     async fn store_protocol_gated_off_in_bridge_mode() {

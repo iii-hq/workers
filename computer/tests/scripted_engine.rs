@@ -15,8 +15,8 @@ use computer::frames::{
 use computer::functions::{self, catalog};
 use computer::session::Sessions;
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;

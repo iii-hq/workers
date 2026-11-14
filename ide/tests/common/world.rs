@@ -13,7 +13,7 @@ use ide::code::{
     },
     path::PathResolver,
 };
-use iii_sdk::{protocol::CallRequest, IIIClient};
+use iii_sdk::{IIIClient, protocol::CallRequest};
 use serde::Serialize;
 use serde_json::Value;
 use tempfile::TempDir;

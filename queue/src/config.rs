@@ -251,10 +251,12 @@ mod tests {
     #[test]
     fn run_jobs_in_defaults_to_enqueuer_and_worker_needs_rabbitmq() {
         assert_eq!(QueueConfig::default().run_jobs_in, RunJobsIn::Enqueuer);
-        assert!(QueueConfig::default()
-            .to_json()
-            .get("run_jobs_in")
-            .is_none());
+        assert!(
+            QueueConfig::default()
+                .to_json()
+                .get("run_jobs_in")
+                .is_none()
+        );
         let c: QueueConfig =
             serde_yaml_ng::from_str("{adapter: {name: rabbitmq}, run_jobs_in: worker}").unwrap();
         assert_eq!(c.run_jobs_in, RunJobsIn::Worker);

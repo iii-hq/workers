@@ -9,11 +9,11 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// Register a typed async handler with a caller-owned deserialization error.

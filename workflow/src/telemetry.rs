@@ -10,11 +10,11 @@
 //! Cardinality: only bounded labels (status/action/outcome). Never tag a
 //! metric with run_id / node_uid / session_id.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iii_helpers::observability::opentelemetry::metrics::{Counter, Histogram, ObservableGauge};
-use iii_helpers::observability::opentelemetry::{global, KeyValue};
+use iii_helpers::observability::opentelemetry::{KeyValue, global};
 
 use crate::types::RunStatus;
 
@@ -81,19 +81,11 @@ pub fn status_label(status: RunStatus) -> &'static str {
 }
 
 pub fn action_label(refire: bool) -> &'static str {
-    if refire {
-        "refire"
-    } else {
-        "failout"
-    }
+    if refire { "refire" } else { "failout" }
 }
 
 pub fn outcome_label(done: bool) -> &'static str {
-    if done {
-        "done"
-    } else {
-        "failed"
-    }
+    if done { "done" } else { "failed" }
 }
 
 // --- emit helpers (called by handlers) ---

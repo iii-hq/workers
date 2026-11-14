@@ -1,7 +1,7 @@
 //! scrapling::css — one CSS query over HTML; first-or-all; `attr` pulls an
 //! attribute else text (core.py `op_query(payload, "css")`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::{adaptive, dom, query};
 use crate::scrapling::{ops::common, require_str};

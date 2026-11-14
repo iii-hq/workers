@@ -6,25 +6,25 @@ use crate::{
     encode::{self, Encoded},
     engine::{self, Engine, Stop},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use iii_llama_runtime::softmax;
 use judge_contract::{
-    confidence, encode_evaluation_with_limits, validate_answer, validate_request_with_limits,
-    Answer, CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
-    EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, Stats, Usage,
-    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+    Answer, CancelRequest, CancelResponse, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+    ErrorCode, EvaluateRequest, EvaluateResponse, EvaluationResult, ModelCard, ModelsRequest,
+    ModelsResponse, Question, Stats, Usage, confidence, encode_evaluation_with_limits,
+    validate_answer, validate_request_with_limits,
 };
 use judge_provider::cancellation::CancellationRegistry;
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokenizers::Tokenizer;
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{Instant, timeout_at};
 
 /// Operator limits on the request itself; the context window bounds each prompt.
 #[derive(Clone, Copy, Debug)]

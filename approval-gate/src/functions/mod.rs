@@ -26,8 +26,8 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;

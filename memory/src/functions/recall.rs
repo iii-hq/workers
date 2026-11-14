@@ -200,7 +200,7 @@ async fn rank(
 mod tests {
     use super::*;
     use crate::store::Store;
-    use crate::types::{fingerprint, now_ms, Confidence};
+    use crate::types::{Confidence, fingerprint, now_ms};
 
     fn memory(text: &str, tags: &[&str], age_days: u64) -> Memory {
         let at = now_ms() - age_days * 86_400_000;

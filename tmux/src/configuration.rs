@@ -8,7 +8,7 @@ use std::sync::Arc;
 use iii_config_client::{EntrySpec, Reload};
 use iii_sdk::IIIClient;
 
-use crate::config::{SharedConfig, WorkerConfig, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME};
+use crate::config::{CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, SharedConfig, WorkerConfig};
 
 pub const RELOAD_FN_ID: &str = "tmux::on-config-change";
 

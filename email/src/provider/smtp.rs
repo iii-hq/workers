@@ -1,15 +1,15 @@
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use iii_sdk::errors::Error;
 use lettre::{
-    message::{
-        header::ContentType, Attachment as LAttach, Mailbox, Message, MultiPart, SinglePart,
-    },
-    transport::smtp::{authentication::Credentials, AsyncSmtpTransport},
     AsyncTransport, Tokio1Executor,
+    message::{
+        Attachment as LAttach, Mailbox, Message, MultiPart, SinglePart, header::ContentType,
+    },
+    transport::smtp::{AsyncSmtpTransport, authentication::Credentials},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 use crate::config::SmtpConfig;

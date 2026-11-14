@@ -22,11 +22,10 @@ pub mod token;
 mod wire;
 
 pub use provider::{MentionDetails, MentionProvider, ProviderError};
-pub use token::{format_mention, parse_mentions, parse_prose_mentions, MentionRef};
+pub use token::{MentionRef, format_mention, parse_mentions, parse_prose_mentions};
 pub use wire::{
-    MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionSearchContext,
-    MentionSearchRequest, MentionSearchResponse, MentionView, DEFAULT_SEARCH_LIMIT,
-    MAX_SEARCH_LIMIT,
+    DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MentionField, MentionGetRequest, MentionItem,
+    MentionOpen, MentionSearchContext, MentionSearchRequest, MentionSearchResponse, MentionView,
 };
 
 /// The function-metadata key that holds a [`MentionProvider`].

@@ -229,17 +229,21 @@ mod tests {
     #[tokio::test]
     async fn hit_within_ttl_avoids_the_inner_call() {
         let (inner, clock, cache) = harness(Ok(Some(budget())));
-        assert!(cache
-            .get_model_budget(Some("p"), "m")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            cache
+                .get_model_budget(Some("p"), "m")
+                .await
+                .unwrap()
+                .is_some()
+        );
         clock.0.store(HIT_TTL_MS, Ordering::SeqCst); // exactly at the TTL edge
-        assert!(cache
-            .get_model_budget(Some("p"), "m")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            cache
+                .get_model_budget(Some("p"), "m")
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
     }
 
@@ -264,17 +268,21 @@ mod tests {
     #[tokio::test]
     async fn unknown_model_uses_the_short_negative_ttl() {
         let (inner, clock, cache) = harness(Ok(None));
-        assert!(cache
-            .get_model_budget(Some("p"), "m")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            cache
+                .get_model_budget(Some("p"), "m")
+                .await
+                .unwrap()
+                .is_none()
+        );
         clock.0.store(NEGATIVE_TTL_MS + 1, Ordering::SeqCst);
-        assert!(cache
-            .get_model_budget(Some("p"), "m")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            cache
+                .get_model_budget(Some("p"), "m")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             inner.calls.load(Ordering::SeqCst),
             2,

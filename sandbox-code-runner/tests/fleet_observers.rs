@@ -12,17 +12,17 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
 use sandbox_code_runner::engine::{CallResult, Engine, ProxyHandler, UnregisterFn};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 

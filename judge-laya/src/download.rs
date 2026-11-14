@@ -1,6 +1,6 @@
 //! Fetch a laya checkpoint from the Hugging Face Hub into hf-hub's cache
 //! (`$HF_HOME`, default `~/.cache/huggingface`). No token: the repo is public.
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{Result, anyhow, ensure};
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::{Cache, Repo, RepoType};
 use std::ffi::OsStr;
@@ -35,7 +35,7 @@ pub fn fetch(model: &str, revision: Option<&str>, gguf: Option<&Path>) -> Result
         other => {
             return Err(anyhow!(
                 "unknown laya model {other:?}; expected one of {MODELS:?}"
-            ))
+            ));
         }
     };
     let repo = Repo::with_revision(

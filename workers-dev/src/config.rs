@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::color::ColorMode;
@@ -488,10 +488,10 @@ pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
 
     for start in candidates {
         for ancestor in start.ancestors() {
-            if validate_repo_root(ancestor).is_ok() {
-                if let Ok(root) = ancestor.canonicalize() {
-                    return Ok(root);
-                }
+            if validate_repo_root(ancestor).is_ok()
+                && let Ok(root) = ancestor.canonicalize()
+            {
+                return Ok(root);
             }
         }
     }
@@ -728,9 +728,11 @@ mod tests {
         assert_eq!(found.dir, worker.canonicalize().unwrap());
 
         // Pointed at its parent, which is a directory of workers instead.
-        assert!(offered(&repo, vec![outside.path().to_path_buf()])
-            .iter()
-            .any(|candidate| candidate.name == "harness-e2e"));
+        assert!(
+            offered(&repo, vec![outside.path().to_path_buf()])
+                .iter()
+                .any(|candidate| candidate.name == "harness-e2e")
+        );
     }
 
     /// The repo is scanned first, so a name it already uses is not replaced by
@@ -828,9 +830,11 @@ mod tests {
         // The rest of the repo is what the dashboard can start on demand.
         let offered = discover_workers(&config.repo_root, &config.worker_dirs, &config.workers);
         assert!(offered.len() > 40, "{}", offered.len());
-        assert!(offered
-            .iter()
-            .all(|worker| config.worker(&worker.name).is_none()));
+        assert!(
+            offered
+                .iter()
+                .all(|worker| config.worker(&worker.name).is_none())
+        );
         assert!(offered.iter().any(|worker| worker.name == "worktree"));
     }
 

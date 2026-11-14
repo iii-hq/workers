@@ -7,7 +7,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{purge, Deps};
+use super::{Deps, purge};
 use crate::filesystem_access_state;
 use crate::settings;
 use crate::types::EventAck;
@@ -64,7 +64,7 @@ mod tests {
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
     use crate::testkit::{
-        log_snapshot, settle, state_get, state_set, wait_for, with_stack, BootOpts,
+        BootOpts, log_snapshot, settle, state_get, state_set, wait_for, with_stack,
     };
 
     async fn seed_pending(iii: &iii_sdk::IIIClient, sid: &str, cid: &str) {
@@ -102,15 +102,21 @@ mod tests {
             .unwrap();
 
             assert!(state_get(&stack.iii, SETTINGS_SCOPE, "s_1").await.is_null());
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
-                .await
-                .is_null());
-            assert!(!state_get(&stack.iii, PENDING_SCOPE, "s_2/c_3")
-                .await
-                .is_null());
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                    .await
+                    .is_null()
+            );
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
+                    .await
+                    .is_null()
+            );
+            assert!(
+                !state_get(&stack.iii, PENDING_SCOPE, "s_2/c_3")
+                    .await
+                    .is_null()
+            );
 
             // Delivery to observers does not wait for them.
             assert!(
@@ -176,7 +182,7 @@ mod tests {
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
-    use crate::observed::{delivered_event, envelope, Delivered};
+    use crate::observed::{Delivered, delivered_event, envelope};
 
     /// The target is called with the `Observed` envelope: the event is its
     /// output.

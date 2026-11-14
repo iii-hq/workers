@@ -31,9 +31,9 @@ use iii_node_core::manager::RuntimeManager;
 use iii_node_core::wire::run::RunRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+    CallRequest, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 

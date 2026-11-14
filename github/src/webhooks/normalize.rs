@@ -3,7 +3,7 @@ mod baseline;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{types::*, Failure, Result};
+use super::{Failure, Result, types::*};
 
 /// A point-in-time REST read is authoritative; never replace current HEAD with
 /// the head embedded in a delayed webhook. Called only at setup/recovery/events.
@@ -164,15 +164,14 @@ pub fn normalize(w: &mut Watch, inbox: &Inbox, current: Snapshot) -> Option<PrEv
             attempt,
             updated_at,
         };
-        if let Some(old) = w.snapshot.ci.get(&key) {
-            if old.attempt > ci.attempt
+        if let Some(old) = w.snapshot.ci.get(&key)
+            && (old.attempt > ci.attempt
                 || (old.attempt == ci.attempt
                     && (old.updated_at > ci.updated_at
                         || (old.status == "completed" && ci.status != "completed")))
-                || old == &ci
-            {
-                return None;
-            }
+                || old == &ci)
+        {
+            return None;
         }
         w.snapshot.ci.insert(key, ci);
     } else if cat == Category::Comments || cat == Category::Reviews {

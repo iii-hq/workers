@@ -25,14 +25,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 
 use context_manager::adapters::cache::CachingModelResolver;
 use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::configuration::{self, ConfigCell};
-use context_manager::ports::{lease_cell, Deps, SystemClock};
+use context_manager::ports::{Deps, SystemClock, lease_cell};
 use context_manager::{config, functions, manifest, ui};
 
 #[derive(Parser, Debug)]

@@ -16,19 +16,19 @@ use std::time::Duration;
 use a2ui::composer::Composer;
 use a2ui::config::WorkerConfig;
 use a2ui::functions::{
-    delete_binding, get, refresh_binding, set_binding, BindingDeleteRequest, BindingRefreshRequest,
-    BindingSetRequest, Deps,
+    BindingDeleteRequest, BindingRefreshRequest, BindingSetRequest, Deps, delete_binding, get,
+    refresh_binding, set_binding,
 };
 use a2ui::protocol::{
-    apply_messages, ServerMessage, SessionState, CATALOG_ID, PROTOCOL_VERSION,
-    STREAM_BINDING_DEPRECATION,
+    CATALOG_ID, PROTOCOL_VERSION, STREAM_BINDING_DEPRECATION, ServerMessage, SessionState,
+    apply_messages,
 };
 use a2ui::store::Store;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 const SESSION: &str = "live-session";
@@ -319,9 +319,11 @@ async fn owned_function_binding_end_to_end() {
         .await
         .unwrap();
     assert_eq!(other["observers"], 0);
-    assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .is_err()
+    );
 
     // 6. Unbind cleanup: the observer is disposed, no further delivery.
     observer.dispose().await.unwrap();
@@ -330,9 +332,11 @@ async fn owned_function_binding_end_to_end() {
         .await
         .unwrap();
     assert_eq!(after["observers"], 0);
-    assert!(tokio::time::timeout(Duration::from_millis(500), rx.recv())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .is_err()
+    );
     let delete: BindingDeleteRequest = serde_json::from_value(
         json!({"session_id": SESSION, "surface_id": SURFACE, "binding_id": "clicks-count"}),
     )
@@ -407,9 +411,11 @@ async fn owned_function_binding_end_to_end() {
         surface.retired_bindings[0].function_id,
         "demo::on-counter-reset"
     );
-    assert!(surface.retired_bindings[0]
-        .reason
-        .contains("is not registered with the engine"));
+    assert!(
+        surface.retired_bindings[0]
+            .reason
+            .contains("is not registered with the engine")
+    );
 
     // The engine accepts the translated observer, and refuses the args the
     // stored config would otherwise have become.

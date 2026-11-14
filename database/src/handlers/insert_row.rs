@@ -26,12 +26,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::AppState;
 use super::catalog::ColumnDesc;
 use super::execute::{self, ExecuteReq};
 use super::filter::{quote_ident, quote_table};
-use super::query::{self, err_to_str, QueryReq};
+use super::query::{self, QueryReq, err_to_str};
 use super::schema::{self, DescribeTableReq};
-use super::AppState;
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::Pool;
@@ -168,7 +168,7 @@ fn pg_array_literal(column: &str, items: &[Value]) -> Result<String, DbError> {
             Value::Array(_) | Value::Object(_) => {
                 return Err(invalid(format!(
                     "column `{column}`: nested arrays/objects are not supported in an array value"
-                )))
+                )));
             }
             other => {
                 let text = match other {
@@ -764,13 +764,15 @@ mod tests {
         assert!(format!("{err}").contains("`flag` takes a boolean"), "{err}");
         // A catalog type that is not a plain type spelling never reaches SQL.
         let evil = [col("x", "int; DROP TABLE t", false)];
-        assert!(build_insert(
-            DriverKind::Postgres,
-            None,
-            "t",
-            &evil,
-            &values(json!({"x": 1}))
-        )
-        .is_err());
+        assert!(
+            build_insert(
+                DriverKind::Postgres,
+                None,
+                "t",
+                &evil,
+                &values(json!({"x": 1}))
+            )
+            .is_err()
+        );
     }
 }

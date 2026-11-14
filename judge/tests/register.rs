@@ -1,9 +1,9 @@
 //! Routing, validation and contract enforcement over a mocked engine socket.
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use judge_contract::{CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 

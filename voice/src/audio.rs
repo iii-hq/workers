@@ -5,8 +5,8 @@
 
 use std::io::Cursor;
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use sherpa_onnx::LinearResampler;
 
 /// The recognizer's native sample rate.
@@ -153,9 +153,11 @@ mod tests {
     #[test]
     fn oversized_and_odd_chunks_are_rejected() {
         let encoded = BASE64_STANDARD.encode([0u8; 10]);
-        assert!(decode_pcm16_base64(&encoded, 4)
-            .unwrap_err()
-            .contains("cap"));
+        assert!(
+            decode_pcm16_base64(&encoded, 4)
+                .unwrap_err()
+                .contains("cap")
+        );
         let odd = BASE64_STANDARD.encode([0u8; 3]);
         assert!(decode_pcm16_base64(&odd, 64).unwrap_err().contains("odd"));
     }

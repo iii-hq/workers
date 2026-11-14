@@ -12,8 +12,8 @@
 //! folder, status): no connection is opened and nothing sensitive is shown.
 
 use mention_contract::{
-    color, tone, MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
-    MentionSearchRequest, MentionSearchResponse, MentionView,
+    MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
+    MentionSearchRequest, MentionSearchResponse, MentionView, color, tone,
 };
 use serde_json::json;
 
@@ -344,9 +344,11 @@ mod tests {
             "{other}"
         );
         assert!(!serde_json::to_string(&view).unwrap().contains("hunter2"));
-        assert!(get(&st, MentionGetRequest { id: "nope".into() })
-            .await
-            .is_none());
+        assert!(
+            get(&st, MentionGetRequest { id: "nope".into() })
+                .await
+                .is_none()
+        );
     }
 
     #[test]

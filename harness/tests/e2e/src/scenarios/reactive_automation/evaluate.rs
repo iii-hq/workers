@@ -4,7 +4,7 @@ use super::evidence::{Evidence, FinalReport};
 use super::names::ScenarioNames;
 use super::{ASSESSMENTS, EXPECTED_ORDERS, EXPECTED_WRITERS, ORDERS_PER_WRITER};
 use super::{FINALIZATION_CLEANUP, OBSERVER_ORCHESTRATION, PARALLEL_WRITES, REACTIVE_AGGREGATES};
-use crate::scenarios::{assessment, ObjectiveEvaluation};
+use crate::scenarios::{ObjectiveEvaluation, assessment};
 
 pub(super) fn missing_database() -> ObjectiveEvaluation {
     assessment::prerequisite_failure(

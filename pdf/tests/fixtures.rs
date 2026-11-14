@@ -474,8 +474,8 @@ fn an_empty_region_is_reported_as_unreliable_rather_than_as_empty_text() {
 /// document read from disk.
 #[test]
 fn inline_bytes_and_a_path_agree() {
-    use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
     let path = format!(
         "{}/tests/fixtures/text-two-page.pdf",

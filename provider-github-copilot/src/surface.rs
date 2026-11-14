@@ -20,8 +20,7 @@ use llm_router::types::router::{
 use crate::login::{LoginPollRequest, LoginPollResponse, LoginStartRequest, LoginStartResponse};
 
 pub const STREAM_ID: &str = "provider::github-copilot::stream";
-pub const STREAM_DESC: &str =
-    "Stream a GitHub Copilot chat completion: exchange the GitHub credential for a \
+pub const STREAM_DESC: &str = "Stream a GitHub Copilot chat completion: exchange the GitHub credential for a \
      Copilot bearer, call the Chat Completions API, and relay AssistantMessageEvent \
      frames to writer_ref.";
 
@@ -30,23 +29,19 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::github-copilot::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the Copilot catalog slice from GET /models — ids, windows, and \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the Copilot catalog slice from GET /models — ids, windows, and \
      capability flags come from the live listing the subscription enables — and \
      reconcile it through the router; returns the model count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::github-copilot::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const LOGIN_START_ID: &str = "provider::github-copilot::login::start";
-pub const LOGIN_START_DESC: &str =
-    "Begin the GitHub device-flow sign-in: returns the user_code to enter at the \
+pub const LOGIN_START_DESC: &str = "Begin the GitHub device-flow sign-in: returns the user_code to enter at the \
      verification URL plus the device_code for login::poll. Operator-only.";
 
 pub const LOGIN_POLL_ID: &str = "provider::github-copilot::login::poll";
-pub const LOGIN_POLL_DESC: &str =
-    "Complete the device-flow sign-in: exchanges the device_code once the operator \
+pub const LOGIN_POLL_DESC: &str = "Complete the device-flow sign-in: exchanges the device_code once the operator \
      has entered the user_code; on success the GitHub credential is stored and \
      discovery runs. Returns ok | pending | expired | denied.";
 

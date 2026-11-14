@@ -98,9 +98,9 @@ impl Drop for AbortGuard {
 pub fn make_abort(
     aborts: StreamAborts,
 ) -> impl Fn(ProviderAbortRequest) -> BoxFuture<'static, Result<ProviderAbortResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ProviderAbortRequest| {
         let aborted = aborts.abort(&req.request_id);
         Box::pin(async move { Ok(ProviderAbortResponse { aborted }) })

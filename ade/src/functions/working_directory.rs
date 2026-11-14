@@ -12,7 +12,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const PROPOSE_ID: &str = "ade::working-directory::propose";
 pub const STAMP_SESSION_ID: &str = "ade::working-directory::stamp-session";
@@ -165,8 +165,7 @@ async fn propose(
     })?;
     if let (Some(session_id), Some(turn_id)) =
         (request.session_id.as_deref(), request.turn_id.as_deref())
-    {
-        if let Err(error) = iii
+        && let Err(error) = iii
             .call(CallRequest {
                 function_id: ADOPT_ROOT_ID.into(),
                 payload: json!({
@@ -178,9 +177,8 @@ async fn propose(
                 timeout_ms: Some(10_000),
             })
             .await
-        {
-            tracing::debug!(%error, "new project could not be added to Shell turn history");
-        }
+    {
+        tracing::debug!(%error, "new project could not be added to Shell turn history");
     }
     proposal(request, validated.path)
 }
@@ -292,12 +290,12 @@ pub fn observe_generation(iii: &IIIClient, target: &str, args: Value) {
     );
     let (client, target) = (iii.clone(), target.to_string());
     tokio::spawn(async move {
-        if let Err(Error::Remote { code, .. }) = handle.ready().await {
-            if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
-                // Leave no refused observer behind to show as an error.
-                let _ = handle.dispose().await;
-                client.observe(Source::function(PRE_GENERATE_HOOK_FN).args(args), &target);
-            }
+        if let Err(Error::Remote { code, .. }) = handle.ready().await
+            && matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR")
+        {
+            // Leave no refused observer behind to show as an error.
+            let _ = handle.dispose().await;
+            client.observe(Source::function(PRE_GENERATE_HOOK_FN).args(args), &target);
         }
     });
 }
@@ -404,8 +402,10 @@ mod tests {
             "/private/tmp/project".into(),
         )
         .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("missing Harness session context"));
+        assert!(
+            error
+                .to_string()
+                .contains("missing Harness session context")
+        );
     }
 }

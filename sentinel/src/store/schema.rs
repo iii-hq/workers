@@ -285,8 +285,9 @@ mod tests {
 
     #[test]
     fn only_one_first_pass_can_run_per_group() {
-        assert!(migrations()[0].1.iter().any(|statement| statement
-            .contains("sentinel_investigations_active")
-            && statement.contains("WHERE status = 'running'")));
+        assert!(migrations()[0].1.iter().any(|statement| {
+            statement.contains("sentinel_investigations_active")
+                && statement.contains("WHERE status = 'running'")
+        }));
     }
 }

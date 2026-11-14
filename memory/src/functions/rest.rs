@@ -22,14 +22,13 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
 
 pub const REST_ID: &str = "memory::rest";
-pub const REST_DESC: &str =
-    "Internal: target of the memory REST routes, the http::on-request observers with args \
+pub const REST_DESC: &str = "Internal: target of the memory REST routes, the http::on-request observers with args \
      { method: POST, path: /memory/... }. Receives the HttpRequest, runs the memory::* \
      function the route's path names with the request's JSON body, and returns the \
      HttpResponse { status_code, body }: 200 with the function's result, or 400/404/500/503 \

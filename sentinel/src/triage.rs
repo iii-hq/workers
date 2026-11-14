@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, Store, UntriagedGroup};

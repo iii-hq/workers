@@ -15,12 +15,12 @@
 //! idle, and the lifecycle bound still retires the binding after its single
 //! delivery.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";

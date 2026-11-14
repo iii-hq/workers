@@ -8,8 +8,7 @@ use super::{argv, push_opt};
 
 pub const REPOS_ID: &str = "github::search::repos";
 pub const REPOS_DESC: &str = "Search GitHub for repositories matching a query. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").";
-pub const REPOS_JSON: &str =
-    "fullName,description,url,visibility,isArchived,isFork,stargazersCount,forksCount,language,updatedAt";
+pub const REPOS_JSON: &str = "fullName,description,url,visibility,isArchived,isFork,stargazersCount,forksCount,language,updatedAt";
 
 pub const ISSUES_ID: &str = "github::search::issues";
 pub const ISSUES_DESC: &str =

@@ -3,10 +3,10 @@ use std::{path::Component, sync::Arc};
 use async_trait::async_trait;
 
 use crate::{
-    build_analysis_plan, ids, AnalysisPlan, AssessmentStatusV1, EnqueueRequest, ExecuteResponseV1,
-    HarnessRunV1, MaterializedTargetV1, RepositoryConfigV1, RunErrorV1, RunRecordV1, RunStatusV1,
+    AnalysisPlan, AssessmentStatusV1, EnqueueRequest, ExecuteResponseV1, HarnessRunV1,
+    MaterializedTargetV1, RepositoryConfigV1, RunErrorV1, RunRecordV1, RunStatusV1,
     SecurityAreaAssessmentV1, SecurityReportV1, SecurityRuntime, SecurityScanError,
-    TurnCompletedEventV1, TurnCompletedResponseV1, WorkerConfig,
+    TurnCompletedEventV1, TurnCompletedResponseV1, WorkerConfig, build_analysis_plan, ids,
 };
 
 const MAX_STEP_FAILURES: u32 = 3;
@@ -95,7 +95,7 @@ pub trait ExecutionRuntime: SecurityRuntime {
     }
 
     async fn start_analysis(&self, plan: AnalysisPlan)
-        -> Result<AnalysisHandle, SecurityScanError>;
+    -> Result<AnalysisHandle, SecurityScanError>;
 
     async fn completed_analysis(
         &self,
@@ -224,14 +224,12 @@ where
         if !self.runtime.replace_run(&run, failed.clone()).await? {
             return Ok(None);
         }
-        if terminal {
-            if let Err(cleanup_error) = self.cleanup_terminal(&failed).await {
-                tracing::warn!(
-                    run_id = %failed.run_id,
-                    error = %cleanup_error,
-                    "failed run checkout cleanup failed"
-                );
-            }
+        if terminal && let Err(cleanup_error) = self.cleanup_terminal(&failed).await {
+            tracing::warn!(
+                run_id = %failed.run_id,
+                error = %cleanup_error,
+                "failed run checkout cleanup failed"
+            );
         }
         Ok(terminal.then(|| response(&failed, false)))
     }
@@ -585,10 +583,10 @@ fn sanitize_report_for_persistence(
         .map(|target| target.path.as_str())
         .filter(|root| !root.is_empty());
     let redact = |value: &mut String| {
-        if let Some(root) = root {
-            if value.contains(root) {
-                *value = value.replace(root, "<checkout>");
-            }
+        if let Some(root) = root
+            && value.contains(root)
+        {
+            *value = value.replace(root, "<checkout>");
         }
         *value = redact_secret_material(value);
     };
@@ -1082,11 +1080,11 @@ fn merge_spans(mut spans: Vec<(usize, usize)>, value_len: usize) -> Vec<(usize, 
     spans.sort_unstable_by_key(|(start, end)| (*start, *end));
     let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
     for (start, end) in spans {
-        if let Some((_, previous_end)) = merged.last_mut() {
-            if start <= *previous_end {
-                *previous_end = (*previous_end).max(end);
-                continue;
-            }
+        if let Some((_, previous_end)) = merged.last_mut()
+            && start <= *previous_end
+        {
+            *previous_end = (*previous_end).max(end);
+            continue;
         }
         merged.push((start, end));
     }
@@ -1134,12 +1132,12 @@ fn validate_location(prefix: &str, location: &crate::FindingLocationV1) -> Resul
             "invalid security report: {prefix} location lines are one-based"
         ));
     }
-    if let (Some(start), Some(end)) = (location.line_start, location.line_end) {
-        if end < start {
-            return Err(format!(
-                "invalid security report: {prefix} location line_end precedes line_start"
-            ));
-        }
+    if let (Some(start), Some(end)) = (location.line_start, location.line_end)
+        && end < start
+    {
+        return Err(format!(
+            "invalid security report: {prefix} location line_end precedes line_start"
+        ));
     }
     Ok(())
 }
@@ -1216,11 +1214,13 @@ mod report_tests {
 
     #[test]
     fn report_rejects_internal_or_parent_paths() {
-        assert!(validate_report(
-            report("/private/internal/wt_x/src/x.rs"),
-            &run(ScanModeV1::Suggest)
-        )
-        .is_err());
+        assert!(
+            validate_report(
+                report("/private/internal/wt_x/src/x.rs"),
+                &run(ScanModeV1::Suggest)
+            )
+            .is_err()
+        );
         assert!(validate_report(report("../outside"), &run(ScanModeV1::Suggest)).is_err());
     }
 

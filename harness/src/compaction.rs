@@ -29,11 +29,11 @@ use std::sync::{Arc, Mutex};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::clients::SessionClient;
 use crate::clients::context::{CompactOutput, CompactParams, CountTokensParams};
 use crate::clients::session::LoadedEntry;
-use crate::clients::SessionClient;
 use crate::context_snapshot::{self, SnapshotMessagesV1};
 use crate::deps::Deps;
 use crate::ids;
@@ -47,8 +47,7 @@ pub const STATUS_REASON: &str = "compacting context";
 const NOTICE: &str = "notice";
 const RECORD: &str = "compaction";
 const STARTED: &str = "compacting the conversation…";
-const ALREADY_RUNNING: &str =
-    "compaction skipped — this conversation is already being compacted; its result will appear here.";
+const ALREADY_RUNNING: &str = "compaction skipped — this conversation is already being compacted; its result will appear here.";
 const LEASE_BUSY: &str = "compaction skipped — another compaction of this conversation is in progress; try /compact again when it finishes.";
 const NOTHING_TO_COMPACT: &str =
     "nothing to compact yet — the conversation still fits word for word.";
@@ -279,10 +278,8 @@ pub async fn run(deps: &Deps, req: Request, compaction_id: String) -> Outcome {
     )
     .await;
     drop(running);
-    if owns_status {
-        if let Err(error) = crate::session_status::repair(deps, &req.session_id).await {
-            tracing::warn!(session_id = %req.session_id, %error, "session status restore after compaction failed");
-        }
+    if owns_status && let Err(error) = crate::session_status::repair(deps, &req.session_id).await {
+        tracing::warn!(session_id = %req.session_id, %error, "session status restore after compaction failed");
     }
     if outcome.status != Status::Ok {
         return finish(deps, &session, outcome, vec![started_entry], outcome_entry).await;
@@ -351,7 +348,7 @@ async fn summarise(
     let entries = match session.messages(&req.session_id, true).await {
         Ok(entries) => entries,
         Err(error) => {
-            return Summarised::Failed(format!("could not read the conversation: {error}"))
+            return Summarised::Failed(format!("could not read the conversation: {error}"));
         }
     };
     let anchor = crate::turn_loop::compaction_anchor(&req.session_id, &entries);
@@ -414,10 +411,10 @@ async fn persist(
         Summarised::Done(summary) => summary,
         Summarised::Busy => return outcome(req, compaction_id, Status::Busy, LEASE_BUSY.into()),
         Summarised::Empty => {
-            return outcome(req, compaction_id, Status::Empty, NOTHING_TO_COMPACT.into())
+            return outcome(req, compaction_id, Status::Empty, NOTHING_TO_COMPACT.into());
         }
         Summarised::Failed(reason) => {
-            return outcome(req, compaction_id, Status::Failed, failed(&reason))
+            return outcome(req, compaction_id, Status::Failed, failed(&reason));
         }
     };
     // Everything read was summarised: a turn that appended meanwhile must
@@ -432,7 +429,7 @@ async fn persist(
                     compaction_id,
                     Status::Failed,
                     failed(&format!("could not read the conversation: {error}")),
-                )
+                );
             }
         },
     };

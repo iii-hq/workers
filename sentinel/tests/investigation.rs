@@ -28,7 +28,7 @@ use sentinel::{
     OccurrenceWrite, RecordOutcome, RepositoryConfigV1, ResolveRequestV1, RootCauseV1, Service,
     Store, TurnCompletedEventV1, WorkerConfig,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 const NOW: i64 = 1_789_000_000_000;
@@ -1012,9 +1012,11 @@ async fn a_first_pass_that_said_nothing_is_nudged_exactly_once() {
         GroupStatusV1::New,
         "an empty pass leaves no mark on the lifecycle"
     );
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, Announcement::Investigation(_))));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Announcement::Investigation(_)))
+    );
     assert_eq!(
         fixture
             .harness
@@ -1455,9 +1457,10 @@ async fn joint_concurrent_same_request_creates_one_session_with_durable_membersh
         .await
         .unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows
-        .iter()
-        .all(|r| r["evidence"].as_str().unwrap().contains("occurrence_id")));
+    assert!(
+        rows.iter()
+            .all(|r| r["evidence"].as_str().unwrap().contains("occurrence_id"))
+    );
     let conflict = f
         .investigations
         .investigate_many(joint_request(
@@ -1539,12 +1542,13 @@ async fn joint_diagnosis_is_member_only_and_never_moves_human_state() {
             .len(),
         1
     );
-    assert!(f
-        .store
-        .diagnoses_for_group(&f.group_id, 10)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        f.store
+            .diagnoses_for_group(&f.group_id, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1575,12 +1579,13 @@ async fn joint_send_failure_is_durable_and_retry_does_not_send_again() {
             .status,
         InvestigationStatusV1::Failed
     );
-    assert!(f
-        .store
-        .running_investigation(&f.group_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        f.store
+            .running_investigation(&f.group_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         f.harness
             .calls()
@@ -1645,10 +1650,12 @@ async fn joint_profile_cannot_inject_tools_filesystem_or_delegation() {
     assert_eq!(payload["options"]["metadata"], json!({}));
     assert!(payload["options"].get("agent").is_none());
     assert!(payload["options"].get("output").is_none());
-    assert!(state
-        .calls
-        .iter()
-        .all(|call| !matches!(call, Call::Grant { .. })));
+    assert!(
+        state
+            .calls
+            .iter()
+            .all(|call| !matches!(call, Call::Grant { .. }))
+    );
     let prompt = payload["options"]["system_prompt"].as_str().unwrap();
     assert!(prompt.contains("Inspect independently"));
     assert!(prompt.ends_with(sentinel::investigation::message::SYSTEM_PROMPT));
@@ -1895,11 +1902,12 @@ async fn source_proxy_requires_real_session_member_mapping_and_relative_path() {
         .unwrap();
     assert!(source.content.contains("sentinel"));
     for path in ["../harness/src/lib.rs", "/etc/passwd", ".env"] {
-        assert!(f
-            .investigations
-            .source_read(caller.clone(), request(f.group_id.clone(), path))
-            .await
-            .is_err());
+        assert!(
+            f.investigations
+                .source_read(caller.clone(), request(f.group_id.clone(), path))
+                .await
+                .is_err()
+        );
     }
 }
 

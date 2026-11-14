@@ -24,8 +24,8 @@
 
 use serde_json::Value;
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 const LEAD_PROFILE: &str = "---
@@ -74,8 +74,7 @@ Gamma procedure: never preloaded, only indexed.
 
 const BLOCK_OPEN: &str = "<preloaded_skills>";
 const BLOCK_CLOSE: &str = "</preloaded_skills>";
-const UNAVAILABLE_LINE: &str =
-    "Declared by the profile but NOT available right now — do not look for them: `harness/missing`.";
+const UNAVAILABLE_LINE: &str = "Declared by the profile but NOT available right now — do not look for them: `harness/missing`.";
 
 /// The resolved identity (lead body, engineer body), the block right after
 /// it, the two skill sections root-first with their bodies, and the unknown
@@ -285,8 +284,10 @@ mod tests {
             &RENDERED.replace("<skill id=\"harness/alpha\">", "<skill id=\"harness/zzz\">")
         ));
         // A body-less section (id only) is not a preloaded skill.
-        assert!(!regex
-            .is_match(&RENDERED.replace("Alpha procedure: greet before anything else.\n", "")));
+        assert!(
+            !regex
+                .is_match(&RENDERED.replace("Alpha procedure: greet before anything else.\n", ""))
+        );
         // Unknown id silently dropped instead of named.
         assert!(!regex.is_match(&RENDERED.replace("`harness/missing`", "`other/thing`")));
         // Block before the identity.

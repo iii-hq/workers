@@ -5,21 +5,21 @@
 //! worker / auth-credentials vault — this provider only *calls* a refresh
 //! when the token is near expiry.
 use crate::config::build_config;
-use crate::errors::{classify_bus_error, SIGN_IN_EXPIRED};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::errors::{SIGN_IN_EXPIRED, classify_bus_error};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::wire::cache::{cache_enabled, cache_ttl, messages_cache_ttl};
 use crate::{auth, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::pump::{PING_INTERVAL, pump, pump_abortable, send_event};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, ProviderStreamInput, ProviderStreamOutput,
@@ -31,9 +31,9 @@ pub fn make_stream(
     cache: ScaffoldCache,
     aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {

@@ -116,9 +116,11 @@ fn transforms_cover_the_lodash_surface() {
 
     // misses and type mismatches are teachable errors, never silent garbage
     assert!(util::get(&json!({"a": 1}), "/b").unwrap_err().contains("a"));
-    assert!(util::pick(json!([1]), &["a".into()])
-        .unwrap_err()
-        .contains("object"));
+    assert!(
+        util::pick(json!([1]), &["a".into()])
+            .unwrap_err()
+            .contains("object")
+    );
 }
 
 #[test]

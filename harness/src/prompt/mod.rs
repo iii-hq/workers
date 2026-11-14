@@ -9,7 +9,7 @@ mod variants;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use stored::{effective_default, EffectiveDefault, STORED_DEFAULT_PROMPT_NAME};
+pub use stored::{EffectiveDefault, STORED_DEFAULT_PROMPT_NAME, effective_default};
 pub use variants::DEFAULT;
 
 /// How a caller-supplied system prompt combines with the built-in identity prompt.

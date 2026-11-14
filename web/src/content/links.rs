@@ -3,7 +3,7 @@
 //! otherwise the final (post-redirect) fetch URL. Links are classified
 //! internal/external by comparing against the fetch host.
 
-use tl::{parse, ParserOptions};
+use tl::{ParserOptions, parse};
 use url::Url;
 
 use crate::content::{Link, Links, Media, MediaItem};
@@ -52,12 +52,12 @@ fn source_child_src(tag: &tl::HTMLTag, parser: &tl::Parser) -> Option<String> {
         let Some(ct) = child.get(parser).and_then(|n| n.as_tag()) else {
             continue;
         };
-        if ct.name().as_utf8_str().eq_ignore_ascii_case("source") {
-            if let Some(src) = ct.attributes().get("src").flatten() {
-                let s = src.as_utf8_str();
-                if !s.trim().is_empty() {
-                    return Some(s.into_owned());
-                }
+        if ct.name().as_utf8_str().eq_ignore_ascii_case("source")
+            && let Some(src) = ct.attributes().get("src").flatten()
+        {
+            let s = src.as_utf8_str();
+            if !s.trim().is_empty() {
+                return Some(s.into_owned());
             }
         }
     }

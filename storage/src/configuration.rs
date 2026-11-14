@@ -11,9 +11,9 @@
 //! cannot be applied (a port already taken) rejects the whole update and the
 //! running generation stays.
 
+use crate::backend::Backend;
 use crate::backend::factory::{self, LocalBackendCtx, Purpose};
 use crate::backend::local::LocalRuntime;
-use crate::backend::Backend;
 use crate::config::{BucketConfig, WorkerConfig};
 use crate::events::dispatcher::EngineDispatcher;
 use crate::events::pollers::{cf_queue, pubsub, sqs};
@@ -24,7 +24,7 @@ use crate::secrets::Refetch;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -425,10 +425,10 @@ impl StorageRuntime {
                         .refresh(stale, Refetch::KeepLastGood)
                         .await
                         .is_empty();
-                if retry || rotated {
-                    if let Err(error) = runtime.reapply(&state).await {
-                        tracing::warn!(error = %error, "maintenance re-apply failed");
-                    }
+                if (retry || rotated)
+                    && let Err(error) = runtime.reapply(&state).await
+                {
+                    tracing::warn!(error = %error, "maintenance re-apply failed");
                 }
             }
         })
@@ -459,17 +459,15 @@ async fn build_buckets(
         let result = async {
             let material = Material::resolve(bucket, |key| state.secrets.lookup(key))?;
             let fingerprint = material::fingerprint(name, bucket, &material);
-            if !matches!(bucket, BucketConfig::Local(_)) {
-                if let (Some(backend), Some(previous)) = (current.get(name), fingerprints.get(name))
-                {
-                    if *previous == fingerprint {
-                        return Ok(BuiltBucket {
-                            backend: backend.clone(),
-                            fingerprint,
-                            material,
-                        });
-                    }
-                }
+            if !matches!(bucket, BucketConfig::Local(_))
+                && let (Some(backend), Some(previous)) = (current.get(name), fingerprints.get(name))
+                && *previous == fingerprint
+            {
+                return Ok(BuiltBucket {
+                    backend: backend.clone(),
+                    fingerprint,
+                    material,
+                });
             }
             let backend = factory::build(
                 name,

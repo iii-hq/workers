@@ -16,8 +16,7 @@ pub struct ModuleManifest {
     pub supported_targets: Vec<String>,
 }
 
-pub const DESCRIPTION: &str =
-    "Speak to the console: local streaming speech-to-text for dictation and file \
+pub const DESCRIPTION: &str = "Speak to the console: local streaming speech-to-text for dictation and file \
      transcription, read-aloud of replies, and an optional OpenAI-compatible audio \
      endpoint, with a mic chip in every chat and a voice page.";
 
@@ -43,9 +42,11 @@ mod tests {
         assert!(json["version"].as_str().is_some_and(|v| !v.is_empty()));
         assert!(json["description"].as_str().is_some_and(|d| d.len() > 20));
         assert!(json["default_config"].is_object());
-        assert!(json["supported_targets"]
-            .as_array()
-            .is_some_and(|t| !t.is_empty()));
+        assert!(
+            json["supported_targets"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty())
+        );
     }
 
     /// The manifest name is the folder name, the binary name, and the registry

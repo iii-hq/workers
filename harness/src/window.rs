@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::clients::session::LoadedEntry;
 use crate::types::content::ContentBlock;

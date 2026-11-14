@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 
 /// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

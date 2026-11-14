@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 
 use super::evidence::{
-    integer_field, Evidence, FinalReport, OrderSummary, Totals, WatchEvidence, WriterSpawnEvidence,
-    WriterStatus,
+    Evidence, FinalReport, OrderSummary, Totals, WatchEvidence, WriterSpawnEvidence, WriterStatus,
+    integer_field,
 };
 use super::names::ScenarioNames;
-use crate::scenarios::{common, ScenarioObservation};
+use crate::scenarios::{ScenarioObservation, common};
 
 const DATABASE: &str = "primary";
 

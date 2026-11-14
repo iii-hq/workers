@@ -11,7 +11,7 @@
 //! `state::set` tail never ran), and the wake-expiry fallback that keeps a
 //! parent from parking forever on evidence that will never arrive.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::code::change_journal::ChangeJournal;
-use crate::code::error::{err_to_string, CoderError, WireError};
+use crate::code::error::{CoderError, WireError, err_to_string};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.
@@ -155,7 +155,7 @@ fn delete_one(
                 removed: false,
                 change_id: None,
                 error: Some((&e).into()),
-            }
+            };
         }
     };
     let wire_path = abs.display().to_string();
@@ -209,12 +209,12 @@ fn try_delete_one(
     // back to scope_root) canonicalizes to the session directory — which is a
     // SUBDIR of an allowed root, so the `is_root` guard above never catches it.
     // Without this, a recursive delete would wipe the active project directory.
-    if let Some(base) = scope_root {
-        if resolver.session_root(base).as_deref() == Some(abs) {
-            return Err(CoderError::BadInput(
-                "refusing to delete the session working directory itself".into(),
-            ));
-        }
+    if let Some(base) = scope_root
+        && resolver.session_root(base).as_deref() == Some(abs)
+    {
+        return Err(CoderError::BadInput(
+            "refusing to delete the session working directory itself".into(),
+        ));
     }
     let md = match std::fs::symlink_metadata(abs) {
         Ok(m) => m,

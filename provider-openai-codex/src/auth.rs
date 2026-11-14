@@ -1,10 +1,10 @@
 //! JWT metadata and read-only compatibility with existing vault/CLI sessions.
 //! New login and token rotation are owned by `session::AuthManager`.
 use crate::session::{CredentialSource, ResolvedCredential, SessionError};
-use crate::{router_client, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client};
 use base64::Engine as _;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The ChatGPT account-id claim namespace in Codex OAuth JWTs.
 const AUTH_CLAIM: &str = "https://api.openai.com/auth";

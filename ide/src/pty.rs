@@ -6,12 +6,12 @@ use std::time::Duration as StdDuration;
 #[cfg(unix)]
 use std::time::Instant;
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{CallAction, IIIClient, RegisterFunction};
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -26,7 +26,7 @@ mod session;
 
 #[cfg(test)]
 use output_buffer::OutputFrame;
-use output_buffer::{OutputBuffer, MAX_OUTPUT_BUFFER_BYTES};
+use output_buffer::{MAX_OUTPUT_BUFFER_BYTES, OutputBuffer};
 pub use protocol::{
     AdoptRequest, AttachRequest, AttachResponse, CloseRequest, CloseResponse, DetachRequest,
     DetachResponse, OpenRequest, OpenResponse, ResizeRequest, ResizeResponse, SessionSummary,
@@ -712,12 +712,11 @@ async fn detach_failed_output(session: &PtySession, output_function_id: &str, ac
         .lock()
         .await
         .detach_output_target(output_function_id, access_key);
-    if detached {
-        if let Ok(mut status) = session.status.lock() {
-            if !matches!(*status, SessionStatus::Exited { .. }) {
-                *status = SessionStatus::Detached;
-            }
-        }
+    if detached
+        && let Ok(mut status) = session.status.lock()
+        && !matches!(*status, SessionStatus::Exited { .. })
+    {
+        *status = SessionStatus::Detached;
     }
 }
 
@@ -1640,11 +1639,13 @@ mod tests {
 
         let first = harness.manager.attach(attach()).await.unwrap();
         let session = harness.manager.session(&opened.session_id).await.unwrap();
-        assert!(session
-            .control
-            .lock()
-            .await
-            .detach_output_target(&harness.output_function_id, &first.access_key));
+        assert!(
+            session
+                .control
+                .lock()
+                .await
+                .detach_output_target(&harness.output_function_id, &first.access_key)
+        );
         let retry_worker = "retry-worker";
         let retry_output = format!("{OUTPUT_FUNCTION_PREFIX}{}", Uuid::new_v4());
         let retried = harness
@@ -1667,9 +1668,11 @@ mod tests {
         let control = session.control.lock().await;
         assert_eq!(control.status(), SessionStatus::Attached);
         assert_eq!(control.output_function_id(), retry_output);
-        assert!(control
-            .authenticate(&retried.access_key, retry_worker)
-            .is_ok());
+        assert!(
+            control
+                .authenticate(&retried.access_key, retry_worker)
+                .is_ok()
+        );
         drop(control);
         harness
             .manager
@@ -2004,14 +2007,18 @@ mod tests {
             .await;
 
         assert_eq!(harness.pid(&opened.session_id).await, pid);
-        assert!(attached
-            .replay
-            .iter()
-            .any(|frame| decode_frame(frame).contains("__DETACHED_OK__")));
-        assert!(attached
-            .replay
-            .windows(2)
-            .all(|frames| frames[0].sequence < frames[1].sequence));
+        assert!(
+            attached
+                .replay
+                .iter()
+                .any(|frame| decode_frame(frame).contains("__DETACHED_OK__"))
+        );
+        assert!(
+            attached
+                .replay
+                .windows(2)
+                .all(|frames| frames[0].sequence < frames[1].sequence)
+        );
         assert!(!attached.truncated);
         assert_eq!(
             attached.next_sequence,
@@ -2202,20 +2209,22 @@ mod tests {
         assert_ne!(adopted.reconnect_token, opened.reconnect_token);
         // The old credentials are dead, so the previous owner cannot write to
         // a terminal it no longer holds.
-        assert!(harness
-            .manager
-            .attach(AttachRequest {
-                request_id: None,
-                session_id: opened.session_id.clone(),
-                reconnect_token: opened.reconnect_token.clone(),
-                output_function_id: another_browser,
-                cols: 80,
-                rows: 24,
-                after_sequence: 0,
-                caller_worker_id: Some(harness.caller_worker_id.clone()),
-            })
-            .await
-            .is_err());
+        assert!(
+            harness
+                .manager
+                .attach(AttachRequest {
+                    request_id: None,
+                    session_id: opened.session_id.clone(),
+                    reconnect_token: opened.reconnect_token.clone(),
+                    output_function_id: another_browser,
+                    cols: 80,
+                    rows: 24,
+                    after_sequence: 0,
+                    caller_worker_id: Some(harness.caller_worker_id.clone()),
+                })
+                .await
+                .is_err()
+        );
         assert!(
             harness
                 .close(&opened.session_id, &adopted.access_key)
@@ -2424,27 +2433,31 @@ mod tests {
         let browser = Uuid::new_v4();
         // A worker that runs its own program in a session serves its own
         // console page, so its handler prefix is its own.
-        assert!(validate_output_function_id(&format!(
-            "iii::claude-ui::pty-output::console-{browser}"
-        ))
-        .is_ok());
+        assert!(
+            validate_output_function_id(&format!("iii::claude-ui::pty-output::console-{browser}"))
+                .is_ok()
+        );
         assert!(
             validate_output_function_id(&format!("iii::pi-ui::pty-output::console-{browser}"))
                 .is_ok()
         );
         // Still a console UI handler and nothing else.
-        assert!(validate_output_function_id(&format!(
-            "iii::claude::pty-output::console-{browser}"
-        ))
-        .is_err());
-        assert!(validate_output_function_id(&format!(
-            "worker::claude-ui::pty-output::console-{browser}"
-        ))
-        .is_err());
-        assert!(validate_output_function_id(&format!(
-            "iii::Claude_Code-ui::pty-output::console-{browser}"
-        ))
-        .is_err());
+        assert!(
+            validate_output_function_id(&format!("iii::claude::pty-output::console-{browser}"))
+                .is_err()
+        );
+        assert!(
+            validate_output_function_id(&format!(
+                "worker::claude-ui::pty-output::console-{browser}"
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_output_function_id(&format!(
+                "iii::Claude_Code-ui::pty-output::console-{browser}"
+            ))
+            .is_err()
+        );
         assert!(validate_output_function_id("iii::-ui::pty-output::console-abc").is_err());
         assert!(
             validate_output_function_id("iii::shell-ui::pty-output::console-").is_err(),
@@ -2524,7 +2537,8 @@ mod tests {
     #[tokio::test]
     async fn worker_identity_env_never_reaches_the_program() {
         const KEY: &str = "III_NAMESPACE";
-        std::env::set_var(KEY, "leaked-namespace");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(KEY, "leaked-namespace") };
         let harness = PtyTestHarness::unpinned().await;
         let opened = harness
             .open_request(
@@ -2538,7 +2552,8 @@ mod tests {
             .await
             .expect("session opens");
         harness.wait_for_output(&opened.session_id, "ns=[]").await;
-        std::env::remove_var(KEY);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var(KEY) };
         let _ = harness.manager.close_all().await;
     }
 

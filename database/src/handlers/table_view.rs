@@ -14,12 +14,12 @@
 //! column was renamed should degrade to "that column has no stored width", not
 //! fail the read; the renderer already treats every entry as optional.
 
-use super::saved::{call, SCOPE};
+use super::saved::{SCOPE, call};
 use crate::error::DbError;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Upper bound on stored columns per table. A view is a preference, not a

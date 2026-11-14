@@ -2,16 +2,16 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::imageops::FilterType;
 use image::{GenericImageView, ImageEncoder};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::config::{SecurityMode, WorkerConfig};
 use crate::scrapling::cdp::{CdpClient, CdpEvent, CdpSession, EventReceiver};
@@ -820,10 +820,11 @@ impl RawBrowser {
         if let Some(context) = &self.context_id {
             dispose_browser_context(&self.client, context).await;
         }
-        if self.persistent && !self.remote {
-            if let Ok(command) = self.client.send("Browser.close", json!({})) {
-                let _ = command.await;
-            }
+        if self.persistent
+            && !self.remote
+            && let Ok(command) = self.client.send("Browser.close", json!({}))
+        {
+            let _ = command.await;
         }
         let _ = self.client.close();
     }
@@ -835,18 +836,19 @@ impl Drop for RawBrowser {
             return;
         }
         self.child_router.abort();
-        if let Some(context_id) = self.context_id.take() {
-            if let Ok(command) = self.client.send(
+        if let Some(context_id) = self.context_id.take()
+            && let Ok(command) = self.client.send(
                 "Target.disposeBrowserContext",
                 json!({"browserContextId": context_id}),
-            ) {
-                drop(command);
-            }
+            )
+        {
+            drop(command);
         }
-        if self.persistent && !self.remote {
-            if let Ok(command) = self.client.send("Browser.close", json!({})) {
-                drop(command);
-            }
+        if self.persistent
+            && !self.remote
+            && let Ok(command) = self.client.send("Browser.close", json!({}))
+        {
+            drop(command);
         }
         let _ = self.client.close();
     }
@@ -1282,8 +1284,12 @@ impl RawPage {
         let selector = serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string());
         let predicate = match state {
             "detached" => format!("!document.querySelector({selector})"),
-            "visible" => format!("(()=>{{const e=document.querySelector({selector});return !!e&&(e.offsetParent!==null||e.getClientRects().length>0)}})()"),
-            "hidden" => format!("(()=>{{const e=document.querySelector({selector});return !e||(e.offsetParent===null&&e.getClientRects().length===0)}})()"),
+            "visible" => format!(
+                "(()=>{{const e=document.querySelector({selector});return !!e&&(e.offsetParent!==null||e.getClientRects().length>0)}})()"
+            ),
+            "hidden" => format!(
+                "(()=>{{const e=document.querySelector({selector});return !e||(e.offsetParent===null&&e.getClientRects().length===0)}})()"
+            ),
             _ => format!("!!document.querySelector({selector})"),
         };
         let deadline = Instant::now() + timeout;
@@ -2647,7 +2653,10 @@ mod tests {
                 "Invalid argument type: CDP URL must use 'ws://' or 'wss://' scheme",
             ),
         ] {
-            assert_eq!(RawBrowserOptions::from_payload(&payload).unwrap_err(), expected);
+            assert_eq!(
+                RawBrowserOptions::from_payload(&payload).unwrap_err(),
+                expected
+            );
         }
         let options = RawBrowserOptions::from_payload(&json!({
             "proxy": "http://user:pass@proxy.example:8080/path",
@@ -2718,9 +2727,10 @@ mod tests {
             .get_args()
             .map(|value| value.to_string_lossy().to_string())
             .collect::<Vec<_>>();
-        assert!(args
-            .iter()
-            .any(|value| value.starts_with("--proxy-server=http://127.0.0.1:")));
+        assert!(
+            args.iter()
+                .any(|value| value.starts_with("--proxy-server=http://127.0.0.1:"))
+        );
         assert!(args.contains(&"--disable-quic".to_string()));
         assert!(args.contains(&"--webrtc-ip-handling-policy=disable_non_proxied_udp".to_string()));
     }

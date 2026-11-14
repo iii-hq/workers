@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, InitOptions};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
 
 /// Long enough for an investigation to open, which is the slowest call here.
 const TIMEOUT_MS: u64 = 120_000;

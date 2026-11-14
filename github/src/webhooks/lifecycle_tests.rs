@@ -371,9 +371,11 @@ async fn release_failure_does_not_block_next_watch_and_closed_retry_restores_com
     bus.reply("quick-tunnel::release", Ok(Value::Null));
     assert!(s.cleanup().await.is_err());
     assert_eq!(s.status("w1").unwrap().status, WatchState::CleanupPending);
-    assert!(s.store().unwrap().read().unwrap().watches["w2"]
-        .lease_id
-        .is_none());
+    assert!(
+        s.store().unwrap().read().unwrap().watches["w2"]
+            .lease_id
+            .is_none()
+    );
     bus.reply("quick-tunnel::release", Ok(Value::Null));
     s.cleanup().await.unwrap();
     assert_eq!(s.status("w1").unwrap().status, WatchState::Completed);
@@ -397,13 +399,14 @@ async fn recover_waits_for_lock_before_reset_and_does_not_deadlock() {
             .await
             .is_err()
     );
-    assert!(s
-        .store()
-        .unwrap()
-        .read()
-        .unwrap()
-        .publications
-        .contains_key("pending"));
+    assert!(
+        s.store()
+            .unwrap()
+            .read()
+            .unwrap()
+            .publications
+            .contains_key("pending")
+    );
     drop(guard);
     tokio::time::timeout(std::time::Duration::from_secs(1), s.recover(None))
         .await
@@ -489,11 +492,12 @@ async fn a_remaining_listener_keeps_the_watch_lease_and_hook() {
         })
         .unwrap();
     // No bus reply queued: any release or hook call would fail the test.
-    assert!(s
-        .drop_subscribers(&["chat".into()])
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        s.drop_subscribers(&["chat".into()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let data = s.store().unwrap().read().unwrap();
     assert!(data.watches["w1"].live());
     assert_eq!(data.watches["w1"].lease_id.as_deref(), Some("lease-w1"));
@@ -717,10 +721,11 @@ async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing()
         .to_string();
     assert!(error.contains("quick-tunnel worker"), "{error}");
     assert!(error.contains("http webhook listener"), "{error}");
-    assert!(bus
-        .calls()
-        .iter()
-        .all(|c| c.function != "configuration::set"));
+    assert!(
+        bus.calls()
+            .iter()
+            .all(|c| c.function != "configuration::set")
+    );
     s.iii.shutdown_async().await;
 }
 
@@ -869,10 +874,11 @@ async fn turning_on_the_listener_keeps_an_existing_one_unless_a_port_is_asked() 
     s.enable_http_listener(setup::EnableListenerRequest::default())
         .await
         .unwrap();
-    assert!(bus
-        .calls()
-        .iter()
-        .all(|c| c.function != "configuration::set"));
+    assert!(
+        bus.calls()
+            .iter()
+            .all(|c| c.function != "configuration::set")
+    );
     // An explicit port changes only the port and keeps the host.
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(custom));
@@ -988,9 +994,10 @@ async fn an_explicit_port_zero_is_refused_before_writing() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("must be fixed"), "{error}");
-    assert!(bus
-        .calls()
-        .iter()
-        .all(|c| c.function != "configuration::set"));
+    assert!(
+        bus.calls()
+            .iter()
+            .all(|c| c.function != "configuration::set")
+    );
     s.iii.shutdown_async().await;
 }

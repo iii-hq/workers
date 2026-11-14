@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 
 use crate::config::SteeringMode;
 use crate::deps::Deps;
@@ -112,10 +112,10 @@ async fn drain_fifo(
     )
     .await?;
 
-    if let Some(mut q) = deps.runtime.fifo_queues.get_mut(&chat_id) {
-        if !q.is_empty() {
-            q.remove(0);
-        }
+    if let Some(mut q) = deps.runtime.fifo_queues.get_mut(&chat_id)
+        && !q.is_empty()
+    {
+        q.remove(0);
     }
     Ok(())
 }

@@ -17,9 +17,9 @@
 //! coordinates are literal arguments and never shell-interpreted.
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use iii_sdk::{CallRequest, IIIClient};

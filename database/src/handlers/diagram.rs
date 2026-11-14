@@ -21,8 +21,8 @@
 //! produces the same diagram — which is what makes `crossings` a number worth
 //! asserting on in a test.
 
-use super::schema::{self, DescribeSchemaReq, TableDescription};
 use super::AppState;
+use super::schema::{self, DescribeSchemaReq, TableDescription};
 use crate::error::DbError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

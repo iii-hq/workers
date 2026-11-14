@@ -548,10 +548,12 @@ mod tests {
     #[test]
     fn json_schema_has_properties_and_example() {
         let schema = WorkerConfig::json_schema();
-        assert!(schema
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .is_some());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .is_some()
+        );
         assert_eq!(
             schema.get("example"),
             Some(&WorkerConfig::default().to_json())
@@ -560,9 +562,11 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("HARNESS_TEST_CRON", "0 0 * * * *");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("HARNESS_TEST_CRON", "0 0 * * * *") };
         let cfg = WorkerConfig::from_yaml("sweep_expression: \"${HARNESS_TEST_CRON}\"\n").unwrap();
         assert_eq!(cfg.sweep_expression, "0 0 * * * *");
-        std::env::remove_var("HARNESS_TEST_CRON");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("HARNESS_TEST_CRON") };
     }
 }

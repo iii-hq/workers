@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use provider_github_copilot::register::register_provider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
@@ -23,12 +23,16 @@ use engine_fixture::*;
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn set_credential_env(with_bearer: bool) {
-    std::env::set_var("GITHUB_COPILOT_NO_LOCAL_IMPORT", "1");
-    std::env::remove_var("GITHUB_COPILOT_OAUTH_TOKEN");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("GITHUB_COPILOT_NO_LOCAL_IMPORT", "1") };
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var("GITHUB_COPILOT_OAUTH_TOKEN") };
     if with_bearer {
-        std::env::set_var("GITHUB_COPILOT_TOKEN", "stub-bearer");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("GITHUB_COPILOT_TOKEN", "stub-bearer") };
     } else {
-        std::env::remove_var("GITHUB_COPILOT_TOKEN");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("GITHUB_COPILOT_TOKEN") };
     }
 }
 

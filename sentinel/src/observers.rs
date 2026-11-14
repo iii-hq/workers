@@ -9,7 +9,7 @@ use iii_config_client::ObserverSlot;
 use iii_sdk::{Capture, IIIClient, Source};
 use serde_json::json;
 
-use crate::{functions, WorkerConfig};
+use crate::{WorkerConfig, functions};
 
 /// The engine's own sources, hosted in the `default` namespace.
 pub const ON_SPAN_FN: &str = "observability::on-span";

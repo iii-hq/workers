@@ -60,7 +60,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError, WireError};
+use crate::code::error::{CoderError, WireError, err_to_string};
 use crate::code::path::PathResolver;
 
 use super::create_file::content_revision;
@@ -393,10 +393,9 @@ fn inner(
             for target in targets {
                 if let Err(e) =
                     resolver.require_writable_scope(req.fs_scope.as_ref(), target.path())
+                    && is_jail_scope_error(&e)
                 {
-                    if is_jail_scope_error(&e) {
-                        return Err(e);
-                    }
+                    return Err(e);
                 }
             }
             let results = batch_read(resolver, cfg, req.fs_scope.as_ref(), targets);
@@ -557,13 +556,13 @@ fn parse_window(
         ));
     }
     let from = line_from.unwrap_or(1);
-    if let Some(to) = line_to {
-        if to < from {
-            return Err(CoderError::BadInput(format!(
-                "line_to ({to}) must be >= line_from ({from}); the window \
+    if let Some(to) = line_to
+        && to < from
+    {
+        return Err(CoderError::BadInput(format!(
+            "line_to ({to}) must be >= line_from ({from}); the window \
                  is 1-based and inclusive. Swap or widen the bounds."
-            )));
-        }
+        )));
     }
     Ok(Some((from, line_to)))
 }

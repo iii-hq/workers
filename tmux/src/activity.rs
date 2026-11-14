@@ -306,11 +306,11 @@ impl ActivityReader {
         let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
             return false;
         };
-        if let Some(entry) = self.ended.get_mut(path) {
-            if entry.value.0 == len {
-                entry.poll = poll;
-                return entry.value.1;
-            }
+        if let Some(entry) = self.ended.get_mut(path)
+            && entry.value.0 == len
+        {
+            entry.poll = poll;
+            return entry.value.1;
         }
         let ended = File::open(path)
             .ok()
@@ -742,7 +742,7 @@ fn transcript_ended(file: &mut File, len: u64) -> Option<bool> {
                         entry
                             .message
                             .is_some_and(|message| message.is_interruption()),
-                    )
+                    );
                 }
                 _ => {}
             }

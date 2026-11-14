@@ -22,11 +22,11 @@ use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use declaration::{read_project, ContainerSource, ProjectDeclaration};
-use entry::{container_object, read_entry, EditInput};
-use inspect::{inspect, InspectInput, Inspection};
+use declaration::{ContainerSource, ProjectDeclaration, read_project};
+use entry::{EditInput, container_object, read_entry};
+use inspect::{InspectInput, Inspection, inspect};
 use registry::{PackageVersion, RegistryWorker};
-use watch::{compose_status, ChangedEvent, StateWatcher};
+use watch::{ChangedEvent, StateWatcher, compose_status};
 
 /// Called when the daemon writes state.json or the compose file changes.
 pub const ON_CHANGED_FN: &str = "ade::compose::on-changed";

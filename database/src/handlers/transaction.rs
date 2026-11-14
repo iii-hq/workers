@@ -1,14 +1,14 @@
 //! `database::transaction` — atomic sequence of statements.
 
-use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
+use super::tx_sql_guard::is_transaction_control_sql;
 use crate::driver::{self, Isolation, TxStatement};
 use crate::handlers::query::err_to_str;
 use crate::pool::Pool;
 use crate::value::JsonParam;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxReq {
@@ -73,7 +73,7 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
             return Err(err_to_str(crate::error::DbError::InvalidParam {
                 index: 0,
                 reason: format!("unknown isolation `{other}`"),
-            }))
+            }));
         }
         None => None,
     };

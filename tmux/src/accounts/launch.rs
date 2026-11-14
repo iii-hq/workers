@@ -291,9 +291,11 @@ mod tests {
             accounts.plan_launch_as("global", true, None, true),
             Err(ROOT_SKIP.to_string())
         );
-        assert!(accounts
-            .plan_launch_as("nobody", false, None, false)
-            .is_err());
+        assert!(
+            accounts
+                .plan_launch_as("nobody", false, None, false)
+                .is_err()
+        );
         assert_eq!(
             accounts
                 .restart_command(&Place::Slot, false, Some("s1"))

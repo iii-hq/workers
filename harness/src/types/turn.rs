@@ -772,7 +772,7 @@ pub(crate) mod tests {
             .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         r.calls
             .insert("b".into(), cp(CallState::Pending, None, false)); // hook hold, no child
-                                                                      // Fire-and-forget spawn: Done instantly, still counts.
+        // Fire-and-forget spawn: Done instantly, still counts.
         r.calls
             .insert("c".into(), cp(CallState::Done, Some("s_done"), true));
         let children = r.spawned_children();
@@ -895,11 +895,13 @@ pub(crate) mod tests {
     #[test]
     fn agent_identity_round_trips_and_stays_off_the_wire_when_absent() {
         let mut r = record();
-        assert!(!serde_json::to_value(&r.options)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("agent"));
+        assert!(
+            !serde_json::to_value(&r.options)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("agent")
+        );
         r.options.agent = Some(AgentIdentity {
             id: "tech-leader".into(),
             name: Some("Tech Leader".into()),
@@ -942,10 +944,12 @@ pub(crate) mod tests {
             name: "English".into(),
         };
         let mut r = record();
-        assert!(serde_json::to_value(&r.options)
-            .unwrap()
-            .get("response_language")
-            .is_none());
+        assert!(
+            serde_json::to_value(&r.options)
+                .unwrap()
+                .get("response_language")
+                .is_none()
+        );
         r.options.response_language = Some(english.clone());
         let value = serde_json::to_value(&r).unwrap();
         assert_eq!(

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::json;
 use support::{
-    commit_file, create_request, git, head_sha, init_repo, make_env, test_config, TestEnv,
+    TestEnv, commit_file, create_request, git, head_sha, init_repo, make_env, test_config,
 };
 use worktree::error::codes;
 use worktree::functions::{claim, create, list, prune, release, remove, status, validate};
@@ -257,10 +257,12 @@ async fn remove_guards_dirty_and_unmerged_work() {
     assert!(removed.removed);
     assert!(removed.branch_deleted);
     assert!(!wt.exists());
-    assert!(state::get_record(env.state.as_ref(), &resp.worktree_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        state::get_record(env.state.as_ref(), &resp.worktree_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let removed_events = env.deliverer.events_of("worktree::on-removed");
     assert_eq!(removed_events.len(), 1);
     assert_eq!(removed_events[0]["branch_deleted"], true);
@@ -395,10 +397,12 @@ async fn prune_reconciles_after_manual_removal_and_skips_claimed() {
     assert!(reasons.contains(&(claimed.worktree_id.clone(), "claimed".into())));
     assert!(reasons.contains(&(fresh.worktree_id.clone(), "not expired".into())));
 
-    assert!(state::get_record(env.state.as_ref(), &gone.worktree_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        state::get_record(env.state.as_ref(), &gone.worktree_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     // The stale admin entry is pruned from git too.
     let porcelain = git(&repo, &["worktree", "list", "--porcelain"]);
     assert!(!porcelain.contains(&gone.worktree_id));

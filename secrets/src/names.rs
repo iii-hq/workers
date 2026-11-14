@@ -1,7 +1,7 @@
 //! Secret names, `secret://NAME` and `env://NAME` references, consumer lists
 //! and the masked hint.
 use crate::api::StoreKind;
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 
 /// Scheme of a versionable reference to a value in the encrypted vault.
 pub const REFERENCE_PREFIX: &str = "secret://";

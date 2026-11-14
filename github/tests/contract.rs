@@ -51,7 +51,8 @@ fn resolve_timeout_clamps_to_the_configured_max() {
 fn seed_loading_expands_env_and_defaults_the_rest() {
     // Unique var name: no other test reads or writes it, so the process-env
     // mutation cannot race the parallel test runner.
-    std::env::set_var("GH_CONTRACT_TOKEN_92AF", "sekrit");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("GH_CONTRACT_TOKEN_92AF", "sekrit") };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");
     std::fs::write(
@@ -60,7 +61,8 @@ fn seed_loading_expands_env_and_defaults_the_rest() {
     )
     .unwrap();
     let c = Config::load(path.to_str().unwrap()).unwrap();
-    std::env::remove_var("GH_CONTRACT_TOKEN_92AF");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var("GH_CONTRACT_TOKEN_92AF") };
     assert_eq!(c.token, "sekrit");
     assert_eq!(c.default_timeout_ms, 1000);
     assert_eq!(c.max_timeout_ms, 120_000);

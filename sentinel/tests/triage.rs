@@ -11,12 +11,12 @@ use db::TestDb;
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::service::TraceAvailability;
 use sentinel::store::{Db, OccurrenceWrite};
-use sentinel::triage::{Judge, Triage, BATCH};
+use sentinel::triage::{BATCH, Judge, Triage};
 use sentinel::{
     ErrorSourceV1, GroupsListRequestV1, SentinelError, Service, Store, TriageKindV1,
     TriageSourceV1, WorkerConfig,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const MINUTE: i64 = 60_000;
 

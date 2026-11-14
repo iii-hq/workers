@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::model::{
-    now_ms, ClaudeAccount, ClaudeSnapshot, CodexUsage, PendingGlobal, UsageSnapshot,
+    ClaudeAccount, ClaudeSnapshot, CodexUsage, PendingGlobal, UsageSnapshot, now_ms,
 };
 use credentials::{Credentials, Profile, SecretStore};
 use paths::ClaudePaths;
@@ -452,10 +452,10 @@ impl Accounts {
                 });
                 registry.global = global;
             }
-            if let Some(entry) = registry.get_mut(DEFAULT) {
-                if entry.shared.is_empty() {
-                    entry.shared = shared::GROUPS.iter().map(|g| g.to_string()).collect();
-                }
+            if let Some(entry) = registry.get_mut(DEFAULT)
+                && entry.shared.is_empty()
+            {
+                entry.shared = shared::GROUPS.iter().map(|g| g.to_string()).collect();
             }
             registry.slot_version = registry::SLOT_VERSION;
         }
@@ -807,10 +807,10 @@ impl Accounts {
                 .map(|token| -> [u8; 32] { Sha256::digest(token.expose().as_bytes()).into() });
             // A new token (or the first look since the worker started) is
             // worth asking the endpoint again.
-            if state.token_digests.get(&id).copied() != digest {
-                if let Some(reading) = state.readings.get_mut(&id) {
-                    reading.rejected = false;
-                }
+            if state.token_digests.get(&id).copied() != digest
+                && let Some(reading) = state.readings.get_mut(&id)
+            {
+                reading.rejected = false;
             }
             match digest {
                 Some(digest) => state.token_digests.insert(id.clone(), digest),
@@ -1539,11 +1539,13 @@ mod tests {
         // The worker's own unit tests get a sandbox from `from_env` too.
         let from_env = Accounts::from_env();
         assert!(!from_env.can_fetch());
-        assert!(from_env
-            .paths()
-            .unwrap()
-            .home
-            .starts_with(std::env::temp_dir()));
+        assert!(
+            from_env
+                .paths()
+                .unwrap()
+                .home
+                .starts_with(std::env::temp_dir())
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

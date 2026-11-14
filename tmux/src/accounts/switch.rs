@@ -17,17 +17,17 @@
 //!   (G6), a new one added when nobody knows it.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use super::moves::{self, Stopped, NOT_IDLE};
+use super::moves::{self, NOT_IDLE, Stopped};
 use super::panes::PaneState;
 use super::registry::{self, PendingSwitch, Registry};
 use super::slot::{self, Crash, Journal, Place, SwapError};
-#[cfg(test)]
-use super::{shared, DEFAULT as DEFAULT_ID};
 use super::{Accounts, RecentSwap};
-use crate::model::{now_ms, AccountSwitch};
+#[cfg(test)]
+use super::{DEFAULT as DEFAULT_ID, shared};
+use crate::model::{AccountSwitch, now_ms};
 use crate::tmux_cli::Tmux;
 
 /// Who asks for a switch.
@@ -389,26 +389,24 @@ impl Accounts {
         if let Some(recent) = self
             .recent_swap()
             .filter(|recent| recent.to == registry.global)
+            && stores.uuid(&Place::Folder(recent.from.clone())).as_deref() == Some(&slot_uuid)
         {
-            if stores.uuid(&Place::Folder(recent.from.clone())).as_deref() == Some(&slot_uuid) {
-                // The old account's profile over the chain the swap wrote (or
-                // one it was renewed to): a session that fetched the profile
-                // just before wrote it back. Over another chain: someone
-                // signed in to the old account by hand (G6, P23). `/login`
-                // writes the profile before the sign-in, so the chain is
-                // read again once that had time to land.
-                let stale = self.slot_chain_is(&stores, &recent.to_chains) && {
-                    std::thread::sleep(super::LOGIN_SETTLE);
-                    self.slot_chain_is(&stores, &recent.to_chains)
-                };
-                if stale {
-                    tracing::info!(from = %recent.from, to = %recent.to, "a session wrote the old account's profile back; the new one is put back");
-                    if let Err(error) = slot::swap_records(&stores, &recent.from, &recent.to, false)
-                    {
-                        tracing::warn!(error = %error.sentence(), "the new account's profile was not put back");
-                    }
-                    return false;
+            // The old account's profile over the chain the swap wrote (or
+            // one it was renewed to): a session that fetched the profile
+            // just before wrote it back. Over another chain: someone
+            // signed in to the old account by hand (G6, P23). `/login`
+            // writes the profile before the sign-in, so the chain is
+            // read again once that had time to land.
+            let stale = self.slot_chain_is(&stores, &recent.to_chains) && {
+                std::thread::sleep(super::LOGIN_SETTLE);
+                self.slot_chain_is(&stores, &recent.to_chains)
+            };
+            if stale {
+                tracing::info!(from = %recent.from, to = %recent.to, "a session wrote the old account's profile back; the new one is put back");
+                if let Err(error) = slot::swap_records(&stores, &recent.from, &recent.to, false) {
+                    tracing::warn!(error = %error.sentence(), "the new account's profile was not put back");
                 }
+                return false;
             }
         }
         let known = registry
@@ -581,11 +579,10 @@ impl Accounts {
         if let Some(kept) = kept
             .as_mut()
             .filter(|kept| kept.to == recent.to && kept.at == recent.at)
+            && !kept.to_chains.contains(&chain)
         {
-            if !kept.to_chains.contains(&chain) {
-                tracing::info!(account = %kept.to, "the new global account's sign-in was renewed");
-                kept.to_chains.push(chain);
-            }
+            tracing::info!(account = %kept.to, "the new global account's sign-in was renewed");
+            kept.to_chains.push(chain);
         }
     }
 
@@ -783,7 +780,7 @@ pub async fn switch_locked(
                 .as_ref()
                 .is_some_and(|pending| pending.account == to && pending.at_ms == *at_ms) =>
         {
-            return Err(SwitchError::Stale)
+            return Err(SwitchError::Stale);
         }
         _ => {}
     }
@@ -796,10 +793,8 @@ pub async fn switch_locked(
         accounts
             .update_registry_at_async(|registry, _| {
                 registry.pending_global = None;
-                if person {
-                    if let Some(last) = registry.last_switch.as_mut() {
-                        last.back_at_ms = None;
-                    }
+                if person && let Some(last) = registry.last_switch.as_mut() {
+                    last.back_at_ms = None;
                 }
                 Ok(())
             })
@@ -1350,7 +1345,7 @@ pub async fn migrate_tmux(tmux: &Tmux, accounts: &Accounts, panes: &HashMap<Stri
 mod tests {
     use super::*;
     use crate::accounts::test_support::Home;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn chain(token: &str) -> Value {
         json!({"claudeAiOauth": {"accessToken": format!("at-{token}"), "refreshToken": format!("rt-{token}"),
@@ -1417,11 +1412,13 @@ mod tests {
             stores.uuid(&Place::Folder(DEFAULT_ID.into())).as_deref(),
             Some("uuid-work")
         );
-        assert!(!home
-            .paths
-            .account_dir(DEFAULT_ID)
-            .join(".credentials.json")
-            .exists());
+        assert!(
+            !home
+                .paths
+                .account_dir(DEFAULT_ID)
+                .join(".credentials.json")
+                .exists()
+        );
         // Nothing changed by hand: nothing to take in.
         assert!(!accounts.watch_slot_blocking());
     }

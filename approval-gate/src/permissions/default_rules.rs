@@ -15,7 +15,7 @@ pub fn default_rule_strings() -> Vec<&'static str> {
 mod tests {
     use super::*;
     use crate::functions::catalog;
-    use crate::permissions::{default_permissions, Decision};
+    use crate::permissions::{Decision, default_permissions};
     use crate::types::PermissionMode;
 
     fn catalog_function_ids() -> Vec<&'static str> {

@@ -16,7 +16,7 @@
 #[path = "support/engine.rs"]
 mod engine;
 
-use engine::{isolated_engine, isolated_engine_with, worker_options, Engine};
+use engine::{Engine, isolated_engine, isolated_engine_with, worker_options};
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,14 +26,14 @@ use std::time::{Duration, Instant};
 use harness::bindings::{Binding, BindingTarget, Lifecycle, OwnerScope, SourceSpec};
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
-use harness::events::{TurnEvents, ON_READY_FN};
+use harness::events::{ON_READY_FN, TurnEvents};
 use harness::functions::observer_deliver::DELIVER_ID;
 use harness::types::turn::FunctionPolicy;
 use iii_sdk::{
-    register_worker, Call, CallAction, CallRequest, Capture, IIIClient, Observer, RegisterFunction,
-    Source,
+    Call, CallAction, CallRequest, Capture, IIIClient, Observer, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 /// Function ids the stub stack serves to the delivery hop: the harness's

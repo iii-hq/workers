@@ -16,8 +16,7 @@ pub struct ModuleManifest {
     pub supported_targets: Vec<String>,
 }
 
-pub const DESCRIPTION: &str =
-    "Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF documents to markdown \
+pub const DESCRIPTION: &str = "Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF documents to markdown \
      on this machine: detect the format from the bytes, convert with structure intact, pull out \
      the images embedded in them, and transcribe a scan by rendering its pages and reading them \
      with a vision model.";
@@ -44,9 +43,11 @@ mod tests {
         assert!(json["version"].as_str().is_some_and(|v| !v.is_empty()));
         assert!(json["description"].as_str().is_some_and(|d| d.len() > 20));
         assert!(json["default_config"].is_object());
-        assert!(json["supported_targets"]
-            .as_array()
-            .is_some_and(|t| !t.is_empty()));
+        assert!(
+            json["supported_targets"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty())
+        );
     }
 
     /// The manifest name is the folder name, the binary name, and the registry

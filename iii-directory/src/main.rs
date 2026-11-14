@@ -28,24 +28,24 @@
 //! introspection is native, with `directory::engine::functions::info` retained
 //! as a narrow wrapper for restricted callers.
 
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::Value;
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
-    download_worker_skills, reconcile_decision, refresh_decision, InFlightGuard,
+    InFlightGuard, download_worker_skills, reconcile_decision, refresh_decision,
 };
 use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::search_index::ToolSchema;
 use iii_directory::functions::skills::{
-    compose_status_request, make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
+    ENGINE_NAMESPACE, RegisteredWorkersCache, compose_status_request, make_registered_cache,
 };
 use iii_directory::sources::registry::VersionSpec;
 use iii_directory::{configuration, events, functions, manifest};
@@ -667,10 +667,10 @@ fn spawn_boot_reconcile(
         // it directly (registry pull), independent of — and before — the
         // worker list, so it lands even when `compose::status` isn't ready
         // yet on a cold start.
-        if let Some(spec) = reconcile_decision(ENGINE_NAMESPACE, None, &local_root, &global_root) {
-            if reconcile_one(&cfg, &in_flight, ENGINE_NAMESPACE, &spec).await {
-                reconciled += 1;
-            }
+        if let Some(spec) = reconcile_decision(ENGINE_NAMESPACE, None, &local_root, &global_root)
+            && reconcile_one(&cfg, &in_flight, ENGINE_NAMESPACE, &spec).await
+        {
+            reconciled += 1;
         }
 
         // Retry `compose::status` with backoff: the worker-manager that

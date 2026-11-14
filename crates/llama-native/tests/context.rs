@@ -195,19 +195,23 @@ fn clear_empties_memory_and_bad_batches_err() {
     );
     // The context is still usable.
     decode(&mut ctx, &[(&ids, 0, 0)]).unwrap();
-    assert!(model
-        .new_context(ContextParams {
-            threads: 0,
-            ..Default::default()
-        })
-        .is_err());
-    assert!(model
-        .new_context(ContextParams {
-            n_ctx: 32,
-            n_seq_max: 64,
-            ..Default::default()
-        })
-        .is_err());
+    assert!(
+        model
+            .new_context(ContextParams {
+                threads: 0,
+                ..Default::default()
+            })
+            .is_err()
+    );
+    assert!(
+        model
+            .new_context(ContextParams {
+                n_ctx: 32,
+                n_seq_max: 64,
+                ..Default::default()
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -313,7 +317,9 @@ fn zero_gpu_layers_can_keep_the_gpu_devices() {
     assert_eq!(model.device, "CPU");
     let ids = model.tokenize("the site is down", false).unwrap();
     let mut ctx = scorer_context(&model);
-    assert!(decode(&mut ctx, &[(&ids, 0, 0)]).unwrap()[0]
-        .iter()
-        .all(|v| v.is_finite()));
+    assert!(
+        decode(&mut ctx, &[(&ids, 0, 0)]).unwrap()[0]
+            .iter()
+            .all(|v| v.is_finite())
+    );
 }

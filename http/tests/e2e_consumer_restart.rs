@@ -29,7 +29,7 @@ use iii_http::types::HttpRequest;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::observe_codes::OBSERVER_ID_CONFLICT;
 use iii_sdk::{IIIClient, ObserverOptions, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::mpsc;
 

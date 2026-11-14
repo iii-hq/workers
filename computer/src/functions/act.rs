@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::invalid;
 use crate::driver::{Driver, Screen};
-use crate::semantic::{SemanticError, SemanticSession, Verb, MAX_SET_VALUE_CHARS};
+use crate::semantic::{MAX_SET_VALUE_CHARS, SemanticError, SemanticSession, Verb};
 use crate::session::Session;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -142,25 +142,36 @@ fn plan(req: &ActInput, screen: Screen) -> Result<Physical, Error> {
             let from = require_xy(req)?;
             let to = match (req.to_x, req.to_y) {
                 (Some(tx), Some(ty)) => (tx, ty),
-                _ => return Err(Error::Handler("action 'drag' needs to_x and to_y".to_string())),
+                _ => {
+                    return Err(Error::Handler(
+                        "action 'drag' needs to_x and to_y".to_string(),
+                    ));
+                }
             };
-            Physical::Drag { from, to, button: req.button.clone().unwrap_or_else(|| "left".into()) }
+            Physical::Drag {
+                from,
+                to,
+                button: req.button.clone().unwrap_or_else(|| "left".into()),
+            }
         }
         "type" => Physical::Type(
             req.text
                 .clone()
                 .ok_or_else(|| Error::Handler("action 'type' needs text".to_string()))?,
         ),
-        "press" | "hotkey" | "key" => Physical::Keys(
-            req.keys.clone().filter(|k| !k.is_empty()).ok_or_else(|| {
-                Error::Handler(format!("action '{}' needs a non-empty keys array", req.action))
-            })?,
-        ),
+        "press" | "hotkey" | "key" => {
+            Physical::Keys(req.keys.clone().filter(|k| !k.is_empty()).ok_or_else(|| {
+                Error::Handler(format!(
+                    "action '{}' needs a non-empty keys array",
+                    req.action
+                ))
+            })?)
+        }
         other => {
             return Err(Error::Handler(format!(
                 "unknown action '{other}' (by coordinate: click, right_click, double_click, \
                  move, drag, scroll, type, press, hotkey; by ref: invoke, set_value, toggle, select)"
-            )))
+            )));
         }
     })
 }
@@ -285,7 +296,7 @@ async fn by_ref(session: &Arc<Session>, req: &ActInput, verb: Verb) -> Result<Ac
         (Verb::SetValue, Some(t)) if t.chars().count() > MAX_SET_VALUE_CHARS => {
             return Err(invalid(format!(
                 "text is longer than {MAX_SET_VALUE_CHARS} characters"
-            )))
+            )));
         }
         (Verb::SetValue, Some(t)) => Some(t.to_string()),
         (_, Some(_)) => return Err(invalid(format!("{} does not take `text`", verb.as_str()))),
@@ -309,8 +320,8 @@ mod tests {
     use crate::semantic::fake::FakeTree;
     use crate::semantic::{Query, Scope, SemanticSession};
     use crate::test_support::{code, session_with};
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use xa11y_core::Role;
 
     fn req(v: serde_json::Value) -> ActInput {

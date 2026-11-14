@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use base64::Engine;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::clients::slack;
 use crate::deps::Deps;
@@ -79,12 +79,12 @@ async fn upload(deps: &Deps, req: UploadReq) -> Result<UploadResponse, Error> {
         (Some(_), Some(_)) => {
             return Err(Error::Handler(
                 "files.upload: provide content OR content_base64, not both".into(),
-            ))
+            ));
         }
         (None, None) => {
             return Err(Error::Handler(
                 "files.upload: content or content_base64 is required".into(),
-            ))
+            ));
         }
     };
 

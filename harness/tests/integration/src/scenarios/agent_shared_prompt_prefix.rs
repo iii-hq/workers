@@ -14,8 +14,8 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 const SPAWN: &str = "harness::spawn";

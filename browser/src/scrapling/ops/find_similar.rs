@@ -4,7 +4,7 @@
 //! `op_find_similar`). No adaptive refusal: Python's `op_find_similar` never
 //! reads `adaptive` either (same precedent as `describe`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::{dom, query, similar};
 use crate::scrapling::{ops::extract, require_str};

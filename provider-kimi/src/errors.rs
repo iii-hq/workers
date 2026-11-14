@@ -7,10 +7,10 @@ use serde_json::Value;
 /// Map a Moonshot HTTP status + error body to the shared taxonomy.
 /// `None` status = the request never got a response (connect/read failure).
 pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
-    if let Ok(v) = serde_json::from_str::<Value>(message) {
-        if let Some(kind) = classify_moonshot_value(&v, status) {
-            return kind;
-        }
+    if let Ok(v) = serde_json::from_str::<Value>(message)
+        && let Some(kind) = classify_moonshot_value(&v, status)
+    {
+        return kind;
     }
     match status {
         Some(401) | Some(403) => ErrorKind::AuthExpired,
@@ -47,7 +47,7 @@ fn classify_moonshot_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> 
         // A quota wall is billing, not a rate limit: backoff cannot fix it.
         "insufficient_quota" | "exceeded_current_quota_error" => return Some(ErrorKind::Permanent),
         "invalid_api_key" | "invalid_authentication_error" | "account_deactivated" => {
-            return Some(ErrorKind::AuthExpired)
+            return Some(ErrorKind::AuthExpired);
         }
         _ => {}
     }

@@ -16,7 +16,7 @@ mod protocol;
 mod runtime;
 mod stub;
 
-pub use case::{ProtocolFamily, ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES};
+pub use case::{ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES, ProtocolFamily};
 pub use stub::CapturedRequest;
 
 #[cfg(test)]

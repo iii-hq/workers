@@ -11,7 +11,7 @@ use crate::error::WError;
 use crate::functions::Deps;
 use crate::git::{canonical_or_self, ops, validate_abs_path};
 use crate::state;
-use crate::types::{now_ms, Lifecycle};
+use crate::types::{Lifecycle, now_ms};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {

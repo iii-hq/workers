@@ -3,8 +3,8 @@ mod session_bus;
 
 use provider_openai_codex::credential_store::{SecretsSessionStore, SessionRecord, SessionStore};
 use provider_openai_codex::oauth::Credential;
-use serde_json::{json, Value};
-use session_bus::{Failure, SessionBus, RESOLVE, SECRET_CAS, STATE_CAS};
+use serde_json::{Value, json};
+use session_bus::{Failure, RESOLVE, SECRET_CAS, STATE_CAS, SessionBus};
 
 fn session() -> SessionRecord {
     SessionRecord::connected(Credential {
@@ -24,14 +24,15 @@ fn envelope(record: Option<&SessionRecord>, complete: bool) -> String {
 async fn legacy_state_worker_must_acknowledge_durable_cleanup() {
     let bus = SessionBus::start(serde_json::to_value(session()).unwrap(), None).await;
     bus.state.lock().unwrap().omit_durable_ack = true;
-    assert!(SecretsSessionStore::new(bus.client.clone())
-        .load()
-        .await
-        .is_err());
+    assert!(
+        SecretsSessionStore::new(bus.client.clone())
+            .load()
+            .await
+            .is_err()
+    );
     let state = bus.state.lock().unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()
-            ["migration_complete"],
+        serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()["migration_complete"],
         false
     );
 }
@@ -49,9 +50,11 @@ async fn migrates_session_and_clears_state() {
     assert_eq!(stored["migration_complete"], true);
     let cleanup = state.calls.iter().position(|s| s == STATE_CAS).unwrap();
     let creation = state.calls.iter().position(|s| s == SECRET_CAS).unwrap();
-    assert!(state.calls[creation + 1..cleanup]
-        .iter()
-        .any(|call| call == RESOLVE));
+    assert!(
+        state.calls[creation + 1..cleanup]
+            .iter()
+            .any(|call| call == RESOLVE)
+    );
 }
 
 #[tokio::test]
@@ -142,18 +145,19 @@ async fn migration_resumes_after_write_or_cleanup_response_is_lost() {
         let record = session();
         let bus = SessionBus::start(serde_json::to_value(&record).unwrap(), None).await;
         bus.state.lock().unwrap().failure = Some(failure);
-        assert!(SecretsSessionStore::new(bus.client.clone())
-            .load()
-            .await
-            .is_err());
+        assert!(
+            SecretsSessionStore::new(bus.client.clone())
+                .load()
+                .await
+                .is_err()
+        );
         let restarted = SecretsSessionStore::new(bus.client.clone());
         let loaded = restarted.load().await.unwrap().unwrap();
         assert_eq!(loaded.revision, record.revision);
         let state = bus.state.lock().unwrap();
         assert!(state.legacy.is_null() && state.flushed);
         assert_eq!(
-            serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()
-                ["migration_complete"],
+            serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()["migration_complete"],
             true
         );
     }
@@ -174,8 +178,7 @@ async fn cleanup_failure_and_flush_retry_keep_migration_pending() {
         let state = bus.state.lock().unwrap();
         assert!(state.legacy.is_null() && !state.flushed);
         assert_eq!(
-            serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()
-                ["migration_complete"],
+            serde_json::from_str::<Value>(state.secret.as_ref().unwrap()).unwrap()["migration_complete"],
             false
         );
     }
@@ -346,14 +349,18 @@ async fn compare_and_set_preserves_newer_session_and_uses_original_json() {
     let store = SecretsSessionStore::new(bus.client.clone());
     let expected = store.load().await.unwrap().unwrap();
     let logout = SessionRecord::logged_out();
-    assert!(store
-        .compare_and_set(Some(&expected), &logout)
-        .await
-        .unwrap());
-    assert!(!store
-        .compare_and_set(Some(&expected), &session())
-        .await
-        .unwrap());
+    assert!(
+        store
+            .compare_and_set(Some(&expected), &logout)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .compare_and_set(Some(&expected), &session())
+            .await
+            .unwrap()
+    );
     assert!(store.load().await.unwrap().unwrap().credential.is_none());
 }
 

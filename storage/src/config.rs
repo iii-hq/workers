@@ -261,17 +261,15 @@ pub struct BucketDisplay {
 impl BucketDisplay {
     /// Refuse a malformed icon or color, naming the field.
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(icon) = &self.icon {
-            if !valid_icon(icon) {
-                return Err(
-                    "`display.icon` must be a Lucide icon name ([a-z0-9-], at most 64)".into(),
-                );
-            }
+        if let Some(icon) = &self.icon
+            && !valid_icon(icon)
+        {
+            return Err("`display.icon` must be a Lucide icon name ([a-z0-9-], at most 64)".into());
         }
-        if let Some(color) = &self.color {
-            if !valid_color(color) {
-                return Err("`display.color` must be #RRGGBB".into());
-            }
+        if let Some(color) = &self.color
+            && !valid_color(color)
+        {
+            return Err("`display.color` must be #RRGGBB".into());
         }
         Ok(())
     }
@@ -471,11 +469,11 @@ impl BucketConfig {
     /// field, never a value: a misplaced value may be a credential.
     pub fn validate(&self, name: &str) -> Result<(), String> {
         validate_bucket_name(name).map_err(|e| format!("bucket `{name}`: {e}"))?;
-        if let Self::Local(local) = self {
-            if let Some(underlying) = local.bucket.as_deref() {
-                validate_bucket_name(underlying)
-                    .map_err(|e| format!("bucket `{name}` local bucket `{underlying}`: {e}"))?;
-            }
+        if let Self::Local(local) = self
+            && let Some(underlying) = local.bucket.as_deref()
+        {
+            validate_bucket_name(underlying)
+                .map_err(|e| format!("bucket `{name}` local bucket `{underlying}`: {e}"))?;
         }
         for (field, value) in self.credential_fields() {
             if value.trim() == REDACTED {
@@ -658,13 +656,13 @@ impl WorkerConfig {
         let root = schemars::schema_for!(WorkerConfig);
         let mut schema =
             serde_json::to_value(&root.schema).expect("WorkerConfig JSON Schema serializes");
-        if let Some(obj) = schema.as_object_mut() {
-            if !root.definitions.is_empty() {
-                obj.insert(
-                    "definitions".into(),
-                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
-                );
-            }
+        if let Some(obj) = schema.as_object_mut()
+            && !root.definitions.is_empty()
+        {
+            obj.insert(
+                "definitions".into(),
+                serde_json::to_value(&root.definitions).expect("definitions serialize"),
+            );
         }
         schema
     }
@@ -990,7 +988,8 @@ buckets:
 
     #[test]
     fn env_var_expansion_in_strings() {
-        std::env::set_var("IIISTORE_TEST_REGION", "eu-west-1");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("IIISTORE_TEST_REGION", "eu-west-1") };
         let yaml = r#"
 buckets:
   uploads:
@@ -1003,13 +1002,15 @@ buckets:
             BucketConfig::S3(s) => assert_eq!(s.region, "eu-west-1"),
             _ => panic!(),
         }
-        std::env::remove_var("IIISTORE_TEST_REGION");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("IIISTORE_TEST_REGION") };
     }
 
     #[test]
     fn missing_env_var_fails_config_load() {
         // Make sure the var really isn't in the environment.
-        std::env::remove_var("IIISTORE_TEST_DEFINITELY_UNSET_VAR");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("IIISTORE_TEST_DEFINITELY_UNSET_VAR") };
         let yaml = r#"
 buckets:
   uploads:
@@ -1134,19 +1135,25 @@ buckets:
             !cfg.invalid["typo"].message.contains("yes"),
             "values are never echoed"
         );
-        assert!(cfg.invalid["placeholder"]
-            .message
-            .contains("redaction placeholder"));
+        assert!(
+            cfg.invalid["placeholder"]
+                .message
+                .contains("redaction placeholder")
+        );
         // The providers block stays strict.
-        assert!(WorkerConfig::from_json_isolating(&serde_json::json!({
-            "providers": { "local": { "http": { "bind_address": "nope" } } }
-        }))
-        .is_err());
+        assert!(
+            WorkerConfig::from_json_isolating(&serde_json::json!({
+                "providers": { "local": { "http": { "bind_address": "nope" } } }
+            }))
+            .is_err()
+        );
         assert!(WorkerConfig::from_json_isolating(&serde_json::json!({ "buckets": [] })).is_err());
-        assert!(WorkerConfig::from_json_isolating(&serde_json::json!({}))
-            .unwrap()
-            .buckets
-            .is_empty());
+        assert!(
+            WorkerConfig::from_json_isolating(&serde_json::json!({}))
+                .unwrap()
+                .buckets
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1224,9 +1231,11 @@ buckets:
     #[test]
     fn json_schema_has_buckets_property() {
         let schema = WorkerConfig::json_schema();
-        assert!(schema
-            .get("properties")
-            .and_then(|p| p.get("buckets"))
-            .is_some());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.get("buckets"))
+                .is_some()
+        );
     }
 }

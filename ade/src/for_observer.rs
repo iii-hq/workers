@@ -9,7 +9,7 @@
 //! every event of the function in one shape.
 
 use iii_sdk::{Call, CallAction, CallRequest, CallRequestWithMetadata, Match};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The metadata key that names the observer a call is for.
 pub const KEY: &str = "for_observer";

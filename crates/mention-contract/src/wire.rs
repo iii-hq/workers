@@ -119,10 +119,10 @@ impl MentionView {
     /// The agent-facing line: `summary` when the provider wrote one,
     /// otherwise `hint label — description · field: value …`.
     pub fn agent_summary(&self) -> String {
-        if let Some(summary) = self.summary.as_deref().map(str::trim) {
-            if !summary.is_empty() {
-                return summary.to_string();
-            }
+        if let Some(summary) = self.summary.as_deref().map(str::trim)
+            && !summary.is_empty()
+        {
+            return summary.to_string();
         }
         let label = serde_json::to_string(&self.label).unwrap_or_default();
         let mut line = match self.hint.as_deref() {

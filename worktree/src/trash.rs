@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::types::now_ms;
 
 pub const TRASH_DIR_NAME: &str = ".trash";

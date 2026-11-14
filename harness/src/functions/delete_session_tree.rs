@@ -5,11 +5,11 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::CallAction;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -225,13 +225,13 @@ pub async fn handle(deps: &Deps, req: DeleteRequest) -> Result<Snapshot, Harness
     // A pending/completed read must not wait behind the cancellation lifetime.
     // It never writes state. A retry/first acceptance re-reads under the SAME
     // lock as run, so an old runner cannot overwrite a newer attempt.
-    if let Some(op) = load(deps, &id).await? {
-        if op.snapshot.status != DeletionStatus::Failed {
-            if op.snapshot.status == DeletionStatus::Deleting {
-                enqueue(deps, &id).await?;
-            }
-            return Ok(op.snapshot);
+    if let Some(op) = load(deps, &id).await?
+        && op.snapshot.status != DeletionStatus::Failed
+    {
+        if op.snapshot.status == DeletionStatus::Deleting {
+            enqueue(deps, &id).await?;
         }
+        return Ok(op.snapshot);
     }
     let _lock = deps.deletion_commands.guard(&id).await;
     let mut op = match load(deps, &id).await? {
@@ -355,12 +355,11 @@ async fn release_unplanned_ancestors(deps: &Deps, op: &Operation) -> Result<(), 
         if let Some(owner) = guard
             .as_str()
             .filter(|owner| *owner != op.snapshot.operation_id)
+            && let Some(ancestor) = load(deps, owner).await?
+            && !ancestor.planned
+            && ancestor.snapshot.session_id == parent
         {
-            if let Some(ancestor) = load(deps, owner).await? {
-                if !ancestor.planned && ancestor.snapshot.session_id == parent {
-                    release_guard(deps, &parent, owner).await?;
-                }
-            }
+            release_guard(deps, &parent, owner).await?;
         }
         current = parent;
     }
@@ -435,14 +434,14 @@ pub async fn recover(deps: &Deps) -> Result<(), HarnessError> {
                 continue;
             }
         };
-        if op.snapshot.status == DeletionStatus::Deleting {
-            if let Err(error) = enqueue(deps, &op.snapshot.operation_id).await {
-                tracing::warn!(
-                    operation_id = %op.snapshot.operation_id,
-                    %error,
-                    "could not re-enqueue session deletion during recovery"
-                );
-            }
+        if op.snapshot.status == DeletionStatus::Deleting
+            && let Err(error) = enqueue(deps, &op.snapshot.operation_id).await
+        {
+            tracing::warn!(
+                operation_id = %op.snapshot.operation_id,
+                %error,
+                "could not re-enqueue session deletion during recovery"
+            );
         }
     }
     Ok(())
@@ -633,10 +632,10 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         // is refused. Holding it across cleanup and session::delete would
         // stall every topology writer in the process for those RPCs.
         drop(deps.topology.lock().await);
-        if let Some(record) = state::get_turn_unhydrated(&deps.iii, &id, timeout).await? {
-            if !record.status.is_terminal() {
-                return Err(failure(format!("{id} became nonterminal; refusing erase")));
-            }
+        if let Some(record) = state::get_turn_unhydrated(&deps.iii, &id, timeout).await?
+            && !record.status.is_terminal()
+        {
+            return Err(failure(format!("{id} became nonterminal; refusing erase")));
         }
         cleanup(deps, &id).await?;
         let response = deps
@@ -731,7 +730,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         Err(e) => {
             return Err(HarnessError::Dependency(format!(
                 "approval cleanup {id}: {e}"
-            )))
+            )));
         }
         Ok(_) => {
             let pending = deps
@@ -774,8 +773,13 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
 }
 
 fn notification(op: &Operation) -> String {
-    format!("User-requested cancellation and deletion of session {} ({}) and its subtree: {}. All turns have stopped; these sessions are being deleted. Do not await their results and do not recreate them automatically. Your history, execution and other children are preserved. Operation: {}.",
-        op.name, op.snapshot.session_id, op.members.join(", "), op.snapshot.operation_id)
+    format!(
+        "User-requested cancellation and deletion of session {} ({}) and its subtree: {}. All turns have stopped; these sessions are being deleted. Do not await their results and do not recreate them automatically. Your history, execution and other children are preserved. Operation: {}.",
+        op.name,
+        op.snapshot.session_id,
+        op.members.join(", "),
+        op.snapshot.operation_id
+    )
 }
 
 async fn notify_parent(deps: &Deps, parent: &str, op: &Operation) -> Result<(), HarnessError> {
@@ -953,7 +957,7 @@ pub(crate) async fn end_dispatch(deps: &Deps, ticket: &DispatchTicket) -> Result
             return Err(failure(format!(
                 "dispatch witness {} changed under its dispatch: {current}",
                 ticket.id
-            )))
+            )));
         }
     }
     deps.deletion_changed.notify_waiters();

@@ -1,13 +1,13 @@
 //! The mention hook's decisions and the text agents read — engine-free.
 
-use judge::mentions::registry::{parse_providers, Provider};
+use judge::mentions::registry::{Provider, parse_providers};
 use judge::mentions::render::{
-    advertised_providers, already_resolved, mentions_block, pending_mentions, providers_block,
-    DetailsCall, MentionStatus, ResolvedMention,
+    DetailsCall, MentionStatus, ResolvedMention, advertised_providers, already_resolved,
+    mentions_block, pending_mentions, providers_block,
 };
-use judge::mentions::{plan, BLOCK_BUDGET_CHARS};
+use judge::mentions::{BLOCK_BUDGET_CHARS, plan};
 use mention_contract::MentionProvider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn user(text: &str) -> Value {
     json!({ "role": "user", "content": [{ "type": "text", "text": text }] })

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use super::{sum_cost, E2eReport};
+use super::{E2eReport, sum_cost};
 
 impl E2eReport {
     pub fn summary(&self, verbose: bool) -> String {

@@ -26,12 +26,10 @@ pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Z.AI catalog slice 
      router (Z.AI has no models-listing endpoint); returns the model count written.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::zai::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with GLM's own published vocabulary; never runs the model and costs nothing.";
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with GLM's own published vocabulary; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::zai::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

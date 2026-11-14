@@ -8,8 +8,8 @@
 //! (ThinkingStart/Delta/End) that precedes the answer's Text block.
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
-use crate::{now_ms, PROVIDER_ID};
-use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
+use crate::{PROVIDER_ID, now_ms};
+use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -286,37 +286,37 @@ pub fn handle_chunk(
 
     if let Some(delta) = choice.get("delta") {
         // Moonshot thinking: reasoning_content streams before the answer text.
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-            if !reasoning.is_empty() {
-                if state.open_block != Some(OpenBlock::Thinking) {
-                    close_open_block(state, model, &mut events);
-                    state.open_block = Some(OpenBlock::Thinking);
-                    events.push(AssistantMessageEvent::ThinkingStart {
-                        partial: build_partial(state, model),
-                    });
-                }
-                state.thinking.push_str(reasoning);
-                events.push(AssistantMessageEvent::ThinkingDelta {
-                    partial: None,
-                    delta: reasoning.to_string(),
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+            && !reasoning.is_empty()
+        {
+            if state.open_block != Some(OpenBlock::Thinking) {
+                close_open_block(state, model, &mut events);
+                state.open_block = Some(OpenBlock::Thinking);
+                events.push(AssistantMessageEvent::ThinkingStart {
+                    partial: build_partial(state, model),
                 });
             }
+            state.thinking.push_str(reasoning);
+            events.push(AssistantMessageEvent::ThinkingDelta {
+                partial: None,
+                delta: reasoning.to_string(),
+            });
         }
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                if state.open_block != Some(OpenBlock::Text) {
-                    close_open_block(state, model, &mut events);
-                    state.open_block = Some(OpenBlock::Text);
-                    events.push(AssistantMessageEvent::TextStart {
-                        partial: build_partial(state, model),
-                    });
-                }
-                state.text.push_str(text);
-                events.push(AssistantMessageEvent::TextDelta {
-                    partial: None,
-                    delta: text.to_string(),
+        if let Some(text) = delta.get("content").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            if state.open_block != Some(OpenBlock::Text) {
+                close_open_block(state, model, &mut events);
+                state.open_block = Some(OpenBlock::Text);
+                events.push(AssistantMessageEvent::TextStart {
+                    partial: build_partial(state, model),
                 });
             }
+            state.text.push_str(text);
+            events.push(AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: text.to_string(),
+            });
         }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
@@ -335,26 +335,26 @@ pub fn handle_chunk(
                     });
                 }
                 let entry = &mut state.function_calls[index];
-                if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                    if !id.is_empty() {
-                        entry.id = id.to_string();
-                    }
+                if let Some(id) = tc.get("id").and_then(Value::as_str)
+                    && !id.is_empty()
+                {
+                    entry.id = id.to_string();
                 }
-                if let Some(name) = tc.pointer("/function/name").and_then(Value::as_str) {
-                    if !name.is_empty() {
-                        entry.function_id = decode_tool_name(name);
-                    }
+                if let Some(name) = tc.pointer("/function/name").and_then(Value::as_str)
+                    && !name.is_empty()
+                {
+                    entry.function_id = decode_tool_name(name);
                 }
-                if let Some(args) = tc.pointer("/function/arguments").and_then(Value::as_str) {
-                    if !args.is_empty() {
-                        state.function_calls[index].args_json.push_str(args);
-                        events.push(AssistantMessageEvent::FunctioncallDelta {
-                            partial: None,
-                            delta: args.to_string(),
-                            id: state.function_calls[index].id.clone(),
-                            arguments_preview: None,
-                        });
-                    }
+                if let Some(args) = tc.pointer("/function/arguments").and_then(Value::as_str)
+                    && !args.is_empty()
+                {
+                    state.function_calls[index].args_json.push_str(args);
+                    events.push(AssistantMessageEvent::FunctioncallDelta {
+                        partial: None,
+                        delta: args.to_string(),
+                        id: state.function_calls[index].id.clone(),
+                        arguments_preview: None,
+                    });
                 }
             }
         }

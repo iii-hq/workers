@@ -11,8 +11,8 @@
 //! without any array handling or `GROUP_CONCAT`.
 
 use super::{
-    bool_at, fold_index_rows, i64_at, run, str_at, ColumnDesc, ForeignKeyRef, IndexDesc,
-    TableFilter, TableKey, TableKind, TableRef,
+    ColumnDesc, ForeignKeyRef, IndexDesc, TableFilter, TableKey, TableKind, TableRef, bool_at,
+    fold_index_rows, i64_at, run, str_at,
 };
 use crate::handlers::AppState;
 use serde_json::Value;
@@ -37,8 +37,7 @@ pub async fn list_tables(
     db: &str,
     timeout_ms: u64,
 ) -> Result<Vec<TableRef>, String> {
-    let sql =
-        "SELECT TABLE_NAME AS table_name, TABLE_TYPE AS kind, TABLE_ROWS AS row_count_estimate \
+    let sql = "SELECT TABLE_NAME AS table_name, TABLE_TYPE AS kind, TABLE_ROWS AS row_count_estimate \
                FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() \
                ORDER BY TABLE_TYPE, TABLE_NAME";
     let rows = run(state, db, sql, vec![], timeout_ms).await?;
@@ -131,14 +130,14 @@ async fn merge_foreign_keys(
         ) else {
             continue;
         };
-        if let Some(cols) = columns.get_mut(&key) {
-            if let Some(c) = cols.iter_mut().find(|c| c.name == src) {
-                c.foreign_key = Some(ForeignKeyRef {
-                    schema: None,
-                    table: ref_table,
-                    column: ref_column,
-                });
-            }
+        if let Some(cols) = columns.get_mut(&key)
+            && let Some(c) = cols.iter_mut().find(|c| c.name == src)
+        {
+            c.foreign_key = Some(ForeignKeyRef {
+                schema: None,
+                table: ref_table,
+                column: ref_column,
+            });
         }
     }
     Ok(())

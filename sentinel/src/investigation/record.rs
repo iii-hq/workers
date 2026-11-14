@@ -13,9 +13,9 @@ use serde_json::json;
 use super::{Announcement, Investigations, Outcome};
 use crate::store::Db;
 use crate::{
-    ids, DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DiagnosisSourceV1,
-    GroupChangeReasonV1, GroupStateResponseV1, InvestigationChangedEventV1,
-    InvestigationChangedOpV1, SentinelError,
+    DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DiagnosisSourceV1, GroupChangeReasonV1,
+    GroupStateResponseV1, InvestigationChangedEventV1, InvestigationChangedOpV1, SentinelError,
+    ids,
 };
 
 /// Who is calling, as the runtime reported it.

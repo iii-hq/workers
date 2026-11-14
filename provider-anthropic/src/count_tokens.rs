@@ -5,15 +5,15 @@
 //! the endpoint meters without generating, so it never runs the model and
 //! costs nothing. Exposed behind `router::count_tokens`.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;

@@ -18,7 +18,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Keys, Match, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const ON_SESSION_STARTED_FN: &str = "browser::on-session-started";
 pub const ON_SESSION_STOPPED_FN: &str = "browser::on-session-stopped";

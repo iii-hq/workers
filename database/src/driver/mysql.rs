@@ -7,7 +7,7 @@ use crate::error::DbError;
 use crate::pool::MysqlPool;
 use crate::value::{JsonParam, RowValue};
 use mysql_async::prelude::Queryable;
-use mysql_async::{params::Params, Value as MyValue};
+use mysql_async::{Value as MyValue, params::Params};
 use std::time::Duration;
 
 pub async fn query(

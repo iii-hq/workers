@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{Call, CallRequest, IIIClient, Match, ObserveRejection, Observer, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::bus::{RowChangedArgs, RowChangedEvent};
 use super::native;
@@ -40,8 +40,7 @@ use crate::pool::{Pool, PoolId};
 /// The function this worker announces its writes through.
 pub const ROW_CHANGED_FN: &str = "database::on-row-changed";
 
-pub const ROW_CHANGED_DESCRIPTION: &str =
-    "One event per committed write statement. Observe it with args { db, table?, ops? } \
+pub const ROW_CHANGED_DESCRIPTION: &str = "One event per committed write statement. Observe it with args { db, table?, ops? } \
      (table canonical: bare, unquoted, lowercase) and filter on input.returning / caller. \
      On a `capture: statements` database (the default) it reports only writes made THROUGH \
      this worker, with the writer's own RETURNING rows as `returning`; on a `capture: native` \
@@ -1000,11 +999,11 @@ mod tests {
             let unchanged = old_cfg.databases.get(name).map(|old| {
                 serde_json::to_string(old).unwrap() == serde_json::to_string(db).unwrap()
             });
-            if unchanged == Some(true) {
-                if let Some(pool) = old_pools.get(name) {
-                    pools.insert(name.clone(), pool.clone());
-                    continue;
-                }
+            if unchanged == Some(true)
+                && let Some(pool) = old_pools.get(name)
+            {
+                pools.insert(name.clone(), pool.clone());
+                continue;
             }
             if build {
                 pools.insert(name.clone(), crate::pool::build(name, db).await.unwrap());

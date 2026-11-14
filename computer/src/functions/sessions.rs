@@ -157,7 +157,7 @@ pub struct StopOutput {
 mod tests {
     use super::*;
     use crate::driver::SemanticOnly;
-    use crate::semantic::{fake::FakeTree, SemanticSession};
+    use crate::semantic::{SemanticSession, fake::FakeTree};
     use crate::test_support::{session_driving, session_with};
     use std::sync::Arc;
 

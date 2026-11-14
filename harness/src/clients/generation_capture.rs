@@ -26,8 +26,8 @@
 //! Sequence is diagnostic, not an all-global continuity fence: correlate each
 //! request/success/current update and the required source receipt independently.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use iii_sdk::{CallAction, CallRequest, IIIClient};
 use schemars::JsonSchema;

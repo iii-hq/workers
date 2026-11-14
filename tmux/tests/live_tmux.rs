@@ -7,13 +7,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use iii_sdk::{scope, Caller, InvocationCtx};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use iii_sdk::{Caller, InvocationCtx, scope};
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
-use tmux::functions::{self, panes, sessions, windows, Ctx, EmptyInput};
+use tmux::functions::{self, Ctx, EmptyInput, panes, sessions, windows};
 use tmux::model::AgentState;
 use tmux::terminal::protocol::{
     OpenRequest, OutputEvent, ReplayRequest, SwitchRequest, TerminalRef, WriteRequest,
@@ -1056,12 +1056,13 @@ async fn console_terminal_is_a_live_tmux_client() {
             .then_some(())
     })
     .await;
-    assert!(sink
-        .0
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|event| event.terminal_id == opened.terminal_id));
+    assert!(
+        sink.0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| event.terminal_id == opened.terminal_id)
+    );
 
     // Another caller cannot drive it.
     let foreign = manager
@@ -1144,13 +1145,15 @@ async fn console_terminal_is_a_live_tmux_client() {
     let snapshot = collector.overview().await.sessions;
     assert_eq!(snapshot.sessions.len(), 2);
     assert!(snapshot.sessions.iter().all(|s| s.attached == 0));
-    assert!(manager
-        .write(WriteRequest {
-            terminal: reference,
-            data: BASE64.encode("x")
-        })
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write(WriteRequest {
+                terminal: reference,
+                data: BASE64.encode("x")
+            })
+            .await
+            .is_err()
+    );
 
     // A terminal nobody heartbeats is detached by the reaper.
     let idle = manager
@@ -1475,10 +1478,12 @@ async fn uploads_are_saved_for_the_terminal_that_asks() {
     linked.close(there).await.unwrap();
 
     manager.close(reference.clone()).await.unwrap();
-    assert!(upload(reference, "a.txt", None, b"a")
-        .await
-        .unwrap_err()
-        .contains("not found"));
+    assert!(
+        upload(reference, "a.txt", None, b"a")
+            .await
+            .unwrap_err()
+            .contains("not found")
+    );
 }
 
 #[tokio::test]

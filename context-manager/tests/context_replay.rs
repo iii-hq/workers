@@ -8,10 +8,10 @@ use std::path::Path;
 use context_manager::functions::assemble::AssembleOptions;
 use context_manager::types::Model;
 use replay_support::{
-    compare_decay_four, compare_directory, parse_session_lines, prefix_edits, read_directory,
-    ReplayHistory,
+    ReplayHistory, compare_decay_four, compare_directory, parse_session_lines, prefix_edits,
+    read_directory,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn keeps_the_last_revision_in_first_occurrence_order() {

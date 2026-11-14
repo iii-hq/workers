@@ -16,13 +16,17 @@ fn manifest_subcommand_emits_valid_json() {
     let manifest: Value = serde_json::from_slice(&output.stdout).expect("valid manifest JSON");
     assert_eq!(manifest["name"], "eval");
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
-    assert!(manifest["description"]
-        .as_str()
-        .is_some_and(|value| !value.is_empty()));
+    assert!(
+        manifest["description"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
     assert!(manifest["default_config"].is_object());
-    assert!(manifest["supported_targets"]
-        .as_array()
-        .is_some_and(|targets| !targets.is_empty()));
+    assert!(
+        manifest["supported_targets"]
+            .as_array()
+            .is_some_and(|targets| !targets.is_empty())
+    );
 }
 
 #[test]

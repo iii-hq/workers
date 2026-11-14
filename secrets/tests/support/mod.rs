@@ -9,8 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -169,10 +169,9 @@ pub async fn wait_for(iii: &IIIClient, function_id: &str) {
                 json!({"include_internal": true}),
             )
             .await
+                && value.to_string().contains(&format!("\"{function_id}\""))
             {
-                if value.to_string().contains(&format!("\"{function_id}\"")) {
-                    return;
-                }
+                return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

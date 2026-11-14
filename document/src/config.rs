@@ -384,10 +384,12 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_the_seed_only() {
-        std::env::set_var("DOCUMENT_TEST_CHARS", "99");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("DOCUMENT_TEST_CHARS", "99") };
         let cfg = WorkerConfig::from_yaml("max_chars: ${DOCUMENT_TEST_CHARS}\n").expect("expands");
         assert_eq!(cfg.max_chars, 99);
-        std::env::remove_var("DOCUMENT_TEST_CHARS");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("DOCUMENT_TEST_CHARS") };
 
         let cfg =
             WorkerConfig::from_yaml("max_chars: ${DOCUMENT_UNSET_VAR:42}\n").expect("falls back");

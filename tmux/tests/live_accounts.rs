@@ -12,14 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tmux::accounts::Accounts;
 use tmux::accounts::credentials::FileStore;
 use tmux::accounts::paths::ClaudePaths;
-use tmux::accounts::Accounts;
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
 use tmux::functions::accounts::{self as account_fns, ClaudeLaunchInput};
-use tmux::functions::{self, panes, sessions, windows, Ctx, EmptyInput};
+use tmux::functions::{self, Ctx, EmptyInput, panes, sessions, windows};
 use tmux::model::{Follow, Pane, PaneClaude};
 
 struct Sandbox {
@@ -641,10 +641,11 @@ async fn claude_starts_on_the_account_asked_for() {
     assert_eq!(info.account.as_deref(), Some("default"));
     assert_eq!(info.config_dir.as_deref(), Some("~/.claude"));
     assert_eq!(info.follow, Follow::Global);
-    assert!(!w
-        .tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
-        .status
-        .success());
+    assert!(
+        !w.tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
+            .status
+            .success()
+    );
 
     // Pinned to the account that is global now: on ~/.claude too, kept
     // once it ends.
@@ -671,15 +672,16 @@ async fn claude_starts_on_the_account_asked_for() {
     } else {
         "-p"
     };
-    assert!(w
-        .tmux_out(&[
+    assert!(
+        w.tmux_out(&[
             "show-options",
             scope,
             "-t",
             &session.pane_id,
             "remain-on-exit"
         ])
-        .ends_with("on"));
+        .ends_with("on")
+    );
 
     // A session's own CLAUDE_CONFIG_DIR, or tmux's global one (set by
     // hand): a window on ~/.claude unsets it outright.
@@ -726,15 +728,17 @@ async fn claude_starts_on_the_account_asked_for() {
     .unwrap_err();
     assert!(refused.contains("being moved"), "{refused}");
     drop(moving);
-    assert!(account_fns::remove(
-        &w.ctx,
-        account_fns::RemoveAccountInput {
-            account: "default".into(),
-            delete_files: false,
-        },
-    )
-    .await
-    .is_err());
+    assert!(
+        account_fns::remove(
+            &w.ctx,
+            account_fns::RemoveAccountInput {
+                account: "default".into(),
+                delete_files: false,
+            },
+        )
+        .await
+        .is_err()
+    );
 
     // Refusals.
     let mut both = window("both", claude("global", false));
@@ -840,10 +844,11 @@ async fn followers_switch_with_their_next_message() {
             .signed_in
     );
     // tmux's environment was never touched.
-    assert!(!w
-        .tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
-        .status
-        .success());
+    assert!(
+        !w.tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
+            .status
+            .success()
+    );
 
     // The same account again: nothing moves.
     let again = w.global("personal").await.unwrap();
@@ -986,15 +991,17 @@ async fn a_switch_waits_for_a_pinned_window_in_a_turn() {
     assert_eq!(pending.waiting_for, vec![p.clone()]);
     assert_eq!(w.ask(&f, "still").await, "work");
     // The account a switch waits for can't be removed.
-    assert!(account_fns::remove(
-        &w.ctx,
-        account_fns::RemoveAccountInput {
-            account: "personal".into(),
-            delete_files: false,
-        },
-    )
-    .await
-    .is_err());
+    assert!(
+        account_fns::remove(
+            &w.ctx,
+            account_fns::RemoveAccountInput {
+                account: "personal".into(),
+                delete_files: false,
+            },
+        )
+        .await
+        .is_err()
+    );
     // Still in its turn: a round changes nothing.
     w.pending_tick().await;
     assert_eq!(w.accounts().registry().global, "default");
@@ -1329,10 +1336,11 @@ async fn an_upgrade_from_the_tmux_environment_build() {
 
     tmux::accounts::daemon::start(&w.collector, w.accounts()).await;
 
-    assert!(!w
-        .tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
-        .status
-        .success());
+    assert!(
+        !w.tmux(&["show-environment", "-g", "CLAUDE_CONFIG_DIR"])
+            .status
+            .success()
+    );
     let registry = w.accounts().registry();
     assert_eq!(registry.slot_version, 2);
     assert_eq!(registry.global, "default", "the account in ~/.claude");
@@ -1398,9 +1406,11 @@ async fn panes_move_between_accounts_between_turns() {
         "resumed"
     );
     assert_eq!(after.skip_permissions, skip, "skip kept");
-    assert!(walk(&personal_dir.join("projects"))
-        .iter()
-        .any(|path| path.ends_with(format!("{session}.jsonl"))));
+    assert!(
+        walk(&personal_dir.join("projects"))
+            .iter()
+            .any(|path| path.ends_with(format!("{session}.jsonl")))
+    );
     assert!(w.screen(&a).contains("Resumed, signed in as personal"));
     let scope = if w.tmux_out(&["-V"]).starts_with("tmux 2.") {
         "-w"
@@ -1436,9 +1446,10 @@ async fn panes_move_between_accounts_between_turns() {
     w.pending_tick().await;
     let info = w.settled_on_slot(&a, "default").await;
     assert_eq!(info.follow, Follow::Global);
-    assert!(w
-        .start_command(&a)
-        .contains("env -u CLAUDE_CONFIG_DIR claude"));
+    assert!(
+        w.start_command(&a)
+            .contains("env -u CLAUDE_CONFIG_DIR claude")
+    );
 
     // Cancelling a waiting move: back to what it is.
     w.set_state(&a, "waiting").await;
@@ -1610,21 +1621,25 @@ async fn rules_suggest_switch_and_switch_back() {
     )
     .await
     .unwrap();
-    assert!(account_fns::list(&w.ctx, EmptyInput {})
-        .await
-        .unwrap()
-        .suggestion
-        .is_none());
+    assert!(
+        account_fns::list(&w.ctx, EmptyInput {})
+            .await
+            .unwrap()
+            .suggestion
+            .is_none()
+    );
     // An order naming no account is refused.
-    assert!(account_fns::rules(
-        &w.ctx,
-        account_fns::RulesInput {
-            order: Some(vec!["nobody".into()]),
-            ..Default::default()
-        },
-    )
-    .await
-    .is_err());
+    assert!(
+        account_fns::rules(
+            &w.ctx,
+            account_fns::RulesInput {
+                order: Some(vec!["nobody".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err()
+    );
 
     // Switch by itself, never to an account with Claude Code working on
     // its folder.

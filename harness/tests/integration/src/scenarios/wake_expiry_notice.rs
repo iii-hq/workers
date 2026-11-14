@@ -24,12 +24,12 @@
 //! relative `expires_in_ms` (the contract's only form — resolved server-side
 //! at registration); the timer fires at that instant, with no harness knob.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";

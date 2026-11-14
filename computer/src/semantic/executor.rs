@@ -8,15 +8,15 @@
 //! returns and finds its channel closed.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use super::engine::Engine;
 use super::{
-    Code, ProviderFactory, Query, SemanticError, SnapshotOut, Verb, ACT_DEADLINE, WALK_DEADLINE,
+    ACT_DEADLINE, Code, ProviderFactory, Query, SemanticError, SnapshotOut, Verb, WALK_DEADLINE,
 };
 
 /// Slack the async side gives the executor past the command's own deadline.
@@ -303,8 +303,8 @@ impl SemanticSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::fake::FakeTree;
     use crate::semantic::Scope;
+    use crate::semantic::fake::FakeTree;
     use xa11y_core::Role;
 
     fn tree() -> Arc<FakeTree> {

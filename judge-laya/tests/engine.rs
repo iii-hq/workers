@@ -4,7 +4,7 @@
 mod engine_support;
 mod support;
 
-use engine_support::{connect, invoke, wait_for, Engine};
+use engine_support::{Engine, connect, invoke, wait_for};
 use judge_contract::EvaluateResponse;
 use judge_laya::{CANCEL_ID, EVALUATE_ID, MODELS_ID};
 use serde_json::json;

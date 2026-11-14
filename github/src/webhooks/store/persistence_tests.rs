@@ -195,21 +195,25 @@ fn closure_error_and_sql_error_leave_both_cache_and_database_unchanged() {
     let path = dir.path().join("store.sqlite3");
     let store = Store::open(&path).unwrap();
     let expected = serde_json::to_value(store.read().unwrap()).unwrap();
-    assert!(store
-        .change::<()>(|d| {
-            d.jobs.insert("new".into(), inbox("new"));
-            Err(Failure::Capacity)
-        })
-        .is_err());
+    assert!(
+        store
+            .change::<()>(|d| {
+                d.jobs.insert("new".into(), inbox("new"));
+                Err(Failure::Capacity)
+            })
+            .is_err()
+    );
     store.database.lock().unwrap().connection.execute_batch("CREATE TRIGGER fail_jobs BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
-    assert!(store
-        .change(|d| {
-            d.last_error = Some("should rollback".into());
-            d.deliveries.insert("42:new".into());
-            d.jobs.insert("new".into(), inbox("new"));
-            Ok(())
-        })
-        .is_err());
+    assert!(
+        store
+            .change(|d| {
+                d.last_error = Some("should rollback".into());
+                d.deliveries.insert("42:new".into());
+                d.jobs.insert("new".into(), inbox("new"));
+                Ok(())
+            })
+            .is_err()
+    );
     assert_eq!(
         serde_json::to_value(store.read().unwrap()).unwrap(),
         expected

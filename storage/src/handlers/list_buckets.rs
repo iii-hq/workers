@@ -4,7 +4,7 @@
 
 use super::AppState;
 use crate::backend::Backend;
-use crate::config::{redact_url, BucketConfig, BucketDisplay, InvalidBucket};
+use crate::config::{BucketConfig, BucketDisplay, InvalidBucket, redact_url};
 use crate::material::Stage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
