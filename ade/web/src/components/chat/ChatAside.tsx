@@ -22,6 +22,12 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Badge } from '@/components/shadcn/badge'
 import { Button } from '@/components/shadcn/button'
+import {
+  Sheet,
+  SheetClose,
+  SheetPortal,
+  SheetTitle,
+} from '@/components/shadcn/sheet'
 import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import {
   Tooltip,
@@ -1205,18 +1211,15 @@ function PhonePanel({
   children: ReactNode
 }) {
   return (
-    <DialogPrimitive.Root
-      open={open}
-      onOpenChange={(next) => onOpenChange(next)}
-    >
-      <DialogPrimitive.Portal>
+    <Sheet open={open} onOpenChange={(next) => onOpenChange(next)}>
+      <SheetPortal>
         <PortalScope>
           <PhonePanelContent tabs={tabs} options={options}>
             {children}
           </PhonePanelContent>
         </PortalScope>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+      </SheetPortal>
+    </Sheet>
   )
 }
 
@@ -1239,11 +1242,9 @@ function PhonePanelContent({
       data-side-panel-phone=""
       className="fixed inset-x-0 top-0 z-50 flex h-dvh flex-col bg-panel pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-sans text-ink focus:outline-none"
     >
-      <DialogPrimitive.Title className="sr-only">
-        Side panel
-      </DialogPrimitive.Title>
+      <SheetTitle className="sr-only">Side panel</SheetTitle>
       <div className="flex h-13 shrink-0 items-center gap-1 border-b border-border bg-panel-raised px-1">
-        <DialogPrimitive.Close
+        <SheetClose
           render={
             <IconButton label="Back to the chat" className="size-11 shrink-0">
               <ArrowLeft aria-hidden />

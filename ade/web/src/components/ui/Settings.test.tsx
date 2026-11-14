@@ -75,7 +75,9 @@ describe('settings primitives', () => {
       </SettingsList>,
     )
 
-    expect(html).toContain('<label for="pool-size">Maximum connections</label>')
+    expect(html).toMatch(
+      /<label [^>]*for="pool-size"[^>]*>Maximum connections<\/label>/,
+    )
     expect(html).toContain('name="databases.primary.pool.max"')
     expect(html).toContain('data-field="databases.primary.pool.max"')
     expect(html).toContain('data-settings-field-control="true"')

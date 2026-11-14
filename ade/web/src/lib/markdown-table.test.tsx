@@ -10,7 +10,7 @@ describe('Markdown tables', () => {
 | \`name\` | string | Human-readable name. |`}</Markdown>,
     )
 
-    expect(html).toContain('iii-ui-table-viewport')
+    expect(html).toContain('data-slot="table-container"')
     expect(html).toContain('iii-ui-table-frame')
     expect(html).toContain('iii-ui-table__header')
     expect(html).toContain('iii-ui-table__row')

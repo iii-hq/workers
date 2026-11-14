@@ -1,6 +1,15 @@
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { X } from 'lucide-react'
 import * as React from 'react'
+import {
+  Sheet,
+  SheetClose,
+  SheetDescription,
+  SheetOverlay,
+  SheetPortal,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/shadcn/sheet'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
@@ -8,22 +17,17 @@ import { cn } from '@/lib/utils'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-/** The sheet root: the first API's one-argument `onOpenChange`. */
+/** The sheet root (the shadcn sheet): the first API's one-argument `onOpenChange`. */
 export function BottomSheet({
   onOpenChange,
   ...props
-}: Omit<DialogPrimitive.Root.Props, 'onOpenChange'> & {
+}: Omit<React.ComponentProps<typeof Sheet>, 'onOpenChange'> & {
   onOpenChange?: (open: boolean) => void
 }) {
-  return (
-    <DialogPrimitive.Root
-      {...props}
-      onOpenChange={(open) => onOpenChange?.(open)}
-    />
-  )
+  return <Sheet {...props} onOpenChange={(open) => onOpenChange?.(open)} />
 }
-export const BottomSheetTrigger = DialogPrimitive.Trigger
-export const BottomSheetClose = DialogPrimitive.Close
+export const BottomSheetTrigger = SheetTrigger
+export const BottomSheetClose = SheetClose
 
 interface BottomSheetPageNavigationValue {
   activePageId: string | null
@@ -165,11 +169,11 @@ export const BottomSheetContent = React.forwardRef<
           }
 
     return (
-      <DialogPrimitive.Portal>
+      <SheetPortal>
         <PortalScope>
-          <DialogPrimitive.Backdrop
+          <SheetOverlay
             className={cn(
-              'iii-ui-motion-sheet-overlay fixed inset-0 z-40 bg-black/55 md:hidden',
+              'iii-ui-motion-sheet-overlay z-40 bg-black/55 md:hidden',
               overlayClassName,
             )}
           />
@@ -237,16 +241,16 @@ export const BottomSheetContent = React.forwardRef<
               </div>
             </BottomSheetPageNavigationContext.Provider>
 
-            <DialogPrimitive.Close
+            <SheetClose
               ref={closeButtonRef}
               className="absolute right-2 top-2 flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <X className="size-5" aria-hidden />
               <span className="sr-only">{closeLabel}</span>
-            </DialogPrimitive.Close>
+            </SheetClose>
           </DialogPrimitive.Popup>
         </PortalScope>
-      </DialogPrimitive.Portal>
+      </SheetPortal>
     )
   },
 )
@@ -254,9 +258,9 @@ BottomSheetContent.displayName = 'BottomSheetContent'
 
 export const BottomSheetTitle = React.forwardRef<
   HTMLHeadingElement,
-  DialogPrimitive.Title.Props
+  React.ComponentProps<typeof SheetTitle>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title
+  <SheetTitle
     ref={ref}
     className={cn('font-sans text-lg font-semibold text-ink', className)}
     {...props}
@@ -266,9 +270,9 @@ BottomSheetTitle.displayName = 'BottomSheetTitle'
 
 export const BottomSheetDescription = React.forwardRef<
   HTMLParagraphElement,
-  DialogPrimitive.Description.Props
+  React.ComponentProps<typeof SheetDescription>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description
+  <SheetDescription
     ref={ref}
     className={cn(
       'font-sans text-base leading-relaxed text-ink-faint',

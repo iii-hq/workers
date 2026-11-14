@@ -1,5 +1,10 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import * as React from 'react'
+import {
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from '@/components/shadcn/field'
 import { cn } from '@/lib/utils'
 
 function hasContent(value: React.ReactNode): boolean {
@@ -231,10 +236,12 @@ export const SettingsField = React.forwardRef<
     return (
       <SettingsRow
         ref={ref}
-        label={<label htmlFor={controlId}>{label}</label>}
+        label={<FieldLabel htmlFor={controlId}>{label}</FieldLabel>}
         description={
           hasDescription ? (
-            <span id={descriptionId}>{description}</span>
+            <FieldDescription id={descriptionId} className="text-xs">
+              {description}
+            </FieldDescription>
           ) : undefined
         }
         meta={
@@ -242,9 +249,9 @@ export const SettingsField = React.forwardRef<
             <div className="flex flex-col items-start gap-0.5">
               {hasMeta ? meta : null}
               {hasError ? (
-                <span id={errorId} className="text-alert" role="alert">
+                <FieldError id={errorId} className="text-xs">
                   {error}
-                </span>
+                </FieldError>
               ) : null}
             </div>
           ) : undefined

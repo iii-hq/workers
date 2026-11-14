@@ -128,6 +128,10 @@ export {
   SheetDescription,
   SheetFooter,
   SheetHeader,
+  // The console's bottom sheet and phone panels compose the portal and
+  // overlay with their own popup layout.
+  SheetOverlay,
+  SheetPortal,
   SheetTitle,
   SheetTrigger,
 }
