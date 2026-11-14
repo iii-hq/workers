@@ -875,6 +875,108 @@ async fn a_reseed_failure_completes_even_when_the_settle_write_fails() {
     );
 }
 
+/// The process died after the finalize wrote `continues` and before its
+/// reseed: the redelivered step seeds the turn that write promised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_redoes_the_reseed_its_finalize_never_reached() {
+    for status in [TurnStatus::Completed, TurnStatus::Failed] {
+        let ((result, report), calls, turn) = redeliver_finished(status, true, |_, _| false).await;
+        assert!(result.unwrap().skipped);
+        assert_ne!(turn["turn_id"], "t1", "{turn}");
+        assert_eq!(turn["status"], "running", "{turn}");
+        assert!(turn.get("continues").is_none(), "{turn}");
+        assert!(
+            calls
+                .iter()
+                .any(|(function, data)| function == "harness::turn" && reseeds(data)),
+            "{calls:?}"
+        );
+        assert_eq!(report.status, TurnStatus::Running, "{report:?}");
+    }
+}
+
+/// The redone reseed fails like a live one: the finished turn ends the
+/// exchange instead of promising a turn nobody seeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_whose_reseed_fails_ends_the_exchange() {
+    let refuse = |function: &str, data: &Value| function == "state::set" && reseeds(data);
+    let ((result, report), calls, turn) =
+        redeliver_finished(TurnStatus::Completed, true, refuse).await;
+    assert!(result.unwrap().skipped);
+    assert_eq!(completions(&calls), [(json!("t1"), json!(true))]);
+    assert_eq!(turn["turn_id"], "t1");
+    assert!(turn.get("continues").is_none(), "{turn}");
+    assert!(!report.expects_wake);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_that_does_not_continue_is_only_dropped() {
+    let ((result, _), calls, turn) =
+        redeliver_finished(TurnStatus::Completed, false, |_, _| false).await;
+    assert!(result.unwrap().skipped);
+    assert_eq!(turn["turn_id"], "t1");
+    assert!(completions(&calls).is_empty(), "{calls:?}");
+    assert!(
+        !calls
+            .iter()
+            .any(
+                |(function, data)| (function == "harness::turn" || function == "state::set")
+                    && reseeds(data)
+            ),
+        "{calls:?}"
+    );
+}
+
+/// Store `t1` finished with `status` and `continues`, as a finalize leaves it
+/// when the process dies before its reseed, then deliver its step 1 again,
+/// refusing every engine call `refuse` matches. Returns the step outcome and
+/// the status after it, the engine calls and the stored turn.
+async fn redeliver_finished(
+    status: TurnStatus,
+    continues: bool,
+    refuse: fn(&str, &Value) -> bool,
+) -> (
+    (
+        Result<TurnStepResult, HarnessError>,
+        crate::functions::status::StatusReport,
+    ),
+    Vec<(String, Value)>,
+    Value,
+) {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        hooks,
+        refuse,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = status;
+            record.continues = continues;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let result = step_one(deps.clone()).await;
+            let req = crate::functions::status::StatusRequest {
+                session_id: "s".into(),
+                verbose: false,
+            };
+            let report = crate::functions::status::handle(&deps, req)
+                .await
+                .unwrap()
+                .unwrap();
+            (result, report)
+        },
+    )
+    .await
+}
+
 /// Whether an engine call is made for a turn other than `t1`: a reseed's.
 fn reseeds(data: &Value) -> bool {
     data["value"]["turn_id"]

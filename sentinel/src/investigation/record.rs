@@ -64,12 +64,10 @@ impl<D: Db> Investigations<D> {
             )));
         }
 
-        // `first_pass` only while the automatic pass is the turn in progress.
-        // Everything after it is the conversation, whoever asked for it.
-        let source = if investigation.status.is_running()
-            && caller.turn_id.is_some()
-            && caller.turn_id == investigation.first_pass_turn_id
-        {
+        // `first_pass` while the automatic pass runs, on whichever turn its
+        // session continued in. Everything after it is the conversation,
+        // whoever asked for it.
+        let source = if investigation.status.is_running() && caller.turn_id.is_some() {
             DiagnosisSourceV1::FirstPass
         } else {
             DiagnosisSourceV1::Conversation

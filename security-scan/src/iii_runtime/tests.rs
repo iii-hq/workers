@@ -476,6 +476,33 @@ mod tests {
         assert_eq!(completed.status, "completed");
     }
 
+    /// The analysis turn's finalize drained a message and the session went on
+    /// in `t2`: its end is the run's result, under the run's checkpoint.
+    #[test]
+    fn harness_status_reconciliation_follows_the_session_to_a_later_turn() {
+        let harness = crate::HarnessRunV1 {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+        };
+        let status = |value: Value| serde_json::from_value::<HarnessStatusWire>(value).unwrap();
+        let completed = completion_event(
+            status(json!({ "turn_id": "t2", "status": "completed",
+                "result": { "summary": "ok", "findings": [] } })),
+            &harness,
+        )
+        .unwrap()
+        .expect("the later turn's end is the run's");
+        assert!(completed.terminal);
+        assert_eq!(completed.turn_id, "t1");
+        assert_eq!(completed.result, Some(json!({ "summary": "ok", "findings": [] })));
+        for open in [
+            json!({ "turn_id": "t2", "status": "completed", "expects_wake": true }),
+            json!({ "turn_id": "t2", "status": "running" }),
+        ] {
+            assert!(completion_event(status(open), &harness).unwrap().is_none());
+        }
+    }
+
     #[test]
     fn missing_worktree_record_is_an_idempotent_cleanup_success() {
         assert!(worktree_is_missing(&SecurityScanError::Dependency(

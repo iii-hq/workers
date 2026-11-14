@@ -22,6 +22,7 @@ mod engine_restart_recovery;
 mod exactly_once_function;
 mod function_call_id_collision;
 mod function_contract_reuse;
+mod harness_crash_recovery;
 mod idempotency_key_collision;
 mod leaf_denied_control_plane;
 mod multi_turn_traces;
@@ -76,6 +77,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         exactly_once_function::scenario(),
         function_call_id_collision::scenario(),
         function_contract_reuse::scenario(),
+        harness_crash_recovery::scenario(),
         idempotency_key_collision::scenario(),
         leaf_denied_control_plane::scenario(),
         multi_turn_traces::scenario(),
@@ -111,7 +113,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 44);
+        assert_eq!(fixtures.len(), 45);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

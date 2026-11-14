@@ -44,6 +44,8 @@ pub(super) struct ActiveTurn {
     pub(super) tree_sessions: Vec<String>,
     pub(super) tree_statuses: Vec<Value>,
     pub(super) router_evidence: Value,
+    /// When a harness fault SIGKILLed the harness, in Unix nanoseconds.
+    pub(super) harness_killed_at: Option<u64>,
 }
 
 impl ActiveTurn {
@@ -66,6 +68,7 @@ impl ActiveTurn {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            harness_killed_at: None,
         }
     }
 

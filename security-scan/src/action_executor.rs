@@ -118,12 +118,8 @@ where
                 status: None,
             });
         };
-        if action.status != SecurityActionStatusV1::AwaitingApproval
-            || action
-                .harness
-                .as_ref()
-                .is_none_or(|harness| harness.turn_id != event.turn_id)
-        {
+        // Any turn of the action's session, as for a run's analysis.
+        if action.status != SecurityActionStatusV1::AwaitingApproval || action.harness.is_none() {
             return Ok(TurnCompletedResponseV1 {
                 woke: false,
                 status: None,
