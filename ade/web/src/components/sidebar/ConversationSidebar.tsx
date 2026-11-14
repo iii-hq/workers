@@ -27,6 +27,7 @@ import {
 } from '@/components/chat/transcript-window'
 import { Button } from '@/components/ui/Button'
 import { Hint } from '@/components/ui/Hint'
+import { navRowVariants } from '@/components/ui/nav-row'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
 import {
@@ -108,8 +109,10 @@ const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
  * A navigation row at the top of the sidebar (New chat, Search): an icon
  * and a label on a rounded-xl wash that only paints on hover or focus.
  */
-const NAV_ROW =
-  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-muted-foreground transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+const NAV_ROW = cn(
+  navRowVariants(),
+  'h-auto gap-2.5 rounded-xl px-2.5 font-inter font-medium',
+)
 
 /**
  * A row's shortcut, spelled plainly (⌘K, ⌃N) and shown only while the row

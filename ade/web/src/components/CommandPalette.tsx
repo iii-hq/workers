@@ -37,6 +37,20 @@ import {
   useRef,
   useState,
 } from 'react'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+  InputGroupText,
+} from '@/components/shadcn/input-group'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemMedia,
+} from '@/components/shadcn/item'
+import { toggleVariants } from '@/components/shadcn/toggle'
 import { Kbd } from '@/components/ui/Kbd'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -72,6 +86,7 @@ import {
   readEngine,
 } from '@/lib/palette/sources'
 import { trackCommand } from '@/lib/telemetry'
+import { cn } from '@/lib/utils'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -123,10 +138,10 @@ const CAP =
 
 /** The filter row's chips: a quiet label that fills when chosen. Tab
  *  cycles them from the keyboard; the pointer picks one outright. */
-const CHIP =
-  'inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
-const CHIP_IDLE = 'text-muted-foreground hover:bg-muted hover:text-foreground'
-const CHIP_ON = 'bg-primary text-white'
+const CHIP = cn(
+  toggleVariants({ size: 'sm' }),
+  'h-6 shrink-0 px-2 text-xs text-muted-foreground',
+)
 
 /** The glyph's tile: a hairline square, so rows read as a column of
  *  objects rather than a ragged edge of bare icons. */
@@ -686,18 +701,20 @@ export function CommandPalette({
       >
         {/* The field: a magnifier, the mode chip when a prefix is typed, the
  query, and on a phone the close button. */}
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-border pr-1 pl-4 sm:pr-4">
-          <Search aria-hidden className="size-4 shrink-0 text-ink-ghost" />
-          {scope ? (
-            <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 text-xs font-medium text-muted-foreground">
-              {scope.glyph ? (
-                <span className="text-ink-ghost">{scope.glyph}</span>
-              ) : null}
-              {scope.label}
-            </span>
-          ) : null}
+        <InputGroup className="h-14 shrink-0 rounded-none border-0 border-b border-border bg-transparent pr-1 pl-4 shadow-none! has-[input:focus-visible]:ring-0 sm:pr-4 dark:bg-transparent">
+          <InputGroupAddon className="pl-0">
+            <Search aria-hidden className="text-ink-ghost" />
+            {scope ? (
+              <InputGroupText className="h-6 rounded-md bg-muted px-1.5 text-xs font-medium">
+                {scope.glyph ? (
+                  <span className="text-ink-ghost">{scope.glyph}</span>
+                ) : null}
+                {scope.label}
+              </InputGroupText>
+            ) : null}
+          </InputGroupAddon>
           <div className="relative min-w-0 flex-1">
-            <input
+            <InputGroupInput
               ref={inputRef}
               value={typed}
               onChange={(event) => {
@@ -714,7 +731,7 @@ export function CommandPalette({
               // Under 16px iOS Safari zooms the page on focus, which strands a
               // fixed overlay off screen. Worker and function ids are not prose,
               // so autocorrect and the automatic leading capital both mangle them.
-              className="h-14 w-full bg-transparent text-base text-foreground caret-foreground outline-none"
+              className="h-14 px-0 text-base text-foreground caret-foreground md:text-base"
               inputMode="search"
               enterKeyHint="go"
               autoCapitalize="none"
@@ -735,21 +752,23 @@ export function CommandPalette({
           </div>
           {/* Escape, spelled where a pointer can see it; a phone has no Escape
  and gets a real close button instead. */}
-          <Kbd
-            aria-hidden
-            className={`${CAP} hidden shrink-0 pointer-fine:inline-flex`}
-          >
-            esc
-          </Kbd>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close search"
-            className="flex size-12 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:hidden"
-          >
-            <X className="size-5" aria-hidden />
-          </button>
-        </div>
+          <InputGroupAddon align="inline-end" className="pr-0">
+            <Kbd
+              aria-hidden
+              className={`${CAP} hidden shrink-0 pointer-fine:inline-flex`}
+            >
+              esc
+            </Kbd>
+            <InputGroupButton
+              size="icon-sm"
+              onClick={onClose}
+              aria-label="Close search"
+              className="size-12 text-muted-foreground hover:text-foreground sm:hidden"
+            >
+              <X className="size-5" aria-hidden />
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
 
         {/* The filter row: every kind the palette can narrow to, so the
  scopes are discoverable before Tab is pressed. A typed prefix is
@@ -775,15 +794,14 @@ export function CommandPalette({
                   aria-checked={on}
                   tabIndex={-1}
                   onClick={() => pickFilter(option.id)}
-                  className={`${CHIP} ${on ? CHIP_ON : CHIP_IDLE} ${
-                    count === 0 && !on ? 'opacity-50' : ''
-                  }`}
+                  data-state={on ? 'on' : 'off'}
+                  className={cn(CHIP, count === 0 && !on && 'opacity-50')}
                 >
                   {option.label}
                   {count ? (
                     <span
                       className={`ml-1.5 font-geist-mono text-meta tabular-nums ${
-                        on ? 'text-primary-foreground/60 ' : 'text-ink-ghost '
+                        on ? 'text-foreground' : 'text-ink-ghost'
                       }`}
                     >
                       {count > 99 ? '99+' : count}
@@ -863,9 +881,10 @@ export function CommandPalette({
                     entry.kind,
                   )
                   return (
-                    <button
+                    <Item
                       key={entry.id}
-                      type="button"
+                      size="xs"
+                      render={<button type="button" />}
                       tabIndex={-1}
                       data-palette-index={index}
                       data-selected={selected || undefined}
@@ -873,11 +892,12 @@ export function CommandPalette({
                         if (!selected) select(index)
                       }}
                       onClick={() => choose(entry)}
-                      className={`flex min-h-12 w-full scroll-my-1.5 items-center gap-3 rounded-lg px-2.5 text-left transition-colors duration-[var(--motion-duration-control)] sm:min-h-10 ${
-                        selected ? 'bg-muted ' : 'hover:bg-muted '
-                      }`}
+                      className={cn(
+                        'min-h-12 scroll-my-1.5 gap-3 px-2.5 py-0 text-left sm:min-h-10',
+                        selected ? 'bg-muted' : 'hover:bg-muted',
+                      )}
                     >
-                      <span
+                      <ItemMedia
                         aria-hidden
                         className={`${TILE} ${selected ? TILE_ON : TILE_IDLE}`}
                       >
@@ -891,8 +911,8 @@ export function CommandPalette({
                             } ${statusTone(entry.keywords[0])}`}
                           />
                         ) : null}
-                      </span>
-                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                      </ItemMedia>
+                      <ItemContent className="min-w-0 flex-1 flex-row items-baseline gap-2">
                         {entry.kind === 'function' ? (
                           <FunctionId id={entry.title} ranges={titleRanges} />
                         ) : (
@@ -917,35 +937,37 @@ export function CommandPalette({
                             />
                           </span>
                         ) : null}
-                      </span>
+                      </ItemContent>
                       {/* The right-hand tag is the first thing to give up when
  the row has to fit a phone. Holding the pick key swaps it for
  the row's number. */}
-                      {digit !== null ? (
-                        <Kbd
-                          className={`${CAP} hidden shrink-0 text-foreground sm:inline-flex `}
-                        >
-                          {digit}
-                        </Kbd>
-                      ) : entry.shortcut ? (
-                        <KeyCombo
-                          binding={entry.shortcut}
-                          platform={platform}
-                          className="hidden shrink-0 sm:inline-flex"
-                          capClassName={CAP}
-                        />
-                      ) : entry.meta ? (
-                        <span
-                          className={`hidden max-w-[40%] shrink-0 truncate text-ink-ghost tabular-nums sm:block ${
-                            entry.metaMono
-                              ? 'font-geist-mono text-xs tracking-[-0.01em]'
-                              : 'text-xs'
-                          }`}
-                        >
-                          {entry.meta}
-                        </span>
-                      ) : null}
-                    </button>
+                      <ItemActions className="shrink-0">
+                        {digit !== null ? (
+                          <Kbd
+                            className={`${CAP} hidden shrink-0 text-foreground sm:inline-flex `}
+                          >
+                            {digit}
+                          </Kbd>
+                        ) : entry.shortcut ? (
+                          <KeyCombo
+                            binding={entry.shortcut}
+                            platform={platform}
+                            className="hidden shrink-0 sm:inline-flex"
+                            capClassName={CAP}
+                          />
+                        ) : entry.meta ? (
+                          <span
+                            className={`hidden max-w-[40%] shrink-0 truncate text-ink-ghost tabular-nums sm:block ${
+                              entry.metaMono
+                                ? 'font-geist-mono text-xs tracking-[-0.01em]'
+                                : 'text-xs'
+                            }`}
+                          >
+                            {entry.meta}
+                          </span>
+                        ) : null}
+                      </ItemActions>
+                    </Item>
                   )
                 })}
               </div>

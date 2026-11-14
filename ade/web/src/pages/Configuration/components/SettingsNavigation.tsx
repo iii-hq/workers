@@ -18,6 +18,7 @@ import {
 } from 'react'
 import { Button } from '@/components/shadcn/button'
 import { Input } from '@/components/shadcn/input'
+import { navRowVariants } from '@/components/ui/nav-row'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import {
@@ -479,8 +480,8 @@ interface NavItemProps {
   onClick: () => void
 }
 
-const ROW_BASE =
-  'flex w-full items-center gap-2.5 rounded-md px-2 text-left leading-5 outline-none transition-colors duration-100 ease-out select-none'
+/* The shared navigation row (nav-row.ts), with the settings' 15px labels. */
+const ROW_BASE = cn(navRowVariants(), 'gap-2.5 leading-5 select-none')
 
 function NavItem({
   icon: Icon,
@@ -496,13 +497,8 @@ function NavItem({
         onClick={onClick}
         title={title}
         aria-current={selected ? 'page' : undefined}
-        className={cn(
-          ROW_BASE,
-          'h-9 text-[15px] focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:h-11',
-          selected
-            ? 'bg-surface-selected/70 text-foreground '
-            : 'text-muted-foreground hover:bg-surface-hover/50 hover:text-foreground  ',
-        )}
+        data-active={selected || undefined}
+        className={cn(ROW_BASE, 'h-9 text-[15px] pointer-coarse:h-11')}
       >
         <PageIcon icon={Icon} selected={selected} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -572,17 +568,16 @@ function ResultRow({
         event.preventDefault()
         onChoose()
       }}
+      data-active={selected || undefined}
       className={cn(
         ROW_BASE,
         'cursor-default',
         field
           ? 'h-8 pl-[34px] text-sm pointer-coarse:h-10'
           : 'h-9 text-[15px] pointer-coarse:h-11',
-        selected
-          ? 'bg-surface-selected/70 text-foreground '
-          : active
-            ? 'bg-surface-selected/50 text-foreground '
-            : 'text-muted-foreground ',
+        active &&
+          !selected &&
+          'bg-sidebar-accent/60 text-sidebar-accent-foreground',
       )}
     >
       {children}

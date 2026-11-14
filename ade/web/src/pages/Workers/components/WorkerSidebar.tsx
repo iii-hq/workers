@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react'
 import { Input } from '@/components/shadcn/input'
+import { navRowVariants } from '@/components/ui/nav-row'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import {
@@ -321,10 +322,16 @@ export function WorkerSidebar({
   )
 }
 
-const ROW =
-  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left font-inter text-muted-foreground transition-colors duration-150 ease-out outline-none hover:bg-surface-hover/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 pointer-coarse:min-h-12'
-const ROW_SELECTED = 'bg-accent/80 text-foreground hover:bg-accent/80'
-const ROW_ACTIVE = 'bg-surface-selected/60 text-foreground'
+/* The shared navigation row (nav-row.ts): two lines tall, touch-sized on
+   a coarse pointer. The keyboard-active result and the current page both
+   wear the sidebar wash; the current one in the medium weight. */
+const ROW = cn(
+  navRowVariants({ size: 'auto' }),
+  'gap-2.5 px-2.5 font-inter pointer-coarse:min-h-12',
+)
+const ROW_SELECTED =
+  'bg-sidebar-accent font-medium text-sidebar-accent-foreground'
+const ROW_ACTIVE = 'bg-sidebar-accent/60 text-sidebar-accent-foreground'
 
 function Group({
   label,
