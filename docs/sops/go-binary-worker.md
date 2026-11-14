@@ -58,8 +58,11 @@ maps the Registry triples to Go's `GOOS` and `GOARCH` through
 Declare a string `version` variable in package `main`. Release builds run
 `go build -mod=readonly -trimpath -ldflags "-s -w -X main.version=<metadata-version>"`
 with `CGO_ENABLED=0`, `GOWORK=off`, and `GOTOOLCHAIN=local`. They require no C
-cross-compiler. Compiled frontend assets must be committed and embedded with
-`go:embed`; Go release builds do not install or build frontend dependencies.
+cross-compiler. An optional `artifact.tags` list adds `-tags <a,b>` to that
+build, and CI vets and tests with the same tags; Mesh sets
+`ts_omit_peerapiserver`. Compiled frontend assets must be committed and
+embedded with `go:embed`; Go release builds do not install or build frontend
+dependencies.
 
 Each build unit produces `<binary>-<target>.tar.gz` and a SHA-256 sidecar.
 Windows-capable Go workers use a ZIP containing `<binary>.exe`. The prepared
@@ -79,13 +82,14 @@ amd64 binary.
 
 Go's adjacent `*_test.go` files satisfy the repository's tests requirement;
 a separate `tests/` directory is optional. CI discovers `go-binary` artifacts
-in the Go matrix and runs formatting, vet, readonly tests, and the release build:
+in the Go matrix and runs formatting, vet, readonly tests, and the release build,
+with `<tags>` the comma-joined `artifact.tags` (empty when unset):
 
 ```bash
 cd <worker>
 test -z "$(gofmt -l .)"
-CGO_ENABLED=0 GOWORK=off go vet -mod=readonly ./...
-CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./...
+CGO_ENABLED=0 GOWORK=off go vet -mod=readonly -tags=<tags> ./...
+CGO_ENABLED=0 GOWORK=off go test -mod=readonly -tags=<tags> ./...
 make build
 ```
 
