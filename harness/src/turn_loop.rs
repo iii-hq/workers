@@ -492,6 +492,17 @@ async fn generate_step(
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
+        // The process died between the finalize write and its reseed: only
+        // this redelivery can still seed the turn that write promised.
+        if record.continues {
+            match crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await {
+                Ok(()) => reseed_after_finalize_drain(deps, &mut record).await,
+                Err(error) => {
+                    tracing::warn!(session_id = %record.session_id, %error, "could not reload a finished turn to seed the one it promised");
+                    settle_unreseeded(deps, &mut record, cfg.session_timeout_ms).await;
+                }
+            }
+        }
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
