@@ -299,6 +299,7 @@ impl BindingStore {
             }
             let mut next = expected.clone();
             next.fires = expected.fires + 1;
+            next.claimed_at = Some(now);
 
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
                 None => {
@@ -502,6 +503,7 @@ mod tests {
             capability: None,
             dedup_key: dedup,
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         }
     }

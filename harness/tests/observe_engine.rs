@@ -225,6 +225,7 @@ fn sink_binding(id: &str, function_id: &str) -> Binding {
         }),
         dedup_key: Some(json!({ "function_id": function_id })),
         fires: 0,
+        claimed_at: None,
         created_at: 0,
     }
 }

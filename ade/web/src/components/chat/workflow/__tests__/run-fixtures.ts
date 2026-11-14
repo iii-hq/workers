@@ -1,0 +1,131 @@
+/** `workflow::status {details: true}` replies shared by the workflow tests. */
+
+/** A finished two-node run, as `workflow::status {details: true}` returns it. */
+export const BATCH = {
+  created_at: 1794408336733,
+  updated_at: 1794408448575,
+  run_id: 'r_3f03',
+  status: 'completed',
+  nodes: { 'batch-check': 'done', 'batch-work': 'done' },
+  node_results: {
+    'batch-check': 'r_3f03/batch-check',
+    'batch-work': 'r_3f03/batch-work',
+  },
+  phases: {
+    check: { done: 1, failed: 0, running: 0, total: 1 },
+    test: { done: 1, failed: 0, running: 0, total: 1 },
+  },
+  result: { verdict: 'pass' },
+  node_details: {
+    'batch-check': {
+      attempt: 0,
+      started_at: 1794408422677,
+      finished_at: 1794408448575,
+      last_generate_at: 1794408436813,
+      label: 'KAN-5 batch r1w1 check',
+      model: 'codex/gpt-6-luna',
+      phase: 'check',
+      profile: 'workflow-verifier',
+      session_id: 'wf_r_3f03_batch-check@r0',
+      state: 'done',
+      usage: {
+        cache_read_tokens: 9344,
+        cache_write_tokens: 0,
+        complete: true,
+        cost_usd: null,
+        input_tokens: 25962,
+        output_tokens: 1096,
+        reasoning_tokens: 409,
+      },
+    },
+    'batch-work': {
+      attempt: 0,
+      started_at: 1794408336765,
+      finished_at: 1794408422639,
+      last_generate_at: 1794408416280,
+      label: 'KAN-5 batch r1w1 tests',
+      model: 'codex/gpt-6-luna',
+      phase: 'test',
+      profile: 'workflow-impl',
+      session_id: 'wf_r_3f03_batch-work@r0',
+      state: 'done',
+      usage: {
+        cache_read_tokens: 201472,
+        cache_write_tokens: 0,
+        complete: true,
+        cost_usd: null,
+        input_tokens: 52226,
+        output_tokens: 2252,
+        reasoning_tokens: 560,
+      },
+    },
+  },
+}
+
+export const T = 1794408000000
+/** The same run on the loop's second pass: one node failed, four waiting. */
+export const LIVE = {
+  run_id: 'r_live',
+  status: 'running',
+  created_at: T + 1000,
+  updated_at: T + 9000,
+  nodes: {
+    work: 'done',
+    verify: 'done',
+    'work#it1': 'failed',
+    'verify#it1': 'running',
+    plan: 'pending',
+    map: 'pending',
+    critic: 'pending',
+    a_report: 'pending',
+  },
+  node_errors: { 'work#it1': 'no provider registered for model x' },
+  phases: {
+    work: { total: 2, done: 1, failed: 1, running: 0 },
+    check: { total: 2, done: 1, failed: 0, running: 1 },
+    plan: { total: 1, done: 0, failed: 0, running: 0 },
+  },
+  node_details: {
+    a_report: { state: 'pending' },
+    critic: { state: 'pending', phase: 'critic' },
+    map: { state: 'pending', phase: 'map' },
+    plan: { state: 'pending', phase: 'plan', profile: 'planner' },
+    verify: {
+      state: 'done',
+      phase: 'check',
+      label: 'Check',
+      started_at: T + 3000,
+      finished_at: T + 4000,
+    },
+    'verify#it1': {
+      state: 'running',
+      phase: 'check',
+      label: 'Check',
+      started_at: T + 6000,
+      last_generate_at: T + 7000,
+      session_id: 'wf_r_live_verify#it1@r0',
+      usage: {
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_tokens: 300,
+        cache_write_tokens: null,
+        cost_usd: 0.4234,
+      },
+    },
+    work: {
+      state: 'done',
+      phase: 'work',
+      label: 'Work',
+      started_at: T + 1000,
+      finished_at: T + 3000,
+      usage: { input_tokens: 10, output_tokens: 5, cost_usd: null },
+    },
+    'work#it1': {
+      state: 'failed',
+      phase: 'work',
+      label: 'Work',
+      started_at: T + 4000,
+      finished_at: T + 6000,
+    },
+  },
+}

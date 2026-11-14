@@ -19,6 +19,7 @@ use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
 use crate::types::event::Usage;
 use crate::types::message::{AgentMessage, AssistantMessage};
+use crate::types::turn::TurnRecord;
 
 use super::session_tree::{self, SessionTreeNodeV1};
 
@@ -495,7 +496,7 @@ fn read_session(
                 session_context(turn.context_snapshot.clone(), omit_context);
             read.context = snapshot;
             read.read_back = read_back;
-            read.settled = terminal_snapshot(Some(turn.status), expects_wake);
+            read.settled = terminal_snapshot(&turn, expects_wake);
             if read.settled {
                 settled_turn = Some(turn.turn_id);
             }
@@ -541,9 +542,7 @@ fn read_session(
                 .await
                 .ok()
                 .flatten()
-                .is_some_and(|turn| {
-                    same_settled_turn(&turn_id, &turn.turn_id, turn.status, expects_wake)
-                }),
+                .is_some_and(|turn| same_settled_turn(&turn_id, &turn, expects_wake)),
             None => false,
         };
         cache.remember(session_id, still_settled, last_entry_id, &usage);
@@ -591,8 +590,10 @@ pub async fn handle(
     let omit_context = req.omit_context;
     // The binding store is listed once for the whole tree: asked per session
     // (`bindings::session_expects_wake`), it was listed again for each one.
-    // Same rule, failing closed the same way: an unreadable store counts every
-    // session as parked, so the answer is never reported complete.
+    // Record exists, not `parks_turn`: a claimed wake counts until its record
+    // goes, so this never settles earlier than `harness::status` would. It
+    // fails closed the same way: an unreadable store counts every session as
+    // parked, so the answer is never reported complete.
     let now = AgentMessage::now_ms();
     let parked: Option<BTreeSet<String>> =
         deps.bindings().await.list().await.ok().map(|bindings| {
@@ -789,23 +790,17 @@ where
     )))
 }
 
-fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
-    status.is_some_and(crate::types::turn::TurnStatus::is_terminal)
-}
-
-fn terminal_snapshot(status: Option<crate::types::turn::TurnStatus>, expects_wake: bool) -> bool {
-    terminal_status(status) && !expects_wake
+/// Settled: terminal, nothing armed to wake it, and no queued message its
+/// finalize drained (`continues`: its reseeded turn replaces it next), the
+/// same two terms as `harness::status`'s `expects_wake`.
+fn terminal_snapshot(turn: &TurnRecord, expects_wake: bool) -> bool {
+    turn.status.is_terminal() && !turn.continues && !expects_wake
 }
 
 /// Whether the turn read after a transcript is the settled turn read before
-/// it: same turn, still terminal, nothing armed to wake it.
-fn same_settled_turn(
-    before: &str,
-    after: &str,
-    status: crate::types::turn::TurnStatus,
-    expects_wake: bool,
-) -> bool {
-    before == after && terminal_snapshot(Some(status), expects_wake)
+/// it: same turn, still settled.
+fn same_settled_turn(before: &str, after: &TurnRecord, expects_wake: bool) -> bool {
+    before == after.turn_id && terminal_snapshot(after, expects_wake)
 }
 
 async fn collect_trace_metrics(
@@ -1607,21 +1602,49 @@ mod tests {
         assert!(cache.settled("s", true).is_none(), "forgotten once it ran");
     }
 
+    fn turn(turn_id: &str, status: TurnStatus) -> TurnRecord {
+        TurnRecord {
+            turn_id: turn_id.into(),
+            status,
+            ..crate::types::turn::tests::record()
+        }
+    }
+
     #[test]
     fn usage_is_cached_only_while_the_same_turn_stays_settled() {
-        use crate::types::turn::TurnStatus;
-        assert!(same_settled_turn("t1", "t1", TurnStatus::Completed, false));
+        assert!(same_settled_turn(
+            "t1",
+            &turn("t1", TurnStatus::Completed),
+            false
+        ));
         // A turn started while the transcript was being read.
-        assert!(!same_settled_turn("t1", "t2", TurnStatus::Running, false));
-        assert!(!same_settled_turn("t1", "t2", TurnStatus::Completed, false));
+        assert!(!same_settled_turn(
+            "t1",
+            &turn("t2", TurnStatus::Running),
+            false
+        ));
+        assert!(!same_settled_turn(
+            "t1",
+            &turn("t2", TurnStatus::Completed),
+            false
+        ));
         // Same turn, resumed by a function result or parked on a wake.
         assert!(!same_settled_turn(
             "t1",
-            "t1",
-            TurnStatus::AwaitingFunctions,
+            &turn("t1", TurnStatus::AwaitingFunctions),
             false
         ));
-        assert!(!same_settled_turn("t1", "t1", TurnStatus::Completed, true));
+        assert!(!same_settled_turn(
+            "t1",
+            &turn("t1", TurnStatus::Completed),
+            true
+        ));
+        // Same turn, its finalize drained a message and reseeds the session.
+        let continuing = TurnRecord {
+            continues: true,
+            ..turn("t1", TurnStatus::Completed)
+        };
+        assert!(!same_settled_turn("t1", &continuing, false));
     }
 
     #[test]
@@ -1724,15 +1747,25 @@ mod tests {
     }
 
     #[test]
-    fn metrics_complete_only_for_present_terminal_turns() {
-        assert!(!terminal_status(None));
-        assert!(!terminal_status(Some(TurnStatus::Running)));
-        assert!(!terminal_status(Some(TurnStatus::AwaitingFunctions)));
-        assert!(terminal_status(Some(TurnStatus::Completed)));
-        assert!(terminal_status(Some(TurnStatus::Cancelled)));
-        assert!(terminal_status(Some(TurnStatus::Failed)));
-        assert!(!terminal_snapshot(Some(TurnStatus::Completed), true));
-        assert!(terminal_snapshot(Some(TurnStatus::Completed), false));
+    fn metrics_complete_only_for_settled_terminal_turns() {
+        assert!(!terminal_snapshot(&turn("t", TurnStatus::Running), false));
+        assert!(!terminal_snapshot(
+            &turn("t", TurnStatus::AwaitingFunctions),
+            false
+        ));
+        for status in [
+            TurnStatus::Completed,
+            TurnStatus::Cancelled,
+            TurnStatus::Failed,
+        ] {
+            assert!(terminal_snapshot(&turn("t", status), false));
+            assert!(!terminal_snapshot(&turn("t", status), true));
+            let continuing = TurnRecord {
+                continues: true,
+                ..turn("t", status)
+            };
+            assert!(!terminal_snapshot(&continuing, false), "{status:?}");
+        }
     }
 
     #[test]

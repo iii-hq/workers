@@ -27,6 +27,16 @@ struct Store {
     /// a dispatch held mid-flight, between a fire's claim and its retirement.
     hold_sink: bool,
     held: Vec<Value>,
+    /// While set, the next compare-and-set finds its record deleted — a
+    /// binding retired between a delivery's read and its claim.
+    retire_before_claim: bool,
+    /// While set, every step enqueue fails: a woken turn cannot be scheduled.
+    fail_enqueue: bool,
+    /// While set, a binding record cannot be deleted: a delivery's retire fails.
+    fail_binding_delete: bool,
+    /// Queued when a failed turn is first written: a send that enqueued
+    /// between the failing turn's first drain and its terminal write.
+    queue_on_failed_write: Option<(String, Value)>,
 }
 
 impl Store {
@@ -49,6 +59,9 @@ impl Store {
         self.calls
             .push((function.into(), data.clone(), action.clone()));
         if action["type"] == "enqueue" {
+            if self.fail_enqueue {
+                return Err("queue unavailable".into());
+            }
             return Ok(json!({ "message_receipt_id": "receipt" }));
         }
         let scope = data["scope"].as_str().unwrap_or_default();
@@ -57,6 +70,11 @@ impl Store {
             "state::get" | "harness::state::get" => Ok(self.get(scope, key)),
             "state::set" | "harness::state::set" => {
                 self.put(scope, key, data["value"].clone());
+                if scope == "harness_turn" && data["value"]["status"] == "failed" {
+                    if let Some((key, row)) = self.queue_on_failed_write.take() {
+                        self.put("harness_queue", &key, row);
+                    }
+                }
                 Ok(json!({}))
             }
             "state::delete" | "harness::state::delete" => {
@@ -77,6 +95,13 @@ impl Store {
                     .collect(),
             )),
             "harness::state::compare-and-set" => {
+                if self.fail_binding_delete && scope == "harness_binding" && data["value"].is_null()
+                {
+                    return Err("store unavailable".into());
+                }
+                if std::mem::take(&mut self.retire_before_claim) {
+                    self.put(scope, key, Value::Null);
+                }
                 let current = self.get(scope, key);
                 let swapped = current == data["expected"];
                 if swapped {
@@ -296,6 +321,7 @@ fn call_binding(id: &str, once: bool, expires_at: i64) -> Binding {
         }),
         dedup_key: Some(json!({ "function_id": "state::on-changed" })),
         fires: 0,
+        claimed_at: None,
         created_at: 0,
     }
 }
@@ -457,6 +483,286 @@ async fn a_pass_cleans_up_a_consumed_binding_without_an_outcome() {
     );
 }
 
+/// A once wake delivered back into its owner session.
+fn wake_binding(id: &str) -> Binding {
+    let mut wake = call_binding(id, true, AgentMessage::now_ms() + 60_000);
+    wake.target = BindingTarget::new(harness::functions::SEND_ID);
+    wake.capability = None;
+    wake
+}
+
+fn park(stack: &Stack, wake: &Binding) {
+    stack.insert_binding(wake);
+    stack.store.lock().unwrap().put(
+        "harness_turn",
+        "s_owner",
+        json!({
+            "session_id": "s_owner", "turn_id": "t_parked", "status": "completed",
+            "step": 1, "turn_count": 1, "depth": 0,
+            "options": { "model": "fake", "max_turns": 16 },
+            "created_at": 1, "updated_at": 1
+        }),
+    );
+}
+
+async fn status(stack: &Stack) -> harness::functions::status::StatusReport {
+    let req = harness::functions::status::StatusRequest {
+        session_id: "s_owner".into(),
+        verbose: false,
+    };
+    harness::functions::status::handle(&stack.deps, req)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// The live regression: a wake fired while its session's lock was held (a
+/// running tool call). The claimed record was then deleted by the binding
+/// pass every engine worker change runs, so `harness::status` read the
+/// parked turn as the outcome for the seconds before the woken turn started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_binding_pass_leaves_a_claimed_wake_to_its_delivery() {
+    let stack = Stack::new().await;
+    let wake = wake_binding("sub_wake");
+    park(&stack, &wake);
+    let held = stack.deps.locks.guard("s_owner").await;
+
+    let delivery = {
+        let deps = stack.deps.clone();
+        tokio::spawn(async move {
+            harness::functions::observer_deliver::handle(
+                &deps,
+                json!({ "type": "state", "scope": "watched", "key": "k", "new_value": 1 }),
+                Some(json!({ "__binding": "sub_wake" })),
+            )
+            .await
+        })
+    };
+    stack
+        .wait_for("the claim", |store| {
+            store.get("harness_binding", "sub_wake")["fires"] == 1
+        })
+        .await;
+    assert!(stack
+        .store
+        .lock()
+        .unwrap()
+        .get("harness_binding", "sub_wake")["claimed_at"]
+        .is_i64());
+
+    harness::bindings::expiry::sweep(&stack.deps).await;
+    harness::bindings::expiry::sweep(&stack.deps).await;
+    let due = AgentMessage::now_ms();
+    assert!(!harness::bindings::expiry::retire_due(&stack.deps, "sub_wake", due).await);
+    assert!(
+        stack.binding_stored("sub_wake"),
+        "the delivery retires its own record"
+    );
+    let parked = status(&stack).await;
+    assert_eq!(parked.turn_id.as_deref(), Some("t_parked"));
+    assert_eq!(parked.status, harness::types::turn::TurnStatus::Completed);
+    assert!(parked.expects_wake, "the parked turn is not the outcome");
+
+    drop(held);
+    let delivered = delivery.await.unwrap().unwrap();
+    assert!(delivered.delivered, "{delivered:?}");
+    let woken = status(&stack).await;
+    assert_eq!(woken.status, harness::types::turn::TurnStatus::Running);
+    assert_ne!(woken.turn_id.as_deref(), Some("t_parked"));
+    assert!(!stack.binding_stored("sub_wake"));
+    assert!(!stack.deps.deliveries.contains("sub_wake"));
+}
+
+/// A delivery that gives up before dispatching leaves no in-flight marker:
+/// it would keep the binding pass off a record forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_that_loses_its_claim_leaves_no_marker() {
+    let stack = Stack::new().await;
+    stack.insert_binding(&wake_binding("sub_gone"));
+    stack.store.lock().unwrap().retire_before_claim = true;
+
+    let result = harness::functions::observer_deliver::handle(
+        &stack.deps,
+        json!({ "type": "state", "scope": "watched", "key": "k", "new_value": 1 }),
+        Some(json!({ "__binding": "sub_gone" })),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.gate.as_deref(),
+        Some("unknown-binding"),
+        "{result:?}"
+    );
+    assert!(!stack.deps.deliveries.contains("sub_gone"));
+}
+
+/// A claimed wake whose claimer died (no delivery in flight here) is still
+/// the binding pass's to delete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_binding_pass_deletes_a_claimed_wake_nobody_delivers() {
+    let stack = Stack::new().await;
+    let mut wake = wake_binding("sub_orphan");
+    wake.fires = 1;
+    park(&stack, &wake);
+
+    harness::bindings::expiry::sweep(&stack.deps).await;
+
+    assert!(!stack.binding_stored("sub_orphan"));
+}
+
+fn stored_turn(stack: &Stack) -> Value {
+    stack.store.lock().unwrap().get("harness_turn", "s_owner")
+}
+
+async fn deliver_wake(stack: &Stack) -> harness::functions::observer_deliver::DeliverResult {
+    harness::functions::observer_deliver::handle(
+        &stack.deps,
+        json!({ "type": "state", "scope": "watched", "key": "k", "new_value": 1 }),
+        Some(json!({ "__binding": "sub_wake" })),
+    )
+    .await
+    .unwrap()
+}
+
+/// The woken turn fails inside the delivery, before `retire` deletes the
+/// claimed record. It must still end the exchange: it is the wake's outcome,
+/// not a turn parked on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_woken_turn_that_cannot_be_scheduled_ends_the_exchange() {
+    let stack = Stack::new().await;
+    park(&stack, &wake_binding("sub_wake"));
+    stack.store.lock().unwrap().fail_enqueue = true;
+
+    let result = deliver_wake(&stack).await;
+
+    assert!(!result.delivered, "{result:?}");
+    let turn = stored_turn(&stack);
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert_ne!(turn["turn_id"], "t_parked", "{turn}");
+    assert_eq!(turn["exchange_finished"], true, "{turn}");
+    assert!(!status(&stack).await.expects_wake);
+    assert!(!stack.binding_stored("sub_wake"));
+}
+
+/// A delivery whose retire fails leaves its claimed record behind until the
+/// binding pass. The woken turn and every later one must not wait on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_woken_turn_outlasting_a_failed_retire_ends_the_exchange() {
+    let stack = Stack::new().await;
+    park(&stack, &wake_binding("sub_wake"));
+    stack.store.lock().unwrap().fail_binding_delete = true;
+
+    let result = deliver_wake(&stack).await;
+
+    assert!(result.delivered, "{result:?}");
+    let lingering = stack
+        .store
+        .lock()
+        .unwrap()
+        .get("harness_binding", "sub_wake");
+    assert_eq!(lingering["fires"], 1, "{lingering}");
+    assert!(lingering["claimed_at"].is_i64(), "{lingering}");
+    assert!(!stack.deps.deliveries.contains("sub_wake"));
+    let woken = status(&stack).await;
+    assert_eq!(woken.status, harness::types::turn::TurnStatus::Running);
+    let turn_id = woken.turn_id.expect("the woken turn");
+    assert_ne!(turn_id, "t_parked");
+
+    harness::turn_loop::fail_turn(&stack.deps, "s_owner", &turn_id, "boom")
+        .await
+        .unwrap();
+
+    let turn = stored_turn(&stack);
+    assert_eq!(turn["exchange_finished"], true, "{turn}");
+    assert!(!status(&stack).await.expects_wake);
+    assert!(
+        stack.binding_stored("sub_wake"),
+        "the record outlived the seed"
+    );
+}
+
+/// The race the claim guards against: a turn that started before the claim
+/// still finalizes parked while its wake is being delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_that_predates_the_claim_stays_parked_on_it() {
+    let stack = Stack::new().await;
+    let mut wake = wake_binding("sub_wake");
+    wake.fires = 1;
+    wake.claimed_at = Some(AgentMessage::now_ms());
+    stack.insert_binding(&wake);
+    stack.store.lock().unwrap().put(
+        "harness_turn",
+        "s_owner",
+        json!({
+            "session_id": "s_owner", "turn_id": "t_running", "status": "running",
+            "step": 1, "turn_count": 1, "depth": 0,
+            "options": { "model": "fake", "max_turns": 16 },
+            "created_at": 1, "updated_at": 1
+        }),
+    );
+
+    harness::turn_loop::fail_turn(&stack.deps, "s_owner", "t_running", "boom")
+        .await
+        .unwrap();
+
+    let turn = stored_turn(&stack);
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert!(turn.get("exchange_finished").is_none(), "{turn}");
+    assert!(status(&stack).await.expects_wake);
+}
+
+/// A message enqueued while a turn fails, after its first drain, is collected
+/// by the sweep after the terminal write. The failed turn is then progress: it
+/// is rewritten as continuing, not as the exchange's end, and the message
+/// reseeds the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_queued_as_a_turn_fails_keeps_the_exchange_going() {
+    let stack = Stack::new().await;
+    let row = json!({
+        "id": "q_late", "session_id": "s_owner", "entry_id": "e_late", "queued_at": 1,
+        "message": AgentMessage::user_text("[notification] late"),
+    });
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.queue_on_failed_write = Some(("s_owner:q_late".into(), row));
+        store.put(
+            "harness_turn",
+            "s_owner",
+            json!({
+                "session_id": "s_owner", "turn_id": "t_running", "status": "running",
+                "step": 1, "turn_count": 1, "depth": 0,
+                "options": { "model": "fake", "max_turns": 16 },
+                "created_at": 1, "updated_at": 1
+            }),
+        );
+    }
+
+    harness::turn_loop::fail_turn(&stack.deps, "s_owner", "t_running", "boom")
+        .await
+        .unwrap();
+
+    let store = stack.store.lock().unwrap();
+    let failed = store
+        .calls
+        .iter()
+        .filter(|(f, data, _)| {
+            f.ends_with("state::set")
+                && data["scope"] == "harness_turn"
+                && data["value"]["turn_id"] == "t_running"
+        })
+        .map(|(_, data, _)| &data["value"])
+        .next_back()
+        .expect("the failed turn is written");
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert_eq!(failed["continues"], true, "{failed}");
+    assert!(failed.get("exchange_finished").is_none(), "{failed}");
+    assert!(store.appended("e_late"));
+    let turn = store.get("harness_turn", "s_owner");
+    assert_eq!(turn["status"], "running", "the message reseeds: {turn}");
+    assert_ne!(turn["turn_id"], "t_running", "{turn}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_worker_disconnect_event_redrives_an_orphaned_turn() {
     let stack = Stack::new().await;
@@ -519,4 +825,128 @@ async fn a_worker_disconnect_event_redrives_an_orphaned_turn() {
                 .is_some_and(|at| at > 1)
         })
         .await;
+}
+
+/// The wake fires while its owner's turn still runs: the delivery claims it
+/// after that turn began, queues it into the turn instead of seeding one, and
+/// fails to retire it. The turn takes the wake through its in-step drain, so
+/// the lingering claimed record must not park it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_turn_that_drained_its_wake_ends_the_exchange() {
+    let stack = Stack::new().await;
+    stack.insert_binding(&wake_binding("sub_wake"));
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            "harness_turn",
+            "s_owner",
+            json!({
+                "session_id": "s_owner", "turn_id": "t_running", "status": "running",
+                "step": 1, "turn_count": 1, "depth": 0,
+                "options": { "model": "fake", "max_turns": 16 },
+                "created_at": 1, "updated_at": 1
+            }),
+        );
+        store.fail_binding_delete = true;
+    }
+
+    let result = deliver_wake(&stack).await;
+    assert!(result.delivered, "{result:?}");
+    assert_eq!(
+        stored_turn(&stack)["turn_id"],
+        "t_running",
+        "queued, not seeded"
+    );
+
+    // The step drains the wake, then errors on the mock's missing context
+    // RPCs; the turn fails from its stored record, as a step error does.
+    let payload = harness::turn_loop::TurnStepPayload {
+        session_id: "s_owner".into(),
+        turn_id: "t_running".into(),
+        step: 1,
+        message_preview: None,
+        depth: 0,
+    };
+    let step = harness::turn_loop::run_step(&stack.deps, payload).await;
+    assert!(step.is_err(), "{step:?}");
+    harness::turn_loop::fail_turn(&stack.deps, "s_owner", "t_running", "step error")
+        .await
+        .unwrap();
+
+    let turn = stored_turn(&stack);
+    assert_eq!(turn["turn_id"], "t_running", "{turn}");
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert_eq!(turn["exchange_finished"], true, "{turn}");
+    assert!(!status(&stack).await.expects_wake);
+    assert_eq!(turn["took_wakes"], json!(["sub_wake"]), "{turn}");
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(function, data, _)| {
+                function == "session::append" && data["entry_id"] == "e_fire_sub_wake_1"
+            }),
+        "the step drained the wake"
+    );
+    assert!(
+        stack.binding_stored("sub_wake"),
+        "the record outlived the drain"
+    );
+}
+
+/// The wake fires while its owner's turn waits on its functions: the delivery
+/// appends it straight into the transcript and merges it into that turn, which
+/// reads it when it resumes. The lingering claimed record must not park it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_a_wake_merged_into_ends_the_exchange() {
+    let stack = Stack::new().await;
+    stack.insert_binding(&wake_binding("sub_wake"));
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.put(
+            "harness_turn",
+            "s_owner",
+            json!({
+                "session_id": "s_owner", "turn_id": "t_waiting",
+                "status": "awaiting_functions",
+                "step": 1, "turn_count": 1, "depth": 0,
+                "options": { "model": "fake", "max_turns": 16 },
+                "created_at": 1, "updated_at": 1
+            }),
+        );
+        store.fail_binding_delete = true;
+    }
+
+    let result = deliver_wake(&stack).await;
+    assert!(result.delivered, "{result:?}");
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(function, data, _)| {
+                function == "session::append" && data["entry_id"] == "e_fire_sub_wake_1"
+            }),
+        "appended, not queued"
+    );
+    assert_eq!(stored_turn(&stack)["turn_id"], "t_waiting", "merged");
+
+    harness::turn_loop::fail_turn(&stack.deps, "s_owner", "t_waiting", "step error")
+        .await
+        .unwrap();
+
+    let turn = stored_turn(&stack);
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert_eq!(turn["exchange_finished"], true, "{turn}");
+    assert!(!status(&stack).await.expects_wake);
+    assert_eq!(turn["took_wakes"], json!(["sub_wake"]), "{turn}");
+    assert!(
+        stack.binding_stored("sub_wake"),
+        "the record outlived the delivery"
+    );
 }

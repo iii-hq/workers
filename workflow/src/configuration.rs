@@ -52,6 +52,9 @@ pub const TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 pub const PRE_CALL_HOOK_FN: &str = "harness::hook::on-pre-call";
 /// The harness hook point before generation; the guidance observer.
 pub const PRE_GENERATE_HOOK_FN: &str = "harness::hook::on-pre-generate";
+/// The harness hook point at turn end; `workflow::validate-result` observes it
+/// for node sessions.
+pub const POST_TURN_HOOK_FN: &str = "harness::hook::on-post-turn";
 
 /// How long a replacement sweep observer may stay `pending` before it is
 /// kept anyway (the cron worker is not running yet).
@@ -102,19 +105,45 @@ pub struct ObserverHandles {
     pub guidance: config_client::ObserverSlot,
 }
 
-/// Observe the two always-on harness functions (turn-completed → wake,
-/// pre-call hook → stamp-reply). One shot: an observer of a function the
-/// harness has not registered yet stays `pending` and becomes active when the
-/// harness registers it, and again across harness restarts. Nothing to watch
+/// Observe the always-on harness functions (turn-completed → wake, pre-call
+/// hook → stamp-reply, post-turn hook → validate-result). One shot: an
+/// observer of a function the harness has not registered yet stays `pending`
+/// and becomes active when the harness registers it, and again across harness
+/// restarts. Nothing to watch
 /// or retry. The pre-generate guidance hook is NOT observed here — it follows
-/// the `inject_guidance` config knob via [`apply_guidance`].
-pub fn setup_harness_hooks(iii: &IIIClient) {
+/// the `inject_guidance` config knob via [`apply_guidance`]. Returns the
+/// stamp-reply observer, which boot waits on before registering `workflow::start`.
+pub fn setup_harness_hooks(iii: &IIIClient) -> ObserverHandle {
     observe_turn_completed(iii);
-    observe_pre_call_hook(iii);
+    observe_post_turn_hook(iii);
+    let stamp = observe_pre_call_hook(iii);
     tracing::info!(
         "workflow harness observers created: on-turn-completed → wake, hook::on-pre-call → \
-         stamp-reply"
+         stamp-reply, hook::on-post-turn → validate-result"
     );
+    stamp
+}
+
+/// The args of the `workflow::validate-result` observer of the post-turn hook:
+/// node sessions only. `on_error: fail_open` (post_turn defaults to
+/// fail-closed): reconcile checks the settled result again, so a validator that
+/// errors or times out must not fail the node's turn.
+pub fn post_turn_hook_args() -> Value {
+    json!({
+        "sessions": [format!("{}*", crate::functions::wake::SESSION_PREFIX)],
+        "on_error": "fail_open",
+        "timeout_ms": 30000,
+        "retry_prompt": crate::functions::validate_result::RETRY_PROMPT,
+    })
+}
+
+/// Observe `harness::hook::on-post-turn` with `workflow::validate-result`: a
+/// JSON node's settling turn must answer with a JSON value matching its schema.
+fn observe_post_turn_hook(iii: &IIIClient) -> ObserverHandle {
+    iii.observe(
+        Source::function(POST_TURN_HOOK_FN).args(post_turn_hook_args()),
+        crate::functions::validate_result::VALIDATE_RESULT_ID,
+    )
 }
 
 /// Reconcile the live `workflow::inject-guidance` observer with the configured
@@ -157,28 +186,35 @@ pub fn report_sweep(handle: ObserverHandle) {
     });
 }
 
-/// Subscribe `workflow::wake` to harness turn completion. No session filter —
-/// the handler discards non-workflow sessions — because workflow nodes are
-/// top-level turns, so a `parent_session_id` filter would never match. The cron
-/// sweep is the durable fallback while the harness is down.
+/// The filter of the turn-completed observer: node sessions only, so the
+/// engine does not call `workflow::wake` for every other turn.
+pub fn turn_completed_filters() -> Value {
+    json!({ "input.session_id": { "$prefix": crate::functions::wake::SESSION_PREFIX } })
+}
+
+/// Subscribe `workflow::wake` to harness turn completion of node sessions.
+/// The cron sweep is the durable fallback while the harness is down.
 fn observe_turn_completed(iii: &IIIClient) -> ObserverHandle {
     iii.observe(
-        Source::function(TURN_COMPLETED_FN).capture([Capture::Output]),
+        Source::function(TURN_COMPLETED_FN)
+            .filters(turn_completed_filters())
+            .capture([Capture::Output]),
         crate::functions::wake::WAKE_ID,
     )
 }
 
 /// The args of the `workflow::stamp-reply` observer of the pre-call hook.
 ///
-/// `on_error: fail_open` because the hook only stamps the caller's session
-/// (and, when `reply_to` is set, the caller's model/provider/policy) into the
-/// arguments — trivial, fast, and side-effect-free; it never starts a run or
-/// parks the call. A hook timeout/error must NOT block a legitimate
-/// `workflow::start`: falling through just runs the call without the
-/// auto-stamp (the run still happens; it only loses console nesting / reply
-/// delivery on that one call) — strictly better than denying it.
+/// `on_error: fail_closed`: the hook replaces any agent-supplied
+/// `caller_fs_root` with the caller turn's folder, so a call that skipped it
+/// would run its nodes in a folder the agent chose. A hook timeout/error
+/// therefore refuses `workflow::start` for an agent caller.
 pub fn pre_call_hook_args() -> Value {
-    json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 })
+    json!({
+        "functions": ["workflow::start", crate::functions::submit::SUBMIT_ID],
+        "on_error": "fail_closed",
+        "timeout_ms": 30000
+    })
 }
 
 /// Observe `harness::hook::on-pre-call` with `workflow::stamp-reply`, scoped
@@ -204,12 +240,20 @@ pub fn pre_generate_hook_args() -> Value {
     })
 }
 
+/// Node sessions are left out: they run inside a workflow, `workflow::*` is
+/// denied to them, and the guidance only tempts them to start one.
+pub fn pre_generate_hook_filters() -> Value {
+    json!({ "$not": { "input.session_id": { "$prefix": crate::functions::wake::SESSION_PREFIX } } })
+}
+
 /// Observe `harness::hook::on-pre-generate` so the workflow orchestration
 /// guidance is appended to the agent system prompt ONLY while this worker is
 /// connected.
 fn observe_pre_generate_hook(iii: &IIIClient) -> ObserverHandle {
     iii.observe(
-        Source::function(PRE_GENERATE_HOOK_FN).args(pre_generate_hook_args()),
+        Source::function(PRE_GENERATE_HOOK_FN)
+            .args(pre_generate_hook_args())
+            .filters(pre_generate_hook_filters()),
         crate::functions::inject_guidance::GUIDANCE_HOOK_ID,
     )
 }
@@ -311,6 +355,22 @@ mod tests {
     use tokio::sync::RwLock;
 
     #[test]
+    fn guidance_skips_node_sessions() {
+        assert_eq!(
+            pre_generate_hook_filters(),
+            json!({ "$not": { "input.session_id": { "$prefix": "wf_" } } })
+        );
+    }
+
+    #[test]
+    fn turn_completed_observer_filters_on_the_node_session_prefix() {
+        assert_eq!(
+            turn_completed_filters(),
+            json!({ "input.session_id": { "$prefix": "wf_" } })
+        );
+    }
+
+    #[test]
     fn observers_carry_the_v2_args() {
         assert_eq!(
             sweep_args(&WorkerConfig {
@@ -321,7 +381,19 @@ mod tests {
         );
         assert_eq!(
             pre_call_hook_args(),
-            json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 })
+            json!({
+                "functions": ["workflow::start", "workflow-result::submit"],
+                "on_error": "fail_closed",
+                "timeout_ms": 30000
+            })
+        );
+        let post_turn = post_turn_hook_args();
+        assert_eq!(post_turn["sessions"], json!(["wf_*"]));
+        assert_eq!(post_turn["on_error"], "fail_open");
+        assert_eq!(post_turn["timeout_ms"], 30000);
+        assert_eq!(
+            post_turn["retry_prompt"],
+            crate::functions::validate_result::RETRY_PROMPT
         );
         let guidance = pre_generate_hook_args();
         assert_eq!(guidance["on_error"], "fail_open");

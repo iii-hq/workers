@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::Value;
 
-use crate::ids::node_uid;
-use crate::types::{NodeCheckpoint, NodeDef, NodeState, RunStatus, WorkflowDef, WorkflowRunRecord};
+use crate::ids::{iter_uid, node_uid, split_iteration};
+use crate::types::{
+    LoopCondition, NodeCheckpoint, NodeDef, NodeState, OnError, OutputFrom, RunStatus, WorkflowDef,
+    WorkflowRunRecord,
+};
 
 // ponytail: generous cap so a runaway `over` array can't materialize unbounded
 // per-item state/sessions; tighten if abused.
@@ -15,24 +18,6 @@ const MAX_FANOUT_ITEMS: usize = 10_000;
 // fan out into a resource bomb (each item is a harness session + a checkpoint
 // stored in the run's single JSON record). Safety ceiling, not a tuning knob.
 const MAX_TOTAL_NODES: usize = 50_000;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Returns a zeroed-out Pending checkpoint (caller sets node_uid as the map key).
-fn pending_checkpoint() -> NodeCheckpoint {
-    NodeCheckpoint {
-        state: NodeState::Pending,
-        session_id: None,
-        turn_id: None,
-        result_ref: None,
-        result_error: None,
-        pending_at: None,
-        pending_timeout_ms: None,
-        retries: 0,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -48,6 +33,109 @@ pub fn fanned_uids(record: &WorkflowRunRecord, node_id: &str) -> Vec<String> {
             .map(|i| node_uid(node_id, Some(i as u32)))
             .collect(),
     }
+}
+
+/// Node id → the loop node of the loop it belongs to (a loop node maps to itself).
+/// Nodes in no loop are absent.
+fn loop_groups(def: &WorkflowDef) -> BTreeMap<&str, &str> {
+    let mut groups = BTreeMap::new();
+    for (id, node) in &def.nodes {
+        if let Some(spec) = &node.loop_spec {
+            groups.insert(id.as_str(), id.as_str());
+            for b in &spec.body {
+                groups.insert(b.as_str(), id.as_str());
+            }
+        }
+    }
+    groups
+}
+
+/// The last materialized loop pass of `node_id`: probes `<id>#it1`, `<id>#it2`, …
+/// until one is missing; 0 for a node that never repeated.
+fn last_pass(record: &WorkflowRunRecord, node_id: &str) -> u32 {
+    let mut k = 0;
+    while record.nodes.contains_key(&iter_uid(node_id, k + 1)) {
+        k += 1;
+    }
+    k
+}
+
+/// Uid of the last materialized loop pass of `node_id` (`node_id` itself for a node
+/// that never repeated): what a reader outside the loop waits for and reads.
+pub fn last_uid(record: &WorkflowRunRecord, node_id: &str) -> String {
+    iter_uid(node_id, last_pass(record, node_id))
+}
+
+/// `cond.field` (a dotted path) of `result` is the string `cond.equals`. A missing
+/// field, a non-string value or no result does not hold. Pure.
+fn condition_holds(cond: &LoopCondition, result: Option<&Value>) -> bool {
+    let leaf = result.and_then(|r| cond.field.split('.').try_fold(r, |cur, seg| cur.get(seg)));
+    leaf.and_then(Value::as_str) == Some(cond.equals.as_str())
+}
+
+/// Start the next pass of every loop whose last pass `k` finished: when every node
+/// of the loop is Done at pass `k`, `while` holds on the loop node's pass-`k` result
+/// and `k < max_repeats`, insert a default Pending checkpoint `<node>#it<k+1>` for
+/// every node of the loop, all or none. A failed or cancelled node (even a tolerated
+/// one), a false condition, the repeat limit or the run-wide node cap ends the loop
+/// quietly. A second call adds nothing. Returns the loop node ids that got a pass;
+/// the caller persists the record. Call it before `expand_ready_fanouts` and
+/// `ready_frontier`, so readers of a loop node see its new pass.
+pub fn expand_ready_loops(
+    def: &WorkflowDef,
+    record: &mut WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) -> Vec<String> {
+    let mut expanded = Vec::new();
+    for (id, node) in &def.nodes {
+        let Some(spec) = &node.loop_spec else {
+            continue;
+        };
+        let k = last_pass(record, id);
+        let members: Vec<&str> = std::iter::once(id.as_str())
+            .chain(spec.body.iter().map(String::as_str))
+            .collect();
+        let pass_done = members.iter().all(|m| {
+            record
+                .nodes
+                .get(&iter_uid(m, k))
+                .is_some_and(|cp| cp.state == NodeState::Done)
+        });
+        if !pass_done
+            || k >= spec.max_repeats
+            || !condition_holds(&spec.cond, results.get(&iter_uid(id, k)))
+            || record.nodes.len() + members.len() > MAX_TOTAL_NODES
+        {
+            continue;
+        }
+        for m in members {
+            record.nodes.entry(iter_uid(m, k + 1)).or_default();
+        }
+        expanded.push(id.clone());
+    }
+    expanded
+}
+
+/// What a node of a loop reads at the pass of `uid`: `loop_previous`, the loop
+/// node's result of the previous pass, and for a body node `Some(own_previous)`,
+/// its own result of the previous pass (`None` for the loop node, where it would
+/// equal `loop_previous`). Both are `null` on the first pass (or when that pass
+/// left no result). `None` for a node in no loop.
+pub fn loop_previous(
+    def: &WorkflowDef,
+    uid: &str,
+    results: &BTreeMap<String, Value>,
+) -> Option<(Value, Option<Value>)> {
+    let (node_id, k) = split_iteration(uid);
+    let loop_id = *loop_groups(def).get(node_id)?;
+    let prev = |id: &str| match k {
+        0 => Value::Null,
+        k => results
+            .get(&iter_uid(id, k - 1))
+            .cloned()
+            .unwrap_or(Value::Null),
+    };
+    Some((prev(loop_id), (node_id != loop_id).then(|| prev(node_id))))
 }
 
 /// JSON value kind, for diagnostics.
@@ -133,7 +221,8 @@ pub fn resolve_over_path(
 }
 
 /// For each fanout node in `def` whose dependencies are Done and which has not yet been
-/// expanded (no entry in `record.fanout_src`), snapshot the `over` array into
+/// expanded (no entry in `record.fanout_src`), snapshot its `items`, else the `over`
+/// array, into
 /// `record.fanout_src[node_id]` and insert a `Pending` `NodeCheckpoint` for each
 /// `node_uid(node_id, Some(i))`.
 ///
@@ -160,7 +249,7 @@ pub fn expand_ready_fanouts(
         .collect();
 
     for (node_id, node_def) in candidates {
-        // All direct depends_on must be Done before we can snapshot the over array.
+        // All direct depends_on (the `over` source and the reads) must be settled first.
         if !deps_done(def, record, node_id) {
             continue;
         }
@@ -170,7 +259,22 @@ pub fn expand_ready_fanouts(
         // can never expand — fail it fast (base-id Failed checkpoint) so the run
         // fails instead of parking in AwaitingNodes forever.
         let fanout_spec = node_def.fanout.as_ref().unwrap();
-        let items = match resolve_over_path(&fanout_spec.over, results) {
+        // The request spelling, so a runtime error does not teach the stored `node:` prefix.
+        let source = match &fanout_spec.items {
+            Some(_) => "its own array".to_string(),
+            None => format!(
+                "'{}'",
+                fanout_spec
+                    .over
+                    .strip_prefix("node:")
+                    .unwrap_or(&fanout_spec.over)
+            ),
+        };
+        let outcome = match &fanout_spec.items {
+            Some(items) => Ok(items.clone()),
+            None => resolve_over_path(&fanout_spec.over, results),
+        };
+        let items = match outcome {
             Ok(v) if v.len() <= MAX_FANOUT_ITEMS => v,
             outcome => {
                 // Two distinct failures, each with an honest message:
@@ -178,23 +282,17 @@ pub fn expand_ready_fanouts(
                 // - the array is genuinely oversize (the cap, stated as a cap)
                 let reason = match outcome {
                     Ok(v) => format!(
-                        "fanout '{}' over '{}': array has {} items, exceeds the cap of {}",
-                        node_id,
-                        fanout_spec.over,
+                        "fanout '{node_id}' over {source}: array has {} items, exceeds the cap of {MAX_FANOUT_ITEMS}",
                         v.len(),
-                        MAX_FANOUT_ITEMS
                     ),
-                    Err(detail) => {
-                        format!(
-                            "fanout '{}' over '{}': {}",
-                            node_id, fanout_spec.over, detail
-                        )
-                    }
+                    Err(detail) => format!("fanout '{node_id}' over {source}: {detail}"),
                 };
                 record.fanout_src.insert(node_id.to_string(), vec![]);
-                let mut cp = pending_checkpoint();
-                cp.state = NodeState::Failed;
-                cp.result_error = Some(reason);
+                let cp = NodeCheckpoint {
+                    state: NodeState::Failed,
+                    result_error: Some(reason),
+                    ..Default::default()
+                };
                 record.nodes.insert(node_id.to_string(), cp);
                 expanded.push(node_id.to_string());
                 continue;
@@ -208,16 +306,15 @@ pub fn expand_ready_fanouts(
         // record / spawn a session storm.
         if record.nodes.len() + items.len() > MAX_TOTAL_NODES {
             record.fanout_src.insert(node_id.to_string(), vec![]);
-            let mut cp = pending_checkpoint();
-            cp.state = NodeState::Failed;
-            cp.result_error = Some(format!(
-                "fanout '{}' over '{}': expanding {} items would exceed the run-wide cap of {} \
-                 materialized nodes",
-                node_id,
-                fanout_spec.over,
-                items.len(),
-                MAX_TOTAL_NODES
-            ));
+            let cp = NodeCheckpoint {
+                state: NodeState::Failed,
+                result_error: Some(format!(
+                    "fanout '{node_id}' over {source}: expanding {} items would exceed the \
+                     run-wide cap of {MAX_TOTAL_NODES} materialized nodes",
+                    items.len(),
+                )),
+                ..Default::default()
+            };
             record.nodes.insert(node_id.to_string(), cp);
             expanded.push(node_id.to_string());
             continue;
@@ -228,7 +325,7 @@ pub fn expand_ready_fanouts(
         record.fanout_src.insert(node_id.to_string(), items);
         for i in 0..n {
             let uid = node_uid(node_id, Some(i as u32));
-            record.nodes.entry(uid).or_insert_with(pending_checkpoint);
+            record.nodes.entry(uid).or_default();
         }
 
         expanded.push(node_id.to_string());
@@ -237,20 +334,54 @@ pub fn expand_ready_fanouts(
     expanded
 }
 
-/// Returns `true` when every dependency of `node_id` is fully Done:
-/// - For a normal (non-fanout) dependency: its checkpoint must be `NodeState::Done`.
+/// A node in `state` is finished for its consumers: Done, or Failed/Cancelled when its
+/// node is `on_error: continue` (`tolerant`). Pure.
+pub fn is_settled(state: NodeState, tolerant: bool) -> bool {
+    match state {
+        NodeState::Done => true,
+        NodeState::Failed | NodeState::Cancelled => tolerant,
+        NodeState::Pending | NodeState::Running => false,
+    }
+}
+
+/// True when `node_id` (a base id; fanout items share it) is `on_error: continue`.
+pub(crate) fn tolerant(def: &WorkflowDef, node_id: &str) -> bool {
+    def.nodes
+        .get(node_id)
+        .is_some_and(|n| n.on_error == OnError::Continue)
+}
+
+/// Returns `true` when every dependency of `uid` (a node id, a fanout item, or a loop
+/// pass `<id>#it<k>`) is settled (`is_settled`):
+/// - For a normal (non-fanout) dependency: its checkpoint must be settled; for a
+///   dependency in the reader's loop, its checkpoint at the reader's pass; for any
+///   other, its last pass (`last_uid`).
 /// - For a fanned-out dependency `dep_id`: the expansion must have occurred (entry in
 ///   `fanout_src`); an empty expansion is vacuously satisfied (0 items → 0..0 loop);
-///   a non-empty expansion requires every `dep_id#i` checkpoint to be `NodeState::Done`.
+///   a non-empty expansion requires every `dep_id#i` checkpoint to be settled.
 ///   An *un-expanded* fanout (no `fanout_src` entry) still blocks, as does a fanout that
-///   FAILED to expand (a base-id `Failed`/`Cancelled` checkpoint).
-pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -> bool {
+///   FAILED to expand (a base-id `Failed`/`Cancelled` checkpoint) unless it is tolerant.
+pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, uid: &str) -> bool {
+    deps_settled(def, record, uid, &loop_groups(def))
+}
+
+/// `deps_done` with the definition's `loop_groups` computed once by the caller.
+fn deps_settled(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    uid: &str,
+    groups: &BTreeMap<&str, &str>,
+) -> bool {
+    let (_, pass) = split_iteration(uid);
+    let node_id = uid.split('#').next().unwrap_or(uid);
     let node_def = match def.nodes.get(node_id) {
         Some(n) => n,
         None => return false,
     };
+    let group = groups.get(node_id);
 
     for dep_id in &node_def.depends_on {
+        let tolerant = tolerant(def, dep_id);
         if def
             .nodes
             .get(dep_id)
@@ -261,15 +392,18 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
             // (over path unresolvable / oversized / cap): `fanout_src` is an empty vec,
             // which the 0..0 loop below would otherwise read as vacuously Done. A failed
             // expansion must BLOCK its dependents (else an orphan-branch dependent fires
-            // on Null input), not satisfy them. quiescence catches this for required
-            // nodes; this covers orphan branches and the internal expand-time caller.
-            if matches!(
-                record.nodes.get(dep_id.as_str()).map(|c| c.state),
-                Some(NodeState::Failed) | Some(NodeState::Cancelled)
-            ) {
+            // on Null input), not satisfy them — unless the fanout is tolerant, whose
+            // consumers then read `[]`. quiescence catches this for required nodes; this
+            // covers orphan branches and the internal expand-time caller.
+            if !tolerant
+                && matches!(
+                    record.nodes.get(dep_id.as_str()).map(|c| c.state),
+                    Some(NodeState::Failed) | Some(NodeState::Cancelled)
+                )
+            {
                 return false;
             }
-            // Fanned dependency: expansion must exist AND every #i must be Done.
+            // Fanned dependency: expansion must exist AND every #i must be settled.
             match record.fanout_src.get(dep_id.as_str()) {
                 None => return false, // not yet expanded
                 Some(items) => {
@@ -279,16 +413,21 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
                     for i in 0..items.len() {
                         let uid = node_uid(dep_id, Some(i as u32));
                         match record.nodes.get(&uid) {
-                            Some(cp) if cp.state == NodeState::Done => {}
+                            Some(cp) if is_settled(cp.state, tolerant) => {}
                             _ => return false,
                         }
                     }
                 }
             }
         } else {
-            // Normal dependency: checkpoint must be Done.
-            match record.nodes.get(dep_id.as_str()) {
-                Some(cp) if cp.state == NodeState::Done => {}
+            // Same loop: the reader's own pass. Anything else: its last pass.
+            let dep_uid = if group.is_some() && groups.get(dep_id.as_str()) == group {
+                iter_uid(dep_id, pass)
+            } else {
+                last_uid(record, dep_id)
+            };
+            match record.nodes.get(&dep_uid) {
+                Some(cp) if is_settled(cp.state, tolerant) => {}
                 _ => return false,
             }
         }
@@ -303,9 +442,12 @@ pub fn deps_done(def: &WorkflowDef, record: &WorkflowRunRecord, node_id: &str) -
 ///   `Pending` (i.e. exists in `record.nodes` with state `Pending`).
 /// - For a fanout node not yet expanded: skip (expansion happens first via
 ///   `expand_ready_fanouts`).
-/// - For a normal node: the `node_id` itself if no checkpoint exists yet (never started).
+/// - For a normal node: the `node_id` itself if it has no checkpoint yet or a
+///   `Pending` one (reserved, a send to retry, or a sweep refire), and each loop pass
+///   `<id>#it<k>` whose checkpoint is `Pending`.
 pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<String> {
     let mut frontier = Vec::new();
+    let groups = loop_groups(def);
 
     for (node_id, node_def) in &def.nodes {
         if node_def.fanout.is_some() {
@@ -314,16 +456,26 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
                 for i in 0..items.len() {
                     let uid = node_uid(node_id, Some(i as u32));
                     if let Some(cp) = record.nodes.get(&uid) {
-                        if cp.state == NodeState::Pending && deps_done(def, record, node_id) {
+                        if cp.state == NodeState::Pending
+                            && deps_settled(def, record, node_id, &groups)
+                        {
                             frontier.push(uid);
                         }
                     }
                 }
             }
         } else {
-            // Normal node: ready if no checkpoint yet and deps are done.
-            if !record.nodes.contains_key(node_id.as_str()) && deps_done(def, record, node_id) {
-                frontier.push(node_id.clone());
+            // Normal node: each pass is ready if not started (no checkpoint or Pending)
+            // and its deps are done.
+            for k in 0..=last_pass(record, node_id) {
+                let uid = iter_uid(node_id, k);
+                let unstarted = record
+                    .nodes
+                    .get(&uid)
+                    .is_none_or(|cp| cp.state == NodeState::Pending);
+                if unstarted && deps_settled(def, record, &uid, &groups) {
+                    frontier.push(uid);
+                }
             }
         }
     }
@@ -331,7 +483,9 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
     frontier
 }
 
-/// Build the input value for `node_id` by gathering results from its declared source.
+/// Build the input value for `uid` (a node id, or a loop pass `<id>#it<k>`) by
+/// gathering results from its declared source. A `node:<dep>` in the reader's loop
+/// reads the reader's pass; any other dependency reads its last pass.
 ///
 /// - `input.from == "node:<dep>"` and `<dep>` is a FANOUT node → return a JSON array
 ///   `[results["<dep>#0"], results["<dep>#1"], …]` in strict NUMERIC order.
@@ -342,16 +496,30 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
 pub fn gather_input(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
-    node_id: &str,
+    uid: &str,
     results: &BTreeMap<String, Value>,
 ) -> Value {
+    let (_, pass) = split_iteration(uid);
+    let node_id = uid.split('#').next().unwrap_or(uid);
     let node_def = match def.nodes.get(node_id) {
         Some(n) => n,
         None => return record.input.clone(),
     };
+    let groups = loop_groups(def);
+    let group = groups.get(node_id);
+    let gather_one = |from: &str| match from.strip_prefix("node:") {
+        // A node of the reader's loop: the reader's own pass.
+        Some(dep) if group.is_some() && groups.get(dep) == group => results
+            .get(&iter_uid(dep, pass))
+            .cloned()
+            .unwrap_or(Value::Null),
+        Some(dep) => gather_node(def, record, dep, results),
+        // run_input / literal / fanout_item → delegate to the template layer.
+        None => record.input.clone(),
+    };
 
     match &node_def.input.from {
-        crate::types::InputFrom::One(from) => gather_one(def, record, from, results),
+        crate::types::InputFrom::One(from) => gather_one(from),
         crate::types::InputFrom::Many(sources) => {
             // Join: gather each `node:<id>` into a field keyed by the dep id, so a
             // synthesis node can read every dependency it declared (a single
@@ -360,7 +528,7 @@ pub fn gather_input(
             for src in sources {
                 if let Some(dep) = src.strip_prefix("node:") {
                     let key = dep.split('.').next().unwrap_or(dep).to_string();
-                    obj.insert(key, gather_one(def, record, src, results));
+                    obj.insert(key, gather_one(src));
                 }
                 // Non-`node:` entries are rejected at workflow::start; ignore here.
             }
@@ -369,33 +537,52 @@ pub fn gather_input(
     }
 }
 
-/// Resolve a single `from` source against the results map (the per-source logic
-/// shared by `One` and each element of `Many`).
-fn gather_one(
+/// One node's result: a fanout group's children as an array in NUMERIC order, else
+/// the node's own result (its last loop pass). A node without a result (unfinished, or failed with
+/// `on_error: continue`) reads as `null`.
+fn gather_node(
     def: &WorkflowDef,
     record: &WorkflowRunRecord,
-    from: &str,
+    node_id: &str,
     results: &BTreeMap<String, Value>,
 ) -> Value {
-    if let Some(dep) = from.strip_prefix("node:") {
-        // Check if dep is a fanout node.
-        if def.nodes.get(dep).and_then(|n| n.fanout.as_ref()).is_some() {
-            // Fan-in: iterate 0..N in NUMERIC order (not BTreeMap/lexical order).
-            let n = fanned_uids(record, dep).len();
-            let arr: Vec<Value> = (0..n)
-                .map(|i| {
-                    let uid = node_uid(dep, Some(i as u32));
-                    results.get(&uid).cloned().unwrap_or(Value::Null)
-                })
-                .collect();
-            Value::Array(arr)
-        } else {
-            // Normal node: return its single result.
-            results.get(dep).cloned().unwrap_or(Value::Null)
-        }
+    if def
+        .nodes
+        .get(node_id)
+        .and_then(|n| n.fanout.as_ref())
+        .is_some()
+    {
+        let n = fanned_uids(record, node_id).len();
+        let arr: Vec<Value> = (0..n)
+            .map(|i| {
+                let uid = node_uid(node_id, Some(i as u32));
+                results.get(&uid).cloned().unwrap_or(Value::Null)
+            })
+            .collect();
+        Value::Array(arr)
     } else {
-        // run_input / literal / fanout_item → delegate to the template layer.
-        record.input.clone()
+        results
+            .get(&last_uid(record, node_id))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+}
+
+/// The run's result from `output.from`: one node's result as is, or an object keyed
+/// by node id for the array form. Never the run input, even for a bare id.
+pub fn gather_output(
+    def: &WorkflowDef,
+    record: &WorkflowRunRecord,
+    results: &BTreeMap<String, Value>,
+) -> Value {
+    let ids = def.output.from.node_ids();
+    match &def.output.from {
+        OutputFrom::One(_) => gather_node(def, record, ids[0], results),
+        OutputFrom::Many(_) => Value::Object(
+            ids.into_iter()
+                .map(|id| (id.to_string(), gather_node(def, record, id, results)))
+                .collect(),
+        ),
     }
 }
 
@@ -403,8 +590,10 @@ fn gather_one(
 ///
 /// Evaluation order (first matching rule wins):
 /// 1. `record.abort` → `Cancelled`
-/// 2. Any node *in the required set* (or a fanned item of one) is `Failed`/`Cancelled` → `Failed`
-/// 3. Every required node (and every `#i` of a required fanned node) is `Done` → `Completed`
+/// 2. Any node *in the required set* (or a fanned item of one) is `Failed`/`Cancelled`
+///    and not `on_error: continue` → `Failed`
+/// 3. Every required node (every `#i` of a required fanned node, every pass of a
+///    loop node) is settled (`is_settled`) → `Completed`
 /// 4. Otherwise → `AwaitingNodes`
 ///
 /// Orphan-branch state (nodes not in the transitive closure of the output node) never
@@ -417,17 +606,20 @@ pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
 
     let mut all_done = true;
     for node_id in &required {
+        let tolerant = tolerant(def, node_id);
         let is_fanout = def
             .nodes
             .get(node_id.as_str())
             .map(|n| n.fanout.is_some())
             .unwrap_or(false);
         // Expand a required node to the uids that actually carry state: a fanout
-        // node contributes all its #i items, a normal node is itself.
+        // node contributes all its #i items, a normal node every materialized pass.
         let uids = if is_fanout {
             fanned_uids(record, node_id.as_str())
         } else {
-            vec![node_id.to_string()]
+            (0..=last_pass(record, node_id))
+                .map(|k| iter_uid(node_id, k))
+                .collect()
         };
         // A required fanout that hasn't expanded yet is not done. An expanded-empty fanout
         // (fanout_src entry present, zero items) is vacuously Done, so only an *un-expanded*
@@ -439,17 +631,19 @@ pub fn quiescence(def: &WorkflowDef, record: &WorkflowRunRecord) -> RunStatus {
             }
             // A base-id Failed/Cancelled checkpoint marks a fanout that failed to
             // expand (over path unresolvable / oversized).
-            if matches!(
-                record.nodes.get(node_id.as_str()).map(|c| c.state),
-                Some(NodeState::Failed) | Some(NodeState::Cancelled)
-            ) {
+            if !tolerant
+                && matches!(
+                    record.nodes.get(node_id.as_str()).map(|c| c.state),
+                    Some(NodeState::Failed) | Some(NodeState::Cancelled)
+                )
+            {
                 return RunStatus::Failed;
             }
         }
         for uid in uids {
             match record.nodes.get(&uid).map(|c| c.state) {
+                Some(s) if is_settled(s, tolerant) => {}
                 Some(NodeState::Failed) | Some(NodeState::Cancelled) => return RunStatus::Failed,
-                Some(NodeState::Done) => {}
                 _ => all_done = false, // Pending / Running / unstarted
             }
         }
@@ -493,23 +687,28 @@ pub fn validate_acyclic(def: &WorkflowDef) -> Result<(), String> {
     Ok(())
 }
 
-/// The output node plus the transitive closure of its `depends_on` (node_ids).
+/// The output node(s) plus the transitive closure of their `depends_on` (node_ids);
+/// a node of a loop also brings its loop node.
 pub fn required_set(def: &WorkflowDef) -> BTreeSet<String> {
+    let groups = loop_groups(def);
     let mut req = BTreeSet::new();
-    let mut stack: Vec<String> = Vec::new();
-    let output = def
+    let mut stack: Vec<String> = def
         .output
         .from
-        .strip_prefix("node:")
-        .unwrap_or(&def.output.from)
-        .to_string();
-    stack.push(output);
+        .node_ids()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(n) = stack.pop() {
         if !seen.insert(n.clone()) {
             continue;
         }
         req.insert(n.clone());
+        // A body node's last pass is known only when its loop ends.
+        if let Some(loop_id) = groups.get(n.as_str()) {
+            stack.push(loop_id.to_string());
+        }
         if let Some(node) = def.nodes.get(&n) {
             for dep in &node.depends_on {
                 stack.push(dep.clone());
@@ -543,17 +742,14 @@ mod tests {
             NodeDef {
                 agent: AgentSpec {
                     model: "claude-opus-4-8".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
                     output: Some(json!({"type":"json"})),
+                    ..Default::default()
                 },
                 input: InputSpec {
                     from: "run_input".into(),
                     template: Some("List the docs to read for: {{topic}}".to_string()),
                 },
-                depends_on: vec![],
-                fanout: None,
+                ..Default::default()
             },
         );
 
@@ -562,10 +758,8 @@ mod tests {
             NodeDef {
                 agent: AgentSpec {
                     model: "claude-haiku-4-5".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
                     output: Some(json!({"type":"json"})),
+                    ..Default::default()
                 },
                 input: InputSpec {
                     from: "fanout_item".into(),
@@ -574,7 +768,9 @@ mod tests {
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
                     over: "node:plan.result.docs".to_string(),
+                    items: None,
                 }),
+                ..Default::default()
             },
         );
 
@@ -583,17 +779,15 @@ mod tests {
             NodeDef {
                 agent: AgentSpec {
                     model: "claude-opus-4-8".to_string(),
-                    provider: None,
-                    system_prompt: None,
-                    functions: None,
                     output: Some(json!({"type":"json"})),
+                    ..Default::default()
                 },
                 input: InputSpec {
                     from: "node:read".into(),
                     template: Some("Synthesize from: {{results}}".to_string()),
                 },
                 depends_on: vec!["read".to_string()],
-                fanout: None,
+                ..Default::default()
             },
         );
 
@@ -604,6 +798,7 @@ mod tests {
                 from: "node:synthesize".into(),
             },
             default_functions: None,
+            max_concurrency: None,
         }
     }
 
@@ -620,8 +815,9 @@ mod tests {
             result: None,
             result_error: None,
             notify: None,
-            reply_to: None,
             caller_session_id: None,
+            caller_fs_root: None,
+            idem_key: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -630,13 +826,7 @@ mod tests {
     fn done_checkpoint() -> NodeCheckpoint {
         NodeCheckpoint {
             state: NodeState::Done,
-            session_id: None,
-            turn_id: None,
-            result_ref: None,
-            result_error: None,
-            pending_at: None,
-            pending_timeout_ms: None,
-            retries: 0,
+            ..Default::default()
         }
     }
 
@@ -832,26 +1022,14 @@ mod tests {
     fn failed_checkpoint() -> NodeCheckpoint {
         NodeCheckpoint {
             state: NodeState::Failed,
-            session_id: None,
-            turn_id: None,
-            result_ref: None,
-            result_error: None,
-            pending_at: None,
-            pending_timeout_ms: None,
-            retries: 0,
+            ..Default::default()
         }
     }
 
     fn running_checkpoint() -> NodeCheckpoint {
         NodeCheckpoint {
             state: NodeState::Running,
-            session_id: None,
-            turn_id: None,
-            result_ref: None,
-            result_error: None,
-            pending_at: None,
-            pending_timeout_ms: None,
-            retries: 0,
+            ..Default::default()
         }
     }
 
@@ -895,10 +1073,8 @@ mod tests {
         use crate::types::{AgentSpec, InputSpec, NodeDef, OutputRef};
         let agent = || AgentSpec {
             model: "m".to_string(),
-            provider: None,
-            system_prompt: None,
-            functions: None,
             output: Some(json!({"type":"json"})),
+            ..Default::default()
         };
         let mut nodes = BTreeMap::new();
         nodes.insert(
@@ -909,8 +1085,7 @@ mod tests {
                     from: "run_input".into(),
                     template: None,
                 },
-                depends_on: vec![],
-                fanout: None,
+                ..Default::default()
             },
         );
         nodes.insert(
@@ -921,8 +1096,7 @@ mod tests {
                     from: "run_input".into(),
                     template: None,
                 },
-                depends_on: vec![],
-                fanout: None,
+                ..Default::default()
             },
         );
         nodes.insert(
@@ -934,7 +1108,7 @@ mod tests {
                     template: None,
                 },
                 depends_on: vec!["b".to_string(), "c".to_string()],
-                fanout: None,
+                ..Default::default()
             },
         );
         let d = WorkflowDef {
@@ -944,6 +1118,7 @@ mod tests {
                 from: "node:join".into(),
             },
             default_functions: None,
+            max_concurrency: None,
         };
         let r = record();
         let mut results = BTreeMap::new();
@@ -1135,6 +1310,115 @@ mod tests {
             RunStatus::Failed,
             "run must fail (not hang) when a required fanout cannot expand"
         );
+        assert_eq!(
+            r.nodes["b"].result_error.as_deref(),
+            Some("fanout 'b' over 'a.result.items': value at path is string (not an array)")
+        );
+    }
+
+    /// `draft` → `critic` (fanout over a written array, reading `draft`) → `final`.
+    fn critics_def(reads: bool) -> WorkflowDef {
+        let mut d: WorkflowDef = serde_json::from_value(json!({
+            "nodes": {
+                "draft": {"agent": {}, "input": {"from": "run_input"}},
+                "critic": {"agent": {}, "input": {"from": "node:draft"}, "depends_on": ["draft"],
+                           "fanout": {"items": ["security", "cost"]}},
+                "final": {"agent": {}, "input": {"from": "node:critic"}, "depends_on": ["critic"]}
+            },
+            "output": {"from": "node:final"}
+        }))
+        .unwrap();
+        if !reads {
+            let critic = d.nodes.get_mut("critic").unwrap();
+            critic.input.from = "fanout_item".into();
+            critic.depends_on.clear();
+        }
+        d
+    }
+
+    #[test]
+    fn written_array_expands_at_once_without_reads() {
+        let d = critics_def(false);
+        let mut r = record();
+        assert_eq!(
+            expand_ready_fanouts(&d, &mut r, &BTreeMap::new()),
+            vec!["critic".to_string()]
+        );
+        assert_eq!(
+            r.fanout_src["critic"],
+            vec![json!("security"), json!("cost")]
+        );
+        assert_eq!(
+            fanned_uids(&r, "critic"),
+            vec!["critic#0".to_string(), "critic#1".to_string()]
+        );
+    }
+
+    #[test]
+    fn written_array_waits_for_its_reads() {
+        let d = critics_def(true);
+        let mut r = record();
+        assert!(expand_ready_fanouts(&d, &mut r, &BTreeMap::new()).is_empty());
+        r.nodes.insert("draft".into(), done_checkpoint());
+        assert_eq!(
+            expand_ready_fanouts(&d, &mut r, &BTreeMap::new()),
+            vec!["critic".to_string()]
+        );
+    }
+
+    #[test]
+    fn path_fanout_with_reads_waits_for_source_and_reads() {
+        let mut d = def();
+        d.nodes.insert(
+            "spec".into(),
+            serde_json::from_value(json!({"agent": {}, "input": {"from": "run_input"}})).unwrap(),
+        );
+        let read = d.nodes.get_mut("read").unwrap();
+        read.input.from = "node:spec".into();
+        read.depends_on.push("spec".into());
+        let mut r = record();
+        let results = BTreeMap::from([("plan".to_string(), json!({"docs": ["a"]}))]);
+        r.nodes.insert("plan".into(), done_checkpoint());
+        assert!(expand_ready_fanouts(&d, &mut r, &results).is_empty());
+        r.nodes.insert("spec".into(), done_checkpoint());
+        assert_eq!(
+            expand_ready_fanouts(&d, &mut r, &results),
+            vec!["read".to_string()]
+        );
+    }
+
+    #[test]
+    fn written_array_over_the_cap_names_its_own_array() {
+        let mut d = critics_def(false);
+        d.nodes
+            .get_mut("critic")
+            .unwrap()
+            .fanout
+            .as_mut()
+            .unwrap()
+            .items = Some(vec![json!(0); MAX_FANOUT_ITEMS + 1]);
+        let mut r = record();
+        expand_ready_fanouts(&d, &mut r, &BTreeMap::new());
+        assert_eq!(
+            r.nodes["critic"].result_error.as_deref(),
+            Some("fanout 'critic' over its own array: array has 10001 items, exceeds the cap of 10000")
+        );
+    }
+
+    #[test]
+    fn reader_of_written_array_fanout_gets_results_in_written_order() {
+        let d = critics_def(true);
+        let mut r = record();
+        r.nodes.insert("draft".into(), done_checkpoint());
+        expand_ready_fanouts(&d, &mut r, &BTreeMap::new());
+        let results = BTreeMap::from([
+            ("critic#1".to_string(), json!("on cost")),
+            ("critic#0".to_string(), json!("on security")),
+        ]);
+        assert_eq!(
+            gather_input(&d, &r, "final", &results),
+            json!(["on security", "on cost"])
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1199,5 +1483,564 @@ mod tests {
         r.nodes.insert("a".into(), done_checkpoint());
         r.nodes.insert("b".into(), running_checkpoint());
         assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+    }
+
+    fn pending_send_retry() -> NodeCheckpoint {
+        NodeCheckpoint {
+            session_id: Some("wf_run_test_b@r0".into()),
+            result_error: Some("send failed: invocation timed out".into()),
+            send_failed_at: Some(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ready_frontier_includes_pending_checkpoint_of_normal_node() {
+        let d = def_with_orphan();
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), pending_send_retry());
+        r.nodes.insert("orphan".into(), running_checkpoint());
+        assert_eq!(ready_frontier(&d, &r), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn quiescence_does_not_fail_on_pending_with_error() {
+        let d = def_with_orphan();
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), pending_send_retry());
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+    }
+
+    // -----------------------------------------------------------------------
+    // on_error: continue, and output.from as an array
+    // -----------------------------------------------------------------------
+
+    fn continue_on(d: &mut WorkflowDef, ids: &[&str]) {
+        for id in ids {
+            d.nodes.get_mut(*id).unwrap().on_error = OnError::Continue;
+        }
+    }
+
+    fn cancelled_checkpoint() -> NodeCheckpoint {
+        NodeCheckpoint {
+            state: NodeState::Cancelled,
+            result_error: Some("cancelled".into()),
+            ..Default::default()
+        }
+    }
+
+    /// Three independent text nodes x, y, z plus an orphan; `output.from` as given.
+    fn independent_def(output_from: Value) -> WorkflowDef {
+        serde_json::from_value(json!({
+            "output": {"from": output_from},
+            "nodes": {
+                "x": {"agent": {"model": "m"}, "input": {"from": "run_input"}},
+                "y": {"agent": {"model": "m"}, "input": {"from": "run_input"}},
+                "z": {"agent": {"model": "m"}, "input": {"from": "run_input"}},
+                "orphan": {"agent": {"model": "m"}, "input": {"from": "run_input"}}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn deps_done_true_when_failed_dep_continues() {
+        let mut d = def_with_orphan();
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), failed_checkpoint());
+        assert!(!deps_done(&d, &r, "d"), "a strict failed dep blocks");
+        continue_on(&mut d, &["b"]);
+        assert!(deps_done(&d, &r, "d"));
+        assert!(ready_frontier(&d, &r).contains(&"d".to_string()));
+    }
+
+    #[test]
+    fn cancelled_node_with_continue_settles() {
+        assert!(is_settled(NodeState::Cancelled, true));
+        assert!(!is_settled(NodeState::Cancelled, false));
+        assert!(!is_settled(NodeState::Running, true));
+        assert!(!is_settled(NodeState::Pending, true));
+        let mut d = def_with_orphan();
+        continue_on(&mut d, &["b"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), cancelled_checkpoint());
+        assert!(deps_done(&d, &r, "d"));
+    }
+
+    #[test]
+    fn quiescence_completes_when_required_failure_continues() {
+        let mut d = def_with_orphan();
+        continue_on(&mut d, &["b"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), failed_checkpoint());
+        assert_eq!(
+            quiescence(&d, &r),
+            RunStatus::AwaitingNodes,
+            "d still to run"
+        );
+        r.nodes.insert("d".into(), running_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+        r.nodes.insert("d".into(), done_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+
+        // The output node itself failing with continue also completes the run.
+        continue_on(&mut d, &["d"]);
+        r.nodes.insert("d".into(), failed_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+    }
+
+    #[test]
+    fn quiescence_tolerates_failed_fanout_item_with_continue() {
+        let mut d = def();
+        continue_on(&mut d, &["read"]);
+        let mut r = record();
+        r.nodes.insert("plan".into(), done_checkpoint());
+        let mut results = BTreeMap::new();
+        results.insert("plan".to_string(), json!({"docs": ["a", "b", "c"]}));
+        expand_ready_fanouts(&d, &mut r, &results);
+        r.nodes.insert("read#0".into(), done_checkpoint());
+        r.nodes.insert("read#1".into(), failed_checkpoint());
+        r.nodes.insert("read#2".into(), running_checkpoint());
+        results.insert("read#0".into(), json!("v0"));
+        assert!(!deps_done(&d, &r, "synthesize"), "read#2 still running");
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+
+        r.nodes.insert("read#2".into(), done_checkpoint());
+        results.insert("read#2".into(), json!("v2"));
+        assert!(deps_done(&d, &r, "synthesize"));
+        assert_eq!(
+            gather_input(&d, &r, "synthesize", &results),
+            json!(["v0", null, "v2"]),
+            "fan-in keeps positions"
+        );
+        r.nodes.insert("synthesize".into(), done_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+    }
+
+    #[test]
+    fn abort_wins_over_continue() {
+        let mut d = def_with_orphan();
+        continue_on(&mut d, &["a", "b", "d"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), failed_checkpoint());
+        r.abort = true;
+        assert_eq!(quiescence(&d, &r), RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn gather_input_yields_null_for_failed_continue_dep() {
+        let mut d = def_with_orphan();
+        continue_on(&mut d, &["b"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        r.nodes.insert("b".into(), failed_checkpoint());
+        let mut results = BTreeMap::new();
+        results.insert("a".to_string(), json!({"k": 1}));
+        assert_eq!(gather_input(&d, &r, "d", &results), Value::Null);
+        assert_ne!(gather_input(&d, &r, "d", &results), r.input);
+    }
+
+    #[test]
+    fn gather_input_reads_text_dep_whole_as_string() {
+        let mut d = def_with_orphan();
+        d.nodes.get_mut("a").unwrap().agent.output = None;
+        let mut r = record();
+        r.nodes.insert("a".into(), done_checkpoint());
+        let text = "Report.\n- point one\n- point two";
+        let results = BTreeMap::from([("a".to_string(), json!(text))]);
+        assert_eq!(gather_input(&d, &r, "b", &results), json!(text));
+        d.nodes.get_mut("b").unwrap().input.from = InputFrom::Many(vec!["node:a".into()]);
+        assert_eq!(gather_input(&d, &r, "b", &results), json!({ "a": text }));
+    }
+
+    #[test]
+    fn failed_expansion_with_continue_gives_empty_array() {
+        let mut d = empty_fanout_def();
+        continue_on(&mut d, &["a", "b"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), failed_checkpoint());
+        let results = BTreeMap::new();
+        assert_eq!(expand_ready_fanouts(&d, &mut r, &results), vec!["b"]);
+        assert_eq!(
+            r.nodes["b"].state,
+            NodeState::Failed,
+            "no result to fan over"
+        );
+        assert!(deps_done(&d, &r, "c"));
+        assert_eq!(gather_input(&d, &r, "c", &results), json!([]));
+        assert_eq!(
+            quiescence(&d, &r),
+            RunStatus::AwaitingNodes,
+            "c still to run"
+        );
+        r.nodes.insert("c".into(), done_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+    }
+
+    #[test]
+    fn tolerant_source_with_strict_fanout_consumer_fails_run() {
+        let mut d = empty_fanout_def();
+        continue_on(&mut d, &["a"]);
+        let mut r = record();
+        r.nodes.insert("a".into(), failed_checkpoint());
+        expand_ready_fanouts(&d, &mut r, &BTreeMap::new());
+        assert_eq!(r.nodes["b"].state, NodeState::Failed);
+        assert!(!deps_done(&d, &r, "c"));
+        assert_eq!(quiescence(&d, &r), RunStatus::Failed);
+    }
+
+    #[test]
+    fn required_set_unions_output_array() {
+        let d = independent_def(json!(["node:x", "y"]));
+        let req = required_set(&d);
+        assert_eq!(req, BTreeSet::from(["x".to_string(), "y".to_string()]));
+        let d = def_with_orphan();
+        let mut d2 = d.clone();
+        d2.output.from = OutputFrom::Many(vec!["node:d".into(), "node:orphan".into()]);
+        let req = required_set(&d2);
+        for id in ["a", "b", "d", "orphan"] {
+            assert!(req.contains(id), "{id}");
+        }
+        assert!(!required_set(&d).contains("orphan"));
+    }
+
+    #[test]
+    fn gather_output_many_is_object_keyed_by_node() {
+        let mut d = def();
+        d.output.from = OutputFrom::Many(vec!["node:plan".into(), "node:read".into()]);
+        let mut r = record();
+        r.fanout_src.insert("read".into(), vec![json!(0), json!(1)]);
+        let mut results = BTreeMap::new();
+        results.insert("plan".to_string(), json!({"docs": [0, 1]}));
+        results.insert("read#1".to_string(), json!("r1"));
+        assert_eq!(
+            gather_output(&d, &r, &results),
+            json!({"plan": {"docs": [0, 1]}, "read": [null, "r1"]})
+        );
+    }
+
+    #[test]
+    fn gather_output_bare_id_matches_node_prefix() {
+        let mut results = BTreeMap::new();
+        results.insert("y".to_string(), json!("text y"));
+        let r = record();
+        let bare = gather_output(&independent_def(json!("y")), &r, &results);
+        let prefixed = gather_output(&independent_def(json!("node:y")), &r, &results);
+        assert_eq!(bare, json!("text y"));
+        assert_eq!(bare, prefixed);
+        // A bare id with no result is null, never the run input.
+        let missing = gather_output(&independent_def(json!(["x"])), &r, &results);
+        assert_eq!(missing, json!({"x": null}));
+    }
+
+    #[test]
+    fn gather_output_one_keeps_bare_result() {
+        let mut d = def();
+        let mut r = record();
+        r.fanout_src.insert("read".into(), vec![json!(0)]);
+        let mut results = BTreeMap::new();
+        results.insert("synthesize".to_string(), json!({"summary": "s"}));
+        results.insert("read#0".to_string(), json!("r0"));
+        assert_eq!(gather_output(&d, &r, &results), json!({"summary": "s"}));
+        d.output.from = "node:read".into();
+        assert_eq!(gather_output(&d, &r, &results), json!(["r0"]));
+    }
+
+    // -----------------------------------------------------------------------
+    // Loops: w (work, text) → v (verify, json, loop body [w]) → out
+    // -----------------------------------------------------------------------
+
+    fn loop_def(max_repeats: u32) -> WorkflowDef {
+        serde_json::from_value(json!({
+            "nodes": {
+                "w": {"agent": {"model": "m"}, "input": {"from": "run_input"}},
+                "v": {
+                    "agent": {"model": "m", "output": {"type": "json"}},
+                    "input": {"from": "node:w"}, "depends_on": ["w"],
+                    "loop": {"body": ["w"], "while": {"field": "verdict", "equals": "reject"},
+                             "max_repeats": max_repeats}
+                },
+                "out": {"agent": {"model": "m"}, "input": {"from": "node:v"}, "depends_on": ["v"]}
+            },
+            "output": {"from": "node:out"}
+        }))
+        .expect("loop def")
+    }
+
+    fn set_done(
+        r: &mut WorkflowRunRecord,
+        results: &mut BTreeMap<String, Value>,
+        uid: &str,
+        value: Value,
+    ) {
+        r.nodes.insert(uid.to_string(), done_checkpoint());
+        results.insert(uid.to_string(), value);
+    }
+
+    /// Pass 0 of `w` and `v` Done, `v` reading `verdict`.
+    fn first_pass_done(verdict: &str) -> (WorkflowRunRecord, BTreeMap<String, Value>) {
+        let mut r = record();
+        let mut results = BTreeMap::new();
+        set_done(&mut r, &mut results, "w", json!("work 0"));
+        set_done(&mut r, &mut results, "v", json!({"verdict": verdict}));
+        (r, results)
+    }
+
+    #[test]
+    fn condition_holds_compares_field_by_equality() {
+        let cond = LoopCondition {
+            field: "review.verdict".into(),
+            equals: "reject".into(),
+        };
+        let holds = |v: Value| condition_holds(&cond, Some(&v));
+        assert!(holds(json!({"review": {"verdict": "reject"}})));
+        assert!(!holds(json!({"review": {"verdict": "pass"}})));
+        assert!(!holds(json!({"review": {}})), "missing field");
+        assert!(
+            !holds(json!({"review": "reject"})),
+            "not an object on the way"
+        );
+        assert!(!holds(json!(null)), "null result");
+        assert!(!condition_holds(&cond, None), "no result");
+        let flag = LoopCondition {
+            field: "ok".into(),
+            equals: "true".into(),
+        };
+        assert!(
+            !condition_holds(&flag, Some(&json!({"ok": true}))),
+            "a non-string value never equals the string"
+        );
+    }
+
+    #[test]
+    fn loop_expands_next_pass_when_condition_holds() {
+        let d = loop_def(2);
+        let (mut r, results) = first_pass_done("reject");
+        assert_eq!(expand_ready_loops(&d, &mut r, &results), vec!["v"]);
+        for uid in ["w#it1", "v#it1"] {
+            let cp = r.nodes.get(uid).expect(uid);
+            assert_eq!(cp.state, NodeState::Pending);
+            assert!(cp.session_id.is_none(), "{uid} holds no session yet");
+        }
+        assert!(!r.nodes.contains_key("out"));
+        assert_eq!(last_uid(&r, "v"), "v#it1");
+        assert_eq!(last_uid(&r, "w"), "w#it1");
+        assert_eq!(last_uid(&r, "out"), "out");
+        // An explicit pass and a fanout item stay put.
+        assert_eq!(last_uid(&r, "v#it1"), "v#it1");
+        assert_eq!(last_uid(&r, "read#0"), "read#0");
+    }
+
+    #[test]
+    fn loop_stops_when_condition_false_or_repeats_exhausted() {
+        let d = loop_def(1);
+        let (mut r, results) = first_pass_done("pass");
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(r.nodes.len(), 2);
+
+        let (mut r, mut results) = first_pass_done("reject");
+        assert_eq!(expand_ready_loops(&d, &mut r, &results), vec!["v"]);
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "reject"}));
+        assert!(
+            expand_ready_loops(&d, &mut r, &results).is_empty(),
+            "max_repeats 1 allows one pass after the first"
+        );
+        assert!(!r.nodes.contains_key("v#it2"));
+    }
+
+    #[test]
+    fn loop_stops_when_body_pass_not_done() {
+        let mut d = loop_def(2);
+        d.nodes.get_mut("w").unwrap().on_error = OnError::Continue;
+        for state in [NodeState::Running, NodeState::Failed, NodeState::Cancelled] {
+            let (mut r, results) = first_pass_done("reject");
+            r.nodes.get_mut("w").unwrap().state = state;
+            assert!(
+                expand_ready_loops(&d, &mut r, &results).is_empty(),
+                "{state:?} body pass ends the loop, even when tolerated"
+            );
+        }
+        // The loop node itself has not finished.
+        let (mut r, results) = first_pass_done("reject");
+        r.nodes.get_mut("v").unwrap().state = NodeState::Running;
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+    }
+
+    #[test]
+    fn loop_expansion_is_idempotent() {
+        let d = loop_def(2);
+        let (mut r, results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        let after_first = r.clone();
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(r, after_first);
+    }
+
+    #[test]
+    fn loop_stops_at_run_node_cap_without_partial_pass() {
+        let d = loop_def(2);
+        let fill = |r: &mut WorkflowRunRecord, total: usize| {
+            let mut i = 0;
+            while r.nodes.len() < total {
+                r.nodes.insert(format!("filler{i}"), done_checkpoint());
+                i += 1;
+            }
+        };
+        let (mut r, results) = first_pass_done("reject");
+        fill(&mut r, MAX_TOTAL_NODES - 1);
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert!(!r.nodes.contains_key("w#it1") && !r.nodes.contains_key("v#it1"));
+
+        let (mut r, results) = first_pass_done("reject");
+        fill(&mut r, MAX_TOTAL_NODES - 2);
+        assert_eq!(expand_ready_loops(&d, &mut r, &results), vec!["v"]);
+        assert_eq!(r.nodes.len(), MAX_TOTAL_NODES);
+    }
+
+    #[test]
+    fn pass_deps_wait_only_for_the_same_pass() {
+        let d = loop_def(2);
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        assert!(deps_done(&d, &r, "w#it1"), "w reads only run_input");
+        assert!(
+            !deps_done(&d, &r, "v#it1"),
+            "v#it1 waits for w#it1, not the Done first pass"
+        );
+        assert!(deps_done(&d, &r, "v"), "pass 0 still reads pass 0");
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        assert!(deps_done(&d, &r, "v#it1"));
+        assert_eq!(gather_input(&d, &r, "v#it1", &results), json!("work 1"));
+        assert_eq!(gather_input(&d, &r, "v", &results), json!("work 0"));
+    }
+
+    #[test]
+    fn frontier_lists_pending_passes() {
+        let d = loop_def(2);
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        assert_eq!(ready_frontier(&d, &r), vec!["w#it1"]);
+        r.nodes.get_mut("w#it1").unwrap().state = NodeState::Running;
+        assert!(ready_frontier(&d, &r).is_empty());
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        assert_eq!(ready_frontier(&d, &r), vec!["v#it1"]);
+    }
+
+    #[test]
+    fn outside_consumer_waits_for_and_reads_last_pass() {
+        let mut d = loop_def(2);
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        assert!(!deps_done(&d, &r, "out"), "out waits for v#it1");
+        assert!(!ready_frontier(&d, &r).contains(&"out".to_string()));
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "pass"}));
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert!(deps_done(&d, &r, "out"));
+        assert_eq!(
+            gather_input(&d, &r, "out", &results),
+            json!({"verdict": "pass"})
+        );
+        d.output.from = "node:v".into();
+        assert_eq!(gather_output(&d, &r, &results), json!({"verdict": "pass"}));
+    }
+
+    #[test]
+    fn loop_previous_is_null_first_then_previous_result() {
+        let d = loop_def(2);
+        let (mut r, mut results) = first_pass_done("reject");
+        assert_eq!(
+            loop_previous(&d, "w", &results),
+            Some((json!(null), Some(json!(null))))
+        );
+        assert_eq!(loop_previous(&d, "v", &results), Some((json!(null), None)));
+        assert_eq!(loop_previous(&d, "out", &results), None, "not in a loop");
+        expand_ready_loops(&d, &mut r, &results);
+        let first = json!({"verdict": "reject"});
+        assert_eq!(
+            loop_previous(&d, "w#it1", &results),
+            Some((first.clone(), Some(json!("work 0"))))
+        );
+        assert_eq!(loop_previous(&d, "v#it1", &results), Some((first, None)));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "again"}));
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        assert_eq!(
+            loop_previous(&d, "w#it2", &results),
+            Some((json!({"verdict": "again"}), Some(json!("work 1"))))
+        );
+    }
+
+    #[test]
+    fn quiescence_awaits_pending_pass() {
+        let mut d = loop_def(2);
+        d.output.from = "node:v".into();
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "pass"}));
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        // A strict failure in a later pass fails the run.
+        r.nodes.get_mut("w#it1").unwrap().state = NodeState::Failed;
+        assert_eq!(quiescence(&d, &r), RunStatus::Failed);
+    }
+
+    #[test]
+    fn output_body_node_requires_its_loop_and_returns_last_pass() {
+        let mut d = loop_def(2);
+        d.output.from = "node:w".into();
+        assert_eq!(
+            required_set(&d),
+            ["v", "w"].into_iter().map(String::from).collect()
+        );
+        let mut r = record();
+        let mut results = BTreeMap::new();
+        set_done(&mut r, &mut results, "w", json!("work 0"));
+        r.nodes.insert("v".into(), running_checkpoint());
+        assert_eq!(
+            quiescence(&d, &r),
+            RunStatus::AwaitingNodes,
+            "the run waits for the loop node to judge pass 0"
+        );
+        set_done(&mut r, &mut results, "v", json!({"verdict": "reject"}));
+        assert_eq!(expand_ready_loops(&d, &mut r, &results), vec!["v"]);
+        assert_eq!(quiescence(&d, &r), RunStatus::AwaitingNodes);
+        set_done(&mut r, &mut results, "w#it1", json!("work 1"));
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "pass"}));
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        assert_eq!(gather_output(&d, &r, &results), json!("work 1"));
+        d.output.from = OutputFrom::Many(vec!["node:v".into(), "node:w".into()]);
+        assert_eq!(
+            gather_output(&d, &r, &results),
+            json!({"v": {"verdict": "pass"}, "w": "work 1"})
+        );
+    }
+
+    #[test]
+    fn output_body_node_is_null_when_its_last_pass_failed() {
+        let mut d = loop_def(2);
+        d.output.from = OutputFrom::Many(vec!["node:v".into(), "node:w".into()]);
+        let (mut r, mut results) = first_pass_done("reject");
+        expand_ready_loops(&d, &mut r, &results);
+        r.nodes.insert("w#it1".into(), failed_checkpoint());
+        assert_eq!(quiescence(&d, &r), RunStatus::Failed, "strict body node");
+
+        d.nodes.get_mut("w").unwrap().on_error = OnError::Continue;
+        set_done(&mut r, &mut results, "v#it1", json!({"verdict": "reject"}));
+        assert!(expand_ready_loops(&d, &mut r, &results).is_empty());
+        assert_eq!(quiescence(&d, &r), RunStatus::Completed);
+        assert_eq!(
+            gather_output(&d, &r, &results),
+            json!({"v": {"verdict": "reject"}, "w": null}),
+            "never an earlier pass"
+        );
     }
 }

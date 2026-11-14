@@ -1,0 +1,32 @@
+iii: v1
+name: iii/workflow
+version: 0.1.0
+iii_engine_version: ">=0.26.0"
+description: "Multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get one worktree per ticket, one tests-and-check run per integrated wave and a kept branch. Installs beside iii/deepwork."
+license: Apache-2.0
+repo: https://github.com/iii-hq/workers/tree/main/kits/workflow
+tags: [orchestration, workflows, kanban, verification, sub-agents]
+workers:
+  # The flat workflow::start request (`nodes` at the top level, `task` on a node; an older
+  # worker refuses every run), node options (profile, model, label, phase, loop,
+  # filesystem_root), an `output` naming a loop body node, the caller folder, workflow::status
+  # details and the run-end observe (`next` + replay of workflow::on-run-completed): set the
+  # floor to the first release with all of them. No caret, like state and ide.
+  workflow: ">=0.2.3"
+  # 1.9.4 ends a parked node on workflow::stop without a spurious turn.
+  harness: ^1.9.4
+  # iii-directory, state, kanban and ide: their first releases on iii-sdk 0.26 (observe v2),
+  # the same floors as iii/deepwork, so the two kits install side by side.
+  # No caret: harness pulls iii-directory@latest.
+  iii-directory: ">=1.3.0"
+  # No caret: harness pulls state@latest, and ^0.23 would block 0.24.
+  state: ">=0.23.0"
+  # 0.1.21: subtasks + parent_id, compact writes, add_labels / remove_labels.
+  # 0.2.0 is its observe v2 port: on a 0.26 engine, 0.1.x registers its board page and config
+  # watch as triggers, which the engine drops, so the Kanban page never appears.
+  kanban: ^0.2.0
+  # shell::exec, shell::on-job-finished and coder::* for the nodes. No caret: projects pin ide@latest.
+  ide: ">=0.13.0"
+  # fp::pipe + fp::get read node_errors when a workflow::status reply is too large to return.
+  # No caret: harness pulls fp@latest.
+  fp: ">=0.3.0"

@@ -19,7 +19,8 @@ pub struct FloorExpectations<'a> {
     /// (non-terminal) completions first, terminal turns after.
     pub turn_statuses: &'a [String],
     /// How many of the TRAILING statuses are terminal turns. A parked
-    /// completion (a turn that ended with an armed wake) carries
+    /// completion (a turn that ended with an armed wake, or whose finalize
+    /// reseeded the session) carries
     /// `terminal: false` in its lifecycle payload, and the floor demands the
     /// flag match the position — a run must not pass with its park missing,
     /// nor with a turn parked that was declared terminal.
@@ -312,7 +313,8 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
     // Each turn's status AND terminal flag must match its position in trace
     // order (summary turn ids are ordered by first span start): the first
     // `parked()` completions are non-terminal — the session still owned an
-    // armed wake — and every turn after them is terminal.
+    // armed wake, or the finalize reseeded it — and every turn after them is
+    // terminal.
     let expected_by_turn: BTreeMap<&str, (&str, bool)> = run
         .traces
         .summary

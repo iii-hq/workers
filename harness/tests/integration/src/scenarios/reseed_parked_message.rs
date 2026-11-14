@@ -9,8 +9,9 @@
 //! steering check, so a generation that parks a steer and then fails routes
 //! the parked message deterministically through the finalize drain, which must
 //! reseed a turn to react to it (both finalize paths share the same drain +
-//! reseed). Without the reseed the parked message is stranded, no second
-//! terminal turn arrives, and the run times out.
+//! reseed). The failed turn reports `terminal: false` because its finalize
+//! reseeded the session. Without the reseed the parked message is stranded,
+//! the terminal (reseeded) turn never arrives, and the run times out.
 
 use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
@@ -33,6 +34,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .send(Send::message(MESSAGE).idempotency_key("{{run_id}}:integration-003"))
     .terminal_turn_statuses(["failed", "completed"])
+    .parked_completions(1)
     .generation(
         // Turn 1's only step: the steer parks while the harness awaits this
         // generation, then the scripted failure drives finalize_failed — whose
@@ -106,7 +108,7 @@ mod tests {
     #[test]
     fn parks_before_a_failing_terminal_generation_and_expects_a_reseeded_turn() {
         let fixture = scenario();
-        assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.expected_turn_statuses, ["failed", "completed"]);
         assert_eq!(fixture.expected_traces(), 1);
 

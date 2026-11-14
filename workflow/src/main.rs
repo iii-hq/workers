@@ -6,11 +6,14 @@
 //!   3. Connect to the local iii engine.
 //!   4. Register config schema (seed = None for MVP) and fetch authoritative value.
 //!   5. Build ConfigCell + Deps.
-//!   6. Register all functions.
+//!   6. Register every function but `workflow::start`, then define the `workflow` and
+//!      `workflow-notify` queues (exit on failure).
 //!   7. Observe `cron::on-tick` for the sweep (retain the handle for hot-reload).
 //!   8. Observe the harness: one-shot observers of on-turn-completed /
 //!      hook::on-pre-call, plus hook::on-pre-generate per `inject_guidance` (each
-//!      stays pending until the harness registers its function).
+//!      stays pending until the harness registers its function). Register
+//!      `workflow::start` once the stamp-reply observer is active, or after a
+//!      bounded wait while the harness is absent.
 //!   9. Resume-scan: re-enqueue a tick for every non-terminal run (crash recovery).
 //!  10. LAST: observe configuration changes so the handler closes over the
 //!      fully-built snapshot cell + the sweep handle.
@@ -29,6 +32,10 @@ use workflow::configuration::{self, ObserverHandles};
 use workflow::functions::{self, ConfigCell};
 use workflow::locks::WorkflowLocks;
 use workflow::{manifest, state};
+
+/// How long boot waits for the stamp-reply observer before registering
+/// `workflow::start` anyway.
+const STAMP_READY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -117,6 +124,11 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
+    // Ticks and default notify ride on these queues; without them nothing runs.
+    workflow::queue::ensure_workflow_queue(&iii)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
     // Observe the cron sweep; retain the handle so a sweep_expression change
     // replaces it live. The guidance slot starts empty — apply_guidance below
     // fills it only when the config asks for injection.
@@ -128,13 +140,27 @@ async fn main() -> Result<()> {
     });
 
     // Observe the two always-on HARNESS functions (on-turn-completed → wake,
-    // hook::on-pre-call → reply stamping). One shot: each observer stays
+    // hook::on-pre-call → caller session and folder stamping). One shot: each observer stays
     // pending until the harness registers its function and becomes active
     // again across harness restarts. The pre-generate guidance hook follows
     // the `inject_guidance` config knob instead (on by default), hot-applied
     // on config changes.
-    configuration::setup_harness_hooks(&iii);
+    let stamp = configuration::setup_harness_hooks(&iii);
     configuration::apply_guidance(&iii, &handles, cfg.inject_guidance);
+    // An agent call that reaches workflow::start before the stamp hook is bound
+    // runs unstamped, with its own caller_fs_root. Bounded: the observer stays
+    // pending while the harness is absent, and then no agent can call.
+    match tokio::time::timeout(STAMP_READY_WAIT, stamp.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(
+            error = %e,
+            "workflow::stamp-reply hook refused; agent workflow::start calls run unstamped"
+        ),
+        Err(_) => {
+            tracing::warn!("workflow::stamp-reply hook still pending; registering workflow::start")
+        }
+    }
+    functions::register_start(&iii, &deps);
 
     // Crash recovery: a parked AwaitingNodes run has no enqueued tick.
     // Re-drive each non-terminal run so it can make progress.

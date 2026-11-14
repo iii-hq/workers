@@ -563,6 +563,7 @@ mod tests {
             capability: None,
             dedup_key: None,
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         }
     }

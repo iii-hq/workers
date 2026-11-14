@@ -86,6 +86,7 @@ export const CONTEXT_PANEL_GROUPS = [
   'tickets',
   'prs',
   'assets',
+  'workflow',
   'subagents',
   'observers',
   'links',

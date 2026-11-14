@@ -423,6 +423,19 @@ fn agent_call_forbidden(function_id: &str) -> bool {
         .any(|prefix| function_id.starts_with(prefix))
 }
 
+/// `workflow::start` trusts the `caller_fs_root` its pre-call hook stamps from
+/// the caller's turn, and `workflow-result::submit` the caller session it
+/// stamps. A delivered call skips that hook, so a binding's payload could pick
+/// the folder every node of a run works in, or deliver another node's result.
+pub(crate) fn unstamped_target_refusal(target: &str) -> Option<String> {
+    matches!(target, "workflow::start" | "workflow-result::submit").then(|| {
+        format!(
+            "`{target}` is not a binding target: a delivered call skips the pre-call hook \
+             that stamps the caller; call it from a turn"
+        )
+    })
+}
+
 fn send_invocation_context(
     function_id: &str,
     arguments: &Value,
@@ -896,6 +909,7 @@ async fn handle(
         capability: caller.and_then(|c| c.functions.cloned()),
         dedup_key: Some(dedup),
         fires: 0,
+        claimed_at: None,
         created_at: crate::types::message::AgentMessage::now_ms(),
     };
     // Durable BEFORE the observer exists: a delivery that arrives before the
@@ -1553,6 +1567,9 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
         return Err(format!(
             "`{target}` is not available to agents, including through bindings"
         ));
+    }
+    if let Some(e) = unstamped_target_refusal(target) {
+        return Err(e);
     }
     if !policy.allows(target) {
         return Err(format!(
@@ -3042,6 +3059,22 @@ pub(crate) mod tests {
         assert!(validate_call_target("", &policy)
             .unwrap_err()
             .contains("must name the function"));
+    }
+
+    /// Prevents: a binding that calls workflow::start with a forged
+    /// `caller_fs_root`, which the skipped pre-call hook would have replaced.
+    #[test]
+    fn workflow_start_is_not_a_binding_target() {
+        let policy = policy_allowing(&["workflow::*"]);
+        let err = validate_call_target("workflow::start", &policy).unwrap_err();
+        assert!(
+            err.contains("skips the pre-call hook that stamps the caller"),
+            "unhelpful error: {err}"
+        );
+        assert!(validate_call_target("workflow::status", &policy).is_ok());
+        // A delivered submit could name another node's session as its own.
+        let submit = policy_allowing(&["workflow-result::*"]);
+        assert!(validate_call_target("workflow-result::submit", &submit).is_err());
     }
 
     /// Prevents: a binding or post-turn validator on coder::scaffold-worker
