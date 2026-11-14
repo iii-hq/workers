@@ -112,7 +112,7 @@ iii.observe(
 | Function observed | Args, filters | Target | Purpose |
 | --- | --- | --- | --- |
 | `cron::on-tick` | args `{ expression }` of one configured schedule; observer metadata `{ repository }` | `security-scan::on-schedule` | Starts a scheduled scan (one observer per scheduled repository) |
-| `harness::on-turn-completed` | none | `security-scan::on-turn-completed` | Wakes the run or action whose Harness turn finished; a recovery sweep every 30 s covers missed events |
+| `harness::on-turn-completed` | none | `security-scan::on-turn-completed` | Wakes the run or action whose Harness session finished its terminal turn (a later turn than the one it started when the session went on); a recovery sweep every 30 s covers missed events |
 
 Both capture the event as output (`capture: ['output']`) and read it at the envelope's `output`. An observer stays `pending` while its function's worker is not running and becomes active when that worker registers it, so start order does not matter.
 

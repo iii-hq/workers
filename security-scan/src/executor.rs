@@ -252,11 +252,10 @@ where
                 status: None,
             });
         };
+        // Any turn of the run's session: one that drained a message ends in a
+        // later turn, and harness::status below says whether the session is done.
         if (run.status != RunStatusV1::Analyzing && run.status != RunStatusV1::Cancelling)
-            || run
-                .harness
-                .as_ref()
-                .is_none_or(|harness| harness.turn_id != event.turn_id)
+            || run.harness.is_none()
         {
             return Ok(TurnCompletedResponseV1 {
                 woke: false,
