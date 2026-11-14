@@ -95,7 +95,7 @@ pub trait Harness: Send + Sync {
     async fn send(&self, request: Value) -> Result<SendOutcome, SentinelError>;
     /// `None` when the harness has never heard of the session.
     async fn status(&self, session_id: &str) -> Result<Option<TurnStatus>, SentinelError>;
-    async fn stop(&self, session_id: &str, turn_id: &str) -> Result<(), SentinelError>;
+    async fn stop(&self, session_id: &str) -> Result<(), SentinelError>;
     async fn metrics(&self, root_session_id: &str) -> TurnMetrics;
     /// Create the session without running anything.
     async fn ensure_session(
@@ -461,8 +461,10 @@ impl<D: Db> Investigations<D> {
         if !investigation.status.is_running() {
             return Ok(Outcome::quiet(investigation));
         }
-        if let Some(turn_id) = &investigation.first_pass_turn_id {
-            if let Err(error) = self.harness.stop(&investigation.session_id, turn_id).await {
+        // The session's current turn, not the first one: a reseeded turn is
+        // still the pass, and a stop naming a finished turn stops nothing.
+        if investigation.first_pass_turn_id.is_some() {
+            if let Err(error) = self.harness.stop(&investigation.session_id).await {
                 tracing::warn!(
                     investigation_id = investigation.id,
                     %error,
@@ -501,11 +503,6 @@ impl<D: Db> Investigations<D> {
             return Ok(Outcome::quiet(DoorbellResponseV1 { handled: false }));
         };
         if !investigation.status.is_running() {
-            return Ok(Outcome::quiet(DoorbellResponseV1 { handled: false }));
-        }
-        // Only the first pass is this worker's turn. Everything after it
-        // belongs to the person having the conversation.
-        if event.turn_id.is_some() && event.turn_id != investigation.first_pass_turn_id {
             return Ok(Outcome::quiet(DoorbellResponseV1 { handled: false }));
         }
         let events = self.finish_first_pass(&investigation).await?;
@@ -559,13 +556,6 @@ impl<D: Db> Investigations<D> {
                 )
                 .await;
         };
-        // A turn that is not ours says nothing about ours.
-        if investigation.first_pass_turn_id.is_some()
-            && status.turn_id.is_some()
-            && status.turn_id != investigation.first_pass_turn_id
-        {
-            return Ok(Vec::new());
-        }
         if status.in_flight() {
             return Ok(Vec::new());
         }
@@ -685,10 +675,14 @@ impl<D: Db> Investigations<D> {
         error: Option<String>,
     ) -> Result<Vec<Announcement>, SentinelError> {
         let metrics = self.harness.metrics(&investigation.session_id).await;
-        self.store
-            .update_investigation(
-                &investigation.id,
-                "status = ?, error = ?, finished_ms = ?, turns = ?, duration_ms = ?, cost_usd = ?",
+        // A doorbell, the sweep and a cancel can race to close the same pass:
+        // only the one that moves it out of running writes and announces.
+        let closed = self
+            .store
+            .db()
+            .execute(
+                "UPDATE sentinel_investigations SET status = ?, error = ?, finished_ms = ?, \
+                 turns = ?, duration_ms = ?, cost_usd = ? WHERE id = ? AND status = ?",
                 vec![
                     json!(status.as_str()),
                     json!(error),
@@ -696,9 +690,14 @@ impl<D: Db> Investigations<D> {
                     json!(metrics.turns),
                     json!(metrics.duration_ms),
                     json!(metrics.cost_usd),
+                    json!(investigation.id),
+                    json!(InvestigationStatusV1::Running.as_str()),
                 ],
             )
             .await?;
+        if closed == 0 {
+            return Ok(Vec::new());
+        }
 
         let members = self.member_ids(&investigation.id).await?;
         self.store
