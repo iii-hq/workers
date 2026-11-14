@@ -911,6 +911,13 @@ pub struct QueuedMessage {
     pub entry_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Value>,
+    /// How the message reached the session: `direct` is a person (or a
+    /// client acting as one), `notification` an observer or system notice,
+    /// `invoked-agent` a sub-agent's opening task. Absent on rows parked by
+    /// a harness that predates the field. The console hides every row that
+    /// is not `direct` from the person's queued-messages strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<crate::functions::send::DeliveryChannel>,
     pub queued_at: i64,
 }
 
@@ -1290,6 +1297,7 @@ mod tests {
                 message: AgentMessage::user_text("hi"),
                 entry_id: format!("e_{id}"),
                 origin: None,
+                channel: None,
                 queued_at: at,
             }
         }

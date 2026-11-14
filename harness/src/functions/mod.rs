@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod ask_settle;
 pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
@@ -62,8 +63,9 @@ pub const ASK_DESC: &str =
     "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
      the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
      as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
-     message, so do not repeat the questions in text. Not available to sub-agents or \
-     structured-output turns.";
+     message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
+     a dismissed card sends a notice instead of answers), so do not repeat the questions in \
+     text. Not available to sub-agents or structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
@@ -431,6 +433,21 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         EDIT_QUEUED_ID,
         EDIT_QUEUED_DESC,
         |d, r| async move { send::edit_queued(&d, r).await },
+    );
+    // The console's ask card records (and reads back) what became of each card.
+    register_internal(
+        iii,
+        deps,
+        ask_settle::SETTLE_ID,
+        ask_settle::SETTLE_DESC,
+        |d, r| async move { ask_settle::settle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        ask_settle::SETTLEMENTS_ID,
+        ask_settle::SETTLEMENTS_DESC,
+        |d, r| async move { ask_settle::settlements(&d, r).await },
     );
 
     // Internal filesystem grant controls — registered for trusted callers, kept

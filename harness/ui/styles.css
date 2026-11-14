@@ -941,6 +941,27 @@
   line-height: 1.5;
   color: var(--color-ink-faint);
 }
+/* The "Choose one." line with the Skip toggle at its end. */
+[data-iii-ui="harness"] .harness-ui-ask-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-row .harness-ui-ask-note {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-ask-skip {
+  flex: none;
+}
+/* A skipped question keeps its options on screen, locked and faded, so the
+   person can still see what they passed on and take it back. */
+[data-iii-ui="harness"] .harness-ui-ask-q[data-skipped] .harness-ui-ask-options,
+[data-iii-ui="harness"] .harness-ui-ask-q[data-skipped] .harness-ui-ask-other {
+  opacity: 0.45;
+}
 [data-iii-ui="harness"] .harness-ui-ask-options {
   display: flex;
   flex-direction: column;
