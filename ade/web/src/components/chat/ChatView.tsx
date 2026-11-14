@@ -176,6 +176,7 @@ import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
+import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
 import {
   agentIdForSend,
@@ -820,7 +821,11 @@ export function ChatView({
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
-  // must not re-show a message that just drained into the chat).
+  // must not re-show a message that just drained into the chat). Only the
+  // person's own rows: the harness's notices to the agent (observer fires,
+  // container reports, sub-agent tasks) park in the same queue but are not
+  // messages the person wrote, so they stay out of the strip and off the
+  // ↑-to-edit path (`isPersonQueuedRow`).
   const queuedStrip = useMemo(() => {
     const seen = new Set<string>(queuedDrafts.map((d) => d.id))
     for (const m of conversation.messages) seen.add(m.id)
@@ -829,8 +834,8 @@ export function ChatView({
       text: d.content || '(attachments only)',
     }))
     const server = serverQueued
-      .filter((row) => !seen.has(row.id))
-      .map((row) => ({ id: row.id, text: row.text || '(notification)' }))
+      .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
+      .map((row) => ({ id: row.id, text: row.text || '(attachments only)' }))
     return [...drafts, ...server]
   }, [queuedDrafts, serverQueued, conversation.messages])
 

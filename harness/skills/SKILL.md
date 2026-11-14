@@ -99,8 +99,10 @@ Consumer-facing:
 - `harness::ask` — put a decision with discrete options to the user as a
   clickable card (1–4 questions, 2–4 options each). Model-facing (invoked
   through `agent_call`) and answered by the turn loop itself: the turn ends
-  on the question and the answer arrives as the user's next message. Refused
-  in sub-agents, structured-output turns, and for a second ask in one step.
+  on the question and the answer arrives as the user's next message, one
+  `Header: answer` line per question (`(skipped)` for a question the user
+  passed on; a dismissed card sends a notice instead). Refused in
+  sub-agents, structured-output turns, and for a second ask in one step.
 
 Internal — the harness drives these; never call them directly:
 `harness::turn` (the durable loop step), `harness::function::call` /
