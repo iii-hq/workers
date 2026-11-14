@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **A tmux server the worker starts no longer hands its `III_*` variables to every pane.**
+  tmux copies the environment of the command that starts its server into its global one, so
+  a server started by the worker (`new-session`, or a Console terminal's `attach`) gave each
+  pane the worker's `III_URL`, `III_WORKER_NAME`, `III_COMPOSE_*` and the rest. An
+  `iii compose --up` run there took `III_URL` for an engine already running and started none,
+  and every pane shell was listed as a `tmux` worker. Every tmux command the worker runs now
+  leaves out all `III_*` variables. A server started earlier keeps them until it restarts.
 - **Links in Console terminals keep their target.** A program's OSC 8 link (Claude Code's
   `owner/repo#123`) reached the terminal as text only: tmux knows neither xterm.js nor
   SwiftTerm by name, so it dropped the link and the text had nowhere to open. The worker's
