@@ -48,7 +48,6 @@ enum Call {
     },
     Stop {
         session_id: String,
-        turn_id: String,
     },
     Ensure {
         session_id: String,
@@ -71,6 +70,8 @@ struct FakeHarnessState {
     next_turn: u64,
     send_fails: bool,
     append_fails: bool,
+    /// `stop` closes the pass as the stopped turn's doorbell would.
+    doorbell_during_stop: bool,
     /// Rows observed inside the `send` call, to prove the store was written
     /// before the harness heard anything.
     seen_running: Option<usize>,
@@ -174,11 +175,26 @@ impl Harness for FakeHarness {
         Ok(self.state.lock().unwrap().status.clone())
     }
 
-    async fn stop(&self, session_id: &str, turn_id: &str) -> Result<(), SentinelErrorAlias> {
-        self.state.lock().unwrap().calls.push(Call::Stop {
-            session_id: session_id.into(),
-            turn_id: turn_id.into(),
-        });
+    async fn stop(&self, session_id: &str) -> Result<(), SentinelErrorAlias> {
+        let doorbell = {
+            let mut state = self.state.lock().unwrap();
+            state.calls.push(Call::Stop {
+                session_id: session_id.into(),
+            });
+            state.doorbell_during_stop
+        };
+        if doorbell {
+            let investigation = self
+                .store
+                .investigation_by_session(session_id)
+                .await
+                .expect("read the investigation")
+                .expect("the investigation exists");
+            self.store
+                .update_investigation(&investigation.id, "status = ?", vec![json!("failed")])
+                .await
+                .expect("close the investigation");
+        }
         Ok(())
     }
 
@@ -793,6 +809,19 @@ async fn a_diagnosis_moves_the_group_forward_and_versions_up() {
         .events
         .iter()
         .any(|event| matches!(event, Announcement::Group(state) if state.status == GroupStatusV1::Diagnosed)));
+    // The pass ends here; what follows is the conversation.
+    fixture
+        .harness
+        .set_status("completed", None, Some("turn-1"));
+    fixture
+        .investigations
+        .on_turn_completed(TurnCompletedEventV1 {
+            session_id: session_id.clone(),
+            turn_id: Some("turn-1".into()),
+            ..TurnCompletedEventV1::default()
+        })
+        .await
+        .expect("answered");
 
     let second = fixture
         .investigations
@@ -1118,26 +1147,141 @@ async fn a_session_the_harness_forgot_does_not_stay_running_forever() {
     assert_eq!(status_of(&fixture).await, GroupStatusV1::New);
 }
 
-#[tokio::test]
-async fn a_doorbell_for_a_turn_that_is_not_the_first_pass_changes_nothing() {
-    let fixture = fixture(MODEL).await;
-    let (_, session_id) = open(&fixture).await;
+async fn investigation_status(fixture: &Fixture, investigation_id: &str) -> InvestigationStatusV1 {
     fixture
-        .harness
-        .set_status("completed", None, Some("turn-7"));
+        .store
+        .investigation_by_id(investigation_id)
+        .await
+        .expect("read")
+        .expect("exists")
+        .status
+}
 
-    let outcome = fixture
+async fn ring(fixture: &Fixture, session_id: &str, turn_id: &str) -> bool {
+    fixture
         .investigations
         .on_turn_completed(TurnCompletedEventV1 {
-            session_id,
-            turn_id: Some("turn-7".into()),
+            session_id: session_id.into(),
+            turn_id: Some(turn_id.into()),
             ..TurnCompletedEventV1::default()
         })
         .await
-        .expect("answered");
+        .expect("answered")
+        .value
+        .handled
+}
 
-    assert!(!outcome.value.handled, "the person's own turns are theirs");
-    assert_eq!(status_of(&fixture).await, GroupStatusV1::Investigating);
+/// The first pass's finish drained a message, so its session went on in a
+/// new turn: the pass ends when that turn does, not when the first one did.
+#[tokio::test]
+async fn a_pass_whose_session_moved_to_another_turn_closes_when_that_turn_ends() {
+    let fixture = fixture(MODEL).await;
+    let (investigation_id, session_id) = open(&fixture).await;
+    fixture
+        .investigations
+        .record(
+            Caller {
+                session_id: Some(session_id.clone()),
+                turn_id: Some("turn-1".into()),
+            },
+            DiagnosisRecordRequestV1 {
+                group_id: fixture.group_id.clone(),
+                diagnosis: a_diagnosis("the operation table has no `up`"),
+                _caller_worker_id: None,
+            },
+        )
+        .await
+        .expect("the diagnosis is recorded");
+    fixture.harness.set_status("running", None, Some("turn-2"));
+
+    assert!(ring(&fixture, &session_id, "turn-1").await);
+    assert_eq!(
+        investigation_status(&fixture, &investigation_id).await,
+        InvestigationStatusV1::Running,
+        "the session still runs"
+    );
+
+    fixture
+        .harness
+        .set_status("completed", None, Some("turn-2"));
+    assert!(ring(&fixture, &session_id, "turn-2").await);
+    assert_eq!(
+        investigation_status(&fixture, &investigation_id).await,
+        InvestigationStatusV1::Completed
+    );
+    assert_eq!(status_of(&fixture).await, GroupStatusV1::Diagnosed);
+}
+
+#[tokio::test]
+async fn reconcile_closes_a_pass_whose_session_moved_to_another_turn() {
+    let fixture = fixture(MODEL).await;
+    let (investigation_id, _) = open(&fixture).await;
+    fixture
+        .harness
+        .set_status("failed", Some("boom"), Some("turn-2"));
+
+    fixture.investigations.reconcile().await;
+
+    let investigation = fixture
+        .store
+        .investigation_by_id(&investigation_id)
+        .await
+        .expect("read")
+        .expect("exists");
+    assert_eq!(investigation.status, InvestigationStatusV1::Failed);
+    assert_eq!(investigation.error.as_deref(), Some("boom"));
+}
+
+#[tokio::test]
+async fn a_doorbell_after_the_pass_closed_changes_nothing() {
+    let fixture = fixture(MODEL).await;
+    let (investigation_id, session_id) = open(&fixture).await;
+    fixture
+        .harness
+        .set_status("failed", Some("boom"), Some("turn-1"));
+    assert!(ring(&fixture, &session_id, "turn-1").await);
+    assert_eq!(status_of(&fixture).await, GroupStatusV1::New);
+
+    fixture
+        .harness
+        .set_status("completed", None, Some("turn-7"));
+    assert!(
+        !ring(&fixture, &session_id, "turn-7").await,
+        "the person's own turns are theirs"
+    );
+    assert_eq!(
+        investigation_status(&fixture, &investigation_id).await,
+        InvestigationStatusV1::Failed
+    );
+    assert_eq!(status_of(&fixture).await, GroupStatusV1::New);
+}
+
+#[tokio::test]
+async fn a_diagnosis_from_a_later_turn_of_the_running_pass_is_still_the_first_pass() {
+    let fixture = fixture(MODEL).await;
+    let (investigation_id, session_id) = open(&fixture).await;
+    fixture
+        .investigations
+        .record(
+            Caller {
+                session_id: Some(session_id),
+                turn_id: Some("turn-2".into()),
+            },
+            DiagnosisRecordRequestV1 {
+                group_id: fixture.group_id.clone(),
+                diagnosis: a_diagnosis("the operation table has no `up`"),
+                _caller_worker_id: None,
+            },
+        )
+        .await
+        .expect("the diagnosis is recorded");
+
+    let records = fixture
+        .store
+        .diagnoses_for_investigation(&investigation_id)
+        .await
+        .expect("read");
+    assert_eq!(records[0].source, sentinel::DiagnosisSourceV1::FirstPass);
 }
 
 #[tokio::test]
@@ -1172,10 +1316,7 @@ async fn cancelling_stops_the_turn_and_releases_the_group() {
         .expect("cancelled");
 
     assert_eq!(outcome.value.status, InvestigationStatusV1::Cancelled);
-    assert!(fixture.harness.calls().contains(&Call::Stop {
-        session_id,
-        turn_id: "turn-1".into(),
-    }));
+    assert!(fixture.harness.calls().contains(&Call::Stop { session_id }));
     assert_eq!(status_of(&fixture).await, GroupStatusV1::New);
 
     // Cancelling twice is not an error, and does not stop anything twice.
@@ -1197,6 +1338,25 @@ async fn cancelling_stops_the_turn_and_releases_the_group() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_cancel_that_loses_the_race_to_the_doorbell_announces_nothing() {
+    let fixture = fixture(MODEL).await;
+    let (investigation_id, _session_id) = open(&fixture).await;
+    fixture.harness.state.lock().unwrap().doorbell_during_stop = true;
+
+    let outcome = fixture
+        .investigations
+        .cancel(sentinel::InvestigationCancelRequestV1 {
+            investigation_id,
+            _caller_worker_id: None,
+        })
+        .await
+        .expect("cancelled");
+
+    assert!(outcome.events.is_empty());
+    assert_eq!(outcome.value.status, InvestigationStatusV1::Failed);
 }
 
 #[tokio::test]

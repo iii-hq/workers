@@ -112,11 +112,11 @@ impl Harness for IiiHarness {
         }))
     }
 
-    async fn stop(&self, session_id: &str, turn_id: &str) -> Result<(), SentinelError> {
+    async fn stop(&self, session_id: &str) -> Result<(), SentinelError> {
         self.runtime
             .call(
                 "harness::stop",
-                json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
+                json!({ "session_id": session_id, "quiet_deadlines": true }),
             )
             .await?;
         Ok(())
