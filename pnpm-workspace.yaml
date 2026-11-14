@@ -54,6 +54,7 @@ packages:
   - ios-simulator/ui
   - whatsapp/ui
   - tmux/ui
+  - mesh/ui
 
 # One pin per shared toolchain package; every worker UI and the shared
 # packages reference these as `"catalog:"` so a bump lands in one place.

@@ -23,6 +23,7 @@ ignore=(
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing
   'https://workers.iii.dev/workers/ade'    # console renamed to ade in #1126; page appears with the first publish under the new name — drop once live
   'https://iii.dev/api/subscribe'          # email signup API (ade, onboarding), POST only: 405 to GET
+  'https://iii.dev/mesh/gateway'           # mesh's Tailscale node capability id, not a link
   'https://iii.dev/docs/upgrading/migrate-from-streams' # pubsub deprecation guide (MOT-3619), referenced ahead of publication — drop once live
 )
 

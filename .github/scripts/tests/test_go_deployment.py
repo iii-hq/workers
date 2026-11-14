@@ -86,12 +86,34 @@ def test_go_descriptor_uses_worker_version_and_binary_runtime(tmp_path):
 @pytest.mark.parametrize(("field", "value", "message"), [
     ("toolchain", {"name": "rust", "version": "1.97.1"}, "Go version"),
     ("targets", ["invented-go-target"], "unknown release target"),
+    ("tags", [], "artifact.tags must be"),
+    ("tags", ["bad tag"], "artifact.tags must be"),
+    ("tags", ["a,b"], "artifact.tags must be"),
+    ("tags", "ts_omit_peerapiserver", "artifact.tags must be"),
 ])
 def test_go_descriptor_rejects_invalid_build_inputs(tmp_path, field, value, message):
     entry = go_worker(tmp_path)
     entry["artifact"][field] = value
     with pytest.raises(ValueError, match=message):
         compile_go(tmp_path, entry)
+
+
+def test_go_descriptor_carries_build_tags(tmp_path):
+    entry = go_worker(tmp_path)
+    entry["artifact"]["tags"] = ["ts_omit_peerapiserver", "netgo"]
+    descriptor = compile_go(tmp_path, entry)
+    assert descriptor["artifact"]["tags"] == ["ts_omit_peerapiserver", "netgo"]
+    schema = json.loads((ROOT / ".github/contracts/deployment-descriptor.schema.json").read_text())
+    pytest.importorskip("jsonschema").Draft202012Validator(schema).validate(descriptor)
+
+
+def test_mesh_release_omits_the_peer_api_server():
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy/workers.yaml")["workers"]
+    descriptor = deployment_compiler.compile_worker(ROOT, "mesh", catalog["mesh"], "a" * 40, "b" * 64)
+    assert "ts_omit_peerapiserver" in descriptor["artifact"].get("tags", [])
+    # Local builds and CI's make build take the tag from the Makefile, not the catalog.
+    recipes = subprocess.run(["make", "-n", "build", "test"], cwd=ROOT / "mesh", capture_output=True, text=True, check=True).stdout
+    assert recipes.count('-tags="ts_omit_peerapiserver"') == 2, recipes
 
 
 def test_go_catalog_and_pr_validation_accept_adjacent_go_tests(tmp_path, monkeypatch, capsys):
@@ -189,8 +211,15 @@ def test_go_metadata_pins_toolchain_and_matrix_uses_target_runners(tmp_path, cap
     ]
 
 
-def test_go_build_produces_versioned_readonly_static_binary_archive(tmp_path, monkeypatch):
-    descriptor = compile_go(tmp_path, go_worker(tmp_path))
+@pytest.mark.parametrize(("tags", "tail"), [
+    (None, ["."]),
+    (["ts_omit_peerapiserver", "netgo"], ["-tags", "ts_omit_peerapiserver,netgo", "."]),
+])
+def test_go_build_produces_versioned_readonly_static_binary_archive(tmp_path, monkeypatch, tags, tail):
+    entry = go_worker(tmp_path)
+    if tags:
+        entry["artifact"]["tags"] = tags
+    descriptor = compile_go(tmp_path, entry)
     path = tmp_path / "descriptor.json"
     path.write_text(json.dumps(descriptor))
     tools = tmp_path / "tools"
@@ -203,7 +232,7 @@ def test_go_build_produces_versioned_readonly_static_binary_archive(tmp_path, mo
         'assert os.environ["GOWORK"] == "off"\n'
         'assert sys.argv[1:5] == ["build", "-mod=readonly", "-trimpath", "-ldflags"]\n'
         'assert sys.argv[5] == "-s -w -X main.version=0.4.2-rc.3"\n'
-        'assert sys.argv[6] == "-o" and sys.argv[8] == "."\n'
+        'assert sys.argv[6] == "-o" and sys.argv[8:] == ' + repr(tail) + '\n'
         'Path(sys.argv[7]).write_text("#!/bin/sh\\necho smoke 0.4.2-rc.3\\n")\n'
     )
     compiler.chmod(0o755)
