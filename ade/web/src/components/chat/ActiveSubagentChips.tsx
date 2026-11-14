@@ -106,7 +106,7 @@ export function ActiveSubagentChips({
             type="button"
             key={sessionId}
             aria-label={`Open ${appearance.name} sub-agent in a new panel (${statusLabel})`}
-            className="active-subagent-chip inline-flex h-11 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 font-sans text-meta font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:h-7"
+            className="active-subagent-chip inline-flex h-11 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 font-sans text-meta font-medium transition-colors focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 sm:h-7"
             data-color={appearance.color}
             data-session-id={sessionId}
             data-status={status}

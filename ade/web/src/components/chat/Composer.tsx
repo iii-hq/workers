@@ -1186,7 +1186,7 @@ export function Composer({
             <button
               key={label}
               type="button"
-              className="group/starter inline-flex h-9 items-center gap-2 rounded-full border border-border bg-transparent pr-4 pl-3.5 font-inter text-sm text-ink-faint transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-input hover:bg-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-ring motion-safe:active:scale-96"
+              className="group/starter inline-flex h-9 items-center gap-2 rounded-full border border-border bg-transparent pr-4 pl-3.5 font-inter text-sm text-ink-faint transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-input hover:bg-muted hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring motion-safe:active:scale-96"
               onClick={() => {
                 if (textRef.current.trim()) return
                 const target = lexicalEditorRef.current

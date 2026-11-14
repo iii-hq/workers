@@ -61,11 +61,11 @@ export function Stepper({
               className={cn(
                 'relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold tabular-nums transition-[background-color,border-color,color,box-shadow] duration-200 ease-[var(--motion-ease-standard)]',
                 done
-                  ? 'border-ink bg-ink text-bg'
+                  ? 'border-input bg-ink text-bg'
                   : isCurrent
-                    ? 'border-ink bg-card text-ink ring-[3px] ring-ink/10 '
+                    ? 'border-input bg-card text-ink ring-[3px] ring-ink/10 '
                     : 'border-input bg-card text-muted-foreground  ',
-                clickable && 'group-hover:border-ink',
+                clickable && 'group-hover:border-input',
               )}
             >
               <span

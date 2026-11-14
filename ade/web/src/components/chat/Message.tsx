@@ -732,7 +732,7 @@ function ReplyFooter({
       <DropdownMenu>
         <Hint label="More" side="top">
           <DropdownMenuTrigger
-            className="chat-message-action relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:size-5"
+            className="chat-message-action relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 sm:size-5"
             aria-label="More reply actions"
             data-message-action="more"
           >

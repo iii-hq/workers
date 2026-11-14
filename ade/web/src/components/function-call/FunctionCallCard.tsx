@@ -835,7 +835,7 @@ export function FunctionCallCard({
                 type="button"
                 data-message-action="retry-load"
                 onClick={loadDetails}
-                className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
               >
                 Retry
               </button>
@@ -1030,7 +1030,7 @@ function PaneCopyButton({ label, text }: { label: string; text: string }) {
       <button
         type="button"
         onClick={copy}
-        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
         aria-label={copied ? 'copied' : `copy ${label}`}
       >
         <span className="grid place-items-center">

@@ -1049,7 +1049,7 @@ export function QuoteChip({
 /** Half the toolbar's width, to keep it on screen near the edges. */
 const TOOLBAR_HALF = 112
 const toolbarButton =
-  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-body text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent [&>svg]:size-4 [&>svg]:shrink-0'
+  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-body text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50 [&>svg]:size-4 [&>svg]:shrink-0'
 
 /** What a selection toolbar points at: the quote, where it is, and the
  *  transcript box it must stay inside. */
@@ -1276,7 +1276,7 @@ function SideChatOptions({
 }) {
   const [open, setOpen] = useState(false)
   const row =
-    'flex h-12 w-full items-center gap-3 rounded-md px-3 text-left text-base hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 [&>svg]:size-[18px] [&>svg]:shrink-0'
+    'flex h-12 w-full items-center gap-3 rounded-md px-3 text-left text-base hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50 disabled:opacity-50 [&>svg]:size-[18px] [&>svg]:shrink-0'
   return (
     <>
       <IconButton

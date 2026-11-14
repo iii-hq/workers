@@ -109,7 +109,7 @@
   color: var(--color-ink);
 }
 [data-iii-ui="browser"] .br-ui-tab:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--color-rule-focus);
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
 }
 /* hairline between resting tabs; none touching the active or hovered one */
 [data-iii-ui="browser"] .br-ui-tab + .br-ui-tab::before {
@@ -501,12 +501,12 @@
   outline: none;
 }
 [data-iii-ui="browser"] .br-ui-vp:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--color-rule-focus);
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
 }
 /* annotating is a live mode, so its frame is the accent */
 [data-iii-ui="browser"] .br-ui-vp.is-annotating {
   cursor: crosshair;
-  box-shadow: inset 0 0 0 2px var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
 }
 [data-iii-ui="browser"] .br-ui-vp-annot {
   position: absolute;
@@ -551,68 +551,67 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 20px;
   padding: 24px;
   background: var(--color-panel);
   text-align: center;
-}
-[data-iii-ui="browser"] .br-ui-ntp-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  margin-bottom: 8px;
-  border-radius: 50%;
-  background: var(--color-surface);
-  color: var(--color-ink-faint);
 }
 [data-iii-ui="browser"] .br-ui-ntp-title {
   margin: 0;
   color: var(--color-ink);
   font-family: var(--font-sans);
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 600;
+  letter-spacing: -0.02em;
+}
+/* The one thing on the page: an address field standing in for the bar
+   above, big enough to be the obvious next move. */
+[data-iii-ui="browser"] .br-ui-ntp-focus {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(640px, 100%);
+  height: 52px;
+  padding: 0 10px 0 18px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-raised);
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  text-align: left;
+  cursor: text;
+  transition:
+    box-shadow var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus:hover {
+  box-shadow: var(--shadow-floating);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-color: var(--color-rule-focus);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus > svg {
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus > span {
+  flex: 1;
 }
 [data-iii-ui="browser"] .br-ui-ntp-body {
   margin: 0;
-  max-width: 40ch;
+  max-width: 44ch;
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.5;
 }
-[data-iii-ui="browser"] .br-ui-ntp-focus {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: min(520px, 100%);
-  height: 44px;
-  margin-top: 16px;
-  padding: 0 8px 0 16px;
-  border: 1px solid var(--color-edge);
-  border-radius: 9999px;
-  background: var(--color-panel-raised);
-  color: var(--color-ink-ghost);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  text-align: left;
-  cursor: text;
-  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-[data-iii-ui="browser"] .br-ui-ntp-focus:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="browser"] .br-ui-ntp-focus:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: 2px;
-}
-[data-iii-ui="browser"] .br-ui-ntp-focus > span {
-  flex: 1;
-}
 [data-iii-ui="browser"] .br-ui-ntp-kbd {
-  padding: 2px 8px;
-  border-radius: 9999px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
   background: var(--color-surface);
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
@@ -622,7 +621,7 @@
 [data-iii-ui="browser"] .br-ui-vp-hint {
   position: absolute;
   pointer-events: none;
-  border: 1px solid var(--color-accent);
+  border: 1px solid var(--color-control-edge);
   background: color-mix(in srgb, var(--color-accent) 15%, transparent);
 }
 [data-iii-ui="browser"] .br-ui-vp-hint-label {
@@ -1821,7 +1820,7 @@
   text-decoration: underline;
 }
 [data-iii-ui="browser"] .br-ui-link:focus-visible {
-  outline: 2px solid var(--color-ring);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
 }
 

@@ -292,7 +292,7 @@ export function AnnotationLayer({
               top: pinTop(annotation),
             }}
             className={cn(
-              'absolute z-10 flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-accent font-mono text-xs font-semibold text-accent-fg shadow-md transition-transform [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:scale-95',
+              'absolute z-10 flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-accent font-mono text-xs font-semibold text-accent-fg shadow-md transition-transform [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:scale-110 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 active:scale-95',
               isSelected &&
                 'ring-2 ring-white/80 ring-offset-2 ring-offset-accent',
               active ? 'cursor-grab' : 'cursor-pointer',

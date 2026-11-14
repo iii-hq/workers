@@ -94,7 +94,7 @@ export function PanelDragHandle({
       onKeyDown={onKeyDown}
       className={cn(
         'absolute top-0 left-1/2 z-30 hidden h-5 w-10 -translate-x-1/2 items-center justify-center rounded-b-sm border-x border-b border-edge bg-panel text-ink-ghost shadow-sm sm:flex',
-        'cursor-grab opacity-40 transition-[color,opacity,background-color] hover:bg-surface-hover hover:text-ink hover:opacity-100 focus-visible:bg-surface-hover focus-visible:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing',
+        'cursor-grab opacity-40 transition-[color,opacity,background-color] hover:bg-surface-hover hover:text-ink hover:opacity-100 focus-visible:bg-surface-hover focus-visible:text-ink focus-visible:opacity-100 focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50 active:cursor-grabbing',
         disabled && 'cursor-default opacity-0',
         dragging && 'cursor-grabbing bg-surface-hover text-ink opacity-100',
       )}
@@ -323,7 +323,7 @@ export function SplitPreview({
         // Overlay grammar: one surface step up and the floating shadow — no
         // frame. It sits over the neighbouring pane, not beside it.
         'rounded-sm bg-panel-raised font-inter shadow-floating select-none',
-        'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+        'focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-inset focus-visible:ring-ring/50',
         side === 'left' ? 'left-1.5' : 'right-1.5',
         closing
           ? side === 'left'

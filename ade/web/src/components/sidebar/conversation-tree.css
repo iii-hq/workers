@@ -8,8 +8,8 @@
 /* Doubled with the recipe's class so the overrides outrank `.iii-ui-tree`
    whichever stylesheet loads first. */
 .iii-ui-tree.conversation-tree {
-  --iii-ui-tree-inset: 10px;
-  --iii-ui-tree-trailing: 10px;
+  --iii-ui-tree-inset: 12px;
+  --iii-ui-tree-trailing: 12px;
 }
 
 .iii-ui-tree.conversation-tree:not([data-narrow]) {
@@ -115,7 +115,7 @@
   display: inline-flex;
   flex: 0 0 auto;
   margin-left: auto;
-  padding-left: 0.5rem;
+  padding-left: 0.875rem;
   align-items: center;
   gap: 0.375rem;
 }

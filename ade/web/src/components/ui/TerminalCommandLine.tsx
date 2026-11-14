@@ -83,7 +83,7 @@ export function TerminalCommandLine({
           }
           className={cn(
             'flex shrink-0 cursor-pointer items-center gap-1 text-ink-faint transition-colors hover:text-ink',
-            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            'focus-visible:outline focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50',
           )}
         >
           {copyState === 'idle' ? (

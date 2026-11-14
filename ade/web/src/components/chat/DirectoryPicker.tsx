@@ -585,7 +585,7 @@ export function DirectoryPicker({
             onClick={() => (open ? setOpen(false) : openPanel())}
             className={cn(
               triggerAppearance === 'inline'
-                ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-inter font-medium text-ink hover:border-ink hover:text-ink focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50'
+                ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-inter font-medium text-ink hover:border-input hover:text-ink focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50'
                 : triggerAppearance === 'chip'
                   ? // A ghost dropdown button: the folder and name read as the
                     // dialog's scope, the caret says it is a choice.

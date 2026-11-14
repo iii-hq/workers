@@ -226,7 +226,7 @@ const OPEN_SETTLE_MAX_MS = 800
 /** A fast open shows nothing rather than a flash of the loading line. */
 const OPEN_INDICATOR_DELAY_MS = 150
 const HISTORY_EDGE_BUTTON_CLASS =
-  'cursor-pointer underline decoration-dotted underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+  'cursor-pointer underline decoration-dotted underline-offset-2 hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50'
 
 /**
  * Transcript entry ids a placeholder row needs fetched: its own entry and,
@@ -1647,7 +1647,7 @@ export function MessageList({
         className={cn(
           // Scroll anchoring is off: the prepend restoration above is the one
           // adjustment, and it must not add to the browser's own.
-          'conversation-transcript min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          'conversation-transcript min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-inset focus-visible:ring-ring/50',
           // Opacity, not display or visibility: the veiled list keeps its
           // layout so the tail jump and the settle happen for real behind it,
           // and opacity composites the whole subtree, whereas `visibility:
@@ -1747,7 +1747,7 @@ export function MessageList({
           variant="pill"
           size="sm"
           className={cn(
-            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md sm:h-8 sm:text-[0.8125rem] dark:ring-1',
+            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md ring-1 ring-border sm:h-8 sm:text-[0.8125rem]',
             hasPendingApproval && 'text-warn',
           )}
           onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}
@@ -2146,7 +2146,7 @@ function FunctionCallGroup({
             type="button"
             onClick={onShowObservers}
             aria-label={`${label}${sources ? ` from ${sources}` : ''} · show in Observers`}
-            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
           >
             <ObserverIcon aria-hidden className="size-4 shrink-0 fill-warn" />
             <span className="font-medium text-ink tabular-nums">

@@ -201,7 +201,9 @@
   --color-rule: transparent;
   --color-rule-2: transparent;
   --color-rule-strong: transparent;
-  --color-rule-focus: var(--ring);
+  /* Half-strength, like the shadcn `ring-ring/50`: a focus line, never a
+     solid primary stroke. */
+  --color-rule-focus: color-mix(in oklab, var(--ring) 50%, transparent);
 
   /* The structural strokes: the design-system `border` on panels, cards,
      popovers and dialogs, `input` on form controls. */

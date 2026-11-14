@@ -160,7 +160,7 @@ export function MermaidDiagram({ source }: { source: string }) {
           <section
             ref={viewportRef}
             style={{ maxHeight: previewHeight + 32 }}
-            className="max-w-full overflow-auto p-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+            className="max-w-full overflow-auto p-4 focus-visible:outline focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
             aria-label="Mermaid diagram viewport"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll wide diagrams.
             tabIndex={0}

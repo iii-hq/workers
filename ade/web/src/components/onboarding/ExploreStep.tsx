@@ -65,7 +65,7 @@ const PICK_CLASS =
   'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-card px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none'
 const PICK_IDLE = 'border-border hover:border-input hover:bg-muted'
 const PICK_CHECKED =
-  'border-ink bg-muted shadow-[inset_0_0_0_1px_var(--color-ink)]'
+  'border-input bg-muted shadow-[inset_0_0_0_1px_var(--color-ink)]'
 
 /** Rows rise in one after another as the screen opens; nothing waits on it. */
 const ROW_ENTER = { duration: 0.2, ease: [0.23, 1, 0.32, 1] as const }
@@ -78,7 +78,7 @@ function Dot({ checked }: { checked: boolean }) {
       aria-hidden
       className={cn(
         'flex size-[18px] shrink-0 items-center justify-center rounded-full border transition-colors duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
-        checked ? 'border-ink' : 'border-input group-hover:border-input  ',
+        checked ? 'border-input' : 'border-input group-hover:border-input  ',
       )}
     >
       <span

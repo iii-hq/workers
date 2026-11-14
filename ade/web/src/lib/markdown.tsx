@@ -282,7 +282,7 @@ function MarkdownLink({
         problem={problem}
         className={cn(
           linkClassName,
-          'cursor-pointer text-left break-words focus-visible:outline-2 focus-visible:outline-ring',
+          'cursor-pointer text-left break-words focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring',
           className,
         )}
         title={
@@ -405,7 +405,7 @@ function MarkdownFileMention({ path, range }: FileMentionRef) {
   return (
     <FileReferenceButton
       reference={{ path, range }}
-      className="inline-flex align-middle cursor-pointer rounded-xs hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring"
+      className="inline-flex align-middle cursor-pointer rounded-xs hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
       title={`open ${path} in the IDE (current file on disk)`}
     >
       {pill}

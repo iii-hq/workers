@@ -1477,16 +1477,8 @@ export function SessionView({
           />
           {newTab ? (
             <div className="br-ui-ntp">
-              <span className="br-ui-ntp-mark" aria-hidden>
-                {session.incognito ? <HatGlasses size={28} /> : <Search size={28} />}
-              </span>
               <p className="br-ui-ntp-title">
-                {session.incognito ? 'You’ve gone incognito' : 'New tab'}
-              </p>
-              <p className="br-ui-ntp-body">
-                {session.incognito
-                  ? 'Nothing this tab visits is saved: no history, no cookies, no site data.'
-                  : 'Type an address or a search in the bar above.'}
+                {session.incognito ? 'You’re incognito' : 'Where to?'}
               </p>
               <button
                 type="button"
@@ -1496,10 +1488,15 @@ export function SessionView({
                   urlInputRef.current?.select()
                 }}
               >
-                <Search size={16} aria-hidden />
+                <Search size={18} aria-hidden />
                 <span>Search or type a URL</span>
                 <kbd className="br-ui-ntp-kbd">⌘L</kbd>
               </button>
+              <p className="br-ui-ntp-body">
+                {session.incognito
+                  ? 'Nothing this tab visits is saved: no history, no cookies, no site data.'
+                  : 'The agent can drive this tab too: ask it to open a page.'}
+              </p>
             </div>
           ) : null}
         </div>

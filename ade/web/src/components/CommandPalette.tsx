@@ -701,7 +701,7 @@ export function CommandPalette({
       >
         {/* The field: a magnifier, the mode chip when a prefix is typed, the
  query, and on a phone the close button. */}
-        <InputGroup className="h-14 shrink-0 rounded-none border-0 border-b border-border bg-transparent pr-1 pl-4 shadow-none! has-[input:focus-visible]:ring-0 sm:pr-4 dark:bg-transparent">
+        <InputGroup className="h-14 shrink-0 rounded-none border-0 bg-transparent pr-1 pl-4 shadow-none! has-[input:focus-visible]:ring-0 sm:pr-4 dark:bg-transparent">
           <InputGroupAddon className="pl-0">
             <Search aria-hidden className="text-ink-ghost" />
             {scope ? (
@@ -883,7 +883,6 @@ export function CommandPalette({
                   return (
                     <Item
                       key={entry.id}
-                      size="xs"
                       render={<button type="button" />}
                       tabIndex={-1}
                       data-palette-index={index}

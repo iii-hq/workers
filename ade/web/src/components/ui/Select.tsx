@@ -159,7 +159,7 @@ export function Select<T extends string>({
   const chevronVisible = showChevron ?? appearance === 'default'
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-ink sm:text-sm'
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-input focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-input sm:text-sm'
       : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',
     className,

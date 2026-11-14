@@ -1506,11 +1506,11 @@ function WorkspacePanes({
               }
               className={cn(
                 'group/panel relative flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
-                'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
+                'focus-visible:ring-inset focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
                 'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
                 isDragged && 'opacity-60',
                 isDropTarget &&
-                  'z-10 outline-2 -outline-offset-2 outline-accent',
+                  'z-10 ring-3 outline-none ring-inset ring-ring/50',
                 isEntering &&
                   (motionDirection === 'left'
                     ? 'workspace-panel-enter-left'

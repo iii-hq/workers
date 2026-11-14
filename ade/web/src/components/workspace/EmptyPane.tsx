@@ -217,7 +217,7 @@ export function EmptyPane({
             type="button"
             onClick={onRemove}
             aria-label="remove this panel"
-            className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:outline-2 focus-visible:outline-accent"
+            className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
           >
             <span
               aria-hidden

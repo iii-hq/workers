@@ -358,7 +358,7 @@ function FailureDetails({ rows }: { rows: TechnicalRow[] }) {
       data-message-technical-details
       className="group border-t border-edge bg-surface/40"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 font-inter text-sm text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring sm:px-3.5 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 font-inter text-sm text-ink-faint select-none hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-inset focus-visible:outline-ring sm:px-3.5 [&::-webkit-details-marker]:hidden">
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"
@@ -781,7 +781,7 @@ function TechnicalDetails({
   const copyText = () => rows.map(([k, v]) => `${k}: ${v}`).join('\n')
   return (
     <details data-message-technical-details className={cn('group', className)}>
-      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-sm [&::-webkit-details-marker]:hidden">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 sm:text-sm [&::-webkit-details-marker]:hidden">
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 stroke-ink-ghost transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"
