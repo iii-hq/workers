@@ -302,9 +302,7 @@ async fn flag_parked_turn(
     record: &mut crate::types::turn::TurnRecord,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    if !record.abort
-        && crate::bindings::session_expects_wake(deps, &record.session_id, record.created_at).await
-    {
+    if !record.abort && crate::bindings::session_expects_wake(deps, record).await {
         record.abort = true;
         crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
     }

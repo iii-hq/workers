@@ -244,7 +244,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         .collect();
     // One store read answers both: the flag (fail-closed on an unreadable
     // store, same as `session_expects_wake`) and the detail rows behind it.
-    let armed = crate::bindings::armed_wakes(deps, &req.session_id, record.created_at).await;
+    let armed = crate::bindings::armed_wakes(deps, &record).await;
     // A finished turn that drained a queued wake is replaced by its reseeded
     // turn moments later; until then it is not the run's outcome either.
     let expects_wake = armed.as_ref().is_none_or(|wakes| !wakes.is_empty())

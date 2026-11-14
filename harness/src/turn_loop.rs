@@ -536,7 +536,11 @@ async fn generate_step(
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
     // at once (harness.md § Concurrency & steering).
-    drain_queued(deps, &session, &record.session_id).await?;
+    let drained = drain_rows(deps, &session, &record.session_id).await?;
+    // Stored now: a step that fails next is finalized from the stored record.
+    if note_took_wakes(&mut record, &drained) {
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    }
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     // The reason is the live phase detail UIs render while the shimmer shows;
@@ -1579,8 +1583,9 @@ async fn generate_step(
 
     // Re-acquire the lock before any further turn-record write, then refresh
     // the durable fields allowed to change while generation held no lock:
-    // abort and an explicit skill filter from a raced send. The frozen skill
-    // baseline remains the one used for this generation.
+    // abort, an explicit skill filter from a raced send, and a wake merged
+    // into this turn. The frozen skill baseline remains the one used for this
+    // generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
         crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
@@ -1592,6 +1597,15 @@ async fn generate_step(
             .as_ref()
             .and_then(|record| record.options.skill_context.as_ref()),
     );
+    for wake in durable_record
+        .iter()
+        .filter(|durable| durable.turn_id == record.turn_id)
+        .flat_map(|durable| &durable.took_wakes)
+    {
+        if !record.took_wakes.contains(wake) {
+            record.took_wakes.push(wake.clone());
+        }
+    }
 
     Ok(PreparedStep::Generated(Box::new(GeneratedStep {
         payload,
@@ -2517,20 +2531,31 @@ fn count_model_visible(rows: &[crate::state::QueuedMessage]) -> usize {
         .count()
 }
 
-/// Drain the session's message queue into the transcript in arrival order,
-/// returning how many drained rows were MODEL-VISIBLE. Idempotent: each row
-/// appends under its stored deterministic entry id, and rows are deleted only
-/// after the append lands — a redelivered step re-drains as a no-op and reports
-/// zero, since there is nothing left to drain.
+/// [`drain_rows`], returning how many drained rows were MODEL-VISIBLE.
+#[cfg(test)]
 pub(crate) async fn drain_queued(
     deps: &Deps,
     session: &SessionClient,
     session_id: &str,
 ) -> Result<usize, HarnessError> {
+    Ok(count_model_visible(
+        &drain_rows(deps, session, session_id).await?,
+    ))
+}
+
+/// Drain the session's message queue into the transcript in arrival order,
+/// returning the drained rows. Idempotent: each row appends under its stored
+/// deterministic entry id, and rows are deleted only after the append lands —
+/// a redelivered step re-drains as a no-op and returns nothing, since there is
+/// nothing left to drain.
+async fn drain_rows(
+    deps: &Deps,
+    session: &SessionClient,
+    session_id: &str,
+) -> Result<Vec<crate::state::QueuedMessage>, HarnessError> {
     let cfg = deps.cfg().await;
     let rows = crate::state::list_queued(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    let model_visible = count_model_visible(&rows);
-    for row in rows {
+    for row in &rows {
         session
             .append(
                 session_id,
@@ -2542,7 +2567,15 @@ pub(crate) async fn drain_queued(
             .await?;
         crate::state::delete_queued(&deps.iii, session_id, &row.id, cfg.session_timeout_ms).await?;
     }
-    Ok(model_visible)
+    Ok(rows)
+}
+
+/// [`crate::bindings::note_took_wake`] for every row a drain delivered. True
+/// when one was new.
+fn note_took_wakes(record: &mut TurnRecord, rows: &[crate::state::QueuedMessage]) -> bool {
+    rows.iter().fold(false, |new, row| {
+        crate::bindings::note_took_wake(record, &row.entry_id, row.origin.as_ref()) | new
+    })
 }
 
 /// Finalize drain: a message that parked after the loop's last in-step queue
@@ -2552,11 +2585,18 @@ pub(crate) async fn drain_queued(
 /// reseed a parked notification sits unread with no turn to process it, which
 /// strands an autonomous run that ended its turn expecting the fire to wake it.
 /// Never blocks the finalise.
-async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) -> bool {
-    match drain_queued(deps, session, session_id).await {
-        Ok(model_visible) => model_visible > 0,
+async fn drain_queued_best_effort(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+) -> bool {
+    match drain_rows(deps, session, &record.session_id).await {
+        Ok(rows) => {
+            note_took_wakes(record, &rows);
+            count_model_visible(&rows) > 0
+        }
         Err(e) => {
-            tracing::warn!(session_id = %session_id, error = %e, "finalize queue drain failed");
+            tracing::warn!(session_id = %record.session_id, error = %e, "finalize queue drain failed");
             false
         }
     }
@@ -2574,7 +2614,7 @@ async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_
 /// finalize (queue at-least-once) drains nothing and does not double-seed; a
 /// concurrent external send racing the same slot is resolved by `run_step`'s
 /// stale-turn guard, exactly as two racing sends already are.
-async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
+async fn reseed_after_finalize_drain(deps: &Deps, record: &mut TurnRecord) {
     let cfg = deps.cfg().await;
     // Carry the finalized turn's lineage onto the reseeded one: it is the same
     // session continuing, so its depth still counts against the spawn budget
@@ -2585,7 +2625,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         &cfg,
         &record.session_id,
         record.options.clone(),
-        Some(record),
+        Some(&*record),
         None,
         &lineage,
     )
@@ -2596,7 +2636,46 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
             error = %e,
             "reseed after finalize drain failed; a parked notification may be stranded",
         );
+        settle_unreseeded(deps, record, cfg.session_timeout_ms).await;
     }
+}
+
+/// No reseeded turn replaces this record, so the terminal decision its
+/// finalize deferred is this turn's to make: drop `continues` and complete it
+/// again. Skipped once a reseeded record replaced it (a reseed whose first
+/// enqueue failed has finalized that turn itself).
+async fn settle_unreseeded(deps: &Deps, record: &mut TurnRecord, timeout_ms: u64) {
+    match crate::state::get_turn_unhydrated(&deps.iii, &record.session_id, timeout_ms).await {
+        Ok(Some(current)) if current.turn_id == record.turn_id => {}
+        _ => return,
+    }
+    record.continues = false;
+    let terminal = turn_is_terminal(deps, record).await;
+    let failed = record.status == TurnStatus::Failed;
+    if failed {
+        record.exchange_finished = terminal;
+    }
+    // Completes even when the write fails: a waiter left without the event
+    // stays stuck, while a stale stored record is only a stale read.
+    if let Err(error) = crate::state::put_turn(&deps.iii, record, timeout_ms).await {
+        tracing::warn!(session_id = %record.session_id, %error, "could not settle a turn whose reseed failed");
+    }
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
+    let error = record.result_error.as_deref().filter(|_| failed);
+    deps.events
+        .emit_completed(
+            &record.session_id,
+            &record.turn_id,
+            if failed { "failed" } else { "completed" },
+            record.result.as_ref(),
+            error,
+            error,
+            record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+            terminal,
+            record.context_snapshot.as_ref(),
+        )
+        .await;
 }
 
 /// Consume a `submit_result` call: validate its arguments against the
@@ -2816,7 +2895,7 @@ async fn turn_is_terminal(deps: &Deps, record: &TurnRecord) -> bool {
     ) {
         return true;
     }
-    !crate::bindings::session_expects_wake(deps, &record.session_id, record.created_at).await
+    !crate::bindings::session_expects_wake(deps, record).await
 }
 
 /// After the terminal `Completed` write, a failed deletion-guard lookup must
@@ -2859,7 +2938,7 @@ async fn finalize_completed(
         ))
         .await;
     }
-    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
     record.result = result.clone();
@@ -2876,7 +2955,7 @@ async fn finalize_completed(
     // it, a row enqueued between the first drain and the terminal write would
     // strand — queued against a turn that will never drain again. It runs
     // before the completion event so `terminal` and `continues` count its row.
-    let late = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let late = drain_queued_best_effort(deps, session, record).await;
     if late && !woke {
         record.continues = true;
         // Best effort: failing the step here would skip the reseed below.
@@ -3134,7 +3213,7 @@ async fn finalize_failed(
     public_message: &str,
     failure: FailureInfo<'_>,
 ) -> Result<TurnStepResult, HarnessError> {
-    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     let presentation = failure_presentation(public_message, failure);
     let summary = presentation.summary;
@@ -3151,7 +3230,7 @@ async fn finalize_failed(
     // Second sweep, as in `finalize_completed`: right after the terminal write
     // and before the proof and the event, so both count a row enqueued between
     // the first drain and that write.
-    let late = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let late = drain_queued_best_effort(deps, session, record).await;
     if late && !woke {
         terminal = false;
         record.exchange_finished = false;
@@ -3374,7 +3453,7 @@ pub(crate) async fn finalize_cancelled(
     // Deliver any parked rows to the transcript but do NOT reseed: the user
     // stopped this turn, so a parked notification waits for the next explicit
     // send rather than auto-waking a turn they just cancelled.
-    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let _ = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     let terminal = turn_is_terminal(deps, record).await;
     record.status = TurnStatus::Cancelled;
@@ -3407,7 +3486,7 @@ pub(crate) async fn finalize_cancelled(
     // Second post-terminal sweep (see `finalize_completed`): a row enqueued
     // between the first drain and the terminal write still reaches the
     // transcript. Still no reseed — the user cancelled.
-    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let _ = drain_queued_best_effort(deps, session, record).await;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Cancelled,

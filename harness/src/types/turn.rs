@@ -405,6 +405,10 @@ pub struct TurnRecord {
     /// reseeded turn replaces this record.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub continues: bool,
+    /// Wake bindings whose fire this turn's own queue drain delivered: their
+    /// claimed record can outlive the delivery, and must not park this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub took_wakes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub watermark_entry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -601,6 +605,7 @@ pub(crate) mod tests {
             abort: false,
             exchange_finished: false,
             continues: false,
+            took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::deps::Deps;
-use crate::types::turn::FunctionPolicy;
+use crate::types::turn::{FunctionPolicy, TurnRecord};
 
 /// Added to a binding's remaining lifetime when it becomes the observer's
 /// `expires_in` backstop: the harness's own deadline timer retires the
@@ -236,10 +236,31 @@ pub fn is_armed_wake(binding: &Binding, _now_ms: i64) -> bool {
 
 /// Whether `binding` parks the session's turn created at `turn_created_at`. An
 /// unclaimed wake parks every turn; a claimed one only a turn that predates the
-/// claim, because its delivery seeds or steers a later one, which consumes it.
-pub fn parks_turn(binding: &Binding, turn_created_at: i64) -> bool {
+/// claim, because its delivery seeds or steers a later one, which consumes it,
+/// and not a turn that took it itself (`took_wakes`).
+pub fn parks_turn(binding: &Binding, turn_created_at: i64, took_wakes: &[String]) -> bool {
     is_armed_wake(binding, 0)
-        && (binding.fires == 0 || binding.claimed_at.is_some_and(|at| turn_created_at < at))
+        && (binding.fires == 0
+            || (binding.claimed_at.is_some_and(|at| turn_created_at < at)
+                && !took_wakes.contains(&binding.id)))
+}
+
+/// Record on `turn` that it took the message delivered as `entry_id` with
+/// `origin`, when that message is a wake's fire: the turn consumes it whether
+/// or not the claimed record is gone yet (see [`parks_turn`]). True when the
+/// wake was new to the turn.
+pub fn note_took_wake(turn: &mut TurnRecord, entry_id: &str, origin: Option<&Value>) -> bool {
+    let Some(binding) = origin
+        .and_then(|o| o["binding"].as_str())
+        .filter(|_| entry_id.starts_with("e_fire_"))
+    else {
+        return false;
+    };
+    if turn.took_wakes.iter().any(|id| id == binding) {
+        return false;
+    }
+    turn.took_wakes.push(binding.to_string());
+    true
 }
 
 /// Whether the session's turn created at `turn_created_at` is parked on a wake
@@ -249,9 +270,11 @@ pub fn parks_turn(binding: &Binding, turn_created_at: i64) -> bool {
 ///
 /// Reads the durable store, not an in-memory flag: the flag did not survive a
 /// harness restart, so every parked session came back looking terminal.
-pub async fn session_expects_wake(deps: &Deps, session_id: &str, turn_created_at: i64) -> bool {
-    match deps.bindings().await.list_for_owner(session_id).await {
-        Ok(bindings) => bindings.iter().any(|b| parks_turn(b, turn_created_at)),
+pub async fn session_expects_wake(deps: &Deps, turn: &TurnRecord) -> bool {
+    match deps.bindings().await.list_for_owner(&turn.session_id).await {
+        Ok(bindings) => bindings
+            .iter()
+            .any(|b| parks_turn(b, turn.created_at, &turn.took_wakes)),
         // Fail CLOSED on an unreadable store: reporting "no wake" would mark a
         // parked run terminal and finalize an exchange that is still going.
         Err(_) => true,
@@ -277,25 +300,20 @@ pub struct ArmedWake {
     pub expires_at: Option<i64>,
 }
 
-/// The session's armed wakes that park its turn created at `turn_created_at`,
-/// in detail. `None` when the store is unreadable — callers deciding
-/// terminality must fail closed on it, exactly like [`session_expects_wake`]
-/// does.
-pub async fn armed_wakes(
-    deps: &Deps,
-    session_id: &str,
-    turn_created_at: i64,
-) -> Option<Vec<ArmedWake>> {
+/// The session's armed wakes that park `turn`, in detail. `None` when the
+/// store is unreadable — callers deciding terminality must fail closed on it,
+/// exactly like [`session_expects_wake`] does.
+pub async fn armed_wakes(deps: &Deps, turn: &TurnRecord) -> Option<Vec<ArmedWake>> {
     let bindings = deps
         .bindings()
         .await
-        .list_for_owner(session_id)
+        .list_for_owner(&turn.session_id)
         .await
         .ok()?;
     Some(
         bindings
             .iter()
-            .filter(|b| parks_turn(b, turn_created_at))
+            .filter(|b| parks_turn(b, turn.created_at, &turn.took_wakes))
             .map(|b| ArmedWake {
                 observer_id: b.id.clone(),
                 function_id: b.source.as_ref().map(|s| s.function_id.clone()),
@@ -623,7 +641,7 @@ mod tests {
         let mut unclaimed = binding();
         unclaimed.lifecycle.once = true;
         assert!(
-            parks_turn(&unclaimed, i64::MAX),
+            parks_turn(&unclaimed, i64::MAX, &[]),
             "an unclaimed wake parks every turn"
         );
 
@@ -631,24 +649,32 @@ mod tests {
         claimed.fires = 1;
         claimed.claimed_at = Some(100);
         assert!(
-            parks_turn(&claimed, 99),
+            parks_turn(&claimed, 99, &[]),
             "the parked turn keeps waiting while its wake is delivered"
         );
         assert!(
-            !parks_turn(&claimed, 100),
+            !parks_turn(&claimed, 100, &[]),
             "the turn seeded in the claim's millisecond is the woken one"
         );
-        assert!(!parks_turn(&claimed, 101));
+        assert!(!parks_turn(&claimed, 101, &[]));
+        assert!(
+            !parks_turn(&claimed, 99, &[claimed.id.clone()]),
+            "a turn that drained the wake from its queue took it"
+        );
+        assert!(
+            parks_turn(&unclaimed, 99, &[unclaimed.id.clone()]),
+            "an unfired wake still owes its fire"
+        );
 
         claimed.claimed_at = None;
         assert!(
-            !parks_turn(&claimed, 0),
+            !parks_turn(&claimed, 0, &[]),
             "a claim without a time counts as consumed"
         );
 
         let mut call = unclaimed.clone();
         call.target = BindingTarget::new("state::set");
-        assert!(!parks_turn(&call, 0));
+        assert!(!parks_turn(&call, 0, &[]));
     }
 
     #[test]
