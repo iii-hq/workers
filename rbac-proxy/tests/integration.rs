@@ -6,10 +6,8 @@
 //! temporary directory on a free port picked at boot (never the default
 //! 49134), so the test never reaches an engine a developer has running.
 //!
-//! Self-skips (printing why) when:
-//!   - there is no `iii` binary, or
-//!   - the proxy does not come up within the timeout (e.g. the `configuration`
-//!     worker — a required boot dependency — is not deployed in this engine).
+//! Skips only when the optional engine is absent. A supplied engine and
+//! proxy must start successfully; startup failures include their logs.
 //!
 //! Covers spec *Testing* (a)–(e): an exposed call succeeds, a forbidden call
 //! rejects with `FORBIDDEN`, an observer whose target is a forbidden function
@@ -21,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -151,14 +149,14 @@ async fn boot() -> Option<Harness> {
     // The engine keeps its state (configuration entries) under its working
     // directory: a fresh one per run.
     let dir = std::env::temp_dir().join(format!("rbac-proxy-itest-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::create_dir_all(&dir).expect("create integration directory");
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {engine_port}\n"
         ),
     )
-    .ok()?;
+    .expect("write integration configuration");
 
     // Seed config: RBAC on, exposing only api::* and the functions-discovery
     // surface. Written before any child starts, so failing here leaks none.
@@ -171,31 +169,31 @@ async fn boot() -> Option<Harness> {
              rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
         ),
     )
-    .ok()?;
+    .expect("write integration configuration");
 
+    let engine_log = std::fs::File::create(dir.join("engine.log")).expect("create engine log");
     let spawned = Command::new(&iii_bin)
-        .args(["-c", "config.yaml"])
+        .args(["--no-update-check", "-c", "config.yaml"])
         .current_dir(&dir)
         .env_remove("III_URL")
         // Engine and proxy write `iii ps` markers under $HOME/.iii/run.
         .env("HOME", &dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(engine_log.try_clone().expect("clone engine log"))
+        .stderr(engine_log)
         .spawn();
     let mut iii = match spawned {
         Ok(child) => child,
         Err(e) => {
-            eprintln!("skipping: could not start {}: {e}", iii_bin.display());
             let _ = std::fs::remove_dir_all(&dir);
-            return None;
+            panic!("could not start supplied engine {}: {e}", iii_bin.display());
         }
     };
 
     if !wait_for_listen(engine_port, Duration::from_secs(15)).await {
-        eprintln!("skipping: engine did not come up on :{engine_port}");
+        let log = std::fs::read_to_string(dir.join("engine.log")).unwrap_or_default();
         kill_tree(&mut iii);
         let _ = std::fs::remove_dir_all(&dir);
-        return None;
+        panic!("supplied engine did not come up on :{engine_port}: {log}");
     }
 
     // Register auth + targets, give the engine a moment to index them.
@@ -203,6 +201,7 @@ async fn boot() -> Option<Harness> {
     sleep(Duration::from_millis(600)).await;
 
     let proxy_bin = env!("CARGO_BIN_EXE_rbac-proxy");
+    let proxy_log = std::fs::File::create(dir.join("proxy.log")).expect("create proxy log");
     let spawned = Command::new(proxy_bin)
         .arg("--url")
         .arg(&engine_ws)
@@ -210,20 +209,20 @@ async fn boot() -> Option<Harness> {
         .arg(&seed_path)
         .env_remove("III_URL")
         .env("HOME", &dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(proxy_log.try_clone().expect("clone proxy log"))
+        .stderr(proxy_log)
         .spawn();
-    let Ok(proxy) = spawned else {
-        kill_tree(&mut iii);
-        let _ = std::fs::remove_dir_all(&dir);
-        return None;
+    let proxy = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            kill_tree(&mut iii);
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("start proxy: {error}");
+        }
     };
 
     if !wait_for_listen(proxy_port, Duration::from_secs(10)).await {
-        eprintln!(
-            "skipping: rbac-proxy did not come up on :{proxy_port} \
-             (is the `configuration` worker deployed in this engine?)"
-        );
+        let log = std::fs::read_to_string(dir.join("proxy.log")).unwrap_or_default();
         let mut h = Harness {
             proxy,
             iii,
@@ -231,10 +230,10 @@ async fn boot() -> Option<Harness> {
             dir,
             proxy_port,
         };
-        // Ensure the proxy child is reaped by the Drop; signal skip via None.
+        // Reap both processes before reporting the failed prerequisite.
         let _ = h.proxy.kill();
         drop(h);
-        return None;
+        panic!("rbac-proxy did not come up on :{proxy_port}: {log}");
     }
 
     Some(Harness {
@@ -637,4 +636,21 @@ async fn request(ws: &mut RawClient, frame: Value, pick: impl Fn(&Value) -> bool
     })
     .await
     .expect("no reply in time")
+}
+
+#[cfg(unix)]
+#[test]
+fn supplied_failed_engine_cannot_skip() {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "end_to_end_rbac_through_proxy", "--nocapture"])
+        .env("III_BIN", "/bin/false")
+        .output()
+        .expect("run supplied-engine failure in isolated process");
+    assert!(!output.status.success(), "failed engine passed integration");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("supplied engine did not come up"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("skipping:"), "{stderr}");
 }
