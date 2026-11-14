@@ -8,8 +8,8 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
@@ -18,21 +18,18 @@ use crate::consolidate::{self, BankReport, ConsolidationTransport};
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
 pub const RUN_ID: &str = "memory-consolidate::run";
-pub const RUN_DESC: &str =
-    "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
+pub const RUN_DESC: &str = "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
      near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic \
      merge/supersede of new memories, each with a reason), applied strictly through \
      memory::supersede; pinned memories are untouchable. dry_run plans without writing.";
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
-pub const STATUS_DESC: &str =
-    "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
+pub const STATUS_DESC: &str = "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
      the reports of the last 30 passes (newest first), each with per-bank results and LLM \
      calls, tokens and cost; only the newest lists its groups and semantic actions.";
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
-pub const TICK_DESC: &str =
-    "Internal: schedule heartbeat (observer of cron::on-tick + boot catch-up backstop). Runs a \
+pub const TICK_DESC: &str = "Internal: schedule heartbeat (observer of cron::on-tick + boot catch-up backstop). Runs a \
      pass only when interval_hours have elapsed since the last one.";
 
 const STATE_SCOPE: &str = "memory_consolidate";

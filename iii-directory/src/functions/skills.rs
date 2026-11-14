@@ -28,8 +28,8 @@
 //! mutation.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use iii_sdk::errors::Error;
@@ -42,7 +42,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source::{self, FsSkill, SkillFrontmatter};
-use crate::functions::error::{invalid_input_message, not_found_message, NextAction, SuggestEntry};
+use crate::functions::error::{NextAction, SuggestEntry, invalid_input_message, not_found_message};
 
 /// Soft-cap on a single skill body (matches the historic state-backed
 /// limit the registry enforced).
@@ -65,8 +65,7 @@ const ID_TOTAL_MAX_LEN: usize = 1024;
 const URI_PREFIX: &str = "iii://";
 
 /// Description for the `directory::skills::get` registration.
-const GET_DESCRIPTION: &str =
-    "Fetch one skill by id and return its raw markdown body plus id, title, \
+const GET_DESCRIPTION: &str = "Fetch one skill by id and return its raw markdown body plus id, title, \
      type, function_id, and modified_at. A worker overview is addressed by \
      the bare worker name; `<id>.md` and `iii://<id>` forms are accepted. On \
      a miss, D110 names the closest ids.";
@@ -274,12 +273,11 @@ impl RegisteredWorkersCache {
         // Phase 1: check for a fresh cache entry under the lock.
         {
             let lock = self.inner.lock().await;
-            if let Some(entry) = lock.as_ref() {
-                if entry.fetched_at.elapsed().as_millis()
+            if let Some(entry) = lock.as_ref()
+                && entry.fetched_at.elapsed().as_millis()
                     < self.ttl_ms.load(Ordering::Relaxed) as u128
-                {
-                    return Some(entry.workers.clone());
-                }
+            {
+                return Some(entry.workers.clone());
             }
             // Drop the guard before the async fetch.
         }
@@ -805,11 +803,7 @@ fn engine_fallback_worker(
     let has_doc = visible
         .iter()
         .any(|s| s.id == ns || s.id.starts_with(&prefix));
-    if has_doc {
-        None
-    } else {
-        Some(ns)
-    }
+    if has_doc { None } else { Some(ns) }
 }
 
 /// Markdown note prepended to the engine overview when `get` falls back
@@ -979,16 +973,16 @@ async fn get_skill_visible(
     // 1. A wrong sub-path under a single-skill worker (agents fabricate
     //    skill paths from function ids, e.g. `iii-sandbox/sandbox/create`)
     //    collapses straight to that worker's overview — one call, not three.
-    if let Some(overview_id) = worker_overview_fallback(&id, &visible, &registered) {
-        if let Some(fs) = find_fs_skill_in(&visible, &overview_id) {
-            let mut out = read_skill_output(&fs, &siblings, include_raw)?;
-            out.body = format!(
-                "{}{}",
-                worker_overview_redirect_note(&id, &overview_id, &siblings),
-                out.body
-            );
-            return Ok(out);
-        }
+    if let Some(overview_id) = worker_overview_fallback(&id, &visible, &registered)
+        && let Some(fs) = find_fs_skill_in(&visible, &overview_id)
+    {
+        let mut out = read_skill_output(&fs, &siblings, include_raw)?;
+        out.body = format!(
+            "{}{}",
+            worker_overview_redirect_note(&id, &overview_id, &siblings),
+            out.body
+        );
+        return Ok(out);
     }
 
     // 2. If the requested namespace is an installed worker that ships
@@ -1194,10 +1188,10 @@ pub fn resolve_title(fm: &SkillFrontmatter, body: &str, id: &str) -> String {
             return trimmed.to_string();
         }
     }
-    if let Some(h1) = extract_title(body) {
-        if !h1.is_empty() {
-            return h1.to_string();
-        }
+    if let Some(h1) = extract_title(body)
+        && !h1.is_empty()
+    {
+        return h1.to_string();
     }
     id.to_string()
 }
@@ -2053,10 +2047,12 @@ First paragraph.
             serde_json::to_value(&enabled).unwrap()["disable_model_invocation"],
             false
         );
-        assert!(serde_json::to_value(&enabled)
-            .unwrap()
-            .get("body")
-            .is_none());
+        assert!(
+            serde_json::to_value(&enabled)
+                .unwrap()
+                .get("body")
+                .is_none()
+        );
         assert!(disabled.disable_model_invocation);
         assert_eq!(
             serde_json::to_value(&disabled).unwrap()["disable_model_invocation"],
@@ -3043,9 +3039,11 @@ First paragraph.
     #[test]
     fn parse_worker_names_empty_project_is_a_valid_empty_set() {
         let val = json!({"containers": []});
-        assert!(parse_worker_names(&val)
-            .expect("empty project parses")
-            .is_empty());
+        assert!(
+            parse_worker_names(&val)
+                .expect("empty project parses")
+                .is_empty()
+        );
     }
 
     #[test]

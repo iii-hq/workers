@@ -114,10 +114,10 @@ fn write_temp(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
 /// Persist the rename itself. Best effort: not every platform can open a
 /// directory for syncing.
 fn sync_parent(path: &Path) {
-    if let Some(dir) = path.parent() {
-        if let Ok(handle) = File::open(dir) {
-            let _ = handle.sync_all();
-        }
+    if let Some(dir) = path.parent()
+        && let Ok(handle) = File::open(dir)
+    {
+        let _ = handle.sync_all();
     }
 }
 

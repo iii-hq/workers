@@ -12,14 +12,14 @@
 //! size, so a caller learns it exists and can go read the file itself, but its
 //! bytes are left out rather than base64'd into a response nobody can hold.
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
 use crate::format::{self, Format};
-use crate::source::{describe_error, DocumentSource};
+use crate::source::{DocumentSource, describe_error};
 
 pub const ID: &str = "document::extract-assets";
 pub const DESC: &str = "Extract the images and embedded objects from a document as base64, for a \

@@ -14,7 +14,7 @@ use iii_sdk::IIIClient;
 
 use session_manager::config::WorkerConfig;
 use session_manager::events::{
-    attach_bridge_relay, BridgeRelay, Emitter, EventSink, RemotePublisher,
+    BridgeRelay, Emitter, EventSink, RemotePublisher, attach_bridge_relay,
 };
 use session_manager::functions::Deps;
 use session_manager::service::SessionService;

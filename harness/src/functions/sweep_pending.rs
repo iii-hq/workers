@@ -11,8 +11,7 @@ use crate::error::HarnessError;
 use crate::types::message::AgentMessage;
 
 pub const SWEEP_PENDING_ID: &str = "harness::sweep-pending";
-pub const SWEEP_PENDING_DESC: &str =
-    "Internal cron sweep: resolve pending function calls past their timeout and re-enqueue the \
+pub const SWEEP_PENDING_DESC: &str = "Internal cron sweep: resolve pending function calls past their timeout and re-enqueue the \
      step of running turns left without one, so a turn never wedges; then move finished turn \
      records' inline prompts to shared bodies and delete unused bodies. Not called directly.";
 

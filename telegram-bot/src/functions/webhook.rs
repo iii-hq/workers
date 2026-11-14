@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -112,10 +112,10 @@ async fn handle_message(
     let chat_id = message.chat.id;
     let cfg = deps.cfg().await;
 
-    if let Some(text) = message.text.as_deref() {
-        if text.starts_with('/') {
-            return handle_command(deps, chat_id, text, &cfg).await;
-        }
+    if let Some(text) = message.text.as_deref()
+        && text.starts_with('/')
+    {
+        return handle_command(deps, chat_id, text, &cfg).await;
     }
 
     let user_text = extract_user_content(&message);
@@ -146,27 +146,27 @@ async fn handle_message(
         return Ok(());
     };
 
-    if cfg.steering_mode == SteeringMode::Fifo {
-        if let Some(ref sid) = session_id {
-            match harness::status_active(&deps.iii, sid, cfg.timeout_ms).await {
-                Ok(true) => {
-                    deps.runtime
-                        .fifo_queues
-                        .entry(chat_id)
-                        .or_default()
-                        .push(user_text);
-                    return Ok(());
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, session_id = %sid, "harness::status failed; queueing message");
-                    deps.runtime
-                        .fifo_queues
-                        .entry(chat_id)
-                        .or_default()
-                        .push(user_text);
-                    return Ok(());
-                }
+    if cfg.steering_mode == SteeringMode::Fifo
+        && let Some(ref sid) = session_id
+    {
+        match harness::status_active(&deps.iii, sid, cfg.timeout_ms).await {
+            Ok(true) => {
+                deps.runtime
+                    .fifo_queues
+                    .entry(chat_id)
+                    .or_default()
+                    .push(user_text);
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, session_id = %sid, "harness::status failed; queueing message");
+                deps.runtime
+                    .fifo_queues
+                    .entry(chat_id)
+                    .or_default()
+                    .push(user_text);
+                return Ok(());
             }
         }
     }
@@ -185,15 +185,15 @@ async fn handle_message(
 }
 
 fn extract_user_content(message: &crate::types::TelegramMessage) -> String {
-    if let Some(text) = &message.text {
-        if !text.is_empty() {
-            return text.clone();
-        }
+    if let Some(text) = &message.text
+        && !text.is_empty()
+    {
+        return text.clone();
     }
-    if let Some(caption) = &message.caption {
-        if !caption.is_empty() {
-            return caption.clone();
-        }
+    if let Some(caption) = &message.caption
+        && !caption.is_empty()
+    {
+        return caption.clone();
     }
     if message.photo.is_some() {
         return "[User sent a photo]".into();
@@ -364,10 +364,10 @@ async fn start_flow(
     payload: Option<&str>,
     cfg: &WorkerConfig,
 ) -> Result<(), Error> {
-    if let Some(p) = payload {
-        if !p.is_empty() {
-            tracing::info!(chat_id, payload = p, "deep link /start payload");
-        }
+    if let Some(p) = payload
+        && !p.is_empty()
+    {
+        tracing::info!(chat_id, payload = p, "deep link /start payload");
     }
 
     reset_chat_for_start(deps, chat_id, cfg).await?;
@@ -635,10 +635,10 @@ fn compose_system_prompt(
     if cfg.channel_context == ChannelContext::Auto {
         parts.push(crate::prompt::channel_context(chat_id, session_id, model));
     }
-    if let Some(operator) = &cfg.system_prompt {
-        if !operator.is_empty() {
-            parts.push(operator.clone());
-        }
+    if let Some(operator) = &cfg.system_prompt
+        && !operator.is_empty()
+    {
+        parts.push(operator.clone());
     }
     if parts.is_empty() {
         None

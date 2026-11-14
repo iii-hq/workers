@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
+use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use source::{ConversationSummary, ExternalMessage, Source, Transcript};
 
@@ -275,8 +275,8 @@ mod tests {
     #[ignore = "requires ADE_IMPORT_TEST_ENGINE_URL pointing at an isolated iii engine"]
     async fn imports_create_independent_native_sessions_and_remove_failed_copies() {
         use std::collections::HashMap;
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::Duration;
 
         let url = std::env::var("ADE_IMPORT_TEST_ENGINE_URL").expect("isolated engine URL");

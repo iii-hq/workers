@@ -1,7 +1,7 @@
 //! Bounded, anchored summarization shared by automatic and explicit compaction.
 use std::time::Duration;
 
-use crate::core::estimate::{estimator_for_model, Estimator};
+use crate::core::estimate::{Estimator, estimator_for_model};
 use crate::core::prune::cap_results_with_sizes;
 use crate::core::summary::{build_system_prompt, render_user_prompt, strip_media};
 use crate::ports::{Deps, SummarizeError, SummarizeRequest};

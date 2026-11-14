@@ -65,13 +65,13 @@ impl ConfigureRequestV1 {
                 "model.model and model.provider must name a catalog model".into(),
             ));
         }
-        if let Some(options) = &model.provider_options {
-            if options.keys().any(|key| key != &model.provider) {
-                return Err(EvalError::InvalidRequest(format!(
-                    "model.provider_options may only hold the `{}` namespace",
-                    model.provider
-                )));
-            }
+        if let Some(options) = &model.provider_options
+            && options.keys().any(|key| key != &model.provider)
+        {
+            return Err(EvalError::InvalidRequest(format!(
+                "model.provider_options may only hold the `{}` namespace",
+                model.provider
+            )));
         }
         if self
             .daily_cost_cap_usd
@@ -1861,17 +1861,21 @@ mod tests {
         }))
         .unwrap();
         assert!(request.validate().is_ok());
-        assert!(serde_json::from_value::<ConfigureRequestV1>(json!({
-            "enabled": true,
-            "model": {"model": "m", "provider": "p"},
-            "api_key": "secret"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ConfigureRequestV1>(json!({
-            "enabled": true,
-            "model": {"model": "m", "provider": "p", "api_key": "secret"}
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ConfigureRequestV1>(json!({
+                "enabled": true,
+                "model": {"model": "m", "provider": "p"},
+                "api_key": "secret"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ConfigureRequestV1>(json!({
+                "enabled": true,
+                "model": {"model": "m", "provider": "p", "api_key": "secret"}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1928,18 +1932,22 @@ mod tests {
             EvalListRequestV1::default().normalized_limit().unwrap(),
             DEFAULT_LIST_LIMIT as usize
         );
-        assert!(EvalListRequestV1 {
-            limit: Some(0),
-            ..Default::default()
-        }
-        .normalized_limit()
-        .is_err());
-        assert!(EvalListRequestV1 {
-            limit: Some(MAX_LIST_LIMIT + 1),
-            ..Default::default()
-        }
-        .normalized_limit()
-        .is_err());
+        assert!(
+            EvalListRequestV1 {
+                limit: Some(0),
+                ..Default::default()
+            }
+            .normalized_limit()
+            .is_err()
+        );
+        assert!(
+            EvalListRequestV1 {
+                limit: Some(MAX_LIST_LIMIT + 1),
+                ..Default::default()
+            }
+            .normalized_limit()
+            .is_err()
+        );
     }
 
     #[test]

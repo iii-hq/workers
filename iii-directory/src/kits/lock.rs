@@ -106,7 +106,7 @@ impl KitsLock {
             return Ok(Self::default());
         }
         let lock: Self =
-            serde_yaml::from_str(text).map_err(|e| format!("invalid kits.lock: {e}"))?;
+            serde_yaml_ng::from_str(text).map_err(|e| format!("invalid kits.lock: {e}"))?;
         if lock.version != LOCK_VERSION {
             return Err(format!(
                 "kits.lock version {} is not supported (expected {LOCK_VERSION})",
@@ -117,7 +117,7 @@ impl KitsLock {
     }
 
     pub fn render(&self) -> Result<String, String> {
-        let body = serde_yaml::to_string(self).map_err(|e| format!("encode kits.lock: {e}"))?;
+        let body = serde_yaml_ng::to_string(self).map_err(|e| format!("encode kits.lock: {e}"))?;
         Ok(format!("{HEADER}{body}"))
     }
 

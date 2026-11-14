@@ -38,13 +38,13 @@ use iii_sdk::{
     AddedHook, Call, CallRequest, DeliverHook, IIIClient, ObserveRejection, Observer,
     RegisterFunction, RemovedHook,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::configuration::ConfigCell;
 use crate::inflight::{InFlight, InFlightRequests, REQUEST_ID_KEY};
-use crate::middleware::{self, error_body, response_value, MiddlewareOutcome};
-use crate::routes::{log_registered, log_unregistered, Route, RouteTable};
+use crate::middleware::{self, MiddlewareOutcome, error_body, response_value};
+use crate::routes::{Route, RouteTable, log_registered, log_unregistered};
 use crate::types::{HttpRequest, HttpRouteArgs, InboundRequest};
 
 /// The function observers declare routes on.
@@ -57,8 +57,7 @@ pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
 /// the engine default in `views.rs`).
 const CHANNEL_BUFFER: usize = 64;
 
-pub const ON_REQUEST_DESCRIPTION: &str =
-    "One call per HTTP request the http worker receives (OPTIONS requests are answered by its \
+pub const ON_REQUEST_DESCRIPTION: &str = "One call per HTTP request the http worker receives (OPTIONS requests are answered by its \
      CORS layer). Observe it with args { method, path } (plus optional public_webhook and \
      middleware_function_ids) to serve that route: the worker calls the target with the \
      HttpRequest (path template, path_params, query_params, headers, body, and the \

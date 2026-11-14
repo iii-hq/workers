@@ -7,7 +7,7 @@ use std::sync::Arc;
 use iii_config_client::{EntrySpec, Reload};
 use iii_sdk::IIIClient;
 
-use crate::config::{SecretsConfig, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME};
+use crate::config::{CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, SecretsConfig};
 use crate::functions::Ctx;
 use crate::store::StorePaths;
 

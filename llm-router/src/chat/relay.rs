@@ -109,8 +109,8 @@ pub async fn relay_frames(
     opts: &RelayOpts,
 ) -> RelayResult {
     let mut forwarded = false; // a non-ping frame reached the caller (gates retry)
-                               // Cumulative message for abort/no-terminal synthesis: slim deltas are
-                               // cheap string appends; legacy fat partials replace the snapshot.
+    // Cumulative message for abort/no-terminal synthesis: slim deltas are
+    // cheap string appends; legacy fat partials replace the snapshot.
     let mut acc = crate::chat::accumulate::PartialAccumulator::default();
     let mut usage: Option<Usage> = None;
     let mut content_started = false;
@@ -143,7 +143,7 @@ pub async fn relay_frames(
                     partial: acc.current(),
                     usage,
                     forwarded,
-                }
+                };
             }
             ReadEvent::Timeout => {
                 reader.close();
@@ -260,8 +260,8 @@ mod loop_tests {
     use crate::testkit::fake_channels::FakeChannel;
     use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
     use crate::types::messages::AssistantMessage;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
     fn partial(text: &str) -> AssistantMessage {

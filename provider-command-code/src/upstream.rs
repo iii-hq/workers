@@ -1,10 +1,10 @@
 use crate::errors::classify;
 use crate::request::WireDialect;
-use crate::sse::{synthetic_error, DecoderState};
+use crate::sse::{DecoderState, synthetic_error};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
+    error_chain, flush_tail, truncated_stream_error,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -223,10 +223,12 @@ mod tests {
                     llm_router::types::events::StopReason::Error
                 );
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
-                assert!(error
-                    .error_message
-                    .as_deref()
-                    .is_some_and(|message| message.contains("stream read failed")));
+                assert!(
+                    error
+                        .error_message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("stream read failed"))
+                );
                 assert_eq!(error.native_stop_reason.as_deref(), native_stop_reason);
             }
             other => panic!("want error, got {other:?}"),

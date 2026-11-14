@@ -89,8 +89,7 @@ impl ModelSpec {
 }
 
 #[cfg(test)]
-const ZIPFORMER_EN_20M_BASE: &str =
-    "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/resolve/main/";
+const ZIPFORMER_EN_20M_BASE: &str = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/resolve/main/";
 
 static ZIPFORMER_EN_20M_FILES: [ModelFile; 4] = [
     ModelFile {
@@ -181,8 +180,7 @@ static CATALOG: [ModelSpec; 9] = [
         languages: &["pt-BR"],
         license: "CC0-1.0 (dataset; see model card)",
         author: "OHF-Voice / Piper contributors",
-        source:
-            "https://huggingface.co/rhasspy/piper-voices/blob/main/pt/pt_BR/faber/medium/MODEL_CARD",
+        source: "https://huggingface.co/rhasspy/piper-voices/blob/main/pt/pt_BR/faber/medium/MODEL_CARD",
         files: &PIPER_FABER_FILES,
         encoder: "",
         decoder: "",
@@ -196,8 +194,7 @@ static CATALOG: [ModelSpec; 9] = [
         languages: &["en"],
         license: "Apache-2.0",
         author: "k2-fsa (icefall)",
-        source:
-            "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
+        source: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
         files: &ZIPFORMER_EN_20M_FILES,
         encoder: "encoder-epoch-99-avg-1.int8.onnx",
         decoder: "decoder-epoch-99-avg-1.int8.onnx",
@@ -387,17 +384,17 @@ pub async fn download(
             continue;
         }
         let result = download_one(&client, spec, file, &target, progress.as_ref()).await;
-        if let Err(e) = &result {
-            if let Some(sink) = &progress {
-                sink(Progress {
-                    id: spec.id.to_string(),
-                    file: file.name.to_string(),
-                    received_bytes: 0,
-                    total_bytes: file.size_bytes,
-                    done: true,
-                    error: Some(e.clone()),
-                });
-            }
+        if let Err(e) = &result
+            && let Some(sink) = &progress
+        {
+            sink(Progress {
+                id: spec.id.to_string(),
+                file: file.name.to_string(),
+                received_bytes: 0,
+                total_bytes: file.size_bytes,
+                done: true,
+                error: Some(e.clone()),
+            });
         }
         written += result?;
     }
@@ -434,18 +431,18 @@ async fn stream_to_partial(
             .await
             .map_err(|e| format!("write {}: {e}", partial.display()))?;
         received += chunk.len() as u64;
-        if let Some(sink) = progress {
-            if received - last_report >= 1_048_576 || received == file.size_bytes {
-                last_report = received;
-                sink(Progress {
-                    id: spec.id.to_string(),
-                    file: file.name.to_string(),
-                    received_bytes: received,
-                    total_bytes: file.size_bytes,
-                    done: false,
-                    error: None,
-                });
-            }
+        if let Some(sink) = progress
+            && (received - last_report >= 1_048_576 || received == file.size_bytes)
+        {
+            last_report = received;
+            sink(Progress {
+                id: spec.id.to_string(),
+                file: file.name.to_string(),
+                received_bytes: received,
+                total_bytes: file.size_bytes,
+                done: false,
+                error: None,
+            });
         }
     }
     out.flush().await.map_err(|e| format!("flush: {e}"))?;
@@ -560,9 +557,10 @@ mod tests {
             assert_eq!(model.files.len(), 1);
             let file = &model.files[0];
             assert!(file.name.starts_with("ggml-") && file.name.ends_with(".bin"));
-            assert!(file
-                .url
-                .starts_with("https://huggingface.co/ggerganov/whisper.cpp/"));
+            assert!(
+                file.url
+                    .starts_with("https://huggingface.co/ggerganov/whisper.cpp/")
+            );
             assert_eq!(file.sha256.len(), 64);
             assert!(file.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
             assert!(file.size_bytes > 70_000_000);

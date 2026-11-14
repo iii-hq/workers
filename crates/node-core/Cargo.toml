@@ -3,7 +3,7 @@
 [package]
 name = "iii-node-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Evaluate untrusted JavaScript in per-namespace V8 isolates — the runtime, ops, guest prelude and manager, with no bus dependency"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

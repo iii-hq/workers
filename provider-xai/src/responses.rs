@@ -15,12 +15,12 @@ use crate::errors::classify;
 use crate::sse::synthetic_error_event;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::names::decode_tool_name;
-use crate::{now_ms, PROVIDER_ID};
+use crate::{PROVIDER_ID, now_ms};
 use futures::StreamExt;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AgentMessage, AssistantMessage, AssistantRoleTag};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 /// Derive the `/v1/responses` endpoint from the configured completions URL
@@ -586,11 +586,12 @@ mod tests {
             ]
         );
         // citation surfaced on warnings
-        assert!(f
-            .warnings
-            .unwrap()
-            .iter()
-            .any(|w| w.contains("https://x.com/i/status/1")));
+        assert!(
+            f.warnings
+                .unwrap()
+                .iter()
+                .any(|w| w.contains("https://x.com/i/status/1"))
+        );
         let u = f.usage.unwrap();
         assert_eq!(u.input, Some(10));
         assert_eq!(u.output, Some(4));

@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -137,7 +137,7 @@ pub struct BootSignature {
 impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {
@@ -248,7 +248,8 @@ accounts:
 
     #[test]
     fn seed_yaml_expands_env_into_credentials() {
-        std::env::set_var("EMAIL_TEST_SMTP_PASSWORD", "re_secret");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("EMAIL_TEST_SMTP_PASSWORD", "re_secret") };
         let cfg = WorkerConfig::from_yaml(SMTP_ACCOUNT).unwrap();
         let smtp = cfg.accounts["notifications"].smtp.as_ref().unwrap();
         assert!(smtp.starttls);

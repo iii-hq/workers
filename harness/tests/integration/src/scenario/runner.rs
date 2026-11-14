@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::artifacts::ArtifactSink;
 use crate::deadline::Deadline;
-use crate::expand::{expand_compiled_fixture, ExpandedFixtureV1};
+use crate::expand::{ExpandedFixtureV1, expand_compiled_fixture};
 use crate::fixtures::ScenarioFixture;
 use crate::process::TeardownReport;
 use crate::runtime::{RunError, RunPhase};
@@ -14,7 +14,7 @@ use crate::stack::{EarlyExit, RunLayout, Stack, StackBins};
 use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};
 use crate::types::script::SchemaVersion1;
 
-use super::report::{classify, now_rfc3339, ProcessState};
+use super::report::{ProcessState, classify, now_rfc3339};
 use super::state::PreparedRun;
 
 pub struct RunOutcome {
@@ -103,10 +103,11 @@ pub async fn run_scenario(
         }
     }
 
-    if classification == Classification::Pass && !retain_success {
-        if let Some(sink) = &runner.sink {
-            sink.trim_passing_run();
-        }
+    if classification == Classification::Pass
+        && !retain_success
+        && let Some(sink) = &runner.sink
+    {
+        sink.trim_passing_run();
     }
 
     RunOutcome {

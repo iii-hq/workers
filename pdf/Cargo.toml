@@ -3,7 +3,7 @@
 [package]
 name = "pdf"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 description = "PDF worker for iii — local classification, markdown conversion, positioned text and table extraction, and per-page OCR routing (pdf::* functions)"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -31,7 +31,7 @@ base64 = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

@@ -7,7 +7,7 @@ use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::PromptCacheIntent;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Codex client version whose Responses contract this worker mirrors.
 ///

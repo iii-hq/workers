@@ -64,12 +64,11 @@ pub fn names_a_value(value: &str) -> bool {
 /// one; requests may not).
 pub fn redact_entry(entry: &mut Value) {
     for path in SECRET_FIELDS {
-        if let Some(v) = get_mut(entry, path) {
-            if v.as_str()
+        if let Some(v) = get_mut(entry, path)
+            && v.as_str()
                 .is_some_and(|s| !s.is_empty() && !names_a_value(s))
-            {
-                *v = Value::String(REDACTED.into());
-            }
+        {
+            *v = Value::String(REDACTED.into());
         }
     }
     // Keys that are not fields (a hand-edited entry, `secret_access_key_old`)
@@ -91,11 +90,11 @@ pub fn redact_entry(entry: &mut Value) {
             }
         }
     }
-    if let Some(endpoint) = entry.get_mut("endpoint_url") {
-        if endpoint.as_str().is_some_and(has_userinfo) {
-            let stripped = crate::config::redact_url(endpoint.as_str().unwrap_or_default());
-            *endpoint = Value::String(stripped);
-        }
+    if let Some(endpoint) = entry.get_mut("endpoint_url")
+        && endpoint.as_str().is_some_and(has_userinfo)
+    {
+        let stripped = crate::config::redact_url(endpoint.as_str().unwrap_or_default());
+        *endpoint = Value::String(stripped);
     }
 }
 

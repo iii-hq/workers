@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 
 use iii_bridge::config::BridgeConfig;
 use iii_bridge::configuration;
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     let seed: Option<BridgeConfig> = match cli.config.as_deref() {
         Some(path) => match std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
-            .and_then(|s| serde_yaml::from_str::<BridgeConfig>(&s).map_err(|e| e.to_string()))
+            .and_then(|s| serde_yaml_ng::from_str::<BridgeConfig>(&s).map_err(|e| e.to_string()))
         {
             Ok(c) => {
                 tracing::info!(path = %path, "loaded seed config");

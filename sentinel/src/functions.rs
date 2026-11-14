@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use iii_sdk::{IIIClient, RegisterFunction};
-use schemars::{schema::RootSchema, JsonSchema};
+use schemars::{JsonSchema, schema::RootSchema};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::configuration::ConfigCell;
 use crate::events::Emitter;
@@ -24,7 +24,7 @@ use crate::registry::EngineRegistry;
 use crate::service::Service;
 use crate::store::Store;
 use crate::{
-    ids, Counters, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisRecordRequestV1,
+    Counters, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisRecordRequestV1,
     DiagnosisRecordResponseV1, DoorbellResponseV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
     GroupActionRequestV1, GroupChangedEventV1, GroupChangedOpV1, GroupGetRequestV1,
     GroupGetResponseV1, GroupHistoryRequestV1, GroupHistoryResponseV1, GroupStateResponseV1,
@@ -34,6 +34,7 @@ use crate::{
     InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
     LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1, ResolveRequestV1,
     StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TurnCompletedEventV1,
+    ids,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -67,8 +68,7 @@ pub const ON_LOG_ID: &str = "sentinel::on-log";
 pub const ON_LOG_DESC: &str =
     "Internal observer of observability::on-log, filtered to ERROR records and above.";
 pub const ON_TURN_COMPLETED_ID: &str = "sentinel::on-turn-completed";
-pub const ON_TURN_COMPLETED_DESC: &str =
-    "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.";
+pub const ON_TURN_COMPLETED_DESC: &str = "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.";
 pub const ON_SCHEDULE_ID: &str = "sentinel::on-schedule";
 pub const ON_SCHEDULE_DESC: &str = "Internal daily prune of buckets and archived groups.";
 

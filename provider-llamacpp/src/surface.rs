@@ -28,16 +28,13 @@ pub const REFRESH_MODELS_DESC: &str = "Discover the resolved llama.cpp server's 
      count written.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::llamacpp::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.";
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} through the llama-server's own count endpoint, using the loaded model's tokenizer; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::llamacpp::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const EMBED_ID: &str = "provider::llamacpp::embed";
-pub const EMBED_DESC: &str =
-    "Batch text embeddings via the configured llama-server's /v1/embeddings (requires \
+pub const EMBED_DESC: &str = "Batch text embeddings via the configured llama-server's /v1/embeddings (requires \
      --embeddings and an embedding-capable model). One vector per input, order preserved. \
      Fully local; credential only when the server runs with --api-key.";
 

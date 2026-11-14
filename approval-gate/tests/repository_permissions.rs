@@ -1,7 +1,7 @@
-use approval_gate::permissions::{parse_rules_from_config, Decision, Permissions};
+use approval_gate::permissions::{Decision, Permissions, parse_rules_from_config};
 use approval_gate::types::PermissionMode;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 struct RepositoryPermissions {
@@ -10,7 +10,7 @@ struct RepositoryPermissions {
 
 fn repository_permissions() -> Permissions {
     let config: RepositoryPermissions =
-        serde_yaml::from_str(include_str!("../../iii-permissions.yaml"))
+        serde_yaml_ng::from_str(include_str!("../../iii-permissions.yaml"))
             .expect("repository permissions should be valid YAML");
     let specs = parse_rules_from_config(&Value::Array(config.rules));
     Permissions::compile(&specs).expect("repository permission rules should compile")

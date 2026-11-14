@@ -95,18 +95,17 @@ impl IiiRuntime {
             .await?;
         let mut records: Vec<archive::ArchiveIndexRecordV1> =
             parse_state_list(&index, "archive index")?;
-        if records.is_empty() {
-            if let Some(body) = self
+        if records.is_empty()
+            && let Some(body) = self
                 .get_archived_object(
                     &archive.bucket,
                     &archive::legacy_manifest_key(archive.prefix.as_deref()),
                 )
                 .await?
-            {
-                for run_id in archive::decode_legacy_manifest(&body)?.run_ids {
-                    self.remember_archived_run(&run_id).await?;
-                    records.push(archive::index_record(&run_id));
-                }
+        {
+            for run_id in archive::decode_legacy_manifest(&body)?.run_ids {
+                self.remember_archived_run(&run_id).await?;
+                records.push(archive::index_record(&run_id));
             }
         }
         let mut imported = 0;

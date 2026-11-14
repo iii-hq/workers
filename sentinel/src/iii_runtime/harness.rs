@@ -8,12 +8,12 @@
 //! saying otherwise would leave a row running forever.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Runtime;
+use crate::SentinelError;
 use crate::investigation::proxies::EngineWindow;
 use crate::investigation::{Harness, SendOutcome, TurnMetrics, TurnStatus};
-use crate::SentinelError;
 
 pub struct IiiHarness {
     runtime: Runtime,

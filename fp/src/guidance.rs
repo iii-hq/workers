@@ -21,8 +21,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction, Source};
 
 pub const GUIDANCE_HOOK_ID: &str = "fp::inject-guidance";
-pub const GUIDANCE_HOOK_DESC: &str =
-    "Internal pre_generate hook: appends fp::pipe usage guidance to the agent system \
+pub const GUIDANCE_HOOK_DESC: &str = "Internal pre_generate hook: appends fp::pipe usage guidance to the agent system \
      prompt. Observes harness::hook::on-pre-generate while inject_guidance is on; not called \
      directly.";
 

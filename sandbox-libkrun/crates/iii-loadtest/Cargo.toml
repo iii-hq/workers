@@ -30,4 +30,4 @@ iii-filesystem = { path = "../iii-filesystem" }
 msb_krun = { version = "=0.1.42" }
 
 [dev-dependencies]
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"

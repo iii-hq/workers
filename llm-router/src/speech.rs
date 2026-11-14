@@ -15,12 +15,12 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
 use crate::registry::store::RegistryStore;
-use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
+use crate::types::errors::{RouterCode, RouterError, is_function_not_found};
 use crate::types::model::{Model, SpeechModality};
 
 /// Recordings can run long and providers decode at a fraction of real time.

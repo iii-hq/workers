@@ -24,9 +24,9 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::registry::resolve::unconfigured_for_good;
 use crate::registry::store::RegistryStore;
 use crate::secrets::SecretCache;

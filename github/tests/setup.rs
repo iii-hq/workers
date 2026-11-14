@@ -1,9 +1,9 @@
-use github::webhooks::setup::{
-    blockers, compose_status_route, evaluate, function_missing, CheckState, HttpProbeFailure,
-    ListenerProbe, SetupFix, TunnelProbe, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
-};
 use github::webhooks::Failure;
-use serde_json::{json, Value};
+use github::webhooks::setup::{
+    CLOUDFLARED_INSTALL_URL, CheckState, DEFAULT_LISTENER_PORT, HttpProbeFailure, ListenerProbe,
+    SetupFix, TunnelProbe, blockers, compose_status_route, evaluate, function_missing,
+};
+use serde_json::{Value, json};
 
 fn tunnel_with(cloudflared: Value) -> Result<Value, TunnelProbe> {
     Ok(json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": cloudflared}}))

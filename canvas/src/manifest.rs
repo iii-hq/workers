@@ -16,8 +16,7 @@ pub struct ModuleManifest {
     pub supported_targets: Vec<String>,
 }
 
-pub const DESCRIPTION: &str =
-    "Create, edit and render diagrams in the console: canvases store editable source (mermaid \
+pub const DESCRIPTION: &str = "Create, edit and render diagrams in the console: canvases store editable source (mermaid \
      text or excalidraw scenes), drawn live in chat and on a canvas page.";
 
 pub fn build_manifest() -> ModuleManifest {
@@ -42,9 +41,11 @@ mod tests {
         assert!(json["version"].as_str().is_some_and(|v| !v.is_empty()));
         assert!(json["description"].as_str().is_some_and(|d| d.len() > 20));
         assert!(json["default_config"].is_object());
-        assert!(json["supported_targets"]
-            .as_array()
-            .is_some_and(|t| !t.is_empty()));
+        assert!(
+            json["supported_targets"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty())
+        );
     }
 
     /// The manifest name is the folder name, the binary name, and the registry

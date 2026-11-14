@@ -23,9 +23,9 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::consolidate::{call, BankReport, ConsolidationTransport, MemoryRow};
+use crate::consolidate::{BankReport, ConsolidationTransport, MemoryRow, call};
 
 /// Static system prompt (identical for every bank and batch, so providers
 /// can cache it).
@@ -107,10 +107,11 @@ pub fn interleave<'a>(
     let mut seen: HashSet<&str> = HashSet::from([self_id]);
     for i in 0..lexical.len().max(semantic.len()) {
         for arm in [lexical, semantic] {
-            if let Some(r) = arm.get(i) {
-                if out.len() < cap && seen.insert(r.id.as_str()) {
-                    out.push(r);
-                }
+            if let Some(r) = arm.get(i)
+                && out.len() < cap
+                && seen.insert(r.id.as_str())
+            {
+                out.push(r);
             }
         }
     }
@@ -976,17 +977,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok[0].id, "x");
-        assert!(read_arm(
-            &json!({"retrieval": "semantic-unavailable", "memories": []}),
-            "semantic"
-        )
-        .is_err());
+        assert!(
+            read_arm(
+                &json!({"retrieval": "semantic-unavailable", "memories": []}),
+                "semantic"
+            )
+            .is_err()
+        );
         // An older memory worker ignores `mode` and answers hybrid.
-        assert!(read_arm(
-            &json!({"retrieval": "bm25-entity", "memories": []}),
-            "lexical"
-        )
-        .is_err());
+        assert!(
+            read_arm(
+                &json!({"retrieval": "bm25-entity", "memories": []}),
+                "lexical"
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ mod theme;
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -18,7 +18,7 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::style::Print;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -1333,11 +1333,7 @@ fn handle_quit_key(key: KeyEvent, mode: &mut UiMode, running: &mut bool, stop_on
 // -------------------------------------------------------------------- drawing
 
 fn styled_if(enabled: bool, style: Style) -> Style {
-    if enabled {
-        style
-    } else {
-        Style::default()
-    }
+    if enabled { style } else { Style::default() }
 }
 
 fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) -> Panes {

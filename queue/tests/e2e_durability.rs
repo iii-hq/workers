@@ -1,7 +1,7 @@
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ use iii_sdk::{
     CallAction, CallRequest, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
     WorkerIdentityMode,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::Notify;
 use tokio::time::Instant;
@@ -309,9 +309,11 @@ async fn provider_functions_and_enqueue_use_the_worker_namespace() {
 
     wait_for_function(&iii, LIST_TOPICS_FN_ID, &namespace).await;
     let topics = call_in_namespace(&iii, LIST_TOPICS_FN_ID, json!({}), &namespace).await;
-    assert!(topics
-        .as_array()
-        .is_some_and(|topics| topics.iter().any(|topic| topic["name"] == queue_name)));
+    assert!(
+        topics
+            .as_array()
+            .is_some_and(|topics| topics.iter().any(|topic| topic["name"] == queue_name))
+    );
 
     wait_for_function(&iii, ENQUEUE_FUNCTION_FN_ID, &namespace).await;
     let fires = Arc::new(AtomicUsize::new(0));

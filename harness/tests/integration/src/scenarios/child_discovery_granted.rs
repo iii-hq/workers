@@ -25,10 +25,10 @@
 
 use serde_json::json;
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const SPAWN: &str = "harness::spawn";

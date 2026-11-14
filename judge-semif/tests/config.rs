@@ -1,4 +1,4 @@
-use judge_semif::{configuration, SemifConfig};
+use judge_semif::{SemifConfig, configuration};
 use serde_json::json;
 
 #[test]

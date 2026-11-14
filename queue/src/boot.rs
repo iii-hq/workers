@@ -14,10 +14,10 @@ use crate::adapters::builtin::BuiltinAdapter;
 #[cfg(feature = "rabbitmq")]
 use crate::adapters::rabbitmq::RabbitMQAdapter;
 use crate::adapters::redis::RedisAdapter;
-use crate::config::{adapter_config_value, QueueConfig, RunJobsIn};
+use crate::config::{QueueConfig, RunJobsIn, adapter_config_value};
 use crate::runtime::FunctionQueueRuntime;
 use crate::store::{FileStore, InMemoryStore, QueueStore};
-use crate::subscribers::{observe_engine_events, IiiInvoker, Invoker, Subscribers};
+use crate::subscribers::{IiiInvoker, Invoker, Subscribers, observe_engine_events};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 pub const BUILTIN_III_QUEUE_WORKER_ID: &str = "iii-queue";

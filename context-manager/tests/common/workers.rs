@@ -13,15 +13,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use tokio::sync::{OnceCell, RwLock};
 
 use context_manager::adapters::fs_lease::FsLeaseStore;
 use context_manager::adapters::router::{RouterModelResolver, RouterSummarizer};
 use context_manager::config::WorkerConfig;
 use context_manager::functions;
-use context_manager::ports::{lease_cell, Deps, SystemClock};
+use context_manager::ports::{Deps, SystemClock, lease_cell};
 
 static REGISTERED: OnceCell<()> = OnceCell::const_new();
 

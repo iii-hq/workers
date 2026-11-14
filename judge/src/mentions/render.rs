@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use mention_contract::{format_mention, parse_mentions, parse_prose_mentions, MentionRef};
+use mention_contract::{MentionRef, format_mention, parse_mentions, parse_prose_mentions};
 use serde::Serialize;
 use serde_json::Value;
 

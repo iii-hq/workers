@@ -13,10 +13,10 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 
 use crate::util;
 
@@ -281,21 +281,20 @@ fn validate_with_approval_gate(
     // Fail fast on an unseeded leading transform (live-tested trap: serde's
     // bare "missing field `value`" taught nothing). Only our own transforms
     // are statically checkable; a foreign first step just runs.
-    if let Some(first) = req.through.first() {
-        if util::is_transform(&first.function)
-            && first
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("value"))
-                .is_none()
-        {
-            problems.push(format!(
-                "step 1 ({}) receives no threaded input — seed it in the first step's payload \
+    if let Some(first) = req.through.first()
+        && util::is_transform(&first.function)
+        && first
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("value"))
+            .is_none()
+    {
+        problems.push(format!(
+            "step 1 ({}) receives no threaded input — seed it in the first step's payload \
                  ({{\"value\": …}}), or start the pipe with a producing function (a fetch, a \
                  state::get)",
-                first.function
-            ));
-        }
+            first.function
+        ));
     }
     refused("pipe", problems)
 }
@@ -399,7 +398,7 @@ fn inject(payload: Value, pointer: &str, value: Value) -> Result<Value, String> 
             return Err(format!(
                 "step payload must be an object to receive `into`, got {}",
                 util::kind_of(&other)
-            ))
+            ));
         }
     };
     let mut cursor = &mut root;
@@ -696,11 +695,13 @@ mod tests {
         assert!(validate(&req).is_ok());
 
         // unknown step fields fail loudly, not silently
-        assert!(parse(json!({ "through": [
-            { "function": "a::b", "pick": "/content" },
-        ]}))
-        .unwrap_err()
-        .contains("pick"));
+        assert!(
+            parse(json!({ "through": [
+                { "function": "a::b", "pick": "/content" },
+            ]}))
+            .unwrap_err()
+            .contains("pick")
+        );
 
         // control / nested / worker-authority steps are refused with a
         // reason — mirroring every agent-policy hard-denied class
@@ -876,12 +877,16 @@ mod tests {
         assert_eq!(out, json!({ "command": "ls", "fs_scope": trusted }));
 
         // fail closed: no stamp, or a non-object payload
-        assert!(bus_step_args("shell::exec", json!({}), None)
-            .unwrap_err()
-            .contains("without a harness fs_scope stamp"));
-        assert!(bus_step_args("shell::exec", json!("ls"), Some(&trusted))
-            .unwrap_err()
-            .contains("must be an object"));
+        assert!(
+            bus_step_args("shell::exec", json!({}), None)
+                .unwrap_err()
+                .contains("without a harness fs_scope stamp")
+        );
+        assert!(
+            bus_step_args("shell::exec", json!("ls"), Some(&trusted))
+                .unwrap_err()
+                .contains("must be an object")
+        );
 
         // non-scoped steps pass through untouched — the scope must not leak
         let args = json!({ "scope": "s", "key": "k" });
@@ -950,9 +955,11 @@ mod tests {
             inject(json!({}), "/a~0b", json!(1)).unwrap(),
             json!({ "a~b": 1 })
         );
-        assert!(inject(json!({ "items": [] }), "/items/0", json!(1))
-            .unwrap_err()
-            .contains("non-object"));
+        assert!(
+            inject(json!({ "items": [] }), "/items/0", json!(1))
+                .unwrap_err()
+                .contains("non-object")
+        );
     }
 
     #[test]

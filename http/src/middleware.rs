@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Outcome of a middleware invocation that did not short-circuit the request.
 pub enum MiddlewareOutcome {

@@ -6,7 +6,7 @@
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub async fn function_resolve(iii: &IIIClient, payload: Value) -> Result<Value, Error> {
     iii.call(CallRequest {

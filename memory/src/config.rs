@@ -184,7 +184,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -302,7 +302,8 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_seed_yaml_only() {
-        std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test") };
         let cfg = WorkerConfig::from_yaml("data_dir: ${MEMORY_TEST_DIR}").unwrap();
         assert_eq!(cfg.data_dir, "/tmp/mem-test");
     }

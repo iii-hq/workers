@@ -1,7 +1,7 @@
 //! Caller-scoped cancellation for in-flight evaluations and model listings.
 use judge_contract::ErrorCode;
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     future::pending,
     sync::{Arc, Mutex},
 };

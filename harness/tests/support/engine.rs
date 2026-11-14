@@ -4,7 +4,7 @@ use std::io::Read as _;
 use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, InitOptions};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
 use serde_json::json;
 
 pub struct Engine {

@@ -9,18 +9,18 @@
 //!
 //! Exposed behind `router::count_tokens`.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::endpoint_count::{
-    base_route_url, post_count, ESTIMATOR_METERED,
+    ESTIMATOR_METERED, base_route_url, post_count,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::config::{config_from_resolve, KimiConfig};
+use crate::config::{KimiConfig, config_from_resolve};
 use crate::request::build_headers;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
@@ -126,7 +126,7 @@ pub async fn count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{build_body, BodyArgs};
+    use crate::request::{BodyArgs, build_body};
     use llm_router::types::content::ContentBlock;
     use llm_router::types::messages::{UserMessage, UserRoleTag};
     use llm_router::types::router::ResponseFormat;

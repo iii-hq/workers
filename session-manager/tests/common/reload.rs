@@ -10,12 +10,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use session_manager::config::{FsBackendConfig, StorageAdapter, WorkerConfig};
-use session_manager::configuration::{apply_runtime, AppState, ConfigCell};
-use session_manager::runtime::{build_runtime, SessionBuildContext};
+use session_manager::configuration::{AppState, ConfigCell, apply_runtime};
+use session_manager::runtime::{SessionBuildContext, build_runtime};
 use session_manager::types::SessionMeta;
 
 pub struct ReloadableInstance {

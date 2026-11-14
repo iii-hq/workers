@@ -5,8 +5,8 @@
 //! external engine.
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use common::fake_engine::FakeEngine;
@@ -14,10 +14,10 @@ use iii_http::boot::{self, BootHandle};
 use iii_http::config::{MiddlewareConfig, RestApiConfig, WebhookListenerConfig};
 use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
+use iii_sdk::RegisterFunction;
 use iii_sdk::channel::ChannelWriter;
 use iii_sdk::errors::Error;
-use iii_sdk::RegisterFunction;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn start() -> (FakeEngine, BootHandle) {
     start_with_middleware(Vec::new()).await
@@ -105,25 +105,29 @@ async fn observe(
 async fn an_observer_route_serves_its_targets_result() {
     let (engine, boot) = start().await;
     let calls = register_echo(&engine, "test::new-ping");
-    assert!(observe(
-        &engine,
-        "obs-ping",
-        "test::new-ping",
-        json!({"method": "GET", "path": "/new/ping"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-ping",
+            "test::new-ping",
+            json!({"method": "GET", "path": "/new/ping"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     register_echo(&engine, "test::new-user");
-    assert!(observe(
-        &engine,
-        "obs-user",
-        "test::new-user",
-        json!({"method": "post", "path": "/new/users/{id}"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-user",
+            "test::new-user",
+            json!({"method": "post", "path": "/new/users/{id}"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     assert!(boot.on_request.is_observed());
     let http = client();
     let addr = boot.local_addr;
@@ -185,15 +189,17 @@ async fn a_targets_response_keeps_its_status_headers_and_content_type() {
             }))
         }),
     );
-    assert!(observe(
-        &engine,
-        "obs-text",
-        "test::text",
-        json!({"method": "GET", "path": "/new/text"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-text",
+            "test::text",
+            json!({"method": "GET", "path": "/new/text"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
 
     let resp = client()
         .get(format!("http://{}/new/text", boot.local_addr))
@@ -222,15 +228,17 @@ async fn a_targets_error_is_a_500_with_its_code_and_message() {
             })
         }),
     );
-    assert!(observe(
-        &engine,
-        "obs-boom",
-        "test::boom",
-        json!({"method": "GET", "path": "/new/boom"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-boom",
+            "test::boom",
+            json!({"method": "GET", "path": "/new/boom"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
 
     let resp = client()
         .get(format!("http://{}/new/boom", boot.local_addr))
@@ -266,15 +274,17 @@ async fn an_observer_target_can_stream_through_the_response_channel() {
             }
         }),
     );
-    assert!(observe(
-        &engine,
-        "obs-stream",
-        "test::stream",
-        json!({"method": "GET", "path": "/new/stream"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-stream",
+            "test::stream",
+            json!({"method": "GET", "path": "/new/stream"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
 
     let resp = client()
         .get(format!("http://{}/new/stream", boot.local_addr))
@@ -370,15 +380,17 @@ async fn an_observers_filters_answer_422_without_calling_the_target() {
     let calls = register_echo(&engine, "test::signed");
     // Normal form of { 'input.headers.x-signature': { $exists: true } }.
     let filters = json!({"$and": [{"input.headers.x-signature": {"$exists": true}}]});
-    assert!(observe(
-        &engine,
-        "obs-signed",
-        "test::signed",
-        json!({"method": "POST", "path": "/new/hook"}),
-        filters,
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-signed",
+            "test::signed",
+            json!({"method": "POST", "path": "/new/hook"}),
+            filters,
+        )
+        .await
+        .is_none()
+    );
 
     let url = format!("http://{}/new/hook", boot.local_addr);
     let resp = client().post(&url).send().await.unwrap();
@@ -419,12 +431,13 @@ async fn invalid_args_are_rejected_and_add_no_route() {
             .unwrap_or_else(|| panic!("{id} accepted"));
         assert_eq!(rejection["code"], "INVALID_ARGS", "{id}: {rejection}");
     }
-    assert!(boot
-        .routes
-        .read()
-        .await
-        .match_route("GET", "/new/invalid")
-        .is_none());
+    assert!(
+        boot.routes
+            .read()
+            .await
+            .match_route("GET", "/new/invalid")
+            .is_none()
+    );
     assert!(!boot.on_request.is_observed());
 
     boot.shutdown().await;
@@ -437,15 +450,17 @@ async fn a_route_shape_belongs_to_the_observer_that_claimed_it_first() {
     let first = register_echo(&engine, "test::dup-first");
     let second = register_echo(&engine, "test::dup-second");
 
-    assert!(observe(
-        &engine,
-        "obs-dup-first",
-        "test::dup-first",
-        json!({"method": "GET", "path": "/dup/:a"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-dup-first",
+            "test::dup-first",
+            json!({"method": "GET", "path": "/dup/:a"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     let rejection = observe(
         &engine,
         "obs-dup-second",
@@ -456,10 +471,12 @@ async fn a_route_shape_belongs_to_the_observer_that_claimed_it_first() {
     .await
     .expect("conflicting observer rejected");
     assert_eq!(rejection["code"], "HTTP_ROUTE_CONFLICT");
-    assert!(rejection["message"]
-        .as_str()
-        .unwrap()
-        .contains("conflicts with already-registered route 'GET /dup/:a'"));
+    assert!(
+        rejection["message"]
+            .as_str()
+            .unwrap()
+            .contains("conflicts with already-registered route 'GET /dup/:a'")
+    );
     assert_eq!(
         boot.routes
             .read()
@@ -490,15 +507,17 @@ async fn a_route_shape_belongs_to_the_observer_that_claimed_it_first() {
 async fn removing_an_observer_removes_its_route() {
     let (engine, boot) = start().await;
     register_echo(&engine, "test::gone");
-    assert!(observe(
-        &engine,
-        "obs-gone",
-        "test::gone",
-        json!({"method": "GET", "path": "/new/gone"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-gone",
+            "test::gone",
+            json!({"method": "GET", "path": "/new/gone"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     let url = format!("http://{}/new/gone", boot.local_addr);
     assert_eq!(client().get(&url).send().await.unwrap().status(), 201);
 
@@ -508,15 +527,17 @@ async fn removing_an_observer_removes_its_route() {
     assert!(!boot.on_request.is_observed());
 
     // The path is free again.
-    assert!(observe(
-        &engine,
-        "obs-back",
-        "test::gone",
-        json!({"method": "GET", "path": "/new/gone"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-back",
+            "test::gone",
+            json!({"method": "GET", "path": "/new/gone"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
 
     boot.shutdown().await;
     engine.shutdown().await;
@@ -530,15 +551,17 @@ async fn an_observer_announced_again_under_its_id_gets_its_route_back() {
     let (engine, boot) = start().await;
     let before = register_echo(&engine, "test::stable");
     let route = json!({"method": "GET", "path": "/new/stable/{id}"});
-    assert!(observe(
-        &engine,
-        "obs-stable",
-        "test::stable",
-        route.clone(),
-        json!({})
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-stable",
+            "test::stable",
+            route.clone(),
+            json!({})
+        )
+        .await
+        .is_none()
+    );
     let url = format!("http://{}/new/stable/7", boot.local_addr);
     assert_eq!(client().get(&url).send().await.unwrap().status(), 201);
 
@@ -575,24 +598,28 @@ async fn the_restricted_listener_serves_only_public_webhook_observers() {
     let (engine, boot) = start().await;
     register_echo(&engine, "test::public");
     register_echo(&engine, "test::private");
-    assert!(observe(
-        &engine,
-        "obs-public",
-        "test::public",
-        json!({"method": "POST", "path": "/new/public", "public_webhook": true}),
-        json!({}),
-    )
-    .await
-    .is_none());
-    assert!(observe(
-        &engine,
-        "obs-private",
-        "test::private",
-        json!({"method": "POST", "path": "/new/private"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-public",
+            "test::public",
+            json!({"method": "POST", "path": "/new/public", "public_webhook": true}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
+    assert!(
+        observe(
+            &engine,
+            "obs-private",
+            "test::private",
+            json!({"method": "POST", "path": "/new/private"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
 
     let restricted = boot.current_webhook_addr().await.unwrap();
     let http = client();
@@ -668,15 +695,17 @@ async fn on_request_registers_as_a_private_event_source_with_route_args() {
 async fn the_worker_boots_again_on_the_same_client_after_shutdown() {
     let (engine, boot) = start().await;
     register_echo(&engine, "test::again");
-    assert!(observe(
-        &engine,
-        "obs-again-1",
-        "test::again",
-        json!({"method": "GET", "path": "/new/again"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-again-1",
+            "test::again",
+            json!({"method": "GET", "path": "/new/again"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     boot.shutdown().await;
 
     // A second boot on the same client registers `http::on-request` again
@@ -691,15 +720,17 @@ async fn the_worker_boots_again_on_the_same_client_after_shutdown() {
     )
     .await
     .unwrap();
-    assert!(observe(
-        &engine,
-        "obs-again-2",
-        "test::again",
-        json!({"method": "GET", "path": "/new/again"}),
-        json!({}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-again-2",
+            "test::again",
+            json!({"method": "GET", "path": "/new/again"}),
+            json!({}),
+        )
+        .await
+        .is_none()
+    );
     let resp = client()
         .get(format!("http://{}/new/again", boot.local_addr))
         .send()
@@ -732,15 +763,17 @@ async fn every_request_is_one_call_of_on_request() {
     let (engine, boot) = start_with_middleware(vec![global("test::gate")]).await;
     register_gate(&engine, "test::gate");
     let target = register_echo(&engine, "test::counted");
-    assert!(observe(
-        &engine,
-        "obs-counted",
-        "test::counted",
-        json!({"method": "POST", "path": "/new/counted/:id"}),
-        json!({"$and": [{"input.headers.x-signature": {"$exists": true}}]}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-counted",
+            "test::counted",
+            json!({"method": "POST", "path": "/new/counted/:id"}),
+            json!({"$and": [{"input.headers.x-signature": {"$exists": true}}]}),
+        )
+        .await
+        .is_none()
+    );
 
     let http = client();
     let url = |path: &str| format!("http://{}{path}", boot.local_addr);
@@ -865,15 +898,17 @@ async fn the_deliver_hooks_calls_are_made_from_the_functions_invocation() {
 async fn filters_read_the_request_as_the_server_received_it() {
     let (engine, boot) = start().await;
     let calls = register_echo(&engine, "test::seven");
-    assert!(observe(
-        &engine,
-        "obs-seven",
-        "test::seven",
-        json!({"method": "GET", "path": "/new/items/:id"}),
-        json!({"$and": [{"input.path": {"$eq": "/new/items/7"}}]}),
-    )
-    .await
-    .is_none());
+    assert!(
+        observe(
+            &engine,
+            "obs-seven",
+            "test::seven",
+            json!({"method": "GET", "path": "/new/items/:id"}),
+            json!({"$and": [{"input.path": {"$eq": "/new/items/7"}}]}),
+        )
+        .await
+        .is_none()
+    );
 
     let http = client();
     let resp = http

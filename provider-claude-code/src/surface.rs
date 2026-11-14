@@ -14,8 +14,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::claude-code::stream";
-pub const STREAM_DESC: &str =
-    "Stream a Claude Code (subscription) chat completion: resolve credentials, call the \
+pub const STREAM_DESC: &str = "Stream a Claude Code (subscription) chat completion: resolve credentials, call the \
      upstream Messages API, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::claude-code::abort";
@@ -23,17 +22,14 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::claude-code::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the Claude Code catalog slice from the upstream models \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the Claude Code catalog slice from the upstream models \
      endpoint and reconcile it through the router; returns the model count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::claude-code::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::claude-code::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, thinking_level?, messages} via \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, thinking_level?, messages} via \
      the upstream count_tokens metering endpoint with the Claude Code subscription OAuth \
      token; never runs the model and costs nothing.";
 

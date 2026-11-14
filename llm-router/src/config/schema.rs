@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::settings::MAX_RETRY_MAX;
 use crate::types::errors::{RouterCode, RouterError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Shown beside the default slice's `api_key` field.
 pub const API_KEY_DESCRIPTION: &str = "Provider API key, or a secret://NAME reference \
@@ -44,7 +44,9 @@ pub fn validate_custom_schema(schema: &Value) -> Result<(), RouterError> {
             if secretish.is_match(field) && def.get("writeOnly") != Some(&Value::Bool(true)) {
                 return Err(RouterError::new(
                     RouterCode::InvalidRequest,
-                    format!("config_schema field \"{field}\" looks secret-bearing and must set writeOnly: true"),
+                    format!(
+                        "config_schema field \"{field}\" looks secret-bearing and must set writeOnly: true"
+                    ),
                 ));
             }
         }
@@ -110,10 +112,12 @@ mod tests {
         let s = default_provider_schema(&json!({ "api_url": "https://x", "max_tokens": 8192 }));
         assert_eq!(s["properties"]["api_key"]["writeOnly"], true);
         assert_eq!(s["properties"]["api_key"]["format"], "password");
-        assert!(s["properties"]["api_key"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("secret://NAME"));
+        assert!(
+            s["properties"]["api_key"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("secret://NAME")
+        );
         assert_eq!(s["properties"]["api_url"]["default"], "https://x");
         assert_eq!(s["properties"]["max_tokens"]["default"], 8192);
     }
@@ -131,9 +135,11 @@ mod tests {
         ] {
             assert!(s["properties"].get(key).is_some(), "missing {key}");
         }
-        assert!(s["properties"]["providers"]["properties"]
-            .get("anthropic")
-            .is_some());
+        assert!(
+            s["properties"]["providers"]["properties"]
+                .get("anthropic")
+                .is_some()
+        );
     }
 
     #[test]

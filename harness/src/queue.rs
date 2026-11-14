@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::protocol::CallRequest;
+use serde_json::{Value, json};
 
 pub const TURN_QUEUE: &str = "harness-turn";
 
@@ -83,7 +83,9 @@ where
                         .is_some()
                 {
                     if !allow_legacy {
-                        return Err(format!("{queue} requires a queue worker supporting redeliver_on_engine_restart; cannot safely start deletion recovery: {last_error}"));
+                        return Err(format!(
+                            "{queue} requires a queue worker supporting redeliver_on_engine_restart; cannot safely start deletion recovery: {last_error}"
+                        ));
                     }
                     tracing::warn!(%queue, error = %last_error, "retrying turn queue with legacy schema");
                     if let Some(config) = payload["config"].as_object_mut() {
@@ -150,9 +152,11 @@ mod tests {
                 }
             })
         );
-        assert!(turn_queue_definition(64)["config"]
-            .get("timeout_ms")
-            .is_none());
+        assert!(
+            turn_queue_definition(64)["config"]
+                .get("timeout_ms")
+                .is_none()
+        );
         assert_eq!(turn_queue_definition(0)["config"]["concurrency"], 1);
     }
 
@@ -202,9 +206,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(seen.len(), 3);
         assert_eq!(seen[1]["queue"], TURN_QUEUE);
-        assert!(seen[1]["config"]
-            .get("redeliver_on_engine_restart")
-            .is_none());
+        assert!(
+            seen[1]["config"]
+                .get("redeliver_on_engine_restart")
+                .is_none()
+        );
         assert_eq!(seen[2]["config"]["redeliver_on_engine_restart"], true);
         assert!(error.contains("requires a queue worker supporting redeliver_on_engine_restart"));
     }

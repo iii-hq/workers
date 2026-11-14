@@ -6,11 +6,11 @@
 //! suffixes).
 use crate::{download::Checkpoint, prompt};
 use anyhow::Result;
-use iii_llama_runtime::scorer::{softmax, Render, Scorer, Vocab};
 pub use iii_llama_runtime::scorer::{Options, Stop};
+use iii_llama_runtime::scorer::{Render, Scorer, Vocab, softmax};
 use std::{
     future::Future,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 use tokio::sync::oneshot::error::RecvError;
@@ -72,7 +72,7 @@ impl Engine {
         evaluations: Vec<Evaluation>,
         deadline: Instant,
         cancel: Arc<AtomicBool>,
-    ) -> impl Future<Output = Result<Result<Outcome, Stop>, RecvError>> {
+    ) -> impl Future<Output = Result<Result<Outcome, Stop>, RecvError>> + use<> {
         let evaluations = evaluations
             .into_iter()
             .map(|evaluation| Box::new(evaluation) as Box<dyn Render>)

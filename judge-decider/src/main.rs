@@ -1,10 +1,10 @@
 //! Boot the decider provider: register on the bus, then fetch and load the GGUF
 //! on first use (or at once while the judge hub selects decider).
 use clap::Parser;
-use iii_llama_runtime::{ModelSlot, IDLE_RELEASE};
+use iii_llama_runtime::{IDLE_RELEASE, ModelSlot};
 use iii_sdk::IIIClient;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_decider::{configuration, download, engine, register, DeciderClient, PROVIDER};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
+use judge_decider::{DeciderClient, PROVIDER, configuration, download, engine, register};
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -124,7 +124,7 @@ async fn serve(iii: Arc<IIIClient>, slot: Arc<ModelSlot<DeciderClient>>) -> anyh
 
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("judge-decider ready");

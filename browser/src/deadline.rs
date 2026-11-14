@@ -4,7 +4,7 @@
 //! setting changing); between those events and the deadline nothing wakes.
 
 use tokio::sync::Notify;
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{Instant, sleep_until};
 
 /// Return once `due()` has passed. `due` is re-read only when `changed` is
 /// notified or the deadline it last named arrives (it may have moved later

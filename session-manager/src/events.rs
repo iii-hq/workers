@@ -47,10 +47,10 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::types::{AgentMessage, CustomPayload, JsonMap, SessionStatus};
 
@@ -865,20 +865,24 @@ mod tests {
             payload: json!({}),
             session_metadata: None,
         };
-        assert!(bad_function
-            .to_emittable()
-            .unwrap_err()
-            .contains("unknown event function"));
+        assert!(
+            bad_function
+                .to_emittable()
+                .unwrap_err()
+                .contains("unknown event function")
+        );
 
         let bad_payload = EventEnvelope {
             function_id: ON_DELETED_FN.into(),
             payload: json!({ "nope": true }),
             session_metadata: None,
         };
-        assert!(bad_payload
-            .to_emittable()
-            .unwrap_err()
-            .contains("malformed session::on-deleted envelope payload"));
+        assert!(
+            bad_payload
+                .to_emittable()
+                .unwrap_err()
+                .contains("malformed session::on-deleted envelope payload")
+        );
     }
 
     /// Records every call for emission assertions; `observed` lists the

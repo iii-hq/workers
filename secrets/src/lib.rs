@@ -27,7 +27,7 @@ pub mod store;
 pub mod vault;
 
 pub use error::SecretsError;
-pub use functions::{register, Ctx};
+pub use functions::{Ctx, register};
 pub use secret::SecretString;
 pub use store::{Store, StorePaths};
 
@@ -37,5 +37,6 @@ pub use store::{Store, StorePaths};
 /// value and `secrets::resolve` returns one, so this worker always turns
 /// payload capture off. Call before any thread is spawned.
 pub fn disable_trace_payloads() {
-    std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1");
+    // SAFETY: callers run this first in main, before any thread is spawned (see above).
+    unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
 }

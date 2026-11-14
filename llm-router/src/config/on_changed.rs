@@ -10,13 +10,13 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use serde_json::Value;
 
-use super::entry::{read_entry_value, EntryWriteLock};
+use super::entry::{EntryWriteLock, read_entry_value};
 use super::fingerprint::{changed_slices, fingerprint_slices};
-use super::state::{apply_config, snapshot, ConfigCell};
+use super::state::{ConfigCell, apply_config, snapshot};
 use crate::registry::refresh::{Refresh, RefreshQueue};
 use crate::registry::resolve::referenced_secrets;
 use crate::secrets::{Refetch, SecretCache};
@@ -35,10 +35,10 @@ pub fn make_on_config_changed(
     secrets: Arc<SecretCache>,
     refresh: RefreshQueue,
 ) -> impl Fn(ConfigChangedEvent) -> BoxFuture<'static, Result<RouterAck, Error>>
-       + Send
-       + Sync
-       + Clone
-       + 'static {
++ Send
++ Sync
++ Clone
++ 'static {
     let initial_fingerprints = {
         let current = snapshot(&config);
         let slices = provider_slices(current.value());
@@ -177,9 +177,11 @@ mod tests {
         );
         assert!(fired.lock().unwrap().is_empty());
         // Unchanged slices are not re-read; unreferenced entries are dropped.
-        assert!(!fake
-            .calls()
-            .contains(&"secret://OPENAI_API_KEY".to_string()));
+        assert!(
+            !fake
+                .calls()
+                .contains(&"secret://OPENAI_API_KEY".to_string())
+        );
         assert_eq!(secrets.lookup("secret://STALE"), None);
 
         tokio::time::sleep(Duration::from_secs(3)).await;

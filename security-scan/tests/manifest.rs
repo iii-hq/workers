@@ -17,12 +17,16 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
     );
     assert_eq!(value["default_config"]["analysis"]["model"], "");
     assert_eq!(value["default_config"]["analysis"]["max_turns"], 4);
-    assert!(value["supported_targets"]
-        .as_array()
-        .is_some_and(|targets| targets.len() == 1));
-    assert!(value["supported_targets"][0]
-        .as_str()
-        .is_some_and(|target| !target.is_empty()));
+    assert!(
+        value["supported_targets"]
+            .as_array()
+            .is_some_and(|targets| targets.len() == 1)
+    );
+    assert!(
+        value["supported_targets"][0]
+            .as_str()
+            .is_some_and(|target| !target.is_empty())
+    );
 }
 
 #[test]
@@ -58,9 +62,11 @@ fn manifest_subcommand_emits_valid_json_without_connecting_to_iii() {
     assert_eq!(manifest["name"], "security-scan");
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
     assert!(manifest["default_config"].is_object());
-    assert!(manifest["supported_targets"]
-        .as_array()
-        .is_some_and(|targets| !targets.is_empty()));
+    assert!(
+        manifest["supported_targets"]
+            .as_array()
+            .is_some_and(|targets| !targets.is_empty())
+    );
 }
 
 #[test]

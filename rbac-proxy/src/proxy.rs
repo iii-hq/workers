@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
@@ -24,8 +24,8 @@ use axum::response::Response;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
 
 use crate::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use crate::rbac;
@@ -221,10 +221,10 @@ async fn handle_connection(
                     }
                 },
                 other => {
-                    if let Some(out) = client_frame_to_engine(other) {
-                        if a_engine_out.send(out).await.is_err() {
-                            break;
-                        }
+                    if let Some(out) = client_frame_to_engine(other)
+                        && a_engine_out.send(out).await.is_err()
+                    {
+                        break;
                     }
                 }
             }
@@ -251,14 +251,13 @@ async fn handle_connection(
                         UpstreamAction::ReplyThenForwardAll(reply, frames) => (Some(reply), frames),
                         UpstreamAction::Drop => (None, Vec::new()),
                     };
-                    if let Some(reply) = to_engine {
-                        if b_engine_out
+                    if let Some(reply) = to_engine
+                        && b_engine_out
                             .send(TungMessage::Text(reply.into()))
                             .await
                             .is_err()
-                        {
-                            break;
-                        }
+                    {
+                        break;
                     }
                     let mut sent = true;
                     for out in frames {
@@ -276,10 +275,10 @@ async fn handle_connection(
                     }
                 }
                 other => {
-                    if let Some(out) = tungstenite_to_axum(other) {
-                        if b_client_out.send(out).await.is_err() {
-                            break;
-                        }
+                    if let Some(out) = tungstenite_to_axum(other)
+                        && b_client_out.send(out).await.is_err()
+                    {
+                        break;
                     }
                 }
             }

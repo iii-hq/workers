@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// empty or partial config still yields a fully-populated struct.
 ///
 /// Deserialization lives here; READING a file does not. `load_config` stays
-/// with the worker that owns a `config.yaml`, which is what keeps `serde_yaml`
+/// with the worker that owns a `config.yaml`, which is what keeps `serde_yaml_ng`
 /// and `anyhow` out of this crate.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct NodeEngineConfig {
@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     /// Was `defaults_from_empty_yaml`. Driven through JSON here because
-    /// `serde_yaml` is the worker's dependency, not this crate's — serde's
+    /// `serde_yaml_ng` is the worker's dependency, not this crate's — serde's
     /// field defaults are format-independent, so this asserts the same
     /// property. The YAML-shaped tests live beside `load_config`.
     #[test]

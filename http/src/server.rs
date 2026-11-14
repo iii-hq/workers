@@ -40,18 +40,18 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::{
+    Extension, Router,
     body::Body,
     http::{Method, Request, Response, StatusCode},
     serve::IncomingStream,
-    Extension, Router,
 };
 use futures::Future;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
-use tower::limit::ConcurrencyLimitLayer;
 use tower::Service;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{Any, CorsLayer},
     timeout::TimeoutLayer,
@@ -234,12 +234,12 @@ impl Service<Request<Body>> for HotRouter {
                         },
                         status.canonical_reason().unwrap_or("Request rejected"),
                     );
-                    if !allowed.is_empty() {
-                        if let Ok(value) = allowed.join(", ").parse() {
-                            response
-                                .headers_mut()
-                                .insert(axum::http::header::ALLOW, value);
-                        }
+                    if !allowed.is_empty()
+                        && let Ok(value) = allowed.join(", ").parse()
+                    {
+                        response
+                            .headers_mut()
+                            .insert(axum::http::header::ALLOW, value);
                     }
                     return Ok(response);
                 }

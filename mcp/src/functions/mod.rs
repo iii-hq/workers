@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use iii_helpers::observability::Logger;
 use iii_sdk::{
+    IIIClient, ObserverHandle, RegisterFunction, Source,
     channels::{ChannelWriter, StreamChannelRef},
     errors::Error,
-    IIIClient, ObserverHandle, RegisterFunction, Source,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::McpConfig;
-use crate::handler::{handle_mcp_body, Outcome};
+use crate::handler::{Outcome, handle_mcp_body};
 use crate::transport::encode_sse_jsonrpc;
 
 pub const FUNCTION_ID: &str = "mcp::handler";
@@ -39,7 +39,7 @@ struct McpRequest {
 /// Build a published JSON Schema for `T`, stripping the root `$schema` key the
 /// registry publish validator has no meta-schema for (mirrors codex).
 fn schema_value<T: schemars::JsonSchema>() -> Value {
-    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(root).expect("schema serializes");
     if let Some(obj) = v.as_object_mut() {
         obj.remove("$schema");

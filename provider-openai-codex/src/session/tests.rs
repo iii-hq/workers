@@ -593,9 +593,11 @@ async fn unauthorized_before_streaming_rotates_and_retries_once() {
             .count(),
         1
     );
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, AssistantMessageEvent::Error { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AssistantMessageEvent::Error { .. }))
+    );
 }
 
 #[tokio::test]
@@ -617,7 +619,7 @@ async fn repeated_unauthorized_is_terminal_after_one_retry() {
 async fn streaming_auth_error_is_not_replayed_after_content() {
     let (manager, store, oauth, _) = setup();
     *store.value.lock().await = Some(SessionRecord::connected(credential("account", 3600)));
-    let reply="HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"expired\"}}}\n\n";
+    let reply = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"invalid_api_key\",\"message\":\"expired\"}}}\n\n";
     let (_, requests) = stream_requests(manager, vec![reply]).await;
     assert_eq!(requests.len(), 1);
     assert_eq!(oauth.refreshes.load(Ordering::SeqCst), 0);

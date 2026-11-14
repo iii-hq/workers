@@ -334,7 +334,7 @@ impl CoderConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let cfg: CoderConfig =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         Ok(cfg)
     }
 
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn empty_yaml_parses_to_defaults() {
-        let cfg: CoderConfig = serde_yaml::from_str("{}").expect("empty yaml parses");
+        let cfg: CoderConfig = serde_yaml_ng::from_str("{}").expect("empty yaml parses");
         assert!(cfg.base_paths.is_empty());
         assert!(cfg.non_accessible_globs.is_empty());
         assert_eq!(
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_yaml: CoderConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: CoderConfig = serde_yaml_ng::from_str("{}").unwrap();
         let from_default = CoderConfig::default();
         // Compare via JSON so we don't have to derive PartialEq.
         let a = serde_json::to_value(&from_yaml).unwrap();
@@ -474,7 +474,7 @@ batch_read_budget_bytes: 23
 max_output_bytes: 31
 search_response_budget_bytes: 29
 "#;
-        let cfg: CoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: CoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.non_accessible_globs, vec!["**/.env".to_string()]);
         assert_eq!(cfg.default_exclude_globs, vec!["**/build/**".to_string()]);
         assert_eq!(cfg.max_read_bytes, 42);
@@ -558,20 +558,22 @@ search_response_budget_bytes: 11
         let _env_lock = crate::config::ENV_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob") };
         let yaml = "non_accessible_globs:\n  - \"${CODER_TEST_ROOT}\"\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
         assert_eq!(
             cfg.non_accessible_globs,
             vec!["/tmp/expanded-glob".to_string()]
         );
-        std::env::remove_var("CODER_TEST_ROOT");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("CODER_TEST_ROOT") };
     }
 
     #[test]
     fn from_yaml_preserves_unicode_outside_markers() {
         // Guard against byte-iteration mojibake: a non-ASCII comment runs
-        // through expand_env verbatim before serde_yaml strips it.
+        // through expand_env verbatim before serde_yaml_ng strips it.
         let yaml = "# café 日本語\nmax_read_bytes: 5\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
         assert_eq!(cfg.max_read_bytes, 5);
@@ -645,7 +647,7 @@ search_response_budget_bytes: 11
 
     #[test]
     fn templates_block_defaults_and_yaml_overrides() {
-        let cfg: CoderConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: CoderConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(
             cfg.templates,
             TemplatesConfig {
@@ -657,7 +659,7 @@ search_response_budget_bytes: 11
             }
         );
         let yaml = "templates:\n  dir: /src/templates\n  ref: dev\n  refresh_secs: 5\n";
-        let cfg: CoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: CoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.templates.dir.as_deref(), Some("/src/templates"));
         assert_eq!(cfg.templates.git_ref, "dev");
         assert_eq!(cfg.templates.refresh_secs, 5);

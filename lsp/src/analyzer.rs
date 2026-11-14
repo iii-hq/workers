@@ -424,13 +424,12 @@ fn find_string_at_cursor<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a>, 
     // Quote character that's part of a string
     // TS: anonymous "'" or "\"" nodes
     // Python: named "string_start" / "string_end" nodes
-    if kind == "'" || kind == "\"" || kind == "string_start" || kind == "string_end" {
-        if let Some(parent) = node.parent() {
-            if parent.kind() == "string" || parent.kind() == "string_literal" {
-                let text = extract_string_content(parent, source);
-                return Some((parent, text));
-            }
-        }
+    if (kind == "'" || kind == "\"" || kind == "string_start" || kind == "string_end")
+        && let Some(parent) = node.parent()
+        && (parent.kind() == "string" || parent.kind() == "string_literal")
+    {
+        let text = extract_string_content(parent, source);
+        return Some((parent, text));
     }
 
     None
@@ -449,13 +448,13 @@ fn extract_string_content(string_node: Node, source: &str) -> String {
 /// The position of the argument that holds `node` among `arguments`.
 pub(crate) fn argument_index(arguments: Node, node: Node) -> Option<usize> {
     let mut cursor = arguments.walk();
-    let index = arguments
+
+    arguments
         .named_children(&mut cursor)
         .filter(|argument| !argument.kind().contains("comment"))
         .position(|argument| {
             argument.start_byte() <= node.start_byte() && argument.end_byte() >= node.end_byte()
-        });
-    index
+        })
 }
 
 // --- Context detection: dict/object style (TS + Python dict) ---
@@ -588,7 +587,7 @@ fn determine_context_rust_field(string_node: Node, source: &str) -> CompletionCo
             Some(p) if p.kind() == "field_initializer" => break p,
             // Stop if we've gone too far up
             Some(p) if p.kind() == "field_initializer_list" || p.kind() == "struct_expression" => {
-                return CompletionContext::None
+                return CompletionContext::None;
             }
             Some(p) => current = p,
             None => return CompletionContext::None,
@@ -868,16 +867,15 @@ fn check_nested_object_kwarg(object: Node, source: &str) -> Option<CompletionCon
 fn find_string_value_in_object(object: Node, target_key: &str, source: &str) -> Option<String> {
     let mut cursor = object.walk();
     for child in object.children(&mut cursor) {
-        if child.kind() == "pair" {
-            if let Some(key) = child.child_by_field_name("key") {
-                let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
-                if key_text == target_key {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "string" {
-                            return Some(extract_string_content(value, source));
-                        }
-                    }
-                }
+        if child.kind() == "pair"
+            && let Some(key) = child.child_by_field_name("key")
+        {
+            let key_text = strip_quotes(key.utf8_text(source.as_bytes()).ok()?);
+            if key_text == target_key
+                && let Some(value) = child.child_by_field_name("value")
+                && value.kind() == "string"
+            {
+                return Some(extract_string_content(value, source));
             }
         }
     }
@@ -888,16 +886,13 @@ fn find_string_value_in_object(object: Node, target_key: &str, source: &str) -> 
 fn find_kwarg_string_value(arg_list: Node, target_name: &str, source: &str) -> Option<String> {
     let mut cursor = arg_list.walk();
     for child in arg_list.children(&mut cursor) {
-        if child.kind() == "keyword_argument" {
-            if let Some(name) = child.child_by_field_name("name") {
-                if name.utf8_text(source.as_bytes()).ok()? == target_name {
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if value.kind() == "string" {
-                            return Some(extract_string_content(value, source));
-                        }
-                    }
-                }
-            }
+        if child.kind() == "keyword_argument"
+            && let Some(name) = child.child_by_field_name("name")
+            && name.utf8_text(source.as_bytes()).ok()? == target_name
+            && let Some(value) = child.child_by_field_name("value")
+            && value.kind() == "string"
+        {
+            return Some(extract_string_content(value, source));
         }
     }
     None

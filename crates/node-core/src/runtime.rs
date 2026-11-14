@@ -10,21 +10,21 @@ use std::cell::RefCell;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 use std::time::Duration;
 
 use deno_core::error::JsError;
-use deno_core::{v8, JsRuntime, OpState, PollEventLoopOptions, RuntimeOptions};
+use deno_core::{JsRuntime, OpState, PollEventLoopOptions, RuntimeOptions, v8};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::engine::Engine;
 use crate::error::NodeEngineError;
-use crate::ops::{node_engine_ext, with_ops_state, OpsState};
-use crate::protocol::{wrap_eval, wrap_invoke, Envelope};
+use crate::ops::{OpsState, node_engine_ext, with_ops_state};
+use crate::protocol::{Envelope, wrap_eval, wrap_invoke};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct LogLine {
@@ -257,11 +257,13 @@ unsafe extern "C" fn near_heap_limit(
     current_limit: usize,
     _initial_limit: usize,
 ) -> usize {
-    let guard = &*(data as *const HeapGuard);
-    guard.oom.store(true, Ordering::SeqCst);
-    guard.isolate.terminate_execution();
-    // Hand V8 headroom so it can unwind instead of aborting the process.
-    current_limit * 2
+    unsafe {
+        let guard = &*(data as *const HeapGuard);
+        guard.oom.store(true, Ordering::SeqCst);
+        guard.isolate.terminate_execution();
+        // Hand V8 headroom so it can unwind instead of aborting the process.
+        current_limit * 2
+    }
 }
 
 enum Reply {

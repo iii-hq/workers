@@ -8,10 +8,10 @@ use serde_json::Value;
 /// (api-docs.deepseek.com, quick_start/error_codes).
 /// `None` status = the request never got a response (connect/read failure).
 pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
-    if let Ok(v) = serde_json::from_str::<Value>(message) {
-        if let Some(kind) = classify_error_value(&v, status) {
-            return kind;
-        }
+    if let Ok(v) = serde_json::from_str::<Value>(message)
+        && let Some(kind) = classify_error_value(&v, status)
+    {
+        return kind;
     }
     match status {
         Some(401) | Some(403) => ErrorKind::AuthExpired,
@@ -61,7 +61,7 @@ fn classify_error_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
         // Billing walls, not rate limits: the router's backoff cannot fix them.
         "insufficient_quota" | "insufficient_balance" => return Some(ErrorKind::Permanent),
         "invalid_api_key" | "authentication_error" | "account_deactivated" => {
-            return Some(ErrorKind::AuthExpired)
+            return Some(ErrorKind::AuthExpired);
         }
         _ => {}
     }

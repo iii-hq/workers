@@ -16,10 +16,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use iii_helpers::observability::{current_trace_id, run_with_baggage};
 use iii_sdk::{CallAction, CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
-use crate::ingest::{ring::PhantomRing, CheckoutVersions, IngestJob, Telemetry, TraceSummary};
+use crate::ingest::{CheckoutVersions, IngestJob, Telemetry, TraceSummary, ring::PhantomRing};
 use crate::registry::{EngineRegistry, FunctionEntry, WorkerEntry};
 use crate::service::TraceAvailability;
 use crate::store::{self, Db, NamedRow, Statement, StepResult};

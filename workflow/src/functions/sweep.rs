@@ -13,8 +13,7 @@ use crate::{error::WorkflowError, functions::Deps, reconcile, state, types::Node
 use super::start;
 
 pub const SWEEP_ID: &str = "workflow::sweep";
-pub const SWEEP_DESC: &str =
-    "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
+pub const SWEEP_DESC: &str = "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
      Not called directly.";
 
 /// The `cron::on-tick` event, delivered as output. Informational only: the

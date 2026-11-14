@@ -4,7 +4,7 @@
 use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 /// Body of the synthetic `tool_result` injected for an orphan `tool_use`
@@ -184,16 +184,16 @@ pub fn to_wire_messages(messages: &[AgentMessage]) -> Vec<Value> {
                 // Placeholders for orphans land in `pending` → flushed into
                 // the NEXT user message, exactly where Anthropic expects them.
                 for block in &a.content {
-                    if let ContentBlock::FunctionCall { id, .. } = block {
-                        if !resolved_ids.contains(id) {
-                            pending.push(json!({
-                                "type": "tool_result",
-                                "tool_use_id": id,
-                                "content": ORPHAN_TOOL_PLACEHOLDER,
-                                "is_error": true,
-                            }));
-                            resolved_ids.insert(id.clone());
-                        }
+                    if let ContentBlock::FunctionCall { id, .. } = block
+                        && !resolved_ids.contains(id)
+                    {
+                        pending.push(json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": ORPHAN_TOOL_PLACEHOLDER,
+                            "is_error": true,
+                        }));
+                        resolved_ids.insert(id.clone());
                     }
                 }
             }
@@ -361,9 +361,11 @@ mod tests {
             "tool_result must sit in the message immediately after tool_use, got: {content:?}"
         );
         // The notification text must survive, after the result.
-        assert!(content
-            .iter()
-            .any(|b| b["type"] == "text" && b["text"].as_str().unwrap().contains("progress")));
+        assert!(
+            content
+                .iter()
+                .any(|b| b["type"] == "text" && b["text"].as_str().unwrap().contains("progress"))
+        );
     }
 
     #[test]
@@ -376,10 +378,12 @@ mod tests {
         assert_eq!(content[0]["type"], "tool_result");
         assert_eq!(content[0]["tool_use_id"], "orphan");
         assert_eq!(content[0]["is_error"], true);
-        assert!(content[0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("interrupted"));
+        assert!(
+            content[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("interrupted")
+        );
     }
 
     #[test]

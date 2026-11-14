@@ -26,22 +26,18 @@ pub const REFRESH_MODELS_DESC: &str = "Reconcile the curated Sarvam catalog slic
      models, through the router (Sarvam has no models-listing endpoint); returns the count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::sarvam::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::sarvam::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with \
      Sarvam's own published vocabulary and chat template; never runs the model and costs nothing.";
 
 pub const TRANSCRIBE_ID: &str = "provider::sarvam::transcribe";
-pub const TRANSCRIBE_DESC: &str =
-    "Speech to text on Sarvam Saaras behind router::transcribe: base64 audio in, text with timed \
+pub const TRANSCRIBE_DESC: &str = "Speech to text on Sarvam Saaras behind router::transcribe: base64 audio in, text with timed \
      segments and the detected language out; 22 Indian languages and English.";
 
 pub const SPEAK_ID: &str = "provider::sarvam::speak";
-pub const SPEAK_DESC: &str =
-    "Text to speech on Sarvam Bulbul behind router::speak: text, a speaker name and a language in, \
+pub const SPEAK_DESC: &str = "Text to speech on Sarvam Bulbul behind router::speak: text, a speaker name and a language in, \
      base64 audio out (mp3, wav, pcm16, opus).";
 
 /// One function's complete agent-facing wire surface: id, registration

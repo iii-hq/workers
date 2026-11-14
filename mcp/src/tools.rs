@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{errors::Error, CallRequest, IIIClient};
-use serde_json::{json, Map, Value};
+use iii_sdk::{CallRequest, IIIClient, errors::Error};
+use serde_json::{Map, Value, json};
 
 use crate::config::McpConfig;
 
@@ -91,10 +91,10 @@ fn unwrap_function_list(raw: &Value) -> Vec<Map<String, Value>> {
     if let Some(arr) = raw.as_array() {
         return arr.iter().filter_map(|v| v.as_object().cloned()).collect();
     }
-    if let Some(obj) = raw.as_object() {
-        if let Some(arr) = obj.get("functions").and_then(Value::as_array) {
-            return arr.iter().filter_map(|v| v.as_object().cloned()).collect();
-        }
+    if let Some(obj) = raw.as_object()
+        && let Some(arr) = obj.get("functions").and_then(Value::as_array)
+    {
+        return arr.iter().filter_map(|v| v.as_object().cloned()).collect();
     }
     Vec::new()
 }

@@ -8,7 +8,7 @@
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use provider_anthropic::register::register_provider;
 
 #[derive(Parser, Debug)]
@@ -59,14 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if let Ok(contents) = std::fs::read_to_string(&cli.config) {
-        if has_config_keys(&contents) {
-            tracing::warn!(
-                path = %cli.config,
-                "provider-anthropic takes no file-based config; configure the provider \
-                 via the engine's `llm-router` configuration entry — ignoring this file's keys"
-            );
-        }
+    if let Ok(contents) = std::fs::read_to_string(&cli.config)
+        && has_config_keys(&contents)
+    {
+        tracing::warn!(
+            path = %cli.config,
+            "provider-anthropic takes no file-based config; configure the provider \
+             via the engine's `llm-router` configuration entry — ignoring this file's keys"
+        );
     }
 
     let iii = register_worker(

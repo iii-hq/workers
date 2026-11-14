@@ -758,8 +758,8 @@ async fn resolve_root_with_metadata<F, Fut>(
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<
-        Output = Result<Option<serde_json::Map<String, serde_json::Value>>, HarnessError>,
-    >,
+            Output = Result<Option<serde_json::Map<String, serde_json::Value>>, HarnessError>,
+        >,
 {
     /// Deeper than any legitimate sub-agent chain; a cycle in the durable
     /// metadata must end as an error, never as an unbounded walk.

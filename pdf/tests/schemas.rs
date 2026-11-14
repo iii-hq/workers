@@ -13,7 +13,7 @@
 
 mod support;
 
-use pdf::functions::{catalog, FunctionSpec};
+use pdf::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use browser::scrapling::{adaptive, dispatch_op};
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn call(id: &str, payload: Value) -> Value {
     dispatch_op(id, &payload).unwrap()

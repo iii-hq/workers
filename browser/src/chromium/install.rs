@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{cft_executable, is_executable, read_current, write_current, CurrentInstall};
+use super::{CurrentInstall, cft_executable, is_executable, read_current, write_current};
 use crate::events::{Emitter, EventKind};
 use crate::session::now_ms;
 
@@ -476,7 +476,7 @@ async fn download(
                 return Err(format!(
                     "download stalled: no data for {} s",
                     CHUNK_TIMEOUT.as_secs()
-                ))
+                ));
             }
             Ok(Err(e)) => return Err(format!("download interrupted: {e}")),
             Ok(Ok(None)) => break,
@@ -491,10 +491,10 @@ async fn download(
     file.flush()
         .await
         .map_err(|e| format!("cannot write {}: {e}", partial.display()))?;
-    if let Some(total) = total {
-        if done != total {
-            return Err(format!("download incomplete: got {done} of {total} bytes"));
-        }
+    if let Some(total) = total
+        && done != total
+    {
+        return Err(format!("download incomplete: got {done} of {total} bytes"));
     }
     Ok(())
 }
@@ -659,7 +659,7 @@ async fn verify(exe: &Path, root: &Path) -> Result<String, Failure> {
                 "the new Chromium did not answer `--version` within {} s",
                 VERIFY_TIMEOUT.as_secs()
             )
-            .into())
+            .into());
         }
         Ok(Err(e)) => return Err(format!("the new Chromium does not start: {e}").into()),
         Ok(Ok(output)) => output,
@@ -892,9 +892,10 @@ mod tests {
         );
         for platform in ["linux-arm64", "mac-arm64", "mac-x64", "win64"] {
             let pick = pick_download(FIXTURE, platform).unwrap();
-            assert!(pick
-                .url
-                .contains(&format!("/{platform}/chrome-{platform}.zip")));
+            assert!(
+                pick.url
+                    .contains(&format!("/{platform}/chrome-{platform}.zip"))
+            );
         }
         let missing = pick_download(FIXTURE, "freebsd64").unwrap_err();
         assert!(missing.contains("freebsd64"), "{missing}");
@@ -903,17 +904,23 @@ mod tests {
     #[test]
     fn manifest_problems_are_reported_not_panicked() {
         assert!(pick_download("not json", "linux64").is_err());
-        assert!(pick_download(r#"{"channels":{}}"#, "linux64")
-            .unwrap_err()
-            .contains("Stable"));
+        assert!(
+            pick_download(r#"{"channels":{}}"#, "linux64")
+                .unwrap_err()
+                .contains("Stable")
+        );
         let odd_version = r#"{"channels":{"Stable":{"version":"../../x","downloads":{"chrome":[{"platform":"linux64","url":"https://x/y.zip"}]}}}}"#;
-        assert!(pick_download(odd_version, "linux64")
-            .unwrap_err()
-            .contains("odd version"));
+        assert!(
+            pick_download(odd_version, "linux64")
+                .unwrap_err()
+                .contains("odd version")
+        );
         let http = r#"{"channels":{"Stable":{"version":"1.2.3","downloads":{"chrome":[{"platform":"linux64","url":"http://x/y.zip"}]}}}}"#;
-        assert!(pick_download(http, "linux64")
-            .unwrap_err()
-            .contains("non-https"));
+        assert!(
+            pick_download(http, "linux64")
+                .unwrap_err()
+                .contains("non-https")
+        );
     }
 
     #[test]
@@ -971,9 +978,11 @@ mod tests {
             hint.contains("sudo apt-get install -y libasound2"),
             "{hint}"
         );
-        assert!(dependency_hint(&libs, None)
-            .unwrap()
-            .contains("install-deps"));
+        assert!(
+            dependency_hint(&libs, None)
+                .unwrap()
+                .contains("install-deps")
+        );
         assert_eq!(dependency_hint(&[], Some(deb)), None);
     }
 
@@ -1053,10 +1062,12 @@ mod tests {
         // another live holder: pid 1 always exists on Unix.
         std::fs::write(dir.join(LOCK_FILE), "1\n").unwrap();
         #[cfg(unix)]
-        assert!(InstallLock::acquire(&dir)
-            .err()
-            .unwrap()
-            .contains("another browser worker"));
+        assert!(
+            InstallLock::acquire(&dir)
+                .err()
+                .unwrap()
+                .contains("another browser worker")
+        );
         drop(first);
         assert!(!dir.join(LOCK_FILE).exists());
         // A dead pid (and an empty file) is reclaimed.

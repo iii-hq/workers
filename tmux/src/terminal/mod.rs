@@ -22,16 +22,16 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::collector::{Collector, ConsoleClients};
-use crate::tmux_cli::{window_target, Tmux, WindowRef};
+use crate::tmux_cli::{Tmux, WindowRef, window_target};
 
 mod output_buffer;
 pub mod protocol;
@@ -695,14 +695,38 @@ macro_rules! register_terminal_fn {
 }
 
 pub const FUNCTIONS: [(&str, &str); 8] = [
-    ("tmux::terminal::open", "Attach a console terminal to a tmux session as a real tmux client running in a PTY. Output is pushed to the page's handler."),
-    ("tmux::terminal::write", "Write base64 keyboard input to a console terminal's tmux client."),
-    ("tmux::terminal::resize", "Resize a console terminal; also its heartbeat."),
-    ("tmux::terminal::switch", "Move only this console terminal's tmux client to another session (switch-client), optionally selecting a window there."),
-    ("tmux::terminal::replay", "Re-send buffered output frames after a sequence, for gap repair."),
-    ("tmux::terminal::redraw", "Ask tmux to repaint the console terminal's whole screen (refresh-client)."),
-    ("tmux::terminal::close", "Detach a console terminal's tmux client. The session keeps running."),
-    ("tmux::terminal::upload", "Save a file being pasted into a console terminal (any type, base64, at most 12 MiB) in a new folder of its own in the cache folder of the user this worker runs as, under its name made safe, and answer its path for the page to paste. It types nothing; uploads older than 7 days, and the oldest past 256 MiB, are removed."),
+    (
+        "tmux::terminal::open",
+        "Attach a console terminal to a tmux session as a real tmux client running in a PTY. Output is pushed to the page's handler.",
+    ),
+    (
+        "tmux::terminal::write",
+        "Write base64 keyboard input to a console terminal's tmux client.",
+    ),
+    (
+        "tmux::terminal::resize",
+        "Resize a console terminal; also its heartbeat.",
+    ),
+    (
+        "tmux::terminal::switch",
+        "Move only this console terminal's tmux client to another session (switch-client), optionally selecting a window there.",
+    ),
+    (
+        "tmux::terminal::replay",
+        "Re-send buffered output frames after a sequence, for gap repair.",
+    ),
+    (
+        "tmux::terminal::redraw",
+        "Ask tmux to repaint the console terminal's whole screen (refresh-client).",
+    ),
+    (
+        "tmux::terminal::close",
+        "Detach a console terminal's tmux client. The session keeps running.",
+    ),
+    (
+        "tmux::terminal::upload",
+        "Save a file being pasted into a console terminal (any type, base64, at most 12 MiB) in a new folder of its own in the cache folder of the user this worker runs as, under its name made safe, and answer its path for the page to paste. It types nothing; uploads older than 7 days, and the oldest past 256 MiB, are removed.",
+    ),
 ];
 
 pub fn register(iii: &IIIClient, manager: TerminalManager) {
@@ -776,7 +800,7 @@ pub fn register(iii: &IIIClient, manager: TerminalManager) {
 mod tests {
     use super::*;
     use crate::tmux_cli::Socket;
-    use iii_sdk::{scope, Activation, Caller, InvocationCtx};
+    use iii_sdk::{Activation, Caller, InvocationCtx, scope};
 
     #[test]
     fn output_target_is_this_pages_console_handler() {
@@ -858,10 +882,12 @@ mod tests {
         // the engine's support is known, nothing is trusted either.
         for engine in [Some(true), None] {
             for caller in [None, stamped_caller(""), Some(Caller::default())] {
-                assert!(caller_in(invocation(caller, None), Some("page"), engine)
-                    .await
-                    .unwrap_err()
-                    .contains("require engine-stamped caller identity"));
+                assert!(
+                    caller_in(invocation(caller, None), Some("page"), engine)
+                        .await
+                        .unwrap_err()
+                        .contains("require engine-stamped caller identity")
+                );
             }
             assert!(require_caller(Some("page"), engine).is_err());
         }
@@ -876,9 +902,11 @@ mod tests {
                     caller_in(invocation(None, None), stamped, engine).await,
                     caller_in(invocation(stamped_caller(""), None), stamped, engine).await,
                 ] {
-                    assert!(result
-                        .unwrap_err()
-                        .contains("require engine-stamped caller identity"));
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .contains("require engine-stamped caller identity")
+                    );
                 }
             }
         }

@@ -27,7 +27,7 @@ use tokio::sync::RwLock;
 use crate::config::SkillsConfig;
 use crate::functions::registry::RegistryCache;
 use crate::functions::search::{
-    search_functions, Deps, SearchFunctionsRequest, SearchFunctionsResponse,
+    Deps, SearchFunctionsRequest, SearchFunctionsResponse, search_functions,
 };
 use crate::functions::search_index::ToolSchema;
 
@@ -226,15 +226,21 @@ async fn gibberish_query_returns_refine_guidance() {
         response.guidance
     );
     assert!(response.guidance.contains("next decision point"));
-    assert!(response
-        .guidance
-        .contains("all unmet external capabilities"));
-    assert!(response
-        .guidance
-        .contains("Do not search for intrinsic reasoning, summarization, planning, or formatting"));
-    assert!(response
-        .guidance
-        .contains("do not repeat needs already represented"));
+    assert!(
+        response
+            .guidance
+            .contains("all unmet external capabilities")
+    );
+    assert!(
+        response.guidance.contains(
+            "Do not search for intrinsic reasoning, summarization, planning, or formatting"
+        )
+    );
+    assert!(
+        response
+            .guidance
+            .contains("do not repeat needs already represented")
+    );
 }
 
 #[tokio::test]
@@ -338,9 +344,11 @@ async fn repeat_query_in_one_session_omits_delivered_contracts() {
         "all-repeat query must re-send full contracts: {:?}",
         function_ids(&third)
     );
-    assert!(!third
-        .guidance
-        .contains("Already provided earlier in this session"));
+    assert!(
+        !third
+            .guidance
+            .contains("Already provided earlier in this session")
+    );
 }
 
 #[tokio::test]
@@ -351,19 +359,23 @@ async fn guidance_hands_selected_candidates_to_batched_function_info() {
     assert!(response.guidance.contains("engine::functions::info"));
     assert!(response.guidance.contains("function_ids"));
     assert!(response.guidance.contains("smallest candidate set"));
-    assert!(response
-        .guidance
-        .contains("all unmet external capabilities"));
+    assert!(
+        response
+            .guidance
+            .contains("all unmet external capabilities")
+    );
     assert!(!response.guidance.contains("listed request fields"));
-    assert!(response
-        .guidance
-        .contains("directory::search_functions again"));
+    assert!(
+        response
+            .guidance
+            .contains("directory::search_functions again")
+    );
 }
 
 #[tokio::test]
 #[ignore = "exploratory dump for precision tuning"]
 async fn dump_probe_queries() {
-    use crate::functions::search_index::{canonical_tools, Bm25Index};
+    use crate::functions::search_index::{Bm25Index, canonical_tools};
     let corpus = canonical_tools(&fixture_catalog());
     let index = Bm25Index::build(&corpus);
     for query in [

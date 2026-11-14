@@ -103,7 +103,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let parsed: Self =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         parsed.validate()
     }
 
@@ -292,10 +292,12 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_the_seed_only() {
-        std::env::set_var("PDF_TEST_CHARS", "99");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("PDF_TEST_CHARS", "99") };
         let cfg = WorkerConfig::from_yaml("max_chars: ${PDF_TEST_CHARS}\n").expect("expands");
         assert_eq!(cfg.max_chars, 99);
-        std::env::remove_var("PDF_TEST_CHARS");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("PDF_TEST_CHARS") };
 
         let cfg = WorkerConfig::from_yaml("max_chars: ${PDF_UNSET_VAR:42}\n").expect("falls back");
         assert_eq!(cfg.max_chars, 42);

@@ -204,15 +204,15 @@ fn kill_process_group(_pid: Option<u32>) {}
 /// (each side would otherwise block on a full pipe). Best-effort: a child that
 /// exited before consuming its input just makes the write fail, which we ignore.
 fn pump_stdin(child: &mut tokio::process::Child, stdin: &Option<String>) {
-    if let Some(data) = stdin {
-        if let Some(mut sin) = child.stdin.take() {
-            let bytes = data.clone().into_bytes();
-            tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                let _ = sin.write_all(&bytes).await;
-                let _ = sin.shutdown().await;
-            });
-        }
+    if let Some(data) = stdin
+        && let Some(mut sin) = child.stdin.take()
+    {
+        let bytes = data.clone().into_bytes();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = sin.write_all(&bytes).await;
+            let _ = sin.shutdown().await;
+        });
     }
 }
 

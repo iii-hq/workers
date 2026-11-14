@@ -19,7 +19,7 @@ use session_manager::config::{FsBackendConfig, StorageAdapter, WorkerConfig};
 use session_manager::configuration::{AppState, ConfigCell};
 use session_manager::events::register_event_functions;
 use session_manager::functions::{self, store_protocol};
-use session_manager::runtime::{build_runtime, SessionBuildContext};
+use session_manager::runtime::{SessionBuildContext, build_runtime};
 
 pub struct Shared {
     /// The main (fs-mode) instance's data directory; steps read the

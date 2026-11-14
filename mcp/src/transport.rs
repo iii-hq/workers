@@ -15,7 +15,7 @@ pub fn encode_sse_jsonrpc(rpc: &JsonRpcResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsonrpc::{json_rpc_success, JsonRpcId, JsonRpcResponseId};
+    use crate::jsonrpc::{JsonRpcId, JsonRpcResponseId, json_rpc_success};
     use serde_json::json;
 
     #[test]

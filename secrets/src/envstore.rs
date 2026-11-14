@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
-use crate::detect::{scan_dotenv, PROCESS_ENV_LOCATION};
+use crate::detect::{PROCESS_ENV_LOCATION, scan_dotenv};
 use crate::error::SecretsError;
 use crate::fsutil;
 use crate::secret::SecretString;
@@ -43,23 +43,23 @@ impl EnvSource {
         if names.is_empty() {
             return out;
         }
-        if let Some(path) = &self.dotenv {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                let text = Zeroizing::new(text);
-                let location = path.display().to_string();
-                for entry in scan_dotenv(&text) {
-                    if names.contains(&entry.key) && !entry.value.is_blank() {
-                        // A later definition wins, as a dotenv loader reads it.
-                        out.insert(
-                            entry.key,
-                            EnvValue {
-                                value: entry.value,
-                                location: location.clone(),
-                            },
-                        );
-                    } else if names.contains(&entry.key) {
-                        out.remove(&entry.key);
-                    }
+        if let Some(path) = &self.dotenv
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            let text = Zeroizing::new(text);
+            let location = path.display().to_string();
+            for entry in scan_dotenv(&text) {
+                if names.contains(&entry.key) && !entry.value.is_blank() {
+                    // A later definition wins, as a dotenv loader reads it.
+                    out.insert(
+                        entry.key,
+                        EnvValue {
+                            value: entry.value,
+                            location: location.clone(),
+                        },
+                    );
+                } else if names.contains(&entry.key) {
+                    out.remove(&entry.key);
                 }
             }
         }
@@ -107,7 +107,7 @@ impl EnvSource {
                     "{} could not be read: {}",
                     target.display(),
                     error.kind()
-                )))
+                )));
             }
         };
         let next = Zeroizing::new(upsert(&current, name, &line));
@@ -293,7 +293,8 @@ mod tests {
             dotenv: Some(path.clone()),
             process_env: true,
         };
-        std::env::set_var("SECRETS_ENVSTORE_TEST_B", "from-process");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("SECRETS_ENVSTORE_TEST_B", "from-process") };
         let names = vec![
             "A".to_owned(),
             "B".to_owned(),
@@ -307,7 +308,8 @@ mod tests {
             values["SECRETS_ENVSTORE_TEST_B"].location,
             PROCESS_ENV_LOCATION
         );
-        std::env::remove_var("SECRETS_ENVSTORE_TEST_B");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("SECRETS_ENVSTORE_TEST_B") };
     }
 
     #[test]

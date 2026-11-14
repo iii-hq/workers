@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use ide::code::change_journal::{diff as exact_diff, ChangeDiffInput, ChangeJournal};
+use ide::code::change_journal::{ChangeDiffInput, ChangeJournal, diff as exact_diff};
 use ide::code::config::CoderConfig;
 use ide::code::functions::{
     create_file, delete_file, list_folder, read_file, search, tree, update_file,
@@ -217,9 +217,11 @@ async fn full_lifecycle_via_handlers() {
         .as_array()
         .expect("content matches");
     let expected_match_path = s.root.join("hello.txt").display().to_string();
-    assert!(content_matches
-        .iter()
-        .any(|m| m["path"] == expected_match_path.as_str() && m["line"] == 2));
+    assert!(
+        content_matches
+            .iter()
+            .any(|m| m["path"] == expected_match_path.as_str() && m["line"] == 2)
+    );
 
     // 7. Non-accessible glob blocks reads even though list-folder shows it.
     std::fs::write(s.root.join(".env"), "API_KEY=secret\n").unwrap();

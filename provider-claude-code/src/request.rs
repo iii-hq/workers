@@ -18,7 +18,7 @@ use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::PromptSection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Beta flag required for subscription OAuth tokens on api.anthropic.com.
@@ -274,18 +274,22 @@ mod tests {
         // a flat prompt's system marker is 5 minutes, so the anchor stays at 5 minutes
         a.system_sections = None;
         a.system_prompt = "p".repeat(crate::wire::cache::CACHE_MIN_CHARS);
-        assert!(anchor(&build_body(&a, &mut Vec::new()))
-            .get("ttl")
-            .is_none());
+        assert!(
+            anchor(&build_body(&a, &mut Vec::new()))
+                .get("ttl")
+                .is_none()
+        );
         // a 5-minute prefix (PROVIDER_*_CACHE_TTL=5m) keeps it at 5 minutes too
         a.system_sections = Some(vec![PromptSection {
             text: "s".repeat(crate::wire::cache::CACHE_MIN_CHARS),
             cache_boundary: true,
         }]);
         a.cache_ttl = None;
-        assert!(anchor(&build_body(&a, &mut Vec::new()))
-            .get("ttl")
-            .is_none());
+        assert!(
+            anchor(&build_body(&a, &mut Vec::new()))
+                .get("ttl")
+                .is_none()
+        );
     }
 
     fn assistant_msg(content: Vec<ContentBlock>) -> AgentMessage {

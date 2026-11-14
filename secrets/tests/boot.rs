@@ -11,7 +11,7 @@ use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 const VALUE: &str = "sk-ant-api03-boot-test-value-9f2c";
@@ -298,9 +298,11 @@ async fn check(signal: Option<&str>) {
     }
     let set_schema = registration("secrets::set");
     assert!(set_schema["request_format"]["properties"]["value"].is_object());
-    assert!(set_schema["response_format"]["properties"]
-        .get("value")
-        .is_none());
+    assert!(
+        set_schema["response_format"]["properties"]
+            .get("value")
+            .is_none()
+    );
     let ensure = frames
         .iter()
         .find(|f| f["function_id"] == "configuration::ensure")

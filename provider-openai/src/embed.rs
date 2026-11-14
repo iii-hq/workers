@@ -4,13 +4,13 @@
 //! memory worker's semantic recall) treat this as the provider protocol's
 //! embedding surface.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{config_from_resolve, ConfigError};
+use crate::config::{ConfigError, config_from_resolve};
 use crate::state;
 
 pub const DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";

@@ -1,7 +1,7 @@
 pub mod engine;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Waits until the counter reaches `n` (up to ~5s), else panics.

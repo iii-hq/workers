@@ -2,7 +2,7 @@
 //! Recovery rechecks the persisted evidence against the actual source path.
 use crate::{deps::Deps, hooks::PreGenerateInput};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,10 +257,10 @@ pub(crate) fn content_bytes(content: Option<&Value>) -> Result<usize, String> {
 /// root recovery clone them. Sizes are not capped here: a run captures only
 /// what the model reads of a long entry, never a failed read.
 pub(crate) fn source_page(reply: &Value) -> Result<(), String> {
-    if let Some(cursor) = reply.get("next_cursor").and_then(Value::as_str) {
-        if !bounded(cursor) {
-            return Err("history cursor byte bound".into());
-        }
+    if let Some(cursor) = reply.get("next_cursor").and_then(Value::as_str)
+        && !bounded(cursor)
+    {
+        return Err("history cursor byte bound".into());
     }
     let items = reply["messages"]
         .as_array()

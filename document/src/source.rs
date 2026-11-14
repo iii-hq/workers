@@ -10,8 +10,8 @@
 //! unrecognisable, and the converter would refuse a file it can read perfectly
 //! well.
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

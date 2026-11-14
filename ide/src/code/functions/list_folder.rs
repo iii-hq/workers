@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError};
+use crate::code::error::{CoderError, err_to_string};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.

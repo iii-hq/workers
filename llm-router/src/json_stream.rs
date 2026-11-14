@@ -191,19 +191,19 @@ impl JsonStream {
             current = Some(match frame {
                 Frame::Object { values, state, key } => {
                     let mut values = values.clone();
-                    if *state == ObjectState::Value {
-                        if let (Some(key), Some(value)) = (key, current.take()) {
-                            values.insert(key.clone(), value);
-                        }
+                    if *state == ObjectState::Value
+                        && let (Some(key), Some(value)) = (key, current.take())
+                    {
+                        values.insert(key.clone(), value);
                     }
                     Value::Object(values)
                 }
                 Frame::Array { values, state } => {
                     let mut values = values.clone();
-                    if matches!(state, ArrayState::ValueOrEnd | ArrayState::Value) {
-                        if let Some(value) = current.take() {
-                            values.push(value);
-                        }
+                    if matches!(state, ArrayState::ValueOrEnd | ArrayState::Value)
+                        && let Some(value) = current.take()
+                    {
+                        values.push(value);
                     }
                     Value::Array(values)
                 }
@@ -359,7 +359,7 @@ impl JsonStream {
                             self.token = Some(Token::String(string));
                         }
                         c if c <= '\u{1f}' => {
-                            return Err(syntax(offset, "unescaped control character in a string"))
+                            return Err(syntax(offset, "unescaped control character in a string"));
                         }
                         c => {
                             string.value.push(c);

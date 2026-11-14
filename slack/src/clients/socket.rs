@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;

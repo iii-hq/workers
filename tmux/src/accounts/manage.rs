@@ -5,7 +5,7 @@ use super::launch::Target;
 use super::paths::ClaudePaths;
 use super::registry::{self, Entry, Registry};
 use super::slot::Place;
-use super::{shared, Accounts, DEFAULT};
+use super::{Accounts, DEFAULT, shared};
 use crate::model::now_ms;
 
 /// An account a swap involves is not removed until the swap is over.
@@ -70,12 +70,11 @@ impl Accounts {
                 let _ = shared::delete_account_dir(&paths.root, &dir);
                 return Err(error);
             }
-            if groups.iter().any(|g| g == "plugins") {
-                if let Err(error) =
+            if groups.iter().any(|g| g == "plugins")
+                && let Err(error) =
                     shared::seed_mcp_servers(&paths.default_json, &paths.account_json(&id))
-                {
-                    tracing::warn!(account = %id, %error, "MCP servers not copied");
-                }
+            {
+                tracing::warn!(account = %id, %error, "MCP servers not copied");
             }
             registry.accounts.push(Entry {
                 id: id.clone(),
@@ -107,10 +106,10 @@ impl Accounts {
             if !registry.has(id) {
                 return Err(no_account(id));
             }
-            if let Some(name) = name.as_deref() {
-                if name_taken(registry, name, Some(id)) {
-                    return Err(format!("There is already an account named \"{name}\"."));
-                }
+            if let Some(name) = name.as_deref()
+                && name_taken(registry, name, Some(id))
+            {
+                return Err(format!("There is already an account named \"{name}\"."));
             }
             let entry = registry.get_mut(id).expect("checked above");
             if let Some(groups) = groups {
@@ -322,9 +321,11 @@ mod tests {
             std::fs::read_link(dir.join("projects")).unwrap(),
             claude.join("projects")
         );
-        assert!(std::fs::read_to_string(dir.join(".claude.json"))
-            .unwrap()
-            .contains("docs-mcp"));
+        assert!(
+            std::fs::read_to_string(dir.join(".claude.json"))
+                .unwrap()
+                .contains("docs-mcp")
+        );
         let registry = accounts.registry();
         assert!(accounts.managed());
         let entry = registry.get(&id).unwrap();
@@ -333,9 +334,11 @@ mod tests {
         assert!(entry.created_at_ms > 0);
         assert!(accounts.add("side project", "green", None).is_err());
         assert!(accounts.add("Other", "red", None).is_err());
-        assert!(accounts
-            .add("Other", "green", Some(vec!["keys".into()]))
-            .is_err());
+        assert!(
+            accounts
+                .add("Other", "green", Some(vec!["keys".into()]))
+                .is_err()
+        );
         // Nothing shared: no links, no servers copied.
         let bare = accounts.add("Bare", "orange", Some(vec![])).unwrap();
         let bare_dir = home.paths.account_dir(&bare);
@@ -388,9 +391,11 @@ mod tests {
             .update("default", None, None, Some(vec!["settings".into()]))
             .unwrap();
         assert_eq!(accounts.registry().accounts[0].shared, vec!["settings"]);
-        assert!(accounts
-            .update("default", Some("home"), None, None)
-            .is_err());
+        assert!(
+            accounts
+                .update("default", Some("home"), None, None)
+                .is_err()
+        );
         assert!(accounts.update("nobody", Some("x"), None, None).is_err());
     }
 

@@ -43,6 +43,87 @@ def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | Non
     return None
 
 
+RUST_EDITION = "2024"
+
+# Crates first-party manifests must not depend on: the deprecated serde_yaml
+# moved to serde_yaml_ng, and serde_yml is unmaintained (RUSTSEC-2025-0068).
+DENIED_CRATES = {
+    "serde_yaml": "serde_yaml is deprecated upstream; use serde_yaml_ng",
+    "serde_yml": "serde_yml is unmaintained (RUSTSEC-2025-0068); use serde_yaml_ng",
+}
+
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _dependency_names(manifest: dict) -> set[str]:
+    """Every crate a manifest names, under its own key or a `package = ` rename."""
+    tables = [manifest.get(table, {}) for table in DEPENDENCY_TABLES]
+    tables.append(manifest.get("workspace", {}).get("dependencies", {}))
+    for target in manifest.get("target", {}).values():
+        tables.extend(target.get(table, {}) for table in DEPENDENCY_TABLES)
+    names: set[str] = set()
+    for table in tables:
+        for key, value in table.items():
+            names.add(key)
+            if isinstance(value, dict) and isinstance(value.get("package"), str):
+                names.add(value["package"])
+    return names
+
+
+def cargo_manifest_errors(label: str, manifest_path: pathlib.Path) -> list[str]:
+    """Return why a first-party Cargo.toml drifts from the shared toolchain, if it does.
+
+    Every first-party crate is on Rust edition 2024 (vendored crates follow
+    their upstream and are not checked) and stays off the YAML crates the
+    repo moved away from.
+    """
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"{label}: could not parse {manifest_path.name}: {error}"]
+    errors = []
+    package = manifest.get("package")
+    if isinstance(package, dict) and "edition" not in package:
+        errors.append(f'{label}: [package] must declare edition = "{RUST_EDITION}"')
+    tables = (("package", package), ("workspace.package", manifest.get("workspace", {}).get("package")))
+    for table_name, table in tables:
+        edition = table.get("edition") if isinstance(table, dict) else None
+        # `edition.workspace = true` inherits [workspace.package], checked there.
+        if edition is None or edition == {"workspace": True}:
+            continue
+        if edition != RUST_EDITION:
+            errors.append(f'{label}: [{table_name}] edition = {edition!r}, must be "{RUST_EDITION}"')
+    for name in sorted(_dependency_names(manifest) & DENIED_CRATES.keys()):
+        errors.append(f"{label}: depends on {name}: {DENIED_CRATES[name]}")
+    return errors
+
+
+def root_package_manager(root: pathlib.Path) -> str | None:
+    """The repo-root package.json `packageManager`, the pin every package follows."""
+    try:
+        return json.loads((root / "package.json").read_text(encoding="utf-8")).get("packageManager")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def package_manager_error(label: str, package_json: pathlib.Path, expected: str) -> str | None:
+    """Return why a package.json pins another package manager than the repo root, or None.
+
+    A package with its own pnpm-lock.yaml is installed on its own, so it must
+    pin one; a workspace member without a pin uses the root's.
+    """
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return f"{label}: could not parse {package_json.name}: {error}"
+    pinned = package.get("packageManager")
+    if pinned is None and not (package_json.parent / "pnpm-lock.yaml").exists():
+        return None
+    if pinned != expected:
+        return f'{label}: packageManager is {pinned!r}, must be "{expected}" (the repo-root package.json pin)'
+    return None
+
+
 def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     """Validate the public `iii.worker.yaml` manifest while keeping it out of release planning."""
     try:
@@ -201,6 +282,14 @@ def main(argv: list[str] | None = None) -> int:
                     profile_error = release_profile_error(worker, manifest_path)
                     if profile_error:
                         hard(profile_error)
+                if manifest_path.name == "Cargo.toml":
+                    for manifest_error in cargo_manifest_errors(f"{worker}/{spec.manifest}", manifest_path):
+                        hard(manifest_error)
+                root_pin = root_package_manager(spec.path.parent)
+                if manifest_path.name == "package.json" and root_pin:
+                    pin_error = package_manager_error(f"{worker}/{spec.manifest}", manifest_path, root_pin)
+                    if pin_error:
+                        hard(pin_error)
                 try:
                     current_version = _lib.read_version(manifest_path)
                 except (ValueError, FileNotFoundError) as error:

@@ -154,11 +154,11 @@ pub fn diff_keys(previous: &[String], current: &[String]) -> SnapshotDiffResult 
     }
     let mut removed = Vec::new();
     for k in previous {
-        if let Some(n) = old_counts.get_mut(k.as_str()) {
-            if *n > 0 {
-                *n -= 1;
-                removed.push(k.clone());
-            }
+        if let Some(n) = old_counts.get_mut(k.as_str())
+            && *n > 0
+        {
+            *n -= 1;
+            removed.push(k.clone());
         }
     }
     SnapshotDiffResult {

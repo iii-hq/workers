@@ -181,7 +181,7 @@ fn new_credential_pair(mut source: impl FnMut() -> String) -> (String, String) {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{new_credential_pair, SessionControl, SessionStatus};
+    use super::{SessionControl, SessionStatus, new_credential_pair};
 
     #[test]
     fn credential_pair_retries_duplicate_values() {
@@ -210,9 +210,11 @@ mod tests {
 
         assert_ne!(rotated.access_key, access);
         assert_ne!(rotated.reconnect_token, reconnect);
-        assert!(control
-            .attach(&reconnect, None, "owner-3", "output-3")
-            .is_err());
+        assert!(
+            control
+                .attach(&reconnect, None, "owner-3", "output-3")
+                .is_err()
+        );
     }
 
     #[test]
@@ -268,12 +270,16 @@ mod tests {
         let mut control = SessionControl::new("owner-1", "output-1");
         let reconnect = control.reconnect_token().to_string();
 
-        assert!(control
-            .attach("invalid-token", None, "owner-2", "output-2")
-            .is_err());
-        assert!(control
-            .attach(&reconnect, None, "owner-2", "output-2")
-            .is_ok());
+        assert!(
+            control
+                .attach("invalid-token", None, "owner-2", "output-2")
+                .is_err()
+        );
+        assert!(
+            control
+                .attach(&reconnect, None, "owner-2", "output-2")
+                .is_ok()
+        );
     }
 
     #[test]

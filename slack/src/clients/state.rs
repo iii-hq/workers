@@ -1,9 +1,9 @@
 //! Thin wrapper over the engine `state::*` functions (durable KV).
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::errors::Error;
+use serde_json::{Value, json};
 
 pub async fn get(iii: &IIIClient, scope: &str, key: &str, timeout_ms: u64) -> Result<Value, Error> {
     iii.call(CallRequest {

@@ -239,7 +239,7 @@ fn detection_reads_the_package_not_the_extension() {
 }
 
 fn base64_decode(encoded: &str) -> Vec<u8> {
-    use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
     STANDARD.decode(encoded).expect("valid base64")
 }

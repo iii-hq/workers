@@ -9,18 +9,18 @@ use std::sync::Arc;
 use futures::FutureExt;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{SharedConfig, WebConfig};
 use crate::fetch::execute_fetch;
-use crate::schemas::{request_schema, response_schema, FetchPayload, TOOL_DESCRIPTION};
+use crate::schemas::{FetchPayload, TOOL_DESCRIPTION, request_schema, response_schema};
 
 /// Parse + validate + execute. Always returns an envelope (never errors).
 pub async fn handle(payload: Value, cfg: &WebConfig) -> Value {
     let parsed: FetchPayload = match serde_json::from_value(payload) {
         Ok(p) => p,
         Err(e) => {
-            return json!({ "ok": false, "error": "invalid_payload", "message": e.to_string() })
+            return json!({ "ok": false, "error": "invalid_payload", "message": e.to_string() });
         }
     };
     if let Err(msg) = parsed.validate() {

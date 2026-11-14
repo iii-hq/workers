@@ -83,7 +83,7 @@ mod tests {
     use crate::handle::HandleRegistry;
     use crate::handlers::AppState;
     use crate::pool::{Pool, SqlitePool};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;

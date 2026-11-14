@@ -6,7 +6,7 @@ mod support;
 
 use judge_contract::{CancelRequest, ErrorCode, EvaluateResponse};
 use judge_laya::LayaClient;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use support::tiny_client;
 use tracing_subscriber::layer::SubscriberExt;
 

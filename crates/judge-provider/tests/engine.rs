@@ -5,16 +5,16 @@
 mod support;
 
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc,
+    atomic::{AtomicU32, Ordering},
 };
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, ObserverHandle, ObserverState, RegisterFunction};
-use judge_provider::secrets::{observe_secret_changes, Fetch, SecretCache, SecretValue};
-use serde_json::{json, Value};
-use support::{connect, Engine};
+use judge_provider::secrets::{Fetch, SecretCache, SecretValue, observe_secret_changes};
+use serde_json::{Value, json};
+use support::{Engine, connect};
 use tokio::time::timeout;
 
 const ON_CHANGE: &str = "probe::on-secret-change";

@@ -3,7 +3,7 @@
 [package]
 name = "sentinel"
 version = "0.2.4"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]
@@ -50,7 +50,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 # names one (see tests/support/postgres.rs).
 tokio-postgres = "0.7"
 bytes = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 # `test-util` lets a boot test run its retry backoff instantly instead of
 # sleeping through it.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

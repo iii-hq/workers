@@ -5,8 +5,8 @@
 //! terminal frame, stored once per generate step. Read back by
 //! `harness::metrics` and pushed on `harness::on-turn-completed`.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::sync::OnceLock;

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value as Json};
-use serde_yaml::{Mapping, Value};
+use serde_json::{Map, Value as Json, json};
+use serde_yaml_ng::{Mapping, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct EnvVar {
@@ -92,7 +92,7 @@ fn strings(value: Option<&Value>) -> Vec<String> {
 }
 
 fn entry_mapping(source: &str, container: &str) -> Result<Mapping, String> {
-    let root: Value = serde_yaml::from_str(source).map_err(|error| error.to_string())?;
+    let root: Value = serde_yaml_ng::from_str(source).map_err(|error| error.to_string())?;
     root.get("containers")
         .and_then(|containers| containers.get(container))
         .and_then(Value::as_mapping)
@@ -120,7 +120,7 @@ pub fn read_entry(source: &str, container: &str) -> Result<ContainerEntry, Strin
         .collect();
     let config_override = get("config_override")
         .filter(|value| !value.is_null())
-        .map(|value| serde_yaml::to_string(value).unwrap_or_default());
+        .map(|value| serde_yaml_ng::to_string(value).unwrap_or_default());
     Ok(ContainerEntry {
         name: container.to_string(),
         worker: get("worker").and_then(scalar).unwrap_or_default(),
@@ -208,7 +208,7 @@ pub fn container_object(source: &str, input: &EditInput) -> Result<Json, String>
         let value: Value = if text.trim().is_empty() {
             Value::Null
         } else {
-            serde_yaml::from_str(text)
+            serde_yaml_ng::from_str(text)
                 .map_err(|error| format!("INVALID_CONFIG_OVERRIDE: {error}"))?
         };
         object.insert("config_override".into(), to_json(&value)?);
@@ -307,9 +307,11 @@ containers:
             worker: Some("path:///home/me/harness-e2e-benchmarks".into()),
             ..ok
         };
-        assert!(container_object(FILE, &renamed)
-            .unwrap_err()
-            .starts_with("KEY_MISMATCH"));
+        assert!(
+            container_object(FILE, &renamed)
+                .unwrap_err()
+                .starts_with("KEY_MISMATCH")
+        );
     }
 
     #[test]
@@ -318,12 +320,16 @@ containers:
             container: "database".into(),
             ..EditInput::default()
         };
-        assert!(container_object(FILE, &empty)
-            .unwrap_err()
-            .starts_with("NOTHING_TO_CHANGE"));
-        assert!(read_entry(FILE, "nope")
-            .unwrap_err()
-            .starts_with("UNKNOWN_CONTAINER"));
+        assert!(
+            container_object(FILE, &empty)
+                .unwrap_err()
+                .starts_with("NOTHING_TO_CHANGE")
+        );
+        assert!(
+            read_entry(FILE, "nope")
+                .unwrap_err()
+                .starts_with("UNKNOWN_CONTAINER")
+        );
     }
 
     #[test]

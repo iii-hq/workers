@@ -27,7 +27,7 @@
 //! logs that once and the run continues unrecorded.
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::optional::OptionalDependency;
 use crate::wire::{assistant_message, now_ms};
@@ -433,9 +433,11 @@ mod tests {
             status_request("s1", "done", Some("stopped")),
             json!({ "session_id": "s1", "status": "done", "reason": "stopped" })
         );
-        assert!(status_request("s1", "working", None)
-            .get("reason")
-            .is_none());
+        assert!(
+            status_request("s1", "working", None)
+                .get("reason")
+                .is_none()
+        );
     }
 
     #[test]

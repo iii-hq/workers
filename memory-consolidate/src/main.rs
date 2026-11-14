@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::json;
 use tokio::sync::RwLock;
 

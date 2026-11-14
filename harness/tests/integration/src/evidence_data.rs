@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::canonical::{canonical_json, sha256_of_bytes};
-use crate::types::trace::{strip_engine_fields, TraceEvidenceV1, TraceSpanV1, TraceSummaryV1};
+use crate::types::trace::{TraceEvidenceV1, TraceSpanV1, TraceSummaryV1, strip_engine_fields};
 
 /// Everything a scenario's `verify` function may inspect.
 #[derive(Debug, Clone)]

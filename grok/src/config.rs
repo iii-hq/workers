@@ -65,14 +65,14 @@ impl Config {
     /// error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_yaml::from_str(&text)?),
+            Ok(text) => Ok(serde_yaml_ng::from_str(&text)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
     }
 
     pub fn json_schema() -> Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<Config>();
+        let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<Config>();
         serde_json::to_value(root).expect("config schema serializes")
     }
 
@@ -84,5 +84,37 @@ impl Config {
     /// by the worker; this does not re-expand).
     pub fn from_json(value: &Value) -> anyhow::Result<Config> {
         Ok(serde_json::from_value(value.clone())?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shipped_config_yaml_parses_to_the_defaults() {
+        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml")).unwrap();
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            serde_json::to_value(Config::default()).unwrap()
+        );
+    }
+
+    #[test]
+    fn yaml_overrides_round_trip() {
+        let yaml =
+            "defaults:\n  model: grok-4 # comment\n  always_approve: false\niii_context: false\n";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.defaults.model, "grok-4");
+        assert!(!cfg.defaults.always_approve);
+        assert!(!cfg.iii_context);
+        assert_eq!(cfg.grok_executable, "");
+
+        let back: Config =
+            serde_yaml_ng::from_str(&serde_yaml_ng::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&cfg).unwrap()
+        );
     }
 }

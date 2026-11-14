@@ -42,7 +42,7 @@ fn glob_matches(pattern: &str, value: &str) -> bool {
 #[test]
 fn repository_policy_keeps_console_ingress_denied_and_public_a2ui_tools_allowed() {
     let policy: PermissionFile =
-        serde_yaml::from_str(include_str!("../../iii-permissions.yaml")).unwrap();
+        serde_yaml_ng::from_str(include_str!("../../iii-permissions.yaml")).unwrap();
     for function_id in [
         "a2ui::action",
         "a2ui::binding::apply",

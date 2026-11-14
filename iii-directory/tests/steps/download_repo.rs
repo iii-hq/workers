@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use cucumber::{given, then, when};
 use iii_sdk::CallRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::world::IiiSkillsWorld;
 
@@ -150,7 +150,8 @@ impl ScopedGitConfig {
         .expect("write temporary Git config");
 
         let previous = std::env::var_os("GIT_CONFIG_GLOBAL");
-        std::env::set_var("GIT_CONFIG_GLOBAL", &config_path);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", &config_path) };
         Self { previous }
     }
 }
@@ -158,8 +159,10 @@ impl ScopedGitConfig {
 impl Drop for ScopedGitConfig {
     fn drop(&mut self) {
         match &self.previous {
-            Some(value) => std::env::set_var("GIT_CONFIG_GLOBAL", value),
-            None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            Some(value) => unsafe { std::env::set_var("GIT_CONFIG_GLOBAL", value) },
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            None => unsafe { std::env::remove_var("GIT_CONFIG_GLOBAL") },
         }
     }
 }

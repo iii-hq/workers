@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Match, Observer, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify};
 
 use crate::collector::Collector;

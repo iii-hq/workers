@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::artifacts::{write_json, ArtifactSink};
+use crate::artifacts::{ArtifactSink, write_json};
 use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::stack::EarlyExit;
 use crate::types::scenario::{Classification, ExecutionReportV1, IntegrationResultV1};

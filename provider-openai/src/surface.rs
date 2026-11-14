@@ -14,8 +14,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::openai::stream";
-pub const STREAM_DESC: &str =
-    "Stream an OpenAI response: resolve credentials, call the configured \
+pub const STREAM_DESC: &str = "Stream an OpenAI response: resolve credentials, call the configured \
      Responses or Chat Completions endpoint, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::openai::abort";
@@ -27,30 +26,25 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenAI catalog slice from GET
      reconcile it through the router; returns the model count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const EMBED_ID: &str = "provider::openai::embed";
-pub const EMBED_DESC: &str =
-    "Batch text embeddings via the OpenAI embeddings endpoint, using the router-resolved \
+pub const EMBED_DESC: &str = "Batch text embeddings via the OpenAI embeddings endpoint, using the router-resolved \
      credential. One vector per input, order preserved. Default model text-embedding-3-small.";
 
 pub const IMAGE_GENERATE_ID: &str = "provider::openai::image::generate";
-pub const IMAGE_GENERATE_DESC: &str =
-    "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare \
+pub const IMAGE_GENERATE_DESC: &str = "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare \
      (OpenAI Images API, router-resolved credential). Returns viewable content blocks \
      (image + caption) that render inline, and saves the file under data/provider-openai/images/ \
      (details.path) for other processes to pick up.";
 
 pub const IMAGE_READ_ID: &str = "provider::openai::image::read";
-pub const IMAGE_READ_DESC: &str =
-    "Read back an image saved by image::generate (its details.path or bare file name under \
+pub const IMAGE_READ_DESC: &str = "Read back an image saved by image::generate (its details.path or bare file name under \
      data/provider-openai/images/) as viewable content blocks: a JPEG preview (default, fits the \
      harness result cap) or the full bytes. Refuses any path outside that folder.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::openai::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages, response_format?} with \
      OpenAI's Responses input_tokens route, falling back to the local tiktoken tokenizers on \
      Chat Completions endpoints or when that route fails; never runs the model and costs nothing.";
 

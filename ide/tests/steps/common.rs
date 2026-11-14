@@ -7,8 +7,8 @@ use std::{
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::{protocol::CallRequest, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, protocol::CallRequest};
+use serde_json::{Value, json};
 
 use crate::common::world::CodeWorld;
 

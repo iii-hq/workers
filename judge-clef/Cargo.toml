@@ -3,7 +3,7 @@
 [package]
 name = "judge-clef"
 version = "0.3.2"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "clef provider for the judge hub: Cloudflare's Clef-Flash decision model run in-process (llama.cpp's clef arch: the Qwen3.5 backbone and the joint schema head in one graph)."

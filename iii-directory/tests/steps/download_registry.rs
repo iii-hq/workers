@@ -7,7 +7,7 @@
 
 use cucumber::{given, when};
 use iii_sdk::CallRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 

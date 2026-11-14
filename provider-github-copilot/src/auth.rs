@@ -12,7 +12,7 @@
 //!    pi's `~/.pi/agent/auth.json`. Never written back — the editor owns
 //!    its own file.
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::state;
 
@@ -39,10 +39,10 @@ fn from_apps_json(root: &Value) -> Option<String> {
 fn from_pi_auth_json(root: &Value) -> Option<String> {
     let entry = root.get("github-copilot")?;
     for key in ["oauth_token", "access_token", "token", "refresh"] {
-        if let Some(t) = entry.get(key).and_then(Value::as_str) {
-            if !t.is_empty() {
-                return Some(t.to_string());
-            }
+        if let Some(t) = entry.get(key).and_then(Value::as_str)
+            && !t.is_empty()
+        {
+            return Some(t.to_string());
         }
     }
     None
@@ -69,16 +69,16 @@ pub fn read_local_editor_credential() -> Option<String> {
         ".config/github-copilot/apps.json",
         ".config/github-copilot/hosts.json",
     ] {
-        if let Some(root) = read_json(&home.join(rel)) {
-            if let Some(t) = from_apps_json(&root) {
-                return Some(t);
-            }
-        }
-    }
-    if let Some(root) = read_json(&home.join(".pi/agent/auth.json")) {
-        if let Some(t) = from_pi_auth_json(&root) {
+        if let Some(root) = read_json(&home.join(rel))
+            && let Some(t) = from_apps_json(&root)
+        {
             return Some(t);
         }
+    }
+    if let Some(root) = read_json(&home.join(".pi/agent/auth.json"))
+        && let Some(t) = from_pi_auth_json(&root)
+    {
+        return Some(t);
     }
     None
 }
@@ -126,17 +126,17 @@ pub async fn store_oauth(iii: &IIIClient, token: &str) -> Result<(), iii_sdk::er
 /// operator has never signed in anywhere this worker can see — the caller
 /// turns that into a permanent "run provider::github-copilot::login" error.
 pub async fn resolve_credential(iii: &IIIClient) -> Option<GithubCredential> {
-    if let Ok(bearer) = std::env::var("GITHUB_COPILOT_TOKEN") {
-        if !bearer.is_empty() {
-            return Some(GithubCredential::Bearer(bearer));
-        }
+    if let Ok(bearer) = std::env::var("GITHUB_COPILOT_TOKEN")
+        && !bearer.is_empty()
+    {
+        return Some(GithubCredential::Bearer(bearer));
     }
     // Before the persisted token: an operator who sets this expects it to
     // take effect, not to be masked by an older sign-in.
-    if let Ok(oauth) = std::env::var("GITHUB_COPILOT_OAUTH_TOKEN") {
-        if !oauth.is_empty() {
-            return Some(GithubCredential::Oauth(oauth));
-        }
+    if let Ok(oauth) = std::env::var("GITHUB_COPILOT_OAUTH_TOKEN")
+        && !oauth.is_empty()
+    {
+        return Some(GithubCredential::Oauth(oauth));
     }
     if let Some(oauth) = load_stored_oauth(iii).await {
         return Some(GithubCredential::Oauth(oauth));

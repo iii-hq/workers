@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use provider_deepseek::register::register_provider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
@@ -198,7 +198,8 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
 async fn provider_registers_with_persisted_token_and_credential_gated_catalog() {
     // A real key exported on the host would leak into the in-process router's
     // env-var fallback and defeat the no-credential assertions below.
-    std::env::remove_var("DEEPSEEK_API_KEY");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     let engine = engine_or_skip!();
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 

@@ -16,14 +16,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tmux::accounts::Accounts;
 use tmux::accounts::credentials::FileStore;
 use tmux::accounts::paths::ClaudePaths;
-use tmux::accounts::Accounts;
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
 use tmux::functions::accounts::{self as account_fns, ClaudeLaunchInput};
-use tmux::functions::{self, windows, Ctx, EmptyInput};
+use tmux::functions::{self, Ctx, EmptyInput, windows};
 use tmux::model::{Follow, Pane};
 
 const TOKEN_A: &str = "sk-ant-oat01-fake-work-0000000000000000000000000000";
@@ -421,14 +421,13 @@ async fn an_idle_session_uses_the_new_account_after_a_swap() {
     // Its session record, idle: the worker sees it on the slot, following.
     let deadline = Instant::now() + Duration::from_secs(60);
     let first: Pane = loop {
-        if let Some(found) = find_pane(&ctx, &pane_id).await {
-            if found
+        if let Some(found) = find_pane(&ctx, &pane_id).await
+            && found
                 .claude
                 .as_ref()
                 .is_some_and(|c| c.session_id.is_some())
-            {
-                break found;
-            }
+        {
+            break found;
         }
         assert!(
             Instant::now() < deadline,

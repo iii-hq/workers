@@ -26,12 +26,12 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient, ObserverHandle, RegisterFunction, Source};
-use mention_contract::{format_mention, MentionRef, MentionView};
+use mention_contract::{MentionRef, MentionView, format_mention};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub use hook::{plan, pre_generate, HookResponse, Plan, PreGenerateInput};
+pub use hook::{HookResponse, Plan, PreGenerateInput, plan, pre_generate};
 use registry::{Provider, ProviderRegistry};
 use render::{DetailsCall, MentionStatus, ResolvedMention};
 
@@ -140,15 +140,15 @@ pub fn observe(iii: &IIIClient) -> ObserverHandle {
     );
     let (client, first) = (iii.clone(), handle.clone());
     tokio::spawn(async move {
-        if let Err(Error::Remote { code, .. }) = first.ready().await {
-            if matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR") {
-                // Leave no refused observer behind to show as an error.
-                let _ = first.dispose().await;
-                client.observe(
-                    Source::function(PRE_GENERATE_HOOK_FN).args(args),
-                    PRE_GENERATE_FN,
-                );
-            }
+        if let Err(Error::Remote { code, .. }) = first.ready().await
+            && matches!(code.as_str(), "INVALID_ARGS" | "CONFIG_ERROR")
+        {
+            // Leave no refused observer behind to show as an error.
+            let _ = first.dispose().await;
+            client.observe(
+                Source::function(PRE_GENERATE_HOOK_FN).args(args),
+                PRE_GENERATE_FN,
+            );
         }
     });
     tracing::info!(

@@ -8,14 +8,14 @@
 use std::sync::Arc;
 
 use iii_sdk::{CallRequest, IIIClient};
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::WorkerConfig;
 use crate::protocol::{
-    apply_messages, ensure_interactive_data_submission, validate_renderable, ServerMessage,
-    SessionState, SurfaceRecord, PROTOCOL_VERSION,
+    PROTOCOL_VERSION, ServerMessage, SessionState, SurfaceRecord, apply_messages,
+    ensure_interactive_data_submission, validate_renderable,
 };
 
 pub struct ComposeInput<'a> {

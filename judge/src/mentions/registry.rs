@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::{CallRequest, IIIClient};
 use mention_contract::MentionProvider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 const FUNCTIONS_LIST_ID: &str = "engine::functions::list";

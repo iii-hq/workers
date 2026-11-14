@@ -18,11 +18,11 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PAGE: usize = 500;
 const CALL_TIMEOUT_MS: u64 = 15_000;

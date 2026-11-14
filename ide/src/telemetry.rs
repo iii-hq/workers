@@ -23,7 +23,7 @@ use std::time::Instant;
 use iii_helpers::observability::opentelemetry::metrics::{
     Counter, Histogram, Meter, ObservableGauge,
 };
-use iii_helpers::observability::opentelemetry::{global, KeyValue};
+use iii_helpers::observability::opentelemetry::{KeyValue, global};
 use iii_sdk::errors::Error;
 use once_cell::sync::Lazy;
 use tracing::Instrument;

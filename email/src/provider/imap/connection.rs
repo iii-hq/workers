@@ -3,15 +3,15 @@
 //! pool (`mod.rs::ImapPool`). The two paths must NEVER share a session — IMAP
 //! is half-duplex once a command is in flight.
 
-use iii_sdk::{errors::Error, IIIClient};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, errors::Error};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
-use tokio_rustls::TlsConnector;
 
 use crate::config::{ImapConfig, WorkerConfig};
 use crate::events::dispatcher::EventDispatcher;

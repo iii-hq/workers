@@ -18,7 +18,7 @@ use iii_sdk::{
     CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
     WorkerIdentityMode,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -374,8 +374,8 @@ fn messages(range: std::ops::RangeInclusive<i64>) -> Vec<Value> {
 /// observer and it rejoins the group, which still handles each message once.
 #[tokio::test]
 #[serial]
-async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_member_connect_or_skip(
-) {
+async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_member_connect_or_skip()
+ {
     let namespace = format!("queue-e2e-group-{}", Uuid::new_v4());
     let Some(worker) = connect(&namespace, "queue").await else {
         return;

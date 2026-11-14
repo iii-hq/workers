@@ -64,7 +64,9 @@ mod tests {
             serde_json::from_value(json!({ "owner": "iii-hq", "limit": 10 })).unwrap();
         assert_eq!(
             list_args(&r),
-            vec!["repo", "list", "iii-hq", "--json", LIST_JSON, "--limit", "10"]
+            vec![
+                "repo", "list", "iii-hq", "--json", LIST_JSON, "--limit", "10"
+            ]
         );
     }
 }

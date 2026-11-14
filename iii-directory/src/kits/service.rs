@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::apply::{apply_plan, ApplyError, ApplyReport, ApplyTiming, DecisionInput};
+use super::apply::{ApplyError, ApplyReport, ApplyTiming, DecisionInput, apply_plan};
 use super::compose::ComposeControl;
 use super::kitref::{KitRef, VersionRef};
-use super::lock::{file_state, local_sha, FileState, KitsLock, LockedKit};
+use super::lock::{FileState, KitsLock, LockedKit, file_state, local_sha};
 use super::plan::{
-    auto_applicable, build_install_plan, build_remove_plan, build_update_plan, summary, KitsEnv,
-    LocalView, Plan, PlanContents, PlanKind,
+    KitsEnv, LocalView, Plan, PlanContents, PlanKind, auto_applicable, build_install_plan,
+    build_remove_plan, build_update_plan, summary,
 };
 use super::registry::{Deprecation, KitDetail, KitRegistry, KitVersions, UpdateQuery};
 use super::store::{self, ApplyProgress, PlanRecord};
@@ -216,7 +216,7 @@ pub async fn download_kit(
                 message: format!("{kit} {} is already installed.", locked.version),
                 plan: None,
                 report: None,
-            })
+            });
         }
         Some(locked) => {
             build_update_plan(&view, registry, locked, &detail, &requested, now).await?
@@ -362,7 +362,7 @@ async fn replan(
                         message: format!("{} {} is already installed.", old.kit, locked.version),
                         plan: None,
                         report: None,
-                    })
+                    });
                 }
                 Some(locked) => {
                     build_update_plan(&view, registry, locked, &detail, &old.requested, now).await?
@@ -506,10 +506,10 @@ pub fn read_updates(env: &KitsEnv) -> UpdatesCache {
 }
 
 fn write_updates(env: &KitsEnv, cache: &UpdatesCache) {
-    if let Ok(bytes) = serde_json::to_vec_pretty(cache) {
-        if let Err(e) = crate::sources::write_file_atomic(&env.updates_cache, &bytes) {
-            tracing::warn!(error = %e, "could not cache kit update check");
-        }
+    if let Ok(bytes) = serde_json::to_vec_pretty(cache)
+        && let Err(e) = crate::sources::write_file_atomic(&env.updates_cache, &bytes)
+    {
+        tracing::warn!(error = %e, "could not cache kit update check");
     }
 }
 
@@ -532,10 +532,10 @@ pub async fn check_updates(
             requested: l.requested.clone(),
         })
         .collect();
-    if let Some(o) = only {
-        if queries.is_empty() {
-            return Err(not_installed(o));
-        }
+    if let Some(o) = only
+        && queries.is_empty()
+    {
+        return Err(not_installed(o));
     }
     let previous = read_updates(env);
     let mut cache = UpdatesCache {
@@ -770,12 +770,11 @@ pub async fn get(
     let locked = &lock.kits[kit];
     let (_, mut file_list) = counts_for(env, locked);
     for f in &mut file_list {
-        if f.kind == "skill" {
-            if let Some(source) = super::paths::source_for_install_path(kit, &f.path) {
-                if let Some(id) = super::paths::skill_id_for_source(kit, &source) {
-                    f.id = id;
-                }
-            }
+        if f.kind == "skill"
+            && let Some(source) = super::paths::source_for_install_path(kit, &f.path)
+            && let Some(id) = super::paths::skill_id_for_source(kit, &source)
+        {
+            f.id = id;
         }
     }
     let (detail, readme) = if include_registry {

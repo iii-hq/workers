@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     error::WorkflowError,
@@ -121,10 +121,10 @@ fn normalize_request(v: &mut Value) {
     let Some(obj) = v.as_object_mut() else {
         return;
     };
-    if !obj.contains_key("definition") {
-        if let Some(w) = obj.remove("workflow") {
-            obj.insert("definition".into(), w);
-        }
+    if !obj.contains_key("definition")
+        && let Some(w) = obj.remove("workflow")
+    {
+        obj.insert("definition".into(), w);
     }
     let Some(nodes) = obj
         .get_mut("definition")
@@ -182,12 +182,12 @@ fn collect_def_problems(v: &Value) -> Vec<String> {
         ));
         return p;
     };
-    if let Some(ver) = def.get("version") {
-        if ver.as_u64() != Some(SUPPORTED_DEF_VERSION as u64) {
-            p.push(format!(
-                "`definition.version` must be {SUPPORTED_DEF_VERSION} (or omit it to default)"
-            ));
-        }
+    if let Some(ver) = def.get("version")
+        && ver.as_u64() != Some(SUPPORTED_DEF_VERSION as u64)
+    {
+        p.push(format!(
+            "`definition.version` must be {SUPPORTED_DEF_VERSION} (or omit it to default)"
+        ));
     }
     for k in def.keys() {
         if !ALLOWED_DEF_KEYS.contains(&k.as_str()) {
@@ -323,10 +323,10 @@ fn add_read_dependencies(def: &mut WorkflowDef) {
                 refs.push(rest.split('.').next().unwrap_or(rest).to_string());
             }
         }
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                refs.push(rest.split('.').next().unwrap_or(rest).to_string());
-            }
+        if let Some(fanout) = &node.fanout
+            && let Some(rest) = fanout.over.strip_prefix("node:")
+        {
+            refs.push(rest.split('.').next().unwrap_or(rest).to_string());
         }
         for r in refs {
             if !node.depends_on.contains(&r) {
@@ -443,24 +443,23 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     for (node_id, node) in &def.nodes {
         if let Some(output) = &node.agent.output {
             let is_json = output.get("type").and_then(|t| t.as_str()) == Some("json");
-            if is_json {
-                if let Some(schema) = output.get("schema") {
-                    if schema.is_object() {
-                        let has_type = schema
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .map(|t| !t.trim().is_empty())
-                            .unwrap_or(false);
-                        if !has_type {
-                            return Err(WorkflowError::InvalidDef(format!(
-                                "node '{}': agent.output is type \"json\" but its schema has no \
+            if is_json
+                && let Some(schema) = output.get("schema")
+                && schema.is_object()
+            {
+                let has_type = schema
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| !t.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_type {
+                    return Err(WorkflowError::InvalidDef(format!(
+                        "node '{}': agent.output is type \"json\" but its schema has no \
                                  top-level \"type\" — an empty/typeless schema is rejected by the \
                                  provider (\"input_schema.type: Field required\"). Use a real JSON \
                                  Schema, e.g. {{\"type\":\"object\",\"properties\":{{...}}}}.",
-                                node_id
-                            )));
-                        }
-                    }
+                        node_id
+                    )));
                 }
             }
         }
@@ -472,11 +471,11 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
 
     for node in def.nodes.values() {
         // fanout.over: "node:<dep_id>.<path...>" → extract dep_id
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                let dep_id = rest.split('.').next().unwrap_or(rest);
-                must_have_json_output.insert(dep_id.to_string());
-            }
+        if let Some(fanout) = &node.fanout
+            && let Some(rest) = fanout.over.strip_prefix("node:")
+        {
+            let dep_id = rest.split('.').next().unwrap_or(rest);
+            must_have_json_output.insert(dep_id.to_string());
         }
 
         // input.from: each "node:<dep_id>" source (One or Many) → extract dep_id
@@ -522,23 +521,23 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     // segment) fall through to the runtime guard, so this never rejects a
     // legitimate def.
     for (node_id, node) in &def.nodes {
-        if let Some(fanout) = &node.fanout {
-            if let Some(leaf_type) = fanout_over_proven_nonarray(def, &fanout.over) {
-                let dep = fanout
-                    .over
-                    .strip_prefix("node:")
-                    .and_then(|r| r.split('.').next())
-                    .unwrap_or(&fanout.over);
-                return Err(WorkflowError::InvalidDef(format!(
-                    "node '{}': fanout.over = \"{}\" resolves to a {} in node '{}'s declared \
+        if let Some(fanout) = &node.fanout
+            && let Some(leaf_type) = fanout_over_proven_nonarray(def, &fanout.over)
+        {
+            let dep = fanout
+                .over
+                .strip_prefix("node:")
+                .and_then(|r| r.split('.').next())
+                .unwrap_or(&fanout.over);
+            return Err(WorkflowError::InvalidDef(format!(
+                "node '{}': fanout.over = \"{}\" resolves to a {} in node '{}'s declared \
                      output schema, but a fanout iterates an ARRAY. Point `over` at a field that \
                      node '{}'s agent.output schema declares as {{\"type\":\"array\"}}. (To run \
                      several agents over ONE value — e.g. several critics over one draft — fan out \
                      over a list of lenses and pass the value as a separate input; don't fan out \
                      over the value itself.)",
-                    node_id, fanout.over, leaf_type, dep, dep
-                )));
-            }
+                node_id, fanout.over, leaf_type, dep, dep
+            )));
         }
     }
 
@@ -568,16 +567,16 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     // Reject it at start instead of producing a degenerate result.
     for (node_id, node) in &def.nodes {
         for src in node.input.from.sources() {
-            if let Some(rest) = src.strip_prefix("node:") {
-                if rest.contains('.') {
-                    let base = rest.split('.').next().unwrap_or(rest);
-                    return Err(WorkflowError::InvalidDef(format!(
-                        "node '{}': input.from = \"{}\" must reference a whole node result as \
+            if let Some(rest) = src.strip_prefix("node:")
+                && rest.contains('.')
+            {
+                let base = rest.split('.').next().unwrap_or(rest);
+                return Err(WorkflowError::InvalidDef(format!(
+                    "node '{}': input.from = \"{}\" must reference a whole node result as \
                          \"node:{}\" — a dotted path is only valid on fanout.over, and here it \
                          silently resolves to null at runtime. Drop the path suffix.",
-                        node_id, src, base
-                    )));
-                }
+                    node_id, src, base
+                )));
             }
         }
     }
@@ -594,10 +593,10 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
                 consumed.insert(rest.split('.').next().unwrap_or(rest));
             }
         }
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                consumed.insert(rest.split('.').next().unwrap_or(rest));
-            }
+        if let Some(fanout) = &node.fanout
+            && let Some(rest) = fanout.over.strip_prefix("node:")
+        {
+            consumed.insert(rest.split('.').next().unwrap_or(rest));
         }
         for dep in &node.depends_on {
             if !consumed.contains(dep.as_str()) {
@@ -774,11 +773,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
         })
         .collect();
 
-    if set.is_empty() {
-        None
-    } else {
-        Some(set)
-    }
+    if set.is_empty() { None } else { Some(set) }
 }
 
 /// Reject a definition that names a model with no provider registered on this

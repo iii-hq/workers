@@ -1,6 +1,6 @@
 //! Test helpers: the committed tiny GGUF (random qwen3 weights, byte vocabulary).
 #![allow(dead_code)]
-use judge_semif::{download, engine, SemifClient};
+use judge_semif::{SemifClient, download, engine};
 use std::path::PathBuf;
 
 pub fn tiny_gguf() -> PathBuf {

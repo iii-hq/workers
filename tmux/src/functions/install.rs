@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 
-use super::{register_fn, spec, Ctx, EmptyInput, FunctionSpec};
+use super::{Ctx, EmptyInput, FunctionSpec, register_fn, spec};
 use crate::install::{InstallStatus, Installer};
 
 pub const INSTALL: &str = "tmux::install";

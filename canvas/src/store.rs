@@ -27,7 +27,7 @@ use std::sync::Arc;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 /// The `state` worker scope every canvas record is stored under.

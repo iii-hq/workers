@@ -1,7 +1,7 @@
 //! Real AWS S3 round-trip. Gated on AWS_ACCESS_KEY_ID + S3_TEST_BUCKET.
 
 use std::collections::HashMap;
-use storage::backend::{factory, GetReq, PutReq};
+use storage::backend::{GetReq, PutReq, factory};
 use storage::config::{BucketConfig, ProvidersConfig, S3BucketConfig};
 
 fn require_env(name: &str) -> Option<String> {

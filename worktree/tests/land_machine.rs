@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use support::{
-    branch_sha, commit_file, create_request, git, head_sha, init_repo, make_env,
-    make_env_with_runner, test_config, FailingStore, ScriptedTestRunner, TestEnv,
+    FailingStore, ScriptedTestRunner, TestEnv, branch_sha, commit_file, create_request, git,
+    head_sha, init_repo, make_env, make_env_with_runner, test_config,
 };
 use worktree::functions::{create, land, prune};
-use worktree::land::{run_step, LandDeps};
+use worktree::land::{LandDeps, run_step};
 use worktree::state;
 use worktree::types::{LandPhase, Lifecycle};
 
@@ -93,10 +93,12 @@ async fn happy_land_via_cas_to_unchecked_branch() {
 
     assert_eq!(branch_sha(&s.repo, "trunk"), feature_sha);
     assert!(!s.wt_path.exists(), "worktree removed after land");
-    assert!(state::get_record(s.env.state.as_ref(), &s.worktree_id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        state::get_record(s.env.state.as_ref(), &s.worktree_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let porcelain = git(&s.repo, &["worktree", "list", "--porcelain"]);
     assert!(!porcelain.contains(&s.worktree_id));
     let branches = git(&s.repo, &["branch", "--list"]);
@@ -191,10 +193,11 @@ async fn prune_preserves_blocked_with_unmerged_then_reaps_integrated() {
         !out.pruned.contains(&s.worktree_id),
         "must not prune unmerged: {out:?}"
     );
-    assert!(out
-        .skipped
-        .iter()
-        .any(|k| k.id == s.worktree_id && k.reason == "unmerged work"));
+    assert!(
+        out.skipped
+            .iter()
+            .any(|k| k.id == s.worktree_id && k.reason == "unmerged work")
+    );
     assert!(s.wt_path.is_dir());
 
     let _ = git(&s.repo, &["merge", "--ff-only", &feature_sha]);

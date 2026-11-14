@@ -2,7 +2,7 @@
 //! console's TypeScript parser runs too.
 
 use mention_contract::token::MAX_ID_LEN;
-use mention_contract::{format_mention, parse_mentions, parse_prose_mentions, MentionRef};
+use mention_contract::{MentionRef, format_mention, parse_mentions, parse_prose_mentions};
 use serde::Deserialize;
 
 #[derive(Deserialize)]

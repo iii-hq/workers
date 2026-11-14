@@ -27,7 +27,7 @@ async fn bridge_invoke_forward_and_expose_roundtrip() {
     caller.register_function("e2e::bridge-target", echo_fn());
     caller.register_function("e2e::bridge-local-src", echo_fn());
 
-    let config: iii_bridge::config::BridgeConfig = serde_yaml::from_str(&format!(
+    let config: iii_bridge::config::BridgeConfig = serde_yaml_ng::from_str(&format!(
         r#"
 url: {url}
 expose:

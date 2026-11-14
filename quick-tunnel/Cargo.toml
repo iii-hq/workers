@@ -3,7 +3,7 @@
 [package]
 name = "quick-tunnel"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Lease-managed cloudflared Quick Tunnels on the iii worker mesh"
@@ -24,7 +24,7 @@ futures-util = "0.3"
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util"] }

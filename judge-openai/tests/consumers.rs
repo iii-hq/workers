@@ -2,11 +2,11 @@
 //! search, harness argument reconciliation, browser::run), checked against the
 //! exact Decisions body and against the strictest consumer reply rule.
 use judge_contract::{EvaluateRequest, EvaluateResponse};
-use judge_openai::{DecisionsClient, DEFAULT_MODEL};
-use serde_json::{json, Value};
+use judge_openai::{DEFAULT_MODEL, DecisionsClient};
+use serde_json::{Value, json};
 use wiremock::{
-    matchers::{method, path},
     Mock, MockServer, Request, ResponseTemplate,
+    matchers::{method, path},
 };
 
 /// Answers like the API: two-decimal probabilities that sum to 1.00 and the

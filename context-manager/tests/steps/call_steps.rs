@@ -3,7 +3,7 @@
 
 use cucumber::gherkin::Step;
 use cucumber::when;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::world::ContextWorld;
 use crate::steps::common_steps::docstring_payload;

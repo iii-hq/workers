@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
-use crate::source::{describe_error, Body, PdfSource};
+use crate::source::{Body, PdfSource, describe_error};
 
 pub const ID: &str = "pdf::extract-text";
 pub const DESC: &str = "Extract a PDF as plain text, with no structure recovery. Cheaper than \
@@ -60,8 +60,8 @@ mod tests {
 
     #[test]
     fn rejects_a_document_that_is_not_a_pdf() {
-        use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD as BASE64;
 
         let req = Request {
             source: PdfSource {

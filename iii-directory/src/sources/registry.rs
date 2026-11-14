@@ -28,7 +28,7 @@ use serde::Deserialize;
 use crate::functions::prompts::validate_name;
 
 use super::{
-    build_http_client, validate_relative_path, write_file_atomic, DownloadResult, SkippedAgent,
+    DownloadResult, SkippedAgent, build_http_client, validate_relative_path, write_file_atomic,
 };
 
 /// Specifier for which version of a worker's skills to pull.
@@ -200,12 +200,12 @@ pub async fn download_typed(
         .await
         .map_err(|_| "D320 registry_error: could not decode the registry response.".to_string())?;
 
-    if let Some(name) = parsed.name.as_deref() {
-        if name != worker {
-            return Err(format!(
-                "registry returned worker name {name:?}, expected {worker:?}"
-            ));
-        }
+    if let Some(name) = parsed.name.as_deref()
+        && name != worker
+    {
+        return Err(format!(
+            "registry returned worker name {name:?}, expected {worker:?}"
+        ));
     }
 
     let result = write_response(worker, parsed, skills_folder, agents_folder, kit_agents)?;
@@ -533,10 +533,12 @@ mod tests {
 
         assert_eq!(result.total_files(), 0);
         assert!(!agents.path().join("review/reviewer.md").exists());
-        assert!(!skills
-            .path()
-            .join("harness/agents/review/reviewer.md")
-            .exists());
+        assert!(
+            !skills
+                .path()
+                .join("harness/agents/review/reviewer.md")
+                .exists()
+        );
     }
 
     #[test]

@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    register_worker, Call, CallRequest, IIIClient, InitOptions, RegisterFunction, Source,
+    Call, CallRequest, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use storage::events::dispatcher::{EngineDispatcher, EventDispatcher};
 use storage::events::normalize::{EventKind, ObjectEventNormalized};
 use storage::events::object_created::ON_OBJECT_CREATED_FN;
@@ -284,7 +284,9 @@ async fn an_event_reaches_its_bucket_and_answers_whether_its_targets_acked() {
     );
     assert_eq!(
         keys(&uploads),
-        ["a.txt", "c.txt", "ack.txt", "nack.txt", "fail.txt", "slow.txt"]
+        [
+            "a.txt", "c.txt", "ack.txt", "nack.txt", "fail.txt", "slow.txt"
+        ]
     );
 
     // An event of a bucket nobody observes is acked without a call.

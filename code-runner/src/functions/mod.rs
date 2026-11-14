@@ -19,21 +19,18 @@ pub const RUN_ID: &str = "code-runner::run";
 /// Contract essentials only — the injected harness guidance
 /// (`inject_guidance`) teaches the full surface, and every extra byte here
 /// is paid on each catalog read.
-pub const RUN_DESC: &str =
-    "Run code in a sandbox (no network, host filesystem or packages). One-shot by default: \
+pub const RUN_DESC: &str = "Run code in a sandbox (no network, host filesystem or packages). One-shot by default: \
      nothing persists and no runtime_id is returned. keep: true keeps the runtime and returns \
      its runtime_id to reuse until code-runner::teardown or the idle TTL reaps it. A failing \
      script is a response, not an error.";
 
 pub const TEARDOWN_ID: &str = "code-runner::teardown";
-pub const TEARDOWN_DESC: &str =
-    "Destroy a runtime: unregister its bus functions, kill it and free its slot. Pass exactly \
+pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister its bus functions, kill it and free its slot. Pass exactly \
      one of runtime_id (from a keep: true run) or namespace (a register_function namespace, \
      e.g. \"app\" for app::greet).";
 
 pub const REGISTER_ID: &str = "code-runner::register_function";
-pub const REGISTER_DESC: &str =
-    "Publish a bus function whose handler runs in a sandbox; no runtime_id needed. source \
+pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a sandbox; no runtime_id needed. source \
      must define handler(payload) in lang; each call runs it and returns its JSON result. The \
      namespace (function_id before `::`) shares one runtime per lang; its functions stop \
      resolving once torn down or idle-reaped.";

@@ -9,7 +9,7 @@
 
 mod support;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use support::engine::{fixture_path, with_stack};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -173,10 +173,12 @@ async fn regions_read_the_box_and_state_the_opposite_origin() {
         assert_eq!(out["region_count"], json!(1));
         let pages = out["pages"].as_array().expect("pages array");
         assert_eq!(pages[0]["page"], json!(1));
-        assert!(pages[0]["regions"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Quarterly Report"));
+        assert!(
+            pages[0]["regions"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Quarterly Report")
+        );
     })
     .await;
 }

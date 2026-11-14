@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use github::webhooks::{
-    listeners::{listens, orphaned, stale},
     Data, EventFilter, Subscriber, Watch, WatchRequest, WatchState,
+    listeners::{listens, orphaned, stale},
 };
 use serde_json::json;
 

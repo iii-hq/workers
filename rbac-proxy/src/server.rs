@@ -9,8 +9,8 @@
 //! CatalogCache), the live-connection gauge, and the actually-bound address
 //! (the source of truth `rbac-proxy::status` reports).
 
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -23,7 +23,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::configuration::ConfigCell;
 use crate::engine_overrides::CatalogCache;

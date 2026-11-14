@@ -9,8 +9,7 @@ use serde_json::Value;
 
 pub const CONFIG_ID: &str = "secrets";
 pub const CONFIG_NAME: &str = "Secrets";
-pub const CONFIG_DESCRIPTION: &str =
-    "Where the encrypted vault lives, optionally the master key file (which must live outside the project), and the env file env:// references read.";
+pub const CONFIG_DESCRIPTION: &str = "Where the encrypted vault lives, optionally the master key file (which must live outside the project), and the env file env:// references read.";
 pub const DEFAULT_DATA_DIR: &str = "data/secrets";
 pub const DEFAULT_ENV_FILE: &str = ".env";
 

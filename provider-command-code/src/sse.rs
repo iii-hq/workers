@@ -1,8 +1,8 @@
 use crate::errors::classify;
 use crate::request::WireDialect;
-use crate::{now_ms, PROVIDER_ID};
+use crate::{PROVIDER_ID, now_ms};
 use llm_router::provider_scaffold::names::decode_tool_name;
-use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
+use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -247,13 +247,13 @@ fn handle_chat_block(
     }
 
     let mut events = Vec::new();
-    if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object()) {
-        if merge_chat_usage(usage, &mut state.usage) {
-            state.usage_seen = true;
-            events.push(AssistantMessageEvent::Usage {
-                usage: state.usage.clone(),
-            });
-        }
+    if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object())
+        && merge_chat_usage(usage, &mut state.usage)
+    {
+        state.usage_seen = true;
+        events.push(AssistantMessageEvent::Usage {
+            usage: state.usage.clone(),
+        });
     }
     let Some(choice) = chunk.pointer("/choices/0") else {
         return events;
@@ -278,21 +278,21 @@ fn handle_chat_block(
                 delta: reasoning.to_string(),
             });
         }
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                if state.open != Some(ChatOpen::Text) {
-                    state.close_open(model, &mut events);
-                    state.open = Some(ChatOpen::Text);
-                    events.push(AssistantMessageEvent::TextStart {
-                        partial: state.partial(model),
-                    });
-                }
-                state.text.push_str(text);
-                events.push(AssistantMessageEvent::TextDelta {
-                    partial: None,
-                    delta: text.to_string(),
+        if let Some(text) = delta.get("content").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            if state.open != Some(ChatOpen::Text) {
+                state.close_open(model, &mut events);
+                state.open = Some(ChatOpen::Text);
+                events.push(AssistantMessageEvent::TextStart {
+                    partial: state.partial(model),
                 });
             }
+            state.text.push_str(text);
+            events.push(AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: text.to_string(),
+            });
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
@@ -484,13 +484,13 @@ fn handle_anthropic_block(
     let mut events = Vec::new();
     match event_type {
         "message_start" => {
-            if let Some(usage) = parsed.pointer("/message/usage") {
-                if merge_anthropic_usage(usage, &mut state.usage) {
-                    state.usage_seen = true;
-                    events.push(AssistantMessageEvent::Usage {
-                        usage: state.usage.clone(),
-                    });
-                }
+            if let Some(usage) = parsed.pointer("/message/usage")
+                && merge_anthropic_usage(usage, &mut state.usage)
+            {
+                state.usage_seen = true;
+                events.push(AssistantMessageEvent::Usage {
+                    usage: state.usage.clone(),
+                });
             }
         }
         "content_block_start" => {
@@ -650,13 +650,13 @@ fn handle_anthropic_block(
                 state.stop_reason = anthropic_stop_reason(reason);
                 state.native_stop_reason = Some(reason.to_string());
             }
-            if let Some(usage) = parsed.get("usage") {
-                if merge_anthropic_usage(usage, &mut state.usage) {
-                    state.usage_seen = true;
-                    events.push(AssistantMessageEvent::Usage {
-                        usage: state.usage.clone(),
-                    });
-                }
+            if let Some(usage) = parsed.get("usage")
+                && merge_anthropic_usage(usage, &mut state.usage)
+            {
+                state.usage_seen = true;
+                events.push(AssistantMessageEvent::Usage {
+                    usage: state.usage.clone(),
+                });
             }
         }
         "message_stop" => {
@@ -771,28 +771,33 @@ mod tests {
     #[test]
     fn missing_usage_stays_absent_for_both_dialects() {
         for dialect in [WireDialect::ChatCompletions, WireDialect::AnthropicMessages] {
-            assert!(DecoderState::new(dialect, vec![])
-                .partial("m")
-                .usage
-                .is_none());
+            assert!(
+                DecoderState::new(dialect, vec![])
+                    .partial("m")
+                    .usage
+                    .is_none()
+            );
         }
     }
 
     #[test]
     fn empty_usage_objects_stay_absent_for_both_dialects() {
         let mut chat = DecoderState::new(WireDialect::ChatCompletions, vec![]);
-        assert!(chat
-            .handle_block("data: {\"choices\":[],\"usage\":{}}\n\n", "m")
-            .is_empty());
+        assert!(
+            chat.handle_block("data: {\"choices\":[],\"usage\":{}}\n\n", "m")
+                .is_empty()
+        );
         assert!(chat.partial("m").usage.is_none());
 
         let mut anthropic = DecoderState::new(WireDialect::AnthropicMessages, vec![]);
-        assert!(anthropic
-            .handle_block(
-                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
-                "m",
-            )
-            .is_empty());
+        assert!(
+            anthropic
+                .handle_block(
+                    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n",
+                    "m",
+                )
+                .is_empty()
+        );
         assert!(anthropic.partial("m").usage.is_none());
     }
 

@@ -7,8 +7,8 @@
 //! channel payload (like `mcp::handler`) and are operator-only ingress, so they
 //! are not part of this agent-facing typed catalog.
 
-use schemars::schema::RootSchema;
 use schemars::JsonSchema;
+use schemars::schema::RootSchema;
 
 use crate::functions::admin::{ConfigStatus, ConfigStatusReq};
 use crate::functions::bindings::BindingAck;
@@ -28,7 +28,7 @@ pub struct FunctionSpec {
 }
 
 fn schema_of<T: JsonSchema>() -> RootSchema {
-    schemars::gen::SchemaSettings::draft07()
+    schemars::r#gen::SchemaSettings::draft07()
         .into_generator()
         .into_root_schema_for::<T>()
 }

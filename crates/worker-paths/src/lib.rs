@@ -65,10 +65,10 @@ fn resolve_path_with(
             .unwrap_or_else(|| configured.to_path_buf());
     }
 
-    if let Ok(relative_to_home) = configured.strip_prefix("~") {
-        if let Some(home_dir) = home_dir {
-            return home_dir.join(relative_to_home);
-        }
+    if let Ok(relative_to_home) = configured.strip_prefix("~")
+        && let Some(home_dir) = home_dir
+    {
+        return home_dir.join(relative_to_home);
     }
 
     project_path_with(configured, compose_dir, current_dir)

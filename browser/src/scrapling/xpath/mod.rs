@@ -87,9 +87,11 @@ mod tests {
             values(xpath_query(&doc, None, "//p/ancestor::*[1]/@id").unwrap()),
             ["s"]
         );
-        assert!(xpath_query(&doc, None, "boolean(//nope)")
-            .unwrap()
-            .is_empty());
+        assert!(
+            xpath_query(&doc, None, "boolean(//nope)")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             xpath_query(&doc, None, "boolean(//p)").unwrap_err(),
             "'bool' object is not iterable"

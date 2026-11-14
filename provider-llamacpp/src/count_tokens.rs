@@ -19,21 +19,21 @@
 //!
 //! Exposed behind `router::count_tokens`.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::endpoint_count::{post_count, ESTIMATOR_METERED};
+use llm_router::provider_scaffold::endpoint_count::{ESTIMATOR_METERED, post_count};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::{build_body, build_headers, enable_thinking, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers, enable_thinking};
 use crate::state;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
@@ -314,8 +314,7 @@ mod tests {
         (format!("http://{addr}/v1/chat/completions"), handle)
     }
 
-    const NOT_FOUND: &str =
-        "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\ncontent-length: 14\r\n\r\nFile Not Found";
+    const NOT_FOUND: &str = "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\ncontent-length: 14\r\n\r\nFile Not Found";
 
     #[test]
     fn the_count_body_is_the_chat_body_without_the_generation_knobs() {

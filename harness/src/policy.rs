@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::types::content::ContentBlock;
 use crate::types::message::AssistantMessage;
@@ -385,10 +385,10 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
             // arguments.
             if let Value::Object(p) = &mut payload {
                 for marker in ["_partial", "_raw", "_invalid"] {
-                    if let Some(v) = arguments.get(marker) {
-                        if !p.contains_key(marker) {
-                            p.insert(marker.to_string(), v.clone());
-                        }
+                    if let Some(v) = arguments.get(marker)
+                        && !p.contains_key(marker)
+                    {
+                        p.insert(marker.to_string(), v.clone());
                     }
                 }
             }
@@ -672,7 +672,7 @@ mod tests {
     }
 
     use crate::types::content::ContentBlock;
-    use crate::types::message::{empty_assistant, AssistantMessage};
+    use crate::types::message::{AssistantMessage, empty_assistant};
     use serde_json::json;
 
     fn assistant_with(calls: Vec<ContentBlock>) -> AssistantMessage {
@@ -771,9 +771,11 @@ mod tests {
         assert_eq!(description["type"], "string");
         assert_eq!(description["minLength"], 1);
         assert_eq!(description["maxLength"], 120);
-        assert!(schema.parameters["required"]
-            .as_array()
-            .is_some_and(|required| required.contains(&json!("description"))));
+        assert!(
+            schema.parameters["required"]
+                .as_array()
+                .is_some_and(|required| required.contains(&json!("description")))
+        );
     }
 
     #[test]
@@ -868,18 +870,22 @@ mod tests {
         let args = &calls[0].arguments;
         assert_eq!(args["key"], "a");
         assert_eq!(args["_partial"], true);
-        assert!(args["_invalid"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("after the root value"));
+        assert!(
+            args["_invalid"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("after the root value")
+        );
         assert_eq!(
             args["_invalid"]["offset"],
             payload.find("},\"loose").unwrap() + 1
         );
-        assert!(args["_invalid"]["context"]
-            .as_str()
-            .unwrap()
-            .ends_with("\"loose_ends\":[\"l\"]}"));
+        assert!(
+            args["_invalid"]["context"]
+                .as_str()
+                .unwrap()
+                .ends_with("\"loose_ends\":[\"l\"]}")
+        );
         assert!(crate::call::arguments_degraded(args));
 
         // Whitespace between the object and the text: the offset and the

@@ -27,7 +27,7 @@ pub async fn build(opts: R2BackendOpts, bucket: String) -> Result<Arc<dyn Backen
             return Err(BackendError::Provider {
                 inner_code: Some("CONFIG".into()),
                 message: "`account_id` is not a Cloudflare account id (32 hex characters)".into(),
-            })
+            });
         }
     };
     if opts.endpoint_url.is_some() && !opts.fast_fail {

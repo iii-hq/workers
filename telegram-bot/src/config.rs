@@ -298,7 +298,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let raw: WorkerConfigRaw =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         Ok(raw.into())
     }
 
@@ -540,8 +540,7 @@ mod tests {
 
     #[test]
     fn parses_webhook_adapter() {
-        let yaml =
-            "updates:\n  name: webhook\n  config:\n    base_url: https://engine.example\n    secret: s";
+        let yaml = "updates:\n  name: webhook\n  config:\n    base_url: https://engine.example\n    secret: s";
         let cfg = WorkerConfig::from_yaml(yaml).unwrap();
         let UpdatesAdapter::Webhook(w) = cfg.updates else {
             panic!("expected webhook");

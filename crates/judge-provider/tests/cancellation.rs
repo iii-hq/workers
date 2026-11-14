@@ -19,9 +19,11 @@ async fn duplicate_ids_stay_reserved_until_the_guard_is_dropped() {
     drop(guard);
     assert_eq!(registry.cancel(Some("owner"), "request"), Ok(false));
     let mut replacement = registry.start(Some("owner"), Some("request")).unwrap();
-    assert!(timeout(Duration::from_millis(20), replacement.cancelled())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(20), replacement.cancelled())
+            .await
+            .is_err()
+    );
     assert_eq!(registry.cancel(Some("owner"), "request"), Ok(true));
     timeout(Duration::from_secs(1), replacement.cancelled())
         .await
@@ -41,9 +43,11 @@ async fn cancellation_is_isolated_by_exact_caller_and_request_id() {
         .await
         .unwrap();
     for guard in [&mut second, &mut other] {
-        assert!(timeout(Duration::from_millis(20), guard.cancelled())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(20), guard.cancelled())
+                .await
+                .is_err()
+        );
     }
     drop(first);
     assert_eq!(registry.cancel(Some("second"), "shared"), Ok(true));
@@ -69,9 +73,11 @@ async fn cancellation_before_waiting_is_persistent_across_waits() {
 async fn cancellation_wakes_an_existing_waiter_after_an_abandoned_wait() {
     let registry = Arc::new(CancellationRegistry::default());
     let mut guard = registry.start(Some("owner"), Some("request")).unwrap();
-    assert!(timeout(Duration::from_millis(20), guard.cancelled())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(20), guard.cancelled())
+            .await
+            .is_err()
+    );
     let waiting = tokio::spawn(async move { guard.cancelled().await });
     tokio::task::yield_now().await;
     assert_eq!(registry.cancel(Some("owner"), "request"), Ok(true));
@@ -88,9 +94,11 @@ async fn unidentified_calls_need_no_caller_and_never_cancel() {
     for caller in [None, Some(""), Some(" "), Some("owner")] {
         let mut guard = registry.start(caller, None).unwrap();
         assert_eq!(registry.cancel(Some("owner"), "request"), Ok(false));
-        assert!(timeout(Duration::from_millis(20), guard.cancelled())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(20), guard.cancelled())
+                .await
+                .is_err()
+        );
     }
 }
 

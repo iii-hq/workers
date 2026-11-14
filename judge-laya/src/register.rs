@@ -1,12 +1,12 @@
 //! Typed bus registration: `judge-laya::evaluate`, `::models::list`, `::cancel`.
 use crate::{client::LayaClient, configuration::SharedConfig};
 use iii_llama_runtime::ModelSlot;
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
     ModelsResponse, Stats,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Handlers snapshot config once per call and take the model from `slot`,
@@ -78,7 +78,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, slot: Arc<ModelSlot<LayaC
                         provider_error: None,
                         retry_after_ms: None,
                         stats: Stats::default(),
-                    })
+                    });
                 }
             };
             let client = match slot

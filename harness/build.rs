@@ -153,11 +153,7 @@ fn git_sha(crate_dir: &Path) -> String {
     let mut status = vec!["--no-optional-locks", "status", "--porcelain", "--", "."];
     status.extend(OUTSIDE_SOURCES);
     let dirty = git(crate_dir, &status).is_none_or(|changes| !changes.is_empty());
-    if dirty {
-        format!("{head}-dirty")
-    } else {
-        head
-    }
+    if dirty { format!("{head}-dirty") } else { head }
 }
 
 /// Trimmed stdout of `git <args>` run in `dir`; `None` when git is missing or

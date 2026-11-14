@@ -6,14 +6,14 @@
 //! provider protocol's embedding surface. Fully local: no cloud, no
 //! credential unless the server was started with `--api-key`.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{config_from_resolve, ConfigError};
+use crate::config::{ConfigError, config_from_resolve};
 use crate::errors::{classify, classify_bus_error};
 use crate::state;
 

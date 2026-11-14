@@ -1387,7 +1387,7 @@ async fn run_manager(
                 return Err(Failure::new(
                     format!("{} couldn't install tmux.", method.name()),
                     reason,
-                ))
+                ));
             }
         }
     }
@@ -1763,10 +1763,11 @@ mod tests {
         for tools in [&["apt-get"][..], &["apt-get", "sudo"][..]] {
             let plan = plan(&host("linux", "x86_64", false, false, tools));
             assert_eq!(methods(&plan), vec![InstallMethod::Prebuilt]);
-            assert!(plan
-                .notes
-                .iter()
-                .any(|note| note.contains("apt-get needs root")));
+            assert!(
+                plan.notes
+                    .iter()
+                    .any(|note| note.contains("apt-get needs root"))
+            );
         }
     }
 
@@ -1851,7 +1852,9 @@ mod tests {
             let prebuilt = prebuilt_of(&plan);
             assert_eq!(
                 prebuilt.url,
-                format!("https://github.com/tmux/tmux-builds/releases/download/v3.7c/tmux-3.7c-{platform}.tar.gz")
+                format!(
+                    "https://github.com/tmux/tmux-builds/releases/download/v3.7c/tmux-3.7c-{platform}.tar.gz"
+                )
             );
             assert!(prebuilt.sha256.starts_with(sha), "{platform}");
             assert_eq!(prebuilt.sha256.len(), 64, "{platform}");
@@ -1868,13 +1871,17 @@ mod tests {
         );
         assert_eq!(
             commands(&plan),
-            vec!["HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 /t/brew install tmux"]
+            vec![
+                "HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 /t/brew install tmux"
+            ]
         );
         // Even with sudo at hand.
         let plan = super::plan(&host("macos", "aarch64", false, true, &["brew", "sudo"]));
         assert_eq!(
             commands(&plan),
-            vec!["HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 /t/brew install tmux"]
+            vec![
+                "HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1 NONINTERACTIVE=1 /t/brew install tmux"
+            ]
         );
     }
 
@@ -1936,16 +1943,20 @@ mod tests {
         assert!(user.attempts.is_empty());
         assert_eq!(
             user.otherwise.as_deref(),
-            Some("There's no ready-made tmux for this processor, and installing it needs an administrator. Ask one to run: sudo apt-get install -y tmux")
+            Some(
+                "There's no ready-made tmux for this processor, and installing it needs an administrator. Ask one to run: sudo apt-get install -y tmux"
+            )
         );
 
         let nothing = plan(&host("linux", "arm", false, false, &[]));
         assert!(nothing.attempts.is_empty());
-        assert!(nothing
-            .otherwise
-            .as_deref()
-            .unwrap()
-            .contains("Ask an administrator to install tmux"));
+        assert!(
+            nothing
+                .otherwise
+                .as_deref()
+                .unwrap()
+                .contains("Ask an administrator to install tmux")
+        );
     }
 
     #[test]
@@ -1954,21 +1965,25 @@ mod tests {
         bare.home = None;
         let plan_alone = plan(&bare);
         assert!(plan_alone.attempts.is_empty());
-        assert!(plan_alone
-            .otherwise
-            .as_deref()
-            .unwrap()
-            .starts_with("HOME isn't set"));
+        assert!(
+            plan_alone
+                .otherwise
+                .as_deref()
+                .unwrap()
+                .starts_with("HOME isn't set")
+        );
 
         let mut root = host("linux", "x86_64", true, false, &["dnf"]);
         root.home = None;
         let with_manager = plan(&root);
         assert_eq!(methods(&with_manager), vec![InstallMethod::Dnf]);
-        assert!(with_manager
-            .otherwise
-            .as_deref()
-            .unwrap()
-            .starts_with("dnf couldn't install tmux, and HOME isn't set"));
+        assert!(
+            with_manager
+                .otherwise
+                .as_deref()
+                .unwrap()
+                .starts_with("dnf couldn't install tmux, and HOME isn't set")
+        );
     }
 
     #[test]
@@ -2512,9 +2527,11 @@ mod tests {
         assert_eq!(path, "/found/tmux");
         let lines = progress.lines();
         assert!(lines.contains(&"broken".to_string()));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("apt couldn't install tmux.")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("apt couldn't install tmux."))
+        );
         assert!(lines.contains(&"apt didn't work, trying the official build next.".to_string()));
         let _ = std::fs::remove_dir_all(home);
     }
@@ -2539,10 +2556,12 @@ mod tests {
         };
         let (method, ..) = execute(&plan, &progress, verify).await.unwrap();
         assert_eq!(method, InstallMethod::Prebuilt);
-        assert!(progress
-            .lines()
-            .iter()
-            .any(|line| line.contains("tmux doesn't resolve after dnf: not found")));
+        assert!(
+            progress
+                .lines()
+                .iter()
+                .any(|line| line.contains("tmux doesn't resolve after dnf: not found"))
+        );
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -2642,10 +2661,12 @@ mod tests {
             error,
             "tmux is installed at /usr/bin/tmux, but it can't start on this computer."
         );
-        assert!(progress
-            .lines()
-            .iter()
-            .any(|line| line.contains("couldn't create directory /run/tmux/0")));
+        assert!(
+            progress
+                .lines()
+                .iter()
+                .any(|line| line.contains("couldn't create directory /run/tmux/0"))
+        );
         // The official build would never be picked over it.
         assert!(!home.join(".local").exists());
         let _ = std::fs::remove_dir_all(home);
@@ -2671,9 +2692,11 @@ mod tests {
             .unwrap();
         assert_eq!(method, InstallMethod::Dnf);
         assert_eq!(path, "/found/tmux");
-        assert!(progress
-            .lines()
-            .contains(&"dnf said it failed, but tmux works.".to_string()));
+        assert!(
+            progress
+                .lines()
+                .contains(&"dnf said it failed, but tmux works.".to_string())
+        );
         // No second tmux that `PATH` would never pick.
         assert!(!home.join(".local").exists());
         let _ = std::fs::remove_dir_all(home);
@@ -2792,9 +2815,11 @@ mod tests {
         };
         execute(&plan, &progress, verify).await.unwrap_err();
         let lines = progress.lines();
-        assert!(lines
-            .iter()
-            .all(|line| line.chars().count() <= MAX_LINE_CHARS + 1 && !line.contains('\x1b')));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.chars().count() <= MAX_LINE_CHARS + 1 && !line.contains('\x1b'))
+        );
         assert!(lines.contains(&"the next line".to_string()), "{lines:?}");
     }
 

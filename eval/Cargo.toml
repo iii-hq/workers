@@ -3,7 +3,7 @@
 [package]
 name = "eval"
 version = "0.3.4"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]
@@ -31,7 +31,7 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 futures-util = "0.3"

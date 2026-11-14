@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
 use serde_json::json;
 use tokio::sync::OnceCell;
 

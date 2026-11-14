@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::{CallRequest, IIIClient};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -73,7 +73,7 @@ fn native_driver(
     cfg: &crate::config::WorkerConfig,
     monitor: Option<u32>,
 ) -> Result<Arc<dyn Driver>, String> {
-    use crate::driver::native::{detect, Desktop, WAYLAND};
+    use crate::driver::native::{Desktop, WAYLAND, detect};
     Ok(match detect()? {
         Desktop::X11 => Arc::new(crate::driver::NativeHost::new(
             cfg.max_screenshot_dimension as u32,
@@ -1009,14 +1009,18 @@ mod tests {
             !viewers.for_observer("v2").is_empty()
         })
         .await;
-        assert!(viewers
-            .for_observer("v1")
-            .iter()
-            .all(|p| p["session_id"] == "c1"));
-        assert!(viewers
-            .for_observer("v2")
-            .iter()
-            .all(|p| p["session_id"] == "c2"));
+        assert!(
+            viewers
+                .for_observer("v1")
+                .iter()
+                .all(|p| p["session_id"] == "c1")
+        );
+        assert!(
+            viewers
+                .for_observer("v2")
+                .iter()
+                .all(|p| p["session_id"] == "c2")
+        );
         // Within one viewer, revisions only move forward.
         let seqs: Vec<u64> = viewers
             .for_observer("v1")
@@ -1137,7 +1141,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_closes_the_semantic_layer() {
-        use crate::semantic::{fake::FakeTree, Code, Query, Scope, SemanticSession};
+        use crate::semantic::{Code, Query, Scope, SemanticSession, fake::FakeTree};
         let tree = Arc::new(FakeTree::new("App", 1));
         let notifier = FrameNotifier::detached();
         let (s, _) = crate::test_support::session_on(
@@ -1180,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_a_session_never_waits_for_the_shared_desktop() {
-        use crate::semantic::{fake::FakeTree, SemanticSession};
+        use crate::semantic::{SemanticSession, fake::FakeTree};
         let lock = Arc::new(Mutex::new(()));
         let tree = Arc::new(FakeTree::new("App", 1));
         let (s1, _) = crate::test_support::session_sharing("c1", lock.clone(), None);

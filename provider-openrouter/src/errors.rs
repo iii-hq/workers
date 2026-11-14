@@ -15,10 +15,10 @@ use serde_json::Value;
 /// Map an OpenRouter HTTP status + error body to the shared taxonomy.
 /// `None` status = the request never got a response (connect/read failure).
 pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
-    if let Ok(v) = serde_json::from_str::<Value>(message) {
-        if let Some(kind) = classify_envelope(&v, status) {
-            return kind;
-        }
+    if let Ok(v) = serde_json::from_str::<Value>(message)
+        && let Some(kind) = classify_envelope(&v, status)
+    {
+        return kind;
     }
     classify_status(status, message)
 }
@@ -69,7 +69,7 @@ fn classify_envelope(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
         // A quota wall is billing, not a rate limit: backoff cannot fix it.
         "insufficient_quota" | "insufficient_credits" => return Some(ErrorKind::Permanent),
         "invalid_api_key" | "invalid_authentication_error" | "account_deactivated" => {
-            return Some(ErrorKind::AuthExpired)
+            return Some(ErrorKind::AuthExpired);
         }
         _ => {}
     }

@@ -4,8 +4,8 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: LazyLock<AtomicU64> =
     LazyLock::new(|| AtomicU64::new(RandomState::new().hash_one(0u8) >> 16));
@@ -38,9 +38,11 @@ mod tests {
         let b = next_ref();
         assert_ne!(a, b);
         assert!(a.starts_with('e') && a.len() <= 12, "{a}");
-        assert!(a[1..]
-            .chars()
-            .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()));
+        assert!(
+            a[1..]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
+        );
         assert_eq!(base36(0), "0");
         assert_eq!(base36(35), "z");
         assert_eq!(base36(36), "10");

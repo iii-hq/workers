@@ -9,9 +9,9 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::permissions::{default_rule_specs, parse_rules_from_config, Permissions, RuleSpec};
+use crate::permissions::{Permissions, RuleSpec, default_rule_specs, parse_rules_from_config};
 use crate::types::PermissionMode;
 
 /// The shipped permission rules as a JSON array of shorthand strings — the
@@ -144,7 +144,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -257,31 +257,31 @@ mod tests {
 
     #[test]
     fn partial_yaml_fills_grant_reask_limit_default() {
-        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("default_mode: auto\n").unwrap();
         assert_eq!(cfg.grant_reask_limit, 3);
     }
 
     #[test]
     fn grant_reask_limit_is_configurable() {
-        let cfg: WorkerConfig = serde_yaml::from_str("grant_reask_limit: 5\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("grant_reask_limit: 5\n").unwrap();
         assert_eq!(cfg.grant_reask_limit, 5);
     }
 
     #[test]
     fn defaults_from_empty_object() {
-        let from_yaml: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(from_yaml, WorkerConfig::default());
     }
 
     #[test]
     fn partial_yaml_fills_defaults() {
-        let cfg: WorkerConfig = serde_yaml::from_str("default_mode: auto\n").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("default_mode: auto\n").unwrap();
         assert_eq!(cfg.default_mode, PermissionMode::Auto);
     }
 
     #[test]
     fn unknown_root_key_is_rejected() {
-        let res: Result<WorkerConfig, _> = serde_yaml::from_str("sweep_scheduel: \"x\"\n");
+        let res: Result<WorkerConfig, _> = serde_yaml_ng::from_str("sweep_scheduel: \"x\"\n");
         assert!(res.is_err());
     }
 
@@ -372,9 +372,11 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var_in_rules() {
-        std::env::set_var("APPROVAL_GATE_TEST_RULE", "state::get");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("APPROVAL_GATE_TEST_RULE", "state::get") };
         let cfg = WorkerConfig::from_yaml("rules:\n  - \"${APPROVAL_GATE_TEST_RULE}\"\n").unwrap();
         assert_eq!(cfg.rules, vec![json!("state::get")]);
-        std::env::remove_var("APPROVAL_GATE_TEST_RULE");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("APPROVAL_GATE_TEST_RULE") };
     }
 }

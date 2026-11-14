@@ -136,11 +136,11 @@ pub fn map_iii_err<E>(err: &Error, make: impl Fn(&'static str, String) -> E) -> 
             }
         }
         Error::Handler(s) => {
-            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-                if let Some(c) = parsed.get("code").and_then(|v| v.as_str()) {
-                    let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    return make(map_static_code(c), format!("forwarded from engine: {msg}"));
-                }
+            if let Ok(parsed) = serde_json::from_str::<Value>(s)
+                && let Some(c) = parsed.get("code").and_then(|v| v.as_str())
+            {
+                let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                return make(map_static_code(c), format!("forwarded from engine: {msg}"));
             }
             if let Some(c) = scan_s_code(s) {
                 return make(

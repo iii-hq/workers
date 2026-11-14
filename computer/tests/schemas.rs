@@ -13,7 +13,7 @@
 
 mod support;
 
-use computer::functions::{catalog, FunctionSpec};
+use computer::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))
@@ -99,8 +99,8 @@ fn every_function_has_typed_request_and_response_schemas() {
 #[test]
 fn event_functions_match_golden() {
     use computer::events::{
-        ActivityEvent, SessionStartedEvent, SessionStoppedEvent, ACTIVITY_DESC, ON_ACTIVITY_FN,
-        ON_SESSION_STARTED_FN, ON_SESSION_STOPPED_FN, SESSION_STARTED_DESC, SESSION_STOPPED_DESC,
+        ACTIVITY_DESC, ActivityEvent, ON_ACTIVITY_FN, ON_SESSION_STARTED_FN, ON_SESSION_STOPPED_FN,
+        SESSION_STARTED_DESC, SESSION_STOPPED_DESC, SessionStartedEvent, SessionStoppedEvent,
     };
     use computer::frames::{FrameArgs, FrameChange, ON_FRAME_CHANGED_DESC, ON_FRAME_CHANGED_FN};
 

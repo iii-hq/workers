@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -21,16 +21,16 @@ use tokio_util_compat::CancellationToken;
 
 use crate::agent_feed::{emit_agent_event, emit_raw_event};
 use crate::config::Config;
-use crate::functions::types::{extract_prompt, RunRequest};
+use crate::functions::types::{RunRequest, extract_prompt};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
 use crate::state::{load_session, save_session};
-use crate::wire::{assistant_message, now_ms, ContentBlock, SessionRecord, Status};
+use crate::wire::{ContentBlock, SessionRecord, Status, assistant_message, now_ms};
 use events_types::GrokEvent;
 
 /// A minimal cancellation token (avoids pulling tokio-util just for this).
 mod tokio_util_compat {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Clone, Default)]
     pub struct CancellationToken(Arc<AtomicBool>);
@@ -201,12 +201,13 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     release(&session_id).await;
 
     // On error with no result text, surface the captured stderr tail.
-    if outcome.is_error && outcome.result_text.is_empty() {
-        if let Ok(tail) = stderr_tail.await {
-            let tail = tail.trim();
-            if !tail.is_empty() {
-                outcome.result_text = tail.chars().take(2000).collect();
-            }
+    if outcome.is_error
+        && outcome.result_text.is_empty()
+        && let Ok(tail) = stderr_tail.await
+    {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            outcome.result_text = tail.chars().take(2000).collect();
         }
     }
 
@@ -318,11 +319,9 @@ async fn stream_turn(
         let had_thread = state.thread_id.is_some();
         let frames = translate::step(&mut state, event);
         // persist the thread id the first time it appears (enables resume)
-        if !had_thread {
-            if let Some(tid) = &state.thread_id {
-                record.grok_thread_id = Some(tid.clone());
-                let _ = save_session(iii, record).await;
-            }
+        if !had_thread && let Some(tid) = &state.thread_id {
+            record.grok_thread_id = Some(tid.clone());
+            let _ = save_session(iii, record).await;
         }
         for frame in frames {
             emit_agent_event(iii, session_id, || frame).await;

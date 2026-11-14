@@ -339,7 +339,7 @@ impl<'de> Deserialize<'de> for LiveBinding {
             (Some(_), Some(_)) => {
                 return Err(serde::de::Error::custom(
                     "binding has both `function_id` and a stored `trigger_type`",
-                ))
+                ));
             }
             (None, None) => return Err(serde::de::Error::missing_field("function_id")),
         };
@@ -907,7 +907,7 @@ pub fn validate_live_binding(binding: &LiveBinding) -> Result<BindingKind, Strin
             return Err(format!(
                 "binding query is only supported for a worker's own event functions, not `{}`",
                 binding.function_id
-            ))
+            ));
         }
         (None, _) => {}
     }
@@ -1550,13 +1550,15 @@ mod tests {
             "createSurface": {"surfaceId": "main", "catalogId": CATALOG_ID}
         }))
         .unwrap();
-        assert!(apply_messages(
-            &mut SessionState::empty("s"),
-            &[wrong],
-            None,
-            &WorkerConfig::default()
-        )
-        .is_err());
+        assert!(
+            apply_messages(
+                &mut SessionState::empty("s"),
+                &[wrong],
+                None,
+                &WorkerConfig::default()
+            )
+            .is_err()
+        );
 
         let cycle: ServerMessage = serde_json::from_value(json!({
             "version": PROTOCOL_VERSION,
@@ -1566,13 +1568,15 @@ mod tests {
         }))
         .unwrap();
         let mut state = SessionState::empty("s");
-        assert!(apply_messages(
-            &mut state,
-            &[create("main"), cycle],
-            None,
-            &WorkerConfig::default()
-        )
-        .is_err());
+        assert!(
+            apply_messages(
+                &mut state,
+                &[create("main"), cycle],
+                None,
+                &WorkerConfig::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1614,13 +1618,15 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(apply_messages(
-            &mut SessionState::empty("s"),
-            &[create("main"), unsafe_data],
-            None,
-            &WorkerConfig::default(),
-        )
-        .is_err());
+        assert!(
+            apply_messages(
+                &mut SessionState::empty("s"),
+                &[create("main"), unsafe_data],
+                None,
+                &WorkerConfig::default(),
+            )
+            .is_err()
+        );
 
         let expanding: ServerMessage = serde_json::from_value(json!({
             "version": PROTOCOL_VERSION,
@@ -1630,13 +1636,15 @@ mod tests {
             ]}
         }))
         .unwrap();
-        assert!(apply_messages(
-            &mut SessionState::empty("s"),
-            &[create("main"), expanding],
-            None,
-            &WorkerConfig::default(),
-        )
-        .is_err());
+        assert!(
+            apply_messages(
+                &mut SessionState::empty("s"),
+                &[create("main"), expanding],
+                None,
+                &WorkerConfig::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1688,13 +1696,15 @@ mod tests {
 
     #[test]
     fn active_batches_require_renderable_surfaces_and_recreate_after_delete() {
-        assert!(apply_messages(
-            &mut SessionState::empty("s"),
-            &[create("empty")],
-            None,
-            &WorkerConfig::default(),
-        )
-        .is_err());
+        assert!(
+            apply_messages(
+                &mut SessionState::empty("s"),
+                &[create("empty")],
+                None,
+                &WorkerConfig::default(),
+            )
+            .is_err()
+        );
 
         let mut state = SessionState::empty("s");
         apply_messages(
@@ -1821,9 +1831,11 @@ mod tests {
         }));
         assert_eq!(validate_live_binding(&invalid), Ok(BindingKind::Builtin));
         invalid.args = Some(json!({"scope": "orders"}));
-        assert!(validate_live_binding(&invalid)
-            .unwrap_err()
-            .contains("takes no args"));
+        assert!(
+            validate_live_binding(&invalid)
+                .unwrap_err()
+                .contains("takes no args")
+        );
         invalid.args = None;
 
         invalid.function_id = STREAM_ON_CHANGED_FN.into();
@@ -1915,19 +1927,25 @@ mod tests {
 
         let mut invalid = binding.clone();
         invalid.filters = Some(json!("open"));
-        assert!(validate_live_binding(&invalid)
-            .unwrap_err()
-            .contains("must be an object"));
+        assert!(
+            validate_live_binding(&invalid)
+                .unwrap_err()
+                .contains("must be an object")
+        );
         invalid.filters =
             Some(json!({"input.blob": {"$eq": "x".repeat(MAX_BINDING_CONFIG_BYTES)}}));
-        assert!(validate_live_binding(&invalid)
-            .unwrap_err()
-            .contains("maximum"));
+        assert!(
+            validate_live_binding(&invalid)
+                .unwrap_err()
+                .contains("maximum")
+        );
         let mut invalid = binding.clone();
         invalid.args = Some(json!(["clicks"]));
-        assert!(validate_live_binding(&invalid)
-            .unwrap_err()
-            .contains("must be an object"));
+        assert!(
+            validate_live_binding(&invalid)
+                .unwrap_err()
+                .contains("must be an object")
+        );
 
         let mut invalid = binding.clone();
         invalid.query.as_mut().unwrap().function_id = "orders list".into();

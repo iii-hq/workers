@@ -1,10 +1,10 @@
 pub mod imap;
 pub mod smtp;
 
-use iii_sdk::{errors::Error, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub async fn fetch_vault_credential(
     iii: &IIIClient,

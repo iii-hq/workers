@@ -5,7 +5,7 @@
 //! during the Phase 15 spike — if CF's API turns out to require different
 //! pagination or auth shape, this module is the place to adjust.
 
-use crate::events::normalize::{normalize_r2, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{EventKind, NormalizeError, ObjectEventNormalized, normalize_r2};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,7 +161,7 @@ pub async fn run_loop<D>(poller: CfQueuePoller, dispatcher: std::sync::Arc<D>)
 where
     D: crate::events::dispatcher::EventDispatcher + 'static,
 {
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     loop {
         let count = poller
             .poll_once(20, Duration::from_secs(60), |ev| {
@@ -240,11 +240,13 @@ mod tests {
             "tok".into(),
             Arc::new(HashMap::new()),
         );
-        assert!(p
-            .pull_url()
-            .contains("/accounts/acc/queues/qid/messages/pull"));
-        assert!(p
-            .ack_url()
-            .contains("/accounts/acc/queues/qid/messages/ack"));
+        assert!(
+            p.pull_url()
+                .contains("/accounts/acc/queues/qid/messages/pull")
+        );
+        assert!(
+            p.ack_url()
+                .contains("/accounts/acc/queues/qid/messages/ack")
+        );
     }
 }

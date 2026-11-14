@@ -78,9 +78,10 @@ mod tests {
 
     #[test]
     fn deserializes_adapter_entry() {
-        let c: PubSubConfig =
-            serde_yaml::from_str("{adapter: {name: redis, config: {redis_url: 'redis://x:6379'}}}")
-                .unwrap();
+        let c: PubSubConfig = serde_yaml_ng::from_str(
+            "{adapter: {name: redis, config: {redis_url: 'redis://x:6379'}}}",
+        )
+        .unwrap();
         assert_eq!(c.effective_adapter_name(), "redis");
         assert_eq!(
             c.adapter.unwrap().config.unwrap()["redis_url"],
@@ -90,7 +91,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let r: Result<PubSubConfig, _> = serde_yaml::from_str("{adapter: {name: local}, wat: 1}");
+        let r: Result<PubSubConfig, _> =
+            serde_yaml_ng::from_str("{adapter: {name: local}, wat: 1}");
         assert!(r.is_err(), "deny_unknown_fields must reject 'wat'");
     }
 
@@ -99,15 +101,15 @@ mod tests {
         // Parity with the builtin's effective_adapter (pubsub.rs:443-449):
         // absent adapter and explicit `local` are NOT a change.
         let none = PubSubConfig::default();
-        let local: PubSubConfig = serde_yaml::from_str("{adapter: {name: local}}").unwrap();
-        let redis: PubSubConfig = serde_yaml::from_str("{adapter: {name: redis}}").unwrap();
+        let local: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: local}}").unwrap();
+        let redis: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: redis}}").unwrap();
         assert_eq!(none.effective_adapter(), local.effective_adapter());
         assert_ne!(none.effective_adapter(), redis.effective_adapter());
     }
 
     #[test]
     fn json_roundtrip() {
-        let c: PubSubConfig = serde_yaml::from_str("{adapter: {name: redis}}").unwrap();
+        let c: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: redis}}").unwrap();
         let back = PubSubConfig::from_json(&c.to_json()).unwrap();
         assert_eq!(back.effective_adapter_name(), "redis");
     }

@@ -10,15 +10,15 @@
 
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
+use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use mention_contract::{
-    color, tone, MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
-    MentionSearchRequest, MentionSearchResponse, MentionView,
+    MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
+    MentionSearchRequest, MentionSearchResponse, MentionView, color, tone,
 };
 use serde::{Deserialize, Deserializer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const SEARCH_ID: &str = "ade::mentions::trace::search";
 pub const GET_ID: &str = "ade::mentions::trace::get";
@@ -106,7 +106,7 @@ async fn list_traces(iii: &IIIClient, payload: Value) -> Result<Vec<TraceRow>, E
         Err(error) => {
             return Err(Error::Handler(format!(
                 "could not list engine traces: {error}"
-            )))
+            )));
         }
     };
     Ok(parse_rows(&response))
@@ -457,10 +457,11 @@ mod tests {
                 context: Some(json!({ "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736" })),
             })
         );
-        assert!(view
-            .fields
-            .iter()
-            .any(|f| f.label == "Session" && f.value == "fix login"));
+        assert!(
+            view.fields
+                .iter()
+                .any(|f| f.label == "Session" && f.value == "fix login")
+        );
         assert_eq!(
             view.summary.as_deref(),
             Some(

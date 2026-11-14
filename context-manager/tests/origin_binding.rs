@@ -8,10 +8,10 @@ use context_manager::{
     config::WorkerConfig,
     core::summary::render_system_prompt_with_span,
     functions::assemble,
-    ports::{lease_cell, Deps},
+    ports::{Deps, lease_cell},
 };
 use fakes::{FakeClock, FakeModelResolver, FakeSummarizer, InMemoryLeaseStore, SummarizerScript};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -145,11 +145,13 @@ async fn origin_real_compaction_renderer_and_harness_fixture() {
             messages[index.as_u64().unwrap() as usize]
         );
     }
-    assert!(summarizer.calls().iter().any(|call| call
-        .user_prompt
-        .matches("synthetic-turn-fact")
-        .count()
-        >= 2));
+    assert!(
+        summarizer.calls().iter().any(|call| call
+            .user_prompt
+            .matches("synthetic-turn-fact")
+            .count()
+            >= 2)
+    );
     let span = &out["summary_origin"]["span"];
     let start = span["byte_start"].as_u64().unwrap() as usize;
     let end = span["byte_end"].as_u64().unwrap() as usize;

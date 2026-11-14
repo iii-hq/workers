@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::ffi::{c_char, c_long, c_void, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_long, c_void};
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use curl_impersonate_sys as curl;
 use serde_json::{Map, Value};
 
-use super::{charset_of_raw, python_scalar, Body, HttpOptions};
+use super::{Body, HttpOptions, charset_of_raw, python_scalar};
 use crate::scrapling::page::PageData;
 
 static GLOBAL: OnceLock<Result<(), String>> = OnceLock::new();
@@ -114,10 +114,15 @@ unsafe extern "C" fn write_body(
     let Some(length) = size.checked_mul(count) else {
         return 0;
     };
-    let transfer = &mut *(userdata.cast::<Transfer>());
-    transfer
-        .body
-        .extend_from_slice(std::slice::from_raw_parts(data.cast::<u8>(), length));
+    // SAFETY: curl passes back the `Transfer` registered as this callback's
+    // userdata, and `data` points at `size * count` bytes it owns for the call.
+    let (transfer, chunk) = unsafe {
+        (
+            &mut *(userdata.cast::<Transfer>()),
+            std::slice::from_raw_parts(data.cast::<u8>(), length),
+        )
+    };
+    transfer.body.extend_from_slice(chunk);
     length
 }
 
@@ -130,23 +135,31 @@ unsafe extern "C" fn write_header(
     let Some(length) = size.checked_mul(count) else {
         return 0;
     };
-    let transfer = &mut *(userdata.cast::<Transfer>());
-    transfer
-        .headers
-        .extend_from_slice(std::slice::from_raw_parts(data.cast::<u8>(), length));
+    // SAFETY: curl passes back the `Transfer` registered as this callback's
+    // userdata, and `data` points at `size * count` bytes it owns for the call.
+    let (transfer, chunk) = unsafe {
+        (
+            &mut *(userdata.cast::<Transfer>()),
+            std::slice::from_raw_parts(data.cast::<u8>(), length),
+        )
+    };
+    transfer.headers.extend_from_slice(chunk);
     length
 }
 
 unsafe fn set_long(easy: &Easy, option: curl::CURLoption, value: c_long) -> Result<(), String> {
-    code(curl::curl_easy_setopt(easy.0, option, value))
+    // SAFETY: the caller guarantees `value` is valid for `option`.
+    code(unsafe { curl::curl_easy_setopt(easy.0, option, value) })
 }
 
 unsafe fn set_ptr(easy: &Easy, option: curl::CURLoption, value: *mut c_void) -> Result<(), String> {
-    code(curl::curl_easy_setopt(easy.0, option, value))
+    // SAFETY: the caller guarantees `value` is valid for `option`.
+    code(unsafe { curl::curl_easy_setopt(easy.0, option, value) })
 }
 
 unsafe fn set_str(easy: &Easy, option: curl::CURLoption, value: &CString) -> Result<(), String> {
-    code(curl::curl_easy_setopt(easy.0, option, value.as_ptr()))
+    // SAFETY: `value` outlives the call, and curl copies string options.
+    code(unsafe { curl::curl_easy_setopt(easy.0, option, value.as_ptr()) })
 }
 
 fn code(value: curl::CURLcode) -> Result<(), String> {
@@ -186,11 +199,12 @@ fn request_url(url: &str, params: &[(String, String)]) -> Result<CString, String
         *new_counts.entry(name.clone()).or_insert(0usize) += 1;
     }
     for (name, value) in params {
-        if old_counts.get(name.as_str()) == Some(&1) && new_counts.get(name.as_str()) == Some(&1) {
-            if let Some(existing) = merged.iter_mut().find(|(key, _)| key == name) {
-                existing.1 = value.clone();
-                continue;
-            }
+        if old_counts.get(name.as_str()) == Some(&1)
+            && new_counts.get(name.as_str()) == Some(&1)
+            && let Some(existing) = merged.iter_mut().find(|(key, _)| key == name)
+        {
+            existing.1 = value.clone();
+            continue;
         }
         merged.push((name.clone(), value.clone()));
     }
@@ -214,12 +228,11 @@ fn selected_proxy<'a>(url: &str, options: &'a HttpOptions) -> Option<&'a str> {
             .find(|(key, _)| key == wanted)
             .map(|(_, value)| value.as_str())
     };
-    if let Some(host) = host {
-        if let Some(proxy) =
+    if let Some(host) = host
+        && let Some(proxy) =
             lookup(&format!("{scheme}://{host}")).or_else(|| lookup(&format!("all://{host}")))
-        {
-            return Some(proxy);
-        }
+    {
+        return Some(proxy);
     }
     lookup(scheme).or_else(|| lookup("all"))
 }
@@ -301,12 +314,12 @@ fn apply_cookie_changes(cookies: &mut Vec<String>, changes: *mut curl::curl_slis
     let mut current = changes;
     while !current.is_null() {
         let raw = unsafe { CStr::from_ptr((*current).data) }.to_string_lossy();
-        if let Some((action, value)) = raw.split_once('\t') {
-            if let Some(key) = cookie_key(value) {
-                cookies.retain(|existing| cookie_key(existing) != Some(key));
-                if action == "SET" {
-                    cookies.push(value.to_string());
-                }
+        if let Some((action, value)) = raw.split_once('\t')
+            && let Some(key) = cookie_key(value)
+        {
+            cookies.retain(|existing| cookie_key(existing) != Some(key));
+            if action == "SET" {
+                cookies.push(value.to_string());
             }
         }
         current = unsafe { (*current).next };
@@ -511,16 +524,15 @@ fn one_attempt(
             }
             None => (Vec::new(), None),
         };
-        if let Some(content_type) = content_type {
-            if !options
+        if let Some(content_type) = content_type
+            && !options
                 .headers
                 .iter()
                 .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            {
-                let value = CString::new(format!("Content-Type: {content_type}")).unwrap();
-                headers.append(&value)?;
-                header_values.push(value);
-            }
+        {
+            let value = CString::new(format!("Content-Type: {content_type}")).unwrap();
+            headers.append(&value)?;
+            header_values.push(value);
         }
         unsafe {
             set_ptr(
@@ -679,19 +691,19 @@ mod tests {
                     break;
                 }
                 bytes.extend_from_slice(&chunk[..read]);
-                if expected.is_none() {
-                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                        let headers = String::from_utf8_lossy(&bytes[..end]);
-                        let length = headers
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .and_then(|value| value.trim().parse::<usize>().ok())
-                            })
-                            .unwrap_or(0);
-                        expected = Some(end + 4 + length);
-                    }
+                if expected.is_none()
+                    && let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    expected = Some(end + 4 + length);
                 }
                 if expected.is_some_and(|length| bytes.len() >= length) {
                     break;

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
 use memory::config::WorkerConfig;
 use memory::deps::Deps;
@@ -23,8 +23,8 @@ use memory::events::{
 };
 use memory::functions::{self, rest};
 use memory::store::Store;
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, RwLock};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::{sleep, timeout};
 
 const ON_ITEM_TARGET: &str = "memory-engine-test::on-item";

@@ -20,8 +20,8 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::lock::{local_sha, KitsLock};
-use crate::functions::download::{read_worker_markers, WorkerMarker};
+use super::lock::{KitsLock, local_sha};
+use crate::functions::download::{WorkerMarker, read_worker_markers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -121,7 +121,7 @@ impl OriginIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kits::lock::{sha256_hex, LockedFile, LockedKit};
+    use crate::kits::lock::{LockedFile, LockedKit, sha256_hex};
 
     #[test]
     fn kit_beats_worker_beats_local() {

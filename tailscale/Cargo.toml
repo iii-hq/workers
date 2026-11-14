@@ -3,7 +3,7 @@
 [package]
 name = "tailscale"
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 publish = false
 description = "Tailscale worker for iii — the tailscale CLI as tailscale::* functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, updates) with an injected Console page"
 
@@ -22,7 +22,7 @@ arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "io-util", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 schemars = "0.8"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

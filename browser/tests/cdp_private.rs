@@ -10,7 +10,7 @@ mod unix {
     use std::sync::mpsc;
     use std::thread;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::cdp::{CdpClient, CdpError, EventError, REMOTE_DEBUGGING_PIPE_ARG};
 

@@ -407,11 +407,15 @@ mod tests {
             "{}",
             map_read_error(&errs[1], false).message
         );
-        assert!(map_read_error(&errs[3], false)
-            .message
-            .starts_with("accessibility read failed (Platform -25204)"));
-        assert!(map_act_error(&errs[4], "invoke", true)
-            .message
-            .starts_with("invoke is not available here (Unsupported)"));
+        assert!(
+            map_read_error(&errs[3], false)
+                .message
+                .starts_with("accessibility read failed (Platform -25204)")
+        );
+        assert!(
+            map_act_error(&errs[4], "invoke", true)
+                .message
+                .starts_with("invoke is not available here (Unsupported)")
+        );
     }
 }

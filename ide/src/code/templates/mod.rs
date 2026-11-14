@@ -5,6 +5,6 @@ pub mod manifest;
 pub mod source;
 
 pub use manifest::{
-    compose_entry, load_worker_templates, replace_token, validate_worker_name, Language,
+    Language, compose_entry, load_worker_templates, replace_token, validate_worker_name,
 };
-pub use source::{resolve_source, ResolvedSource, TemplateSourceInfo};
+pub use source::{ResolvedSource, TemplateSourceInfo, resolve_source};

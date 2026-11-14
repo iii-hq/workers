@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::adapters::{AttributeSource, ErrorEvent};
 use crate::evidence::{
-    filter_attributes, EvidenceBundleV1, EvidenceLogV1, EvidenceTruncatedV1, EvidenceWorkerV1,
-    EVIDENCE_VERSION,
+    EVIDENCE_VERSION, EvidenceBundleV1, EvidenceLogV1, EvidenceTruncatedV1, EvidenceWorkerV1,
+    filter_attributes,
 };
 use crate::{ErrorSourceV1, Redactor};
 

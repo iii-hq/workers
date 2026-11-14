@@ -1,4 +1,4 @@
-use judge::{configuration, JudgeConfig};
+use judge::{JudgeConfig, configuration};
 use serde_json::json;
 
 #[test]
@@ -62,10 +62,12 @@ async fn apply_replaces_the_snapshot_and_keeps_it_on_invalid_reloads() {
 fn preload_all_is_off_by_default_and_round_trips() {
     assert!(!JudgeConfig::default().preload_all);
     // Off is not stored: the seeded entry stays `{"provider": ...}`.
-    assert!(JudgeConfig::default()
-        .to_json()
-        .get("preload_all")
-        .is_none());
+    assert!(
+        JudgeConfig::default()
+            .to_json()
+            .get("preload_all")
+            .is_none()
+    );
     let config =
         JudgeConfig::from_json(&serde_json::json!({"provider": "laya", "preload_all": true}))
             .unwrap();

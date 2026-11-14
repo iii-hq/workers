@@ -40,13 +40,13 @@ use iii_sdk::{
 use notify::{RecursiveMode, Watcher};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tokio::sync::mpsc::error::TrySendError;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::code::path::PathResolver;
 use crate::code::state::ResolverCell;
-use crate::events::{is_noise_kind, INVALID_PATH, WATCH_FAILED};
+use crate::events::{INVALID_PATH, WATCH_FAILED, is_noise_kind};
 
 /// The function a surface observes to follow a repository's state.
 pub const ON_GIT_CHANGED_FN: &str = "shell::on-git-changed";

@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 /// The engine the test talks to; a spawned one is stopped on drop.

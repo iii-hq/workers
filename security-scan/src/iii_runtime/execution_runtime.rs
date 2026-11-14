@@ -76,13 +76,13 @@ impl ExecutionRuntime for IiiRuntime {
                     }
                 }
                 "active" | "claimed" => {
-                    return materialized_from_existing(worktree, repository, &request.target_sha)
+                    return materialized_from_existing(worktree, repository, &request.target_sha);
                 }
                 lifecycle => {
                     return Err(SecurityScanError::Dependency(format!(
                         "scanner checkout {} has unexpected lifecycle {lifecycle}",
                         worktree.worktree_id
-                    )))
+                    )));
                 }
             }
         }

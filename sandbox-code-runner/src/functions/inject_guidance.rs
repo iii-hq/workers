@@ -11,8 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const GUIDANCE_HOOK_ID: &str = "sandbox-code-runner::inject-guidance";
-pub const GUIDANCE_HOOK_DESC: &str =
-    "Internal pre_generate hook: appends sandbox-code-runner usage guidance to the agent \
+pub const GUIDANCE_HOOK_DESC: &str = "Internal pre_generate hook: appends sandbox-code-runner usage guidance to the agent \
      system prompt. Observes harness::hook::on-pre-generate while inject_guidance is on; not \
      called directly.";
 

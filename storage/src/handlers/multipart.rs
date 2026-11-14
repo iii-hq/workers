@@ -1,8 +1,8 @@
 //! Metadata-only multipart control operations.
-use super::{err_to_str, validate_key, AppState};
+use super::{AppState, err_to_str, validate_key};
 use crate::backend::BackendError;
-use crate::error::{backend_error_to_storage, StorageError};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use crate::error::{StorageError, backend_error_to_storage};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -241,9 +241,9 @@ mod tests {
     #[tokio::test]
     async fn multipart_capabilities_are_bucket_scoped_and_metadata_only() {
         use crate::backend::{
+            Backend,
             mock::MockBackend,
             s3::{S3Backend, S3BackendOpts, S3StaticCreds},
-            Backend,
         };
         use std::{collections::HashMap, sync::Arc};
         use tokio::{
@@ -313,15 +313,17 @@ mod tests {
                     );
                 }
                 server.await.unwrap();
-                assert!(capabilities(
-                    &state,
-                    CapabilitiesReq {
-                        bucket: "missing".into()
-                    }
-                )
-                .await
-                .unwrap_err()
-                .contains("UNKNOWN_BUCKET"));
+                assert!(
+                    capabilities(
+                        &state,
+                        CapabilitiesReq {
+                            bucket: "missing".into()
+                        }
+                    )
+                    .await
+                    .unwrap_err()
+                    .contains("UNKNOWN_BUCKET")
+                );
             }
         }
         let mock = Arc::new(MockBackend::default());
@@ -339,10 +341,12 @@ mod tests {
         .unwrap();
         assert_eq!(response.contract, None);
         assert!(mock.calls.lock().unwrap().is_empty());
-        assert!(super::super::parse_request::<CapabilitiesReq>(
-            serde_json::json!({"bucket":"files", "key":"forbidden"})
-        )
-        .is_err());
+        assert!(
+            super::super::parse_request::<CapabilitiesReq>(
+                serde_json::json!({"bucket":"files", "key":"forbidden"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -24,13 +24,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use tokio::sync::{watch, Notify};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use tokio::sync::{Notify, watch};
 
+use super::Accounts;
 use super::launch::shell_quote;
 use super::slot::Place;
-use super::Accounts;
-use crate::model::{now_ms, ClaudeLogin, LoginBrowser, LoginError, LoginState};
+use crate::model::{ClaudeLogin, LoginBrowser, LoginError, LoginState, now_ms};
 
 /// How long a sign-in link works: then Claude Code is stopped (`expired`).
 pub const LINK_TTL_MS: u64 = 10 * 60_000;
@@ -1797,7 +1797,10 @@ mod tests {
     #[test]
     fn an_early_end_says_why() {
         assert_eq!(
-            early_end("Error: --console and --claudeai cannot be used together.\r\n", Some(1)),
+            early_end(
+                "Error: --console and --claudeai cannot be used together.\r\n",
+                Some(1)
+            ),
             "Claude Code ended before it showed a sign-in link: Error: --console and --claudeai cannot be used together."
         );
         assert_eq!(
@@ -1814,7 +1817,9 @@ mod tests {
     fn the_browser_shim_notes_the_link_and_opens_only_on_the_host() {
         let none = browser_shim(Path::new("/t/l 1/browser-link"), None);
         assert!(none.starts_with("#!/bin/sh\n"));
-        assert!(none.contains("> '/t/l 1/browser-link'.part && mv -f '/t/l 1/browser-link'.part '/t/l 1/browser-link'"));
+        assert!(none.contains(
+            "> '/t/l 1/browser-link'.part && mv -f '/t/l 1/browser-link'.part '/t/l 1/browser-link'"
+        ));
         assert!(none.ends_with("exit 0\n"));
         let host = browser_shim(Path::new("/t/n"), Some(Path::new("/usr/bin/open")));
         assert!(host.ends_with("exec /usr/bin/open \"$1\"\n"));
@@ -1849,11 +1854,13 @@ mod tests {
         .unwrap();
         let host = dir.join("host");
         write_script(&host, &browser_shim(&note, Some(&opener))).unwrap();
-        assert!(std::process::Command::new(&host)
-            .arg("http://localhost:1/x")
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            std::process::Command::new(&host)
+                .arg("http://localhost:1/x")
+                .status()
+                .unwrap()
+                .success()
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("opened")).unwrap(),
             "http://localhost:1/x\n"

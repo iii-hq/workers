@@ -44,10 +44,10 @@ impl JobParser {
     pub fn parse_from_delivery(delivery: &Delivery) -> Result<Job> {
         let mut job: Job = serde_json::from_slice(&delivery.data)?;
 
-        if let Some(headers) = &delivery.properties.headers() {
-            if let Some(attempts) = Self::extract_attempts(headers)? {
-                job.attempts_made = attempts;
-            }
+        if let Some(headers) = &delivery.properties.headers()
+            && let Some(attempts) = Self::extract_attempts(headers)?
+        {
+            job.attempts_made = attempts;
         }
 
         Ok(job)

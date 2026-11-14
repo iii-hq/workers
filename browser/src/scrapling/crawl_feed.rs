@@ -31,7 +31,7 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::page::budget_page_derived_fields;
 
@@ -1115,21 +1115,25 @@ mod tests {
         let last = store.page("c", 40, 20).unwrap();
         assert_eq!(last["items"].as_array().unwrap().len(), 5);
         assert!(last.get("next_after").is_none());
-        assert!(store
-            .page("nope", 0, 20)
-            .unwrap_err()
-            .contains("unknown or expired"));
+        assert!(
+            store
+                .page("nope", 0, 20)
+                .unwrap_err()
+                .contains("unknown or expired")
+        );
 
         let hub = CrawlFeedHub::new(Arc::new(Recorder::default()));
         assert!(hub.items(&json!({})).unwrap_err().contains("crawl_id"));
-        assert!(hub
-            .items(&json!({"crawl_id": "x", "limit": 0}))
-            .unwrap_err()
-            .contains("limit"));
-        assert!(hub
-            .items(&json!({"crawl_id": "x", "after": -1}))
-            .unwrap_err()
-            .contains("after"));
+        assert!(
+            hub.items(&json!({"crawl_id": "x", "limit": 0}))
+                .unwrap_err()
+                .contains("limit")
+        );
+        assert!(
+            hub.items(&json!({"crawl_id": "x", "after": -1}))
+                .unwrap_err()
+                .contains("after")
+        );
     }
 
     #[test]

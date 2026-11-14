@@ -4,7 +4,7 @@ use crate::session::SessionError;
 use futures::future::BoxFuture;
 use iii_sdk::{CallRequest, IIIClient};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 mod secrets;
 pub use secrets::SecretsSessionStore;

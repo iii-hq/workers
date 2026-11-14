@@ -34,22 +34,23 @@ fn price(input: f64, output: f64) -> Pricing {
 fn prettify_segment(seg: &str) -> String {
     let lower = seg.to_ascii_lowercase();
     // version tokens like `k2`, `k2.5`, `k2.7` → `K2`, `K2.5`, `K2.7`
-    if let Some(rest) = lower.strip_prefix('k') {
-        if rest.starts_with(|c: char| c.is_ascii_digit()) {
-            return format!("K{rest}");
-        }
+    if let Some(rest) = lower.strip_prefix('k')
+        && rest.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return format!("K{rest}");
     }
     // `v1`, `v2` keep the lowercase `v`
-    if let Some(rest) = lower.strip_prefix('v') {
-        if rest.starts_with(|c: char| c.is_ascii_digit()) {
-            return lower;
-        }
+    if let Some(rest) = lower.strip_prefix('v')
+        && rest.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return lower;
     }
     // window tokens `8k`, `32k`, `128k` → `8K`, `32K`, `128K`
-    if let Some(num) = lower.strip_suffix('k') {
-        if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            return lower.to_ascii_uppercase();
-        }
+    if let Some(num) = lower.strip_suffix('k')
+        && !num.is_empty()
+        && num.chars().all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return lower.to_ascii_uppercase();
     }
     // generic: capitalize the first letter
     let mut chars = lower.chars();

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
@@ -54,7 +54,7 @@ struct Cli {
 /// `shutdown_async`.
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
         result = tokio::signal::ctrl_c() => result?,
@@ -179,13 +179,13 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(move |cfg| {
             let engine = reload_engine.clone();
             tokio::spawn(async move {
-                if let Some(loaded) = engine.current().await {
-                    if loaded.key != LoadKey::from_config(&cfg) {
-                        tracing::info!(
-                            "speech model settings changed; the recognizer reloads on next use"
-                        );
-                        engine.invalidate().await;
-                    }
+                if let Some(loaded) = engine.current().await
+                    && loaded.key != LoadKey::from_config(&cfg)
+                {
+                    tracing::info!(
+                        "speech model settings changed; the recognizer reloads on next use"
+                    );
+                    engine.invalidate().await;
                 }
             });
         }),

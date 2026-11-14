@@ -25,7 +25,7 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 
 use super::AppState;
-use crate::config::{detect_driver, TlsConfig};
+use crate::config::{TlsConfig, detect_driver};
 use crate::connector::{self, ConnectError, Connector, Material, Stage};
 use crate::ssh::HostKeyInfo;
 use crate::transaction::driver_system;
@@ -218,7 +218,7 @@ pub async fn handle(
                         "the stored connection `{name}` could not be read to compare servers; \
                          re-enter the redacted values"
                     ),
-                ))
+                ));
             }
         };
         if let Err(e) = restored_targets_match(&db, &stored_db, name, restored) {
@@ -719,10 +719,10 @@ fn scrub(message: &str, url: &str, credentials: &[String]) -> String {
 fn scrub_credentials(message: &str, url: &str) -> String {
     let mut out = message.to_string();
     if let Ok(parsed) = url::Url::parse(url) {
-        if let Some(password) = parsed.password() {
-            if !password.is_empty() {
-                out = out.replace(password, "***");
-            }
+        if let Some(password) = parsed.password()
+            && !password.is_empty()
+        {
+            out = out.replace(password, "***");
         }
         if !parsed.username().is_empty() {
             out = out.replace(&format!("{}:", parsed.username()), "***:");
@@ -991,10 +991,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp.stage, Some(Stage::Config));
-        assert!(resp
-            .message
-            .unwrap()
-            .contains("`connection.password` holds a literal credential"));
+        assert!(
+            resp.message
+                .unwrap()
+                .contains("`connection.password` holds a literal credential")
+        );
         let mut without = entry;
         without.as_object_mut().unwrap().remove("password");
         super::handle(
@@ -1012,10 +1013,11 @@ mod tests {
         assert_eq!(*got.lock().unwrap(), vec!["typed-pw".to_string()]);
         // The legacy form with a password in the url is refused the same way.
         let resp = handle(req("postgres://u:pw@127.0.0.1:1/db")).await.unwrap();
-        assert!(resp
-            .message
-            .unwrap()
-            .contains("`connection.url` holds a literal credential"));
+        assert!(
+            resp.message
+                .unwrap()
+                .contains("`connection.url` holds a literal credential")
+        );
     }
 
     fn entry(yaml: &str) -> crate::config::DatabaseConfig {
@@ -1029,7 +1031,9 @@ mod tests {
     #[test]
     fn restored_values_only_go_to_their_connections_server() {
         let stored = entry(STORED.trim_start_matches("databases:\n  prod:\n"));
-        let same = entry("    driver: postgres\n    host: DB.internal\n    user: other\n    database: x\n    tls: { mode: verify-full }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        let same = entry(
+            "    driver: postgres\n    host: DB.internal\n    user: other\n    database: x\n    tls: { mode: verify-full }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n",
+        );
         restored_targets_match(
             &same,
             &stored,
@@ -1037,25 +1041,28 @@ mod tests {
             &["password".into(), "ssh.passphrase".into()],
         )
         .unwrap();
-        let elsewhere = entry("    driver: postgres\n    host: evil.example\n    user: app\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        let elsewhere = entry(
+            "    driver: postgres\n    host: evil.example\n    user: app\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n",
+        );
         let err =
             restored_targets_match(&elsewhere, &stored, "prod", &["password".into()]).unwrap_err();
         assert!(err.contains("re-enter the value"), "{err}");
         // The SSH secret stays with its bastion even when the database host
         // is unchanged; the database password stays behind its tunnel.
-        let other_bastion = entry("    driver: postgres\n    host: db.internal\n    user: app\n    ssh: { host: evil.example, user: ops, private_key: /keys/id }\n");
-        assert!(restored_targets_match(
-            &other_bastion,
-            &stored,
-            "prod",
-            &["ssh.passphrase".into()]
-        )
-        .is_err());
+        let other_bastion = entry(
+            "    driver: postgres\n    host: db.internal\n    user: app\n    ssh: { host: evil.example, user: ops, private_key: /keys/id }\n",
+        );
+        assert!(
+            restored_targets_match(&other_bastion, &stored, "prod", &["ssh.passphrase".into()])
+                .is_err()
+        );
         assert!(
             restored_targets_match(&other_bastion, &stored, "prod", &["password".into()]).is_err()
         );
         // A weaker TLS mode toward the same server is refused too.
-        let plaintext = entry("    driver: postgres\n    host: db.internal\n    user: app\n    tls: { mode: disable }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        let plaintext = entry(
+            "    driver: postgres\n    host: db.internal\n    user: app\n    tls: { mode: disable }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n",
+        );
         assert!(restored_targets_match(&plaintext, &stored, "prod", &["password".into()]).is_err());
     }
 
@@ -1064,13 +1071,17 @@ mod tests {
         let stored =
             entry("    url: postgres://app@db.internal:5432/x\n    tls: { mode: verify-full }\n");
         // A url sslmode=disable under tls.mode verify-full runs without TLS.
-        let downgraded = entry("    url: postgres://app@db.internal:5432/x?sslmode=disable\n    tls: { mode: verify-full }\n");
+        let downgraded = entry(
+            "    url: postgres://app@db.internal:5432/x?sslmode=disable\n    tls: { mode: verify-full }\n",
+        );
         assert_eq!(
             effective_tls_mode(&downgraded),
             crate::config::TlsMode::Disable
         );
         assert!(restored_targets_match(&downgraded, &stored, "prod", &["url".into()]).is_err());
-        let required = entry("    url: postgres://app@db.internal:5432/x?sslmode=require\n    tls: { mode: verify-full }\n");
+        let required = entry(
+            "    url: postgres://app@db.internal:5432/x?sslmode=require\n    tls: { mode: verify-full }\n",
+        );
         assert_eq!(
             effective_tls_mode(&required),
             crate::config::TlsMode::VerifyFull

@@ -6,10 +6,10 @@
 
 mod support;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use support::{create_request, init_repo, make_env, test_config};
 use worktree::functions::create;
-use worktree::functions::rest::{self, RestRequest, ROUTED};
+use worktree::functions::rest::{self, ROUTED, RestRequest};
 
 /// What the http worker sends a route's target: the whole `HttpRequest`.
 fn http_request(path: &str, body: Value) -> RestRequest {

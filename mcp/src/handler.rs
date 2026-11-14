@@ -5,19 +5,19 @@
 use std::sync::Arc;
 
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::McpConfig;
 use crate::jsonrpc::{
-    is_json_rpc_request, json_rpc_error, json_rpc_success, parse_json_rpc_request,
-    response_id_from_body, JsonRpcRequest, JsonRpcResponse, JsonRpcResponseId, INVALID_PARAMS,
-    INVALID_REQUEST, METHOD_NOT_FOUND,
+    INVALID_PARAMS, INVALID_REQUEST, JsonRpcRequest, JsonRpcResponse, JsonRpcResponseId,
+    METHOD_NOT_FOUND, is_json_rpc_request, json_rpc_error, json_rpc_success,
+    parse_json_rpc_request, response_id_from_body,
 };
 use crate::skills_bridge::{
     mcp_prompts_get, mcp_prompts_list, mcp_resources_list, mcp_resources_read,
     mcp_resources_templates_list,
 };
-use crate::tools::{mcp_tools_call, mcp_tools_list, McpToolsCallError};
+use crate::tools::{McpToolsCallError, mcp_tools_call, mcp_tools_list};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 

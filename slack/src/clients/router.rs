@@ -1,8 +1,8 @@
 //! `router::models::list` — the sole source of available models/providers.
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use serde::Deserialize;
 use serde_json::json;
 

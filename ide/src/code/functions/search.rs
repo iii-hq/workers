@@ -25,7 +25,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError};
+use crate::code::error::{CoderError, err_to_string};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them. `remote = "Self"` derives
@@ -133,20 +133,20 @@ impl<'de> Deserialize<'de> for SearchInput {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = serde_json::Value::deserialize(deserializer)?;
         let mut notice = None;
-        if let Some(obj) = value.as_object_mut().filter(|o| !o.contains_key("query")) {
-            if let Some(pattern) = obj.remove("pattern").filter(serde_json::Value::is_string) {
-                obj.insert("query".into(), pattern);
-                let regex = if obj.contains_key("regex") {
-                    ""
-                } else {
-                    obj.insert("regex".into(), true.into());
-                    " with `regex: true`"
-                };
-                notice = Some(format!(
-                    "`pattern` was read as `query`{regex}; send `query` (and \
+        if let Some(obj) = value.as_object_mut().filter(|o| !o.contains_key("query"))
+            && let Some(pattern) = obj.remove("pattern").filter(serde_json::Value::is_string)
+        {
+            obj.insert("query".into(), pattern);
+            let regex = if obj.contains_key("regex") {
+                ""
+            } else {
+                obj.insert("regex".into(), true.into());
+                " with `regex: true`"
+            };
+            notice = Some(format!(
+                "`pattern` was read as `query`{regex}; send `query` (and \
                      `regex: true` for a regex)."
-                ));
-            }
+            ));
         }
         let mut input = SearchInput::deserialize(value).map_err(serde::de::Error::custom)?;
         input.notice = notice;
@@ -440,15 +440,15 @@ fn inner(
         if use_default_excludes && resolver.is_default_excluded(abs) {
             continue;
         }
-        if let Some(set) = &include {
-            if !set.is_match(&rel) {
-                continue;
-            }
+        if let Some(set) = &include
+            && !set.is_match(&rel)
+        {
+            continue;
         }
-        if let Some(set) = &exclude {
-            if set.is_match(&rel) {
-                continue;
-            }
+        if let Some(set) = &exclude
+            && set.is_match(&rel)
+        {
+            continue;
         }
 
         // Matching runs on the root-relative form; emitted paths are the
@@ -617,17 +617,19 @@ fn scan_files_in_order(
             let tx = tx.clone();
             let next = &next;
             let stop = &stop;
-            scope.spawn(move || loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some((abs, abs_wire)) = files.get(index) else {
-                    break;
-                };
-                let matches = scan_file(abs, abs_wire, matcher, options);
-                if tx.send((index, matches)).is_err() {
-                    break;
+            scope.spawn(move || {
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((abs, abs_wire)) = files.get(index) else {
+                        break;
+                    };
+                    let matches = scan_file(abs, abs_wire, matcher, options);
+                    if tx.send((index, matches)).is_err() {
+                        break;
+                    }
                 }
             });
         }
@@ -2412,10 +2414,11 @@ mod tests {
         assert_eq!(paths, vec![abs(&tmp, "shown.txt")]);
         let out = handle(r, c, list(true)).await.unwrap();
         assert!(out.path_matches.iter().any(|m| m.path.ends_with("ci.yml")));
-        assert!(out
-            .path_matches
-            .iter()
-            .any(|m| m.path.ends_with(".hidden.txt")));
+        assert!(
+            out.path_matches
+                .iter()
+                .any(|m| m.path.ends_with(".hidden.txt"))
+        );
     }
 
     #[tokio::test]
@@ -2838,10 +2841,12 @@ mod tests {
         .unwrap();
         assert_eq!(out.content_matches.len(), 2);
         let wire = serde_json::to_value(&out).unwrap();
-        assert!(wire["notice"]
-            .as_str()
-            .unwrap()
-            .starts_with("`pattern` was read as `query` with `regex: true`"));
+        assert!(
+            wire["notice"]
+                .as_str()
+                .unwrap()
+                .starts_with("`pattern` was read as `query` with `regex: true`")
+        );
         // Path-only: the regex runs against paths, notice still set.
         let out = handle(
             r.clone(),

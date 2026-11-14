@@ -12,7 +12,7 @@
 
 use crate::types::content::ContentBlock;
 use crate::types::events::{AssistantMessageEvent, FunctionCallArgumentsPreview};
-use crate::types::messages::{degraded_arguments, AssistantMessage};
+use crate::types::messages::{AssistantMessage, degraded_arguments};
 
 #[derive(Default)]
 pub struct PartialAccumulator {

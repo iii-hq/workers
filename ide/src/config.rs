@@ -832,21 +832,21 @@ impl ShellConfig {
     /// in `configuration::build_runtime`).
     ///
     /// The removed-key check runs over a `serde_json::Value` bridged from the
-    /// parsed YAML (`serde_yaml::Value` implements `Serialize`, so
+    /// parsed YAML (`serde_yaml_ng::Value` implements `Serialize`, so
     /// `serde_json::to_value` round-trips it) so `from_yaml`/`from_json` share
     /// ONE traversal (`check_removed_keys`) instead of duplicating the
     /// top-level/`fs`/`env` walk per funnel. The config itself still
     /// deserializes from the ORIGINAL TEXT, not the bridged Value:
-    /// `serde_yaml::from_value` self-tags plain scalars (an unquoted `false`
+    /// `serde_yaml_ng::from_value` self-tags plain scalars (an unquoted `false`
     /// in `denylist_patterns` becomes `Bool` and can no longer deserialize into
     /// `String`), while `from_str` drives parsing by the target type.
     /// Double-parsing a config-sized string is free.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        let raw: serde_yaml::Value =
-            serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
+        let raw: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
         let bridged = serde_json::to_value(&raw).map_err(|e| format!("yaml->json bridge: {e}"))?;
         check_removed_keys(&bridged)?;
-        serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Load and classify the optional `--config` seed file. Boot uses this
@@ -870,8 +870,8 @@ impl ShellConfig {
     /// Classification core of [`Self::load_seed_file`], split from the file
     /// read so it is testable on plain strings.
     fn seed_from_yaml(yaml: &str) -> Result<SeedFile, String> {
-        let parsed: serde_yaml::Value =
-            serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
+        let parsed: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))?;
         let bridged =
             serde_json::to_value(&parsed).map_err(|e| format!("yaml->json bridge: {e}"))?;
         // Removed-key hints BEFORE the foreign check: an un-migrated shell
@@ -914,7 +914,8 @@ impl ShellConfig {
     /// JSON Schema registered with the configuration worker so operators get
     /// a typed editing surface.
     pub fn json_schema() -> serde_json::Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
+        let root =
+            schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
         serde_json::to_value(root).expect("ShellConfig JSON Schema serializes")
     }
 }
@@ -992,9 +993,10 @@ mod tests {
     #[test]
     fn test_denylist_blocks_dangerous_form_but_not_benign() {
         let c = cfg_with_deny(vec![r"--checkpoint-action"]);
-        assert!(c
-            .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
-            .is_ok());
+        assert!(
+            c.is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
+                .is_ok()
+        );
         let err = c
             .is_command_allowed(&[
                 "tar".into(),
@@ -1009,7 +1011,7 @@ mod tests {
     /// and `exec_writable` falls back to the documented cache/toolchain list.
     #[test]
     fn exec_confinement_defaults_off_and_parses_landlock() {
-        let c: FsConfig = serde_yaml::from_str("{}").unwrap();
+        let c: FsConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(c.exec_confinement, ExecConfinement::Off);
         assert_eq!(
             c.exec_writable,
@@ -1023,10 +1025,10 @@ mod tests {
             ]
         );
         let c: FsConfig =
-            serde_yaml::from_str("{exec_confinement: landlock, exec_writable: [/x]}").unwrap();
+            serde_yaml_ng::from_str("{exec_confinement: landlock, exec_writable: [/x]}").unwrap();
         assert_eq!(c.exec_confinement, ExecConfinement::Landlock);
         assert_eq!(c.exec_writable, ["/x"]);
-        assert!(serde_yaml::from_str::<FsConfig>("{exec_confinement: seccomp}").is_err());
+        assert!(serde_yaml_ng::from_str::<FsConfig>("{exec_confinement: seccomp}").is_err());
     }
 
     /// Loads the shipped `config.yaml` and pins the permissive standard:
@@ -1038,7 +1040,7 @@ mod tests {
     fn shipped_config_is_open_exec_with_catastrophic_denylist() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
         let content = std::fs::read_to_string(path).expect("read config.yaml");
-        let mut c: ShellConfig = serde_yaml::from_str(&content).expect("config.yaml parses");
+        let mut c: ShellConfig = serde_yaml_ng::from_str(&content).expect("config.yaml parses");
         c.compile_denylist().expect("denylist compiles");
         // Open exec: every command a coding agent needs is permitted.
         for cmd in ["cargo", "git", "bash", "make", "node", "python3"] {
@@ -1277,7 +1279,7 @@ mod tests {
 
     /// Regression: the removed-key pre-parse must NOT change how scalars
     /// deserialize. An unquoted `false` in a string list self-tags as Bool
-    /// through `serde_yaml::from_value`, so `from_yaml` must re-deserialize
+    /// through `serde_yaml_ng::from_value`, so `from_yaml` must re-deserialize
     /// from the text, where the target type drives parsing.
     #[test]
     fn from_yaml_keeps_unquoted_boolean_like_strings() {
@@ -1379,7 +1381,7 @@ fs:
 sandbox:
   enabled: false
 "#;
-        let c: ShellConfig = serde_yaml::from_str(yaml).unwrap();
+        let c: ShellConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             c.fs.host_roots,
             vec![std::path::PathBuf::from("/tmp/shell")]
@@ -1392,7 +1394,7 @@ sandbox:
     #[test]
     fn missing_fs_section_uses_defaults() {
         let yaml = "max_timeout_ms: 30000\n";
-        let c: ShellConfig = serde_yaml::from_str(yaml).unwrap();
+        let c: ShellConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(c.fs.max_read_bytes, 0);
         assert_eq!(c.fs.max_write_bytes, 0);
         assert!(c.sandbox.enabled);

@@ -16,7 +16,7 @@
 //! nudges, in exactly that order, converging precisely at the default
 //! validation-retry budget.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

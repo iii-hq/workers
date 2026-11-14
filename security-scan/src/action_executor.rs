@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::action::{build_fix_plan, build_issue_plan, result_from_output, ActionHarnessOutputV1};
+use crate::action::{ActionHarnessOutputV1, build_fix_plan, build_issue_plan, result_from_output};
 use crate::{
-    ids, ActionEnqueueRequestV1, ActionExecuteResponseV1, AnalysisHandle, AnalysisPlan,
+    ActionEnqueueRequestV1, ActionExecuteResponseV1, AnalysisHandle, AnalysisPlan,
     ExecutionRuntime, MaterializedTargetV1, RepositoryConfigV1, RunRecordV1, RunStatusV1,
     ScanModeV1, SecurityActionKindV1, SecurityActionRecordV1, SecurityActionStatusV1,
     SecurityFindingV1, SecurityRuntime, SecurityScanError, TurnCompletedEventV1,
-    TurnCompletedResponseV1, WorkerConfig,
+    TurnCompletedResponseV1, WorkerConfig, ids,
 };
 
 const MAX_STEP_FAILURES: u32 = 3;
@@ -63,14 +63,14 @@ where
         let actions = self.runtime.list_actions().await?;
         for action in actions {
             if action.status.is_terminal() {
-                if action.cleanup_completed_at.is_none() {
-                    if let Err(error) = self.cleanup(&action).await {
-                        tracing::warn!(
-                            action_id = %action.action_id,
-                            %error,
-                            "action checkout cleanup recovery failed"
-                        );
-                    }
+                if action.cleanup_completed_at.is_none()
+                    && let Err(error) = self.cleanup(&action).await
+                {
+                    tracing::warn!(
+                        action_id = %action.action_id,
+                        %error,
+                        "action checkout cleanup recovery failed"
+                    );
                 }
                 continue;
             }

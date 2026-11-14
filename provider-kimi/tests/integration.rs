@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use provider_kimi::register::register_provider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +

@@ -23,12 +23,12 @@
 //! turn), so every fire lands on an idle session and the turn and trace
 //! counts are exact — no timing window anywhere.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";
@@ -273,10 +273,12 @@ mod tests {
         assert_eq!(fixture.probe_actions[1].after_turns, 2);
         // Turn-gated only: no probe races a running turn, so the turn and
         // trace floors stay exact.
-        assert!(fixture
-            .probe_actions
-            .iter()
-            .all(|p| p.after_target_calls.is_none()));
+        assert!(
+            fixture
+                .probe_actions
+                .iter()
+                .all(|p| p.after_target_calls.is_none())
+        );
         // One send + one externally-initiated wake per probe.
         assert_eq!(fixture.expected_traces(), 3);
     }

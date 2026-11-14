@@ -1,7 +1,7 @@
 //! Operator-facing authentication RPCs. Every response is token-free.
 use crate::session::{Ack, AuthManager, EmptyRequest, LoginIdRequest};
 use crate::surface;
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use serde_json::json;
 use std::sync::Arc;
 

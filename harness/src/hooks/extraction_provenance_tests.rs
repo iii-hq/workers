@@ -126,9 +126,11 @@ async fn failed_preassistant_on_off_bank_changes_and_restart_retain_actual_ack()
     );
     assert_eq!(h["rows"][1]["attestation"]["policy"], "off");
     assert_eq!(h["rows"][1]["attestation"]["bank"], "bank-b");
-    assert!(stack.data.lock().unwrap().messages["s"]
-        .iter()
-        .all(|e| e["message"]["role"] != "assistant"));
+    assert!(
+        stack.data.lock().unwrap().messages["s"]
+            .iter()
+            .all(|e| e["message"]["role"] != "assistant")
+    );
     let stored = stack.data.lock().unwrap().get(SCOPE, "s");
     assert!(!stored.to_string().contains("Sensitive first request"));
     let persisted_state = stack.data.lock().unwrap().state.clone();
@@ -141,26 +143,30 @@ async fn failed_preassistant_on_off_bank_changes_and_restart_retain_actual_ack()
     restarted.data.lock().unwrap().messages = persisted_messages;
     assert_eq!(history(&restarted, "s").await, h);
     let current = delivered(&restarted, "s", "opaque-c", "Next turn").await;
-    assert!(current
-        .recall_context
-        .as_ref()
-        .unwrap()
-        .get("extraction_history")
-        .is_none());
+    assert!(
+        current
+            .recall_context
+            .as_ref()
+            .unwrap()
+            .get("extraction_history")
+            .is_none()
+    );
     acknowledge(&restarted, &current, json!({"memory_extraction":false})).await;
     let replay = restarted.data.lock().unwrap().hooks.last().unwrap().clone();
     assert_eq!(
         replay["recall_context"]["extraction_history"]["rows"],
         h["rows"]
     );
-    assert!(restarted
-        .data
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .filter(|(f, p)| f == "harness::state::compare-and-set" && p["scope"] == SCOPE)
-        .all(|(_, p)| p.get("durable").is_none()));
+    assert!(
+        restarted
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(f, p)| f == "harness::state::compare-and-set" && p["scope"] == SCOPE)
+            .all(|(_, p)| p.get("durable").is_none())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -204,10 +210,12 @@ async fn prehook_failure_unknown_and_forged_metadata_never_promote() {
     .await;
     other.status = crate::types::turn::TurnStatus::Failed;
     finish_extraction(&outsider.deps, &other, true).await;
-    assert!(history(&outsider, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&outsider, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -234,10 +242,12 @@ async fn full_digest_edit_fork_active_path_and_retention_fail_closed() {
         .unwrap()
         .messages
         .insert("fork".into(), original.clone());
-    assert!(history(&stack, "fork").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "fork").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let edited = AgentMessage::user_text(format!("{}changed suffix", "a".repeat(3200)));
     stack.data.lock().unwrap().messages.get_mut("s").unwrap()[0]["message"] = json!(edited);
     assert!(
@@ -258,20 +268,24 @@ async fn full_digest_edit_fork_active_path_and_retention_fail_closed() {
     .await;
     record.status = crate::types::turn::TurnStatus::Failed;
     finish_extraction(&stack.deps, &record, true).await;
-    assert!(history(&stack, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     stack
         .data
         .lock()
         .unwrap()
         .messages
         .insert("s".into(), Vec::new());
-    assert!(history(&stack, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     stack
         .data
         .lock()
@@ -300,13 +314,15 @@ async fn full_digest_edit_fork_active_path_and_retention_fail_closed() {
     )
     .await
     .unwrap();
-    assert!(!stack
-        .data
-        .lock()
-        .unwrap()
-        .get(SCOPE, "s")
-        .to_string()
-        .contains("unseen"));
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .get(SCOPE, "s")
+            .to_string()
+            .contains("unseen")
+    );
     // Eviction is visible as absence/UNKNOWN, never as next bank inheritance.
     for n in 0..MAX_RECEIPTS {
         let id = format!("opaque-retained-{n}");
@@ -523,19 +539,23 @@ async fn edit_purge_legacy_and_malformed_rows_never_inherit_policy() {
         json!({"memory_extraction":true,"memory_bank":"b"}),
     )
     .await;
-    assert!(history(&stack, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         stack.data.lock().unwrap().get(SCOPE, "s")[0]["extraction"][0]["bank"],
         "a"
     );
     purge(&stack.deps, "s").await;
-    assert!(history(&stack, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let legacy = json!({"session_id":"s","entry_id":"opaque-a","channel":"direct",
         "query":null,"continuation":null});
     let receipt: Receipt = serde_json::from_value(legacy.clone()).unwrap();
@@ -552,10 +572,12 @@ async fn edit_purge_legacy_and_malformed_rows_never_inherit_policy() {
         json!({"memory_extraction":true,"memory_bank":"c"}),
     )
     .await;
-    assert!(history(&stack, "s").await["rows"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        history(&stack, "s").await["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     stack.data.lock().unwrap().state.insert(
         (SCOPE.into(), "s".into()),
         json!([{"extraction":"malformed"}]),
@@ -567,15 +589,19 @@ async fn edit_purge_legacy_and_malformed_rows_never_inherit_policy() {
         .messages_strict("s")
         .await
         .unwrap();
-    assert!(extraction_history(&stack.deps.iii, "s", &entries, 1000)
-        .await
-        .is_err());
+    assert!(
+        extraction_history(&stack.deps.iii, "s", &entries, 1000)
+            .await
+            .is_err()
+    );
     // Generation still resolves its ordinary recall envelope, without proof.
-    assert!(resolve(&stack.deps, &record, &entries)
-        .await
-        .unwrap()
-        .get("extraction_history")
-        .is_none());
+    assert!(
+        resolve(&stack.deps, &record, &entries)
+            .await
+            .unwrap()
+            .get("extraction_history")
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -734,9 +760,11 @@ async fn a_stalled_recall_ledger_holds_the_memory_hook_one_timeout_at_most() {
     );
     let last = stack.data.lock().unwrap().hooks.last().unwrap().clone();
     assert!(last["recall_context"].get("extraction_history").is_none());
-    assert!(stack.data.lock().unwrap().get(SCOPE, "s")[0]["extraction"]
-        .as_array()
-        .is_none_or(Vec::is_empty));
+    assert!(
+        stack.data.lock().unwrap().get(SCOPE, "s")[0]["extraction"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

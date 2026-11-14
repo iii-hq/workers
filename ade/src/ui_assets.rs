@@ -45,7 +45,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{Call, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
@@ -1271,10 +1271,12 @@ mod tests {
         let args: AssetArgs =
             serde_json::from_value(json!({ "kind": "module", "path": "ide/xterm.js" })).unwrap();
         assert_eq!(args.kind, AssetKind::Module);
-        assert!(serde_json::from_value::<AssetArgs>(
-            json!({ "kind": "script", "path": "a/b.js", "extra": 1 })
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<AssetArgs>(
+                json!({ "kind": "script", "path": "a/b.js", "extra": 1 })
+            )
+            .is_err()
+        );
         assert!(serde_json::from_value::<AssetArgs>(json!({ "path": "a/b.js" })).is_err());
     }
 

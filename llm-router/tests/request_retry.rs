@@ -1,18 +1,18 @@
 //! Caller-specific retry ceilings on the real engine and router pipeline.
 //! Only the provider is synthetic; no external model endpoint is called.
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::{register_worker, CallRequest, IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction, register_worker};
 use llm_router::chat::chat::{ChatCall, ChatFnInput};
 use llm_router::config::entry::{register_entry, write_entry_value};
 use llm_router::register::register_router;
 use llm_router::types::router::ChatRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 #[path = "support/engine_fixture.rs"]
@@ -56,11 +56,11 @@ async fn failing_provider(
             let (calls, address, gate) = (observed.clone(), address.clone(), gate.clone());
             async move {
                 let attempt = calls.fetch_add(1, Ordering::SeqCst);
-                if attempt == 0 {
-                    if let Some((entered, release)) = gate {
-                        entered.add_permits(1);
-                        release.acquire().await.unwrap().forget();
-                    }
+                if attempt == 0
+                    && let Some((entered, release)) = gate
+                {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
                 }
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone()).unwrap();

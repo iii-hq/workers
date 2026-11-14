@@ -1,10 +1,10 @@
 use crate::catalog::parse_models;
-use crate::config::{credential_value, endpoint, normalize_base_url, ConfigError, DEFAULT_API_URL};
+use crate::config::{ConfigError, DEFAULT_API_URL, credential_value, endpoint, normalize_base_url};
 use crate::errors::upstream_unavailable;
 use crate::{PROVIDER_ID, STATE_SCOPE};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::{router_client, state};
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
@@ -110,9 +110,9 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_request: RefreshModelsRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {
@@ -167,10 +167,12 @@ mod tests {
     fn empty_or_malformed_success_payload_is_not_an_empty_reconcile() {
         assert!(parse_catalog_response(&serde_json::json!({})).is_err());
         assert!(parse_catalog_response(&serde_json::json!({ "data": [] })).is_err());
-        assert!(parse_catalog_response(&serde_json::json!({
-            "data": [{ "id": "gpt-test", "context_length": 4096 }]
-        }))
-        .is_ok());
+        assert!(
+            parse_catalog_response(&serde_json::json!({
+                "data": [{ "id": "gpt-test", "context_length": 4096 }]
+            }))
+            .is_ok()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -180,7 +182,8 @@ mod tests {
             "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"type\":\"server_error\"}}",
             "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"type\":\"upgrade_required\"}}",
         ] {
-            let outcome = fetch_models(&reqwest::Client::new(), &stub(response).await, "test").await;
+            let outcome =
+                fetch_models(&reqwest::Client::new(), &stub(response).await, "test").await;
             assert!(matches!(outcome, FetchOutcome::Transient(_)));
         }
     }
@@ -192,7 +195,8 @@ mod tests {
             "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"type\":\"authentication_error\"}}",
             "HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}",
         ] {
-            let outcome = fetch_models(&reqwest::Client::new(), &stub(response).await, "test").await;
+            let outcome =
+                fetch_models(&reqwest::Client::new(), &stub(response).await, "test").await;
             assert!(matches!(outcome, FetchOutcome::AuthFailed));
         }
     }

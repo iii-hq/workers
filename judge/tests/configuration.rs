@@ -2,9 +2,9 @@
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
 
-use iii_sdk::{register_worker, InitOptions};
-use judge::{configuration, JudgeConfig};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use judge::{JudgeConfig, configuration};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 

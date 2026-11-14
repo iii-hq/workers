@@ -16,7 +16,7 @@ use database::handlers::query::QueryReq;
 use database::handlers::run_statement::RunReq;
 use database::handlers::schema::{self, DescribeSchemaReq, DescribeTableReq, ListTablesReq};
 use database::handlers::transaction::TxReq;
-use database::handlers::{execute, prepare, query, run_statement, transaction, AppState};
+use database::handlers::{AppState, execute, prepare, query, run_statement, transaction};
 use database::pool;
 use database::transaction::TxRegistry;
 use iii_helpers::observability::Logger;
@@ -174,8 +174,7 @@ async fn list_databases_reports_configured_primary() {
 async fn apply_config_updates_list_snapshot() {
     // Arrange
     let st = build_state().await;
-    let new_yaml =
-        "databases:\n  first:\n    url: \"sqlite::memory:\"\n  second:\n    url: \"sqlite::memory:\"\n";
+    let new_yaml = "databases:\n  first:\n    url: \"sqlite::memory:\"\n  second:\n    url: \"sqlite::memory:\"\n";
     let new_cfg = WorkerConfig::from_yaml(new_yaml).unwrap();
 
     // Act
@@ -775,10 +774,11 @@ async fn column_stats_defaults_to_planner_statistics() {
     // labelled, even when that is very little.
     assert!(r.approximate);
     assert_eq!(r.columns.len(), 4);
-    assert!(r
-        .columns
-        .iter()
-        .all(|c| c.source == column_stats::StatSource::Planner));
+    assert!(
+        r.columns
+            .iter()
+            .all(|c| c.source == column_stats::StatSource::Planner)
+    );
     assert!(
         r.columns.iter().all(|c| c.top_values.is_empty()),
         "top values require a scan, so the cheap path does not invent them"

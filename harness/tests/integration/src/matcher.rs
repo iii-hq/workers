@@ -147,10 +147,10 @@ fn apply_normalizer(doc: &mut Value, normalizer: &JsonNormalizerV1) -> anyhow::R
                     map.remove(&token);
                 }
                 Value::Array(items) => {
-                    if let Ok(index) = token.parse::<usize>() {
-                        if index < items.len() {
-                            items.remove(index);
-                        }
+                    if let Ok(index) = token.parse::<usize>()
+                        && index < items.len()
+                    {
+                        items.remove(index);
                     }
                 }
                 _ => {}
@@ -359,13 +359,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc, json!({ "a": 1 }));
-        assert!(apply_normalizer(
-            &mut doc,
-            &JsonNormalizerV1 {
-                pointer: String::new(),
-                operation: NormalizerOperation::Delete,
-            },
-        )
-        .is_err());
+        assert!(
+            apply_normalizer(
+                &mut doc,
+                &JsonNormalizerV1 {
+                    pointer: String::new(),
+                    operation: NormalizerOperation::Delete,
+                },
+            )
+            .is_err()
+        );
     }
 }

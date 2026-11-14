@@ -22,7 +22,7 @@ use rbac_proxy::config::WorkerConfig;
 use rbac_proxy::engine_overrides::CatalogCache;
 use rbac_proxy::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use rbac_proxy::rbac::{FunctionFilter, ProxySession, RbacConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 /// What the proxy must do with one fixture.

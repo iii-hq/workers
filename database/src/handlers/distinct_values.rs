@@ -7,9 +7,9 @@
 //! substring of the value's text form, matched literally (LIKE wildcards in
 //! it are escaped).
 
-use super::filter::{quote_ident, quote_table};
-use super::query::{self, err_to_str, QueryReq};
 use super::AppState;
+use super::filter::{quote_ident, quote_table};
+use super::query::{self, QueryReq, err_to_str};
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::Pool;
@@ -127,7 +127,7 @@ pub async fn handle(
             return Err(err_to_str(DbError::InvalidParam {
                 index: 0,
                 reason: format!("limit must be 1-{MAX_LIMIT}"),
-            }))
+            }));
         }
         Some(n) => n.min(MAX_LIMIT),
     };

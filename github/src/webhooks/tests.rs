@@ -248,12 +248,14 @@ fn storage_reopens_inbox_and_rejects_second_owner() {
     .unwrap();
     assert!(Store::open(&path).is_err());
     drop(s);
-    assert!(Store::open(&path)
-        .unwrap()
-        .read()
-        .unwrap()
-        .jobs
-        .contains_key("inbox:1"));
+    assert!(
+        Store::open(&path)
+            .unwrap()
+            .read()
+            .unwrap()
+            .jobs
+            .contains_key("inbox:1")
+    );
 }
 #[test]
 fn failed_transaction_does_not_commit_dedupe_without_job() {
@@ -356,18 +358,21 @@ async fn two_prs_share_hook_and_rotation_preserves_secret() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     seed(&s);
-    assert!(s
-        .ensure_hook("owner/repo", "https://one.example", "1")
-        .await
-        .unwrap());
-    assert!(!s
-        .ensure_hook("owner/repo", "https://one.example", "1")
-        .await
-        .unwrap());
-    assert!(s
-        .ensure_hook("owner/repo", "https://two.example", "2")
-        .await
-        .unwrap());
+    assert!(
+        s.ensure_hook("owner/repo", "https://one.example", "1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !s.ensure_hook("owner/repo", "https://one.example", "1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        s.ensure_hook("owner/repo", "https://two.example", "2")
+            .await
+            .unwrap()
+    );
     let data: Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("mock.json")).unwrap()).unwrap();
     let calls = data["calls"].as_array().unwrap();
@@ -415,13 +420,14 @@ async fn cleanup_failure_remains_pending_and_does_not_delete_foreign_hook() {
     std::fs::write(path, data.to_string()).unwrap();
     assert!(matches!(s.cleanup().await, Err(Failure::Ownership)));
     assert_eq!(s.status("w1").unwrap().status, WatchState::CleanupPending);
-    assert!(s
-        .store()
-        .unwrap()
-        .read()
-        .unwrap()
-        .repos
-        .contains_key("owner/repo"));
+    assert!(
+        s.store()
+            .unwrap()
+            .read()
+            .unwrap()
+            .repos
+            .contains_key("owner/repo")
+    );
     s.iii.shutdown_async().await;
 }
 #[tokio::test]

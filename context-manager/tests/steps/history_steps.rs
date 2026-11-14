@@ -3,7 +3,7 @@
 //! accounting in assertions is exact.
 
 use cucumber::given;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::world::ContextWorld;
 

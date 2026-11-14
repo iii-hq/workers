@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use iii_sdk::runtime::FunctionRef;
 use iii_sdk::IIIClient;
+use iii_sdk::runtime::FunctionRef;
 
 use crate::on_tick::{self, OnTickCaller};
 use crate::scheduler::Scheduler;

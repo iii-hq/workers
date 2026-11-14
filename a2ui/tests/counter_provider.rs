@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use provider::{MAX_OBSERVERS, ON_COUNTER_CHANGED_FN};
 

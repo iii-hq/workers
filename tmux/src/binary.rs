@@ -158,7 +158,7 @@ pub async fn resolve(binary: &str) -> Result<Resolved, String> {
                 return Ok(Resolved {
                     path: candidate,
                     version,
-                })
+                });
             }
             Err(error) => rejected.push(error),
         }

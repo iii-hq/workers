@@ -1,5 +1,5 @@
-use crate::config::DEFAULT_MAX_TOKENS;
 use crate::PROVIDER_ID;
+use crate::config::DEFAULT_MAX_TOKENS;
 use llm_router::types::model::Model;
 use serde_json::Value;
 

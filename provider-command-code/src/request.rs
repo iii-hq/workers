@@ -1,10 +1,10 @@
 use crate::catalog::upstream_id;
-use crate::config::{endpoint, CommandCodeConfig};
+use crate::config::{CommandCodeConfig, endpoint};
 use crate::wire::{anthropic_messages, chat_messages};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::ResponseFormat;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const EMPTY_MESSAGES_ERROR: &str = "refusing to call Command Code with an empty messages array";
 
@@ -226,9 +226,11 @@ mod tests {
         assert!(messages.url.ends_with("/messages"));
         assert_eq!(messages.body["system"], "be precise");
         assert!(messages.headers.contains(&("x-cmd-zdr", "1".to_string())));
-        assert!(messages
-            .headers
-            .contains(&("authorization", "Bearer cmd-secret".to_string())));
+        assert!(
+            messages
+                .headers
+                .contains(&("authorization", "Bearer cmd-secret".to_string()))
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::json;
 use tokio::sync::OnceCell;
 

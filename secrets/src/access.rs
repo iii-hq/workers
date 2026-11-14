@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 
 const WORKERS_LIST: &str = "engine::workers::list";
 const LOOKUP_TIMEOUT_MS: u64 = 5_000;

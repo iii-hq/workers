@@ -87,12 +87,24 @@ impl HookPoint {
 
     fn description(self) -> &'static str {
         match self {
-            HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }. Each matching observer's target is called with the hook input { point, session_id, turn_id, step, depth, metadata? } and answers { decision, reason?, mutations?, annotations? }; the harness gets back the merged outcome { decision, reason? }.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose } as the previous target left it, and on a sub-agent's turn `parent` / `parent_session_id` as harness::on-turn-completed reports them; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly of the turns its `sessions` globs and filters select, and its target is not called. A target that reads a few fields lists them as args.input (dotted paths, `[]` maps a list) and gets those plus the envelope.",
-            HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only: each matching observer's target is called with the hook input plus `generated` { message }; the harness gets back { decision: continue }.",
-            HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }.",
-            HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }.",
-            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator. Each matching observer's target is called with the hook input plus the turn's `result` (or the template with the result injected); the harness gets back the merged outcome { decision, reason?, prompt? }.",
+            HookPoint::PreTurn => {
+                "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }. Each matching observer's target is called with the hook input { point, session_id, turn_id, step, depth, metadata? } and answers { decision, reason?, mutations?, annotations? }; the harness gets back the merged outcome { decision, reason? }."
+            }
+            HookPoint::PreGenerate => {
+                "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose } as the previous target left it, and on a sub-agent's turn `parent` / `parent_session_id` as harness::on-turn-completed reports them; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly of the turns its `sessions` globs and filters select, and its target is not called. A target that reads a few fields lists them as args.input (dotted paths, `[]` maps a list) and gets those plus the envelope."
+            }
+            HookPoint::PostGenerate => {
+                "Synchronous hook: after the final assistant message update. Observe only: each matching observer's target is called with the hook input plus `generated` { message }; the harness gets back { decision: continue }."
+            }
+            HookPoint::PreCall => {
+                "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }."
+            }
+            HookPoint::PostCall => {
+                "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }."
+            }
+            HookPoint::PostTurn => {
+                "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator. Each matching observer's target is called with the hook input plus the turn's `result` (or the template with the result injected); the harness gets back the merged outcome { decision, reason?, prompt? }."
+            }
         }
     }
 
@@ -642,7 +654,7 @@ mod tests {
 
     #[test]
     fn filesystem_boundary_tracks_the_live_access_watch_observer() {
-        use crate::filesystem_scope::{FilesystemBoundary, FILESYSTEM_ACCESS_WATCH_ID};
+        use crate::filesystem_scope::{FILESYSTEM_ACCESS_WATCH_ID, FilesystemBoundary};
         assert_eq!(
             filesystem_boundary(&[], "shell::fs::ls"),
             FilesystemBoundary::ConfiguredRoots
@@ -697,13 +709,15 @@ mod tests {
 
     #[test]
     fn invalid_args_are_rejected() {
-        assert!(HookBinding::parse(
-            HookPoint::PreTurn,
-            "a",
-            "h",
-            &json!({ "on_error": "maybe" })
-        )
-        .is_err());
+        assert!(
+            HookBinding::parse(
+                HookPoint::PreTurn,
+                "a",
+                "h",
+                &json!({ "on_error": "maybe" })
+            )
+            .is_err()
+        );
         assert!(
             HookBinding::parse(HookPoint::PreTurn, "a", "h", &json!({ "prority": 1 })).is_err(),
             "a typo in the args is refused, never silently ignored"

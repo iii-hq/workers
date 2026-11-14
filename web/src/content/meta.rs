@@ -28,10 +28,10 @@ pub fn extract_metadata_query(html: &str) -> String {
                 .get("name")
                 .flatten()
                 .map(|b| b.as_utf8_str().to_lowercase());
-            if matches!(name.as_deref(), Some("description") | Some("keywords")) {
-                if let Some(content) = tag.attributes().get("content").flatten() {
-                    parts.push(content.as_utf8_str().trim().to_string());
-                }
+            if matches!(name.as_deref(), Some("description") | Some("keywords"))
+                && let Some(content) = tag.attributes().get("content").flatten()
+            {
+                parts.push(content.as_utf8_str().trim().to_string());
             }
         }
     }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::{parse_lsof, SocketListener};
+use super::{SocketListener, parse_lsof};
 
 const LSOF_TIMEOUT: Duration = Duration::from_secs(5);
 

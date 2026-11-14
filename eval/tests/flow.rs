@@ -22,11 +22,11 @@ use harness::policy::AGENT_CALL_NAME;
 use harness::types::content::ContentBlock;
 use harness::types::event::StopReason;
 use harness::types::message::{
-    empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
+    AgentMessage, FunctionResultMessage, FunctionResultRoleTag, empty_assistant,
 };
 use harness::types::turn::{ResponseLanguage, TurnRecord};
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const ROOT: &str = "s_root";
@@ -339,7 +339,7 @@ impl World {
                 None => {
                     return Some(Err(
                         "Function e2e::dashboard::executions-list not found in namespace p.".into(),
-                    ))
+                    ));
                 }
             },
             // The engine's own functions live in its `default` namespace, as
@@ -349,14 +349,14 @@ impl World {
                     "Function engine::workers::list not found in namespace {}. It is registered \
                      in namespace(s): default.",
                     namespace.as_str().unwrap_or("(this worker's)")
-                )))
+                )));
             }
             "engine::workers::list" => match &self.workers {
                 Some(list) => list.clone(),
                 None => {
                     return Some(Err(
                         "Function engine::workers::list not found in namespace default.".into(),
-                    ))
+                    ));
                 }
             },
             "e2e::dashboard::tests-list" => match &self.tests_list {
@@ -364,7 +364,7 @@ impl World {
                 None => {
                     return Some(Err(
                         "Function e2e::dashboard::tests-list not found in namespace p.".into(),
-                    ))
+                    ));
                 }
             },
             "e2e::dashboard::stacks-list" => match &self.stacks {
@@ -372,7 +372,7 @@ impl World {
                 None => {
                     return Some(Err(
                         "Function e2e::dashboard::stacks-list not found in namespace p.".into(),
-                    ))
+                    ));
                 }
             },
             "e2e::dashboard::execution-start" => {
@@ -389,7 +389,7 @@ impl World {
             "e2e::dashboard::execution-get" if self.executions_down => {
                 return Some(Err(
                     "Function e2e::dashboard::execution-get not found in namespace p.".into(),
-                ))
+                ));
             }
             "e2e::dashboard::execution-get" => {
                 match self.executions.get(data["execution_id"].as_str().unwrap()) {
@@ -936,10 +936,12 @@ async fn full_flow_with_pending_children_lost_reply_and_validated_references() {
     assert!(investigation.rejected[0].reasons[0].contains("e_invented_entry"));
 
     let world = h.world();
-    assert!(world
-        .calls_to("session::messages")
-        .iter()
-        .all(|page| page["include_image_data"] == false));
+    assert!(
+        world
+            .calls_to("session::messages")
+            .iter()
+            .all(|page| page["include_image_data"] == false)
+    );
     let judge_calls = world.calls_to("judge::evaluate");
     assert_eq!(judge_calls.len(), 1);
     assert_eq!(judge_calls[0]["provider"], "typesafe");
@@ -1336,9 +1338,11 @@ async fn manual_analysis_rules() {
         .unwrap()
     };
     // Needs a configured model, works while paused.
-    assert!(runtime::analyze_session(&h.deps, analyze(ROOT, false))
-        .await
-        .is_err());
+    assert!(
+        runtime::analyze_session(&h.deps, analyze(ROOT, false))
+            .await
+            .is_err()
+    );
     h.configure(false).await;
     let first = runtime::analyze_session(&h.deps, analyze(ROOT, false))
         .await
@@ -1350,9 +1354,11 @@ async fn manual_analysis_rules() {
     assert!(same.reused);
     assert_eq!(same.evaluation_id, first.evaluation_id);
     // Reanalysis waits for the previous analysis to end.
-    assert!(runtime::analyze_session(&h.deps, analyze(ROOT, true))
-        .await
-        .is_err());
+    assert!(
+        runtime::analyze_session(&h.deps, analyze(ROOT, true))
+            .await
+            .is_err()
+    );
     // The monitor's own sessions are never analyzed.
     assert!(
         runtime::analyze_session(&h.deps, analyze(&ids::analyst_session("eval_x"), false))
@@ -1363,9 +1369,11 @@ async fn manual_analysis_rules() {
     h.world()
         .status
         .insert("s_busy".into(), status("s_busy", "t_busy", "running", None));
-    assert!(runtime::analyze_session(&h.deps, analyze("s_busy", false))
-        .await
-        .is_err());
+    assert!(
+        runtime::analyze_session(&h.deps, analyze("s_busy", false))
+            .await
+            .is_err()
+    );
     // A deleted analysis keeps blocking automatic re-admission.
     h.drain().await;
     let record = h.result(&first.evaluation_id).await.record;
@@ -1825,10 +1833,12 @@ async fn the_code_directory_is_validated_when_it_is_configured() {
     let h = Harness::start(World::new()).await;
     let plain = h.configure(true).await;
     assert_eq!(plain.code_repository, None);
-    assert!(serde_json::to_value(&plain)
-        .unwrap()
-        .get("code_repository")
-        .is_none());
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("code_repository")
+            .is_none()
+    );
 
     for (path, expected) in [
         ("workers", "absolute path"),
@@ -1865,10 +1875,11 @@ async fn the_code_directory_is_validated_when_it_is_configured() {
     h.configure_code(Some(&vanishing_path)).await.unwrap();
     std::fs::remove_dir_all(&vanishing).unwrap();
     assert!(h.configure_code(Some(&vanishing_path)).await.is_ok());
-    assert!(h
-        .configure_code(Some(&format!("{vanishing_path}/other")))
-        .await
-        .is_err());
+    assert!(
+        h.configure_code(Some(&format!("{vanishing_path}/other")))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -2016,10 +2027,12 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
         sends[1]["session"]["metadata"]["fs_scope"]["root"],
         json!(other)
     );
-    assert!(sends[1]["options"]["system_prompt"]
-        .as_str()
-        .unwrap()
-        .contains(&format!("working directory is {other}:")));
+    assert!(
+        sends[1]["options"]["system_prompt"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("working directory is {other}:"))
+    );
 }
 
 #[tokio::test]
@@ -2043,10 +2056,12 @@ async fn without_a_code_directory_the_investigation_is_unchanged_and_code_refs_a
         record.failure
     );
     assert_eq!(record.code_root, None);
-    assert!(serde_json::to_value(&record)
-        .unwrap()
-        .get("code_root")
-        .is_none());
+    assert!(
+        serde_json::to_value(&record)
+            .unwrap()
+            .get("code_root")
+            .is_none()
+    );
     let investigation = assets.investigation.unwrap();
     assert_eq!(investigation.code_root, None);
     assert_eq!(investigation.suggestions.len(), 1);
@@ -2173,10 +2188,12 @@ async fn the_daily_cost_cap_stops_automatic_admission_and_only_that() {
     // Without a cap the revision is what it always was.
     let plain = h.configure(true).await;
     assert_eq!(plain.daily_cost_cap_usd, None);
-    assert!(serde_json::to_value(&plain)
-        .unwrap()
-        .get("daily_cost_cap_usd")
-        .is_none());
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("daily_cost_cap_usd")
+            .is_none()
+    );
     let capped = configure_capped(&h, json!(0.10)).await.unwrap();
     assert_eq!(capped.daily_cost_cap_usd, Some(0.10));
     assert_ne!(capped.revision, plain.revision);
@@ -2338,10 +2355,12 @@ async fn a_reanalysis_records_what_it_replaces_and_the_list_filters_by_turn() {
 
     let first_record = h.result(&first).await.record;
     assert_eq!(first_record.supersedes, None);
-    assert!(serde_json::to_value(&first_record)
-        .unwrap()
-        .get("supersedes")
-        .is_none());
+    assert!(
+        serde_json::to_value(&first_record)
+            .unwrap()
+            .get("supersedes")
+            .is_none()
+    );
     assert_eq!(
         h.result(&second).await.record.supersedes.as_deref(),
         Some(first.as_str())
@@ -2376,9 +2395,11 @@ async fn a_reanalysis_records_what_it_replaces_and_the_list_filters_by_turn() {
     expected.sort();
     assert_eq!(turn, expected, "every analysis of the turn, and only those");
     assert_eq!(list(None).await.len(), 4);
-    assert!(list(Some(ids::observation_key(ROOT, "t_nobody")))
-        .await
-        .is_empty());
+    assert!(
+        list(Some(ids::observation_key(ROOT, "t_nobody")))
+            .await
+            .is_empty()
+    );
     assert!(!expected.contains(&other));
 }
 
@@ -2431,10 +2452,12 @@ async fn admission_records_the_harness_version_and_collection_the_signals() {
     let again = reanalyze(&h).await;
     let record = h.result(&again).await.record;
     assert_eq!(record.harness_version, None);
-    assert!(serde_json::to_value(&record)
-        .unwrap()
-        .get("harness_version")
-        .is_none());
+    assert!(
+        serde_json::to_value(&record)
+            .unwrap()
+            .get("harness_version")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -2549,10 +2572,12 @@ async fn the_analyst_is_offered_the_e2e_scenarios_once_per_ten_minutes() {
     let second = reanalyze(&h).await;
     investigated(&h, &second).await;
     assert_eq!(h.world().calls_to("e2e::dashboard::tests-list").len(), 1);
-    assert!(h.world().calls_to("harness::send")[1]["message"]
-        .as_str()
-        .unwrap()
-        .contains("timer_wake"));
+    assert!(
+        h.world().calls_to("harness::send")[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("timer_wake")
+    );
 
     // An E2E that does not answer only leaves the analyst without the list.
     let down = Harness::start(World::new()).await;
@@ -2661,8 +2686,7 @@ impl Drop for Repo {
     }
 }
 
-const HARNESS_STACK: &str =
-    "# the harness template\niii: latest\ntemplate: harness\ncontainers:\n  \
+const HARNESS_STACK: &str = "# the harness template\niii: latest\ntemplate: harness\ncontainers:\n  \
     harness:\n    worker: package://harness\n    version: latest\n  harness-e2e:\n    worker: \
     package://harness-e2e\n    version: 0.17.2\nstartup_timeout: 5m\n";
 
@@ -2863,8 +2887,8 @@ async fn starting_a_validation_pins_both_commits_and_the_sweep_attaches_the_pair
             assert_eq!(parameters["provider"], "deepseek");
             let stack = &parameters["stack"];
             assert!(stack["name"].as_str().unwrap().contains(side), "{stack}");
-            let yaml: serde_yaml::Value =
-                serde_yaml::from_str(stack["yaml"].as_str().unwrap()).unwrap();
+            let yaml: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(stack["yaml"].as_str().unwrap()).unwrap();
             let harness = &yaml["containers"]["harness"];
             assert_eq!(harness["worker"], "package://harness");
             assert_eq!(harness["commit"], commit.as_str());
@@ -2907,10 +2931,11 @@ async fn starting_a_validation_pins_both_commits_and_the_sweep_attaches_the_pair
         h.world().calls_to("e2e::dashboard::executions-list"),
         [json!({"ids": ["plan-1", "plan-2"]})]
     );
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::execution-get")
-        .is_empty());
+    assert!(
+        h.world()
+            .calls_to("e2e::dashboard::execution-get")
+            .is_empty()
+    );
     assert_eq!(
         row(&h, &evaluation_id).await.run.unwrap().state,
         ValidationRunStateV1::Running
@@ -3113,10 +3138,11 @@ async fn a_validation_that_cannot_start_is_refused_before_anything_is_spent() {
 
     // None of that registered a criterion or reached the E2E.
     assert_eq!(stored_reviews(&h), 0);
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::execution-start")
-        .is_empty());
+    assert!(
+        h.world()
+            .calls_to("e2e::dashboard::execution-start")
+            .is_empty()
+    );
 
     // The E2E refuses the baseline: the criterion stays registered, the run failed.
     h.world().start_failure = Some((0, "the E2E is busy: another execution is in progress"));
@@ -3143,10 +3169,11 @@ async fn a_validation_that_cannot_start_is_refused_before_anything_is_spent() {
     let run = row(&h, &evaluation_id).await.run.unwrap();
     assert_eq!(run.state, ValidationRunStateV1::Failed);
     assert_eq!(run.baseline_execution_id.as_deref(), Some("plan-1"));
-    assert!(run
-        .error
-        .unwrap()
-        .contains("baseline execution plan-1 was already started"));
+    assert!(
+        run.error
+            .unwrap()
+            .contains("baseline execution plan-1 was already started")
+    );
     // A failed run can be started again with the same criterion.
     h.world().start_failure = None;
     let again = start(&h, &evaluation_id, |_| {}).await.unwrap();
@@ -3278,9 +3305,11 @@ async fn a_dry_run_resolves_the_refs_like_a_start_and_changes_nothing() {
 
     // Nothing was registered, recorded or asked of the E2E.
     assert_eq!(stored_reviews(&h), 0);
-    assert!(h.world().calls[before..]
-        .iter()
-        .all(|(function, _)| !function.starts_with("e2e::")));
+    assert!(
+        h.world().calls[before..]
+            .iter()
+            .all(|(function, _)| !function.starts_with("e2e::"))
+    );
 }
 
 #[tokio::test]
@@ -3335,12 +3364,14 @@ async fn a_start_the_e2e_never_answers_stays_in_progress_instead_of_inviting_a_d
         failed.run.as_ref().unwrap().state,
         ValidationRunStateV1::Failed
     );
-    assert!(failed
-        .run
-        .unwrap()
-        .error
-        .unwrap()
-        .contains("never answered"));
+    assert!(
+        failed
+            .run
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("never answered")
+    );
     let restarted = start(&h, &evaluation_id, |_| {}).await.unwrap();
     assert_eq!(restarted.run.unwrap().state, ValidationRunStateV1::Running);
     assert_eq!(
@@ -3670,15 +3701,17 @@ async fn recurrence_compares_the_analyses_before_and_from_the_shipped_version() 
     .await
     .unwrap();
     assert_eq!(unversioned.lifecycle.version, None);
-    assert!(review::recurrence(
-        &h.deps,
-        RecurrenceRequestV1 {
-            evaluation_id: first.clone(),
-            suggestion_index: 0
-        }
-    )
-    .await
-    .is_err());
+    assert!(
+        review::recurrence(
+            &h.deps,
+            RecurrenceRequestV1 {
+                evaluation_id: first.clone(),
+                suggestion_index: 0
+            }
+        )
+        .await
+        .is_err()
+    );
     review_with(
         &h,
         &first,
@@ -3827,17 +3860,19 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
     store(put(ValidationRunStateV1::Running, ago, true)).await;
     h.world().executions_list = Some(json!({"executions": [{"id": "plan-1", "state": "running"}]}));
     runtime::recover(&h.deps).await.unwrap();
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::executions-list")
-        .is_empty());
+    assert!(
+        h.world()
+            .calls_to("e2e::dashboard::executions-list")
+            .is_empty()
+    );
     runtime::sweep(&h.deps).await.unwrap();
     let gone = run_state().await;
     assert_eq!(gone.state, ValidationRunStateV1::Failed);
-    assert!(gone
-        .error
-        .unwrap()
-        .contains("e2e_execution_not_found: the candidate execution plan-2"));
+    assert!(
+        gone.error
+            .unwrap()
+            .contains("e2e_execution_not_found: the candidate execution plan-2")
+    );
 
     // An E2E that is down when the pair is attached: tried again, and said so.
     store(put(ValidationRunStateV1::Running, ago, true)).await;
@@ -3944,10 +3979,12 @@ async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dr
     runtime::sweep(&h.deps).await.unwrap();
     let forgotten = run_state().await;
     assert_eq!(forgotten.state, ValidationRunStateV1::Failed);
-    assert!(forgotten
-        .error
-        .unwrap()
-        .contains("e2e_execution_not_found(candidate)"));
+    assert!(
+        forgotten
+            .error
+            .unwrap()
+            .contains("e2e_execution_not_found(candidate)")
+    );
 
     // An analysis deleted while its run was going.
     store(put(ValidationRunStateV1::Finished, ago, true)).await;
@@ -4089,10 +4126,12 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
     .unwrap();
     let change = settled(&h, &evaluation_id, &change).await;
     assert_eq!(change.change_kind, ReproductionChangeKindV1::Proposed);
-    assert!(change
-        .samples
-        .iter()
-        .all(|reply| reply.signal == Some(false)));
+    assert!(
+        change
+            .samples
+            .iter()
+            .all(|reply| reply.signal == Some(false))
+    );
     // Sampling never ran a function.
     assert!(h.world().calls_to(INFO).is_empty());
 
@@ -4145,11 +4184,12 @@ async fn the_fidelity_count_carries_the_turns_thinking_level() {
         counts.iter().all(|count| count["thinking_level"] == "off"),
         "{counts:?}"
     );
-    assert!(h
-        .world()
-        .calls_to("context::assemble")
-        .iter()
-        .all(|assemble| assemble["options"]["thinking_level"] == "off"));
+    assert!(
+        h.world()
+            .calls_to("context::assemble")
+            .iter()
+            .all(|assemble| assemble["options"]["thinking_level"] == "off")
+    );
 }
 
 #[tokio::test]

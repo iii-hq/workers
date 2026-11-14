@@ -4,7 +4,7 @@
 //! typo like `max_runtimez: 3` should fail loudly rather than silently no-op.
 //!
 //! Deserialization lives here; READING a file does not. `load_config` stays
-//! with the worker that owns a `config.yaml`, which is what keeps `serde_yaml`
+//! with the worker that owns a `config.yaml`, which is what keeps `serde_yaml_ng`
 //! out of this crate.
 use serde::Deserialize;
 

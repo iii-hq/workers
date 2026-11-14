@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use iii_config_client as config_client;
 use iii_sdk::{Capture, IIIClient, ObserverHandle, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::WorkerConfig;
 // Reuse the ConfigCell type declared in functions::mod — do NOT redefine.

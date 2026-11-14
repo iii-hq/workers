@@ -94,7 +94,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.reserved_tokens_cap, 20_000);
         assert_eq!(cfg.reserved_pct, 10);
         assert_eq!(cfg.tail_turns, 2);
@@ -301,7 +301,7 @@ mod tests {
                     max_result_tokens: 9\n\
                     lease_ttl_secs: 7\nallow_fallback_limits: false\nsummarizer_timeout_ms: 8\n\
                     lease_dir: /tmp/leases";
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.reserved_tokens_cap, 1);
         assert_eq!(cfg.reserved_pct, 2);
         assert_eq!(cfg.tail_turns, 3);
@@ -333,13 +333,13 @@ mod tests {
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_yaml: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(from_yaml, WorkerConfig::default());
     }
 
     #[test]
     fn unknown_root_key_is_rejected_at_parse() {
-        let err = serde_yaml::from_str::<WorkerConfig>("tail_truns: 3").unwrap_err();
+        let err = serde_yaml_ng::from_str::<WorkerConfig>("tail_truns: 3").unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 
@@ -412,10 +412,12 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("CTX_MGR_TEST_LEASE_DIR", "/tmp/expanded-leases");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("CTX_MGR_TEST_LEASE_DIR", "/tmp/expanded-leases") };
         let cfg = WorkerConfig::from_yaml("lease_dir: \"${CTX_MGR_TEST_LEASE_DIR}\"\n").unwrap();
         assert_eq!(cfg.lease_dir, "/tmp/expanded-leases");
-        std::env::remove_var("CTX_MGR_TEST_LEASE_DIR");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("CTX_MGR_TEST_LEASE_DIR") };
     }
 
     #[test]

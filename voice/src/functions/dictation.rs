@@ -27,8 +27,7 @@ pub const STOP_DESC: &str = "Close a dictation session, flush the recognizer and
                              discard=true throws the text away instead.";
 
 pub const LIST_ID: &str = "voice::dictation::list";
-pub const LIST_DESC: &str =
-    "List the dictation sessions this worker currently holds open, with their \
+pub const LIST_DESC: &str = "List the dictation sessions this worker currently holds open, with their \
                              age, audio duration and idle time.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -48,12 +47,12 @@ pub struct StartResponse {
 }
 
 pub async fn start(state: &AppState, req: StartRequest) -> Result<StartResponse, String> {
-    if let Some(rate) = req.sample_rate {
-        if rate != TARGET_SAMPLE_RATE {
-            return Err(format!(
-                "sample_rate {rate} is not supported; resample to {TARGET_SAMPLE_RATE} Hz before pushing"
-            ));
-        }
+    if let Some(rate) = req.sample_rate
+        && rate != TARGET_SAMPLE_RATE
+    {
+        return Err(format!(
+            "sample_rate {rate} is not supported; resample to {TARGET_SAMPLE_RATE} Hz before pushing"
+        ));
     }
     let handle = state.sessions.start(req.output_function_id).await?;
     let session = handle.lock().await;

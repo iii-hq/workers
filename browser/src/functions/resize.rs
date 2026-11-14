@@ -128,13 +128,17 @@ mod tests {
         assert!(hints.mobile);
         assert_eq!(hints.platform, "Android");
         let brands = hints.brands.unwrap();
-        assert!(brands
-            .iter()
-            .any(|b| b.brand == "Chromium" && b.version == "156"));
-        assert!(hints
-            .full_version_list
-            .unwrap()
-            .iter()
-            .any(|b| b.brand == "Chromium" && b.version == "156.0.8078.4"));
+        assert!(
+            brands
+                .iter()
+                .any(|b| b.brand == "Chromium" && b.version == "156")
+        );
+        assert!(
+            hints
+                .full_version_list
+                .unwrap()
+                .iter()
+                .any(|b| b.brand == "Chromium" && b.version == "156.0.8078.4")
+        );
     }
 }

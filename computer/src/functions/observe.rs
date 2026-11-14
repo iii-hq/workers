@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::invalid;
 use super::screenshot::ContentBlock;
 use crate::driver::Screen;
-use crate::semantic::{Code, Query, Scope, SemanticError, DEFAULT_MAX_DEPTH, MAX_DEPTH, MAX_NODES};
+use crate::semantic::{Code, DEFAULT_MAX_DEPTH, MAX_DEPTH, MAX_NODES, Query, Scope, SemanticError};
 use crate::session::Session;
 
 // Which tree to read and how much of it. Shared by observe and find. A plain
@@ -221,10 +221,10 @@ pub(crate) async fn handle(
 mod tests {
     use super::*;
     use crate::semantic::fake::FakeTree;
-    use crate::semantic::{outline_marker, SemanticSession};
+    use crate::semantic::{SemanticSession, outline_marker};
     use crate::test_support::{code, session_with};
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use xa11y_core::{Error as X, Role};
 
@@ -307,11 +307,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(out.content[0]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("window \"W\""));
+        assert!(
+            out.content[0]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("window \"W\"")
+        );
     }
 
     #[tokio::test]
@@ -352,11 +354,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(out.content[1]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("a11y tree unavailable: unsupported_session"));
+        assert!(
+            out.content[1]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("a11y tree unavailable: unsupported_session")
+        );
         let e = handle(
             &s,
             req(serde_json::json!({"session_id":"c1","include_a11y":true,"include_image":false})),
@@ -490,10 +494,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(out.content[1]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("a11y tree unavailable: unsupported_session"));
+        assert!(
+            out.content[1]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("a11y tree unavailable: unsupported_session")
+        );
     }
 }

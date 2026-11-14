@@ -6,7 +6,7 @@ use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
 use llm_router::types::router::ResponseFormat;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct BodyArgs {
     pub model: String,
@@ -168,8 +168,10 @@ mod tests {
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
         assert!(h.contains(&("content-type", "application/json".to_string())));
         assert!(h.contains(&("x-grok-conv-id", "stable-session-key".to_string())));
-        assert!(!build_headers(&cfg, None)
-            .iter()
-            .any(|(name, _)| *name == "x-grok-conv-id"));
+        assert!(
+            !build_headers(&cfg, None)
+                .iter()
+                .any(|(name, _)| *name == "x-grok-conv-id")
+        );
     }
 }

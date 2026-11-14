@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
-use schemars::{schema::RootSchema, JsonSchema};
-use serde_json::{json, Value};
+use schemars::{JsonSchema, schema::RootSchema};
+use serde_json::{Value, json};
 
 use crate::action::{ACTION_COMMIT_ID, ACTION_PUSH_ID};
 use crate::events::{

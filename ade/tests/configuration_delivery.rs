@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -277,20 +277,24 @@ async fn exercise_delivery() {
         );
         if scenario != "schema_null" {
             assert!(result.as_ref().unwrap_err().contains("SCHEMA_INVALID"));
-            assert!(!snapshot
-                .iter()
-                .any(|frame| frame["function_id"] == "configuration::ensure"));
+            assert!(
+                !snapshot
+                    .iter()
+                    .any(|frame| frame["function_id"] == "configuration::ensure")
+            );
         }
     }
     let failed = service_error || scenario.ends_with("error") || scenario == "legacy_malformed";
     if failed {
         result.expect_err("failed initialization must propagate");
         if scenario != "legacy_register_error" {
-            assert!(!frames
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|f| f["function_id"] == "configuration::register"));
+            assert!(
+                !frames
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["function_id"] == "configuration::register")
+            );
         }
     } else {
         result.unwrap();
@@ -342,9 +346,11 @@ async fn exercise_delivery() {
             }
             assert_eq!(initialization[2]["data"], expected);
         } else {
-            assert!(!snapshot
-                .iter()
-                .any(|f| f["function_id"] == "configuration::register"));
+            assert!(
+                !snapshot
+                    .iter()
+                    .any(|f| f["function_id"] == "configuration::register")
+            );
         }
         if matches!(
             scenario.as_str(),

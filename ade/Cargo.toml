@@ -3,7 +3,7 @@
 [package]
 name = "ade"
 version = "1.10.5"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]
@@ -27,7 +27,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signa
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

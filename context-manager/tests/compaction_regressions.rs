@@ -21,11 +21,11 @@ use context_manager::core::estimate::{Estimator, HeuristicEstimator};
 use context_manager::core::lease::LEASE_SCOPE;
 use context_manager::functions::compact;
 use context_manager::ports::{
-    lease_cell, Deps, LeaseRecord, LeaseStore, SummarizeError, SummarizeRequest, Summarizer,
+    Deps, LeaseRecord, LeaseStore, SummarizeError, SummarizeRequest, Summarizer, lease_cell,
 };
 use context_manager::types::{AgentMessage, ContentBlock, Model};
 use fakes::{FakeClock, FakeModelResolver, FakeSummarizer, InMemoryLeaseStore, SummarizerScript};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 /// Inline limits the tool-heavy tests use: usable input

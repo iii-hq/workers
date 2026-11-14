@@ -10,8 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const GUIDANCE_HOOK_ID: &str = "workflow::inject-guidance";
-pub const GUIDANCE_HOOK_DESC: &str =
-    "Internal pre_generate hook: appends workflow orchestration guidance to the agent \
+pub const GUIDANCE_HOOK_DESC: &str = "Internal pre_generate hook: appends workflow orchestration guidance to the agent \
      system prompt. The target of the worker's harness::hook::on-pre-generate observer; not \
      called directly.";
 

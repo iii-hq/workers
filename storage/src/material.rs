@@ -17,7 +17,7 @@ use serde::Serialize;
 
 use crate::backend::BackendError;
 use crate::config::BucketConfig;
-use crate::secrets::{parse_ref, SecretError, SecretValue};
+use crate::secrets::{SecretError, SecretValue, parse_ref};
 
 /// Where using a bucket failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -122,7 +122,7 @@ impl Material {
                     return Err(BucketError::new(
                         Stage::Secrets,
                         format!("`{field}` {}", e.describe_malformed()),
-                    ))
+                    ));
                 }
                 Some(Ok(reference)) => {
                     let key = reference.key();
@@ -132,7 +132,7 @@ impl Material {
                             return Err(BucketError::new(
                                 Stage::Secrets,
                                 format!("`{field}`: {}", e.describe(&key)),
-                            ))
+                            ));
                         }
                     }
                 }

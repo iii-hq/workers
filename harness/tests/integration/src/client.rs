@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 
 use crate::deadline::Deadline;

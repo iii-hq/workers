@@ -13,7 +13,7 @@
 
 mod support;
 
-use provider_kimi::surface::{catalog, FunctionSpec};
+use provider_kimi::surface::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

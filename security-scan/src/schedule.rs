@@ -8,7 +8,7 @@ use iii_sdk::{
     Capture, IIIClient, ObserverHandle, ObserverOptions, ObserverState, RegisterFunction, Source,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::process::Command;
 
 use crate::functions::ON_SCHEDULE_ID;
@@ -315,14 +315,16 @@ mod tests {
 
         assert!(schedule_from_metadata(&config, None).is_err());
         assert!(schedule_from_metadata(&config, Some(json!({ "repository": "unknown" }))).is_err());
-        assert!(schedule_from_metadata(
-            &config,
-            Some(json!({
-                "repository": "iii-hq/iii",
-                "target_ref": "refs/heads/attacker"
-            }))
-        )
-        .is_err());
+        assert!(
+            schedule_from_metadata(
+                &config,
+                Some(json!({
+                    "repository": "iii-hq/iii",
+                    "target_ref": "refs/heads/attacker"
+                }))
+            )
+            .is_err()
+        );
     }
 
     #[test]

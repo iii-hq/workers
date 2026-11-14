@@ -31,8 +31,8 @@ use iii_http::{
 };
 use iii_sdk::{Capture, Error, IIIClient, ObserverOptions, RegisterFunction, Source};
 use mocks::Queue;
-use real_engine::{call, RealEngine};
-use serde_json::{json, Value};
+use real_engine::{RealEngine, call};
+use serde_json::{Value, json};
 
 const PROCESS: &str = "github::webhooks::process";
 const RECORDER: &str = "test::processed";
@@ -107,7 +107,7 @@ fn write_config(dir: &Path) {
     });
     std::fs::write(
         dir.join("config.yaml"),
-        serde_yaml::to_string(&config).unwrap(),
+        serde_yaml_ng::to_string(&config).unwrap(),
     )
     .unwrap();
 }

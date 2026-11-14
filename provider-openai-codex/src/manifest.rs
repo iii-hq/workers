@@ -2,8 +2,7 @@
 //! (binary-worker.md § manifest; same shape as provider-anthropic/src/manifest.rs).
 use serde::Serialize;
 
-const DESCRIPTION: &str =
-    "OpenAI Codex Responses provider with ChatGPT device-code sign-in and automatic session renewal.";
+const DESCRIPTION: &str = "OpenAI Codex Responses provider with ChatGPT device-code sign-in and automatic session renewal.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

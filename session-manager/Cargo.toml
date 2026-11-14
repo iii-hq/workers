@@ -3,7 +3,7 @@
 [package]
 name = "session-manager"
 version = "1.1.1"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]
@@ -25,7 +25,7 @@ iii-helpers = "=0.26.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"

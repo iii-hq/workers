@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::assets::{javascript_response, static_asset};
-use super::controller::{validate_stack_url, Controller};
+use super::controller::{Controller, validate_stack_url};
 use super::presenter::{
-    execution_detail_value, load_execution_summaries, repository_url, validate_execution_id,
-    MAX_EXECUTIONS,
+    MAX_EXECUTIONS, execution_detail_value, load_execution_summaries, repository_url,
+    validate_execution_id,
 };
 use super::store::{read_metadata, read_report};
 use super::{ApiError, DashboardArgs, RunRequest, RunSnapshot};
@@ -47,7 +47,9 @@ fn router(state: AppState) -> Router {
 
 pub(super) async fn serve(args: DashboardArgs) -> Result<()> {
     if !args.listen.ip().is_loopback() {
-        bail!("dashboard --listen must use a loopback address; use SSH port forwarding for remote access");
+        bail!(
+            "dashboard --listen must use a loopback address; use SSH port forwarding for remote access"
+        );
     }
     let listen = args.listen;
     let state = AppState {

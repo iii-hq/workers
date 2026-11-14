@@ -24,7 +24,7 @@ pub async fn handle(deps: &Deps, req: SetModeRequest) -> Result<SettingsResponse
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{with_stack, BootOpts};
+    use crate::testkit::{BootOpts, with_stack};
     use crate::types::PermissionMode;
 
     #[tokio::test(flavor = "multi_thread")]

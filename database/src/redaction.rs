@@ -71,27 +71,25 @@ fn looks_like_path(value: &str) -> bool {
 /// Replace every literal sensitive value of an entry with [`REDACTED`].
 pub fn redact_entry(entry: &mut Value) {
     for path in SECRET_FIELDS {
-        if let Some(v) = get_mut(entry, path) {
-            if v.as_str()
+        if let Some(v) = get_mut(entry, path)
+            && v.as_str()
                 .is_some_and(|s| !s.is_empty() && !names_a_value(s))
-            {
-                *v = Value::String(REDACTED.into());
-            }
+        {
+            *v = Value::String(REDACTED.into());
         }
     }
     for path in KEY_FIELDS {
-        if let Some(v) = get_mut(entry, path) {
-            if v.as_str()
+        if let Some(v) = get_mut(entry, path)
+            && v.as_str()
                 .is_some_and(|s| !s.is_empty() && !names_a_value(s) && !looks_like_path(s))
-            {
-                *v = Value::String(REDACTED.into());
-            }
+        {
+            *v = Value::String(REDACTED.into());
         }
     }
-    if let Some(url) = entry.get_mut("url") {
-        if let Some(redacted) = url.as_str().and_then(redact_url_password) {
-            *url = Value::String(redacted);
-        }
+    if let Some(url) = entry.get_mut("url")
+        && let Some(redacted) = url.as_str().and_then(redact_url_password)
+    {
+        *url = Value::String(redacted);
     }
 }
 
@@ -100,11 +98,11 @@ pub fn redact_entry(entry: &mut Value) {
 fn redact_url_password(raw: &str) -> Option<String> {
     let mut url = url::Url::parse(raw).ok()?;
     let mut changed = false;
-    if let Some(password) = url.password() {
-        if !names_a_value(&percent_decode(password)) {
-            url.set_password(Some(REDACTED)).ok()?;
-            changed = true;
-        }
+    if let Some(password) = url.password()
+        && !names_a_value(&percent_decode(password))
+    {
+        url.set_password(Some(REDACTED)).ok()?;
+        changed = true;
     }
     if url
         .query_pairs()
@@ -217,34 +215,33 @@ pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<Ve
         *v = original;
         restored.push(path.join("."));
     }
-    if let Some(url_value) = candidate.get_mut("url") {
-        if let Some(raw) = url_value.as_str() {
-            if raw.contains(REDACTED) {
-                let mut url = url::Url::parse(raw)
-                    .ok()
-                    .filter(|u| u.password() == Some(REDACTED))
-                    .ok_or_else(|| {
-                        format!("`url` may hold \"{REDACTED}\" only as its password; send the url")
-                    })?;
-                let stored_password = stored
-                    .and_then(|s| s.get("url"))
-                    .and_then(Value::as_str)
-                    .and_then(|u| url::Url::parse(u).ok())
-                    .and_then(|u| u.password().map(str::to_string))
-                    .filter(|p| p != REDACTED)
-                    .ok_or_else(|| {
-                        format!(
-                            "`url` has the password \"{REDACTED}\" but there is no stored url \
+    if let Some(url_value) = candidate.get_mut("url")
+        && let Some(raw) = url_value.as_str()
+        && raw.contains(REDACTED)
+    {
+        let mut url = url::Url::parse(raw)
+            .ok()
+            .filter(|u| u.password() == Some(REDACTED))
+            .ok_or_else(|| {
+                format!("`url` may hold \"{REDACTED}\" only as its password; send the url")
+            })?;
+        let stored_password = stored
+            .and_then(|s| s.get("url"))
+            .and_then(Value::as_str)
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.password().map(str::to_string))
+            .filter(|p| p != REDACTED)
+            .ok_or_else(|| {
+                format!(
+                    "`url` has the password \"{REDACTED}\" but there is no stored url \
                              password to keep; send the password"
-                        )
-                    })?;
-                // Already percent-encoded: set it back verbatim.
-                url.set_password(Some(&percent_decode(&stored_password)))
-                    .map_err(|_| "`url`: cannot restore the stored password".to_string())?;
-                *url_value = Value::String(url.to_string());
-                restored.push("url".into());
-            }
-        }
+                )
+            })?;
+        // Already percent-encoded: set it back verbatim.
+        url.set_password(Some(&percent_decode(&stored_password)))
+            .map_err(|_| "`url`: cannot restore the stored password".to_string())?;
+        *url_value = Value::String(url.to_string());
+        restored.push("url".into());
     }
     if contains_redacted(candidate) {
         return Err(format!(
@@ -273,10 +270,12 @@ mod tests {
         redact_entry(&mut entry);
         assert_eq!(entry["password"], REDACTED);
         assert_eq!(entry["tls"]["client_key"], REDACTED);
-        assert!(entry["tls"]["ca_cert"]
-            .as_str()
-            .unwrap()
-            .contains("BEGIN CERTIFICATE"));
+        assert!(
+            entry["tls"]["ca_cert"]
+                .as_str()
+                .unwrap()
+                .contains("BEGIN CERTIFICATE")
+        );
         assert_eq!(entry["tls"]["client_cert"], "/etc/ssl/client.pem");
         assert_eq!(entry["ssh"]["password"], "secret://SSH_PW");
         assert_eq!(entry["ssh"]["private_key"], "/home/me/.ssh/id_ed25519");

@@ -53,8 +53,9 @@ fn joint_policy_tools_round_trip_through_real_provider_without_native_shell() {
         names,
         vec!["sentinel::diagnosis::record", "sentinel::source::read"]
     );
-    assert!(wire
-        .iter()
-        .all(|tool| tool["type"] != "local_shell" && tool["type"] != "computer"));
+    assert!(
+        wire.iter()
+            .all(|tool| tool["type"] != "local_shell" && tool["type"] != "computer")
+    );
     assert!(wire::tools::functions_to_wire(&[]).is_empty());
 }

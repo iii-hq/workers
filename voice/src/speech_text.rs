@@ -37,11 +37,11 @@ pub fn streaming_text(text: &str, complete: bool) -> String {
     for (event, range) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
         if let Event::Text(value) = event {
             let raw = &text[range.clone()];
-            if raw == value.as_ref() {
-                if let Some(offset) = raw.find(['*', '_', '~', '`', '[', '<', '&', '|']) {
-                    end = range.start + offset;
-                    break;
-                }
+            if raw == value.as_ref()
+                && let Some(offset) = raw.find(['*', '_', '~', '`', '[', '<', '&', '|'])
+            {
+                end = range.start + offset;
+                break;
             }
         }
     }
@@ -175,8 +175,12 @@ mod tests {
 
     #[test]
     fn headings_lists_quotes_and_checkboxes_keep_words_not_markers() {
-        assert_eq!(spoken("# Resumo\n\n> **Pronto.**\n\n- [x] Voz instalada\n- [ ] Fazer teste\n\n---\n\n1. Primeiro\n2. Segundo"),
-            "Resumo Pronto. Voz instalada Fazer teste Primeiro Segundo");
+        assert_eq!(
+            spoken(
+                "# Resumo\n\n> **Pronto.**\n\n- [x] Voz instalada\n- [ ] Fazer teste\n\n---\n\n1. Primeiro\n2. Segundo"
+            ),
+            "Resumo Pronto. Voz instalada Fazer teste Primeiro Segundo"
+        );
         assert_eq!(
             spoken("Título\n======\n\n~~antigo~~ novo"),
             "Título antigo novo"

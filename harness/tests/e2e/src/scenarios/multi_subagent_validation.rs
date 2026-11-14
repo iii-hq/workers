@@ -10,7 +10,7 @@
 //! correction loops, and multi-wake fan-in (wakes may merge into one parent
 //! turn — the tally must count distinct writers, not wake deliveries).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

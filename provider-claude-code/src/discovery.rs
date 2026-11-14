@@ -6,13 +6,13 @@
 //! fallback slice is reconciled instead of blanking a working provider. A 401
 //! (the token itself was turned down) or an expired token is `auth_expired`,
 //! and the last known slice stays.
-use crate::config::{extract_access_token, DEFAULT_API_URL};
-use crate::errors::{auth_expired, upstream_unavailable, SIGN_IN_EXPIRED, SIGN_IN_REJECTED};
-use crate::request::{auth_header, ANTHROPIC_VERSION, OAUTH_BETA};
-use crate::{auth, curated, router_client, state, PROVIDER_ID};
+use crate::config::{DEFAULT_API_URL, extract_access_token};
+use crate::errors::{SIGN_IN_EXPIRED, SIGN_IN_REJECTED, auth_expired, upstream_unavailable};
+use crate::request::{ANTHROPIC_VERSION, OAUTH_BETA, auth_header};
+use crate::{PROVIDER_ID, auth, curated, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
@@ -205,9 +205,9 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {
@@ -225,7 +225,9 @@ pub async fn refresh_models_periodically(iii: IIIClient, http: reqwest::Client) 
     loop {
         ticker.tick().await;
         match refresh_models(&iii, &http).await {
-            Ok(count) => println!("[provider-claude-code] periodic catalog refresh: {count} models"),
+            Ok(count) => {
+                println!("[provider-claude-code] periodic catalog refresh: {count} models")
+            }
             Err(e) => eprintln!(
                 "[provider-claude-code] periodic catalog refresh failed ({e}); keeping last known catalog"
             ),

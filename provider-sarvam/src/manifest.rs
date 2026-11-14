@@ -2,8 +2,7 @@
 //! (binary-worker.md § manifest; same shape as provider-anthropic/src/manifest.rs).
 use serde::Serialize;
 
-const DESCRIPTION: &str =
-    "Sarvam AI provider worker behind llm-router: Sarvam chat models, Saaras speech to text and Bulbul text to speech.";
+const DESCRIPTION: &str = "Sarvam AI provider worker behind llm-router: Sarvam chat models, Saaras speech to text and Bulbul text to speech.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

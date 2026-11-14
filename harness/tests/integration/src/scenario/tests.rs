@@ -2,7 +2,7 @@ use crate::runtime::{RunError, RunErrorKind, RunPhase};
 use crate::types::scenario::{Classification, IntegrationResultV1};
 use crate::types::script::SchemaVersion1;
 
-use super::report::{classify, rpc_failure, ProcessState};
+use super::report::{ProcessState, classify, rpc_failure};
 use super::runner::{combine_teardown, result_digest};
 
 #[test]

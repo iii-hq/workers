@@ -18,33 +18,29 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::core::budget::{fallback_model, ResolvedModel};
+use crate::core::budget::{ResolvedModel, fallback_model};
 use crate::error::ContextError;
 use crate::ports::Deps;
 use crate::types::ModelInput;
 
 pub const ASSEMBLE_ID: &str = "context::assemble";
-pub const ASSEMBLE_DESC: &str =
-    "Build the model-ready context (system prompt + budgeted messages) from a history; \
+pub const ASSEMBLE_DESC: &str = "Build the model-ready context (system prompt + budgeted messages) from a history; \
      applies prune and/or compaction as needed to fit the model's usable token budget.";
 
 pub const COMPACT_ID: &str = "context::compact";
-pub const COMPACT_DESC: &str =
-    "Summarise the head of a history into a single compaction summary, keeping a recent \
+pub const COMPACT_DESC: &str = "Summarise the head of a history into a single compaction summary, keeping a recent \
      tail verbatim. Transient: the caller persists the result.";
 
 pub const PRUNE_ID: &str = "context::prune";
-pub const PRUNE_DESC: &str =
-    "Replace eligible old function outputs with placeholders without summarising. \
+pub const PRUNE_DESC: &str = "Replace eligible old function outputs with placeholders without summarising. \
      A cheaper first pass before compaction.";
 
 pub const COUNT_TOKENS_ID: &str = "context::count-tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Estimate token usage for a set of messages (+ optional invocation schemas / system \
+pub const COUNT_TOKENS_DESC: &str = "Estimate token usage for a set of messages (+ optional invocation schemas / system \
      prompt) vs a model.";
 
 /// Resolve model limits per the spec order: inline `limits` ->
@@ -65,7 +61,7 @@ pub(crate) async fn resolve_model(
             return Ok(ResolvedModel::from_router(
                 &budget.model,
                 budget.effective_max_output_tokens,
-            ))
+            ));
         }
         Ok(None) => format!("model {} is not in the router catalog", input.id),
         Err(e) => format!("router unavailable: {e}"),

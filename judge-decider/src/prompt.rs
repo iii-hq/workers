@@ -3,7 +3,7 @@
 //! `\n\nQuestion: …\nOptions:\n(A) …\nAnswer: (` block per decision; the
 //! answer is read at the final ` (`. The context and each question block are
 //! tokenized separately, as decider does.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// decider's widest label head: `A`–`Z`, then the two-letter labels that are
 /// one token each.
@@ -23,11 +23,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
     fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
         w.write_all(b": ")
@@ -37,11 +33,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
 }
 

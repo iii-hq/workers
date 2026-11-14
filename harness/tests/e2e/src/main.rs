@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::judge::JudgeConfig;
 use crate::report::E2eReport;
 use crate::scenarios::ScenarioId;
-use crate::suite::{run_suite, SubjectConfig, SuiteRunConfig};
+use crate::suite::{SubjectConfig, SuiteRunConfig, run_suite};
 
 mod catalog;
 mod context;

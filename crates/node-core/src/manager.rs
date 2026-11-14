@@ -448,13 +448,13 @@ impl RuntimeManager {
                 req.function_id.len()
             )));
         }
-        if let Some(desc) = &req.description {
-            if desc.len() > MAX_DESCRIPTION_BYTES {
-                return Err(invalid(format!(
-                    "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
-                    desc.len()
-                )));
-            }
+        if let Some(desc) = &req.description
+            && desc.len() > MAX_DESCRIPTION_BYTES
+        {
+            return Err(invalid(format!(
+                "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
+                desc.len()
+            )));
         }
 
         // The namespace IS the first segment; an id with no `::` cannot name
@@ -466,7 +466,7 @@ impl RuntimeManager {
                     "function id {:?} has no namespace; pass something like \
                      \"my-app::greet\"",
                     req.function_id
-                )))
+                )));
             }
         };
         // The existing validator, unchanged: it trims trailing colons and

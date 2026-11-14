@@ -18,8 +18,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction, Source};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 #[path = "support/private_home.rs"]
@@ -315,10 +315,12 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
     assert_eq!(result["crawl"]["id"], "live-1");
     assert_eq!(result["crawl"]["retained"], 4);
     assert_eq!(result["crawl"]["dropped_events"], 0);
-    assert!(result["warnings"][0]
-        .as_str()
-        .unwrap()
-        .starts_with("stream_name is deprecated and ignored"));
+    assert!(
+        result["warnings"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("stream_name is deprecated and ignored")
+    );
 
     // 4. Live events: 4 items in seq order, then done.
     let mut received = Vec::new();

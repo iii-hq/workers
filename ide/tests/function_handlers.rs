@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use ide::config::ShellConfig;
 use ide::functions;
 use ide::functions::types::{ExecBgRequest, ExecRequest, KillRequest, StatusRequest};
-use ide::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
+use ide::jobs::{self, JobHandle, JobRecord, JobStatus, now_ms};
 
 async fn seed(handle: JobHandle) -> String {
     match jobs::try_reserve_and_insert(handle, usize::MAX).await {
@@ -187,10 +187,12 @@ fn exec_bg_schema_exposes_an_optional_job_id() {
         schema["properties"]["job_id"]["type"],
         json!(["string", "null"])
     );
-    assert!(!schema["required"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("job_id")));
+    assert!(
+        !schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("job_id"))
+    );
 }
 
 #[tokio::test]

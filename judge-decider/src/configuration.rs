@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&DeciderConfig>) -> R
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge decider",
-        description:
-            "decider provider for judge: GGUF model, CPU/GPU placement and execution limits (runs in-process).",
+        description: "decider provider for judge: GGUF model, CPU/GPU placement and execution limits (runs in-process).",
         schema: DeciderConfig::json_schema(),
         default_value: DeciderConfig::default().to_json(),
     };

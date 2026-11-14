@@ -12,7 +12,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@10.18.2",
+  "packageManager": "pnpm@11.13.1",
   "scripts": {
     "start": "node ./index.mjs",
     "test": "node --test",
@@ -29,10 +29,5 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "esbuild": "^0.25.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

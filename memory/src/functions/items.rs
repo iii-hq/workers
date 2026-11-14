@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::events::ItemEvent;
-use crate::types::{fingerprint, now_ms, stated_now_ms, Confidence, Memory, Provenance};
+use crate::types::{Confidence, Memory, Provenance, fingerprint, now_ms, stated_now_ms};
 
 /// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {

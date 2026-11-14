@@ -14,7 +14,7 @@
 
 mod support;
 
-use github::functions::{catalog, FunctionSpec};
+use github::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

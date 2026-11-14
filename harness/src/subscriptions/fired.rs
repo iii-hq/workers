@@ -18,7 +18,7 @@
 //! real work (the notification wake or the dispatched call).
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bindings::Binding;
 use crate::clients::session::SessionClient;

@@ -77,7 +77,7 @@ fn request_schemas_name_their_required_fields() {
 
 #[test]
 fn speech_text_format_defaults_to_markdown_but_supports_literal_text() {
-    use voice::speech_text::{prepare, TextFormat};
+    use voice::speech_text::{TextFormat, prepare};
     let req: functions::speak::Request =
         serde_json::from_value(serde_json::json!({"text": "**Olá**"})).unwrap();
     assert_eq!(prepare(&req.text, req.text_format, 100).unwrap(), "Olá");
@@ -89,10 +89,12 @@ fn speech_text_format_defaults_to_markdown_but_supports_literal_text() {
         prepare(&req.text, req.text_format, 100).unwrap(),
         "**literal**"
     );
-    assert!(serde_json::from_value::<functions::speak::Request>(
-        serde_json::json!({"text": "Hello", "text_format": "html"})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<functions::speak::Request>(
+            serde_json::json!({"text": "Hello", "text_format": "html"})
+        )
+        .is_err()
+    );
 }
 
 #[test]

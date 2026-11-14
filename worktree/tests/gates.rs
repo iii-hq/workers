@@ -4,10 +4,10 @@
 
 mod support;
 
-use support::{create_request, init_repo, make_env, test_config, TestEnv};
+use support::{TestEnv, create_request, init_repo, make_env, test_config};
 use worktree::config::WorkerConfig;
 use worktree::functions::{claim, create, land, prune, release, remove, validate};
-use worktree::state::{StateStore, SCOPE_RECORD};
+use worktree::state::{SCOPE_RECORD, StateStore};
 
 fn env_with(tmp: &std::path::Path, mutate: impl FnOnce(&mut WorkerConfig)) -> TestEnv {
     let mut cfg = test_config(tmp);

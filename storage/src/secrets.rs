@@ -22,10 +22,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use futures_util::future::{join_all, BoxFuture};
+use futures_util::future::{BoxFuture, join_all};
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::Instant;
 
 /// Reference scheme for a value in the vault.
@@ -593,9 +593,11 @@ mod tests {
         );
         let msg = SecretError::NotFound.describe("env://DB_PASS");
         assert!(msg.contains("environment variable DB_PASS"), "{msg}");
-        assert!(SecretError::Unavailable
-            .describe("secret://X")
-            .contains("secrets worker is not running"));
+        assert!(
+            SecretError::Unavailable
+                .describe("secret://X")
+                .contains("secrets worker is not running")
+        );
     }
 
     #[tokio::test]
@@ -609,10 +611,12 @@ mod tests {
         assert_eq!(cache.lookup("secret://A").unwrap().unwrap().expose(), "v1");
 
         // Unchanged → nothing reported; rotated → reported.
-        assert!(cache
-            .refresh(["secret://A".to_string()], Refetch::Invalidate)
-            .await
-            .is_empty());
+        assert!(
+            cache
+                .refresh(["secret://A".to_string()], Refetch::Invalidate)
+                .await
+                .is_empty()
+        );
         fake.set("secret://A", Ok("v2"));
         assert_eq!(
             cache

@@ -7,14 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::registry::{Provider, ProviderRegistry};
 use super::render::{
-    advertised_providers, already_resolved, mentions_block, pending_mentions, providers_block,
-    MentionStatus,
+    MentionStatus, advertised_providers, already_resolved, mentions_block, pending_mentions,
+    providers_block,
 };
-use super::{resolve, BLOCK_BUDGET_CHARS, MAX_MENTIONS};
+use super::{BLOCK_BUDGET_CHARS, MAX_MENTIONS, resolve};
 
 /// The envelope the harness posts to pre-generate hooks (only what this
 /// hook reads; everything else is ignored).
@@ -140,10 +140,12 @@ pub async fn pre_generate(
         annotations.insert("mentions_resolved".into(), json!(count));
         annotations.insert(
             "mentions".into(),
-            json!(resolved
-                .iter()
-                .map(|m| json!({ "name": m.name, "id": m.id, "status": m.status }))
-                .collect::<Vec<_>>()),
+            json!(
+                resolved
+                    .iter()
+                    .map(|m| json!({ "name": m.name, "id": m.id, "status": m.status }))
+                    .collect::<Vec<_>>()
+            ),
         );
         mutations
             .append_messages

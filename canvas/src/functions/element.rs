@@ -36,28 +36,24 @@ fn format_name(format: CanvasFormat) -> &'static str {
 const MAX_ELEMENTS: usize = 2000;
 
 pub const ADD_ID: &str = "canvas::element::add";
-pub const ADD_DESC: &str =
-    "Add elements to a freeform canvas, one call per drawing step. Each element is an \
+pub const ADD_DESC: &str = "Add elements to a freeform canvas, one call per drawing step. Each element is an \
      excalidraw-style object ({type, x, y, width?, height?, text?, label?, start?, end?, \
      ...}); skeleton shorthand is accepted and converted at render time. Elements without \
      an id get a stable generated one. The open console canvas streams every call, so \
      shapes appear as they are added. Returns the assigned ids and the new element count.";
 
 pub const UPDATE_ID: &str = "canvas::element::update";
-pub const UPDATE_DESC: &str =
-    "Update one element of a freeform canvas by element id: move it, recolor it, change its text. \
+pub const UPDATE_DESC: &str = "Update one element of a freeform canvas by element id: move it, recolor it, change its text. \
      Properties are merged; unknown ids error and name the canvas. The open canvas streams the \
      change live.";
 
 pub const DELETE_ID: &str = "canvas::element::delete";
-pub const DELETE_DESC: &str =
-    "Remove elements from a freeform canvas by element id. Unknown ids are ignored; the \
+pub const DELETE_DESC: &str = "Remove elements from a freeform canvas by element id. Unknown ids are ignored; the \
      response reports how many were actually removed. The open console canvas streams \
      the change live.";
 
 pub const LIST_ID: &str = "canvas::element::list";
-pub const LIST_DESC: &str =
-    "List the elements of a freeform canvas: id, type, position and size per element — \
+pub const LIST_DESC: &str = "List the elements of a freeform canvas: id, type, position and size per element — \
      the map an agent reads before updating or connecting shapes. Full element bodies \
      are in the record source via canvas::get.";
 
@@ -175,7 +171,7 @@ fn scene_of(record: &CanvasRecord) -> Result<(Map<String, Value>, Vec<Value>), S
             return Err(format!(
                 "canvas '{}' scene has a non-array elements field",
                 record.id
-            ))
+            ));
         }
         None => Vec::new(),
     };

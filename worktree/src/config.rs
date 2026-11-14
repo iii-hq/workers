@@ -324,7 +324,7 @@ impl WorkerConfig {
     /// `${VAR:default}` against the process env, then parse YAML.
     pub fn from_yaml(contents: &str) -> Result<Self> {
         let expanded = expand_env(contents);
-        let cfg: WorkerConfig = serde_yaml::from_str(&expanded)?;
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(&expanded)?;
         Ok(cfg)
     }
 
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg, WorkerConfig::default());
         assert_eq!(cfg.land_queue, "worktree-land");
         assert_eq!(cfg.prune_expire_hours, 72);
@@ -475,13 +475,15 @@ mod tests {
 
     #[test]
     fn env_expansion_supports_defaults() {
-        std::env::set_var("WT_TEST_ROOT", "/data/w");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WT_TEST_ROOT", "/data/w") };
         assert_eq!(expand_env("root: ${WT_TEST_ROOT}"), "root: /data/w");
         assert_eq!(
             expand_env("root: ${WT_TEST_MISSING:/fallback}"),
             "root: /fallback"
         );
-        std::env::remove_var("WT_TEST_ROOT");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("WT_TEST_ROOT") };
     }
 
     #[test]

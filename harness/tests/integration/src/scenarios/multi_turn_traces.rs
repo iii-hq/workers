@@ -2,10 +2,10 @@
 
 use serde_json::json;
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send, Tool,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 pub(super) const SECOND_MESSAGE: &str = "Return the second trace phrase.";

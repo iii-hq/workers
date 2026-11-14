@@ -40,10 +40,12 @@ mod tests {
         assert!(!parsed["description"].as_str().unwrap().is_empty());
         assert!(parsed["default_config"].is_object());
         assert!(parsed["default_config"]["hidden_prefixes"].is_array());
-        assert!(!parsed["supported_targets"]
-            .as_array()
-            .expect("supported_targets must be an array")
-            .is_empty());
+        assert!(
+            !parsed["supported_targets"]
+                .as_array()
+                .expect("supported_targets must be an array")
+                .is_empty()
+        );
     }
 
     #[test]

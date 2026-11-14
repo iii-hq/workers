@@ -6,13 +6,13 @@
 //! from the router config: this provider is a dumb token consumer (login +
 //! refresh live out-of-band).
 use crate::PROVIDER_ID;
+use iii_sdk::IIIClient;
 use iii_sdk::engine::EngineFunctions;
 use iii_sdk::errors::Error;
-use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::router_client::{self as scaffold, call};
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const AUTH_GET_TOKEN_FN: &str = "auth::get_token";
 const AUTH_SET_TOKEN_FN: &str = "auth::set_token";

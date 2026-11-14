@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 
 pub struct RealEngine {
     child: Child,

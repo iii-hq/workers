@@ -45,7 +45,7 @@ impl Default for McpConfig {
 
 pub fn load_config(path: &str) -> Result<McpConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: McpConfig = serde_yaml::from_str(&contents)?;
+    let cfg: McpConfig = serde_yaml_ng::from_str(&contents)?;
     Ok(cfg)
 }
 
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: McpConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: McpConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.hidden_prefixes, default_hidden_prefixes());
         assert!(!cfg.require_expose);
         assert_eq!(cfg.api_path, "/mcp");
@@ -69,7 +69,7 @@ hidden_prefixes:
 require_expose: true
 api_path: "/mcp-rs"
 "#;
-        let cfg: McpConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: McpConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.hidden_prefixes, vec!["demo::".to_string()]);
         assert!(cfg.require_expose);
         assert_eq!(cfg.api_path, "/mcp-rs");
@@ -77,7 +77,7 @@ api_path: "/mcp-rs"
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_yaml: McpConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: McpConfig = serde_yaml_ng::from_str("{}").unwrap();
         let from_default = McpConfig::default();
         assert_eq!(from_default.hidden_prefixes, from_yaml.hidden_prefixes);
         assert_eq!(from_default.require_expose, from_yaml.require_expose);

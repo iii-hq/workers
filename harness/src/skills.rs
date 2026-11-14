@@ -6,7 +6,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -173,8 +173,9 @@ pub(crate) fn plan_sync(
             ack: next,
         },
         (_, _, EffectiveView::Removed { .. }) => SyncPlan::Append {
-            message: "Skill guidance is no longer available. Do not use any previously listed skill."
-                .to_string(),
+            message:
+                "Skill guidance is no longer available. Do not use any previously listed skill."
+                    .to_string(),
             ack: next,
         },
         (_, _, EffectiveView::Unavailable) => SyncPlan::None,
@@ -650,10 +651,12 @@ mod tests {
             "sha256:655f1be2c82922f76c03a7a0b3ae9c6857f96acdd3e681b38a3c8aac47f4c55b"
         );
 
-        assert!(parse_observation(&json!({"skills": [{
-            "id": " ", "title": "x", "description": "x", "disable_model_invocation": false
-        }]}))
-        .is_err());
+        assert!(
+            parse_observation(&json!({"skills": [{
+                "id": " ", "title": "x", "description": "x", "disable_model_invocation": false
+            }]}))
+            .is_err()
+        );
         assert_eq!(
             parse_observation(&json!({"skills": [
                 {"id": "same", "title": "x", "description": "x", "disable_model_invocation": false},
@@ -666,10 +669,12 @@ mod tests {
             }],
             "a duplicate id keeps the first row instead of failing the reload"
         );
-        assert!(parse_observation(&json!({"skills": [{
-            "id": "x", "title": "x", "disable_model_invocation": false
-        }]}))
-        .is_err());
+        assert!(
+            parse_observation(&json!({"skills": [{
+                "id": "x", "title": "x", "disable_model_invocation": false
+            }]}))
+            .is_err()
+        );
     }
 
     #[test]
@@ -686,11 +691,13 @@ mod tests {
             }]
         );
 
-        assert!(parse_observation(&json!({"skills": [{
-            "id": "bad", "title": "Bad", "description": "Bad row",
-            "disable_model_invocation": "false"
-        }]}))
-        .is_err());
+        assert!(
+            parse_observation(&json!({"skills": [{
+                "id": "bad", "title": "Bad", "description": "Bad row",
+                "disable_model_invocation": "false"
+            }]}))
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -729,9 +736,11 @@ mod tests {
         admit(&cell, noisy_reversed).await.unwrap();
         assert_eq!(cell.read().await.generation, 1);
 
-        assert!(admit(&cell, json!({"skills": [{"id": "broken"}]}))
-            .await
-            .is_err());
+        assert!(
+            admit(&cell, json!({"skills": [{"id": "broken"}]}))
+                .await
+                .is_err()
+        );
         let snapshot = cell.read().await.clone();
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.skills[0].id, "one");

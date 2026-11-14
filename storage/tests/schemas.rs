@@ -25,20 +25,24 @@ fn multipart_wire_schemas_are_closed_and_typed() {
         "checksum_sha256",
         "expires_in_seconds",
     ] {
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == field));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == field)
+        );
     }
     let completion_part = schema_of::<multipart::Part>();
     let listed_part = schema_of::<multipart::ListedPart>();
     for field in ["part_number", "size", "etag", "checksum_sha256"] {
-        assert!(completion_part["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == field));
+        assert!(
+            completion_part["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == field)
+        );
         assert_eq!(
             listed_part["required"]
                 .as_array()
@@ -48,8 +52,10 @@ fn multipart_wire_schemas_are_closed_and_typed() {
             field != "checksum_sha256"
         );
     }
-    assert!(serde_json::from_value::<multipart::Identity>(
-        serde_json::json!({"bucket":"b","key":"k","upload_id":"id","extra":true})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<multipart::Identity>(
+            serde_json::json!({"bucket":"b","key":"k","upload_id":"id","extra":true})
+        )
+        .is_err()
+    );
 }

@@ -1,4 +1,4 @@
-use crate::engine_client::{engine_source, EngineClient};
+use crate::engine_client::{EngineClient, engine_source};
 use crate::engine_introspection::FunctionInfo;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
@@ -16,10 +16,10 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
         }
 
         // Show which worker hosts this function
-        if let Some(worker) = engine.find_worker_for_function(&func.function_id) {
-            if let Some(name) = &worker.name {
-                content.push_str(&format!("\n\n**Worker:** {}", name));
-            }
+        if let Some(worker) = engine.find_worker_for_function(&func.function_id)
+            && let Some(name) = &worker.name
+        {
+            content.push_str(&format!("\n\n**Worker:** {}", name));
         }
 
         content.push_str(&observe_markdown(
@@ -27,28 +27,28 @@ pub fn get_hover(word: &str, engine: &Arc<EngineClient>) -> Option<Hover> {
             &engine.observer_targets(&func.function_id),
         ));
 
-        if let Some(req) = &func.request_format {
-            if let Ok(pretty) = serde_json::to_string_pretty(req) {
-                content.push_str(&format!(
-                    "\n\n**Request format:**\n```json\n{}\n```",
-                    pretty
-                ));
-            }
+        if let Some(req) = &func.request_format
+            && let Ok(pretty) = serde_json::to_string_pretty(req)
+        {
+            content.push_str(&format!(
+                "\n\n**Request format:**\n```json\n{}\n```",
+                pretty
+            ));
         }
 
-        if let Some(resp) = &func.response_format {
-            if let Ok(pretty) = serde_json::to_string_pretty(resp) {
-                content.push_str(&format!(
-                    "\n\n**Response format:**\n```json\n{}\n```",
-                    pretty
-                ));
-            }
+        if let Some(resp) = &func.response_format
+            && let Ok(pretty) = serde_json::to_string_pretty(resp)
+        {
+            content.push_str(&format!(
+                "\n\n**Response format:**\n```json\n{}\n```",
+                pretty
+            ));
         }
 
-        if let Some(args) = &func.args_format {
-            if let Ok(pretty) = serde_json::to_string_pretty(args) {
-                content.push_str(&format!("\n\n**Args format:**\n```json\n{}\n```", pretty));
-            }
+        if let Some(args) = &func.args_format
+            && let Ok(pretty) = serde_json::to_string_pretty(args)
+        {
+            content.push_str(&format!("\n\n**Args format:**\n```json\n{}\n```", pretty));
         }
 
         return Some(markdown_hover(content));

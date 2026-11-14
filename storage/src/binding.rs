@@ -437,16 +437,18 @@ mod tests {
         )
         .unwrap();
         // Same endpoint, another field: refused (the id is sent in clear).
-        assert!(check_bound(
-            &s3(
-                "https://s3.prod.example",
-                "access_key_id",
-                "secret://PROD_SK"
-            ),
-            &uses,
-            None
-        )
-        .is_err());
+        assert!(
+            check_bound(
+                &s3(
+                    "https://s3.prod.example",
+                    "access_key_id",
+                    "secret://PROD_SK"
+                ),
+                &uses,
+                None
+            )
+            .is_err()
+        );
         // A reference nobody uses is free.
         check_bound_test(&s3(evil, "session_token", "secret://NEW"), &uses).unwrap();
     }
@@ -522,9 +524,11 @@ mod tests {
         let err = check_bound_test(&bare(Some("http://127.0.0.1:49262")), &uses).unwrap_err();
         assert!(err.contains("engine host's own AWS credentials"), "{err}");
         let adc = json!({ "provider": "gcs", "endpoint_url": "http://127.0.0.1:49262" });
-        assert!(check_bound_test(&adc, &uses)
-            .unwrap_err()
-            .contains("Google credentials"));
+        assert!(
+            check_bound_test(&adc, &uses)
+                .unwrap_err()
+                .contains("Google credentials")
+        );
         check_bound_test(&json!({ "provider": "gcs" }), &uses).unwrap();
         // A save of the ambient bucket itself keeps its endpoint.
         check_bound(&bare(Some("http://minio.lan:9000")), &uses, Some("ambient")).unwrap();

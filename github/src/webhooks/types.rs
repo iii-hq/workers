@@ -132,7 +132,7 @@ impl WatchRequest {
             _ => {
                 return Err(super::Failure::Invalid(
                     "use pr_url OR repo + number".into(),
-                ))
+                ));
             }
         };
         validate_repo(&repo)?;

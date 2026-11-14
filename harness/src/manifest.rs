@@ -37,9 +37,11 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
         assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
-        assert!(parsed["description"]
-            .as_str()
-            .is_some_and(|d| !d.is_empty()));
+        assert!(
+            parsed["description"]
+                .as_str()
+                .is_some_and(|d| !d.is_empty())
+        );
         assert!(parsed["default_config"].is_object());
         assert!(!parsed["supported_targets"].as_array().unwrap().is_empty());
     }

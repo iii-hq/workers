@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::{
-    handshake::server::{Request, Response},
     Message,
+    handshake::server::{Request, Response},
 };
 
 struct Channel {
@@ -166,10 +166,10 @@ impl FakeEngine {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let acked = self.state.acked.notified();
-                if let Some(ack) = self.state.acks.lock().unwrap().get(&id) {
-                    if ack["revision"].as_u64() == Some(revision) {
-                        return ack.get("error").cloned();
-                    }
+                if let Some(ack) = self.state.acks.lock().unwrap().get(&id)
+                    && ack["revision"].as_u64() == Some(revision)
+                {
+                    return ack.get("error").cloned();
                 }
                 acked.await;
             }
@@ -282,14 +282,13 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
             }
             Some(frame) = pushed.recv() => Some(frame),
         };
-        if let Some(reply) = reply {
-            if sink
+        if let Some(reply) = reply
+            && sink
                 .send(Message::Text(reply.to_string().into()))
                 .await
                 .is_err()
-            {
-                break;
-            }
+        {
+            break;
         }
     }
 }

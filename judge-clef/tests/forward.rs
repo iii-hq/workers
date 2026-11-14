@@ -1,14 +1,14 @@
 //! The engine over the committed tiny clef GGUF (random weights, byte
 //! vocabulary, n_embd 32) on the CPU: one forward per prompt.
 use judge_clef::{
-    encode::{encode, Encoded},
+    encode::{Encoded, encode},
     engine::{Engine, Options, Stop},
 };
 use judge_contract::Evaluation;
 use serde_json::json;
 use std::{
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 

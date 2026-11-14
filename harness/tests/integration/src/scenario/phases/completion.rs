@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::client::DEFAULT_CALL_TIMEOUT_MS;
 use crate::deadline::Deadline;
@@ -71,22 +71,21 @@ impl ScenarioRunner<'_> {
                 // observable milestone is a controlled-function call (e.g. a
                 // call-mode reaction on its completion), so an action can gate
                 // on that instead of tracked-session turns alone.
-                if let Some(calls) = action.after_target_calls {
-                    if let Err(error) = services
+                if let Some(calls) = action.after_target_calls
+                    && let Err(error) = services
                         .probe()
                         .wait_for_target_calls(calls, deadline)
                         .await
-                    {
-                        if deadline.is_expired() {
-                            active.timed_out = true;
-                            return Ok(());
-                        }
-                        return Err(RunError::runner(
-                            phase,
-                            "wait for probe-action call boundary",
-                            error,
-                        ));
+                {
+                    if deadline.is_expired() {
+                        active.timed_out = true;
+                        return Ok(());
                     }
+                    return Err(RunError::runner(
+                        phase,
+                        "wait for probe-action call boundary",
+                        error,
+                    ));
                 }
                 self.fire_probe_action(services, &action, deadline).await?;
             }

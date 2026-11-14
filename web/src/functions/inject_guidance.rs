@@ -10,8 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const GUIDANCE_HOOK_ID: &str = "web::inject-guidance";
-pub const GUIDANCE_HOOK_DESC: &str =
-    "Internal pre_generate hook: appends web::fetch usage guidance to the agent system \
+pub const GUIDANCE_HOOK_DESC: &str = "Internal pre_generate hook: appends web::fetch usage guidance to the agent system \
      prompt. Observes harness::hook::on-pre-generate from worker startup; not called directly.";
 
 /// The `web::fetch` usage guidance appended to the system prompt — the single canonical

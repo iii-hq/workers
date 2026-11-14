@@ -11,7 +11,7 @@ use axum::{
 use iii_sdk::channel::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// One HTTP request as the server received it: the input of
 /// `http::on-request` and its output (the handler returns its input). An
@@ -129,10 +129,8 @@ impl HttpResponse {
                 }
             }
         }
-        if !content_type_set {
-            if let Some(ct) = default_content_type {
-                builder = builder.header("content-type", ct);
-            }
+        if !content_type_set && let Some(ct) = default_content_type {
+            builder = builder.header("content-type", ct);
         }
 
         builder

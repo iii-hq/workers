@@ -13,7 +13,7 @@ pub use backend::{ExecBackend, ExecCallResult, ExecOutcome};
 // threaded into `build_command`; `build_overrides` does the gating. Exposed
 // for the handlers and (lib consumers) the test harness.
 #[allow(unused_imports)]
-pub use policy::{build_overrides, ExecOverrides};
+pub use policy::{ExecOverrides, build_overrides};
 // These two re-exports are the public-API surface for downstream
 // consumers of `shell::exec::*` and the stable surface for
 // internal `crate::exec::{parse_argv, build_command, run_to_completion,
@@ -24,4 +24,4 @@ pub use policy::{build_overrides, ExecOverrides};
 #[allow(unused_imports)]
 pub use error::ExecError;
 #[allow(unused_imports)]
-pub use host::{build_command, parse_argv, run_to_completion, HostExecBackend};
+pub use host::{HostExecBackend, build_command, parse_argv, run_to_completion};

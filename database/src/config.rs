@@ -9,10 +9,10 @@
 //! `configuration::get` are already expanded by the configuration worker
 //! (`${VAR:default}` syntax).
 
-use schemars::schema::Schema;
 use schemars::JsonSchema;
+use schemars::schema::Schema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub const DEFAULT_DB_NAME: &str = "primary";
@@ -54,8 +54,8 @@ fn worker_config_example() -> WorkerConfig {
     WorkerConfig::default()
 }
 
-fn databases_schema(gen: &mut schemars::gen::SchemaGenerator) -> Schema {
-    let mut schema = gen.subschema_for::<HashMap<String, DatabaseConfig>>();
+fn databases_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> Schema {
+    let mut schema = generator.subschema_for::<HashMap<String, DatabaseConfig>>();
     if let Schema::Object(obj) = &mut schema {
         obj.metadata().description = Some(
             "Named connection pools. Keys are logical database names referenced \
@@ -307,13 +307,13 @@ impl DatabaseConfig {
                 return Err(format!(
                     "db `{name}`: `url` and `driver` are mutually exclusive — use either the \
                      url or the structured form (driver, host, port, user, password, database)"
-                ))
+                ));
             }
             (None, None) => {
                 return Err(format!(
                     "db `{name}`: set either `url` or `driver` (structured form: driver, host, \
                      port, user, password, database)"
-                ))
+                ));
             }
             (Some(url), None) => {
                 if let Some((field, _)) = structured_fields.iter().find(|(_, set)| *set) {
@@ -431,18 +431,17 @@ impl DatabaseConfig {
                     ));
                 }
             }
-            if let Some(icon) = &display.icon {
-                if icon.is_empty()
+            if let Some(icon) = &display.icon
+                && (icon.is_empty()
                     || icon.len() > 64
                     || !icon
                         .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                {
-                    return Err(format!(
-                        "db `{name}`: `display.icon` must be a Lucide icon name (lowercase \
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+            {
+                return Err(format!(
+                    "db `{name}`: `display.icon` must be a Lucide icon name (lowercase \
                          letters, digits and `-`)"
-                    ));
-                }
+                ));
             }
         }
         if let Some(folder) = &self.folder {
@@ -706,13 +705,13 @@ impl SshConfig {
                 "db `{name}`: `ssh.passphrase` is set without `ssh.private_key`"
             ));
         }
-        if let Some(pin) = &self.host_key {
-            if !valid_host_key_pin(pin) {
-                return Err(format!(
-                    "db `{name}`: `ssh.host_key` must be an OpenSSH SHA-256 fingerprint \
+        if let Some(pin) = &self.host_key
+            && !valid_host_key_pin(pin)
+        {
+            return Err(format!(
+                "db `{name}`: `ssh.host_key` must be an OpenSSH SHA-256 fingerprint \
                      (`SHA256:` followed by base64, as `ssh-keygen -lf` prints it)"
-                ));
-            }
+            ));
         }
         Ok(())
     }
@@ -972,7 +971,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let cfg: WorkerConfig =
-            serde_yml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         Self::finalize(cfg)
     }
 
@@ -1115,12 +1114,11 @@ fn resolve_sqlite_url(url: &str) -> String {
 /// without an authority (`sqlite::memory:`, `sqlite:///data/a@b.db`) or
 /// without an `@` cannot carry credentials and is returned unchanged.
 pub fn redact_url(input: &str) -> String {
-    if let Some((scheme, rest)) = input.split_once("://") {
-        if !rest.starts_with('/') {
-            if let Some((_, host_and_rest)) = rest.rsplit_once('@') {
-                return format!("{scheme}://***@{host_and_rest}");
-            }
-        }
+    if let Some((scheme, rest)) = input.split_once("://")
+        && !rest.starts_with('/')
+        && let Some((_, host_and_rest)) = rest.rsplit_once('@')
+    {
+        return format!("{scheme}://***@{host_and_rest}");
     }
     input.to_string()
 }
@@ -1285,10 +1283,12 @@ mod tests {
     #[test]
     fn json_schema_is_object_with_databases_property() {
         let schema = WorkerConfig::json_schema();
-        assert!(schema
-            .get("properties")
-            .and_then(|p| p.get("databases"))
-            .is_some());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.get("databases"))
+                .is_some()
+        );
     }
 
     #[test]
@@ -1462,13 +1462,15 @@ databases:
 
     #[test]
     fn env_var_expansion_in_url() {
-        std::env::set_var("DATABASE_WORKER_TEST_URL", "sqlite::memory:");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("DATABASE_WORKER_TEST_URL", "sqlite::memory:") };
         // Quote the interpolation site so the expanded value (which ends in
         // a colon) is unambiguously a YAML scalar.
         let yaml = "databases:\n  p:\n    url: \"${DATABASE_WORKER_TEST_URL}\"\n";
         let c = cfg(yaml);
         assert_eq!(c.databases["p"].url.as_deref(), Some("sqlite::memory:"));
-        std::env::remove_var("DATABASE_WORKER_TEST_URL");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("DATABASE_WORKER_TEST_URL") };
     }
 
     #[test]
@@ -1479,18 +1481,24 @@ databases:
 
     #[test]
     fn env_var_expansion_multiple_in_one_url() {
-        std::env::set_var("DBW_TEST_USER", "alice");
-        std::env::set_var("DBW_TEST_HOST", "host.example");
-        std::env::set_var("DBW_TEST_DB", "shop");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("DBW_TEST_USER", "alice") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("DBW_TEST_HOST", "host.example") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("DBW_TEST_DB", "shop") };
         let yaml = "databases:\n  p:\n    url: \"postgres://${DBW_TEST_USER}@${DBW_TEST_HOST}/${DBW_TEST_DB}\"\n";
         let c = cfg(yaml);
         assert_eq!(
             c.databases["p"].url.as_deref(),
             Some("postgres://alice@host.example/shop")
         );
-        std::env::remove_var("DBW_TEST_USER");
-        std::env::remove_var("DBW_TEST_HOST");
-        std::env::remove_var("DBW_TEST_DB");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("DBW_TEST_USER") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("DBW_TEST_HOST") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("DBW_TEST_DB") };
     }
 
     #[test]
@@ -1621,10 +1629,10 @@ databases:
         // "byte-iteration mojibake" regression. The helper is private; we
         // exercise it via a YAML containing a non-ASCII comment.
         let yaml = "# café 日本語\ndatabases:\n  p:\n    url: \"sqlite::memory:\"\n";
-        // Note: serde_yml strips comments, but expand_env runs on the raw
+        // Note: serde_yaml_ng strips comments, but expand_env runs on the raw
         // text *before* parsing. If the helper corrupted UTF-8, the parse
         // would fail because the multibyte sequence would be mangled into
-        // an invalid byte run inside the string we hand to serde_yml.
+        // an invalid byte run inside the string we hand to serde_yaml_ng.
         let c = cfg(yaml);
         assert!(matches!(c.databases["p"].driver, DriverKind::Sqlite));
     }
@@ -1739,14 +1747,18 @@ databases:
             entry_err(&format!("{base}    ssh: {{ host: b, user: t }}\n"))
                 .contains("needs `password` or `private_key`")
         );
-        assert!(entry_err(&format!(
-            "{base}    ssh: {{ host: b, user: t, password: p, passphrase: x }}\n"
-        ))
-        .contains("`ssh.passphrase` is set without `ssh.private_key`"));
-        assert!(entry_err(&format!(
-            "{base}    ssh: {{ host: b, user: t, password: p, host_key: \"MD5:aa\" }}\n"
-        ))
-        .contains("`ssh.host_key` must be an OpenSSH SHA-256 fingerprint"));
+        assert!(
+            entry_err(&format!(
+                "{base}    ssh: {{ host: b, user: t, password: p, passphrase: x }}\n"
+            ))
+            .contains("`ssh.passphrase` is set without `ssh.private_key`")
+        );
+        assert!(
+            entry_err(&format!(
+                "{base}    ssh: {{ host: b, user: t, password: p, host_key: \"MD5:aa\" }}\n"
+            ))
+            .contains("`ssh.host_key` must be an OpenSSH SHA-256 fingerprint")
+        );
         assert!(entry_err(
             "    driver: sqlite\n    database: a.db\n    ssh: { host: b, user: t, password: p }\n"
         )
@@ -1794,9 +1806,11 @@ databases:
         for mode in ["disable", "prefer", "require", "verify-ca", "verify-full"] {
             assert!(modes.contains(mode), "TlsMode lacks {mode}");
         }
-        assert!(schema["definitions"]["TlsConfig"]["properties"]
-            .get("client_key")
-            .is_some());
+        assert!(
+            schema["definitions"]["TlsConfig"]["properties"]
+                .get("client_key")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1834,8 +1848,10 @@ databases:
     #[test]
     fn pool_numbers_are_bounded() {
         let base = "    driver: sqlite\n    database: a.db\n";
-        assert!(entry_err(&format!("{base}    pool: {{ max: 0 }}\n"))
-            .contains("`pool.max` must be 1-500"));
+        assert!(
+            entry_err(&format!("{base}    pool: {{ max: 0 }}\n"))
+                .contains("`pool.max` must be 1-500")
+        );
         assert!(
             entry_err(&format!("{base}    pool: {{ max: 1000000000 }}\n")).contains("`pool.max`")
         );
@@ -1843,10 +1859,12 @@ databases:
             entry_err(&format!("{base}    pool: {{ acquire_timeout_ms: 0 }}\n"))
                 .contains("acquire_timeout_ms")
         );
-        assert!(entry_err(&format!(
-            "{base}    pool: {{ idle_timeout_ms: 999999999999 }}\n"
-        ))
-        .contains("idle_timeout_ms"));
+        assert!(
+            entry_err(&format!(
+                "{base}    pool: {{ idle_timeout_ms: 999999999999 }}\n"
+            ))
+            .contains("idle_timeout_ms")
+        );
         entry_ok(&format!(
             "{base}    pool: {{ max: 500, idle_timeout_ms: 0, acquire_timeout_ms: 600000 }}\n"
         ));

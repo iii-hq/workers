@@ -18,28 +18,24 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use crate::manager::RuntimeManager;
 
 pub const RUN_ID: &str = "sandbox-code-runner::run";
-pub const RUN_DESC: &str =
-    "Run code in an isolated microVM with outbound network. One-shot by default: nothing \
+pub const RUN_DESC: &str = "Run code in an isolated microVM with outbound network. One-shot by default: nothing \
      persists and no runtime_id is returned. keep: true keeps the VM and returns its \
      runtime_id to reuse until sandbox-code-runner::teardown or the idle TTL reaps it. A \
      failing script is a response, not an error.";
 
 pub const TEARDOWN_ID: &str = "sandbox-code-runner::teardown";
-pub const TEARDOWN_DESC: &str =
-    "Destroy a runtime: unregister its bus functions, stop its microVM(s) and free the slot. \
+pub const TEARDOWN_DESC: &str = "Destroy a runtime: unregister its bus functions, stop its microVM(s) and free the slot. \
      Pass exactly one of runtime_id (from a keep: true run) or namespace (a register_function \
      namespace, e.g. \"app\" for app::greet).";
 
 pub const REGISTER_ID: &str = "sandbox-code-runner::register_function";
-pub const REGISTER_DESC: &str =
-    "Publish a bus function whose handler runs in a microVM; no runtime_id needed. source \
+pub const REGISTER_DESC: &str = "Publish a bus function whose handler runs in a microVM; no runtime_id needed. source \
      must define handler(payload) in lang; each call runs it and returns its JSON result. The \
      namespace (function_id before `::`) shares one runtime per lang; its functions stop \
      resolving once torn down or idle-reaped.";
 
 pub const LIST_RUNTIMES_ID: &str = "sandbox-code-runner::list_runtimes";
-pub const LIST_RUNTIMES_DESC: &str =
-    "List every runtime this worker holds (kept runs and register_function namespaces), \
+pub const LIST_RUNTIMES_DESC: &str = "List every runtime this worker holds (kept runs and register_function namespaces), \
      newest first, with runtime_id, lang, sandbox_id, created_at_ms and registered function \
      ids. One-shot runs never appear.";
 

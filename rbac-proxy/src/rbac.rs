@@ -30,7 +30,7 @@ use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -163,10 +163,11 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
         }
     }
 
-    if let Some(last) = parts.last() {
-        if !last.is_empty() && !value.ends_with(last) {
-            return false;
-        }
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+        && !value.ends_with(last)
+    {
+        return false;
     }
 
     true
@@ -306,10 +307,10 @@ fn parse_match_pattern(s: &str) -> Option<String> {
 
 /// VENDORED from rbac_config.rs.
 fn parse_metadata_value(value: Value) -> MetadataValue {
-    if let Some(s) = value.as_str() {
-        if let Some(pattern) = parse_match_pattern(s) {
-            return MetadataValue::Wildcard(WildcardPattern::new(&pattern));
-        }
+    if let Some(s) = value.as_str()
+        && let Some(pattern) = parse_match_pattern(s)
+    {
+        return MetadataValue::Wildcard(WildcardPattern::new(&pattern));
     }
     MetadataValue::Exact(value)
 }
@@ -1035,7 +1036,7 @@ mod tests {
                   public: true
                   name: match("*public*")
         "#;
-        let parsed: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let parsed: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(parsed.auth_function_id.as_deref(), Some("my-project::auth"));
         assert_eq!(parsed.expose_functions.len(), 3);
 
@@ -1305,7 +1306,7 @@ mod tests {
                   public: true
                 namespace: billing
         "#;
-        let c: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let c: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let none = HashMap::new();
         assert!(allowed_in("orders", "api::x", &c, &none, &[], &[]));
         assert!(!allowed_in(
@@ -1331,14 +1332,18 @@ mod tests {
     #[test]
     fn function_filter_rejects_unknown_keys_and_ambiguous_maps() {
         // A typo must not silently widen or narrow the rule.
-        assert!(serde_json::from_value::<FunctionFilter>(
-            json!({ "match": "api::*", "namesapce": "orders" })
-        )
-        .is_err());
-        assert!(serde_json::from_value::<FunctionFilter>(
-            json!({ "match": "api::*", "metadata": { "public": true } })
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<FunctionFilter>(
+                json!({ "match": "api::*", "namesapce": "orders" })
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<FunctionFilter>(
+                json!({ "match": "api::*", "metadata": { "public": true } })
+            )
+            .is_err()
+        );
         assert!(serde_json::from_value::<FunctionFilter>(json!({})).is_err());
     }
 

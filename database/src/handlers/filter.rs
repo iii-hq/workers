@@ -322,10 +322,10 @@ pub fn compile_where_typed(
         }
         // With the catalog at hand, a column the table does not have is the
         // caller's mistake, said plainly — not a database error later.
-        if let Some(types) = column_types {
-            if !types.contains_key(&f.column) {
-                return Err(invalid(format!("the table has no column `{}`", f.column)));
-            }
+        if let Some(types) = column_types
+            && !types.contains_key(&f.column)
+        {
+            return Err(invalid(format!("the table has no column `{}`", f.column)));
         }
         // Check operands by position, not by count. Counting accepts
         // `{op: equals, value2: 5}` — one operand supplied for a one-operand
@@ -539,7 +539,7 @@ pub fn check_raw_filter(driver: DriverKind, raw: &str) -> Result<(), DbError> {
                         return Err(refuse(
                             "a backslash inside a quoted value is ambiguous here (its meaning \
                              depends on server settings); use another character",
-                        ))
+                        ));
                     }
                     Backslash::Literal => {}
                 }
@@ -621,16 +621,16 @@ pub fn check_raw_filter(driver: DriverKind, raw: &str) -> Result<(), DbError> {
             }
             b';' => return Err(refuse("`;` would start another statement")),
             b'-' if b.get(i + 1) == Some(&b'-') => {
-                return Err(refuse("comments (`--`) are not allowed"))
+                return Err(refuse("comments (`--`) are not allowed"));
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                return Err(refuse("comments (`/* */`) are not allowed"))
+                return Err(refuse("comments (`/* */`) are not allowed"));
             }
             b'#' if driver == DriverKind::Mysql => {
-                return Err(refuse("comments (`#`) are not allowed"))
+                return Err(refuse("comments (`#`) are not allowed"));
             }
             b'?' if driver != DriverKind::Postgres => {
-                return Err(refuse("placeholders (?) are not allowed; write the value"))
+                return Err(refuse("placeholders (?) are not allowed; write the value"));
             }
             b'(' => {
                 depth += 1;
@@ -1023,9 +1023,11 @@ mod tests {
             nulls: None,
             mode: SortMode::Natural,
         }];
-        assert!(compile_order_by(DriverKind::Postgres, &s)
-            .unwrap()
-            .contains("regexp_replace"));
+        assert!(
+            compile_order_by(DriverKind::Postgres, &s)
+                .unwrap()
+                .contains("regexp_replace")
+        );
         // No portable equivalent — order plainly instead of approximating.
         assert_eq!(
             compile_order_by(DriverKind::Sqlite, &s).unwrap(),
@@ -1138,21 +1140,25 @@ mod tests {
         // A sqlite bracket identifier cannot be used to hide a quote: the
         // quote inside it is part of the identifier, and the `)` after it is
         // code.
-        assert!(compile_where(
-            DriverKind::Sqlite,
-            &[raw("[x'] = 1 ) ; DELETE FROM t --'")],
-            1
-        )
-        .is_err());
+        assert!(
+            compile_where(
+                DriverKind::Sqlite,
+                &[raw("[x'] = 1 ) ; DELETE FROM t --'")],
+                1
+            )
+            .is_err()
+        );
         // Postgres dollar quotes: what is inside is data; a quote inside one
         // does not open a string that could hide a `)`.
         assert!(compile_where(DriverKind::Postgres, &[raw("note = $$a);--$$")], 1).is_ok());
-        assert!(compile_where(
-            DriverKind::Postgres,
-            &[raw("note = $q$ ' $q$ ) OR (1=1")],
-            1
-        )
-        .is_err());
+        assert!(
+            compile_where(
+                DriverKind::Postgres,
+                &[raw("note = $q$ ' $q$ ) OR (1=1")],
+                1
+            )
+            .is_err()
+        );
         // `$` inside an identifier is not a dollar quote: `a$b$ ) $b$` is an
         // identifier followed by a stray `)`.
         assert!(compile_where(DriverKind::Postgres, &[raw("a$b$ ) $b$ = 1")], 1).is_err());
@@ -1160,12 +1166,14 @@ mod tests {
         // E-strings take backslash escapes on postgres.
         assert!(compile_where(DriverKind::Postgres, &[raw(r"note = E'a\') x'")], 1).is_ok());
         // Where a backslash's meaning depends on server settings, refuse it.
-        assert!(compile_where(
-            DriverKind::Postgres,
-            &[raw(r"note = 'a\' ) OR (1=1 --'")],
-            1
-        )
-        .is_err());
+        assert!(
+            compile_where(
+                DriverKind::Postgres,
+                &[raw(r"note = 'a\' ) OR (1=1 --'")],
+                1
+            )
+            .is_err()
+        );
         assert!(compile_where(DriverKind::Mysql, &[raw(r"note = 'a\' ) OR (1=1'")], 1).is_err());
         assert!(compile_where(DriverKind::Mysql, &[raw(r#"note = "a\" ) x""#)], 1).is_err());
         // sqlite has no backslash escapes at all.

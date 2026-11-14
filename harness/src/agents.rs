@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use iii_sdk::protocol::CallRequest;
 
@@ -1240,14 +1240,18 @@ mod tests {
                 ..Default::default()
             }));
         attach_preloaded_functions(&deps, &mut agent, &policy).await;
-        assert!(agent
-            .prompt
-            .starts_with("Identity.\n\n<preloaded_functions>"));
+        assert!(
+            agent
+                .prompt
+                .starts_with("Identity.\n\n<preloaded_functions>")
+        );
         assert!(agent.prompt.contains("### `harness::observe`"));
         assert!(!agent.prompt.contains("### `harness::unobserve`"));
-        assert!(agent
-            .prompt
-            .contains("NOT available in this session — do not call: `harness::unobserve`"));
+        assert!(
+            agent
+                .prompt
+                .contains("NOT available in this session — do not call: `harness::unobserve`")
+        );
         assert_eq!(agent.contract_digests["harness::unobserve"], None);
     }
 }

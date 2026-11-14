@@ -47,7 +47,8 @@ fn manifest_subcommand_emits_valid_json() {
 fn worker_manifest_uses_latest_runtime_dependencies() {
     let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
     let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&source).expect("parse worker manifest");
     let dependencies = manifest["dependencies"]
         .as_mapping()
         .expect("dependencies is a mapping");
@@ -71,13 +72,13 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         "fp",
     ] {
         assert_eq!(
-            dependencies.get(serde_yaml::Value::String(worker.into())),
-            Some(&serde_yaml::Value::String("latest".into())),
+            dependencies.get(serde_yaml_ng::Value::String(worker.into())),
+            Some(&serde_yaml_ng::Value::String("latest".into())),
             "unexpected {worker} dependency selector"
         );
     }
 
     for retired in ["iii-state", "iii-queue", "iii-cron", "iii-stream"] {
-        assert!(!dependencies.contains_key(serde_yaml::Value::String(retired.into())));
+        assert!(!dependencies.contains_key(serde_yaml_ng::Value::String(retired.into())));
     }
 }

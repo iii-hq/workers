@@ -21,16 +21,16 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{Mutex, Notify};
 
-use crate::bridge::{now_ms, Bridge, Bridges};
+use crate::bridge::{Bridge, Bridges, now_ms};
 use crate::config::SharedConfig;
 use crate::events::{ActivityEvent, DeviceChangedEvent, Events, MediaChangedEvent};
 use crate::input;
-use crate::simctl::{is_udid, Device, Runtime};
+use crate::simctl::{Device, Runtime, is_udid};
 use crate::tenant::{self, Tenant};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -246,12 +246,11 @@ impl Sim {
         let lock = self.device_lock(udid);
         let _guard = lock.lock().await;
         self.release(&tenant.name, udid).await;
-        if device.state != "Shutdown" {
-            if let Err(e) = tenant.set.run(&["shutdown", udid]).await {
-                if !e.contains("current state: Shutdown") {
-                    return Err(e);
-                }
-            }
+        if device.state != "Shutdown"
+            && let Err(e) = tenant.set.run(&["shutdown", udid]).await
+            && !e.contains("current state: Shutdown")
+        {
+            return Err(e);
         }
         self.poke.notify_one();
         self.device(tenant, udid).await

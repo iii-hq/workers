@@ -7,7 +7,7 @@ mod options;
 mod questions;
 pub use options::RequestOptions;
 
-pub use answers::{unique_map, validate_answer, Answer};
+pub use answers::{Answer, unique_map, validate_answer};
 pub use encoding::{
     encode_evaluation, encode_evaluation_with_limits, validate_request,
     validate_request_with_limits,

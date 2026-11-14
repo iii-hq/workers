@@ -3,7 +3,7 @@
 [package]
 name = "voice"
 version = "0.2.2"
-edition = "2021"
+edition = "2024"
 description = "Voice worker for iii — bundled or whisper.cpp speech-to-text for dictation and file transcription, plus read-aloud, with a console mic chip and voice page"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
@@ -29,7 +29,7 @@ sherpa-onnx = "=1.13.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "fs", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

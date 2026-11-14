@@ -8,7 +8,7 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
-use support::{create_request, git, init_repo, make_env, test_config, TestEnv};
+use support::{TestEnv, create_request, git, init_repo, make_env, test_config};
 use worktree::functions::{create, prune, remove};
 use worktree::trash;
 use worktree::types::now_ms;

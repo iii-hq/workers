@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::types::message::AgentMessage;
 use crate::types::model::{AgentFunction, ThinkingLevel};

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 
 use web::config::WebConfig;
 use web::{configuration, functions, manifest};
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
                 return None;
             }
         };
-        match serde_yaml::from_str::<serde_json::Value>(&contents) {
+        match serde_yaml_ng::from_str::<serde_json::Value>(&contents) {
             Ok(v) => match WebConfig::from_json(&v) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {

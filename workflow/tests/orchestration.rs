@@ -6,11 +6,11 @@
 /// the tick loop.
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use workflow::{
     dag,
-    functions::tick::{decide, TickDecision},
-    reconcile::{classify_terminal, NodeOutcome},
+    functions::tick::{TickDecision, decide},
+    reconcile::{NodeOutcome, classify_terminal},
     types::{
         AgentSpec, FanoutSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef, RunStatus,
         WorkflowDef, WorkflowRunRecord,
@@ -768,7 +768,7 @@ fn empty_fanout_completes_run() {
 
 #[test]
 fn sweep_refires_then_fails_after_budget() {
-    use workflow::timeout::{timeout_action, TimeoutAction};
+    use workflow::timeout::{TimeoutAction, timeout_action};
     use workflow::types::*;
     // A Running node, pending_at far in the past, max_retries = 1.
     let mut cp = NodeCheckpoint {

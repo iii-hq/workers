@@ -22,10 +22,10 @@
 //! unrecoverable: the asking runtime dies with `node-engine::oom`, which is
 //! the same way exceeding `heap_mb` ends.
 
-use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
+use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use deno_core::v8;
 
