@@ -456,7 +456,7 @@ function WorkersPage({
         },
         {
           id: 'add',
-          title: 'Add worker…',
+          title: 'Add worker',
           detail: 'Declare one from the registry or a local directory',
           keywords: ['compose', 'install', 'registry'],
           run: () => setAdding(true),

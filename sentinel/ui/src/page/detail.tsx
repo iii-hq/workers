@@ -234,7 +234,7 @@ export function GroupDetailView({
           hint={repositoryName ? `${repositoryName}/` : 'trace only'}
           onSelect={() => investigate('assisted')}
         />
-        <MenuItem label="Investigate with…" hint="pick a model" onSelect={() => setPicking(true)} />
+        <MenuItem label="Investigate with" hint="pick a model" onSelect={() => setPicking(true)} />
         <MenuItem label="Open in chat" hint="no first pass" onSelect={() => investigate('chat')} />
       </DropdownMenuContent>
     </DropdownMenu>
@@ -279,7 +279,7 @@ export function GroupDetailView({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Ignore until…</DropdownMenuLabel>
+        <DropdownMenuLabel>Ignore until</DropdownMenuLabel>
         <MenuItem label="Forever" onSelect={() => act(() => api.ignore(group.id, { kind: 'forever' }), 'Ignored forever.')} />
         <MenuItem
           label="50 more occurrences"

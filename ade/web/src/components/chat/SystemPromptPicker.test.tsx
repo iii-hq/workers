@@ -40,7 +40,7 @@ describe('system prompt strategy', () => {
 
     expect(options).toContain('type="radio"')
     expect(options).toContain('Review the proposed changes')
-    expect(options).toContain('Custom…')
+    expect(options).toContain('Custom')
     expect(options).toContain('aria-hidden="true"')
   })
 })

@@ -614,7 +614,7 @@ export function GitLogTab({
         {
           id: 'push',
           group: 'sync',
-          label: 'Push…',
+          label: 'Push',
           short: 'Push',
           icon: <ArrowUpFromLine aria-hidden />,
           primary: true,
@@ -665,7 +665,7 @@ export function GitLogTab({
         {
           id: 'rename',
           group: 'edit',
-          label: 'Rename…',
+          label: 'Rename',
           icon: <PenLine aria-hidden />,
           shortcut: 'F2',
           in: 'menu',

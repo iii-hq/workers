@@ -106,9 +106,25 @@
   padding: 6px 8px 12px;
 }
 
-/* entry rows: scope / key names are identifiers */
+/* entry rows: scope / key names are identifiers. Compact 32px rows with a
+   quiet glyph, the way the console's own navigation columns read. */
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list {
+  gap: 2px;
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item {
+  min-height: 32px;
+  gap: 8px;
+  padding: 4px 8px;
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item__icon {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item[data-selected="true"] .iii-ui-list-item__icon {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="state"] .state-ui-name {
   font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
   word-break: break-all;
 }
 /* Live-arrived rows flash with an accent wash that fades out. */

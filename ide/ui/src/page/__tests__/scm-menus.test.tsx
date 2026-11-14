@@ -148,24 +148,24 @@ describe('a change row menu', () => {
     const { ctx } = context()
     expect(shape(changeMenu(fileRow(entry('src/a.ts')), ctx))).toEqual([
       'Commit file…',
-      'Rollback…',
+      'Rollback',
       '---',
       'Show diff',
       'Show diff in a new tab',
       'Jump to source',
       { 'Copy path/reference': ['Absolute path', 'Path from root', 'File name'] },
       '---',
-      'Delete…',
+      'Delete',
       'Add to VCS!',
       'Add to .gitignore!',
       '---',
       'Create patch from local changes',
       'Copy as patch to clipboard',
-      'Stash changes…',
+      'Stash changes',
       '---',
       'Refresh',
       '---',
-      { Git: ['Compare with…', 'Show history'] },
+      { Git: ['Compare with', 'Show history'] },
     ])
   })
 
@@ -193,8 +193,8 @@ describe('a change row menu', () => {
     const { ctx, calls } = context()
     const file = entry('notes/new file.md', 'untracked')
     const items = changeMenu(fileRow(file), ctx)
-    expect(shape(items)).toContain('Rollback…!')
-    expect(shape(items)).toContainEqual({ Git: ['Compare with…!', 'Show history!'] })
+    expect(shape(items)).toContain('Rollback!')
+    expect(shape(items)).toContainEqual({ Git: ['Compare with!', 'Show history!'] })
     select(items, 'Add to VCS')
     select(items, 'Add to .gitignore')
     expect(calls).toEqual([
@@ -207,7 +207,7 @@ describe('a change row menu', () => {
     const { ctx } = context()
     const items = shape(changeMenu(fileRow(entry('gone.ts', 'deleted')), ctx))
     expect(items).toContain('Jump to source!')
-    expect(items).toContain('Delete…!')
+    expect(items).toContain('Delete!')
   })
 
   it('ignores an unversioned folder whole and acts on every file under it', () => {
@@ -226,7 +226,7 @@ describe('a change row menu', () => {
     const items = changeMenu(row, ctx)
     expect(shape(items)).toEqual([
       'Commit files…',
-      'Rollback…!',
+      'Rollback!',
       '---',
       { 'Copy path/reference': ['Absolute path', 'Path from root'] },
       '---',
@@ -235,7 +235,7 @@ describe('a change row menu', () => {
       '---',
       'Create patch from local changes',
       'Copy as patch to clipboard',
-      'Stash changes…',
+      'Stash changes',
       '---',
       'Refresh',
       '---',
@@ -266,7 +266,7 @@ describe('a change row menu', () => {
     const labels = shape(items)
     expect(labels).not.toContainEqual(expect.objectContaining({ 'Copy path/reference': expect.anything() }))
     expect(labels).not.toContainEqual(expect.objectContaining({ Git: expect.anything() }))
-    select(items, 'Rollback…')
+    select(items, 'Rollback')
     select(items, 'Copy as patch to clipboard')
     expect(calls).toEqual([
       ['rollback', tracked],
@@ -277,7 +277,7 @@ describe('a change row menu', () => {
   it('holds back what writes while another operation runs', () => {
     const { ctx } = context(true)
     const labels = shape(changeMenu(fileRow(entry('a.ts')), ctx))
-    for (const label of ['Rollback…!', 'Delete…!', 'Stash changes…!']) expect(labels).toContain(label)
+    for (const label of ['Rollback!', 'Delete!', 'Stash changes!']) expect(labels).toContain(label)
     // Reading and copying never wait.
     for (const label of ['Show diff', 'Copy as patch to clipboard', 'Refresh']) expect(labels).toContain(label)
   })
@@ -299,15 +299,15 @@ describe('a stash row menu', () => {
     expect(shape(items)).toEqual([
       'Pop',
       'Apply',
-      'Unstash…',
+      'Unstash',
       '---',
-      'Drop…',
-      'Clear…',
+      'Drop',
+      'Clear',
       '---',
       'Show diff',
       'Show diff in a new tab',
     ])
-    for (const label of ['Pop', 'Apply', 'Unstash…', 'Drop…', 'Clear…', 'Show diff', 'Show diff in a new tab']) {
+    for (const label of ['Pop', 'Apply', 'Unstash', 'Drop', 'Clear', 'Show diff', 'Show diff in a new tab']) {
       select(items, label)
     }
     expect(calls).toEqual([
@@ -327,10 +327,10 @@ describe('a stash row menu', () => {
     expect(shape(items)).toEqual([
       'Pop!',
       'Apply!',
-      'Unstash…!',
+      'Unstash!',
       '---',
-      'Drop…!',
-      'Clear…!',
+      'Drop!',
+      'Clear!',
       '---',
       'Show diff',
       'Show diff in a new tab',

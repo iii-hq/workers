@@ -106,7 +106,7 @@ export function TaskRow({
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={onOpen}>Open details</DropdownMenuItem>
             <DropdownMenuItem onSelect={onOpenConversation}>Open conversation</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onReplace}>Replace…</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onReplace}>Replace</DropdownMenuItem>
             <DropdownMenuItem onSelect={onCopyId}>Copy observer id</DropdownMenuItem>
             <DropdownMenuItem onSelect={onRemove}>Remove</DropdownMenuItem>
           </DropdownMenuContent>

@@ -106,7 +106,7 @@ export function SystemPromptPickerPanel({
       description: entry.description,
     })),
     ...(allowCustom
-      ? [{ value: 'custom', label: 'Custom…', description: undefined }]
+      ? [{ value: 'custom', label: 'Custom', description: undefined }]
       : []),
   ]
 
@@ -343,7 +343,7 @@ export function SystemPromptPicker({
             description={e.description}
           />
         ))}
-        {allowCustom ? <PromptItem value="custom" label="Custom…" /> : null}
+        {allowCustom ? <PromptItem value="custom" label="Custom" /> : null}
       </SelectContent>
     </SelectPrimitive.Root>
   )

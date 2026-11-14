@@ -965,11 +965,11 @@ export function BoardPage({
       onSelect: () => selectView(view),
     })),
     ...(edited && filtering
-      ? [{ id: 'save-view', label: 'Save filters as a view…', icon: <Bookmark size={16} />, onSelect: () => setSavingView(true) }]
+      ? [{ id: 'save-view', label: 'Save filters as a view', icon: <Bookmark size={16} />, onSelect: () => setSavingView(true) }]
       : []),
     ...(filtering ? [{ id: 'clear', label: 'Clear filters', icon: <X size={16} />, onSelect: () => setFilters(EMPTY_FILTERS) }] : []),
     ...(activeView.id !== ALL_VIEW.id
-      ? [{ id: 'delete-view', label: 'Delete this view…', icon: <Trash2 size={16} />, onSelect: () => void removeView(activeView) }]
+      ? [{ id: 'delete-view', label: 'Delete this view', icon: <Trash2 size={16} />, onSelect: () => void removeView(activeView) }]
       : []),
   ]
 

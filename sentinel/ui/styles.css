@@ -35,16 +35,16 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-list {
-  gap: 14px;
-  padding: 16px 24px 40px;
+  gap: 12px;
+  padding: 16px 16px 40px;
 }
 
 /* A reading column, not a full-bleed sheet. */
 [data-iii-ui="sentinel"] .sentinel-ui-detail {
-  gap: 18px;
+  gap: 16px;
   width: min(100%, 1080px);
   margin: 0 auto;
-  padding: 22px 24px 56px;
+  padding: 20px 16px 56px;
 }
 
 /* Each section is worth its own height: a flex child shrinks before its

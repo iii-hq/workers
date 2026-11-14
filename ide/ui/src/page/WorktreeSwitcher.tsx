@@ -860,7 +860,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       {actionRow('update', 'Update Project', ArrowDownToLine, () => ops.updateProject(), detachedReason)}
       {actionRow(
         'push',
-        'Push…',
+        'Push',
         ArrowUpFromLine,
         () => {
           // The confirmation is a dialog of its own: the menu gives way.

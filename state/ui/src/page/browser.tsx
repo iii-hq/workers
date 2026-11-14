@@ -34,7 +34,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ArrowLeft, Database, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Database, FolderClosed, KeyRound, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
@@ -111,6 +111,7 @@ function ColumnBody({
               aria-current={row === selected ? 'true' : undefined}
               className={flashed.has(row) ? 'state-ui-flash' : undefined}
               onClick={() => onOpen(row)}
+              leading={noun === 'scope' ? <FolderClosed size={16} aria-hidden /> : <KeyRound size={16} aria-hidden />}
               label={<span className="state-ui-name">{row}</span>}
             />
           ))}

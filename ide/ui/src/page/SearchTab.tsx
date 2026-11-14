@@ -58,7 +58,7 @@ const DEBOUNCE_MS = 220
 const ROW_HEIGHT = 22
 const MIN_AUTO_QUERY = 2
 
-/** An outside request to search: "Find in folder…" from the explorer. */
+/** An outside request to search: "Find in folder" from the explorer. */
 export interface SearchRequest {
   seq: number
   query?: string

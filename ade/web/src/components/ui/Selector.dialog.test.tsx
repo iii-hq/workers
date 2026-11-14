@@ -39,7 +39,7 @@ async function mountInDialog() {
     root.render(
       <Dialog open>
         <DialogContent>
-          <DialogTitle>Investigate with…</DialogTitle>
+          <DialogTitle>Investigate with</DialogTitle>
           <DialogDescription>For this investigation only.</DialogDescription>
           <Selector
             aria-label="Model"

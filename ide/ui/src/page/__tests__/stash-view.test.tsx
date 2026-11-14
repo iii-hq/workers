@@ -115,13 +115,13 @@ afterEach(() => vi.clearAllMocks())
 describe("a stash's menu", () => {
   it('clears every stash, only once confirmed', async () => {
     const { host, choose, clear } = await render()
-    choose('Clear…')
+    choose('Clear')
     expect(clear().open).toBe(true)
     clear().onCancel()
     expect(clear().open).toBe(false)
     expect(gitStashClear).not.toHaveBeenCalled()
 
-    choose('Clear…')
+    choose('Clear')
     clear().onConfirm()
     await settle()
     expect(clear().open).toBe(false)
@@ -130,14 +130,14 @@ describe("a stash's menu", () => {
 
   it('unstashes here with the boxes ticked, or onto a new branch, each time from fresh boxes', async () => {
     const { host, choose, unstash, box } = await render()
-    choose('Unstash…')
+    choose('Unstash')
     expect(unstash().open).toBe(true)
     box('Reinstate index').onChange({ currentTarget: { checked: true } })
     unstash().onConfirm('')
     await settle()
     expect(gitStashApply).toHaveBeenCalledWith(host, '/repo', 'stash@{0}', false, true)
 
-    choose('Unstash…')
+    choose('Unstash')
     expect(box('Pop stash').checked).toBe(false)
     expect(box('Reinstate index').checked).toBe(false)
     vi.mocked(gitStashApply).mockClear()

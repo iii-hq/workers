@@ -886,7 +886,7 @@ export type ConvertOutcome = {
 }
 
 /**
- * "Create from a label…". Pick a label, then create a new release/project from its tickets or add them to an
+ * "Create from a label". Pick a label, then create a new release/project from its tickets or add them to an
  * existing one. A label that belongs to a family (`phase-0` … `phase-6`) also offers one entity per label, each
  * with an editable name. Every number comes from a dry run of the very call the button makes.
  */

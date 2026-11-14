@@ -2075,7 +2075,7 @@ export function ShellExplorerPage({
       commands?.register([
         {
           id: 'open-file',
-          title: 'Go to file…',
+          title: 'Go to file',
           detail: 'Find a file in this folder by typing any part of its path',
           keywords: ['quick open', 'open file', 'path', 'cmd+p', 'ctrl+p'],
           shortcut: QUICK_OPEN_SHORTCUT,
@@ -2205,7 +2205,7 @@ export function ShellExplorerPage({
         },
         {
           id: 'go-to-line',
-          title: 'Go to line…',
+          title: 'Go to line',
           keywords: ['line', 'jump'],
           enabled: () => activeTabOf(tabsRef.current)?.target.kind === 'file',
           run: () => setGoToLineSeq((value) => value + 1),
@@ -2243,7 +2243,7 @@ export function ShellExplorerPage({
         },
         {
           id: 'compare-active',
-          title: 'Compare the active file with…',
+          title: 'Compare the active file with',
           detail: 'A branch, tag or commit',
           keywords: ['diff', 'git', 'revision', 'branch', 'tag'],
           enabled: () => tabsRef.current.active !== null,
@@ -2254,7 +2254,7 @@ export function ShellExplorerPage({
         },
         {
           id: 'new-file',
-          title: 'New file…',
+          title: 'New file',
           keywords: ['create', 'explorer'],
           run: () => {
             setSideTab('files')
@@ -2616,7 +2616,7 @@ export function ShellExplorerPage({
                       Show hidden files
                     </DropdownMenuCheckboxItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => explorerActions.newWorker('workers')}>New worker…</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => explorerActions.newWorker('workers')}>New worker</DropdownMenuItem>
                     <DropdownMenuItem onSelect={() => workspaceTree.refresh()}>Refresh explorer</DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onSelect={() => setCollapsed(true)}>Hide sidebar</DropdownMenuItem>

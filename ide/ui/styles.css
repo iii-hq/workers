@@ -694,9 +694,11 @@
     flex: none;
     flex-direction: column;
     width: auto;
-    gap: 2px;
-    padding: 0;
+    gap: 4px;
+    padding: 8px 6px;
   }
+  .shui-activity-bar.vertical .shui-activity-item,
+  .shui-activity-bar.vertical .shui-activity-more { width: 32px; height: 32px; }
   /* Each view is a shadcn Toggle; the strip only sizes it. The pressed one
      sits on the neutral selected fill in ink, the others are faint until
      hovered: the same selection every list in the console uses. */

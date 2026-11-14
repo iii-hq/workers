@@ -518,7 +518,7 @@ export function CronSchedulesPage({
   }
 
   // A context from the palette source (a schedule by observer id) or the
-  // setup-time "New schedule…" command (`{ action: 'new' }`). A schedule is
+  // setup-time "New schedule" command (`{ action: 'new' }`). A schedule is
   // left unapplied until it shows up in `tasks` — the page can mount before
   // the first fetch resolves.
   const appliedContextRef = useRef(0)

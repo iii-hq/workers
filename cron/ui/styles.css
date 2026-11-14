@@ -60,8 +60,9 @@
 [data-iii-ui='cron'] .cron-ui-composer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 6px 6px 12px;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 6px 6px 14px;
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   min-width: 0;

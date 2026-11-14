@@ -159,7 +159,7 @@ describe("the Commit tab's change menu", () => {
     const { props, choose } = render()
     choose(modified, 'Jump to source')
     expect(props.onOpenFile).toHaveBeenCalledWith('src/a.ts')
-    choose(modified, 'Git', 'Compare with…')
+    choose(modified, 'Git', 'Compare with')
     expect(props.onCompare).toHaveBeenCalledWith('src/a.ts')
     choose(modified, 'Git', 'Show history')
     expect(props.onShowHistory).toHaveBeenCalledWith(['src/a.ts'])
@@ -167,13 +167,13 @@ describe("the Commit tab's change menu", () => {
 
   it("deletes a file through the page's delete, only once confirmed", async () => {
     const { scm, props, choose, dialog } = render()
-    choose(unversioned, 'Delete…')
+    choose(unversioned, 'Delete')
     expect(dialog()).toMatchObject({ open: true, title: 'Delete n.md?' })
     dialog().onCancel()
     expect(dialog().open).toBe(false)
     expect(scm.run).not.toHaveBeenCalled()
 
-    choose(unversioned, 'Delete…')
+    choose(unversioned, 'Delete')
     dialog().onConfirm()
     expect(dialog().open).toBe(false)
     expect(scm.run).toHaveBeenCalledWith('delete', expect.any(Function))

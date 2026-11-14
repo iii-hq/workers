@@ -48,7 +48,7 @@ interface CommitViewProps {
   onOpenChange: (entry: GitComparisonEntry, pin: boolean) => void
   /** The working copy, in an editor tab. */
   onOpenFile: (path: string) => void
-  /** "Compare with…": the file beside a revision picked in the tab. */
+  /** "Compare with": the file beside a revision picked in the tab. */
   onCompare: (path: string) => void
   /** The Git window's log, narrowed to these root-relative paths. */
   onShowHistory: (paths: string[]) => void

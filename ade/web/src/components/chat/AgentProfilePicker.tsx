@@ -422,7 +422,7 @@ export function AgentProfilePicker({
           }}
         >
           <Settings2 aria-hidden className="size-4 shrink-0 text-ink-faint" />
-          <span className="min-w-0 flex-1 truncate">Configure an agent…</span>
+          <span className="min-w-0 flex-1 truncate">Configure an agent</span>
           <ArrowUpRight
             aria-hidden
             className="size-4 shrink-0 text-ink-faint opacity-0 transition-opacity duration-100 group-hover/configure:opacity-100 group-focus-visible/configure:opacity-100"

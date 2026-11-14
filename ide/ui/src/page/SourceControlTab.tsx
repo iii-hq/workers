@@ -50,11 +50,11 @@ interface SourceControlTabProps {
   onOpenDiff: (path: string, source: DiffSource, pin: boolean) => void
   /** An image has no text diff: its row opens the file. */
   onOpenFile: (path: string) => void
-  /** "Compare with…" from a change's menu. */
+  /** "Compare with" from a change's menu. */
   onCompare: (path: string) => void
   /** "Show history" from a change's menu: the Git log narrowed to these paths. */
   onShowHistory: (paths: string[]) => void
-  /** "Delete…" from a change's menu: the Explorer's delete, so tabs on the file close. */
+  /** "Delete" from a change's menu: the Explorer's delete, so tabs on the file close. */
   onDeleteFile: (path: string) => Promise<void>
   /** The repository setup's terminal steps (`gh auth login`, installing gh). */
   onRunInTerminal?: (command: string) => void
