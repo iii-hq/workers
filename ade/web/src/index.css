@@ -330,6 +330,9 @@
      keeps frame edges square and `full` is for dots and round buttons. */
   --radius-none: 0px;
   --radius-xs: calc(var(--radius) - 8px);
+  /* Text fields, selects and input groups: a 32px control on the 0.9rem
+     radius reads as a pill, so they take a fixed 8px corner. */
+  --radius-field: 0.5rem;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

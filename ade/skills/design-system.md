@@ -219,6 +219,7 @@ while generating. Reduced motion keeps these states static.
 | `--radius` | 0.9rem (the design system's one radius) |
 | `radius-xs` / `radius-sm` / `radius-md` | radius − 8px / − 4px / − 2px |
 | `radius-lg` / `radius-xl` | radius / radius + 4px |
+| `radius-field` | 0.5rem: text inputs, selects and input groups (a 32px control on the 0.9rem corner reads as a pill); textareas keep `radius-lg` |
 | `radius-none` / `radius-full` | 0 / 9999px |
 | `shadow-2xs` … `shadow-2xl` | the design-system shadow scale (`shadow-sm`, `shadow-md`, `shadow-lg`, …) |
 | `shadow-raised` / `shadow-floating` (light) | `shadow-md` / `shadow-lg` |

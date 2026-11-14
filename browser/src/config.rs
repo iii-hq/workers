@@ -367,7 +367,7 @@ impl Default for WorkerConfig {
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
             frame_density: DEFAULT_FRAME_DENSITY,
-            live_view_quality: 85,
+            live_view_quality: 70,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             default_origin_policy: None,
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(c.network_buffer, 500);
         assert_eq!(c.viewport_width, 1280);
         assert_eq!(c.viewport_height, 800);
-        assert_eq!(c.live_view_quality(), 85);
+        assert_eq!(c.live_view_quality(), 70);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);
