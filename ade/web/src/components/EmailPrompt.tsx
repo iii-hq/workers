@@ -122,11 +122,8 @@ export function EmailPrompt() {
     >
       <DialogContent
         className="flex w-[calc(100%-24px)] max-w-[420px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
-        onOpenAutoFocus={(event) => {
-          // The address field, not the close button, takes the first focus.
-          event.preventDefault()
-          inputRef.current?.focus()
-        }}
+        // The address field, not the close button, takes the first focus.
+        initialFocus={() => inputRef.current}
       >
         {sentTo ? (
           <div

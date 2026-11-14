@@ -1,4 +1,4 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { ImageOff, Maximize, X, ZoomIn, ZoomOut } from 'lucide-react'
 import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
@@ -102,6 +102,7 @@ export function ImageViewer({
   actions,
 }: ImageViewerProps) {
   const openerRef = React.useRef<HTMLElement | null>(null)
+  const popupRef = React.useRef<HTMLDivElement>(null)
   React.useLayoutEffect(() => {
     if (open) {
       const active = document.activeElement
@@ -109,23 +110,26 @@ export function ImageViewer({
     }
   }, [open])
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => onOpenChange(next)}
+    >
       <DialogPrimitive.Portal>
         <PortalScope>
-          <DialogPrimitive.Overlay className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/85" />
-          <DialogPrimitive.Content
+          <DialogPrimitive.Backdrop className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/85" />
+          <DialogPrimitive.Popup
+            ref={popupRef}
             className="iii-ui-motion-panel fixed inset-0 z-50 flex flex-col font-sans text-ink focus-visible:outline-none"
-            onOpenAutoFocus={(event) => {
-              event.preventDefault()
-              const content = event.currentTarget as HTMLElement | null
-              content
-                ?.querySelector<HTMLElement>('[data-image-viewer-root]')
-                ?.focus()
-            }}
-            onCloseAutoFocus={(event) => {
-              event.preventDefault()
+            // The stage, not the first button, takes focus as the viewer opens;
+            // the control that opened it gets focus back when it closes.
+            initialFocus={() =>
+              popupRef.current?.querySelector<HTMLElement>(
+                '[data-image-viewer-root]',
+              ) ?? null
+            }
+            finalFocus={() => {
               const opener = openerRef.current
-              if (opener?.isConnected) opener.focus()
+              return opener?.isConnected ? opener : null
             }}
           >
             <DialogPrimitive.Title className="sr-only">
@@ -143,7 +147,7 @@ export function ImageViewer({
               actions={actions}
               onClose={() => onOpenChange(false)}
             />
-          </DialogPrimitive.Content>
+          </DialogPrimitive.Popup>
         </PortalScope>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

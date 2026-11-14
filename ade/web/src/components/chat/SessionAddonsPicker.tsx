@@ -265,12 +265,12 @@ export function SessionAddonsPicker({
            sentences, and an uncapped popper sizes to the widest one — a
            viewport-wide panel that clips its own checkmarks at the screen
            edge. The cap is what makes the row-level truncation engage. */
-        className="min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,var(--radix-dropdown-menu-content-available-width))] max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-x-hidden overflow-y-auto text-sm"
+        className="min-w-(--anchor-width) max-w-[min(24rem,var(--available-width))] max-h-[min(18rem,var(--available-height))] overflow-x-hidden overflow-y-auto text-sm"
       >
         <DropdownMenuCheckboxItem
           className="min-w-0"
           checked={count === 0}
-          onSelect={(ev) => ev.preventDefault()}
+          closeOnClick={false}
           onCheckedChange={() => {
             valueRef.current = undefined
             onChange(undefined)
@@ -297,7 +297,7 @@ export function SessionAddonsPicker({
               className="min-w-0"
               checked={isChecked(e.name)}
               /* Keep the menu open across toggles: multi-select. */
-              onSelect={(ev) => ev.preventDefault()}
+              closeOnClick={false}
               onCheckedChange={() => toggle(e.name)}
               /* Selection indicators stay neutral across themes. */
               indicator={

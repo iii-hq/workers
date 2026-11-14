@@ -583,9 +583,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       return view
     }
@@ -658,9 +658,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       expect(item('Auto-fix')?.getAttribute('data-disabled')).toBeNull()
       await act(async () => item('Auto-fix')?.click())
@@ -698,9 +698,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       expect(item('Auto-fix')?.getAttribute('aria-checked')).toBe('true')
       await act(async () => item('Auto-fix')?.click())

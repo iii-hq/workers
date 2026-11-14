@@ -1,4 +1,3 @@
-import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import {
   ArrowLeft,
   Check,
@@ -15,6 +14,11 @@ import {
   useRef,
   useState,
 } from 'react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Hint } from '@/components/ui/Hint'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -636,32 +640,31 @@ export function ModelPicker({
           </BottomSheet>
         </>
       ) : (
-        <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange}>
-          <DropdownMenuPrimitive.Trigger asChild disabled={pickerDisabled}>
-            {pickerTrigger}
-          </DropdownMenuPrimitive.Trigger>
+        <DropdownMenu open={open} onOpenChange={handleOpenChange}>
+          <DropdownMenuTrigger
+            disabled={pickerDisabled}
+            render={pickerTrigger}
+          />
 
-          <DropdownMenuPrimitive.Portal>
-            <DropdownMenuPrimitive.Content
-              sideOffset={6}
-              align="start"
-              collisionPadding={12}
-              className={cn(
-                NEUTRAL_SURFACE,
-                'iii-ui-motion-dropdown z-50 flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-popover font-inter text-ink shadow-md ring-1 ring-popover-edge',
-                // Sized to its rows around the favorites (an open All
-                // models fills it and scrolls inside); the provider pages
-                // take the full height so their lists scroll inside. Never
-                // taller than the room Radix measured beside the trigger.
-                activePage !== 'models'
-                  ? 'h-[min(70vh,560px,var(--radix-dropdown-menu-content-available-height))]'
-                  : 'max-h-[min(70vh,560px,var(--radix-dropdown-menu-content-available-height))]',
-              )}
-            >
-              {pickerPages}
-            </DropdownMenuPrimitive.Content>
-          </DropdownMenuPrimitive.Portal>
-        </DropdownMenuPrimitive.Root>
+          <DropdownMenuContent
+            sideOffset={6}
+            align="start"
+            collisionPadding={12}
+            className={cn(
+              NEUTRAL_SURFACE,
+              'flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl p-0',
+              // Sized to its rows around the favorites (an open All
+              // models fills it and scrolls inside); the provider pages
+              // take the full height so their lists scroll inside. Never
+              // taller than the room beside the trigger.
+              activePage !== 'models'
+                ? 'h-[min(70vh,560px,var(--available-height))]'
+                : 'max-h-[min(70vh,560px,var(--available-height))]',
+            )}
+          >
+            {pickerPages}
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
       <ModelLibraryDialog

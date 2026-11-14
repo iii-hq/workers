@@ -22,7 +22,16 @@ afterEach(() => {
   for (const unmount of mounted.splice(0)) unmount()
 })
 
-function mountInDialog() {
+/** Base UI lands a popup's initial focus a frame after it opens. */
+const nextFrames = () =>
+  act(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  )
+
+async function mountInDialog() {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -57,22 +66,23 @@ function mountInDialog() {
     )
     trigger?.click()
   })
+  await nextFrames()
 }
 
 describe('Selector inside a modal Dialog', () => {
-  it('takes focus into its search, so the keyboard reaches the list', () => {
-    mountInDialog()
+  it('takes focus into its search, so the keyboard reaches the list', async () => {
+    await mountInDialog()
     const search = document.querySelector(
       'input[aria-label="model or provider"]',
     )
     expect(search).not.toBeNull()
-    // With two copies of Radix's focus scope the dialog's trap handed focus
-    // straight back to the trigger: typing filtered nothing.
+    // A second focus trap (the dialog's) once handed focus straight back to
+    // the trigger: typing filtered nothing.
     expect(document.activeElement).toBe(search)
   })
 
-  it('lets its own list scroll although the dialog locks scrolling', () => {
-    mountInDialog()
+  it('lets its own list scroll although the dialog locks scrolling', async () => {
+    await mountInDialog()
     const list = document.querySelector<HTMLElement>('[role="listbox"]')
     expect(list).not.toBeNull()
     if (!list) return

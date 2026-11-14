@@ -1,7 +1,11 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import * as PopoverPrimitive from '@radix-ui/react-popover'
 import { SlidersHorizontal } from 'lucide-react'
 import { useState } from 'react'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { IconButton } from '@/components/ui/IconButton'
@@ -17,7 +21,6 @@ import {
   useFoldedGroups,
   useHiddenSections,
 } from '@/lib/context-groups'
-import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 
@@ -142,35 +145,33 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
   }
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger asChild>
-        <IconButton label="Sections" className="size-7 shrink-0">
-          <SlidersHorizontal aria-hidden />
-        </IconButton>
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        <PortalScope>
-          <PopoverPrimitive.Content
-            align="end"
-            sideOffset={4}
-            collisionPadding={8}
-            aria-label="Sections"
-            className={cn(
-              uiClasses.panel,
-              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-popover p-1.5 font-inter text-sm shadow-floating ring-1 ring-popover-edge',
-            )}
-          >
-            <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">
-              <span className="font-semibold">Sections</span>
-              <span className="text-xs text-ink-faint">Drag to reorder</span>
-            </div>
-            {list}
-            <div className="-mx-1.5 my-1 h-px bg-ink/5" />
-            {reset}
-            <LiveRegion announcement={announcement} />
-          </PopoverPrimitive.Content>
-        </PortalScope>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <IconButton label="Sections" className="size-7 shrink-0">
+            <SlidersHorizontal aria-hidden />
+          </IconButton>
+        }
+      />
+      <PopoverContent
+        align="end"
+        sideOffset={4}
+        collisionPadding={8}
+        aria-label="Sections"
+        className={cn(
+          uiClasses.panel,
+          'w-72 max-w-[calc(100vw-1rem)] gap-0 p-1.5',
+        )}
+      >
+        <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">
+          <span className="font-semibold">Sections</span>
+          <span className="text-xs text-ink-faint">Drag to reorder</span>
+        </div>
+        {list}
+        <div className="-mx-1.5 my-1 h-px bg-border" />
+        {reset}
+        <LiveRegion announcement={announcement} />
+      </PopoverContent>
+    </Popover>
   )
 }

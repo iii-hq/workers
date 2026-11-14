@@ -1,6 +1,11 @@
-import * as SelectPrimitive from '@radix-ui/react-select'
-import { Bot, Check, ChevronDown } from 'lucide-react'
+import { Select as SelectPrimitive } from '@base-ui/react/select'
+import { Bot, Check } from 'lucide-react'
 import { useCallback, useState } from 'react'
+import {
+  SelectContent,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
 import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
@@ -49,14 +54,11 @@ function AgentItem({
     <SelectPrimitive.Item
       value={value}
       className={cn(
-        'relative flex items-start gap-2 rounded-xs pl-7 pr-3 py-2 cursor-pointer outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=checked]:text-ink',
+        'relative flex cursor-pointer items-start gap-2 rounded-md py-2 pr-8 pl-2 outline-none select-none',
+        'data-highlighted:bg-muted data-highlighted:text-foreground',
+        'data-selected:text-foreground',
       )}
     >
-      <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-        <Check size={16} aria-hidden />
-      </SelectPrimitive.ItemIndicator>
       <Icon size={16} className="mt-0.5 shrink-0 text-ink-faint" aria-hidden />
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
@@ -66,6 +68,13 @@ function AgentItem({
           </div>
         ) : null}
       </div>
+      <SelectPrimitive.ItemIndicator
+        render={
+          <span className="pointer-events-none absolute top-2.5 right-2 flex size-4 items-center justify-center text-ink" />
+        }
+      >
+        <Check size={16} aria-hidden />
+      </SelectPrimitive.ItemIndicator>
     </SelectPrimitive.Item>
   )
 }
@@ -124,57 +133,42 @@ export function AgentPicker({
           ? 'default'
           : `named:${AGENT_CHOICE_PREFIX}${selectedId}`
       }
-      onValueChange={handleValueChange}
+      onValueChange={(next) => handleValueChange(next ?? 'default')}
       onOpenChange={handleOpenChange}
       disabled={disabled}
     >
-      <SelectPrimitive.Trigger
+      <SelectTrigger
         aria-label="agent profile"
         className={cn(
-          'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-inter text-sm hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
-          disabled && 'opacity-40 pointer-events-none',
+          'h-9 w-full justify-between border-transparent bg-bg px-3 font-inter hover:bg-surface-hover data-popup-open:bg-surface-active',
+          disabled && 'pointer-events-none opacity-40',
           className,
         )}
       >
-        <span className="inline-flex items-center gap-2 min-w-0">
+        <span className="inline-flex min-w-0 items-center gap-2">
           <TriggerIconComp size={16} className="text-ink-faint" aria-hidden />
-          <span className="truncate max-w-[14rem]">
-            <SelectPrimitive.Value>{label}</SelectPrimitive.Value>
+          <span className="max-w-[14rem] truncate">
+            <SelectValue>{label}</SelectValue>
           </span>
         </span>
-        <SelectPrimitive.Icon asChild>
-          <ChevronDown size={16} aria-hidden />
-        </SelectPrimitive.Icon>
-      </SelectPrimitive.Trigger>
+      </SelectTrigger>
 
-      <SelectPrimitive.Portal>
-        <SelectPrimitive.Content
-          position="popper"
-          sideOffset={4}
-          className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-popover-edge bg-popover text-ink font-inter text-sm shadow-floating',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-          )}
-        >
-          <SelectPrimitive.Viewport className="p-1">
-            <AgentItem
-              value="default"
-              label="Default"
-              description="No agent profile — the provider's built-in prompt"
-            />
-            {(entries ?? []).map((e) => (
-              <AgentItem
-                key={e.id}
-                value={`named:${AGENT_CHOICE_PREFIX}${e.id}`}
-                label={e.name || e.id}
-                description={e.description}
-                icon={e.icon}
-              />
-            ))}
-          </SelectPrimitive.Viewport>
-        </SelectPrimitive.Content>
-      </SelectPrimitive.Portal>
+      <SelectContent align="start" alignItemWithTrigger={false}>
+        <AgentItem
+          value="default"
+          label="Default"
+          description="No agent profile — the provider's built-in prompt"
+        />
+        {(entries ?? []).map((e) => (
+          <AgentItem
+            key={e.id}
+            value={`named:${AGENT_CHOICE_PREFIX}${e.id}`}
+            label={e.name || e.id}
+            description={e.description}
+            icon={e.icon}
+          />
+        ))}
+      </SelectContent>
     </SelectPrimitive.Root>
   )
 }

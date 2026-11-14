@@ -52,7 +52,8 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
       const view = node?.ownerDocument.defaultView
       if (!node || !view) return
       const claim = (event: KeyboardEvent) => {
-        if (event.key !== 'Escape' || event.target !== node || !node.value) return
+        if (event.key !== 'Escape' || event.target !== node || !node.value)
+          return
         event.preventDefault()
         claimed.current = event
       }

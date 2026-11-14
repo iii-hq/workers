@@ -1,4 +1,4 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { X } from 'lucide-react'
 import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
@@ -8,7 +8,20 @@ import { cn } from '@/lib/utils'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-export const BottomSheet = DialogPrimitive.Root
+/** The sheet root: the first API's one-argument `onOpenChange`. */
+export function BottomSheet({
+  onOpenChange,
+  ...props
+}: Omit<DialogPrimitive.Root.Props, 'onOpenChange'> & {
+  onOpenChange?: (open: boolean) => void
+}) {
+  return (
+    <DialogPrimitive.Root
+      {...props}
+      onOpenChange={(open) => onOpenChange?.(open)}
+    />
+  )
+}
 export const BottomSheetTrigger = DialogPrimitive.Trigger
 export const BottomSheetClose = DialogPrimitive.Close
 
@@ -32,7 +45,7 @@ export function useBottomSheetPageNavigation() {
 }
 
 interface BottomSheetContentProps
-  extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
+  extends Omit<DialogPrimitive.Popup.Props, 'initialFocus' | 'finalFocus'> {
   /** Optional visible heading for simple, single-page sheets. */
   heading?: React.ReactNode
   description?: React.ReactNode
@@ -43,7 +56,7 @@ interface BottomSheetContentProps
 
 /** Viewport-bounded mobile dialog with in-sheet page navigation and focus recovery. */
 export const BottomSheetContent = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Content>,
+  HTMLDivElement,
   BottomSheetContentProps
 >(
   (
@@ -55,8 +68,6 @@ export const BottomSheetContent = React.forwardRef<
       closeLabel = 'Close',
       headerClassName,
       overlayClassName,
-      onOpenAutoFocus,
-      onCloseAutoFocus,
       'aria-labelledby': ariaLabelledBy,
       'aria-describedby': ariaDescribedBy,
       ...props
@@ -156,13 +167,13 @@ export const BottomSheetContent = React.forwardRef<
     return (
       <DialogPrimitive.Portal>
         <PortalScope>
-          <DialogPrimitive.Overlay
+          <DialogPrimitive.Backdrop
             className={cn(
               'iii-ui-motion-sheet-overlay fixed inset-0 z-40 bg-black/55 md:hidden',
               overlayClassName,
             )}
           />
-          <DialogPrimitive.Content
+          <DialogPrimitive.Popup
             ref={ref}
             className={cn(
               'iii-ui-motion-sheet fixed inset-x-3 bottom-3 z-50 flex max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden overscroll-contain md:hidden',
@@ -170,22 +181,16 @@ export const BottomSheetContent = React.forwardRef<
               'pb-[max(0.75rem,env(safe-area-inset-bottom))] focus:outline-none',
               className,
             )}
-            onOpenAutoFocus={(event) => {
+            // The close button takes the first focus (never a row deep in a
+            // long list), and whatever opened the sheet gets focus back.
+            initialFocus={() => {
               returnFocusRef.current =
                 document.activeElement instanceof HTMLElement
                   ? document.activeElement
                   : null
-              onOpenAutoFocus?.(event)
-              if (event.defaultPrevented) return
-              event.preventDefault()
-              closeButtonRef.current?.focus({ preventScroll: true })
+              return closeButtonRef.current
             }}
-            onCloseAutoFocus={(event) => {
-              onCloseAutoFocus?.(event)
-              if (event.defaultPrevented || !returnFocusRef.current) return
-              event.preventDefault()
-              returnFocusRef.current.focus({ preventScroll: true })
-            }}
+            finalFocus={() => returnFocusRef.current}
             {...pageAria}
             {...props}
           >
@@ -239,7 +244,7 @@ export const BottomSheetContent = React.forwardRef<
               <X className="size-5" aria-hidden />
               <span className="sr-only">{closeLabel}</span>
             </DialogPrimitive.Close>
-          </DialogPrimitive.Content>
+          </DialogPrimitive.Popup>
         </PortalScope>
       </DialogPrimitive.Portal>
     )
@@ -248,8 +253,8 @@ export const BottomSheetContent = React.forwardRef<
 BottomSheetContent.displayName = 'BottomSheetContent'
 
 export const BottomSheetTitle = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
+  HTMLHeadingElement,
+  DialogPrimitive.Title.Props
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
@@ -260,8 +265,8 @@ export const BottomSheetTitle = React.forwardRef<
 BottomSheetTitle.displayName = 'BottomSheetTitle'
 
 export const BottomSheetDescription = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Description>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
+  HTMLParagraphElement,
+  DialogPrimitive.Description.Props
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}

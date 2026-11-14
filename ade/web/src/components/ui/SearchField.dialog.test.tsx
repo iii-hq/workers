@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Dialog, DialogContent, DialogTitle } from './Dialog'
 import { SearchField } from './SearchField'
 
-;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+;(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true
 
 const cleanups: Array<() => void> = []
 afterEach(() => {
@@ -24,7 +26,12 @@ function mount(
       <Dialog open onOpenChange={onOpenChange}>
         <DialogContent>
           <DialogTitle>Sub-agents</DialogTitle>
-          <SearchField aria-label="Filter" value={query} onChange={setQuery} onKeyDown={onKeyDown} />
+          <SearchField
+            aria-label="Filter"
+            value={query}
+            onChange={setQuery}
+            onKeyDown={onKeyDown}
+          />
         </DialogContent>
       </Dialog>
     )
@@ -41,7 +48,10 @@ function mount(
 }
 
 function type(input: HTMLInputElement, text: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!.set!
   act(() => {
     setter.call(input, text)
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -50,7 +60,13 @@ function type(input: HTMLInputElement, text: string) {
 
 function escape(input: HTMLInputElement) {
   act(() => {
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
   })
 }
 
@@ -66,7 +82,7 @@ describe('SearchField inside a dialog', () => {
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
-  it('runs the caller\'s onKeyDown once, which can veto the clear', () => {
+  it("runs the caller's onKeyDown once, which can veto the clear", () => {
     const onOpenChange = vi.fn()
     const onKeyDown = vi.fn((event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'Escape') event.preventDefault()

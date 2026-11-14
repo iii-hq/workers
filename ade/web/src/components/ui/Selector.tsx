@@ -1,5 +1,5 @@
+import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import * as PopoverPrimitive from '@radix-ui/react-popover'
 import { Check, ChevronDown, LoaderCircle, Search } from 'lucide-react'
 import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
@@ -320,235 +320,251 @@ export function Selector<T extends string>({
           locks scrolling to its content, and this list is portalled outside
           it: without a lock of its own on top, every wheel and touch scroll
           over the list is cancelled and a long catalog cannot be reached. */}
-      <PopoverPrimitive.Root open={open} onOpenChange={setOpen} modal>
-        <PopoverPrimitive.Trigger asChild>
-          <button
-            id={id}
-            type="button"
-            data-field={dataField}
-            disabled={disabled}
-            aria-label={ariaLabel}
-            aria-haspopup="listbox"
-            aria-expanded={open}
-            aria-controls={open ? listboxId : undefined}
-            aria-invalid={invalidState}
-            aria-describedby={describedBy || undefined}
-            className={cn(
-              'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-sm',
-              open && 'border-rule-focus',
-              invalidVisual && 'bg-alert-muted',
-            )}
-          >
-            {triggerIcon ? (
-              <span className="inline-flex shrink-0 text-ink-faint" aria-hidden>
-                {triggerIcon}
-              </span>
-            ) : null}
-            <span
+      <PopoverPrimitive.Root
+        open={open}
+        onOpenChange={(next) => setOpen(next)}
+        modal
+      >
+        <PopoverPrimitive.Trigger
+          render={
+            <button
+              id={id}
+              type="button"
+              data-field={dataField}
+              disabled={disabled}
+              aria-label={ariaLabel}
+              aria-haspopup="listbox"
+              aria-expanded={open}
+              aria-controls={open ? listboxId : undefined}
+              aria-invalid={invalidState}
+              aria-describedby={describedBy || undefined}
               className={cn(
-                'min-w-0 flex-1 truncate text-left',
-                !selected && 'text-ink-faint',
+                'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-sm',
+                open && 'border-rule-focus',
+                invalidVisual && 'bg-alert-muted',
               )}
             >
-              {selected?.label ?? placeholder}
-            </span>
-            <ChevronDown
-              className="size-4 shrink-0 text-ink-faint"
-              aria-hidden
-            />
-          </button>
-        </PopoverPrimitive.Trigger>
+              {triggerIcon ? (
+                <span
+                  className="inline-flex shrink-0 text-ink-faint"
+                  aria-hidden
+                >
+                  {triggerIcon}
+                </span>
+              ) : null}
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate text-left',
+                  !selected && 'text-ink-faint',
+                )}
+              >
+                {selected?.label ?? placeholder}
+              </span>
+              <ChevronDown
+                className="size-4 shrink-0 text-ink-faint"
+                aria-hidden
+              />
+            </button>
+          }
+        />
 
         <PopoverPrimitive.Portal>
           <PortalScope>
-            <PopoverPrimitive.Content
+            <PopoverPrimitive.Positioner
               align="start"
               sideOffset={4}
               collisionPadding={8}
-              onOpenAutoFocus={(event) => {
-                event.preventDefault()
-                inputRef.current?.focus()
-              }}
-              className={cn(
-                uiClasses.panel,
-                'iii-ui-motion-dropdown z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-popover font-inter shadow-floating ring-1 ring-popover-edge',
-                contentClassName,
-              )}
+              className="isolate z-50"
             >
-              <div className="relative shrink-0 p-2">
-                <Search
-                  className="pointer-events-none absolute left-5 top-1/2 size-4 -translate-y-1/2 text-ink-faint"
-                  aria-hidden
-                />
-                <input
-                  ref={inputRef}
-                  role="combobox"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={handleSearchKeyDown}
-                  placeholder={searchPlaceholder}
-                  aria-label={searchPlaceholder}
-                  aria-autocomplete="list"
-                  aria-expanded="true"
-                  aria-controls={listboxId}
-                  aria-activedescendant={
-                    activeIndex === null
-                      ? undefined
-                      : `${listboxId}-option-${activeIndex}`
-                  }
-                  aria-describedby={statusId}
-                  className="iii-ui-selector-search w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-ink outline-none placeholder:text-ink focus:border-rule-focus"
-                />
-              </div>
-
-              <div
-                id={listboxId}
-                role="listbox"
-                aria-label={ariaLabel}
-                aria-busy={loading || undefined}
-                className={cn(uiClasses.list, 'min-h-0 overflow-y-auto p-1')}
-              >
-                {allowEmpty ? (
-                  <div
-                    id={`${listboxId}-option--1`}
-                    role="option"
-                    tabIndex={-1}
-                    aria-selected={value === undefined}
-                    data-selected={value === undefined ? true : undefined}
-                    data-highlighted={activeIndex === -1 || undefined}
-                    className={cn(uiClasses.listItem, 'cursor-pointer')}
-                    onPointerDown={(event) => event.preventDefault()}
-                    onPointerMove={() => setActiveIndex(-1)}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return
-                      event.preventDefault()
-                      onClear?.()
-                      setOpen(false)
-                    }}
-                    onClick={() => {
-                      onClear?.()
-                      setOpen(false)
-                    }}
-                  >
-                    <span className={uiClasses.listItemContent}>
-                      <span className={uiClasses.listItemTitle}>
-                        {emptyLabel}
-                      </span>
-                    </span>
-                    {value === undefined ? (
-                      <Check className="size-4 text-ink" aria-hidden />
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {filteredGroups.map((group) => (
-                  // biome-ignore lint/a11y/useSemanticElements: ARIA listbox groups are not form fieldsets
-                  <div
-                    key={group.label ?? '__ungrouped'}
-                    role="group"
-                    aria-label={group.label}
-                    className={uiClasses.listGroup}
-                  >
-                    {group.label ? (
-                      <div className={uiClasses.listGroupLabel}>
-                        {group.label}
-                      </div>
-                    ) : null}
-                    {group.options.map(({ option, index }) => {
-                      const optionSelected = option.value === value
-                      const highlighted = index === activeIndex
-                      return (
-                        <div
-                          key={option.value}
-                          id={`${listboxId}-option-${index}`}
-                          role="option"
-                          tabIndex={-1}
-                          aria-selected={optionSelected}
-                          aria-disabled={option.disabled || undefined}
-                          data-selected={optionSelected || undefined}
-                          data-highlighted={highlighted || undefined}
-                          className={cn(
-                            uiClasses.listItem,
-                            !option.disabled && 'cursor-pointer',
-                          )}
-                          onPointerDown={(event) => event.preventDefault()}
-                          onPointerMove={() => {
-                            if (!option.disabled) setActiveIndex(index)
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== 'Enter' && event.key !== ' ')
-                              return
-                            event.preventDefault()
-                            commit(option)
-                          }}
-                          onClick={() => commit(option)}
-                        >
-                          <span className={uiClasses.listItemContent}>
-                            <span className={uiClasses.listItemTitle}>
-                              {option.label}
-                            </span>
-                            {option.description ? (
-                              <span className={uiClasses.listItemDescription}>
-                                {option.description}
-                              </span>
-                            ) : null}
-                          </span>
-                          {optionSelected ? (
-                            <Check
-                              className="size-4 shrink-0 text-ink"
-                              aria-hidden
-                            />
-                          ) : null}
-                        </div>
-                      )
-                    })}
-                  </div>
-                ))}
-
-                {canCreate ? (
-                  <div
-                    id={`${listboxId}-option--2`}
-                    role="option"
-                    tabIndex={-1}
-                    aria-selected="false"
-                    data-highlighted={activeIndex === -2 || undefined}
-                    className={cn(uiClasses.listItem, 'cursor-pointer')}
-                    onPointerDown={(event) => event.preventDefault()}
-                    onPointerMove={() => setActiveIndex(-2)}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return
-                      event.preventDefault()
-                      commitCreate()
-                    }}
-                    onClick={commitCreate}
-                  >
-                    <span className={uiClasses.listItemContent}>
-                      <span className={uiClasses.listItemTitle}>
-                        {createOptionLabel?.(trimmedQuery) ??
-                          `use “${trimmedQuery}”`}
-                      </span>
-                    </span>
-                  </div>
-                ) : null}
-
-                {loading ? (
-                  <SelectorStatus id={statusId}>
-                    <LoaderCircle className="size-4 animate-spin" aria-hidden />
-                    {loadingMessage}
-                  </SelectorStatus>
-                ) : error ? (
-                  <SelectorStatus id={statusId} tone="danger" alert>
-                    {error}
-                  </SelectorStatus>
-                ) : visibleOptions.length === 0 && !canCreate ? (
-                  <SelectorStatus id={statusId}>{emptyMessage}</SelectorStatus>
-                ) : (
-                  <span id={statusId} className="sr-only" role="status">
-                    {optionCount} option{optionCount === 1 ? '' : 's'}
-                  </span>
+              <PopoverPrimitive.Popup
+                // The filter field, not the list, takes focus as the list opens.
+                initialFocus={() => inputRef.current}
+                className={cn(
+                  uiClasses.panel,
+                  'iii-ui-motion-dropdown z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--anchor-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-popover font-inter shadow-floating ring-1 ring-popover-edge',
+                  contentClassName,
                 )}
-              </div>
-            </PopoverPrimitive.Content>
+              >
+                <div className="relative shrink-0 p-2">
+                  <Search
+                    className="pointer-events-none absolute left-5 top-1/2 size-4 -translate-y-1/2 text-ink-faint"
+                    aria-hidden
+                  />
+                  <input
+                    ref={inputRef}
+                    role="combobox"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={handleSearchKeyDown}
+                    placeholder={searchPlaceholder}
+                    aria-label={searchPlaceholder}
+                    aria-autocomplete="list"
+                    aria-expanded="true"
+                    aria-controls={listboxId}
+                    aria-activedescendant={
+                      activeIndex === null
+                        ? undefined
+                        : `${listboxId}-option-${activeIndex}`
+                    }
+                    aria-describedby={statusId}
+                    className="iii-ui-selector-search w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-ink outline-none placeholder:text-ink focus:border-rule-focus"
+                  />
+                </div>
+
+                <div
+                  id={listboxId}
+                  role="listbox"
+                  aria-label={ariaLabel}
+                  aria-busy={loading || undefined}
+                  className={cn(uiClasses.list, 'min-h-0 overflow-y-auto p-1')}
+                >
+                  {allowEmpty ? (
+                    <div
+                      id={`${listboxId}-option--1`}
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={value === undefined}
+                      data-selected={value === undefined ? true : undefined}
+                      data-highlighted={activeIndex === -1 || undefined}
+                      className={cn(uiClasses.listItem, 'cursor-pointer')}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onPointerMove={() => setActiveIndex(-1)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        onClear?.()
+                        setOpen(false)
+                      }}
+                      onClick={() => {
+                        onClear?.()
+                        setOpen(false)
+                      }}
+                    >
+                      <span className={uiClasses.listItemContent}>
+                        <span className={uiClasses.listItemTitle}>
+                          {emptyLabel}
+                        </span>
+                      </span>
+                      {value === undefined ? (
+                        <Check className="size-4 text-ink" aria-hidden />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {filteredGroups.map((group) => (
+                    // biome-ignore lint/a11y/useSemanticElements: ARIA listbox groups are not form fieldsets
+                    <div
+                      key={group.label ?? '__ungrouped'}
+                      role="group"
+                      aria-label={group.label}
+                      className={uiClasses.listGroup}
+                    >
+                      {group.label ? (
+                        <div className={uiClasses.listGroupLabel}>
+                          {group.label}
+                        </div>
+                      ) : null}
+                      {group.options.map(({ option, index }) => {
+                        const optionSelected = option.value === value
+                        const highlighted = index === activeIndex
+                        return (
+                          <div
+                            key={option.value}
+                            id={`${listboxId}-option-${index}`}
+                            role="option"
+                            tabIndex={-1}
+                            aria-selected={optionSelected}
+                            aria-disabled={option.disabled || undefined}
+                            data-selected={optionSelected || undefined}
+                            data-highlighted={highlighted || undefined}
+                            className={cn(
+                              uiClasses.listItem,
+                              !option.disabled && 'cursor-pointer',
+                            )}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onPointerMove={() => {
+                              if (!option.disabled) setActiveIndex(index)
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter' && event.key !== ' ')
+                                return
+                              event.preventDefault()
+                              commit(option)
+                            }}
+                            onClick={() => commit(option)}
+                          >
+                            <span className={uiClasses.listItemContent}>
+                              <span className={uiClasses.listItemTitle}>
+                                {option.label}
+                              </span>
+                              {option.description ? (
+                                <span className={uiClasses.listItemDescription}>
+                                  {option.description}
+                                </span>
+                              ) : null}
+                            </span>
+                            {optionSelected ? (
+                              <Check
+                                className="size-4 shrink-0 text-ink"
+                                aria-hidden
+                              />
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+
+                  {canCreate ? (
+                    <div
+                      id={`${listboxId}-option--2`}
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected="false"
+                      data-highlighted={activeIndex === -2 || undefined}
+                      className={cn(uiClasses.listItem, 'cursor-pointer')}
+                      onPointerDown={(event) => event.preventDefault()}
+                      onPointerMove={() => setActiveIndex(-2)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        commitCreate()
+                      }}
+                      onClick={commitCreate}
+                    >
+                      <span className={uiClasses.listItemContent}>
+                        <span className={uiClasses.listItemTitle}>
+                          {createOptionLabel?.(trimmedQuery) ??
+                            `use “${trimmedQuery}”`}
+                        </span>
+                      </span>
+                    </div>
+                  ) : null}
+
+                  {loading ? (
+                    <SelectorStatus id={statusId}>
+                      <LoaderCircle
+                        className="size-4 animate-spin"
+                        aria-hidden
+                      />
+                      {loadingMessage}
+                    </SelectorStatus>
+                  ) : error ? (
+                    <SelectorStatus id={statusId} tone="danger" alert>
+                      {error}
+                    </SelectorStatus>
+                  ) : visibleOptions.length === 0 && !canCreate ? (
+                    <SelectorStatus id={statusId}>
+                      {emptyMessage}
+                    </SelectorStatus>
+                  ) : (
+                    <span id={statusId} className="sr-only" role="status">
+                      {optionCount} option{optionCount === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </div>
+              </PopoverPrimitive.Popup>
+            </PopoverPrimitive.Positioner>
           </PortalScope>
         </PopoverPrimitive.Portal>
       </PopoverPrimitive.Root>

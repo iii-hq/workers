@@ -1,6 +1,7 @@
-import * as SelectPrimitive from '@radix-ui/react-select'
+import { Select as SelectPrimitive } from '@base-ui/react/select'
 import { Check, ChevronDown, ScrollText } from 'lucide-react'
 import { useCallback, useEffect, useId, useState } from 'react'
+import { SelectContent, SelectTrigger } from '@/components/shadcn/select'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Select } from '@/components/ui/Select'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -51,14 +52,11 @@ function PromptItem({
     <SelectPrimitive.Item
       value={value}
       className={cn(
-        'relative flex items-start gap-2 rounded-xs pl-7 pr-3 py-2 cursor-pointer outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=checked]:text-ink',
+        'relative flex cursor-pointer items-start gap-2 rounded-md py-2 pr-8 pl-2 outline-none select-none',
+        'data-highlighted:bg-muted data-highlighted:text-foreground',
+        'data-selected:text-foreground',
       )}
     >
-      <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-        <Check size={16} aria-hidden />
-      </SelectPrimitive.ItemIndicator>
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>
         {description ? (
@@ -67,6 +65,13 @@ function PromptItem({
           </div>
         ) : null}
       </div>
+      <SelectPrimitive.ItemIndicator
+        render={
+          <span className="pointer-events-none absolute top-2.5 right-2 flex size-4 items-center justify-center text-ink" />
+        }
+      >
+        <Check size={16} aria-hidden />
+      </SelectPrimitive.ItemIndicator>
     </SelectPrimitive.Item>
   )
 }
@@ -284,74 +289,62 @@ export function SystemPromptPicker({
     )
   }
 
+  // The truncation lives on this wrapper (a flex item, hence blockified).
+  const labelText = (
+    <span className="max-w-40 truncate sm:max-w-44">{label}</span>
+  )
+
   return (
     <SelectPrimitive.Root
       value={choiceToValue(value.choice)}
-      onValueChange={handleValueChange}
+      onValueChange={(next) => handleValueChange(next ?? 'default')}
       onOpenChange={handleOpenChange}
       open={open}
       disabled={disabled}
     >
-      <SelectPrimitive.Trigger
-        aria-label={`system prompt, current prompt: ${label}`}
-        className={triggerClassName}
-      >
-        <span
-          className={cn(
-            'inline-flex min-w-0 items-center',
-            appearance === 'default' && 'gap-2',
-          )}
+      {appearance === 'default' ? (
+        <SelectTrigger
+          aria-label={`system prompt, current prompt: ${label}`}
+          className={triggerClassName}
         >
-          {appearance === 'default' ? (
+          <span className="inline-flex min-w-0 items-center gap-2">
             <ScrollText
               size={16}
               className="shrink-0 text-ink-faint"
               aria-hidden
             />
-          ) : null}
-          {/* Radix strips `className` off Select.Value, so the truncation
-              lives on this wrapper (a flex item, hence blockified). */}
-          <span className="max-w-40 truncate sm:max-w-44">{label}</span>
-        </span>
-
-        {appearance === 'default' ? (
-          <SelectPrimitive.Icon asChild>
-            <ChevronDown className="size-4 shrink-0" aria-hidden />
-          </SelectPrimitive.Icon>
-        ) : (
+            {labelText}
+          </span>
+        </SelectTrigger>
+      ) : (
+        <SelectPrimitive.Trigger
+          aria-label={`system prompt, current prompt: ${label}`}
+          className={triggerClassName}
+        >
+          <span className="inline-flex min-w-0 items-center">{labelText}</span>
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
             aria-hidden="true"
           />
-        )}
-      </SelectPrimitive.Trigger>
+        </SelectPrimitive.Trigger>
+      )}
 
-      <SelectPrimitive.Portal>
-        <SelectPrimitive.Content
-          position="popper"
-          sideOffset={4}
-          className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-popover-edge bg-popover text-ink font-inter text-sm shadow-floating',
-          )}
-        >
-          <SelectPrimitive.Viewport className="p-1">
-            <PromptItem
-              value="default"
-              label="Default"
-              description="Use the provider's built-in prompt"
-            />
-            {(entries ?? []).map((e) => (
-              <PromptItem
-                key={e.name}
-                value={choiceToValue({ named: e.name })}
-                label={e.name}
-                description={e.description}
-              />
-            ))}
-            {allowCustom ? <PromptItem value="custom" label="Custom…" /> : null}
-          </SelectPrimitive.Viewport>
-        </SelectPrimitive.Content>
-      </SelectPrimitive.Portal>
+      <SelectContent align="start" alignItemWithTrigger={false}>
+        <PromptItem
+          value="default"
+          label="Default"
+          description="Use the provider's built-in prompt"
+        />
+        {(entries ?? []).map((e) => (
+          <PromptItem
+            key={e.name}
+            value={choiceToValue({ named: e.name })}
+            label={e.name}
+            description={e.description}
+          />
+        ))}
+        {allowCustom ? <PromptItem value="custom" label="Custom…" /> : null}
+      </SelectContent>
     </SelectPrimitive.Root>
   )
 }

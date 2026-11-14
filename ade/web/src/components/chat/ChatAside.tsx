@@ -1,4 +1,4 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import {
   ArrowLeft,
   BookmarkPlus,
@@ -1205,7 +1205,10 @@ function PhonePanel({
   children: ReactNode
 }) {
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => onOpenChange(next)}
+    >
       <DialogPrimitive.Portal>
         <PortalScope>
           <PhonePanelContent tabs={tabs} options={options}>
@@ -1230,7 +1233,7 @@ function PhonePanelContent({
   const ref = useRef<HTMLDivElement>(null)
   useVisualViewportFit(ref)
   return (
-    <DialogPrimitive.Content
+    <DialogPrimitive.Popup
       ref={ref}
       aria-describedby={undefined}
       data-side-panel-phone=""
@@ -1240,16 +1243,18 @@ function PhonePanelContent({
         Side panel
       </DialogPrimitive.Title>
       <div className="flex h-13 shrink-0 items-center gap-1 border-b border-rule-2 bg-panel-raised px-1">
-        <DialogPrimitive.Close asChild>
-          <IconButton label="Back to the chat" className="size-11 shrink-0">
-            <ArrowLeft aria-hidden />
-          </IconButton>
-        </DialogPrimitive.Close>
+        <DialogPrimitive.Close
+          render={
+            <IconButton label="Back to the chat" className="size-11 shrink-0">
+              <ArrowLeft aria-hidden />
+            </IconButton>
+          }
+        />
         <div className="flex min-w-0 flex-1">{tabs}</div>
         {options ?? <span className="size-11 shrink-0" aria-hidden />}
       </div>
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
-    </DialogPrimitive.Content>
+    </DialogPrimitive.Popup>
   )
 }
 

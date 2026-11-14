@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Input as BaseInput } from '@/components/shadcn/input'
 import { cn } from '@/lib/utils'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
@@ -6,11 +7,9 @@ import { cn } from '@/lib/utils'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 export interface InputProps
-  extends Omit<
-    React.InputHTMLAttributes<HTMLInputElement>,
-    'onChange' | 'value'
-  > {
+  extends Omit<React.ComponentProps<typeof BaseInput>, 'onChange' | 'value'> {
   value: string
+  /** The next value (the console's string-first API over the shadcn input). */
   onChange: (next: string) => void
   /**
    * @deprecated Inputs now preserve the entered case by default. Retained so
@@ -19,22 +18,17 @@ export interface InputProps
   preserveCase?: boolean
 }
 
+/** The shadcn (Base UI) input with the console's touch size on phones. */
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   (
     { className, value, onChange, preserveCase: _preserveCase, ...rest },
     ref,
   ) => (
-    <input
+    <BaseInput
       ref={ref}
       value={value}
-      onChange={(e) => onChange(e.currentTarget.value)}
-      className={cn(
-        'h-12 w-full rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink sm:h-9 sm:text-[13px]',
-        'placeholder:text-ink',
-        'hover:bg-surface-hover focus:outline-none focus:border-rule-focus focus:ring-[3px] focus:ring-accent/10 transition-[border-color,box-shadow,background-color]',
-        'disabled:opacity-40 disabled:pointer-events-none',
-        className,
-      )}
+      onChange={(event) => onChange(event.currentTarget.value)}
+      className={cn('h-12 font-sans sm:h-9', className)}
       {...rest}
     />
   ),

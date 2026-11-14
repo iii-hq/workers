@@ -715,8 +715,10 @@ describe('@iii-dev/console-ui surface', () => {
       /\.iii-ui-card-highlight\s*\{([^}]*)\}/,
     )?.[1]
 
-    expect(themeCss).toContain('--color-card-highlight: #dbdbdb63;')
-    expect(themeCss).toContain('--color-card-highlight: #0d0d0e63;')
+    // One alias onto the design-system palette; the dark theme flips the
+    // palette, not the alias.
+    expect(themeCss).toContain('--color-card-highlight: var(--muted);')
+    expect(themeCss.match(/--color-card-highlight:/g)).toHaveLength(1)
     expect(recipe).toContain('border: 0;')
     expect(recipe).toContain('background: var(--color-card-highlight);')
   })

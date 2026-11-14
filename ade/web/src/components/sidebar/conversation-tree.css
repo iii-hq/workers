@@ -114,7 +114,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+  .conversation-tree
+    .conversation-inactive-toggle
+    .iii-ui-tree-item__icon
+    > svg {
     transition: none;
   }
 }

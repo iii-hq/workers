@@ -1,69 +1,140 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { X } from 'lucide-react'
-import * as React from 'react'
-import { PortalScope } from '@/lib/ui-scope'
+/**
+ * The console's first dialog API (Radix-shaped: `asChild` on the trigger
+ * and close, a bare `DialogContent`), kept as a thin layer over the shadcn
+ * (Base UI) dialog so worker UIs that import `Dialog` from
+ * `@iii-dev/console-ui` get the same sheet, overlay, motion and close
+ * affordance as the console. New console code reaches for
+ * `components/shadcn/dialog` directly.
+ */
+
+import {
+  type ComponentProps,
+  isValidElement,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
+import {
+  Dialog as BaseDialog,
+  DialogClose as BaseDialogClose,
+  DialogContent as BaseDialogContent,
+  DialogDescription as BaseDialogDescription,
+  DialogTitle as BaseDialogTitle,
+  DialogTrigger as BaseDialogTrigger,
+} from '@/components/shadcn/dialog'
 import { cn } from '@/lib/utils'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-export const Dialog = DialogPrimitive.Root
-export const DialogTrigger = DialogPrimitive.Trigger
-export const DialogClose = DialogPrimitive.Close
+export interface DialogProps
+  extends Omit<ComponentProps<typeof BaseDialog>, 'onOpenChange'> {
+  /** The first API's one-argument handler. */
+  onOpenChange?: (open: boolean) => void
+}
 
-export const DialogContent = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
-  <DialogPrimitive.Portal>
-    <PortalScope>
-      <DialogPrimitive.Overlay className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/60" />
-      <DialogPrimitive.Content
-        ref={ref}
-        className={cn(
-          'iii-ui-motion-panel fixed top-1/2 left-1/2 z-50 -translate-1/2',
-          'max-h-[85vh] w-full max-w-2xl overflow-y-auto',
-          'rounded-xl bg-dialog-surface p-6 font-sans text-ink shadow-floating ring-1 ring-dialog-edge',
-          'focus-visible:outline-none',
-          className,
-        )}
+/**
+ * The root. An Escape that a field inside already claimed (`SearchField`
+ * clears its query on Escape and default-prevents the keydown) keeps the
+ * dialog open, as it did under the first API; every other close reaches
+ * `onOpenChange(false)`.
+ */
+export function Dialog({ onOpenChange, ...props }: DialogProps) {
+  return (
+    <BaseDialog
+      {...props}
+      onOpenChange={(open, details) => {
+        const event = details.event
+        if (
+          !open &&
+          event instanceof KeyboardEvent &&
+          event.key === 'Escape' &&
+          event.defaultPrevented
+        ) {
+          details.cancel()
+          return
+        }
+        onOpenChange?.(open)
+      }}
+    />
+  )
+}
+
+export interface DialogTriggerProps
+  extends ComponentProps<typeof BaseDialogTrigger> {
+  /** Radix: the single child element is the trigger (Base UI `render`). */
+  asChild?: boolean
+  children?: ReactNode
+}
+
+export function DialogTrigger({
+  asChild,
+  children,
+  ...props
+}: DialogTriggerProps) {
+  if (asChild && isValidElement(children)) {
+    return (
+      <BaseDialogTrigger
         {...props}
-      >
-        {children}
-        <DialogPrimitive.Close
-          aria-label="Close"
-          className="absolute right-0.5 top-0.5 flex size-12 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:right-2 sm:top-2 sm:size-8"
-        >
-          <X size={16} />
-          <span className="sr-only">Close</span>
-        </DialogPrimitive.Close>
-      </DialogPrimitive.Content>
-    </PortalScope>
-  </DialogPrimitive.Portal>
-))
-DialogContent.displayName = 'DialogContent'
+        render={children as ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <BaseDialogTrigger {...props}>{children}</BaseDialogTrigger>
+}
 
-export const DialogTitle = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title
-    ref={ref}
-    className={cn('font-sans text-[13px] font-semibold text-ink', className)}
-    {...props}
-  />
-))
-DialogTitle.displayName = 'DialogTitle'
+export interface DialogCloseProps
+  extends ComponentProps<typeof BaseDialogClose> {
+  /** Radix: the single child element is the button (Base UI `render`). */
+  asChild?: boolean
+  children?: ReactNode
+}
 
-export const DialogDescription = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Description>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
->(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description
-    ref={ref}
-    className={cn('font-sans text-[12px] text-ink-faint', className)}
-    {...props}
-  />
-))
-DialogDescription.displayName = 'DialogDescription'
+export function DialogClose({ asChild, children, ...props }: DialogCloseProps) {
+  if (asChild && isValidElement(children)) {
+    return (
+      <BaseDialogClose
+        {...props}
+        render={children as ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <BaseDialogClose {...props}>{children}</BaseDialogClose>
+}
+
+export type DialogContentProps = ComponentProps<typeof BaseDialogContent>
+
+/**
+ * Portalled, centered, with overlay and close affordance built in. The
+ * legacy sheet is wider than shadcn's default (`max-w-2xl`) and scrolls
+ * inside `85vh`; a caller narrows it with `className`.
+ */
+export function DialogContent({ className, ...props }: DialogContentProps) {
+  return (
+    <BaseDialogContent
+      className={cn('max-h-[85vh] overflow-y-auto p-6 sm:max-w-2xl', className)}
+      {...props}
+    />
+  )
+}
+
+export function DialogTitle({
+  className,
+  ...props
+}: ComponentProps<typeof BaseDialogTitle>) {
+  return (
+    <BaseDialogTitle
+      className={cn('text-[13px] font-semibold', className)}
+      {...props}
+    />
+  )
+}
+
+export function DialogDescription({
+  className,
+  ...props
+}: ComponentProps<typeof BaseDialogDescription>) {
+  return (
+    <BaseDialogDescription className={cn('text-xs', className)} {...props} />
+  )
+}

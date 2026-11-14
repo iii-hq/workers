@@ -139,6 +139,7 @@ export function OnboardingWizardHost() {
   const [prompts, setPrompts] = useState<ExamplePrompt[] | null>(null)
   const [agents, setAgents] = useState<AgentEntry[] | null>(null)
   const ctxRef = useRef(ctx)
+  const popupRef = useRef<HTMLDivElement>(null)
   ctxRef.current = ctx
   const [tour, setTour] = useState<TourState>({ kind: 'idle' })
   // The template's kits install in the background from the moment the
@@ -464,7 +465,7 @@ export function OnboardingWizardHost() {
   useEffect(() => {
     if (!open) return
     const frame = window.requestAnimationFrame(() =>
-      focusPrimary(content.current),
+      primaryAction(content.current)?.focus(),
     )
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
@@ -482,16 +483,14 @@ export function OnboardingWizardHost() {
           onOpenChange={(next) => {
             if (!next) close()
           }}
+          // Setup is a commitment: a click on the backdrop does not dismiss it.
+          disablePointerDismissal
         >
           <DialogContent
             className="@container flex h-[min(720px,calc(100dvh-32px))] max-h-none w-[min(836px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
-            onOpenAutoFocus={(event) => {
-              // Land on the step's primary action, not the first button in it.
-              event.preventDefault()
-              focusPrimary(event.currentTarget)
-            }}
-            onPointerDownOutside={(event) => event.preventDefault()}
-            onInteractOutside={(event) => event.preventDefault()}
+            ref={popupRef}
+            // Land on the step's primary action, not the first button in it.
+            initialFocus={() => primaryAction(popupRef.current)}
           >
             <DialogTitle className="sr-only">Set up the harness</DialogTitle>
             <DialogDescription className="sr-only">
@@ -619,11 +618,11 @@ function CloseButton({ className }: { className?: string }) {
   )
 }
 
-/** Focus the step footer's primary action (the last enabled footer button). */
-function focusPrimary(root: EventTarget | HTMLElement | null) {
-  if (!(root instanceof HTMLElement)) return
+/** The step footer's primary action (the last enabled footer button). */
+function primaryAction(root: HTMLElement | null): HTMLElement | null {
+  if (!root) return null
   const buttons = root.querySelectorAll<HTMLButtonElement>(
     'footer button:not([disabled])',
   )
-  buttons[buttons.length - 1]?.focus()
+  return buttons[buttons.length - 1] ?? null
 }

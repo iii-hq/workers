@@ -260,7 +260,7 @@ function PackageSource({
                 <Selector
                   aria-label="Version"
                   className="wk-version"
-                  contentClassName="wk-popover max-h-[min(22rem,var(--radix-popover-content-available-height))]"
+                  contentClassName="wk-popover max-h-[min(22rem,var(--available-height))]"
                   value={pick}
                   onChange={setPick}
                   searchPlaceholder={`Search ${versions.versions.length} versions`}

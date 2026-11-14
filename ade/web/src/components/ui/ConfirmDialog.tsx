@@ -99,10 +99,8 @@ export function ConfirmDialog({
         role="alertdialog"
         aria-busy={busy || undefined}
         className="flex w-[calc(100%-24px)] max-w-[440px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
-        onOpenAutoFocus={(event) => {
-          event.preventDefault()
-          cancelRef.current?.focus()
-        }}
+        // Cancel takes the first focus: Enter never confirms by accident.
+        initialFocus={() => cancelRef.current}
       >
         {/* The text scrolls when it is taller than the dialog (at most 85vh), so
             the actions below always stay on screen. Its tab stop lets a

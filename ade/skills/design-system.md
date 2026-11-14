@@ -8,10 +8,13 @@ description: The iii Schematic design system — tokens, type, the numbers table
 The console reads as an engineering document, not a SaaS dashboard: hierarchy comes from
 layered surfaces (one background step per region), the chrome draws no lines, corners use
 a 6/8/12px scale, and a single rationed accent marks live state and primary actions. Sans for
-humans, mono for machines. The code is the spec: tokens in `ade/web/src/index.css`, public CSS
-recipes in `ade/web/src/styles/ui-recipes.css`, components in `ade/web/src/components/ui`
-exported through `packages/console-ui` (`index.d.ts`, `component-names.mjs`, `ui-classes.mjs`,
-`token-names.mjs`, `hooks.d.mts`, `format.d.mts`). This file is the only canonical text;
+humans, mono for machines. The code is the spec: the design-system variables and tokens in
+`ade/web/src/index.css`, public CSS recipes in `ade/web/src/styles/ui-recipes.css`, the shadcn
+(Base UI) components in `ade/web/src/components/shadcn` (the first place a screen reaches; add
+one with the shadcn CLI, build a missing part on Base UI in the same style), the console's own
+compositions and the first-API wrappers in `ade/web/src/components/ui`, exported through
+`packages/console-ui` (`index.d.ts`, `component-names.mjs`, `ui-classes.mjs`, `token-names.mjs`,
+`hooks.d.mts`, `format.d.mts`). Radix is gone: every overlay, menu, select and tab is Base UI. This file is the only canonical text;
 `ade/web/DESIGN.md` is a pointer to it. Workspace behaviour (panes, tabs, chords, palette,
 annotations) is documented in `ade/web/README.md`, not here.
 
@@ -64,49 +67,60 @@ motion. Provider choices remain visible and stable as their state changes.
 
 ## Tokens
 
-Use the Tailwind utility (`bg-surface`, `text-ink-faint`) inside the console; injected worker
-CSS uses `var(--color-*)`. Public names are the ones in `packages/console-ui/token-names.mjs`;
-everything else below is console-only and may change.
+The palette is the shadcn design system: the semantic variables (`--background`,
+`--foreground`, `--card`, `--popover`, `--primary`, `--secondary`, `--muted`, `--accent`,
+`--destructive`, `--border`, `--input`, `--ring`, `--sidebar-*`, `--chart-*`) defined in oklch at
+the top of `ade/web/src/index.css`, light on `:root` and dark on `.dark` / `[data-theme="dark"]`,
+with the fonts (Inter, Geist Mono, Georgia), `--radius: 0.9rem`, the shadow scale and the
+`--tracking-normal: -0.025em` letter-spacing. Change a colour there, never in an alias.
 
-### Surface ramp (light → dark)
+Inside the console use the shadcn utilities first (`bg-background`, `text-muted-foreground`,
+`border-border`, `ring-ring`, `rounded-lg`, `shadow-md`). The console's own token names
+(`bg-surface`, `text-ink-faint`, `ring-edge`) are aliases onto the same variables, kept for the
+code that already uses them and for injected worker CSS (`var(--color-*)`; the public names are
+the ones in `packages/console-ui/token-names.mjs`). Raw palette steps (`neutral-500`, hex) are
+not design-system colours: a surface or a text that needs one is a bug to file against the
+aliases below.
 
-| Token | Light | Dark | Use |
-| --- | --- | --- | --- |
-| `bg` | `#f5f5f5` | `#0a0a0a` | Application canvas, the deepest layer |
-| `sidebar` | `#f2f2f2` | `#0e0e0e` | Navigation columns (`PageSidebar`) |
-| `panel` | `lab(98.26% 0 0)` | `#111111` | Main columns (`PageShell`, `PageMain`) |
-| `panel-raised` | `#fafafa` | `#171717` | Headers, cards, popovers, composer, tool cards |
-| `paper-2` | `#ededed` | `#171717` | Legacy alias of `panel-raised`; do not add uses |
-| `surface` | `rgba(24,24,24,.055)` | `rgba(255,255,255,.055)` | Inputs, controls, chips, secondary cards |
-| `surface-hover` | `rgba(24,24,24,.085)` | `rgba(255,255,255,.085)` | Hover on rows, items, ghost controls |
-| `surface-selected` | `rgba(24,24,24,.12)` | `rgba(255,255,255,.12)` | Selected row, card, tab, chip, segment |
-| `surface-active` | `rgba(24,24,24,.12)` | `rgba(255,255,255,.12)` | Pressed / strong active |
-| `card-highlight` | `#dbdbdb63` | `#0d0d0e63` | Borderless inset inside a card; never a state |
+### Surface ramp
 
-The `surface*` fills are alpha, so one step reads the same over any base layer.
+| Token | Design-system variable | Use |
+| --- | --- | --- |
+| `bg` | `background` | Application canvas, the deepest layer |
+| `sidebar` | `sidebar` | Navigation columns (`PageSidebar`) |
+| `panel` | `background` | Main columns (`PageShell`, `PageMain`) |
+| `panel-raised` | `card` | Headers, cards, composer, tool cards |
+| `paper-2` | `card` | Legacy alias of `panel-raised`; do not add uses |
+| `surface` | `muted` | Inputs, controls, chips, secondary cards |
+| `surface-hover` | `accent` (the shadcn hover tint) | Hover on rows, items, ghost controls |
+| `surface-selected` | `accent` | Selected row, card, tab, chip, segment |
+| `surface-active` | `secondary` | Pressed / strong active |
+| `card-highlight` | `muted` | Borderless inset inside a card; never a state |
+| `popover-surface` / `dialog-surface` | `popover` / `background` | Menus, selects, tooltips / dialogs |
 
 ### Ink, strokes, accent, status
 
-| Token | Light | Dark | Use |
-| --- | --- | --- | --- |
-| `ink` | `#0a0a0a` | `#ededed` | Primary text, primary buttons, wordmark |
-| `ink-faint` | `#6b6b6b` | `#a6a6a6` | Secondary copy, captions, inactive navigation |
-| `ink-ghost` | `#909090` | `#6f6f6f` | Placeholders, timestamps, line numbers |
-| `ink-disabled` | `#b5b5b5` | `#4d4d4d` | Disabled labels (paired with `opacity-40`) |
-| `muted-foreground` | `#6b6b6b` | `#b8b8b8` | Legacy alias of `ink-faint` (dark one step brighter) |
-| `call-running` | `#57534f` | `#a6a6a6` | In-flight function description shimmer base |
-| `rule`, `rule-2`, `rule-strong` | transparent | transparent | Legacy; `border-rule*` is an inert 1px |
-| `rule-focus` | `rgba(64,64,64,.6)` | `rgba(212,212,212,.7)` | The focus stroke on inputs and controls |
-| `edge` | `#18181829` | `rgba(255,255,255,.07)` | Panel frame, `PageBody` gap, selected rail |
-| `accent` / `accent-fg` | `#383838` / `#f5f5f5` | `#dedede` / `#070909` | Live state, focus ring, primary action |
-| `accent-hover` | `#262626` | `#f5f5f5` | Hover on accent fills |
-| `accent-muted` / `accent-border` | 10% / 35% alpha | 12% / 35% alpha | Accent tint / legacy accent stroke |
-| `alert` / `alert-muted` | `#ff0026` / 8% | `#f05d68` / 12% | Errors, failed calls |
-| `warn` / `warn-muted` | `#a87a00` / 12% | `#f5a524` / 12% | Warnings, pending approval |
-| `alert-strong` / `warn-strong` | `#c60021` / `#7a5700` | `#ff4d63` / `#d49b00` | The same status as 11–12px text (AA); dots and badges keep the base tone |
-| `ok` / `ok-muted` | `#356f3d` / 12% | `#36c98f` / 12% | Success, completed calls, diff additions |
-| `workdir` / `workdir-muted` | `#0ea5e9` / 12% | same / 14% | Console-only: the chat activity folder mark |
-| `ring` | 5% `ink` mix | same | Tailwind's default `ring` colour |
+| Token | Design-system variable | Use |
+| --- | --- | --- |
+| `ink` | `foreground` | Primary text, primary buttons, wordmark |
+| `ink-faint`, `muted-foreground` | `muted-foreground` | Secondary copy, captions, inactive navigation |
+| `ink-ghost` | `muted-foreground` mixed 72% into `background` | Placeholders, timestamps, line numbers |
+| `ink-disabled` | `muted-foreground` mixed 45% into `background` | Disabled labels (paired with `opacity-40`) |
+| `call-running` | `muted-foreground` | In-flight function description shimmer base |
+| `rule`, `rule-2`, `rule-strong` | transparent | Legacy; `border-rule*` is an inert 1px |
+| `rule-focus` | `ring` | The focus stroke on inputs and controls |
+| `edge`, `card-edge`, `popover-edge`, `dialog-edge` | `border` | Panel frame, card/popover/dialog ring, selected rail |
+| `control-edge` | `input` | The resting outline of a checkbox or radio |
+| `accent` / `accent-fg` | `primary` / `primary-foreground` | Live state, focus ring, primary action (a FILL, not shadcn's hover tint) |
+| `accent-hover` | `primary` mixed 85% into `background` | Hover on accent fills |
+| `accent-muted` / `accent-border` | `primary` at 10% / 35% | Accent tint / legacy accent stroke |
+| `alert` / `alert-muted` / `alert-strong` | `destructive` / 10% / mixed 85% into `foreground` | Errors, failed calls |
+| `warn` / `warn-muted` / `warn-strong` | `#a87a00` / 12% / `#7a5700` (dark `#f5a524` / 12% / `#d49b00`) | Warnings, pending approval |
+| `ok` / `ok-muted` | `#356f3d` / 12% (dark `#36c98f` / 12%) | Success, completed calls, diff additions |
+| `workdir` / `workdir-muted` | `#0ea5e9` / 12% | Console-only: the chat activity folder mark |
+| `ring` | `ring` | Tailwind's `ring` colour; `--tw-ring-color` defaults to 5% `foreground` |
+
+`warn` and `ok` are the console's own semantic hues: the design system only names `destructive`.
 
 ### Glyph tones
 
@@ -141,8 +155,8 @@ Comments and punctuation use `ink-faint`; diff lines reuse `ok` (added) and `ale
 
 | Token | Stack | Role |
 | --- | --- | --- |
-| `--font-sans` | **Inter**, ui-sans-serif, system-ui | Human copy and controls (400/500/600 loaded) |
-| `--font-mono` | Geist Mono, Chivo Mono, ui-monospace | Machine values in chrome: IDs, times, eyebrows, keys |
+| `--font-sans` | **Inter**, ui-sans-serif, system-ui (the design-system `--font-sans`) | Human copy and controls (400/500/600 loaded) |
+| `--font-mono` | Geist Mono, monospace (the design-system `--font-mono`) | Machine values in chrome: IDs, times, eyebrows, keys |
 | `--font-code` | Monaco, SF Mono, Menlo, Consolas | Editor, terminal, `pre`, `code` — not the chrome mono |
 | `--font-geist-mono` | Geist Mono, ui-monospace | Alias used by function-call chrome |
 | `--font-inter` | Inter, ui-sans-serif, system-ui | The workspace header (`WorkspaceHeader`, `TabStrip`), pinned to Inter on the Tailwind neutral palette |
@@ -199,12 +213,13 @@ while generating. Reduced motion keeps these states static.
 
 | Token | Value |
 | --- | --- |
-| `radius-xs` … `radius-md` | 6px |
-| `radius-lg` / `radius-xl` | 8px / 12px |
+| `--radius` | 0.9rem (the design system's one radius) |
+| `radius-xs` / `radius-sm` / `radius-md` | radius − 8px / − 4px / − 2px |
+| `radius-lg` / `radius-xl` | radius / radius + 4px |
 | `radius-none` / `radius-full` | 0 / 9999px |
-| `shadow-raised` (light) | `0 1px 2px #1410081a, 0 4px 12px #1410081a` |
+| `shadow-2xs` … `shadow-2xl` | the design-system shadow scale (`shadow-sm`, `shadow-md`, `shadow-lg`, …) |
+| `shadow-raised` / `shadow-floating` (light) | `shadow-md` / `shadow-lg` |
 | `shadow-raised` (dark) | `0 1px 0 rgba(255,255,255,.025) inset, 0 8px 24px rgba(0,0,0,.18)` |
-| `shadow-floating` (light) | `0 2px 4px #1410081a, 0 10px 24px #1410081a` |
 | `shadow-floating` (dark) | `0 1px 0 rgba(255,255,255,.03) inset, 0 12px 32px rgba(0,0,0,.28)` |
 | `shadow-lift` | inset 1px highlight + inset 1px ring + 1px outer edge + two tight drops (composer) |
 | `shadow-keycap` | `lift` upside down — lit edge at the bottom, drops upward (`Kbd` only) |
