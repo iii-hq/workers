@@ -277,6 +277,41 @@ async fn sessions_and_windows_lifecycle() {
 }
 
 #[tokio::test]
+async fn a_server_the_worker_starts_gets_none_of_its_iii_variables() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    // What compose puts in the worker's environment; no other test reads it.
+    std::env::set_var("III_TMUX_LEAK_TEST", "ws://127.0.0.1:1");
+    let w = world();
+    sessions::create(
+        &w.ctx,
+        sessions::CreateSessionInput {
+            name: Some("env".into()),
+            cwd: Some("/".into()),
+            command: None,
+            window_name: None,
+            remain_on_exit: false,
+            claude: None,
+        },
+    )
+    .await
+    .unwrap();
+    let shown = std::process::Command::new("tmux")
+        .args(["-L", &w._server.socket, "show-environment", "-g"])
+        .env_remove("TMUX")
+        .output()
+        .unwrap();
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    let leaked: Vec<&str> = shown.lines().filter(|l| l.starts_with("III_")).collect();
+    assert!(
+        leaked.is_empty(),
+        "tmux's global environment holds {leaked:?}"
+    );
+}
+
+#[tokio::test]
 async fn names_are_taken_literally_and_never_as_ids() {
     if !tmux_installed() {
         eprintln!("tmux not installed; skipping");
