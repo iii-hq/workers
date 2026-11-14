@@ -33,7 +33,7 @@ const COPY: Record<Exclude<DiscoveryOutcome, 'success'>, [string, string]> = {
   ],
   empty: [
     'No chat models available',
-    'The lookup completed successfully but returned no chat models.',
+    'The lookup finished but returned no chat models.',
   ],
   not_configured: [
     'Configure xAI',

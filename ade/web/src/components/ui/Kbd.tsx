@@ -13,7 +13,7 @@ export function Kbd({ className, ...props }: HTMLAttributes<HTMLElement>) {
   return (
     <BaseKbd
       className={cn(
-        'pointer-events-auto h-auto py-px font-mono text-meta font-normal text-ink-ghost shadow-keycap',
+        'pointer-events-auto h-auto rounded-xs py-px font-mono text-meta font-normal text-ink-ghost shadow-keycap',
         className,
       )}
       {...props}

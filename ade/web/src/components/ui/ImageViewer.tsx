@@ -626,6 +626,7 @@ function Stage({
             // theme surface they were rendered for, not on the black scrim:
             // light-theme diagrams draw dark strokes and text.
             className={cn(
+              'outline -outline-offset-1 outline-black/10 dark:outline-white/10',
               'max-w-none shrink-0 origin-center select-none bg-bg',
               phase.kind === 'ready' ? 'opacity-100' : 'opacity-0',
               animated &&

@@ -112,7 +112,10 @@ export type DialogContentProps = ComponentProps<typeof BaseDialogContent>
 export function DialogContent({ className, ...props }: DialogContentProps) {
   return (
     <BaseDialogContent
-      className={cn('max-h-[85vh] overflow-y-auto p-6 sm:max-w-2xl', className)}
+      className={cn(
+        'max-h-[85vh] overflow-y-auto overscroll-contain p-6 sm:max-w-2xl',
+        className,
+      )}
       {...props}
     />
   )

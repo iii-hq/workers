@@ -1867,7 +1867,11 @@ function ImageTile({
         className="flex size-full items-center justify-center"
       >
         {src ? (
-          <img src={src} alt="" className="size-full object-cover" />
+          <img
+            src={src}
+            alt=""
+            className="size-full object-cover outline -outline-offset-1 outline-black/10 dark:outline-white/10"
+          />
         ) : (
           <ImageIcon aria-hidden className="size-4 text-ink-faint" />
         )}

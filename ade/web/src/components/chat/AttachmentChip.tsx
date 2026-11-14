@@ -187,7 +187,7 @@ export function AttachmentChip({
               <img
                 src={thumbnail}
                 alt=""
-                className="size-6 border border-border object-cover"
+                className="size-6 object-cover outline -outline-offset-1 outline-black/10 dark:outline-white/10"
               />
             ) : failed ? (
               <TriangleAlert size={16} aria-hidden className="text-warn" />

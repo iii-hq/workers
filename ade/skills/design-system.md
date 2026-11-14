@@ -120,7 +120,10 @@ aliases below.
 | `workdir` / `workdir-muted` | `#0ea5e9` / 12% | Console-only: the chat activity folder mark |
 | `ring` | `ring` | Tailwind's `ring` colour; `--tw-ring-color` defaults to 5% `foreground` |
 
-`warn` and `ok` are the console's own semantic hues: the design system only names `destructive`.
+`warn` and `ok` point at the palette's `--warning` and `--success`, defined beside `--destructive`
+in both theme blocks. Navigation rows (chats, workers, settings) share one recipe,
+`components/ui/nav-row.ts`: the shadcn sidebar menu button's `sidebar-accent` wash on hover and
+on the row marked `data-active`.
 
 ### Glyph tones
 
@@ -246,7 +249,11 @@ has chosen, the console does not follow later OS changes.
 
 ## Typography
 
-Two families plus the code font (above). The scale is whatever the shared components render:
+Two families plus the code font (above). Sizes have names, never brackets: `text-meta` is the
+11px floor (metadata, eyebrows, key caps), `text-xs` 12px (descriptions, section labels),
+`text-body` 13px (rows, labels, buttons), `text-sm` 14px (popover and dialog body, the shadcn
+parts), `text-base` 16px (phone inputs, titles). The scale is whatever the shared components
+render:
 
 | Role | Size / weight | Where |
 | --- | --- | --- |

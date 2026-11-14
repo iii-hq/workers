@@ -114,7 +114,7 @@ export function ConfirmDialog({
         <section
           // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
           tabIndex={0}
-          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset focus-visible:outline-none"
+          className="min-h-0 overflow-y-auto overscroll-contain px-6 pt-6 pb-5 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset focus-visible:outline-none"
         >
           <DialogTitle className="break-words pr-8 text-base leading-6 font-semibold">
             {title}

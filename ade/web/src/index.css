@@ -52,6 +52,9 @@
   --accent-foreground: oklch(0 0 0);
   --destructive: oklch(0.63 0.19 23.03);
   --destructive-foreground: oklch(1 0 0);
+  /* The console's two other status hues, beside `destructive`. */
+  --success: #356f3d;
+  --warning: #a87a00;
   --border: oklch(0.92 0 0);
   --input: oklch(0.94 0 0);
   --ring: oklch(0 0 0);
@@ -113,6 +116,8 @@
   --accent-foreground: oklch(1 0 0);
   --destructive: oklch(0.69 0.2 23.91);
   --destructive-foreground: oklch(0 0 0);
+  --success: #36c98f;
+  --warning: #f5a524;
   --border: oklch(0.26 0 0);
   --input: oklch(0.32 0 0);
   --ring: oklch(0.72 0 0);
@@ -228,7 +233,7 @@
      design-system `destructive`. */
   --color-alert: var(--destructive);
   --color-alert-muted: color-mix(in oklab, var(--destructive) 10%, transparent);
-  --color-warn: #a87a00;
+  --color-warn: var(--warning);
   --color-warn-muted: rgba(168, 122, 0, 0.12);
   /* Status as small text (11–12px): the same hues pushed to AA on the
      surface ramp. A dot, a mark or a badge keeps the base tone. */
@@ -240,7 +245,7 @@
   --color-warn-strong: #7a5700;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
-  --color-ok: #356f3d;
+  --color-ok: var(--success);
   --color-ok-muted: rgba(53, 111, 61, 0.12);
   /* Session scope (working directory) — the folder mark in the chat
      timeline's activity-kind trail, beside ƒ (accent), observer (warn) and
@@ -449,7 +454,7 @@
   --iii-ui-lift-edge: rgba(0, 0, 0, 0.12);
   --iii-ui-lift-drop: rgba(0, 0, 0, 0.18);
   --color-alert-muted: color-mix(in oklab, var(--destructive) 12%, transparent);
-  --color-warn: #f5a524;
+  --color-warn: var(--warning);
   --color-warn-muted: rgba(245, 165, 36, 0.12);
   --color-alert-strong: color-mix(
     in oklab,
@@ -457,7 +462,7 @@
     var(--foreground)
   );
   --color-warn-strong: #d49b00;
-  --color-ok: #36c98f;
+  --color-ok: var(--success);
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.14);
