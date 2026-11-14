@@ -127,6 +127,11 @@ fn forbidden_call(function_id: &str, approval_gate_running: bool) -> Option<Stri
     pipe::forbidden_step(function_id, approval_gate_running).map(str::to_string)
 }
 
+fn call_args(call: &BatchCall, fs_scope: Option<&Value>) -> Result<Value, String> {
+    let args = call.payload.clone().unwrap_or_else(|| json!({}));
+    pipe::bus_step_args(&call.function, args, fs_scope)
+}
+
 fn validate_with_approval_gate(
     req: &BatchRequest,
     approval_gate_running: bool,
@@ -290,8 +295,7 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
         .into_iter()
         .enumerate()
         .map(|(i, call)| {
-            let args = call.payload.clone().unwrap_or_else(|| json!({}));
-            let args = pipe::bus_step_args(&call.function, args, fs_scope.as_ref());
+            let args = call_args(&call, fs_scope.as_ref());
             let timeout = call.timeout_ms.unwrap_or(default_timeout);
             (i, call, args, timeout)
         })
@@ -387,6 +391,69 @@ mod tests {
 
     fn parse(v: Value) -> BatchRequest {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn batch_refuses_mesh_node_calls() {
+        for function in [
+            "laptop::mesh-node::update",
+            "a::b::mesh-node::workers::apply",
+            "laptop::shell::workspace::reset",
+            "a::b::configuration::get",
+            "laptop::fp::batch",
+            "laptop::fp::pipe",
+            "a::b::mesh::ui-content",
+        ] {
+            let req = parse(json!({ "calls": [{ "function": function }] }));
+            assert!(validate(&req).unwrap_err().contains(function), "{function}");
+        }
+    }
+
+    #[test]
+    fn batch_args_strip_remote_scope_and_preserve_local_stamping() {
+        for trusted in [Some(json!({ "root": "/work/session-7" })), None] {
+            for function in ["laptop::coder::read-file", "a::b::shell::exec"] {
+                for payload in [
+                    json!({ "path": "a", "fs_scope": { "root": "/evil" } }),
+                    json!({ "path": "a" }),
+                ] {
+                    let req = parse(json!({
+                        "fs_scope": trusted,
+                        "calls": [{ "function": function, "payload": payload }],
+                    }));
+                    assert!(validate(&req).is_ok(), "{function}");
+                    assert_eq!(
+                        call_args(&req.calls[0], req.fs_scope.as_ref()).unwrap(),
+                        json!({ "path": "a" }),
+                        "{function}"
+                    );
+                }
+            }
+        }
+
+        let req = parse(json!({
+            "fs_scope": { "root": "/work/session-7" },
+            "calls": [
+                { "function": "coder::read-file", "payload": { "path": "a", "fs_scope": {} } },
+                { "function": "laptop::coder::read-file" },
+                { "function": "coder::read-file", "payload": "a" },
+                { "function": "laptop::browser::open", "payload": { "fs_scope": 1 } },
+                { "function": "laptop::shell::filesystem::read", "payload": { "fs_scope": 1 } },
+            ],
+        }));
+        assert_eq!(
+            call_args(&req.calls[0], req.fs_scope.as_ref()).unwrap(),
+            json!({ "path": "a", "fs_scope": { "root": "/work/session-7" } })
+        );
+        assert_eq!(call_args(&req.calls[1], None).unwrap(), json!({}));
+        assert!(call_args(&req.calls[0], None).is_err());
+        assert!(call_args(&req.calls[2], req.fs_scope.as_ref()).is_err());
+        for call in &req.calls[3..] {
+            assert_eq!(
+                call_args(call, req.fs_scope.as_ref()).unwrap(),
+                json!({ "fs_scope": 1 })
+            );
+        }
     }
 
     #[test]
