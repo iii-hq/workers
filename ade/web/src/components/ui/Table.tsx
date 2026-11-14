@@ -33,6 +33,7 @@ export const TableFrame = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
+    data-slot="table-frame"
     className={cn('overflow-hidden rounded-lg border border-border', className)}
     {...props}
   />
@@ -62,7 +63,12 @@ export const Table = React.forwardRef<HTMLTableElement, TableProps>(
       className={cn(
         'w-full caption-bottom text-sm',
         density === 'compact' && '[&_td]:py-1 [&_th]:h-8',
-        !inset && '[&_td:first-child]:pl-0 [&_th:first-child]:pl-0',
+        // Flush with the page text when the table stands alone; inside a
+        // `TableFrame` the first and last cells keep a 12px gutter from the
+        // card's edge, so "Status" never touches the ring.
+        !inset &&
+          'not-in-data-[slot=table-frame]:[&_td:first-child]:pl-0 not-in-data-[slot=table-frame]:[&_th:first-child]:pl-0',
+        'in-data-[slot=table-frame]:[&_td:first-child]:pl-3 in-data-[slot=table-frame]:[&_th:first-child]:pl-3 in-data-[slot=table-frame]:[&_td:last-child]:pr-3 in-data-[slot=table-frame]:[&_th:last-child]:pr-3',
         className,
       )}
       {...props}
