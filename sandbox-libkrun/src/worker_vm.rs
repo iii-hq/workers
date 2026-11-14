@@ -640,8 +640,10 @@ impl WorkerVms {
             // Connected now, not at the first record. When this adapter goes away, the engine
             // aborts a connected writer's stream, and that is how a supervisor learns its VM
             // went with it. An unattached writer would leave the reader open until the engine
-            // sweeps the channel, minutes later.
-            let _ = writer.write(&[]).await;
+            // sweeps the channel, minutes later. Bounded: `pump_logs` registers the follower a
+            // lease waits for, so a stalled handshake must not hold it back past the grace. A
+            // connect cut short here happens at the first record instead.
+            let _ = tokio::time::timeout(every, writer.write(&[])).await;
             let channel = &writer;
             let pumped = tokio::select! {
                 pumped = vms.pump_logs(&req, |record| async move {
@@ -2808,6 +2810,35 @@ mod tests {
         assert!(
             connected.is_ok(),
             "the writer waited for a record to connect"
+        );
+    }
+
+    /// A stalled channel handshake does not hold the follower back: a VM's lease waits for
+    /// the follower, not for the engine to answer the upgrade.
+    #[tokio::test]
+    async fn a_stalled_channel_handshake_does_not_hold_the_follower_back() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let mut vms = vms(t, Some("t"), vec![]);
+        vms.lease_grace = Duration::from_millis(900);
+        let vms = Arc::new(vms);
+        // Takes connections into its backlog and never answers the upgrade.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let iii = IIIClient::new(&format!("ws://{}", listener.local_addr().unwrap()));
+        let id = vms
+            .launch("k", sh("sleep 30"), Vec::new(), None)
+            .unwrap()
+            .vm_id;
+        vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
+        let Some(Slot::Booted(vm)) = vms.slots().get(&id).cloned() else {
+            panic!("{id} is not booted");
+        };
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let following = *vm.followers.borrow();
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+        assert_eq!(
+            following, 1,
+            "the stalled connect kept the follower from registering"
         );
     }
 
