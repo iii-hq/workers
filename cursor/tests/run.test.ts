@@ -1735,14 +1735,13 @@ describe('Cursor worker interface', () => {
     }
   });
 
-  it('registers the standard alias and concrete request and response schemas', () => {
+  it('registers concrete request and response schemas', () => {
     const iii = new MockIII();
     const worker = makeWorker(iii, new FakeBridgeFactory(successfulClient()));
     worker.register();
 
     expect([...iii.functions.keys()]).toEqual([
       'cursor::run',
-      'run::start_and_wait',
       'cursor::start',
       'cursor::stop',
       'cursor::status',
@@ -1779,7 +1778,7 @@ describe('Cursor worker interface', () => {
     const worker = makeWorker(iii, new FakeBridgeFactory(client));
     worker.register();
 
-    const response = await iii.functions.get('run::start_and_wait')?.handler({
+    const response = await iii.functions.get('cursor::run')?.handler({
       session_id: 'acp-session',
       cwd: '/editor/workspace',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'from editor' }] }],

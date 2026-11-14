@@ -88,7 +88,7 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 | `grok::on-raw-event` | Event feed: raw streaming-json events of one session (args `{ session_id }`) |
 | `grok::on-config-change` | Internal: observes `configuration::on-updated` and reloads the configuration |
 
-`grok::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Grok with `--brain-fn grok::run` — plus `model`, `cwd`, `always_approve`, and `iii_context`.
+`grok::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as `claude::run`, so the acp worker drives Grok with `--brain-fn grok::run` — plus `model`, `cwd`, `always_approve`, and `iii_context`.
 
 ### Raw events
 

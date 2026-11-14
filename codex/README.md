@@ -89,7 +89,7 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 | `codex::on-raw-event` | Event feed: raw Codex thread events of one session (args `{ session_id }`) |
 | `codex::on-config-change` | Internal: observes `configuration::on-updated` and reloads the configuration |
 
-`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as the claude-code worker and `run::start_and_wait`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, `output_schema`, `images` (local image paths), `additional_directories` (extra writable roots), and `codex_config`.
+`codex::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`) — the same input contract as `claude::run`, so the acp worker drives Codex with `--brain-fn codex::run` — plus `model`, `cwd`, `sandbox_mode`, `approval_policy`, `reasoning_effort`, `skip_git_repo_check`, `output_schema`, `images` (local image paths), `additional_directories` (extra writable roots), and `codex_config`.
 
 ### Raw API pass-through
 

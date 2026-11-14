@@ -21,7 +21,7 @@ async function registeredWorker(): Promise<FakeIii> {
 beforeEach(() => spawnMock.mockReset());
 
 describe('register', () => {
-  it('registers the full opencode::* surface plus the shared entrypoint', async () => {
+  it('registers the full opencode::* surface', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
       'opencode::on-agent-event',
@@ -31,7 +31,6 @@ describe('register', () => {
       'opencode::start',
       'opencode::status',
       'opencode::stop',
-      'run::start_and_wait',
     ]);
   });
 
@@ -50,10 +49,10 @@ describe('register', () => {
     await expect(fake.registered.get('opencode::run')?.({ timeout_ms: -1 })).rejects.toThrow();
   });
 
-  it('run::start_and_wait shares the run handler', async () => {
+  it('opencode::run accepts the shared messages shape', async () => {
     const fake = await registeredWorker();
     spawnMock.mockImplementation(scriptedSpawn(fullTurn, newSpawnCapture()) as never);
-    const res = (await fake.registered.get('run::start_and_wait')?.({
+    const res = (await fake.registered.get('opencode::run')?.({
       session_id: 's1',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
     })) as Record<string, unknown>;

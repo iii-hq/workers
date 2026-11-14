@@ -84,8 +84,6 @@ instead of bolting anything onto this one.
 - `claude::status` — point-in-time session view: live flag, status, turns,
   usage, cost.
 - `claude::sessions::list` — every session this worker has run.
-- `run::start_and_wait` — alias for `claude::run` under the entrypoint the
-  console and acp worker drive, so both run Claude Code with no changes.
 - `claude::on-agent-event`, `claude::on-raw-event` — the event feeds: private
   functions you observe with args `{ session_id }` (at most 256 observers
   each); never call them.

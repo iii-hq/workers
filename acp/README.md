@@ -8,7 +8,7 @@ Editors and clients that already speak ACP launch `iii-acp` as a subprocess
 and drive it through their native agent UI. No editor plugin, no fork, no
 bespoke per-client integration.
 
-> Status: 0.3.0. Server-side only (`acp-client` for consuming external ACP
+> Status: server-side only (`acp-client` for consuming external ACP
 > agents ships separately). All eleven client→agent methods are implemented
 > (`initialize`, `authenticate`, `session/{new,load,resume,list,prompt,cancel,close,set_mode,set_config_option}`)
 > plus the `session/update` agent→client notification. Reverse-RPC paths
@@ -30,8 +30,8 @@ others don't.
 |---|---|---|
 | **MCP server** (`iii-mcp`) | Exposes iii functions as **tools** to an external agent | You're already running Claude Code / Cursor / etc. and want to give it iii tools |
 | **Skill bundles** | Curated prompts + tools loaded into an agent host | You're inside a skill-aware host (Claude Code, Cursor) and want a preset toolset |
-| **Agent workers** (`turn-orchestrator`, `agent`, `coding`, …) | The brain itself — registers `run::start_and_wait`, runs LLM turns, executes tools | You're calling iii from your own code (`iii.call({ function_id: "run::start_and_wait", … })`) or backend automation |
-| **`iii-acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the canonical iii brain contract; turns the frames of the brain worker's `<namespace>::on-agent-event` function into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
+| **Agent workers** (`claude-code`, `pi`, `codex`, `opencode`, `cursor`, …) | The brain itself — `claude::run`, `pi::run`, … run an agent turn and execute its tools | You're calling iii from your own code (`iii.call({ function_id: "claude::run", … })`) or backend automation |
+| **`iii-acp` (this worker)** | Editor → iii. Translates ACP `session/*` JSON-RPC into the agent brain contract; turns the frames of the brain worker's `<namespace>::on-agent-event` function into ACP `session/update` notifications | You want iii to **be** the agent in an editor users already opened today |
 
 ACP is the **north** edge of the stack. MCP is the **south** edge. They
 coexist:
@@ -39,19 +39,15 @@ coexist:
 ```
 Editor (Zed, VS Code, Neovim, …)
   ↓ ACP ─ session/prompt, session/update          ← iii-acp
-iii engine + brain workers (turn-orchestrator,
-  provider-router, guardrails, llm-budget,
-  audit-log, dlp-scrubber, policy-denylist, …)
+iii engine + an agent worker (claude-code, pi,
+  codex, opencode, cursor, …)
   ↓ MCP ─ tools/list, tools/call                  ← iii-mcp / mcp-client
 External tool servers (filesystem, browser, …)
 ```
 
 What iii brings to an editor session that a vanilla agent host doesn't:
 
-- **Provider routing** — switch Claude/GPT/local model per session via `provider-router`, no editor restart
-- **Budgets** — hard token/dollar caps per session via `llm-budget`
-- **Guardrails** — input + output PII/secret scrub via `guardrails`, `dlp-scrubber`
-- **Audit trail** — every turn durably logged via `audit-log`
+- **Any agent** — Claude Code, Pi, Codex, OpenCode, Cursor and the other agent workers behind one editor entry: change `--brain-fn`, not the editor
 - **RBAC** — per-session tool gating via `iii-worker-manager`
 - **Observability** — full distributed trace from editor click to provider API call via `engine::traces::*`
 - **Durable sessions** — `session/load` replays history straight from iii state
@@ -89,7 +85,7 @@ binary, set the `IIIACP_*` env vars below.
 
 ## Prerequisites
 
-`iii-acp` needs an iii engine plus a brain. Minimum stack:
+`iii-acp` needs an iii engine plus a brain: any agent worker's run function.
 
 ```bash
 # 1. Workers acp uses directly. state holds session
@@ -100,40 +96,18 @@ iii call compose::add worker=state worker=queue
 # 2. acp itself.
 iii call compose::add worker=acp
 
-# 3. The brain stack. turn-orchestrator drives the loop;
-#    provider-router routes assistant turns to provider-anthropic
-#    (or any other provider worker); auth-credentials stores the
-#    Anthropic API key. session-inbox / llm-budget / hook-fanout
-#    are pulled in transitively.
-iii call compose::add worker=turn-orchestrator worker=provider-router \
-  worker=provider-anthropic worker=auth-credentials worker=session-inbox \
-  worker=llm-budget worker=hook-fanout
-
-# 4. (Optional but recommended) — iii's distinctive primitives.
-iii call compose::add worker=guardrails worker=dlp-scrubber worker=audit-log \
-  worker=policy-denylist worker=context-compaction
-```
-
-Store the Anthropic API key once:
-
-```bash
-iii call auth::set_token \
-  --json '{"provider":"anthropic","credential":{"type":"api_key","key":"sk-ant-..."}}'
+# 3. The brain. claude-code runs the host's `claude` CLI with its own
+#    login; pi, codex, opencode and cursor work the same way.
+iii call compose::add worker=claude-code
 ```
 
 Verify the brain runs end-to-end before plugging in an editor:
 
 ```bash
-iii call run::start_and_wait --timeout-ms 30000 --json '{
-  "session_id": "smoke",
-  "messages": [{"role":"user","content":[{"type":"text","text":"reply with hi"}],"timestamp":0}],
-  "model": "claude-sonnet-4-5-20250929",
-  "provider": "anthropic"
-}'
+iii call claude::run --timeout-ms 120000 --json '{"session_id":"smoke","prompt":"reply with hi"}'
 ```
 
-A `messages` array ending in an assistant message with `"text":"hi"` means
-the stack is healthy.
+A `result` of `hi` means the stack is healthy.
 
 ## Spawn
 
@@ -142,21 +116,20 @@ exchanges JSON-RPC frames over stdin/stdout. **stderr is reserved for
 logs; stdout is reserved for ACP frames.**
 
 ```bash
-iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
+iii-acp --brain-fn claude::run --brain-stop-fn claude::stop
 ```
 
 ## Configuration
 
 | Flag / env | Effect |
 |---|---|
-| `--engine-url` (`-e`, `IIIACP_ENGINE_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
+| `--engine-url` (`-e`, `III_URL`) | iii engine WebSocket URL. Default `ws://localhost:49134`. |
 | `--debug` (`-d`) | Verbose tracing on stderr. |
-| `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain when unset. Canonical value is `run::start_and_wait` (turn-orchestrator). |
+| `--brain-fn` (`IIIACP_BRAIN_FN`) | iii function id that runs the prompt turn. Falls back to a built-in echo brain when unset. Use an agent's run function: `claude::run`, `pi::run`, `codex::run`, `opencode::run`, `cursor::run`, …. |
 | `--brain-stop-fn` (`IIIACP_BRAIN_STOP_FN`) | Optional iii function id called with `session_id` when ACP cancels an external brain turn. |
 | `--events-function` (`IIIACP_EVENTS_FUNCTION`) | Function(s) carrying the brain's `AgentEvent` frames, observed per session; comma-separated or repeated. Default `<brain namespace>::on-agent-event` (`claude::run` -> `claude::on-agent-event`, `codex::run` -> `codex::on-agent-event`). |
-| `--use-canonical-brain` (`IIIACP_USE_CANONICAL_BRAIN`) | Shortcut for `--brain-fn run::start_and_wait`. |
-| `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain (e.g. `claude-sonnet-4-5-20250929`). |
-| `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to the brain (e.g. `anthropic`). Routes to `provider::<provider>::complete`. |
+| `--model` (`IIIACP_MODEL`) | Model id forwarded to the brain; the brain's default when unset. |
+| `--provider` (`IIIACP_PROVIDER`) | Provider id forwarded to brains that take one (`cursor::run`); others ignore it. |
 | `--system-prompt` (`IIIACP_SYSTEM_PROMPT`) | System prompt prepended to every turn. |
 | `--rbac-tag` | Forwards `x-iii-rbac-tag` on the worker WebSocket so `iii-worker-manager`'s `auth_function_id` can apply policy. |
 
@@ -174,10 +147,9 @@ iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anth
       "command": "/path/to/iii-acp",
       "args": [],
       "env": {
-        "IIIACP_ENGINE_URL": "ws://localhost:49134",
-        "IIIACP_USE_CANONICAL_BRAIN": "true",
-        "IIIACP_MODEL": "claude-sonnet-4-5-20250929",
-        "IIIACP_PROVIDER": "anthropic",
+        "III_URL": "ws://localhost:49134",
+        "IIIACP_BRAIN_FN": "claude::run",
+        "IIIACP_BRAIN_STOP_FN": "claude::stop",
         "IIIACP_SYSTEM_PROMPT": "You are an iii expert. Answer in iii primitives only."
       }
     }
@@ -243,9 +215,9 @@ on the next `session/prompt` turn; iii-acp just stores.
 
 ## Brain contract
 
-iii-acp talks to the canonical iii brain shape used by `turn-orchestrator`
-and every provider worker. Any function with this input contract drops in
-as a brain — no adapter required.
+iii-acp talks to the run shape every agent worker accepts (`claude::run`,
+`pi::run`, `codex::run`, `opencode::run`, `cursor::run`, …). Any function
+with this input contract drops in as a brain — no adapter required.
 
 **Input** (forwarded as the `iii.call` payload):
 
@@ -259,8 +231,9 @@ as a brain — no adapter required.
       "timestamp": 1234567890
     }
   ],
-  "model": "claude-sonnet-4-5-20250929",
-  "provider": "anthropic",
+  "cwd": "/path/to/workspace",
+  "model": "...",
+  "provider": "...",
   "system_prompt": "You are ...",
   "timeout_ms": 600000
 }
@@ -271,14 +244,16 @@ as a brain — no adapter required.
 ```jsonc
 {
   "session_id": "sess_...",
-  "messages": [...],
-  "turn_count": 1
+  "result": "...",
+  "stop_reason": "end"
 }
 ```
 
-iii-acp picks the ACP `stopReason` from the final assistant message's
-`stop_reason` field (`end` → `end_turn`, `length` → `max_tokens`,
-`aborted` → `cancelled`, `error` → `refusal`).
+iii-acp picks the ACP `stopReason` from `stop_reason`, on the result or on
+the final assistant message of a `messages` array (`end` → `end_turn`,
+`length` → `max_tokens`, `aborted` → `cancelled`, `error` → `refusal`), and
+from a terminal `status` (`CANCELLED`, `MAX_TOKENS`, `MAX_TURN_REQUESTS`)
+when the brain reports one.
 
 **Streaming.** The brain's worker publishes `AgentEvent` frames on its own
 private function `<namespace>::on-agent-event` (claude-code
@@ -334,7 +309,7 @@ Streaming wire: the brain's `<namespace>::on-agent-event` function (observed per
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"demo","version":"0"}}}' \
-  | iii-acp --use-canonical-brain --model claude-sonnet-4-5-20250929 --provider anthropic
+  | iii-acp --brain-fn claude::run --brain-stop-fn claude::stop
 ```
 
 Replies stream on stdout, one JSON frame per line.

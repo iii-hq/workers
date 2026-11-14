@@ -175,7 +175,7 @@ export function registerAgentFeeds(iii: IIIClient): { agent: Feed; raw: Feed } {
     id: ON_AGENT_EVENT_FN,
     source: SOURCE,
     description:
-      'Translated AgentEvent frames of one Pi session (pi::run, pi::start, pi::task, run::start_and_wait and the console terminal). Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
+      'Translated AgentEvent frames of one Pi session (pi::run, pi::start, pi::task and the console terminal). Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
     id: ON_RAW_EVENT_FN,

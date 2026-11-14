@@ -1,6 +1,6 @@
 # opencode
 
-OpenCode as an iii worker: the OpenCode API exposed as functions on the iii bus, nothing else. The worker spawns the same `opencode` CLI the user runs in their terminal, with the same login, filesystem, and tools. `opencode::run` executes one headless turn (`opencode run --format json`) and returns the result with token usage and cost; the raw JSON events are delivered verbatim on the `opencode::on-raw-event` function, and a translated AgentEvent view on `opencode::on-agent-event`, so the acp worker and any sibling worker that observes them follows an OpenCode run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and acp worker drive.
+OpenCode as an iii worker: the OpenCode API exposed as functions on the iii bus, nothing else. The worker spawns the same `opencode` CLI the user runs in their terminal, with the same login, filesystem, and tools. `opencode::run` executes one headless turn (`opencode run --format json`) and returns the result with token usage and cost; the raw JSON events are delivered verbatim on the `opencode::on-raw-event` function, and a translated AgentEvent view on `opencode::on-agent-event`, so the acp worker and any sibling worker that observes them follows an OpenCode run exactly like a native harness turn. The acp worker drives it with `--brain-fn opencode::run`.
 
 ## Install
 
@@ -82,7 +82,6 @@ Long turns: use `opencode::start` to return immediately, then observe `opencode:
 | `opencode::stop` | Interrupt a live run |
 | `opencode::status` | Session state, live flag, usage, cost |
 | `opencode::sessions::list` | All sessions this worker has run |
-| `run::start_and_wait` | Alias for `opencode::run` under the shared agent entrypoint |
 
 `opencode::run` accepts a bare `prompt` or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), plus `model` (`provider/model`), `cwd`, `agent`, and `iii_context` overrides.
 

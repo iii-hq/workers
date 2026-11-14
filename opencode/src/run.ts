@@ -4,8 +4,8 @@
  * translates it onto the opencode::on-agent-event feed, mirrors it raw onto the
  * opencode::on-raw-event feed, and
  * returns the final result with token usage and cost. Accepts a bare `prompt`
- * or the shared agent entrypoint shape (`messages`), so anything that drives
- * `run::start_and_wait` can drive OpenCode unchanged.
+ * or the shared agent entrypoint shape (`messages`), so the acp worker
+ * (`--brain-fn opencode::run`) can drive OpenCode unchanged.
  */
 
 import { spawn } from 'node:child_process';
@@ -438,18 +438,6 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       description: 'List every OpenCode session this worker has run.',
       request_format: { type: 'object', properties: {} },
       response_format: SESSIONS_RESPONSE_FORMAT,
-    },
-  );
-
-  iii.registerFunction(
-    'run::start_and_wait',
-    async (payload: unknown) =>
-      executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
-    {
-      description:
-        'Alias for opencode::run under the shared agent entrypoint: run a turn for {session_id, messages} and return when it ends.',
-      request_format: RUN_REQUEST_FORMAT,
-      response_format: RUN_RESPONSE_FORMAT,
     },
   );
 }

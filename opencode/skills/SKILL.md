@@ -63,8 +63,6 @@ bolting anything onto this one.
 - `opencode::status` — point-in-time session view: live flag, status, turns,
   usage, cost.
 - `opencode::sessions::list` — every session this worker has run.
-- `run::start_and_wait` — alias for `opencode::run` under the entrypoint the
-  console and acp worker drive.
 - `opencode::on-agent-event`, `opencode::on-raw-event` — the event feeds:
   private functions you observe with args `{ session_id }` (at most 256
   observers each); never call them.

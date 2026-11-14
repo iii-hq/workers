@@ -40,7 +40,7 @@ beforeEach(() => {
 });
 
 describe('register', () => {
-  it('registers the full pi::* surface plus the shared entrypoint', async () => {
+  it('registers the full pi::* surface', async () => {
     const fake = await registeredWorker();
     expect([...fake.registered.keys()].sort()).toEqual([
       'pi::follow_up',
@@ -53,7 +53,6 @@ describe('register', () => {
       'pi::steer',
       'pi::stop',
       'pi::task',
-      'run::start_and_wait',
     ]);
   });
 
@@ -76,10 +75,10 @@ describe('register', () => {
     await expect(fake.registered.get('pi::run')?.({ timeout_ms: -1 })).rejects.toThrow();
   });
 
-  it('run::start_and_wait shares the pi::run handler behaviour', async () => {
+  it('pi::run accepts the shared messages shape', async () => {
     const fake = await registeredWorker();
     const capture = script();
-    const res = (await fake.registered.get('run::start_and_wait')?.({
+    const res = (await fake.registered.get('pi::run')?.({
       session_id: 's1',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
     })) as Record<string, unknown>;
