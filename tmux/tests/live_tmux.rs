@@ -282,8 +282,23 @@ async fn a_server_the_worker_starts_gets_none_of_its_iii_variables() {
         eprintln!("tmux not installed; skipping");
         return;
     }
-    // What compose puts in the worker's environment; no other test reads it.
-    std::env::set_var("III_TMUX_LEAK_TEST", "ws://127.0.0.1:1");
+    // What compose puts in the worker's environment. Set on a copy of this
+    // test in its own process: `set_var` here would race the tests beside it.
+    const NAME: &str = "a_server_the_worker_starts_gets_none_of_its_iii_variables";
+    if std::env::var_os("III_TMUX_LEAK_TEST").is_none() {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env("III_TMUX_LEAK_TEST", "ws://127.0.0.1:1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        return;
+    }
     let w = world();
     sessions::create(
         &w.ctx,
@@ -303,6 +318,11 @@ async fn a_server_the_worker_starts_gets_none_of_its_iii_variables() {
         .env_remove("TMUX")
         .output()
         .unwrap();
+    assert!(
+        shown.status.success(),
+        "show-environment failed: {}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
     let shown = String::from_utf8_lossy(&shown.stdout);
     let leaked: Vec<&str> = shown.lines().filter(|l| l.starts_with("III_")).collect();
     assert!(
