@@ -248,8 +248,10 @@ describe('ModelsStep', () => {
       'Stored encrypted on this machine. It never lands in a file you commit.',
     )
     expect(html).not.toContain('secret://')
-    // llm-router reads env:// too, so the key may stay a variable instead.
-    expect(html).toContain('role="radiogroup"')
+    // llm-router reads env:// too, so the key may stay a variable instead
+    // (a shadcn toggle group, one pressed item).
+    expect(html).toContain('data-variant="radio"')
+    expect(html).toContain('aria-pressed="true"')
     expect(html).toContain('Encrypted')
     expect(html).toContain('Environment variable')
   })

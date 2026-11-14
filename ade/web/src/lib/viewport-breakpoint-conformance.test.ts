@@ -87,6 +87,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/ui/Dialog.tsx': { max: 3, reason: TOUCH },
   'components/ui/ImageViewer.tsx': { max: 5, reason: TOUCH },
   'components/ui/Input.tsx': { max: 2, reason: TOUCH },
+  'components/ui/SearchField.tsx': { max: 2, reason: TOUCH },
   'components/ui/OpenDetailsAffordance.tsx': { max: 5, reason: TOUCH },
   'components/ui/PageChrome.tsx': { max: 3, reason: TOUCH },
   'components/ui/RawValueInput.tsx': {

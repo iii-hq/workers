@@ -1,7 +1,16 @@
 import { Search, X } from 'lucide-react'
 import * as React from 'react'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '@/components/shadcn/input-group'
 import { cn } from '@/lib/utils'
-import { Input } from './Input'
+
+// viewport: phone chrome — the sm utilities here are the console's
+// phone-vs-desktop presentation (48px touch height, 16px text), not pane
+// layout; see viewport-breakpoint-conformance.test.ts.
 
 export interface SearchFieldProps
   extends Omit<
@@ -17,16 +26,16 @@ export interface SearchFieldProps
 }
 
 /**
- * The search box: leading magnifier, clear button while non-empty, Escape
- * clears (and stops there, so an enclosing dialog stays open).
+ * The search box on the shadcn input group: leading magnifier, clear
+ * button while non-empty, Escape clears (and stops there, so an enclosing
+ * dialog stays open).
  *
- * A Radix Dialog or BottomSheet listens for Escape on the document in the
- * capture phase, before any React handler runs, so stopping the event in
- * `onKeyDown` comes too late: the dialog has already closed. The field
+ * A dialog listens for Escape on the document before any React handler
+ * runs, so stopping the event in `onKeyDown` comes too late. The field
  * claims the key on the window, earlier still, while there is a query to
- * clear; `preventDefault` is what tells the dialog to stay. The clear itself
- * still happens in `onKeyDown`, after the caller's own handler, which can
- * veto it with `preventDefault` as before.
+ * clear; `preventDefault` is what tells the dialog to stay (see `Dialog`).
+ * The clear itself still happens in `onKeyDown`, after the caller's own
+ * handler, which can veto it with `preventDefault` as before.
  */
 export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
   (
@@ -73,26 +82,25 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
         {label ? (
           <label
             htmlFor={inputId}
-            className="font-sans text-xs font-medium text-ink-faint"
+            className="text-xs font-medium text-muted-foreground"
           >
             {label}
           </label>
         ) : null}
-        <div className="relative">
-          <Search
-            aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-ghost"
-          />
-          <Input
+        <InputGroup className="h-12 sm:h-9">
+          <InputGroupAddon>
+            <Search aria-hidden className="text-ink-ghost" />
+          </InputGroupAddon>
+          <InputGroupInput
             ref={setRef}
             {...rest}
             id={inputId}
             type="search"
             value={value}
-            onChange={onChange}
+            onChange={(event) => onChange(event.currentTarget.value)}
             placeholder={placeholder}
             aria-label={label ? undefined : (ariaLabel ?? placeholder)}
-            className="pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
+            className="h-full text-base sm:text-sm [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
               // A claimed Escape arrives already default-prevented (that is
               // what kept the dialog open), so the caller's veto is its own
@@ -115,21 +123,20 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
             }}
           />
           {value ? (
-            <button
-              type="button"
-              aria-label="Clear"
-              onClick={(event) => {
-                event.currentTarget.parentElement
-                  ?.querySelector('input')
-                  ?.focus({ preventScroll: true })
-                onChange('')
-              }}
-              className="absolute right-1.5 top-1/2 flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-            >
-              <X className="size-4" aria-hidden />
-            </button>
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton
+                size="icon-xs"
+                aria-label="Clear search"
+                onClick={() => {
+                  input.current?.focus({ preventScroll: true })
+                  onChange('')
+                }}
+              >
+                <X aria-hidden />
+              </InputGroupButton>
+            </InputGroupAddon>
           ) : null}
-        </div>
+        </InputGroup>
       </div>
     )
   },
