@@ -17,6 +17,7 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Select,
   StatusPanel,
   useConfirm,
 } from '@iii-dev/console-ui'
@@ -356,17 +357,15 @@ export function A2uiPage({
           {surfaces.length > 0 ? (
             <label className="a2ui-mobile-switcher">
               <span>Interface</span>
-              <select
+              <Select
                 aria-label="surface"
                 value={selectedId ?? ''}
-                onChange={(event) => setSelectedId(event.currentTarget.value)}
-              >
-                {surfaces.map((surface) => (
-                  <option key={surface.surface_id} value={surface.surface_id}>
-                    {surface.title} · r{surface.revision}
-                  </option>
-                ))}
-              </select>
+                onChange={(next) => setSelectedId(next)}
+                options={surfaces.map((surface) => ({
+                  value: surface.surface_id,
+                  label: `${surface.title} · r${surface.revision}`,
+                }))}
+              />
             </label>
           ) : null}
           <div className="a2ui-library-bar">

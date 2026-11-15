@@ -14,6 +14,7 @@ import {
   IconButton,
   Input,
   type JsonValue,
+  Select,
   SettingsList,
   SettingsRow,
   SettingsSection,
@@ -618,22 +619,17 @@ function SelectField({
           onUseLiteral={() => onChange(replacement)}
         />
       ) : (
-        <select
+        <Select
           id={id}
           name={name}
           data-field={name}
           className="br-cfg-select"
           value={value}
+          options={[...options]}
           aria-invalid={Boolean(error)}
           aria-describedby={errorId}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={onChange}
+        />
       )}
     </Field>
   )

@@ -236,7 +236,7 @@ export function WorkspaceHeader({
             aria-label={paletteTitle}
             title={paletteTitle}
             /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
-            className="learn-iii-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-card pr-1.5 pl-3 text-body font-medium text-muted-foreground transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] gap-4"
+            className="learn-iii-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-field bg-card pr-1.5 pl-3 text-body font-medium text-muted-foreground transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98]"
           >
             <Search
               className="icon-motion icon-motion--search size-4 shrink-0"

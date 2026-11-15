@@ -1400,24 +1400,6 @@
   font-family: var(--font-mono);
   font-size: 14px;
 }
-/* the one native control: a bordered field like the page's selects */
-[data-iii-ui="browser"] .br-cfg-select {
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--color-edge);
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-ink);
-  font-family: inherit;
-  font-size: 15px;
-}
-[data-iii-ui="browser"] .br-cfg-select:hover {
-  background: var(--color-surface);
-}
-[data-iii-ui="browser"] .br-cfg-select:focus {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -1px;
-}
 [data-iii-ui="browser"] .br-cfg-template-control {
   display: grid;
   grid-template-columns: minmax(150px, 1fr) auto;
