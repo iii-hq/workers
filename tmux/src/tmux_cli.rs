@@ -7,6 +7,7 @@
 //! title) is always last so a stray separator in it cannot shift the others.
 
 use std::borrow::Cow;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -21,6 +22,18 @@ pub const HOLD: &str = "cat";
 /// [`SEP`] as tmux prints it when it passes command output through `vis(3)`
 /// (octal, backslashes left alone).
 const ESCAPED_SEP: &str = "\\037";
+
+/// The names of the `III_*` variables among `vars`: the worker's engine
+/// address, name and compose paths. A tmux server started by one of the
+/// worker's commands copies that client's environment into its global one,
+/// and every pane inherits it; an `iii compose --up` there then takes
+/// `III_URL` for a running engine and starts none.
+pub fn iii_vars(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<OsString> {
+    vars.into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.as_encoded_bytes().starts_with(b"III_"))
+        .collect()
+}
 
 /// One line of `-F` output with its separators raw. A line that already holds
 /// a raw separator came from a tmux that prints it untouched and is kept as is.
@@ -169,9 +182,11 @@ pub struct Tmux {
 impl Tmux {
     /// The binary plus socket arguments. `TMUX` is removed so a worker
     /// started from inside tmux neither talks to a different server than
-    /// configured nor makes `attach` refuse to nest. `-u` because a daemon
-    /// often has no UTF-8 locale, and then tmux prints [`SEP`] as `_` and no
-    /// listing parses (simple-installs D29).
+    /// configured nor makes `attach` refuse to nest; every `III_*` so a
+    /// server this command starts does not hand them to its panes
+    /// ([`iii_vars`]). `-u` because a daemon often has no UTF-8 locale, and
+    /// then tmux prints [`SEP`] as `_` and no listing parses
+    /// (simple-installs D29).
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.path);
         command
@@ -181,6 +196,9 @@ impl Tmux {
             .env_remove("TMUX_PANE")
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
+        for name in iii_vars(std::env::vars_os()) {
+            command.env_remove(name);
+        }
         command
     }
 
@@ -852,6 +870,24 @@ mod tests {
         let command = tmux.command();
         let args: Vec<_> = command.as_std().get_args().collect();
         assert_eq!(args, ["-u", "-L", "work"]);
+    }
+
+    #[test]
+    fn iii_vars_names_only_the_iii_prefixed_ones() {
+        let vars = [
+            "III_URL",
+            "III_WORKER_NAME",
+            "III_COMPOSE_FILE",
+            "PATH",
+            "XIII_URL",
+            "iii_url",
+            "III",
+        ]
+        .map(|name| (OsString::from(name), OsString::from("x")));
+        assert_eq!(
+            iii_vars(vars),
+            ["III_URL", "III_WORKER_NAME", "III_COMPOSE_FILE"].map(OsString::from)
+        );
     }
 
     fn line(tag: char, fields: &[&str]) -> String {
