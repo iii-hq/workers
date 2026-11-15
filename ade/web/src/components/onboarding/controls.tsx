@@ -54,7 +54,7 @@ export function Checkbox({
   return (
     <label
       className={cn(
-        'inline-flex min-w-0 cursor-pointer items-center gap-2.5 text-body has-disabled:cursor-not-allowed has-disabled:opacity-50',
+        'group/check inline-flex min-w-0 cursor-pointer items-center gap-2.5 text-body has-disabled:cursor-not-allowed has-disabled:opacity-50',
         className,
       )}
     >
@@ -62,7 +62,10 @@ export function Checkbox({
         <input
           {...props}
           type="checkbox"
-          className="peer size-4 cursor-inherit appearance-none rounded-[4px] border border-input bg-card shadow-xs transition-[background-color,border-color] duration-150 checked:border-primary checked:bg-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed"
+          // The empty box keeps a line you can see on card, muted and hover
+          // surfaces alike (the `input` token sits one step off all three),
+          // and darkens under the pointer so the row reads as pressable.
+          className="peer size-4 cursor-inherit appearance-none rounded-[4px] border border-muted-foreground/60 bg-background shadow-xs transition-[background-color,border-color] duration-150 group-hover/check:border-muted-foreground checked:border-primary checked:bg-primary group-hover/check:checked:border-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed"
         />
         <Check
           className="pointer-events-none absolute size-4 p-px scale-25 text-primary-foreground opacity-0 transition-[opacity,transform] duration-150 ease-[var(--motion-ease-standard)] peer-checked:scale-100 peer-checked:opacity-100 motion-reduce:transition-none"

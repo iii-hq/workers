@@ -487,7 +487,7 @@ export function OnboardingWizardHost() {
           disablePointerDismissal
         >
           <DialogContent
-            className="@container flex h-[min(760px,calc(100dvh-32px))] max-h-none w-[min(960px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
+            className=" flex h-[min(660px,calc(100dvh-32px))] max-h-none w-[min(1260px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
             ref={popupRef}
             // Land on the step's primary action, not the first button in it.
             initialFocus={() => primaryAction(popupRef.current)}
