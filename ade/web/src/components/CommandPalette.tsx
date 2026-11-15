@@ -731,7 +731,7 @@ export function CommandPalette({
               // Under 16px iOS Safari zooms the page on focus, which strands a
               // fixed overlay off screen. Worker and function ids are not prose,
               // so autocorrect and the automatic leading capital both mangle them.
-              className="h-14 px-0 text-base text-foreground caret-foreground md:text-base"
+              className="h-14 pr-0 pl-2.5 text-base text-foreground caret-foreground md:text-base"
               inputMode="search"
               enterKeyHint="go"
               autoCapitalize="none"
@@ -744,7 +744,7 @@ export function CommandPalette({
             {typed === '' ? (
               <span
                 id="command-palette-prompt"
-                className="pointer-events-none absolute inset-y-0 left-0 flex max-w-full items-center truncate text-base text-ink-ghost"
+                className="pointer-events-none absolute inset-y-0 left-2.5 flex max-w-full items-center truncate text-base text-ink-ghost"
               >
                 {scoped ? placeholderFor(mode, filter) : prompt || '\u00a0'}
               </span>

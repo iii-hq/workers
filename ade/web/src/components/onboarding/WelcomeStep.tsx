@@ -50,7 +50,7 @@ export function WelcomeStep({
             ADE
           </abbr>
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
+        <p className="max-w-[56ch] text-pretty text-sm leading-5 text-muted-foreground">
           Your agentic development environment. Connect a model and give your
           agent access to everything your backend can do.
         </p>
@@ -59,17 +59,20 @@ export function WelcomeStep({
         {PILLARS.map((pillar) => {
           const Icon = PILLAR_ICONS[pillar.id]
           return (
-            <li key={pillar.id} className="flex items-start gap-3.5 px-4 py-3">
+            <li
+              key={pillar.id}
+              className="flex items-start gap-3 px-3.5 py-2.5"
+            >
               <Icon
-                className="mt-0.5 size-5 shrink-0 text-muted-foreground"
+                className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                 strokeWidth={1.75}
                 aria-hidden
               />
               <span className="flex min-w-0 flex-col gap-px">
-                <span className="text-[16.5px] font-medium leading-6 text-ink">
+                <span className="text-sm font-medium leading-5 text-ink">
                   {pillar.title}
                 </span>
-                <span className="text-pretty text-base leading-6 text-muted-foreground">
+                <span className="text-pretty text-body leading-5 text-muted-foreground">
                   {pillar.line}
                 </span>
               </span>

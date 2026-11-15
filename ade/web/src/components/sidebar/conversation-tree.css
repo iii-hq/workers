@@ -17,7 +17,7 @@
 }
 
 .conversation-tree .iii-ui-tree-item {
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-sm);
   font-family: var(--font-inter);
   font-size: 0.875rem;
   /* 2px between rows: a selected row and a hovered neighbour stay two shapes. */

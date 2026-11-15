@@ -83,8 +83,8 @@ function Dot({ checked }: { checked: boolean }) {
     >
       <span
         className={cn(
-          'size-2 rounded-full bg-ink transition-transform duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
-          checked ? 'scale-100' : 'scale-0',
+          'size-2 rounded-full bg-ink transition-[transform,opacity] duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
+          checked ? 'scale-100 opacity-100' : 'scale-50 opacity-0',
         )}
       />
     </span>
