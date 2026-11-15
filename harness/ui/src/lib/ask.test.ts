@@ -4,11 +4,15 @@ import {
   askCardState,
   type AskQuestionView,
   type AskView,
+  DISMISS_TEXT,
   formatAnswer,
-  isOpen,
-  mergeTurnRead,
+  movedOn,
   parseAsk,
-  turnIdOf,
+  sendLanded,
+  settlementsOf,
+  SKIPPED_ANSWER,
+  type TurnPosition,
+  turnPositionOf,
 } from './ask'
 
 /**
@@ -290,101 +294,213 @@ describe('formatAnswer', () => {
     expect(formatAnswer(viewOf(CHANNELS), [{ picked: ['Fax'] }])).toBeNull()
     expect(formatAnswer(viewOf(CHANNELS), [{ picked: ['Fax', 'Slack'] }])).toBe('Channels: Slack')
   })
+
+  it('sends a skipped question as its header with the skipped marker', () => {
+    expect(formatAnswer(viewOf(APPROACH), [{ picked: [], skipped: true }])).toBe(
+      `Approach: ${SKIPPED_ANSWER}`,
+    )
+  })
+
+  it('a skip wins over whatever the question still holds', () => {
+    expect(
+      formatAnswer(viewOf(CHANNELS), [{ picked: ['Slack'], other: 'Email', skipped: true }]),
+    ).toBe('Channels: (skipped)')
+  })
+
+  it('a card with every question skipped still sends', () => {
+    expect(
+      formatAnswer(viewOf(APPROACH, CHANNELS), [
+        { picked: [], skipped: true },
+        { picked: [], skipped: true },
+      ]),
+    ).toBe('Approach: (skipped)\nChannels: (skipped)')
+  })
+
+  it('an unskipped question still blocks the send', () => {
+    expect(
+      formatAnswer(viewOf(APPROACH, CHANNELS), [{ picked: [], skipped: true }, { picked: [] }]),
+    ).toBeNull()
+  })
 })
 
-describe('isOpen', () => {
-  const view = viewOf(APPROACH)
-
-  it('is open while the current turn is the one that asked', () => {
-    expect(isOpen(view, 'turn_7')).toBe(true)
-  })
-
-  it('is closed once the session moved to another turn', () => {
-    expect(isOpen(view, 'turn_8')).toBe(false)
-  })
-
-  it('is closed when the session has no turn record (expired or none)', () => {
-    expect(isOpen(view, null)).toBe(false)
-  })
-
-  it('is open when the current turn is unknown (not read yet, or the read failed)', () => {
-    expect(isOpen(view, undefined)).toBe(true)
+describe('DISMISS_TEXT', () => {
+  it('is a notice, not an answer line: no header prefix', () => {
+    expect(DISMISS_TEXT.startsWith('I dismissed')).toBe(true)
+    expect(DISMISS_TEXT).not.toContain('Approach:')
   })
 })
 
-describe('askCardState', () => {
-  // viewOf() asks in turn_7.
-  const view = viewOf(APPROACH)
-
-  it('is open before any send while the asking turn is current or unknown', () => {
-    expect(askCardState(view, 'turn_7', 'idle')).toBe('open')
-    expect(askCardState(view, undefined, 'idle')).toBe('open')
-  })
-
-  it('is sending after Send while the turn has not advanced, not answered', () => {
-    expect(askCardState(view, 'turn_7', 'sending')).toBe('sending')
-    // A failed status read proves nothing: keep waiting.
-    expect(askCardState(view, undefined, 'sending')).toBe('sending')
-  })
-
-  it('is answered once the turn advances, whatever the send phase', () => {
-    for (const phase of ['idle', 'sending', 'unconfirmed', 'failed'] as const) {
-      expect(askCardState(view, 'turn_8', phase)).toBe('answered')
+describe('settlementsOf', () => {
+  it('maps each settled question to its outcome', () => {
+    const reply = {
+      settlements: [
+        { question_id: 'call_ask_1', outcome: 'answered', settled_at: 10 },
+        { question_id: 'call_ask_2', outcome: 'dismissed', settled_at: 11 },
+      ],
     }
+    const settled = settlementsOf(reply)
+    expect(settled?.get('call_ask_1')).toBe('answered')
+    expect(settled?.get('call_ask_2')).toBe('dismissed')
+    expect(settled?.get('call_ask_3')).toBeUndefined()
   })
 
-  it('is answered when the turn record is gone', () => {
-    expect(askCardState(view, null, 'sending')).toBe('answered')
+  it('an empty list is known: nothing settled', () => {
+    expect(settlementsOf({ settlements: [] })?.size).toBe(0)
   })
 
-  it('is not sent when the reads ran out with the turn unchanged', () => {
-    expect(askCardState(view, 'turn_7', 'unconfirmed')).toBe('not-sent')
-    expect(askCardState(view, undefined, 'unconfirmed')).toBe('not-sent')
+  it('skips rows it cannot read and keeps the rest', () => {
+    const reply = {
+      settlements: [
+        { question_id: 'call_ask_1', outcome: 'replied', settled_at: 10 },
+        { outcome: 'answered', settled_at: 11 },
+        'call_ask_3',
+        { question_id: 'call_ask_4', outcome: 'answered', settled_at: 12 },
+      ],
+    }
+    const settled = settlementsOf(reply)
+    expect(settled?.size).toBe(1)
+    expect(settled?.get('call_ask_4')).toBe('answered')
   })
 
-  it('is failed when compose threw', () => {
-    expect(askCardState(view, 'turn_7', 'failed')).toBe('failed')
+  it('an unreadable reply is unknown, not "nothing settled"', () => {
+    expect(settlementsOf(null)).toBeUndefined()
+    expect(settlementsOf(undefined)).toBeUndefined()
+    expect(settlementsOf({})).toBeUndefined()
+    expect(settlementsOf({ settlements: 'none' })).toBeUndefined()
+    expect(settlementsOf([])).toBeUndefined()
   })
 })
 
-describe('mergeTurnRead', () => {
-  it('takes each read while the asking turn is current or unknown', () => {
-    expect(mergeTurnRead('turn_7', undefined, 'turn_7')).toBe('turn_7')
-    expect(mergeTurnRead('turn_7', 'turn_7', undefined)).toBeUndefined()
-    expect(mergeTurnRead('turn_7', 'turn_7', 'turn_8')).toBe('turn_8')
-    expect(mergeTurnRead('turn_7', undefined, null)).toBeNull()
+describe('turnPositionOf', () => {
+  it('reads the turn, step and queued texts of a verbose harness::status report', () => {
+    const report = {
+      session_id: 'sess_1',
+      turn_id: 'turn_7',
+      status: 'running',
+      step: 3,
+      turn_count: 1,
+      queued: [
+        {
+          id: 'q_1',
+          entry_id: 'e_q_1',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Approach: End the turn' },
+              { type: 'image', data: '...' },
+            ],
+          },
+          queued_at: 1,
+        },
+        { id: 'q_2', entry_id: 'e_q_2', message: { role: 'user', content: [] }, queued_at: 2 },
+      ],
+    }
+    expect(turnPositionOf(report)).toStrictEqual({
+      turnId: 'turn_7',
+      step: 3,
+      queuedTexts: ['Approach: End the turn', ''],
+    })
   })
 
-  it('keeps a turn that moved past the asking one: a later read cannot reopen it', () => {
-    expect(mergeTurnRead('turn_7', 'turn_8', undefined)).toBe('turn_8')
-    expect(mergeTurnRead('turn_7', 'turn_8', 'turn_7')).toBe('turn_8')
-    expect(mergeTurnRead('turn_7', null, undefined)).toBeNull()
-  })
-})
-
-describe('turnIdOf', () => {
-  it('reads the turn id of a lean harness::status report', () => {
+  it('a lean report without a queue reads as an empty queue', () => {
     const report = { session_id: 'sess_1', turn_id: 'turn_7', status: 'completed', step: 2, turn_count: 1 }
-    expect(turnIdOf(report)).toBe('turn_7')
+    expect(turnPositionOf(report)).toStrictEqual({ turnId: 'turn_7', step: 2, queuedTexts: [] })
   })
 
   it('a null report means the session has no turn record', () => {
     // status.rs `handle`: `Ok(None)` when `get_turn` finds no record.
-    expect(turnIdOf(null)).toBeNull()
+    expect(turnPositionOf(null)).toBeNull()
   })
 
   it('a report without a usable turn_id is unknown, not "no record"', () => {
-    // A report exists only when a record does, and `handle` always fills
-    // `turn_id` then; a report we cannot read proves nothing either way.
-    expect(turnIdOf({ session_id: 'sess_1' })).toBeUndefined()
-    expect(turnIdOf({ session_id: 'sess_1', turn_id: null })).toBeUndefined()
-    expect(turnIdOf({ session_id: 'sess_1', turn_id: '  ' })).toBeUndefined()
+    expect(turnPositionOf({ session_id: 'sess_1' })).toBeUndefined()
+    expect(turnPositionOf({ session_id: 'sess_1', turn_id: null })).toBeUndefined()
+    expect(turnPositionOf({ session_id: 'sess_1', turn_id: '  ' })).toBeUndefined()
   })
 
   it('any other value is unknown', () => {
-    expect(turnIdOf(undefined)).toBeUndefined()
-    expect(turnIdOf('turn_7')).toBeUndefined()
-    expect(turnIdOf(['turn_7'])).toBeUndefined()
-    expect(turnIdOf(42)).toBeUndefined()
+    expect(turnPositionOf(undefined)).toBeUndefined()
+    expect(turnPositionOf('turn_7')).toBeUndefined()
+    expect(turnPositionOf(['turn_7'])).toBeUndefined()
+    expect(turnPositionOf(42)).toBeUndefined()
+  })
+})
+
+describe('movedOn', () => {
+  // viewOf() asks in turn_7.
+  const view = viewOf(APPROACH)
+  const at = (turnId: string): TurnPosition => ({ turnId, step: 1, queuedTexts: [] })
+
+  it('is false while the asking turn is current or the read is unknown', () => {
+    expect(movedOn(view, at('turn_7'))).toBe(false)
+    expect(movedOn(view, undefined)).toBe(false)
+  })
+
+  it('is true once the session is on another turn or has no record', () => {
+    expect(movedOn(view, at('turn_8'))).toBe(true)
+    expect(movedOn(view, null)).toBe(true)
+  })
+})
+
+describe('sendLanded', () => {
+  const TEXT = 'Approach: End the turn'
+  const at = (turnId: string, step: number, queuedTexts: string[] = []): TurnPosition => ({
+    turnId,
+    step,
+    queuedTexts,
+  })
+
+  it('landed when the text is parked in the queue (sent mid-stream)', () => {
+    expect(sendLanded(at('turn_7', 2), at('turn_7', 2, ['other', TEXT]), TEXT)).toBe(true)
+    // Even without a position before the send.
+    expect(sendLanded(undefined, at('turn_7', 2, [TEXT]), TEXT)).toBe(true)
+  })
+
+  it('landed when the session moved to another turn', () => {
+    expect(sendLanded(at('turn_7', 2), at('turn_8', 0), TEXT)).toBe(true)
+  })
+
+  it('landed when the same turn stepped on (the queue drained into it)', () => {
+    expect(sendLanded(at('turn_7', 2), at('turn_7', 3), TEXT)).toBe(true)
+  })
+
+  it('landed when a session without a record now has one', () => {
+    expect(sendLanded(null, at('turn_1', 0), TEXT)).toBe(true)
+  })
+
+  it('did not land while nothing changed', () => {
+    expect(sendLanded(at('turn_7', 2), at('turn_7', 2), TEXT)).toBe(false)
+    expect(sendLanded(at('turn_7', 2), at('turn_7', 2, ['something else']), TEXT)).toBe(false)
+  })
+
+  it('proves nothing on an unknown read after, or no position before and no queue match', () => {
+    expect(sendLanded(at('turn_7', 2), undefined, TEXT)).toBe(false)
+    expect(sendLanded(at('turn_7', 2), null, TEXT)).toBe(false)
+    expect(sendLanded(undefined, at('turn_8', 0), TEXT)).toBe(false)
+  })
+})
+
+describe('askCardState', () => {
+  it('is open before any send while nothing is settled', () => {
+    expect(askCardState(undefined, 'idle')).toBe('open')
+  })
+
+  it('is sending after Send until the send lands', () => {
+    expect(askCardState(undefined, 'sending')).toBe('sending')
+  })
+
+  it('is answered or dismissed once settled, whatever the send phase', () => {
+    for (const phase of ['idle', 'sending', 'unconfirmed', 'failed'] as const) {
+      expect(askCardState('answered', phase)).toBe('answered')
+      expect(askCardState('dismissed', phase)).toBe('dismissed')
+    }
+  })
+
+  it('is not sent when the reads ran out with nothing landed', () => {
+    expect(askCardState(undefined, 'unconfirmed')).toBe('not-sent')
+  })
+
+  it('is failed when compose threw', () => {
+    expect(askCardState(undefined, 'failed')).toBe('failed')
   })
 })

@@ -999,6 +999,7 @@ async fn try_enqueue(
         message: d.message.clone(),
         entry_id: entry_id.clone(),
         origin: d.origin.cloned(),
+        channel: Some(d.channel),
         queued_at: AgentMessage::now_ms(),
     };
     let topology = deps.topology.lock().await;
@@ -1126,9 +1127,9 @@ impl TurnLineage {
 /// One message on its way into a session: what to append, how to mark it, and
 /// the lineage the seeded turn inherits. Bundled so every seeding path takes
 /// the same shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum DeliveryChannel {
+pub enum DeliveryChannel {
     Direct,
     InvokedAgent,
     Notification,
@@ -2528,6 +2529,7 @@ mod tests {
                 message: AgentMessage::user_text("hi"),
                 entry_id: entry.into(),
                 origin: None,
+                channel: None,
                 queued_at: 0,
             }
         }
@@ -2548,6 +2550,7 @@ mod tests {
             message: AgentMessage::user_text("old text"),
             entry_id: "e_idem_msg-1".into(),
             origin: Some(serde_json::json!({ "reaction": true })),
+            channel: Some(DeliveryChannel::Direct),
             queued_at: 4242,
         };
         let before = (

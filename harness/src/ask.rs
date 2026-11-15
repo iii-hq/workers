@@ -210,7 +210,10 @@ pub fn awaiting_result(
 
 /// What the model reads after a successful ask.
 const AWAITING_TEXT: &str = "The questions are now shown to the user as a card of options. \
-     Their answer arrives as their next message. \
+     Their answer arrives as their next message, one `Header: answer` line per question. \
+     A question the user skipped reads `Header: (skipped)`: decide that one yourself. \
+     The user may also dismiss the whole card; a notice then arrives instead of answers, \
+     and you go on with your best judgement. \
      Do not repeat the questions in text. End your turn now.";
 
 /// The `is_error` result for an `ask` that cannot be shown (invalid
@@ -488,6 +491,8 @@ mod tests {
             "shown to the user",
             "card of options",
             "next message",
+            "(skipped)",
+            "dismiss",
             "do not repeat the questions",
             "end your turn now",
         ] {

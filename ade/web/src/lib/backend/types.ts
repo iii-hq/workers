@@ -266,7 +266,16 @@ export interface QueuedMessagePreview {
   id: string
   text: string
   queuedAt: number
+  /**
+   * Who parked the row: `direct` is a person's message (this tab or another);
+   * anything else is the harness talking to the agent (an observer or system
+   * `notification`, a sub-agent's `invoked-agent` task). Absent when the
+   * harness predates the field, which the strip treats as a person's message.
+   */
+  channel?: QueuedMessageChannel
 }
+
+export type QueuedMessageChannel = 'direct' | 'invoked-agent' | 'notification'
 
 /**
  * The harness's own context accounting for a session's last generate step
