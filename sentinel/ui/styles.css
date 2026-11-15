@@ -219,6 +219,26 @@
   font-size: 12px;
 }
 
+/* The narrow list's rows are three lines tall: the checkbox and the Open
+   button sit on the first line, with the title, not floating beside the
+   second. */
+[data-iii-ui="sentinel"] .sentinel-ui-list .iii-ui-list-item {
+  align-items: flex-start;
+}
+[data-iii-ui="sentinel"] .sentinel-ui-list .iii-ui-list-item > .iii-ui-list-item__icon {
+  /* The checkbox recipe reserves a touch-height row; the row is the touch
+     target here, so the box sits on the title's 20px line instead. */
+  min-height: 0;
+  margin-top: 2px;
+}
+[data-iii-ui="sentinel"] .sentinel-ui-list .iii-ui-list-item > .iii-ui-list-item__icon .iii-ui-checkbox {
+  min-height: 0;
+  padding: 0;
+}
+[data-iii-ui="sentinel"] .sentinel-ui-list .iii-ui-list-item > .iii-ui-list-item__meta {
+  margin-top: -6px;
+}
+
 /* A regression is the one row that says somebody's fix did not hold; it
    keeps its wash on hover, in both the wide table and the narrow list. */
 [data-iii-ui="sentinel"] tr[data-regressed="true"]:not([data-selected="true"]),
