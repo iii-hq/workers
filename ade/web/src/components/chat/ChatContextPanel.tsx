@@ -403,13 +403,15 @@ export function ChatContextPanel({
       conversations,
       conversation.id,
     )
-    return descendants
-      .map(({ conversation: child }) => ({
-        child,
-        status: deriveSubagentVisualStatus(child, connectionState),
-        appearance: resolveSubagentAppearance(child),
-      }))
-      .sort((a, b) => subagentRank(a.status) - subagentRank(b.status))
+    return descendants.map(({ conversation: child }) => ({
+      child,
+      status: deriveSubagentVisualStatus(child, connectionState),
+      appearance: resolveSubagentAppearance(child),
+    }))
+    // Tree order, not status order: a row sorted by status jumps the moment
+    // its status changes, which is exactly when the person clicked it (the
+    // chat opening loads it, and "disconnected" becomes "completed"). The
+    // dot carries the status; the row stays where it was.
   }, [conversations, conversation.id, connectionState])
   const activeCount = subagents.filter(
     (s) => subagentRank(s.status) === 0,
@@ -492,6 +494,9 @@ export function ChatContextPanel({
     return { rows: [...liveObservers, ...others], eventsOf, ended, live }
   }, [observerEvents, liveObservers, observers, observersListed])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
+  // The sub-agent whose chat this panel opened last: its row keeps the
+  // selected wash, so the person sees which one they are looking at.
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
   const [confirmObserver, setConfirmObserver] =
     useState<SessionObserverInfo | null>(null)
@@ -930,7 +935,11 @@ export function ChatContextPanel({
                 label={appearance.name}
                 title={child.title}
                 ariaLabel={`Open ${appearance.name} in a new panel (${status})`}
-                onActivate={() => onOpenConversation(child.id)}
+                aria-current={openSubagentId === child.id ? 'true' : undefined}
+                onActivate={() => {
+                  setOpenSubagentId(child.id)
+                  onOpenConversation(child.id)
+                }}
                 meta={<SubagentStatus status={status} at={child.updatedAt} />}
               />
             )
@@ -994,6 +1003,9 @@ export function ChatContextPanel({
                   </span>
                 }
                 onActivate={() => setOpenObserverId(observer.id)}
+                aria-current={
+                  openObserverId === observer.id ? 'true' : undefined
+                }
                 ariaLabel={`Show ${label}`}
                 meta={<ObserverStatus ended={ended} />}
                 actions={
@@ -1534,7 +1546,16 @@ function Section({
         ) : null}
       </div>
       {open || keepMounted ? (
-        <div hidden={!open} className={uiClasses.tree}>
+        // Rows sit 6px in from the card's edge, so a hover or selected wash
+        // never touches its border; the inset tokens give the 6px back, so
+        // the text still lines up with the header above it.
+        <div
+          hidden={!open}
+          className={cn(
+            uiClasses.tree,
+            'mx-1.5 [--iii-ui-tree-inset:4px] [--iii-ui-tree-trailing:6px]',
+          )}
+        >
           {children}
         </div>
       ) : null}

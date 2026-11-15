@@ -265,7 +265,7 @@ describe('ChatContextPanel', () => {
     expect(view.textContent).toContain('Show less')
   })
 
-  it('lists sub-agents of every depth, running ones first', async () => {
+  it('lists sub-agents of every depth in tree order, whatever their status', async () => {
     const main = chat('main')
     const done = chat('d', {
       title: 'done-child',
@@ -280,8 +280,10 @@ describe('ChatContextPanel', () => {
     const view = await render(main, { conversations: [main, done, running] })
     const text = view.textContent ?? ''
     expect(text).toContain('running-grandchild')
-    expect(text.indexOf('running-grandchild')).toBeLessThan(
-      text.indexOf('done-child'),
+    // The parent before its child: a row never jumps when its status
+    // changes, which is what opening it does.
+    expect(text.indexOf('done-child')).toBeLessThan(
+      text.indexOf('running-grandchild'),
     )
   })
 
