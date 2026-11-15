@@ -833,7 +833,7 @@ export function KeyField({
   return (
     <div
       className={cn(
-        'flex flex-col gap-2.5 text-body [&_a]:text-body [&_button]:text-body [&_fieldset]:gap-2 [&_input]:rounded-md [&_input]:border-border [&_input]:bg-white [&_input]:font-sans',
+        'flex flex-col gap-2.5 text-body [&_a]:text-body [&_button]:text-body [&_fieldset]:gap-2 [&_input]:rounded-md [&_input]:border-border [&_input]:bg-background [&_input]:font-sans',
         className,
       )}
     >

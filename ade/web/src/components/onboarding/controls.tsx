@@ -62,10 +62,10 @@ export function Checkbox({
         <input
           {...props}
           type="checkbox"
-          className="peer size-4 cursor-inherit appearance-none rounded-[4px] border border-input bg-card shadow-xs transition-[background-color,border-color] duration-150 checked:border-primary checked:bg-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed"
+          className="peer size-4 cursor-inherit appearance-none rounded-[4px] border border-input bg-card shadow-xs transition-[background-color,border-color] duration-150 checked:border-primary checked:bg-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed"
         />
         <Check
-          className="pointer-events-none absolute size-4 p-px scale-25 text-white opacity-0 transition-[opacity,transform] duration-150 ease-[var(--motion-ease-standard)] peer-checked:scale-100 peer-checked:opacity-100 motion-reduce:transition-none"
+          className="pointer-events-none absolute size-4 p-px scale-25 text-primary-foreground opacity-0 transition-[opacity,transform] duration-150 ease-[var(--motion-ease-standard)] peer-checked:scale-100 peer-checked:opacity-100 motion-reduce:transition-none"
           strokeWidth={3}
           aria-hidden
         />

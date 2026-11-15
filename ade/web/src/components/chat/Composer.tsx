@@ -1004,7 +1004,7 @@ export function Composer({
               worktrees={worktreePicker}
               triggerAppearance="chip"
               popoverAlign="start"
-              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-border [&>button]:bg-white [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-muted dark:[&>button]:bg-transparent"
+              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-border [&>button]:bg-background [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-muted dark:[&>button]:bg-transparent"
             />
             {projectControls}
             <Hint
