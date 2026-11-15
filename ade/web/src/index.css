@@ -1923,6 +1923,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A list inside a list counts differently, so the eye can tell the levels
+   apart: 1. then a. then i. — the same in the composer and the reply. */
+.composer-editor .composer-ol .composer-ol,
+.chat-prose ol ol {
+  list-style: lower-alpha;
+}
+
+.composer-editor .composer-ol .composer-ol .composer-ol,
+.chat-prose ol ol ol {
+  list-style: lower-roman;
+}
+
 .composer-editor .composer-li {
   margin: 0;
 }

@@ -735,7 +735,48 @@ const urlTransform: UrlTransform = (url, key) =>
   key === 'href' && (parseMarkdownFileLink(url) || markdownFileLinkError(url))
     ? url
     : defaultUrlTransform(url)
-const remarkPlugins = [remarkGfm]
+/**
+ * Keep the numbers an ordered list was written with. CommonMark only keeps
+ * the first item's number and counts on from it, so "3." then "6." came out
+ * as 3 and 4. Each item gets the `value` its source line starts with; the
+ * browser shows it and counts on from it, as a numbered list should.
+ */
+function remarkListValues() {
+  return (tree: { children?: unknown[] }, file: { value?: unknown }) => {
+    const source = typeof file.value === 'string' ? file.value : ''
+    const walk = (node: Record<string, unknown>) => {
+      if (
+        node.type === 'list' &&
+        node.ordered === true &&
+        Array.isArray(node.children)
+      ) {
+        for (const item of node.children as Record<string, unknown>[]) {
+          const start = (
+            item.position as { start?: { offset?: number } } | undefined
+          )?.start?.offset
+          if (typeof start !== 'number') continue
+          const match = /^\s*(\d{1,9})[.)]/.exec(
+            source.slice(start, start + 16),
+          )
+          if (!match) continue
+          const data = (item.data ?? {}) as Record<string, unknown>
+          const props = (data.hProperties ?? {}) as Record<string, unknown>
+          item.data = {
+            ...data,
+            hProperties: { ...props, value: Number(match[1]) },
+          }
+        }
+      }
+      if (Array.isArray(node.children)) {
+        for (const child of node.children)
+          walk(child as Record<string, unknown>)
+      }
+    }
+    walk(tree as Record<string, unknown>)
+  }
+}
+
+const remarkPlugins = [remarkGfm, remarkListValues]
 const rehypePlugins = [rehypeFnMention]
 
 /** Parsed replies kept between renders and mounts; the oldest leave first. */

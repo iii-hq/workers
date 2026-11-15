@@ -1,5 +1,5 @@
 import { $createCodeNode, $isCodeNode } from '@lexical/code-core'
-import { $isListItemNode } from '@lexical/list'
+import { $isListItemNode, $isListNode, type ListItemNode } from '@lexical/list'
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
@@ -31,6 +31,7 @@ import {
   isSelectionCapturedInDecoratorInput,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
+  KEY_BACKSPACE_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_TAB_COMMAND,
   type LexicalEditor,
@@ -231,6 +232,17 @@ function ComposerEnterPlugin({
           $insertCodeLine(container, selection)
           return true
         }
+        // A blank item ending a list: out of the list in one go, from any
+        // depth (ListPlugin would lift it one level per press).
+        if (
+          collapsed &&
+          $isListItemNode(container) &&
+          $isBlankItem(container) &&
+          $endsList(container)
+        ) {
+          event.preventDefault()
+          return $leaveList(container)
+        }
         // A list item or prose: the paragraph command. ListPlugin starts the
         // next item or leaves the list; prose gets a paragraph of its own
         // (RichTextPlugin's line break would stay in the same one, where no
@@ -245,6 +257,80 @@ function ComposerEnterPlugin({
       offNewLine()
     }
   }, [editor, onSubmit, menuOpenRef, sendKey])
+  return null
+}
+
+/** An item with nothing in it but the caret. */
+function $isBlankItem(item: ListItemNode): boolean {
+  return (
+    item.getTextContent().trim().length === 0 &&
+    !$isListNode(item.getFirstChild())
+  )
+}
+
+/** The item ends the whole list: nothing follows it at any level. */
+function $endsList(item: ListItemNode): boolean {
+  let node: ElementNode | null = item
+  while (node && !$isListNode(node.getParent()?.getParent() ?? null)) {
+    if (node.getNextSibling() !== null) return false
+    node = node.getParent()
+    if (!node || !$isListNode(node)) return node === null
+    node = node.getParent()
+    if (!$isListItemNode(node)) return true
+  }
+  return node?.getNextSibling() === null
+}
+
+/**
+ * Leave the list: the blank item at its end goes (with any nested wrapper it
+ * emptied), and the caret lands on a fresh paragraph after the list. One
+ * key, from any depth; Lexical's own exit climbs one level per press.
+ */
+function $leaveList(item: ListItemNode): boolean {
+  const top = item.getTopLevelElement()
+  if (!$isListNode(top)) return false
+  const paragraph = $createParagraphNode()
+  top.insertAfter(paragraph)
+  let node: ElementNode = item
+  for (;;) {
+    const list = node.getParent()
+    node.remove()
+    if (!$isListNode(list) || list.getChildrenSize() > 0) break
+    const wrapper = list.getParent()
+    list.remove()
+    if (!$isListItemNode(wrapper) || wrapper.getChildrenSize() > 0) break
+    node = wrapper
+  }
+  if (top.isAttached() && top.getChildrenSize() === 0) top.remove()
+  paragraph.select()
+  return true
+}
+
+/**
+ * A newline or Backspace on a blank item at the end of a list leaves the
+ * list, however deep the item sat. Backspace at the start of a blank item
+ * elsewhere lifts it one level, as Shift+Tab does.
+ */
+function ComposerListExitPlugin() {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return editor.registerCommand(
+      KEY_BACKSPACE_COMMAND,
+      (event) => {
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection) || !selection.isCollapsed())
+          return false
+        if (selection.anchor.offset !== 0) return false
+        const container = $getComposerContainer(selection.anchor.getNode())
+        if (!$isListItemNode(container) || !$isBlankItem(container))
+          return false
+        event.preventDefault()
+        if ($endsList(container)) return $leaveList(container)
+        return editor.dispatchCommand(OUTDENT_CONTENT_COMMAND, undefined)
+      },
+      COMMAND_PRIORITY_LOW,
+    )
+  }, [editor])
   return null
 }
 
@@ -453,9 +539,12 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
 function ExternalInsertPlugin({ composerId }: { composerId?: string }) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
-    return onComposerInsert(({ text, inline }) => {
+    return onComposerInsert(({ text, inline, submit }) => {
       editor.update(() => {
         const root = $getRoot()
+        // A send (an ask card's answer, say) never joins what the person is
+        // still writing: with a draft here, the composer sends it on its own.
+        if (submit && root.getTextContent().trim().length > 0) return
         if (inline) {
           // A list or a code block is not a sentence to join: the reference
           // starts a paragraph of its own after it.
@@ -774,6 +863,7 @@ export function LexicalShell({
         <ListPlugin />
         <MarkdownShortcutPlugin transformers={COMPOSER_SHORTCUT_TRANSFORMERS} />
         <ComposerTabPlugin />
+        <ComposerListExitPlugin />
         <ComposerPastePlugin />
         <ComposerEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
         <PillArrowNavPlugin />

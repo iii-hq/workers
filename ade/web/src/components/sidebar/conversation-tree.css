@@ -20,6 +20,8 @@
   border-radius: var(--radius-xl);
   font-family: var(--font-inter);
   font-size: 0.875rem;
+  /* 2px between rows: a selected row and a hovered neighbour stay two shapes. */
+  margin-block: 1px;
 }
 
 .conversation-tree .iii-ui-tree-item__meta {
@@ -211,10 +213,11 @@
   --iii-ui-tree-inset: calc(10px + var(--iii-ui-tree-indent));
 }
 
-/* Each row is its own child of the list, so the window can drop it. A project's
-   rows still touch; only the first keeps the list's gap under its header. */
+/* Each row is its own child of the list, so the window can drop it. Rows
+   stand 2px apart (the row rule's margin), so a selected row and the hovered
+   one under it read as two washes, not one blob. */
 .conversation-tree .conversation-project-rows[data-stacked] {
-  margin-top: -1px;
+  margin-top: 1px;
 }
 
 /* A header heading the whole list has nothing above it to stand off from. The

@@ -760,6 +760,10 @@ export function Composer({
   // `onChange` below. Held in a ref because the insert and the change are two
   // separate turns of the event loop.
   const pendingSubmitRef = useRef(false)
+  // A send that arrived while a draft was being written: it goes on its own
+  // (the draft stays as it was), the moment the composer can send.
+  const heldSendsRef = useRef<string[]>([])
+  const [heldToken, setHeldToken] = useState(0)
   useEffect(() => {
     if (!externalInput) return
     const unfold = () => {
@@ -769,7 +773,16 @@ export function Composer({
     }
     const offFocus = onComposerFocusRequest(unfold, composerId)
     const offInsert = onComposerInsert((insert) => {
-      if (insert.submit) pendingSubmitRef.current = true
+      if (insert.submit) {
+        const drafting =
+          textRef.current.trim().length > 0 || attachmentsRef.current.length > 0
+        if (drafting) {
+          heldSendsRef.current.push(insert.text)
+          setHeldToken((t) => t + 1)
+          return
+        }
+        pendingSubmitRef.current = true
+      }
       unfold()
     }, composerId)
     return () => {
@@ -782,6 +795,14 @@ export function Composer({
     refocusAfterUnfoldRef.current = false
     requestComposerFocus(composerId)
   }, [collapsed, composerId])
+  // Sends held off a draft go, in order, as soon as the composer can send;
+  // the editor is never touched.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: heldToken marks a new held send
+  useEffect(() => {
+    if (submitDisabled || !model || heldSendsRef.current.length === 0) return
+    const texts = heldSendsRef.current.splice(0)
+    for (const text of texts) onSubmit({ text, attachments: [] })
+  }, [submitDisabled, model, onSubmit, heldToken])
   // A send that arrived while the composer could not send (a chat pane just
   // opened again, its session still loading) goes the moment it can.
   useEffect(() => {
