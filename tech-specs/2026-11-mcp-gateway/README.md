@@ -242,8 +242,8 @@ Rules shared by all tools:
 
 `initialize.instructions` open with the first call every agent makes:
 `iii_get_agent` with no arguments, which reads iii-directory's built-in
-`default-mcp` profile (`directory::agents::get {"id": "default-mcp"}`, from
-#1714): the `default` identity rewritten for MCP clients, with `iii_call` and
+`default-mcp` profile (`directory::agents::get {"id": "default-mcp"}`, added
+to iii-directory in this PR): the `default` identity rewritten for MCP clients, with `iii_call` and
 the observe tools in place of `agent_call` and `harness::*`, derived from
 `default` by a checked script. They then name the discovery functions, each with what it
 returns (`directory::search_functions` for candidate ids by capability,
