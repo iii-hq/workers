@@ -67,6 +67,10 @@ async function sync(dir: Directory, argv: string[]): Promise<void> {
 async function exportNative(dir: Directory, argv: string[]): Promise<void> {
   const target = resolve(expandHome(option(argv, '--target')) || join(homedir(), '.claude'));
   const agents = await dir.listAgents(argv.includes('--include-hidden'));
+  // Check the skills before writing anything: two ids that land in one
+  // directory stop the export with nothing written.
+  const skills = argv.includes('--skills') ? await dir.listSkills() : [];
+  skillDirectories(skills.map((row) => row.id));
   await mkdir(join(target, 'agents'), { recursive: true });
   for (const row of agents) {
     const profile = await dir.getAgent(row.id);
@@ -78,9 +82,6 @@ async function exportNative(dir: Directory, argv: string[]): Promise<void> {
   }
   console.error(`wrote ${agents.length} agent profile(s) to ${join(target, 'agents')}`);
   if (!argv.includes('--skills')) return;
-  const skills = await dir.listSkills();
-  // Refuse before writing anything if two ids land in one directory.
-  skillDirectories(skills.map((row) => row.id));
   for (const row of skills) {
     const skill = await dir.getSkill(row.id);
     const path = join(target, 'skills', slug(row.id));

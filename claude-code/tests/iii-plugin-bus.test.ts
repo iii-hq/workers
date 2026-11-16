@@ -18,6 +18,8 @@ function fakeBus(
     callResult?: unknown;
     callError?: Error;
     readyError?: { code: string; message: string };
+    /** Prefix for observer ids, so two buses never share one. */
+    idPrefix?: string;
   } = {},
 ) {
   const calls: Record<string, unknown>[] = [];
@@ -37,7 +39,7 @@ function fakeBus(
       return { unregister: () => void unregistered.push(id) };
     },
     observe: (source, target, opts) => {
-      const id = `obs-${++next}`;
+      const id = `${options.idPrefix ?? ''}obs-${++next}`;
       observes.push({ source, target, options: opts, id });
       return {
         id,
@@ -403,8 +405,9 @@ describe('MCP tools for call and observe', () => {
 
 describe('a replaced connection', () => {
   it('re-registers the sink on the new bus and drops the dead observers', async () => {
-    const a = fakeBus();
-    const b = fakeBus();
+    // Distinct ids: without clearing, the dead entry would still be listed.
+    const a = fakeBus({ idPrefix: 'a-' });
+    const b = fakeBus({ idPrefix: 'b-' });
     let current = a.bus;
     const buffer = new ObserverBuffer(async () => current, { sinkId: 'sink', readyTimeoutMs: 10 });
     await buffer.observe({ function_id: 'orders::create' });

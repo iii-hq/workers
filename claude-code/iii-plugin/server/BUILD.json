@@ -10,6 +10,6 @@
     "src/iii-plugin/main.ts",
     "src/iii-plugin/server.ts"
   ],
-  "inputs_sha256": "73dd9ade46aacfa72a34e950a214ec6466501935b997d02a492d3376ead30f50",
-  "output_sha256": "434d0e22a64e41969d5908c209d292fc9661b77fa03e9cacac45ee43f047ecc9"
+  "inputs_sha256": "6d2b2a1d946a6fb6392bcba4c037fc7510a0e4832765e258097ddd0d2d650d83",
+  "output_sha256": "9f5a76b129e1fc6747418c6aa6d5a4999b9947001c407f77e997ec8961869b53"
 }

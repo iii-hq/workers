@@ -5,8 +5,10 @@
  * this plugin process observe a function: Claude Code cannot be woken by an MCP
  * server mid-turn, so every matching invocation is buffered here, per observer,
  * and read with `iii_events`; `iii_unobserve` removes one. All observers share
- * one private sink function, registered on first use under a namespace unique
- * to this process (two sessions must not fight over a function id).
+ * one sink function (public, as the engine refuses a private observer target,
+ * but internal and hidden from traces), registered on first use under a
+ * namespace unique to this process (two sessions must not fight over a
+ * function id).
  *
  * The `Bus` type is the slice of the iii-sdk 0.26 client this module uses, so
  * the behaviour is testable without an engine.
