@@ -114,7 +114,9 @@ to pick functions one by one instead, internal ones included: that stores a
 fixed list of function ids. A shared id that no listed worker registers now
 stays under **Other shared functions**, so it can be turned off. A worker that
 runs commands, or a function whose id starts with such a worker's name, is
-marked. The **Hub address** section follows.
+marked. The **Hub address** section follows: it picks how machines reach this
+hub, **Public tunnel** or **Manual URL** (see
+[Expose through a tunnel](#expose-through-a-tunnel)).
 The page does not poll. The worker calls the private `mesh::on-status-changed`
 with its `mesh::status` answer whenever that answer changes, and the page
 observes it; in hub mode that covers the tunnel, an applied configuration, the
@@ -123,9 +125,9 @@ hub's shared workers and a machine's shared workers, and
 Use **Refresh** for a new snapshot; the page also refreshes when you return to
 the tab. The **Connect another engine** section shows this hub's URL and join
 code, to paste into the Mesh page of the other project in **Client** mode. If
-the public URL is missing, the section says so: set **Public URL** or turn on
-**Expose through a tunnel** in the page's **Hub address** section, and the URL
-and join code appear once the hub has an address.
+the public URL is missing, the section says so: under **Hub address**, choose
+**Public tunnel** or set a **Manual URL**, and the URL and join code appear once
+the hub has an address.
 
 In **Client** mode the **Hub connection** section shows the client's state as
 the worker pushes it (`starting`, `waiting for join`, `joining`,
@@ -208,16 +210,56 @@ hub accepts and ignores them, and nothing removes them.
 ## Expose through a tunnel
 
 Without a front door of your own, the hub can borrow a public address from the
-quick-tunnel worker. Turn on "Expose through a tunnel" on the Mesh page, or set:
+quick-tunnel worker. On the Mesh page, under **Hub address**, choose
+**Public tunnel** and follow its three steps:
+
+1. **quick-tunnel worker.** If quick-tunnel is not installed, choose
+   **Install quick-tunnel** and confirm. Compose adds the worker; the step
+   updates when quick-tunnel starts and registers its functions. If the hub
+   cannot reach an installed quick-tunnel, the step offers
+   **Restart quick-tunnel**.
+2. **quick-tunnel set up for mesh.** The step lists what quick-tunnel's
+   configuration still needs: provider `opentunnel`, a target for the tunnel id
+   on the hub's `listen` port, that target in `proxy_protocol`,
+   `startup_timeout_ms` of at least 120000 and `max_lease_seconds` of at least
+   600 when set (a `${VAR}` template in either is left as written). Choose
+   **Set up quick-tunnel**; the confirmation lists the changes and names
+   quick-tunnel's other targets, such as `webhooks`, whose public URLs change
+   when the provider does. A worker that only accepts
+   `trycloudflare.com` URLs stops receiving traffic until it is updated. After
+   you confirm, the page writes only those keys, keeps every other setting,
+   target and `${VAR}` template, and restarts quick-tunnel, which reads its
+   configuration only when it starts. The page does not offer this when the
+   hub's `listen` is a `${VAR}` template or a host other than `0.0.0.0`, `::`,
+   `127.0.0.1` or `localhost`: the tunnel forwards to `127.0.0.1`, so the hub
+   must listen there. Nor does it write over a raw quick-tunnel value, move
+   a target OpenTunnel cannot carry (only `http://` targets with lowercase
+   names), add a 33rd target, or share the hub's port with a target that is not
+   in `proxy_protocol`, which quick-tunnel refuses; change those in
+   quick-tunnel's settings.
+3. **Tunnel.** Save the page. The step shows the tunnel URL once the hub
+   reports it `ready`; the first OpenTunnel start can take up to two minutes.
+
+Choosing **Public tunnel** clears the Public URL, so nothing overrides the
+tunnel; **Manual URL** turns the tunnel off. An entry that has both reads as
+**Manual URL**, since the hub then uses the Public URL. The steps follow what
+the hub pushes, the engine's function changes while quick-tunnel installs, and
+what the page reads when you return to the tab; nothing is polled.
+
+The mesh worker never edits another worker's configuration; the Mesh page
+writes quick-tunnel's configuration only when you choose
+**Set up quick-tunnel**, after confirming. To configure by hand instead, set
+the mesh entry:
 
 ```yaml
+public_url: ""         # a Public URL overrides the tunnel
 tunnel:
   enabled: true
   tunnel_id: mesh      # optional, defaults to mesh
 ```
 
-List the hub's `listen` port as a target in the quick-tunnel configuration;
-mesh never edits another worker's config. `targets` replaces quick-tunnel's
+and list the hub's `listen` port as a target in the quick-tunnel
+configuration, then restart quick-tunnel. `targets` replaces quick-tunnel's
 default list, so keep `webhooks` for github:
 
 ```yaml
@@ -226,6 +268,7 @@ targets:
   webhooks: http://127.0.0.1:3112
   mesh: http://127.0.0.1:49180
 proxy_protocol: [mesh]
+startup_timeout_ms: 120000
 ```
 
 The public URL is `public_url` when set, otherwise the tunnel URL once the

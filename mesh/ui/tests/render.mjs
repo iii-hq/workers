@@ -53,6 +53,11 @@ try {
   // mesh::join::cycle replaces it, as the hub does.
   let joinCode = newCode()
   const tunnelURL = 'https://r0ute234abcd5678.abc234.opentunnel.xyz'
+  // quick-tunnel's entry as its manifest installs it: cloudflared, with github's webhooks target.
+  const quickTunnelInstalled = {
+    provider: 'cloudflared', targets: { webhooks: 'http://127.0.0.1:3112' }, cloudflared: 'cloudflared', state_path: 'data/quick-tunnel/leases.json',
+    startup_timeout_ms: 30000, max_retries: 3, retry_initial_ms: 1000, retry_max_ms: 30000, max_leases: 1024, max_lease_seconds: 2592000,
+  }
   const schema = { type: 'object', properties: {
     public_url: { type: 'string' }, listen: { type: 'string' }, gateway_port: { type: 'integer', minimum: 1, maximum: 65535 },
     proxy_url: { type: 'string' }, stun_port: { type: 'integer', minimum: 0, maximum: 65535 },
@@ -160,6 +165,9 @@ try {
       // What the running worker reports, as mesh::status (hub tunnelStatus, client status) would.
       let running = 'hub'
       let tunnelPhase = { state: 'starting' }
+      // quick-tunnel's raw entry; null while quick-tunnel was never started (configuration::get answers NOT_FOUND).
+      let quickTunnelConfig = null
+      const quickTunnelSaved = []
       let clientState = 'connected'
       // The machines this context's hub lists; mesh::nodes::remove drops one.
       let hubNodes = nodes
@@ -184,6 +192,7 @@ try {
       // The page's latest mesh::on-node-changed and mesh::on-status-changed observes, to deliver events as the worker would.
       let nodeObserver = null
       let statusObserver = null
+      let functionsObserver = null
       const release = () => held.splice(0).forEach((answer) => answer())
       // What the client worker has applied; null follows the saved entry at once. A worker lags a save until it handles the event.
       let appliedShare = null
@@ -222,13 +231,14 @@ try {
           if (frame.type === 'observe') socket.send(JSON.stringify({ type: 'observeresult', id: frame.id, state: 'active' }))
           if (frame.type === 'observe' && frame.source.function_id === 'mesh::on-node-changed') nodeObserver = { socket, frame }
           if (frame.type === 'observe' && frame.source.function_id === 'mesh::on-status-changed') statusObserver = { socket, frame }
+          if (frame.type === 'observe' && frame.source.function_id === 'engine::on-functions-changed') functionsObserver = { socket, frame }
           if (frame.type === 'observe' && frame.source.function_id === 'ade::ui::on-assets-changed') {
             socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: frame.target.function_id,
               activation: { observer_id: frame.id }, data: { op: 'sync', assets: [{ path: 'mesh/styles.css', kind: 'style', hash: 'fixture-css' }, { path: 'mesh/page.js', kind: 'script', hash: 'fixture-js' }] } }))
           }
           if (frame.type !== 'invokefunction') return
           calls.push({ id: frame.function_id, namespace: frame.namespace, data: frame.data })
-          const send = (result, error) => socket.send(JSON.stringify({ type: 'invocationresult', invocation_id: frame.invocation_id, function_id: frame.function_id, ...(error ? { error: { code: 'UNAVAILABLE', message: error } } : { result }) }))
+          const send = (result, error, code = 'UNAVAILABLE') => socket.send(JSON.stringify({ type: 'invocationresult', invocation_id: frame.invocation_id, function_id: frame.function_id, ...(error ? { error: { code, message: error } } : { result }) }))
           const answer = () => {
             switch (frame.function_id) {
               case 'mesh::configuration-id': assert.equal(frame.namespace, 'project'); return send({ id: 'mesh-lab' })
@@ -246,11 +256,20 @@ try {
               case 'mesh::join::code': return mode === 'error' || !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: joinCode })
               case 'mesh::join::cycle': return mode === 'cycle-error' ? send(null, 'The hub could not store a new code.') : !hubStatus().public_url ? send(null, 'public_url is not set') : send({ code: (joinCode = newCode()) })
               case 'mesh::status': return send(running === 'client' ? clientStatus() : hubStatus())
-              case 'compose::restart': assert.deepEqual(frame.data, { container: 'mesh' }); running = config?.mode === 'client' ? 'client' : 'hub'; return send({})
+              case 'compose::restart':
+                if (frame.data.container === 'quick-tunnel') return mode === 'quick-tunnel-restart-error' ? send(null, 'compose could not restart quick-tunnel') : send({ restarted: true })
+                assert.deepEqual(frame.data, { container: 'mesh' }); running = config?.mode === 'client' ? 'client' : 'hub'; return send({})
+              // Compose accepts the install and runs it later; the page learns of quick-tunnel from its next read.
+              case 'compose::add': return send({ operation_id: frame.data.operation_id, requested: 1, status: 'accepted' })
               case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
               case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
-              case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
-              case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
+              case 'configuration::get':
+                if (frame.data.id === 'quick-tunnel') return mode === 'quick-tunnel-read-error' ? send(null, 'the configuration worker is not responding')
+                  : quickTunnelConfig === null ? send(null, 'configuration quick-tunnel not found', 'NOT_FOUND') : send({ id: 'quick-tunnel', value: quickTunnelConfig })
+                assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
+              case 'configuration::set':
+                if (frame.data.id === 'quick-tunnel') { quickTunnelSaved.push(frame.data); quickTunnelConfig = frame.data.value; return send({ new_value: quickTunnelConfig }) }
+                assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
               case 'engine::functions::list': {
                 if (mode === 'functions-error') return send(null, 'Engine function list is unavailable.')
                 const rows = [...(mode === 'no-workers' ? [] : [...localFunctions, ...extraLocal]), ...neverListed, ...hubFunctions, ...mirrorFunctions]
@@ -280,8 +299,13 @@ try {
       const statusCalls = () => calls.filter((call) => call.id === 'mesh::status').length
       const button = (name) => page.getByRole('button', { name, exact: true })
       const textbox = (name) => page.getByRole('textbox', { name, exact: true })
-      const tunnelSwitch = page.getByRole('switch', { name: 'Expose through a tunnel', exact: true })
-      const tunnelLine = page.locator('.mesh-ui-tunnel')
+      // How machines reach the hub: 'Public tunnel' or 'Manual URL'.
+      const reach = (name) => page.getByRole('radio', { name, exact: true })
+      const steps = page.getByRole('list', { name: 'Public tunnel setup', exact: true })
+      const stepRow = (title) => steps.getByRole('listitem').filter({ has: page.getByText(title, { exact: true }) })
+      const workerStep = stepRow('quick-tunnel worker')
+      const setupStep = stepRow('quick-tunnel set up for mesh')
+      const tunnelLine = stepRow('Tunnel')
       const saveBar = page.locator('.mesh-ui-save-bar')
       const badge = page.getByText('needed before machines can join', { exact: true })
       const dialog = page.getByRole('alertdialog')
@@ -317,6 +341,12 @@ try {
         tunnelPhase = phase
         pushStatus()
       }
+      // One engine::on-functions-changed call, as the engine makes when a worker registers its functions.
+      const pushFunctions = () => {
+        assert(functionsObserver, 'the page observes engine::on-functions-changed')
+        functionsObserver.socket.send(JSON.stringify({ type: 'invokefunction', invocation_id: randomUUID(), function_id: functionsObserver.frame.target.function_id,
+          activation: { observer_id: functionsObserver.frame.id }, data: {} }))
+      }
       // In real time, once: with nothing pushed, the page reads mesh::status no more.
       const idle = async (what) => {
         if (!timed) return
@@ -349,7 +379,7 @@ try {
         mode = 'error'; await button('Refresh').click()
         await expect(page.getByText('Could not load machines')).toBeVisible()
         // No address: the join section says what to do, not the hub's refusal with a Retry that cannot help.
-        const noAddressLine = page.getByText('This hub has no address yet. Turn on the tunnel or set a Public URL under Hub address. The hub URL and join code appear here once it has one.', { exact: true })
+        const noAddressLine = page.getByText('This hub has no address yet. Choose Public tunnel or set a Manual URL under Hub address. The hub URL and join code appear here once it has one.', { exact: true })
         await expect(noAddressLine).toBeVisible()
         await expect(page.getByText('Join instructions unavailable')).toHaveCount(0)
         await capture('error')
@@ -426,9 +456,10 @@ try {
         await expect(page.getByText('This project is the hub. Other projects join it as clients; the hub and every machine can call the workers the others share.')).toBeVisible()
         await expect(page.getByRole('heading', { name: 'Hub address', exact: true })).toBeVisible()
         await expect(badge).toBeVisible()
-        await expect(tunnelSwitch).not.toBeChecked()
+        await expect(page.getByRole('radiogroup', { name: 'How machines reach this hub', exact: true })).toBeVisible()
+        await expect(reach('Manual URL')).toBeChecked()
         await expect(textbox('Public URL')).toHaveValue('')
-        await expect(tunnelLine).toHaveCount(0)
+        await expect(steps).toHaveCount(0)
         await expect(textbox('Hub URL')).toHaveCount(0)
         await expect(page.getByRole('heading', { name: 'Available from the mesh' })).toHaveCount(0)
         // The hub shares its own workers: the ones running on its engine, never the mesh's own or approval-gate.
@@ -479,22 +510,48 @@ try {
         await expect(textbox('Public URL')).toHaveValue('')
         assert.equal(saved.length, 0, 'Discard writes nothing')
 
-        // The tunnel switch writes tunnel.enabled and the status line follows the hub's tunnel state.
-        await tunnelSwitch.click()
-        await expect(tunnelSwitch).toBeChecked()
+        // Public tunnel is one choice: it writes tunnel.enabled, and its steps show before the save. The hub cannot
+        // call quick-tunnel, which was never started: no entry, and the later steps wait.
+        tunnelPhase = { state: 'unavailable', error: 'quick-tunnel is not installed or not responding' }
+        await reach('Public tunnel').click()
+        await expect(reach('Public tunnel')).toBeChecked()
+        await expect(textbox('Public URL')).toHaveCount(0)
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
-        // An edit typed while the save is in flight is kept, and the page shows what it wrote before it reads again.
+        await expect(steps.getByRole('listitem')).toHaveCount(3)
+        await expect(workerStep.getByText('Action needed', { exact: true })).toBeVisible()
+        await expect(workerStep.getByText('Not installed in this project. It runs the tunnel.', { exact: true })).toBeVisible()
+        await expect(setupStep.getByText('Install quick-tunnel first.', { exact: true })).toBeVisible()
+        await expect(setupStep.getByText('Waiting', { exact: true })).toBeVisible()
+        await expect(setupStep.getByRole('button')).toHaveCount(0)
+        await expect(tunnelLine.getByText('Save to start the tunnel.', { exact: true })).toBeVisible()
+        // The steps are announced as the hub and quick-tunnel move them along.
+        await expect(steps).toHaveAttribute('aria-live', 'polite')
+        await capture('tunnel-unsaved')
+        // Installed before the save, the hub pushes nothing: quick-tunnel registering its functions brings the read.
+        await workerStep.getByRole('button', { name: 'Install quick-tunnel', exact: true }).click()
+        await inDialog('Install quick-tunnel').click()
+        await expect(workerStep.getByText('Installing… this list updates when quick-tunnel starts.', { exact: true })).toBeVisible()
+        quickTunnelConfig = structuredClone(quickTunnelInstalled)
+        pushFunctions()
+        await expect(workerStep.getByText('Done', { exact: true })).toBeVisible()
+        await expect(setupStep.getByText('Install quick-tunnel first.', { exact: true })).toHaveCount(0)
+        await expect(saveBar).toContainText('Unsaved changes')
+        // Back to never installed for the steps below.
+        quickTunnelConfig = null
+        // An edit made while the save is in flight is kept, and the page shows what it wrote before it reads again.
         hold = new Set(['configuration::set'])
         await button('Save').click()
         await expect.poll(() => held.length).toBe(1)
+        await reach('Manual URL').click()
         await textbox('Public URL').fill('https://mesh.example.com')
         hold = new Set(['mesh::status', 'configuration::get'])
         release()
-        await expect.poll(() => held.length).toBe(2)
+        // mesh::status and both entries: mesh's and quick-tunnel's.
+        await expect.poll(() => held.length).toBe(3)
         let stored = { ...initialConfig, tunnel: { enabled: true } }
         assert.deepEqual(saved.at(-1).value, stored, 'configuration::set receives the stored entry with only the changed keys')
         await expect(page.getByText('Settings saved.', { exact: true })).toBeAttached()
-        await expect(tunnelSwitch).toBeChecked()
+        await expect(reach('Manual URL')).toBeChecked()
         await expect(badge).toHaveCount(0)
         await expect(textbox('Public URL')).toHaveValue('https://mesh.example.com')
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
@@ -503,7 +560,93 @@ try {
         await button('Discard').click()
         await expect(saveBar).toHaveCount(0)
         await expect(badge).toHaveCount(0)
-        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await expect(reach('Public tunnel')).toBeChecked()
+        await expect(tunnelLine.getByText('Starts once the steps above are done.', { exact: true })).toBeVisible()
+        await capture('tunnel-not-installed')
+        // Install asks first; Compose then adds quick-tunnel, and nothing is polled while it installs.
+        await workerStep.getByRole('button', { name: 'Install quick-tunnel', exact: true }).click()
+        await expect(dialog.getByRole('heading', { name: 'Install quick-tunnel?', exact: true })).toBeVisible()
+        await inDialog('Install quick-tunnel').click()
+        await expect(dialog).toHaveCount(0)
+        const add = calls.filter((call) => call.id === 'compose::add')
+        assert.equal(add.length, 2, 'one install before the save, one after')
+        assert.deepEqual(add[1].data.workers, ['quick-tunnel'])
+        assert.match(add[1].data.operation_id, /^mesh-install-quick-tunnel-[0-9a-f]{8}$/)
+        assert.notEqual(add[0].data.operation_id, add[1].data.operation_id)
+        assert(!calls.some((call) => call.id === 'compose::operation'), 'the install is not followed by polling')
+        await expect(workerStep.getByText('Installing… this list updates when quick-tunnel starts.', { exact: true })).toBeVisible()
+        await expect(workerStep.getByText('In progress', { exact: true })).toBeVisible()
+        await expect(workerStep.getByRole('button')).toHaveCount(0)
+        await expect(page.getByText('Installing quick-tunnel. The steps update when it starts.', { exact: true })).toBeAttached()
+        await capture('tunnel-installing')
+        await idle('an install in progress')
+        // quick-tunnel starts with its manifest settings; the hub's push brings the next read.
+        quickTunnelConfig = structuredClone(quickTunnelInstalled)
+        pushTo({ state: 'unavailable', error: 'quick-tunnel has no target "mesh"; add "mesh: http://127.0.0.1:49180" to its targets' })
+        await expect(workerStep.getByText('Done', { exact: true })).toBeVisible()
+        await expect(workerStep.getByText('Installed.', { exact: true })).toBeVisible()
+        // An entry the page cannot read says why and offers no fix.
+        mode = 'quick-tunnel-read-error'; await button('Refresh').click()
+        await expect(setupStep).toContainText('Could not read quick-tunnel\'s settings: UNAVAILABLE: the configuration worker is not responding. Refresh to try again.')
+        await expect(setupStep.getByRole('button')).toHaveCount(0)
+        mode = 'populated'; await button('Refresh').click()
+        // A templated listen address hides the port: the page explains instead of offering a fix.
+        await expect(setupStep.getByText(/^The hub's listen address is \$\{MESH_LISTEN:0\.0\.0\.0:49180\}, so the page cannot tell its port\./)).toBeVisible()
+        await expect(setupStep.getByRole('button')).toHaveCount(0)
+        // Without a fix to offer, the hub's own words say what quick-tunnel lacks.
+        await expect(tunnelLine.getByText('The tunnel is unavailable: quick-tunnel has no target "mesh"; add "mesh: http://127.0.0.1:49180" to its targets', { exact: true })).toBeVisible()
+        await capture('tunnel-listen-template')
+        // With a literal listen address the page offers the fix and says what it changes.
+        config = { ...config, listen: '0.0.0.0:49180' }
+        await button('Refresh').click()
+        await expect(setupStep.getByText('quick-tunnel needs a few settings for the mesh.', { exact: true })).toBeVisible()
+        await capture('tunnel-setup-needed')
+        await setupStep.getByRole('button', { name: 'Set up quick-tunnel', exact: true }).click()
+        await expect(dialog.getByRole('heading', { name: 'Set up quick-tunnel for the mesh?', exact: true })).toBeVisible()
+        await expect(dialog).toContainText('The Mesh page changes quick-tunnel\'s settings and restarts it: use OpenTunnel instead of cloudflared;')
+        // github's webhooks target moves with the provider: named, with what that breaks.
+        await expect(dialog).toContainText('The webhooks target moves to OpenTunnel too, so its public URL changes. A worker that only accepts trycloudflare.com URLs stops receiving traffic until it is updated.')
+        await capture('tunnel-setup-confirm')
+        await inDialog('Cancel').click()
+        await expect(dialog).toHaveCount(0)
+        assert.equal(quickTunnelSaved.length, 0, 'a cancelled setup writes nothing')
+        // The confirmed setup re-reads: a value that became raw since is not written.
+        await setupStep.getByRole('button', { name: 'Set up quick-tunnel', exact: true }).click()
+        quickTunnelConfig = '${QUICK_TUNNEL_CONFIG}'
+        await inDialog('Set up quick-tunnel').click()
+        await expect(dialog.getByRole('alert')).toContainText('quick-tunnel\'s settings hold a raw value the page does not edit.')
+        assert.equal(quickTunnelSaved.length, 0, 'a raw value is not written over')
+        assert(!calls.some((call) => call.id === 'compose::restart' && call.data.container === 'quick-tunnel'), 'nor is quick-tunnel restarted')
+        await page.keyboard.press('Escape')
+        await expect(dialog).toHaveCount(0)
+        quickTunnelConfig = structuredClone(quickTunnelInstalled)
+        await button('Refresh').click()
+        // A failed restart stays in the dialog with its reason; the retry re-reads, finds the settings written and restarts.
+        mode = 'quick-tunnel-restart-error'
+        await setupStep.getByRole('button', { name: 'Set up quick-tunnel', exact: true }).click()
+        await inDialog('Set up quick-tunnel').click()
+        await expect(dialog.getByRole('alert')).toContainText('compose could not restart quick-tunnel')
+        assert.equal(quickTunnelSaved.length, 1)
+        assert.deepEqual(quickTunnelSaved[0].value, {
+          ...quickTunnelInstalled, provider: 'opentunnel', targets: { webhooks: 'http://127.0.0.1:3112', mesh: 'http://127.0.0.1:49180' }, proxy_protocol: ['mesh'], startup_timeout_ms: 120000,
+        }, 'quick-tunnel keeps every other setting and target')
+        await expect(dialog).toContainText('quick-tunnel already has these settings. The Mesh page restarts it so it reads them.')
+        mode = 'populated'
+        await inDialog('Retry set up quick-tunnel').click()
+        await expect(dialog).toHaveCount(0)
+        assert.equal(quickTunnelSaved.length, 1, 'the retry finds the settings written')
+        const restarts = calls.filter((call) => call.id === 'compose::restart' && call.data.container === 'quick-tunnel')
+        assert.equal(restarts.length, 2)
+        assert(calls.indexOf(restarts[0]) > calls.findIndex((call) => call.id === 'configuration::set' && call.data.id === 'quick-tunnel'), 'quick-tunnel restarts after its settings are written')
+        await expect(page.getByText('quick-tunnel is set up for the mesh and restarted.', { exact: true })).toBeAttached()
+        await expect(setupStep.getByText('Done', { exact: true })).toBeVisible()
+        await expect(setupStep.getByText('OpenTunnel carries the target mesh to this hub with each visitor\'s address.', { exact: true })).toBeVisible()
+        // Until the hub hears quick-tunnel start, it still reports the missing target: the page offers the restart that applies it.
+        await expect(tunnelLine.getByText('quick-tunnel has these settings but still runs without the target mesh. Restart it to apply them.', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByRole('button', { name: 'Restart quick-tunnel', exact: true })).toBeVisible()
+        pushTo({ state: 'starting' })
+        await expect(tunnelLine.getByText('Starting the tunnel… the first start can take up to two minutes.', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('In progress', { exact: true })).toBeVisible()
         await capture('tunnel-starting')
         await idle('a tunnel that is still starting')
         assert.equal(statusObserver?.frame.source.args, undefined, 'mesh::on-status-changed takes no args')
@@ -512,8 +655,7 @@ try {
         await expect(tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' })).toBeVisible()
         assert(statusCalls() > before, 'the pushed status change makes the page read mesh::status again, without a click')
         await expect(tunnelLine.locator('code')).toHaveText(tunnelURL)
-        // The line is an item of the settings list and announces what the hub reports.
-        await expect(tunnelLine).toHaveAttribute('aria-live', 'polite')
+        await expect(steps.getByText('Done', { exact: true })).toHaveCount(3)
         await expect(page.getByRole('region', { name: 'Hub address', exact: true }).locator('[role="list"] > :not([role="listitem"])')).toHaveCount(0)
         await tunnelLine.getByRole('button', { name: 'Copy Tunnel URL' }).click()
         assert.equal(await page.evaluate(() => navigator.clipboard.readText()), tunnelURL)
@@ -525,21 +667,39 @@ try {
         await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(tunnelURL)
         await capture('tunnel-ready')
         pushTo({ state: 'reconnecting' })
-        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await expect(tunnelLine.getByText('Starting the tunnel… the first start can take up to two minutes.', { exact: true })).toBeVisible()
         pushTo({ state: 'unavailable', error: 'quick-tunnel is not responding' })
-        await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toBeVisible()
-        await expect(tunnelLine.getByText('quick-tunnel is not responding', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('The tunnel is unavailable: quick-tunnel is not responding', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('Action needed', { exact: true })).toBeVisible()
         await capture('tunnel-unavailable')
+        // Installed, but the hub cannot call it: the first step offers a restart, and the tunnel waits for it.
+        pushTo({ state: 'unavailable', error: 'quick-tunnel is not installed or not responding' })
+        await expect(workerStep.getByText('The hub cannot reach quick-tunnel.', { exact: true })).toBeVisible()
+        await expect(setupStep.getByText('Done', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('Starts once the steps above are done.', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText('Waiting', { exact: true })).toBeVisible()
+        const restartsBefore = calls.filter((call) => call.id === 'compose::restart' && call.data.container === 'quick-tunnel').length
+        await workerStep.getByRole('button', { name: 'Restart quick-tunnel', exact: true }).click()
+        await expect(dialog.getByRole('heading', { name: 'Restart quick-tunnel?', exact: true })).toBeVisible()
+        await inDialog('Restart quick-tunnel').click()
+        await expect(dialog).toHaveCount(0)
+        assert.equal(calls.filter((call) => call.id === 'compose::restart' && call.data.container === 'quick-tunnel').length, restartsBefore + 1)
+        await expect(page.getByText('quick-tunnel restarted.', { exact: true })).toBeAttached()
+        await capture('tunnel-unreachable')
         pushTo({ state: 'failed', error: 'opentunnel relay unreachable' })
-        await expect(tunnelLine.getByText('The tunnel failed', { exact: true })).toBeVisible()
-        await expect(tunnelLine.getByText('opentunnel relay unreachable', { exact: true })).toBeVisible()
-        await expect(tunnelLine.getByText('The tunnel is unavailable', { exact: true })).toHaveCount(0)
+        await expect(tunnelLine.getByText('The tunnel failed: opentunnel relay unreachable', { exact: true })).toBeVisible()
+        await expect(tunnelLine.getByText(/The tunnel is unavailable/)).toHaveCount(0)
         pushTo({ state: 'stopped' })
-        await expect(tunnelLine).toHaveCount(0)
-        await expect(tunnelSwitch).toBeChecked()
+        await expect(tunnelLine.getByText('The tunnel is stopped.', { exact: true })).toBeVisible()
+        await expect(reach('Public tunnel')).toBeChecked()
+        // Back to the templated listen address the form checks later.
+        config = { ...config, listen: initialConfig.listen }
+        // Manual turns the tunnel off with the Public URL it sets: the hub never holds both.
+        await reach('Manual URL').click()
+        await expect(steps).toHaveCount(0)
         await textbox('Public URL').fill('https://mesh.example.com')
         await expect(saveBar).toContainText('Unsaved changes · applied within a few seconds')
-        stored = await savePage({ ...stored, public_url: 'https://mesh.example.com' })
+        stored = await savePage({ ...stored, tunnel: { enabled: false }, public_url: 'https://mesh.example.com' })
         await expect(page.getByRole('heading', { name: 'Connect another engine', exact: true })).toBeVisible()
         // Three steps, then what joining means.
         const connect = page.getByRole('region', { name: 'Connect another engine', exact: true })
@@ -628,16 +788,30 @@ try {
         assert.notEqual(joinCode, beforeRemoval, 'a removal replaces the join code')
         await expect(joinValue).toHaveText(joinCode)
         await expect(page.getByText('Removed archive-laptop. The join code was replaced.', { exact: true })).toBeAttached()
-        await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
-        await capture('tunnel-overridden')
-        // The hub drops the tunnel only when it applies the entry, and says so then.
-        applied = config
-        await tunnelSwitch.click()
+        // An entry written before the choice, with both a tunnel and a Public URL, reads as Manual: the hub uses the URL.
+        config = { ...stored, tunnel: { enabled: true } }
+        stored = structuredClone(config)
+        await button('Refresh').click()
+        await expect(reach('Manual URL')).toBeChecked()
+        await expect(textbox('Public URL')).toHaveValue('https://mesh.example.com')
+        await expect(steps).toHaveCount(0)
+        await expect(saveBar).toHaveCount(0)
+        await capture('tunnel-legacy-both')
+        // Emptying the Public URL keeps the stored choice, and the field stays under the cursor.
+        await textbox('Public URL').fill('')
+        await expect(reach('Manual URL')).toBeChecked()
+        await expect(textbox('Public URL')).toBeFocused()
+        await expect(steps).toHaveCount(0)
+        // Untouched, the choice writes nothing: a Public URL edit keeps tunnel.enabled as stored.
+        await textbox('Public URL').fill('https://edge.example.com')
+        stored = await savePage({ ...stored, public_url: 'https://edge.example.com' })
+        // Touched, Manual writes the tunnel off and keeps the stored Public URL.
+        await reach('Public tunnel').click()
+        await expect(textbox('Public URL')).toHaveCount(0)
+        await expect(tunnelLine.getByText('Save to start the tunnel.', { exact: true })).toBeVisible()
+        await reach('Manual URL').click()
+        await expect(textbox('Public URL')).toHaveValue('https://edge.example.com')
         stored = await savePage({ ...stored, tunnel: { enabled: false } })
-        await expect(tunnelLine).toHaveText('Not used while a Public URL is set')
-        applied = null
-        pushStatus()
-        await expect(tunnelLine).toHaveCount(0)
         await expect(badge).toHaveCount(0)
         // A hub share writes the top-level share, warns about a command runner, and follows what the hub pushes.
         await hubShares.getByRole('switch', { name: 'Share shell', exact: true }).click()
@@ -869,10 +1043,12 @@ try {
         await button('Refresh').click()
         await expect(textbox('Public URL')).toHaveValue('${MESH_PUBLIC_URL:}')
         await expect(badge).toBeVisible()
+        // A templated Public URL that expands to nothing beside the tunnel reads as Public tunnel: the hub uses the tunnel.
         config = { ...config, tunnel: { enabled: true } }
         tunnelPhase = { state: 'starting' }
         await button('Refresh').click()
-        await expect(tunnelLine).toHaveText('Starting the tunnel…')
+        await expect(reach('Public tunnel')).toBeChecked()
+        await expect(tunnelLine.getByText('Starting the tunnel… the first start can take up to two minutes.', { exact: true })).toBeVisible()
         await expect(badge).toHaveCount(0)
         pushTo({ state: 'ready', url: tunnelURL })
         await expect(tunnelLine.locator('code')).toHaveText(tunnelURL)
@@ -882,15 +1058,15 @@ try {
         // A raw root belongs to the configuration form: the page never writes its basics over it.
         config = structuredClone(stored)
         await button('Refresh').click()
-        await expect(tunnelSwitch).not.toBeChecked()
-        await tunnelSwitch.click()
+        await expect(reach('Manual URL')).toBeChecked()
+        await reach('Public tunnel').click()
         config = '${MESH_CONFIG}'
         const writes = saved.length
         await button('Save').click()
         await expect(page.getByText('Could not save', { exact: true })).toBeVisible()
         await expect(page.getByText('The mesh settings are one raw value', { exact: true })).toBeVisible()
         assert.equal(saved.length, writes, 'a raw root is never overwritten by the page')
-        await expect(tunnelSwitch).toHaveCount(0)
+        await expect(reach('Public tunnel')).toHaveCount(0)
         await expect(page.getByRole('radiogroup', { name: 'Mesh mode' })).toHaveCount(0)
         await expect(saveBar).toHaveCount(0)
         await capture('raw-root')
@@ -900,8 +1076,8 @@ try {
         await button('Discard').click()
         // Discard also clears a failure: it no longer describes anything on the page.
         await expect(page.getByText('Could not save', { exact: true })).toHaveCount(0)
-        await expect(tunnelSwitch).not.toBeChecked()
-        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, tunnel switch, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, hub shares saved, applying and pushed with their warning, conflict, size and skipped-machine lines, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
+        await expect(reach('Manual URL')).toBeChecked()
+        console.log(`PASS ${viewport.width}px ${theme}: hub basics, discard, save writes only changed keys and keeps edits typed meanwhile, Public tunnel or Manual URL, tunnel steps not installed, installed before the save, installing, templated listen, unreadable quick-tunnel settings, set up after a confirmation refused over a raw value and with a failed restart retried, restart offered when unreachable, starting and ready, a legacy entry with both reads as Manual, every tunnel state pushed by the hub, new join code shown and announced, failed cycle keeps the code, a join shows the replacement code, a machine is removed after a confirmation, hub shares saved, applying and pushed with their warning, conflict, size and skipped-machine lines, templated address, raw root refused${timed ? ', nothing polled' : ''}`)
 
         // The configuration form holds only the advanced settings.
         await button('Settings').click()
@@ -911,7 +1087,7 @@ try {
         await expect(textbox('Public URL')).toHaveCount(0)
         await expect(textbox('Hub URL')).toHaveCount(0)
         await expect(page.getByRole('radiogroup', { name: 'Mesh mode' })).toHaveCount(0)
-        await expect(tunnelSwitch).toHaveCount(0)
+        await expect(reach('Public tunnel')).toHaveCount(0)
         const proxyUrl = textbox('Proxy URL')
         await proxyUrl.fill('ws://127.0.0.1:49201')
         await expect(button('Save changes')).toBeEnabled()
@@ -944,7 +1120,7 @@ try {
         await page.getByRole('radio', { name: 'Client', exact: true }).click()
         await expect(page.getByText('This project joins another project\'s hub. It shares the workers you pick below and can call what the hub and other machines share.')).toBeVisible()
         await expect(page.getByRole('heading', { name: 'Hub address' })).toHaveCount(0)
-        await expect(tunnelSwitch).toHaveCount(0)
+        await expect(reach('Public tunnel')).toHaveCount(0)
         await expect(textbox('Public URL')).toHaveCount(0)
         await expect(page.getByRole('heading', { name: 'Machines', exact: true })).toHaveCount(0)
         await expect(page.getByRole('heading', { name: 'Hub connection', exact: true })).toBeVisible()
@@ -1416,7 +1592,7 @@ try {
         applied = initialConfig
         await page.clock.install()
         await page.goto(`${url}/?stall=${randomUUID()}#/worker/mesh/mesh-manager`)
-        await expect(tunnelSwitch).toBeChecked()
+        await expect(reach('Public tunnel')).toBeChecked()
         const stalled = page.getByText('The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.', { exact: true })
         await expect(stalled).toHaveCount(0)
         const before = statusCalls()
@@ -1424,8 +1600,26 @@ try {
         await expect(stalled).toBeVisible()
         await delay(1000)
         assert.equal(statusCalls(), before, 'the deadline reads nothing')
+        // An install Compose accepted, but quick-tunnel never starts: the step says so after its own deadline.
+        quickTunnelConfig = null
+        await button('Refresh').click()
+        await workerStep.getByRole('button', { name: 'Install quick-tunnel', exact: true }).click()
+        await inDialog('Install quick-tunnel').click()
+        await expect(workerStep.getByText('Installing… this list updates when quick-tunnel starts.', { exact: true })).toBeVisible()
+        await delay(1000)
+        const quiet = statusCalls()
+        await page.clock.fastForward(13 * 60_000)
+        await expect(workerStep.getByText('quick-tunnel has not started yet. Check its install in Compose, or install it again.', { exact: true })).toBeVisible()
+        await delay(1000)
+        assert.equal(statusCalls(), quiet, 'the install deadline reads nothing')
+        // Not a dead end: installing again starts a new operation with a full deadline of its own.
+        await workerStep.getByRole('button', { name: 'Install quick-tunnel', exact: true }).click()
+        await inDialog('Install quick-tunnel').click()
+        await expect(workerStep.getByText('Installing… this list updates when quick-tunnel starts.', { exact: true })).toBeVisible()
+        const retried = calls.filter((call) => call.id === 'compose::add').slice(-2)
+        assert.notEqual(retried[0].data.operation_id, retried[1].data.operation_id, 'each install is its own operation')
         applied = null
-        console.log(`PASS ${viewport.width}px ${theme}: a hub that goes quiet is named after the deadline, with no polling`)
+        console.log(`PASS ${viewport.width}px ${theme}: a hub that goes quiet and an install that never starts are named after their deadline, with no polling, and the install is offered again`)
       }
       assert.deepEqual(errors, [], 'opaque drafts render without host/loader errors')
       await context.close()
