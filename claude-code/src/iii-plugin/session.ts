@@ -18,15 +18,15 @@ function output(additionalContext: string): string {
   });
 }
 
-/** The iii mode rules: the `iii` agent's body, without its frontmatter. */
-export function modeRules(agentMarkdown: string): string {
-  return agentMarkdown.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
-}
-
-/** The hook's stdout for the iii mode rules: a hook of their own, so the
- * rules and the profile each get the whole context budget of a hook. */
-export function modeOutput(rules: string): string {
-  return output(rules.trim());
+/**
+ * The plugin's `iii` agent (`agents/iii.md`, run with `--agent iii:iii`),
+ * built from the `default-mcp` profile: its body is the profile's prompt, so
+ * there is no second, hand-written copy of the rules to drift.
+ */
+export function agentFile(profile: AgentProfile): string {
+  const description =
+    'The iii agent: the engine default-mcp profile, from iii-directory through mcp-server. Works through the iii tools.';
+  return `---\nname: iii\ndescription: ${JSON.stringify(description)}\n---\n\n${(profile.system_prompt ?? '').trim()}\n`;
 }
 
 /** The hook's stdout, for the profile mcp-server returned or the error it hit. */

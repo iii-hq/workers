@@ -320,7 +320,7 @@ async function runReserved(
     : { dir: '', detail: '', mode: '', mcp: false, dispose: async () => {} };
   if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
   try {
-    // iii mode is appended to Claude Code's own system prompt: an agent
+    // default-mcp is appended to Claude Code's own system prompt: an agent
     // (`--agent`) would replace it, and with it Claude Code's operating rules.
     const append = [context?.text ?? '', plugin.mode, userAppend].filter(Boolean).join('\n\n');
     const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];

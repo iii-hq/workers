@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -55,11 +55,26 @@ const hookContext = (out: string[]) =>
   JSON.parse(out.join('')).hookSpecificOutput.additionalContext as string;
 
 describe('runCli', () => {
-  it('mode needs no mcp-server, not even a valid address', async () => {
+  it('sync builds the iii agent from default-mcp', async () => {
     const dir = await pluginDir();
-    const t = io({ III_PLUGIN_MCP_URL: 'ws://127.0.0.1:49134' });
-    expect(await runCli(['mode', '--plugin-dir', dir], t.io)).toBe(0);
-    expect(hookContext(t.out)).toBe('Use iii_call.');
+    const fetchFn = fakeFetch({
+      iii_list_agents: () => JSON.stringify([{ id: 'writer' }]),
+      iii_get_agent: (a) =>
+        JSON.stringify({ id: a.id, system_prompt: `${a.id} profile text, with iii_call.` }),
+    });
+    const t = io({}, fetchFn);
+    expect(await runCli(['sync', '--plugin-dir', dir, '--quiet'], t.io)).toBe(0);
+    const agent = await readFile(join(dir, 'agents', 'iii.md'), 'utf8');
+    expect(agent).toContain('name: iii');
+    expect(agent).toContain('default-mcp profile text, with iii_call.');
+  });
+
+  it('sync keeps the agent it has when default-mcp cannot be read', async () => {
+    const dir = await pluginDir();
+    const fetchFn = fakeFetch({ iii_list_agents: () => JSON.stringify([]) });
+    const t = io({}, fetchFn);
+    await runCli(['sync', '--plugin-dir', dir, '--quiet'], t.io);
+    expect(await readFile(join(dir, 'agents', 'iii.md'), 'utf8')).toContain('Use iii_call.');
   });
 
   it('session-start explains a bad address in the hook output instead of failing', async () => {

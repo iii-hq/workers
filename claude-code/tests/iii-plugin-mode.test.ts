@@ -47,17 +47,20 @@ describe('the iii agent (iii mode)', () => {
     const fm = frontmatter(file('agents/iii.md'));
     expect(fm.name).toBe('iii');
     expect(fm.description.length).toBeGreaterThan(20);
+    // Quoted: a plain YAML scalar cannot hold `: `.
+    expect(JSON.parse(fm.description)).toContain('default-mcp');
     // iii profiles and operators pick models; the mode must not pin one.
     expect(fm.model).toBeUndefined();
   });
 
-  it('instructs the agent to use iii_call and iii_observe for the engine', () => {
-    const body = file('agents/iii.md');
-    for (const t of ['iii_call', 'iii_observe', 'iii_observations_poll', 'iii_unobserve'])
-      expect(body).toContain(t);
-    expect(body).toMatch(/instead of .*`iii call`/i);
-    expect(body).toContain('/iii:profile');
-    expect(body).toContain('/iii:skills');
+  it('ships only a stub that loads default-mcp until sync replaces it', () => {
+    const body = file('agents/iii.md').replace(/^---\n[\s\S]*?\n---\n/, '');
+    expect(body).toContain('default-mcp');
+    expect(body).toContain('iii_get_agent');
+    expect(body).toContain('activate: true');
+    // No second, hand-written copy of the profile's rules.
+    expect(body.length).toBeLessThan(800);
+    expect(body).not.toContain('iii_observations_poll');
   });
 });
 
@@ -95,7 +98,7 @@ describe('the read-only approval hook', () => {
   it('is in the standalone hooks file, beside the SessionStart sync', () => {
     const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
     expect(hooks.PreToolUse).toEqual([entry]);
-    expect(hooks.SessionStart[0].hooks[2].command).toContain(' sync ');
+    expect(hooks.SessionStart[0].hooks[1].command).toContain(' sync ');
   });
 
   it('is in the worker hooks too, after the activity hook', () => {

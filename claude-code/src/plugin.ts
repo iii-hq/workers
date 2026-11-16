@@ -23,8 +23,9 @@ import { approveHookEntry } from './iii-plugin/mode.js';
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
 
-/** The iii mode rules, appended to Claude Code's system prompt (not an agent). */
-export const MODE_FILE = 'iii-mode.md';
+/** The default-mcp prompt, appended to Claude Code's system prompt (an agent
+ * would replace it). */
+export const MODE_FILE = 'default-mcp.md';
 
 /** Where every hook posts, and therefore how a hook entry is recognised. */
 export const ACTIVITY_TARGET = 'claude::terminal::activity';
@@ -53,8 +54,10 @@ export type PluginOptions = {
    * engine runs none, and the session works through the `iii` CLI instead.
    */
   mcpUrl?: string;
-  /** The iii mode rules, written for `--append-system-prompt-file`. */
+  /** The default-mcp prompt, written for `--append-system-prompt-file`. */
   mode?: string;
+  /** The `iii` agent built from default-mcp (`agents/iii.md`). */
+  agent?: string;
 };
 
 /**
@@ -79,20 +82,8 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
     const entry = { hooks: [{ type: 'command', command }] };
     hooks[event] = [shape === 'matcher' ? { matcher: '*', ...entry } : entry];
   }
-  // The iii mode's read-only approvals, after the activity report.
+  // The read-only approvals for the iii tools, after the activity report.
   hooks.PreToolUse.push(approveHookEntry());
-  // Every session starts on the default profile, read from mcp-server.
-  if (options.mcpUrl) {
-    hooks.SessionStart.push({
-      hooks: [
-        {
-          type: 'command',
-          command: `node "\${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start --url ${quote(options.mcpUrl)}`,
-          timeout: 20,
-        },
-      ],
-    });
-  }
 
   // The manifest and commands are the committed `iii-plugin/` folder (see
   // `iii-plugin/install.ts`); these are the parts only a worker can write:
@@ -109,6 +100,9 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
   }
   if (options.mode?.trim()) {
     files.push({ path: MODE_FILE, content: `${options.mode.trim()}\n` });
+  }
+  if (options.agent) {
+    files.push({ path: 'agents/iii.md', content: options.agent });
   }
 
   const context = options.context.trim();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
-import { MAX_CONTEXT, modeOutput, sessionStartOutput } from '../src/iii-plugin/session.js';
+import { agentFile, MAX_CONTEXT, sessionStartOutput } from '../src/iii-plugin/session.js';
 import { pluginFiles } from '../src/plugin.js';
 
 const context = (out: string) => {
@@ -35,13 +35,18 @@ describe('the session-start hook loads default-mcp', () => {
     expect(text).toContain('activate: true');
   });
 
-  it('adds the iii mode rules in a hook of their own, so neither crowds out the profile', () => {
-    const text = context(modeOutput('Use iii_call for the engine.'));
-    expect(text).toBe('Use iii_call for the engine.');
-    const profile = context(
-      sessionStartOutput({ profile: { id: 'default-mcp', system_prompt: 'p'.repeat(7000) } }),
-    );
-    expect(profile).toContain('p'.repeat(7000));
+  it('builds the iii agent from default-mcp, with nothing hand-written in its body', () => {
+    const md = agentFile({
+      id: 'default-mcp',
+      system_prompt: 'You are an iii agent.\n\nUse iii_call.',
+    });
+    const [, fm, body] = md.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/) ?? [];
+    expect(fm).toContain('name: iii');
+    expect(fm).toMatch(/description: .*default-mcp/);
+    // A plain YAML scalar cannot hold `: `; the value is quoted.
+    const value = fm.split('\n').find((l) => l.startsWith('description: '))?.slice(13) ?? '';
+    expect(JSON.parse(value)).toContain('default-mcp');
+    expect(body.trim()).toBe('You are an iii agent.\n\nUse iii_call.');
   });
 
   it('keeps the fallback small however many skills the profile preloads', () => {
@@ -71,22 +76,15 @@ describe('the session-start hook loads default-mcp', () => {
     const commands = hooks.SessionStart.flatMap((e: { hooks: { command: string }[] }) =>
       e.hooks.map((h) => h.command),
     );
-    expect(commands[0]).toBe('node "${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" mode');
-    expect(commands[1]).toBe('node "${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start');
-    expect(commands[2]).toContain('/cli/index.mjs" sync');
+    expect(commands[0]).toBe('node "${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start');
+    expect(commands[1]).toContain('/cli/index.mjs" sync');
+    expect(commands).toHaveLength(2);
   });
 
-  it('runs at session start in worker installs too, at the mcp-server the worker found', () => {
+  it('is not in worker installs: the worker appends default-mcp itself', () => {
     const file = pluginFiles({ cli: 'iii', context: '', mcpUrl: 'http://127.0.0.1:3211/mcp' }).find(
       (f) => f.path === 'hooks/hooks.json',
     );
-    const hooks = JSON.parse(file?.content ?? '{}').hooks;
-    const commands = hooks.SessionStart.flatMap((e: { hooks: { command: string }[] }) =>
-      e.hooks.map((h) => h.command),
-    );
-    expect(commands[0]).toContain('claude::terminal::activity');
-    expect(commands).toContain(
-      `node "\${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start --url 'http://127.0.0.1:3211/mcp'`,
-    );
+    expect(file?.content).not.toContain('session-start');
   });
 });

@@ -15,7 +15,8 @@ const PLUGIN_PATHS = [
   '.claude-plugin/plugin.json',
   '.mcp.json',
   'hooks/hooks.json',
-  'iii-mode.md',
+  'default-mcp.md',
+  'agents/iii.md',
   'skills/iii-runtime/SKILL.md',
 ];
 

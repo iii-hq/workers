@@ -57,6 +57,10 @@ function fakeShell(
             ? Promise.reject(new Error('function_not_found'))
             : { body: '# Skills index\n\n## shell', workers_count: 1 };
         // Profiles become /iii:<profile> commands; hidden ones do not.
+        case 'directory::agents::get':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : { id: payload.id, system_prompt: 'The default-mcp prompt.' };
         case 'http::status':
           return { host: '127.0.0.1', port: 3111, url: 'http://127.0.0.1:3111' };
         case 'engine::functions::list':
@@ -184,10 +188,10 @@ describe('preparing the terminal host', () => {
       '--plugin-dir',
       dir,
       '--append-system-prompt-file',
-      `${dir}/iii-mode.md`,
+      `${dir}/default-mcp.md`,
     ]);
-    expect(files[`${dir}/iii-mode.md`]).toContain('iii_call');
-    expect(files[`${dir}/iii-mode.md`]).not.toMatch(/^---/);
+    expect(files[`${dir}/default-mcp.md`]).toContain('default-mcp prompt');
+    expect(files[`${dir}/agents/iii.md`]).toContain('default-mcp prompt');
     expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
 
     // `.claude/settings.json` is the operator's file and is never written.
@@ -305,7 +309,7 @@ describe('preparing the terminal host', () => {
     expect(prepared.args).toContain('--agent=mine');
   });
 
-  it('adds no iii mode rules over an append the operator configured', async () => {
+  it('adds no default-mcp over an append the operator configured', async () => {
     for (const own of [
       ['--append-system-prompt', 'house rules'],
       ['--append-system-prompt-file=x.md'],
@@ -313,7 +317,7 @@ describe('preparing the terminal host', () => {
       const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
       const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: own });
       expect(prepared.args.filter((a) => a.startsWith('--append-system-prompt'))).toHaveLength(1);
-      expect(prepared.detail).toContain('iii mode');
+      expect(prepared.detail).toContain('default-mcp was not appended');
     }
   });
 

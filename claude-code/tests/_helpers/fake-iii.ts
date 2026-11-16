@@ -220,6 +220,12 @@ export function fakeIii(): FakeIii {
       if (req.function_id === 'directory::system-prompts::get') {
         return { name: payload.name, body: '# iii runtime\n\niii call engine::functions::list' };
       }
+      if (req.function_id === 'directory::agents::get') {
+        return {
+          id: payload.id,
+          system_prompt: 'You are an iii agent. Call the engine with iii_call.',
+        };
+      }
       if (req.function_id === 'directory::skills::index') {
         return { body: '# Skills index\n\n## shell\n\nRun commands.', workers_count: 1 };
       }

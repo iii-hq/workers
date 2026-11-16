@@ -89,14 +89,14 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
   const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
-  // iii mode (only with mcp-server): its rules are appended to Claude Code's
+  // default-mcp (only with mcp-server) is appended to Claude Code's
   // own system prompt. An agent (`--agent`) would replace that prompt. An
   // append the operator configured is kept, and ours is left out.
   if (plugin && mode) {
     const ownAppend = config.args.some((a) => a.startsWith('--append-system-prompt'));
     if (ownAppend) {
       const skipped =
-        'the iii mode rules were not appended: the terminal args already carry an --append-system-prompt';
+        'default-mcp was not appended: the terminal args already carry an --append-system-prompt';
       console.warn(`claude-code: ${skipped}`);
       detail = detail ? `${detail}; ${skipped}` : skipped;
     } else {

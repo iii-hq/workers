@@ -22,9 +22,6 @@
  *       A SessionStart hook: print the `default-mcp` profile as the hook's
  *       additionalContext, so every session starts on it.
  *
- *   index.mjs mode
- *       A SessionStart hook: print the iii mode rules (the `iii` agent's
- *       body) as additionalContext. Needs no mcp-server.
  *
  * The mcp-server URL: --url, then III_PLUGIN_MCP_URL, then the plugin's
  * `mcp_url` option, then http://127.0.0.1:3111/mcp.
@@ -37,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { writeProfileCommands } from './commands.js';
 import { agentFiles, renderSkill, renderSubagent, skillDirectories, slug } from './directory.js';
 import { McpClient, McpDirectory, resolveMcpUrl } from './mcp.js';
-import { DEFAULT_PROFILE, modeOutput, modeRules, sessionStartOutput } from './session.js';
+import { agentFile, DEFAULT_PROFILE, sessionStartOutput } from './session.js';
 
 function option(argv: string[], name: string): string {
   const i = argv.indexOf(name);
@@ -67,9 +64,16 @@ async function sync(dir: McpDirectory, argv: string[], io: CliIo): Promise<void>
     },
     remove: (path) => rm(path, { force: true }),
   });
+  // The `iii` agent is built from default-mcp; if it cannot be read, the
+  // agent the plugin has stays.
+  const agent = await dir.getAgent(DEFAULT_PROFILE).catch(() => null);
+  if (agent?.system_prompt) {
+    await mkdir(join(root, 'agents'), { recursive: true });
+    await writeFile(join(root, 'agents', 'iii.md'), agentFile(agent), 'utf8');
+  }
   if (!argv.includes('--quiet')) {
     io.stderr(
-      `profile commands in ${join(root, 'commands')}: ${result.written.length} written, ${result.removed.length} removed\n`,
+      `profile commands in ${join(root, 'commands')}: ${result.written.length} written, ${result.removed.length} removed; iii agent ${agent?.system_prompt ? 'built from default-mcp' : 'unchanged (default-mcp could not be read)'}\n`,
     );
   }
 }
@@ -116,17 +120,6 @@ function message(err: unknown): string {
 /** Run one command; returns the exit code. */
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
   const command = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'status';
-  if (command === 'mode') {
-    // The iii mode rules need no mcp-server, so nothing about it is resolved.
-    try {
-      const agent = await readFile(join(pluginRoot(argv, io.env), 'agents', 'iii.md'), 'utf8');
-      io.stdout(`${modeOutput(modeRules(agent))}\n`);
-      return 0;
-    } catch (err) {
-      io.stderr(`iii plugin: ${message(err)}\n`);
-      return 1;
-    }
-  }
   let dir: McpDirectory | null = null;
   try {
     if (command === 'session-start') {
@@ -153,9 +146,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         `${JSON.stringify({ mcp_server: mcp, ...status, agents: agents.length }, null, 2)}\n`,
       );
     } else {
-      io.stderr(
-        `unknown command: ${command} (expected sync, export, status, session-start or mode)\n`,
-      );
+      io.stderr(`unknown command: ${command} (expected sync, export, status or session-start)\n`);
       return 2;
     }
     return 0;

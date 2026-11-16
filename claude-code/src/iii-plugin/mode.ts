@@ -1,15 +1,17 @@
 /**
- * The iii mode: Claude Code has no plugin-defined permission modes, so the
- * mode is two plugin parts layered on whichever built-in mode is active:
+ * The `iii` agent and the read-only approval hook. Neither is a Claude Code
+ * permission mode: those are built in (default, accept edits, plan, auto,
+ * bypass) and a plugin cannot add one. The pieces:
  *
- *   - the `iii` agent (`iii-plugin/agents/iii.md`), which a session runs as
- *     with `--agent iii:iii` (the worker passes it; standalone users opt in);
- *   - a PreToolUse hook that pre-approves the plugin's read-only tools.
+ *   - the `iii` agent (`iii-plugin/agents/iii.md`), built from the default-mcp
+ *     profile, which a session runs as only with `--agent iii:iii` (it then
+ *     replaces Claude Code's system prompt);
+ *   - a PreToolUse hook that pre-approves the plugin's read-only tools in
+ *     whatever permission mode is active.
  *
- * `iii_call`, `iii_observe` and `iii_secret_store` are never pre-approved: they
- * can do anything on the bus (or write the vault), so they stay with the
- * session's permission mode and, in a headless turn, the worker's approval
- * gate.
+ * `iii_call`, `iii_observe` and `iii_secret_store` are never pre-approved by
+ * the hook: they stay with the session's permission mode and, in a headless
+ * turn, the worker's allow list and approval gate.
  */
 
 import { TOOL_PREFIX } from './commands.js';

@@ -30,9 +30,9 @@ import { MODE_FILE, pluginDetail, pluginFiles } from '../plugin.js';
 import { readFile as hostRead, writeFile as hostWrite, probe } from '../terminal/host.js';
 import { PLUGIN_STATIC_FILES } from './assets.generated.js';
 import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
-import type { AgentRow } from './directory.js';
+import type { AgentProfile, AgentRow } from './directory.js';
 import { DEFAULT_MCP_URL, normalizeMcpUrl } from './mcp.js';
-import { modeRules } from './session.js';
+import { agentFile } from './session.js';
 
 export const PLUGIN_NAME = 'iii';
 /** Where it lands inside a terminal workspace. */
@@ -46,7 +46,7 @@ const WORKER_OWNED = ['hooks/hooks.json', '.mcp.json'];
 export type Installed = {
   dir: string;
   detail: string;
-  /** The iii mode rules to append to the system prompt; '' without mcp-server. */
+  /** The default-mcp prompt to append to the system prompt; '' without it. */
   mode: string;
   /** Whether the session's `iii` MCP server is the engine's mcp-server. */
   mcp: boolean;
@@ -62,6 +62,9 @@ export type InstallOptions = {
   agentsDetail?: string;
   /** The engine's mcp-server endpoint, whether it runs, and what to say. */
   mcp: { url: string; detail: string; available: boolean };
+  /** The default-mcp profile, or null when it could not be read. */
+  defaultProfile: AgentProfile | null;
+  defaultProfileDetail?: string;
 };
 
 /** Files without which the plugin is not one. */
@@ -103,32 +106,45 @@ export async function installWith(
     await ops.write(`${dir}/${MARKER}`, `${id}\n`);
   }
 
-  // Without mcp-server there is no `iii` MCP server and no iii mode: the
-  // session works through the `iii` CLI, as it did before the plugin.
+  // With mcp-server, default-mcp is both the text appended to Claude Code's
+  // prompt and the `iii` agent. Without it there is no `iii` MCP server and
+  // nothing to append: the session works through the `iii` CLI, as before.
   const available = options.mcp.available;
-  const agent = embedded.find((f) => f.path === 'agents/iii.md')?.content ?? '';
-  const mode = available ? modeRules(agent) : '';
+  const profile = available ? options.defaultProfile : null;
+  const mode = profile?.system_prompt?.trim() ?? '';
+  const stubAgent = embedded.find((f) => f.path === 'agents/iii.md')?.content ?? '';
   const worker = {
     cli: options.cli,
     context: options.context.text,
     contextDetail: options.context.detail,
     mcpUrl: available ? options.mcp.url : '',
     mode,
+    agent: mode && profile ? agentFile(profile) : '',
   };
   const generated = pluginFiles(worker);
   for (const f of generated) {
     const path = `${dir}/${f.path}`;
     if ((await ops.read(path)) !== f.content) await ops.write(path, f.content);
   }
-  // The MCP server, the mode rules and the runtime skill exist only while
+  // The MCP server, the default-mcp file and the runtime skill exist only while
   // they apply: a stale one would keep loading.
   for (const file of CONDITIONAL) {
     if (generated.some((f) => f.path === file)) continue;
     const path = `${dir}/${file}`;
     if ((await ops.read(path)) !== null) await ops.remove(path);
   }
+  // No profile to build the agent from: the plugin's own stub (which loads
+  // default-mcp when run) replaces any agent built from an older one.
+  if (!worker.agent && stubAgent && (await ops.read(`${dir}/agents/iii.md`)) !== stubAgent) {
+    await ops.write(`${dir}/agents/iii.md`, stubAgent);
+  }
 
   const details = [options.mcp.detail, pluginDetail(worker)];
+  if (available && !mode) {
+    details.push(
+      `the default-mcp profile could not be read (${options.defaultProfileDetail || 'it has no prompt'}), so it is neither appended nor the iii agent`,
+    );
+  }
   if (options.agents) {
     await writeProfileCommands(dir, options.agents, ops);
   } else {
@@ -140,7 +156,7 @@ export async function installWith(
 }
 
 const MCP_SETUP =
-  'sessions work through the `iii` CLI, without the iii tools or iii mode, until it runs; add the mcp-server worker behind rbac-proxy (see its README)';
+  'sessions work through the `iii` CLI, without the iii tools or default-mcp, until it runs; add the mcp-server worker behind rbac-proxy (see its README)';
 
 /**
  * Where the engine's mcp-server answers: `III_PLUGIN_MCP_URL` (for a custom
@@ -182,6 +198,22 @@ export async function resolveWorkerMcp(
     details.push(`could not check for mcp-server (${String(err)}); ${MCP_SETUP}`);
   }
   return { url, detail: details.join('; '), available };
+}
+
+/** The default-mcp profile, read from iii-directory. */
+async function readDefaultProfile(
+  iii: IIIClient,
+): Promise<{ profile: AgentProfile | null; detail: string }> {
+  try {
+    const profile = await iii.call<unknown, AgentProfile>({
+      function_id: 'directory::agents::get',
+      payload: { id: 'default-mcp' },
+      timeoutMs: 15_000,
+    });
+    return { profile: profile ?? null, detail: '' };
+  } catch (err) {
+    return { profile: null, detail: `iii-directory did not answer (${String(err)})` };
+  }
 }
 
 async function listAgents(iii: IIIClient): Promise<{ agents: AgentRow[] | null; detail: string }> {
@@ -236,10 +268,11 @@ export async function installLocal(
   };
   try {
     dir = await mkdtemp(LOCAL_PREFIX);
-    const [context, listed, mcp] = await Promise.all([
+    const [context, listed, mcp, def] = await Promise.all([
       fetchIiiContext(iii),
       listAgents(iii),
       resolveWorkerMcp(iii),
+      readDefaultProfile(iii),
     ]);
     const installed = await installWith(dir, localOps, {
       cli: process.env.III_CLI ?? 'iii',
@@ -247,6 +280,8 @@ export async function installLocal(
       agents: listed.agents,
       agentsDetail: listed.detail,
       mcp,
+      defaultProfile: def.profile,
+      defaultProfileDetail: def.detail,
     });
     return { ...installed, dispose };
   } catch (err) {
@@ -283,13 +318,19 @@ export async function installOnHost(
 ): Promise<Installed & { bridge: string }> {
   const dir = `${workspace}/${PLUGIN_DIR_NAME}`;
   const bridge = await probe(iii, 'command -v iii');
-  const [listed, mcp] = await Promise.all([listAgents(iii), resolveWorkerMcp(iii)]);
+  const [listed, mcp, def] = await Promise.all([
+    listAgents(iii),
+    resolveWorkerMcp(iii),
+    readDefaultProfile(iii),
+  ]);
   const installed = await installWith(dir, hostOps(iii), {
     cli: bridge || 'iii',
     context,
     agents: listed.agents,
     agentsDetail: listed.detail,
     mcp,
+    defaultProfile: def.profile,
+    defaultProfileDetail: def.detail,
   });
   return { ...installed, bridge };
 }

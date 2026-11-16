@@ -223,12 +223,13 @@ describe('executeRun', () => {
     expect(sp).toMatchObject({ type: 'preset', preset: 'claude_code' });
   });
 
-  it('with mcp-server on the engine, appends the iii mode rules and allows the iii tools', async () => {
+  it('with mcp-server on the engine, appends default-mcp and allows the iii tools', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' }, fullTurn, {}, true);
     const sp = capture.options?.systemPrompt as { append?: string };
     expect(sp.append).toContain('# iii runtime');
-    expect(sp.append).toContain('iii_call');
-    expect(sp.append).not.toMatch(/^---/m);
+    expect(sp.append).toContain('You are an iii agent. Call the engine with iii_call.');
+    expect(capture.pluginFiles?.['agents/iii.md']).toContain('You are an iii agent.');
+    expect(capture.pluginFiles?.['hooks/hooks.json']).not.toContain('session-start');
     const allowed = capture.options?.allowedTools as string[];
     for (const t of ['iii_call', 'iii_observe', 'iii_observations_poll', 'iii_status'])
       expect(allowed).toContain(`mcp__plugin_iii_iii__${t}`);
