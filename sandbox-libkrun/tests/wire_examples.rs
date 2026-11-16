@@ -91,9 +91,13 @@ fn wire_examples_round_trip() {
     for name in COPIED {
         assert!(seen.contains(name), "fixture has no example for {name}");
     }
-    // A 1.3 caller's requests, without the fields 1.4 added: they must still read
+    // A 1.3 peer's messages, without the fields 1.4 added: they must still read
     // (`serde(default)`) and write back unchanged (`skip_serializing_if`).
-    for name in ["WorkerBuildRequest@1.3", "WorkerDestroyRequest@1.3"] {
+    for name in [
+        "WorkerBuildRequest@1.3",
+        "WorkerDestroyRequest@1.3",
+        "WorkerDestroyResponse@1.3",
+    ] {
         assert!(seen.contains(&name), "fixture has no example for {name}");
     }
 }

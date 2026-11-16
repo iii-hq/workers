@@ -156,6 +156,9 @@ pub enum SandboxError {
     #[error("resource limit exceeded: {0}")]
     ResourceLimit(String),
 
+    /// Bad manifest, `host_path` outside the allowed roots, an invalid binary
+    /// executable, or a binary source outside a build (`worker::prepare`,
+    /// `worker::start` without `build`).
     #[error("worker source rejected: {0}")]
     SourceRejected(String),
 
