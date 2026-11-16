@@ -4,8 +4,8 @@
 
 Sandbox contract 1.4: binary packages in VMs, a build's `base_image`, and a
 `worker::destroy` that keeps the VM's data unless asked to `prune`. The S-codes
-are those of 0.4.x. (0.4.1 and 0.4.2, published from `main`, carry 0.4.0's
-code.)
+are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
+1.3; 0.5.0 includes them (0.4.3's `worker::logs` writer that connects at once).
 
 ### Added
 
