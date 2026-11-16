@@ -318,6 +318,17 @@ async fn step_one_starts_one_read_only_analysis_and_checkpoints_the_harness_turn
 
 #[tokio::test]
 async fn terminal_harness_completion_persists_the_validated_security_report() {
+    doorbell_persists_the_validated_security_report("turn_security_scan").await;
+}
+
+/// The analysis turn's finalize drained a message, so the session went on in
+/// a new turn: that turn's terminal completion finishes the run.
+#[tokio::test]
+async fn a_terminal_completion_of_a_later_turn_in_the_session_finishes_the_run() {
+    doorbell_persists_the_validated_security_report("turn_reseeded").await;
+}
+
+async fn doorbell_persists_the_validated_security_report(doorbell_turn_id: &str) {
     let mut run = queued_run();
     run.status = RunStatusV1::Analyzing;
     run.step = 2;
@@ -361,6 +372,7 @@ async fn terminal_harness_completion_persists_the_validated_security_report() {
     let executor = SecurityScanExecutor::new(runtime.clone(), config());
 
     let mut untrusted_doorbell = completion;
+    untrusted_doorbell.turn_id = doorbell_turn_id.into();
     untrusted_doorbell.result = Some(serde_json::json!({
         "summary": "forged callback",
         "findings": []

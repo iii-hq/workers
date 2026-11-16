@@ -492,6 +492,20 @@ async fn generate_step(
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
+        // The process died between the finalize write and its reseed: only
+        // this redelivery can still seed the turn that write promised, so a
+        // failed store read fails it for the queue to retry. Only a prompt
+        // that is gone for good settles the exchange instead.
+        if record.continues {
+            match crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await {
+                Ok(()) => reseed_after_finalize_drain(deps, &mut record).await?,
+                Err(error) if crate::state::is_lost_prompt_body(&error) => {
+                    tracing::warn!(session_id = %record.session_id, %error, "could not reload a finished turn to seed the one it promised");
+                    settle_unreseeded(deps, &mut record, cfg.session_timeout_ms).await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
@@ -2622,7 +2636,10 @@ async fn drain_queued_best_effort(
 /// finalize (queue at-least-once) drains nothing and does not double-seed; a
 /// concurrent external send racing the same slot is resolved by `run_step`'s
 /// stale-turn guard, exactly as two racing sends already are.
-async fn reseed_after_finalize_drain(deps: &Deps, record: &mut TurnRecord) {
+async fn reseed_after_finalize_drain(
+    deps: &Deps,
+    record: &mut TurnRecord,
+) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
     // Carry the finalized turn's lineage onto the reseeded one: it is the same
     // session continuing, so its depth still counts against the spawn budget
@@ -2644,18 +2661,24 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &mut TurnRecord) {
             error = %e,
             "reseed after finalize drain failed; a parked notification may be stranded",
         );
-        settle_unreseeded(deps, record, cfg.session_timeout_ms).await;
+        return settle_unreseeded(deps, record, cfg.session_timeout_ms).await;
     }
+    Ok(())
 }
 
 /// No reseeded turn replaces this record, so the terminal decision its
 /// finalize deferred is this turn's to make: drop `continues` and complete it
 /// again. Skipped once a reseeded record replaced it (a reseed whose first
-/// enqueue failed has finalized that turn itself).
-async fn settle_unreseeded(deps: &Deps, record: &mut TurnRecord, timeout_ms: u64) {
-    match crate::state::get_turn_unhydrated(&deps.iii, &record.session_id, timeout_ms).await {
-        Ok(Some(current)) if current.turn_id == record.turn_id => {}
-        _ => return,
+/// enqueue failed has finalized that turn itself). A failed read settles
+/// nothing and is the caller's to retry.
+async fn settle_unreseeded(
+    deps: &Deps,
+    record: &mut TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    match crate::state::get_turn_unhydrated(&deps.iii, &record.session_id, timeout_ms).await? {
+        Some(current) if current.turn_id == record.turn_id => {}
+        _ => return Ok(()),
     }
     record.continues = false;
     let terminal = turn_is_terminal(deps, record).await;
@@ -2684,6 +2707,7 @@ async fn settle_unreseeded(deps: &Deps, record: &mut TurnRecord, timeout_ms: u64
             record.context_snapshot.as_ref(),
         )
         .await;
+    Ok(())
 }
 
 /// Consume a `submit_result` call: validate its arguments against the
@@ -3024,7 +3048,11 @@ async fn finalize_completed(
     // first step (on another instance) could write `working` and emit its
     // `on-turn-started` before this turn's `done` and `on-turn-completed`.
     if woke {
-        reseed_after_finalize_drain(deps, record).await;
+        // Best effort: the turn is already final. Nothing retries a failed
+        // settle here: the record keeps `continues` until the next stop or send.
+        if let Err(error) = reseed_after_finalize_drain(deps, record).await {
+            tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+        }
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -3323,7 +3351,10 @@ async fn finalize_failed(
     // deserves a turn, the same as an external send arriving at a failed
     // session. Gated on the drain, so it cannot loop on the failure itself.
     if woke {
-        reseed_after_finalize_drain(deps, record).await;
+        // Best effort, as in `finalize_completed`.
+        if let Err(error) = reseed_after_finalize_drain(deps, record).await {
+            tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+        }
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -3560,7 +3591,6 @@ async fn try_finish_stopped_exchange(
     turn_id: &str,
 ) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
-    let session = deps.session().await;
     let _guard = deps.locks.guard(session_id).await;
     let Some(mut record) =
         crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms)
@@ -3573,25 +3603,37 @@ async fn try_finish_stopped_exchange(
     else {
         return Ok(());
     };
+    end_stopped_exchange(deps, &mut record).await.map(|_| ())
+}
+
+/// [`try_finish_stopped_exchange`] for a caller that holds the session lock and read
+/// `record`, finished and not yet `exchange_finished`, under it. False, with nothing
+/// written, while a wake is left: its going ends the exchange.
+pub(crate) async fn end_stopped_exchange(
+    deps: &Deps,
+    record: &mut TurnRecord,
+) -> Result<bool, HarnessError> {
+    let cfg = deps.cfg().await;
+    let session = deps.session().await;
     let now = AgentMessage::now_ms();
     let wake_left = deps
         .bindings()
         .await
-        .list_for_owner(session_id)
+        .list_for_owner(&record.session_id)
         .await?
         .iter()
         .any(|binding| crate::bindings::is_armed_wake(binding, now));
     if wake_left {
-        return Ok(());
+        return Ok(false);
     }
     if record.status == TurnStatus::Completed {
         record.status = TurnStatus::Cancelled;
         record.updated_at = now;
-        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     }
     if record.status == TurnStatus::Cancelled {
-        append_stopped_notice(&session, &record).await;
-        crate::session_status::project(&session, &record).await;
+        append_stopped_notice(&session, record).await;
+        crate::session_status::project(&session, record).await;
     }
     let status = match record.status {
         TurnStatus::Failed => "failed",
@@ -3599,8 +3641,8 @@ async fn try_finish_stopped_exchange(
     };
     deps.events
         .emit_completed(
-            session_id,
-            turn_id,
+            &record.session_id,
+            &record.turn_id,
             status,
             None,
             record.result_error.as_deref(),
@@ -3612,9 +3654,9 @@ async fn try_finish_stopped_exchange(
         )
         .await;
     record.exchange_finished = true;
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    crate::hooks::recall::finish_extraction(deps, &record, true).await;
-    Ok(())
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, record, true).await;
+    Ok(true)
 }
 
 const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
