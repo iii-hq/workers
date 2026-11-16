@@ -94,7 +94,7 @@ pub fn engine_url(
 
 pub fn load_config(path: &str) -> Result<McpConfig> {
     let contents = std::fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&contents)?)
+    Ok(serde_yaml_ng::from_str(&contents)?)
 }
 
 #[cfg(test)]
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: McpConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: McpConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.api_path, "/mcp");
         assert!(cfg.allowed_origins.is_empty());
         assert_eq!(
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_shipped_config_yaml_is_the_defaults() {
-        let cfg: McpConfig = serde_yaml::from_str(include_str!("../config.yaml")).unwrap();
+        let cfg: McpConfig = serde_yaml_ng::from_str(include_str!("../config.yaml")).unwrap();
         let d = McpConfig::default();
         assert_eq!(
             (
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn settings_parse_into_session_limits() {
-        let cfg: McpConfig = serde_yaml::from_str(
+        let cfg: McpConfig = serde_yaml_ng::from_str(
             "api_path: /x\nallowed_origins: [\"https://console.example.com\"]\nsession_idle_ttl_secs: 60\nmax_sessions: 4\nmax_observers_per_session: 8\nmax_buffered_observations: 10\n",
         )
         .unwrap();
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn keys_from_the_per_function_era_are_ignored() {
         // A config.yaml written for mcp <= 0.6 still loads.
-        let cfg: McpConfig = serde_yaml::from_str(
+        let cfg: McpConfig = serde_yaml_ng::from_str(
             "tools: functions\nhidden_prefixes: [\"engine::\"]\nrequire_expose: true\nmax_buffered_events: 3\n",
         )
         .unwrap();
