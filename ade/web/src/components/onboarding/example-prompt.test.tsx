@@ -178,12 +178,13 @@ describe('openExamplePrompt', () => {
     expect(chat.thinkingLevel).not.toBe('high')
   })
 
-  it('leaves the prompt waiting when the Directory does not serve its profile', async () => {
+  it('sends under the default profile when the Directory does not serve the named one', async () => {
     const { chat } = await open(TODO, [])
     expect(chat.agentProfile).toBeUndefined()
-    // Sent as is, it would run under another agent.
+    // The click was the decision to send; a fresh stack with no kits yet
+    // still gets its message, under the chat's default profile.
     expect(api.getDraftText(chat.id)).toBe(TODO.prompt)
-    expect(claimDraftSend(chat.id)).toBeUndefined()
+    expect(claimDraftSend(chat.id)).toBe(TODO.prompt)
   })
 
   it('leaves the prompt waiting when the folder lookup did not finish', async () => {

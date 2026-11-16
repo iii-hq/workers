@@ -864,9 +864,9 @@ export interface Host {
      * does: `agent` (a profile id; the default profile when absent) is
      * selected, the first of `models` this machine serves is chosen with its
      * effort (the chat's usual model when none is), and the chat is shown.
-     * A profile that is not served leaves the text as a draft to send by
-     * hand. Resolves to the chat's session id. Absent on older consoles;
-     * feature-detect.
+     * A profile that is not served falls back to the chat's default one;
+     * the text is sent either way. Resolves to the chat's session id.
+     * Absent on older consoles; feature-detect.
      */
     startChat?(request: {
       text: string
