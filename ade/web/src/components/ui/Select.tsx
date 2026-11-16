@@ -410,7 +410,7 @@ export function Select<T extends string>({
                   {renderGroupHeader ? (
                     renderGroupHeader(g)
                   ) : (
-                    <SelectPrimitive.GroupLabel className="px-3 pt-2 pb-1 text-xs font-medium text-ink-faint">
+                    <SelectPrimitive.GroupLabel className="px-2 pt-2 pb-1 text-xs font-medium text-ink-faint">
                       {g.label}
                     </SelectPrimitive.GroupLabel>
                   )}
@@ -571,7 +571,9 @@ function SelectItem({
       title={title}
       disabled={disabled}
       className={cn(
-        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-3 pl-7 outline-none sm:min-h-0 sm:py-1.5',
+        // The check sits at the right, as in the shadcn item, so the text
+        // starts at the row's edge instead of behind a 28px empty column.
+        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-8 pl-2 outline-none sm:min-h-0 sm:py-1.5',
         'data-highlighted:bg-muted data-highlighted:text-foreground',
         'data-selected:text-foreground',
         'data-disabled:pointer-events-none data-disabled:opacity-40',
@@ -579,7 +581,7 @@ function SelectItem({
     >
       <SelectPrimitive.ItemIndicator
         render={
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-ink" />
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-ink" />
         }
       >
         <Check size={16} aria-hidden />

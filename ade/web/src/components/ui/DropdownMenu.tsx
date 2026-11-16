@@ -177,7 +177,7 @@ export function DropdownMenuCheckboxItem({
         <span
           aria-hidden
           data-menu-checkbox=""
-          className="absolute top-1/2 left-2 flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm border border-input bg-muted text-primary-foreground group-data-checked/check:border-primary group-data-checked/check:bg-primary [&>svg]:hidden group-data-checked/check:[&>svg]:block"
+          className="absolute top-1/2 left-2 flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm border border-muted-foreground/60 bg-muted text-primary-foreground group-data-checked/check:border-primary group-data-checked/check:bg-primary [&>svg]:hidden group-data-checked/check:[&>svg]:block"
         >
           {mark}
         </span>
