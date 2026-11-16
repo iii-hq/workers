@@ -423,11 +423,11 @@ impl QueueAdapter for BuiltinAdapter {
                 let mut total = 0u64;
                 for subscription_id in &subscription_ids {
                     let queue_name = internal_queue_name(topic, subscription_id);
-                    total += self.store.redrive_dlq(&queue_name).await;
+                    total += self.store.redrive_dlq(&queue_name).await?;
                 }
                 Ok(total)
             }
-            _ => Ok(self.store.redrive_dlq(topic).await),
+            _ => self.store.redrive_dlq(topic).await,
         }
     }
 
@@ -440,14 +440,14 @@ impl QueueAdapter for BuiltinAdapter {
                     if self
                         .store
                         .redrive_dlq_message(&queue_name, message_id)
-                        .await
+                        .await?
                     {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            _ => Ok(self.store.redrive_dlq_message(topic, message_id).await),
+            _ => self.store.redrive_dlq_message(topic, message_id).await,
         }
     }
 
@@ -460,14 +460,14 @@ impl QueueAdapter for BuiltinAdapter {
                     if self
                         .store
                         .discard_dlq_message(&queue_name, message_id)
-                        .await
+                        .await?
                     {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            _ => Ok(self.store.discard_dlq_message(topic, message_id).await),
+            _ => self.store.discard_dlq_message(topic, message_id).await,
         }
     }
 
@@ -797,7 +797,7 @@ impl QueueAdapter for BuiltinAdapter {
         if delivery.queue_name != queue_name {
             anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
         }
-        self.store.ack(queue_name, &delivery.job.id).await;
+        self.store.ack(queue_name, &delivery.job.id).await?;
         delivery.settled.store(true, Ordering::Release);
         self.function_deliveries.lock().await.remove(&delivery_id);
         Ok(())
@@ -837,12 +837,16 @@ impl QueueAdapter for BuiltinAdapter {
                 max_retries.saturating_add(1),
                 delivery.backoff_ms,
             )
-            .await;
+            .await?;
         delivery.settled.store(true, Ordering::Release);
         self.function_deliveries.lock().await.remove(&delivery_id);
         Ok(())
     }
 }
+
+/// Pause before a consumer retries after its store rejected a dequeue (for
+/// example, a journal append failed), so a persistent fault does not spin.
+const STORE_ERROR_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 async fn run_function_queue_consumer(
     store: Arc<dyn QueueStore>,
@@ -872,11 +876,22 @@ async fn run_function_queue_consumer(
         let notified = ready.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        let Some(job) = store.dequeue(&queue_name).await else {
-            drop(permit);
-            tokio::select! {
-                _ = tx.closed() => break,
-                _ = wait_until_ready(&store, &queue_name, notified) => continue,
+        let job = match store.dequeue(&queue_name).await {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                drop(permit);
+                tokio::select! {
+                    _ = tx.closed() => break,
+                    _ = wait_until_ready(&store, &queue_name, notified) => continue,
+                }
+            }
+            Err(err) => {
+                drop(permit);
+                tracing::error!(queue = %queue_name, error = %err, "builtin function queue dequeue failed; retrying");
+                tokio::select! {
+                    _ = tx.closed() => break,
+                    _ = tokio::time::sleep(STORE_ERROR_RETRY_DELAY) => continue,
+                }
             }
         };
 
@@ -884,7 +899,9 @@ async fn run_function_queue_consumer(
             Ok(envelope) => envelope,
             Err(err) => {
                 tracing::error!(queue = %queue_name, error = %err, "invalid builtin function queue envelope");
-                store.nack(&queue_name, job, 1, 0).await;
+                if let Err(err) = store.nack(&queue_name, job, 1, 0).await {
+                    tracing::error!(queue = %queue_name, error = %err, "failed to dead-letter invalid builtin function queue envelope");
+                }
                 continue;
             }
         };
@@ -1026,12 +1043,20 @@ async fn run_fifo(
         tokio::pin!(notified);
         notified.as_mut().enable();
         match store.dequeue(&cfg.queue_name).await {
-            Some(job) => process_job(&store, &invoker, &cfg, job).await,
-            None => {
+            Ok(Some(job)) => process_job(&store, &invoker, &cfg, job).await,
+            Ok(None) => {
                 tokio::select! {
                     biased;
                     _ = &mut cancelled => return,
                     _ = wait_until_ready(&store, &cfg.queue_name, notified) => {}
+                }
+            }
+            Err(err) => {
+                tracing::error!(queue = %cfg.queue_name, error = %err, "queue dequeue failed; retrying");
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => return,
+                    _ = tokio::time::sleep(STORE_ERROR_RETRY_DELAY) => {}
                 }
             }
         }
@@ -1073,7 +1098,7 @@ async fn run_concurrent(
         tokio::pin!(notified);
         notified.as_mut().enable();
         match store.dequeue(&cfg.queue_name).await {
-            Some(job) => {
+            Ok(Some(job)) => {
                 let store = Arc::clone(&store);
                 let invoker = Arc::clone(&invoker);
                 let cfg = Arc::clone(&cfg);
@@ -1082,12 +1107,21 @@ async fn run_concurrent(
                     drop(permit);
                 });
             }
-            None => {
+            Ok(None) => {
                 drop(permit);
                 tokio::select! {
                     biased;
                     _ = &mut cancelled => break,
                     _ = wait_until_ready(&store, &cfg.queue_name, notified) => {}
+                }
+            }
+            Err(err) => {
+                drop(permit);
+                tracing::error!(queue = %cfg.queue_name, error = %err, "queue dequeue failed; retrying");
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => break,
+                    _ = tokio::time::sleep(STORE_ERROR_RETRY_DELAY) => {}
                 }
             }
         }
@@ -1111,13 +1145,18 @@ async fn process_job(
         .deliver(invoker.as_ref(), job.payload.clone())
         .await;
 
-    match result {
+    let settled = match result {
         Ok(_) => store.ack(&cfg.queue_name, &job.id).await,
         Err(_err) => {
             store
                 .nack(&cfg.queue_name, job, cfg.max_retries, cfg.backoff_ms)
                 .await
         }
+    };
+    if let Err(err) = settled {
+        // The store changed nothing: the job stays in flight and is
+        // redelivered after a restart, exactly as the journal records it.
+        tracing::error!(queue = %cfg.queue_name, error = %err, "failed to settle queue job; it stays in flight until restart");
     }
 }
 
@@ -1458,16 +1497,22 @@ mod tests {
             self.inner.enqueue(topic, payload).await
         }
 
-        async fn dequeue(&self, topic: &str) -> Option<Job> {
+        async fn dequeue(&self, topic: &str) -> anyhow::Result<Option<Job>> {
             self.inner.dequeue(topic).await
         }
 
-        async fn ack(&self, topic: &str, job_id: &str) {
-            self.inner.ack(topic, job_id).await;
+        async fn ack(&self, topic: &str, job_id: &str) -> anyhow::Result<()> {
+            self.inner.ack(topic, job_id).await
         }
 
-        async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
-            self.inner.nack(topic, job, max_retries, backoff_ms).await;
+        async fn nack(
+            &self,
+            topic: &str,
+            job: Job,
+            max_retries: u32,
+            backoff_ms: u64,
+        ) -> anyhow::Result<()> {
+            self.inner.nack(topic, job, max_retries, backoff_ms).await
         }
 
         async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
@@ -1498,15 +1543,15 @@ mod tests {
             self.inner.dlq_messages(topic, limit).await
         }
 
-        async fn redrive_dlq(&self, topic: &str) -> u64 {
+        async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
             self.inner.redrive_dlq(topic).await
         }
 
-        async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+        async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
             self.inner.redrive_dlq_message(topic, job_id).await
         }
 
-        async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+        async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
             self.inner.discard_dlq_message(topic, job_id).await
         }
     }
@@ -1940,6 +1985,7 @@ mod tests {
         let job = store
             .dequeue("demo")
             .await
+            .unwrap()
             .expect("job should be on the bare topic");
         assert_eq!(job.payload, json!("no subscribers yet"));
     }
@@ -2570,8 +2616,8 @@ mod tests {
         let adapter = BuiltinAdapter::new(store.clone(), invoker);
 
         store.enqueue("demo", json!("job")).await.unwrap();
-        let job = store.dequeue("demo").await.unwrap();
-        store.nack("demo", job, 1, 1).await;
+        let job = store.dequeue("demo").await.unwrap().unwrap();
+        store.nack("demo", job, 1, 1).await.unwrap();
 
         let peeked = adapter.dlq_peek("demo", 0, 10).await.unwrap();
         assert_eq!(peeked.len(), 1);
