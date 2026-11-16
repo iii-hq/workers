@@ -150,7 +150,9 @@ pub struct BuiltinAdapter {
     retention_counter: AtomicU64,
     function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
     function_deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
-    function_consumers: Mutex<Vec<FunctionConsumerHandle>>,
+    // Serializes stop/recovery batches. Never held by ACK/NACK, which take
+    // only a delivery's operation lock after releasing the deliveries map.
+    function_consumers: Arc<Mutex<Vec<FunctionConsumerHandle>>>,
     delivery_counter: Arc<AtomicU64>,
     consumer_counter: AtomicU64,
 }
@@ -169,8 +171,15 @@ struct FunctionDelivery {
 
 struct FunctionConsumerHandle {
     queue_name: String,
-    consumer_id: u64,
+    state: Arc<FunctionConsumerState>,
     task: JoinHandle<()>,
+}
+
+struct FunctionConsumerState {
+    consumer_id: u64,
+    // Set before natural rx-drop cleanup; aborted tasks are identified by
+    // their finished handle. Neither kind can produce another delivery.
+    stopped: AtomicBool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -241,7 +250,7 @@ impl BuiltinAdapter {
             retention_counter: AtomicU64::new(1),
             function_queue_configs: RwLock::new(HashMap::new()),
             function_deliveries: Arc::new(Mutex::new(HashMap::new())),
-            function_consumers: Mutex::new(Vec::new()),
+            function_consumers: Arc::new(Mutex::new(Vec::new())),
             delivery_counter: Arc::new(AtomicU64::new(1)),
             consumer_counter: AtomicU64::new(1),
         }
@@ -617,7 +626,9 @@ impl QueueAdapter for BuiltinAdapter {
             consumer.task.abort();
         }
         for consumer in consumers {
-            let _ = consumer.task.await;
+            if !consumer.task.is_finished() {
+                let _ = consumer.task.await;
+            }
         }
 
         let deliveries = self
@@ -708,7 +719,14 @@ impl QueueAdapter for BuiltinAdapter {
             anyhow::bail!("function queue '{queue_name}' has not been set up");
         }
 
-        let consumer_id = self.consumer_counter.fetch_add(1, Ordering::Relaxed);
+        let state = Arc::new(FunctionConsumerState {
+            consumer_id: self.consumer_counter.fetch_add(1, Ordering::Relaxed),
+            stopped: AtomicBool::new(false),
+        });
+        // Register the handle before the task can inspect stopped consumers.
+        let mut consumers = self.function_consumers.lock().await;
+        let task_consumers = Arc::clone(&self.function_consumers);
+        let task_state = Arc::clone(&state);
         let (tx, rx) = mpsc::channel(prefetch.max(1) as usize);
         let store = Arc::clone(&self.store);
         let deliveries = Arc::clone(&self.function_deliveries);
@@ -720,59 +738,42 @@ impl QueueAdapter for BuiltinAdapter {
                 store,
                 deliveries,
                 delivery_counter,
-                consumer_id,
+                task_consumers,
+                task_state,
                 task_queue_name,
                 tx,
             )
             .await;
         });
-        self.function_consumers
-            .lock()
-            .await
-            .push(FunctionConsumerHandle {
-                queue_name,
-                consumer_id,
-                task,
-            });
+        consumers.push(FunctionConsumerHandle {
+            queue_name,
+            state,
+            task,
+        });
         Ok(rx)
     }
 
     async fn stop_function_queue_consumer(&self, queue_name: &str) -> anyhow::Result<()> {
-        let matching = {
-            let mut active = self.function_consumers.lock().await;
-            let mut matching = Vec::new();
-            let mut retained = Vec::with_capacity(active.len());
-            for handle in active.drain(..) {
-                if handle.queue_name == queue_name {
-                    matching.push(handle);
-                } else {
-                    retained.push(handle);
-                }
-            }
-            *active = retained;
-            matching
-        };
-
-        let consumer_ids = matching
-            .iter()
-            .map(|handle| handle.consumer_id)
-            .collect::<HashSet<_>>();
-        for handle in &matching {
+        let mut consumers = self.function_consumers.lock().await;
+        for handle in consumers.iter().filter(|h| h.queue_name == queue_name) {
             handle.task.abort();
         }
-        for handle in matching {
-            let _ = handle.task.await;
+        for handle in consumers.iter_mut().filter(|h| h.queue_name == queue_name) {
+            // A failed cleanup retains the handle after joining it. Never
+            // poll a completed JoinHandle again on the next stop/shutdown.
+            if !handle.task.is_finished() {
+                let _ = (&mut handle.task).await;
+            }
         }
-
-        let deliveries = {
-            let active = self.function_deliveries.lock().await;
-            active
-                .values()
-                .filter(|delivery| consumer_ids.contains(&delivery.consumer_id))
-                .cloned()
-                .collect()
-        };
-        requeue_function_deliveries(&self.store, &self.function_deliveries, deliveries).await
+        // Retain stopped handles on failure so both another stop and a
+        // replacement consumer can still identify the orphaned deliveries.
+        requeue_stopped_function_consumers(
+            &self.store,
+            &self.function_deliveries,
+            &mut consumers,
+            queue_name,
+        )
+        .await
     }
 
     async fn forget_function_queue(&self, queue_name: &str) -> anyhow::Result<()> {
@@ -866,7 +867,8 @@ async fn run_function_queue_consumer(
     store: Arc<dyn QueueStore>,
     deliveries: Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
     delivery_counter: Arc<AtomicU64>,
-    consumer_id: u64,
+    consumers: Arc<Mutex<Vec<FunctionConsumerHandle>>>,
+    state: Arc<FunctionConsumerState>,
     queue_name: String,
     tx: mpsc::Sender<QueueMessage>,
 ) {
@@ -885,12 +887,30 @@ async fn run_function_queue_consumer(
             },
         };
 
-        // Register for the wake-up BEFORE looking: an enqueue racing the
-        // empty `dequeue` below still wakes this consumer.
+        // Register before cleanup as well as dequeue: a naturally stopped
+        // consumer can signal failed cleanup even when no job became ready.
         let notified = ready.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        let job = match store.dequeue(&queue_name).await {
+        let mut consumers = consumers.lock().await;
+        let recovered =
+            requeue_stopped_function_consumers(&store, &deliveries, &mut consumers, &queue_name)
+                .await;
+        if let Err(err) = recovered {
+            drop(consumers);
+            drop(permit);
+            tracing::error!(queue = %queue_name, error = %err, "builtin function queue cleanup failed; retrying");
+            tokio::select! {
+                _ = tx.closed() => break,
+                _ = tokio::time::sleep(STORE_ERROR_RETRY_DELAY) => continue,
+            }
+        }
+
+        // Do not dequeue a partially restored newest-first batch from a
+        // different consumer. Release the registry before waiting on readiness.
+        let dequeued = store.dequeue(&queue_name).await;
+        drop(consumers);
+        let job = match dequeued {
             Ok(Some(job)) => job,
             Ok(None) => {
                 drop(permit);
@@ -934,7 +954,7 @@ async fn run_function_queue_consumer(
             delivery_id,
             Arc::new(FunctionDelivery {
                 delivery_id,
-                consumer_id,
+                consumer_id: state.consumer_id,
                 queue_name: queue_name.clone(),
                 job,
                 backoff_ms: envelope.backoff_ms,
@@ -949,17 +969,52 @@ async fn run_function_queue_consumer(
         }
     }
 
-    let consumer_deliveries = {
-        let active = deliveries.lock().await;
-        active
-            .values()
-            .filter(|delivery| delivery.consumer_id == consumer_id)
-            .cloned()
-            .collect()
-    };
-    if let Err(err) = requeue_function_deliveries(&store, &deliveries, consumer_deliveries).await {
+    state.stopped.store(true, Ordering::Release);
+    if let Err(err) = requeue_stopped_function_consumers(
+        &store,
+        &deliveries,
+        &mut *consumers.lock().await,
+        &queue_name,
+    )
+    .await
+    {
         tracing::error!(queue = %queue_name, error = %err, "failed to requeue builtin function queue deliveries after consumer stopped");
     }
+    // Wake replacements parked on an empty queue even if requeue failed.
+    ready.notify_waiters();
+}
+
+/// Caller holds the consumers lock across the whole batch so concurrent
+/// replacements cannot interleave newest-first requeues and reverse FIFO.
+/// Delivery operation locks serialize each requeue with late ACK/NACK; the
+/// deliveries map is never held while acquiring an operation lock.
+async fn requeue_stopped_function_consumers(
+    store: &Arc<dyn QueueStore>,
+    deliveries: &Arc<Mutex<HashMap<u64, Arc<FunctionDelivery>>>>,
+    consumers: &mut Vec<FunctionConsumerHandle>,
+    queue_name: &str,
+) -> anyhow::Result<()> {
+    let stopped_ids = consumers
+        .iter()
+        .filter(|h| {
+            h.queue_name == queue_name
+                && (h.state.stopped.load(Ordering::Acquire) || h.task.is_finished())
+        })
+        .map(|h| h.state.consumer_id)
+        .collect::<HashSet<_>>();
+    if stopped_ids.is_empty() {
+        return Ok(());
+    }
+    let pending = deliveries
+        .lock()
+        .await
+        .values()
+        .filter(|d| stopped_ids.contains(&d.consumer_id))
+        .cloned()
+        .collect();
+    requeue_function_deliveries(store, deliveries, pending).await?;
+    consumers.retain(|h| !stopped_ids.contains(&h.state.consumer_id));
+    Ok(())
 }
 
 async fn requeue_function_deliveries(
@@ -970,7 +1025,6 @@ async fn requeue_function_deliveries(
     // `QueueStore::requeue` pushes to the front. Requeue newest-first to
     // restore the consumer's original delivery order ahead of waiting jobs.
     deliveries.sort_by_key(|delivery| std::cmp::Reverse(delivery.delivery_id));
-    let mut errors = Vec::new();
     for delivery in deliveries {
         let _operation = delivery.operation.lock().await;
         if delivery.settled.load(Ordering::Acquire) {
@@ -982,19 +1036,15 @@ async fn requeue_function_deliveries(
             .await
         {
             tracing::error!(queue = %delivery.queue_name, error = %err, "failed to requeue unacknowledged function queue delivery");
-            errors.push(err.to_string());
-            // The job is still in flight in the store: keep the delivery
-            // unsettled so a later ACK/NACK can still settle it there.
-            continue;
+            // Keep this and all older deliveries pending: requeueing an
+            // older job now would put it behind this job on retry. They stay
+            // ACKable/in flight, including unattempted queues at shutdown.
+            return Err(err);
         }
         delivery.settled.store(true, Ordering::Release);
         active_deliveries.lock().await.remove(&delivery.delivery_id);
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(errors.join("; "))
-    }
+    Ok(())
 }
 
 /// Park an idle consumer until its queue may hold a dequeueable job: the
@@ -1381,6 +1431,220 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn failed_stop_cleanup_is_retried_by_stop() {
+        let dir = std::env::temp_dir().join(format!("queue-stop-retry-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        let mut receiver = adapter.consume_function_queue("turns", 2).await.unwrap();
+        publish_turn(&adapter, "first").await;
+        publish_turn(&adapter, "second").await;
+        receiver.recv().await.unwrap();
+        receiver.recv().await.unwrap();
+        publish_turn(&adapter, "waiting").await;
+
+        let restore = break_journal(&dir);
+        assert!(adapter.stop_function_queue_consumer("turns").await.is_err());
+        assert!(
+            adapter.stop_function_queue_consumer("turns").await.is_err(),
+            "pending cleanup must not report success while the journal is broken"
+        );
+        restore();
+        adapter.stop_function_queue_consumer("turns").await.unwrap();
+        assert_eq!(store.topic_stats("turns").await.depth, 3);
+
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        for receipt in ["first", "second", "waiting"] {
+            let message = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(message.message_id.as_deref(), Some(receipt));
+            adapter
+                .ack_function_queue("turns", message.delivery_id)
+                .await
+                .unwrap();
+        }
+        adapter.shutdown().await;
+        assert_eq!(store.topic_stats("turns").await.depth, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn failed_stop_cleanup_is_retried_by_replacement() {
+        let dir =
+            std::env::temp_dir().join(format!("queue-replacement-retry-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        publish_turn(&adapter, "only").await;
+        let original = receiver.recv().await.unwrap();
+        let restore = break_journal(&dir);
+        assert!(adapter.stop_function_queue_consumer("turns").await.is_err());
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        // Poll the replacement while the journal is still broken. The timeout
+        // advances virtual time through several backoffs, with no wall sleeps.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), replacement.recv())
+                .await
+                .is_err()
+        );
+        assert!(adapter
+            .function_deliveries
+            .lock()
+            .await
+            .contains_key(&original.delivery_id));
+        restore();
+        let message = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
+            .await
+            .expect("replacement must recover orphaned delivery without another stop")
+            .unwrap();
+        assert_eq!(message.message_id, original.message_id);
+        assert_ne!(message.delivery_id, original.delivery_id);
+        adapter
+            .ack_function_queue("turns", message.delivery_id)
+            .await
+            .unwrap();
+        adapter.shutdown().await;
+        assert_eq!(store.topic_stats("turns").await.depth, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn failed_stop_cleanup_isolates_active_consumers_and_other_queues() {
+        let dir =
+            std::env::temp_dir().join(format!("queue-cleanup-isolation-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        adapter
+            .setup_function_queue("other", &function_queue_config())
+            .await
+            .unwrap();
+        let mut other = adapter.consume_function_queue("other", 1).await.unwrap();
+        adapter
+            .publish_to_function_queue(
+                "other",
+                "f",
+                json!({}),
+                "other",
+                3,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let other_message = other.recv().await.unwrap();
+        let mut active = adapter.consume_function_queue("turns", 1).await.unwrap();
+        publish_turn(&adapter, "active").await;
+        let active_message = active.recv().await.unwrap();
+        let mut abandoned = adapter.consume_function_queue("turns", 1).await.unwrap();
+        publish_turn(&adapter, "abandoned").await;
+        let abandoned_message = abandoned.recv().await.unwrap();
+        let restore = break_journal(&dir);
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), replacement.recv())
+                .await
+                .is_err()
+        );
+        drop(abandoned);
+        // Wait for natural rx-drop cleanup to finish, not an arbitrary sleep.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if adapter
+                    .function_consumers
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|h| h.task.is_finished())
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), replacement.recv())
+                .await
+                .is_err()
+        );
+        restore();
+        let recovered = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
+            .await
+            .expect("natural cleanup failure must be recoverable")
+            .unwrap();
+        assert_eq!(recovered.message_id, abandoned_message.message_id);
+        let deliveries = adapter.function_deliveries.lock().await;
+        assert!(deliveries.contains_key(&active_message.delivery_id));
+        assert!(deliveries.contains_key(&other_message.delivery_id));
+        drop(deliveries);
+        assert_eq!(store.topic_stats("other").await.depth, 0);
+        adapter
+            .ack_function_queue("turns", recovered.delivery_id)
+            .await
+            .unwrap();
+        adapter
+            .ack_function_queue("turns", active_message.delivery_id)
+            .await
+            .unwrap();
+        adapter
+            .ack_function_queue("other", other_message.delivery_id)
+            .await
+            .unwrap();
+        adapter.shutdown().await;
+        assert_eq!(store.topic_stats("turns").await.depth, 0);
+        assert_eq!(store.topic_stats("other").await.depth, 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn failed_stop_cleanup_serializes_with_late_ack() {
+        let dir =
+            std::env::temp_dir().join(format!("queue-cleanup-ack-race-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+        publish_turn(&adapter, "only").await;
+        let original = receiver.recv().await.unwrap();
+        let restore = break_journal(&dir);
+        assert!(adapter.stop_function_queue_consumer("turns").await.is_err());
+        restore();
+        let delivery = adapter
+            .function_deliveries
+            .lock()
+            .await
+            .get(&original.delivery_id)
+            .cloned()
+            .unwrap();
+        let operation = delivery.operation.lock().await;
+        // Queue ACK first behind the operation lock, then let replacement
+        // cleanup contend for that same lock. ACK must win without a duplicate.
+        let ack = adapter.ack_function_queue("turns", original.delivery_id);
+        tokio::pin!(ack);
+        assert!(futures::poll!(&mut ack).is_pending());
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        tokio::task::yield_now().await;
+        drop(operation);
+        tokio::time::timeout(Duration::from_secs(5), ack)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), replacement.recv())
+                .await
+                .is_err()
+        );
+        adapter.shutdown().await;
+        assert_eq!(store.topic_stats("turns").await.depth, 0);
+        assert_eq!(store.topic_stats("turns").await.delivered, 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn function_queue_nack_retries_then_moves_to_dlq() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
@@ -1606,14 +1870,18 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct GatedEnqueueStore {
+    struct FaultInjectingStore {
         inner: InMemoryStore,
         entered: Notify,
         release: Notify,
+        requeue_calls: AtomicUsize,
+        // One-based call to reject without mutating the inner store; zero
+        // disables injection. All subsequent calls work normally.
+        reject_requeue_call: usize,
     }
 
     #[async_trait]
-    impl QueueStore for GatedEnqueueStore {
+    impl QueueStore for FaultInjectingStore {
         async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String> {
             if payload == json!("racing") {
                 self.entered.notify_one();
@@ -1641,6 +1909,10 @@ mod tests {
         }
 
         async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
+            let call = self.requeue_calls.fetch_add(1, Ordering::Relaxed) + 1;
+            if call == self.reject_requeue_call {
+                anyhow::bail!("injected single requeue failure at call {call}");
+            }
             self.inner.requeue(topic, job).await
         }
 
@@ -1679,6 +1951,95 @@ mod tests {
         async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
             self.inner.discard_dlq_message(topic, job_id).await
         }
+    }
+
+    // Shared scenario exercises the public stop/retry path with the same
+    // three-delivery batch, varying only the single rejected requeue call.
+    async fn assert_selective_requeue_failure_preserves_fifo(reject_requeue_call: usize) {
+        let store = Arc::new(FaultInjectingStore {
+            reject_requeue_call,
+            ..FaultInjectingStore::default()
+        });
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        adapter
+            .setup_function_queue("turns", &function_queue_config())
+            .await
+            .unwrap();
+        let mut receiver = adapter.consume_function_queue("turns", 3).await.unwrap();
+        for receipt in ["first", "second", "third"] {
+            adapter
+                .publish_to_function_queue(
+                    "turns",
+                    "f",
+                    json!({}),
+                    receipt,
+                    3,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                receiver.recv().await.unwrap().message_id.as_deref(),
+                Some(receipt)
+            );
+        }
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "f",
+                json!({}),
+                "waiting",
+                3,
+                0,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(adapter.stop_function_queue_consumer("turns").await.is_err());
+        assert_eq!(
+            store.requeue_calls.load(Ordering::Relaxed),
+            reject_requeue_call
+        );
+        assert_eq!(
+            adapter.function_deliveries.lock().await.len(),
+            4 - reject_requeue_call
+        );
+        adapter.stop_function_queue_consumer("turns").await.unwrap();
+        let mut replacement = adapter.consume_function_queue("turns", 1).await.unwrap();
+        let mut actual = Vec::new();
+        for _ in 0..4 {
+            let message = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            actual.push(message.message_id.unwrap());
+            adapter
+                .ack_function_queue("turns", message.delivery_id)
+                .await
+                .unwrap();
+        }
+        assert_eq!(actual, ["first", "second", "third", "waiting"]);
+        assert_eq!(store.requeue_calls.load(Ordering::Relaxed), 4);
+        adapter.shutdown().await;
+        assert_eq!(store.topic_stats("turns").await.depth, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn selective_requeue_failure_at_batch_start_preserves_fifo() {
+        assert_selective_requeue_failure_preserves_fifo(1).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn selective_requeue_failure_in_batch_middle_preserves_fifo() {
+        assert_selective_requeue_failure_preserves_fifo(2).await;
     }
 
     /// Tracks the maximum number of concurrent in-flight `call`s observed.
@@ -2659,7 +3020,7 @@ mod tests {
     // its own topic only, never the whole worker.
     #[tokio::test]
     async fn publish_blocked_on_store_io_does_not_block_other_topics() {
-        let store = Arc::new(GatedEnqueueStore::default());
+        let store = Arc::new(FaultInjectingStore::default());
         let invoker = Arc::new(FakeInvoker::default());
         let adapter = Arc::new(BuiltinAdapter::new(store.clone(), invoker.clone()));
 
