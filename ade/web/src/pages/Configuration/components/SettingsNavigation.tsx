@@ -174,7 +174,7 @@ export function SettingsNavigation({
   return (
     <aside
       className={cn(
-        'flex min-h-0 flex-col bg-muted',
+        'flex min-h-0 flex-col bg-sidebar',
         narrow
           ? 'min-w-0 flex-1'
           : 'w-[250px] shrink-0 border-r border-border ',

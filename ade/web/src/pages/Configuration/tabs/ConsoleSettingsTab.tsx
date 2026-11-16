@@ -43,6 +43,7 @@ import {
   saveNewChatMode,
   useNewChatMode,
 } from '@/lib/new-chat-mode'
+import { requestOnboardingWizard } from '@/lib/onboarding/open'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 import { type SendKey, saveSendKey, useSendKey } from '@/lib/send-key'
 import {
@@ -108,6 +109,9 @@ const ROW_SELECT_TRIGGER =
 interface ConsoleSettingsTabProps {
   theme: ThemePreference
   onThemeChange: (next: ThemePreference) => void
+  /** Close settings: "Run setup" closes them before the wizard opens, so
+   *  the chat or tour it starts is not hidden behind this page. */
+  onClose?: () => void
 }
 
 /**
@@ -119,6 +123,7 @@ interface ConsoleSettingsTabProps {
 export function ConsoleSettingsTab({
   theme,
   onThemeChange,
+  onClose,
 }: ConsoleSettingsTabProps) {
   // The permissions section only applies when the optional approval-gate worker
   // is connected (it owns `approval::*` + the config entry). Absent → hide the
@@ -543,6 +548,22 @@ export function ConsoleSettingsTab({
         description="Manage model credentials, endpoints, and provider-specific settings."
       >
         <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.setup}
+            label="Setup"
+            description="Run the setup wizard again: connect a provider, add Judge, or take the learn-iii tour."
+            action={
+              <Button
+                variant="outline"
+                onClick={() => {
+                  onClose?.()
+                  requestOnboardingWizard()
+                }}
+              >
+                Run setup
+              </Button>
+            }
+          />
           <SettingsRow
             id={GENERAL_ANCHOR.modelProviders}
             label="Model providers"

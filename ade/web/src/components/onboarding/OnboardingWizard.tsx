@@ -434,7 +434,11 @@ export function OnboardingWizardHost() {
   const startTour = useCallback(async () => {
     setTour({ kind: 'preparing' })
     try {
-      await prepareTour()
+      // Adding the tour's worker changes the project: the step says which
+      // worker, and how far the add has got, while it runs.
+      await prepareTour((progress) =>
+        setTour({ kind: 'preparing', ...progress }),
+      )
     } catch (error) {
       setTour({ kind: 'failed', error: readableError(error) })
       return

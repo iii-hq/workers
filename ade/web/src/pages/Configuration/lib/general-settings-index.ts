@@ -22,6 +22,7 @@ export const GENERAL_ANCHOR = {
   newChat: 'settings-general-new-chat',
   tabLimit: 'settings-general-tab-limit',
   providers: 'settings-general-providers',
+  setup: 'settings-general-setup',
   modelProviders: 'settings-general-model-providers',
   filesystem: 'settings-general-filesystem',
   permanentRoots: 'settings-general-permanent-roots',
@@ -159,6 +160,24 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
     label: 'Providers',
     trail: [],
     anchor: A.providers,
+  },
+  {
+    key: 'setup',
+    label: 'Setup',
+    trail: ['Providers'],
+    description:
+      'Run the setup wizard again: connect a provider, add Judge, or take the learn-iii tour.',
+    keywords: [
+      'setup',
+      'set up',
+      'wizard',
+      'onboarding',
+      'tour',
+      'learn-iii',
+      'getting started',
+      'welcome',
+    ],
+    anchor: A.setup,
   },
   {
     key: 'model-providers',

@@ -600,10 +600,12 @@ function WorkersPage({
               variant="outline"
               size="default"
               className="wk-add-worker wk-press font-inter"
+              // Named here: in a narrow pane the label folds to the +.
+              aria-label="Add worker"
               onClick={() => setAdding(true)}
             >
               <Plus data-icon="inline-start" />
-              Add worker
+              <span className="wk-add-worker-label">Add worker</span>
             </Button>
           </>
         }

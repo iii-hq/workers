@@ -940,7 +940,11 @@ export function CommandPalette({
                       {/* The right-hand tag is the first thing to give up when
  the row has to fit a phone. Holding the pick key swaps it for
  the row's number. */}
-                      <ItemActions className="shrink-0">
+                      {/* Capped at 40% of the row (a percentage of the row,
+ not of this slot's own content width, which made the label's own
+ 40% cap circular and cut "Chat" to "C…"). A chord never shrinks;
+ a long label truncates. */}
+                      <ItemActions className="min-w-0 max-w-[40%] shrink-0">
                         {digit !== null ? (
                           <Kbd
                             className={`${CAP} hidden shrink-0 text-foreground sm:inline-flex `}
@@ -956,7 +960,7 @@ export function CommandPalette({
                           />
                         ) : entry.meta ? (
                           <span
-                            className={`hidden max-w-[40%] shrink-0 truncate text-ink-ghost tabular-nums sm:block ${
+                            className={`hidden min-w-0 truncate text-ink-ghost tabular-nums sm:block ${
                               entry.metaMono
                                 ? 'font-geist-mono text-xs tracking-[-0.01em]'
                                 : 'text-xs'

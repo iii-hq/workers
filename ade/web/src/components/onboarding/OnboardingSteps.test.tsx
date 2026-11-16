@@ -412,12 +412,47 @@ describe('ExploreStep', () => {
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
-    // A radio group with nothing picked yet; the footer's button is then
-    // Finish, and nothing on the screen is disabled.
+    // A single-choice group with nothing picked yet; the footer's button
+    // then says what it does — Close setup — and nothing is disabled.
     expect(html.match(/role="radio"/g)).toHaveLength(3)
     expect(html.match(/aria-checked="false"/g)).toHaveLength(3)
-    expect(html).toContain('Finish')
+    expect(html).toContain('Close setup')
+    expect(html).not.toContain('Finish')
     expect(html).not.toContain('disabled=""')
+  })
+
+  // QA 2026-11-16 F6: the picks drew round radio dots while Models and
+  // Judge use checkboxes. Every choice list is a checkbox (single choice
+  // ticks one).
+  it('draws each pick as a checkbox, never a radio dot', () => {
+    const html = explore(true)
+    expect(html.match(/data-pick-mark="checkbox"/g)).toHaveLength(3)
+    expect(html).not.toMatch(/data-pick-mark="[^"]*"[^>]*rounded-full/)
+  })
+
+  // QA 2026-11-16 F17: choosing the tour added registry workers while the
+  // wizard said only "Preparing the tour…".
+  it('says which worker it adds while the tour gets ready', () => {
+    const html = renderToStaticMarkup(
+      <ExploreStep
+        connected
+        prompts={PROMPTS}
+        onPrompt={noop}
+        tour={{
+          kind: 'preparing',
+          adding: 'onboarding',
+          note: 'Adding to worker-compose.yaml',
+        }}
+        onTour={noop}
+        onOwn={noop}
+        onFinish={noop}
+        onBack={noop}
+      />,
+    )
+    expect(html).toContain('role="status"')
+    expect(html).toContain('Adding the onboarding worker from the registry')
+    expect(html).toContain('Adding to worker-compose.yaml')
+    expect(html).toContain('Preparing the tour')
   })
 
   it('needs a model for the examples and the tour, not for exploring alone', () => {

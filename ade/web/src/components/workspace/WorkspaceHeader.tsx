@@ -4,6 +4,7 @@ import { KeyCombo } from '@/components/ui/KeyCombo'
 import { ThemeSwitch } from '@/components/ui/ThemeSwitch'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
+import { TabLimitNotice } from '@/components/workspace/TabLimitNotice'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import type { ThemePreference } from '@/hooks/use-theme'
@@ -252,6 +253,7 @@ export function WorkspaceHeader({
           <ThemeSwitch value={theme} onChange={onThemeChange} />
         </div>
       </header>
+      <TabLimitNotice limit={workspace.tabLimit} />
     </>
   )
 }

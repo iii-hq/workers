@@ -8,7 +8,6 @@ import {
   useState,
 } from 'react'
 import { Button } from '@/components/shadcn/button'
-import { Hint } from '@/components/ui/Hint'
 import { Kbd } from '@/components/ui/Kbd'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
@@ -18,10 +17,14 @@ import { filterScreenOptions } from './empty-pane-search'
 import type { ScreenOption } from './use-screen-options'
 import '@/components/chat/conversation-design.css'
 import './empty-pane.css'
+import { WORKSPACE_KEYS_WHILE_SEARCHING } from '@/lib/workspace-keys'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
+
+/** The workspace's own chords a field hands back (`lib/workspace-keys`). */
+export { WORKSPACE_KEYS_WHILE_SEARCHING }
 
 const DESKTOP_PANE_SEARCH_QUERY = `(min-width: 640px) and ${DESKTOP_POINTER_QUERY}`
 
@@ -164,6 +167,9 @@ export function EmptyPane({
   }
 
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A modified key is a chord for the workspace (⌃⇧← steps workspaces),
+    // not a move through this list: leave it to the console's keys.
+    if (event.ctrlKey || event.metaKey || event.altKey) return
     switch (event.key) {
       case 'ArrowDown':
       case 'ArrowUp':
@@ -202,30 +208,34 @@ export function EmptyPane({
         onAttach(activeOption.value)
         break
       case 'Escape':
-        if (!query) return
+        // A query clears first. On an empty launcher Escape leaves it: the
+        // empty panel closes when the tab can drop it, else the search lets
+        // go of the caret so the workspace keys answer again.
         event.preventDefault()
-        updateQuery('')
+        if (query) updateQuery('')
+        else if (onRemove) onRemove()
+        else searchRef.current?.blur()
         break
     }
   }
 
   return (
     <div className="conversation-surface @container relative flex min-h-0 flex-1 overflow-hidden">
+      {/* Named and drawn like every other pane's ✕ (PageChrome): "close
+ panel", with no tooltip. */}
       {onRemove ? (
-        <Hint label="Remove this panel" side="left">
-          <button
-            type="button"
-            onClick={onRemove}
-            aria-label="remove this panel"
-            className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
-          >
-            <span
-              aria-hidden
-              className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            />
-            <X aria-hidden className="size-4 shrink-0" />
-          </button>
-        </Hint>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="close panel"
+          className="absolute right-2 top-2 z-10 flex size-7 items-center justify-center rounded-sm stroke-ink-ghost hover:bg-surface-hover hover:stroke-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+        >
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+          />
+          <X aria-hidden className="size-4 shrink-0" />
+        </button>
       ) : null}
 
       <div className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 @2xl:px-6">
@@ -254,9 +264,11 @@ export function EmptyPane({
               value={query}
               onChange={(event) => updateQuery(event.currentTarget.value)}
               onKeyDown={onSearchKeyDown}
-              // This box opens focused, so without these the workspace keys
-              // spell themselves into the query instead of moving anywhere.
-              data-keybindings-allow="workspace.selectByIndex panel.split panel.splitLeft"
+              // This box opens focused (a new workspace lands here), so
+              // without these the workspace keys spell themselves into the
+              // query, or do nothing: ⌃T, ⌃W and ⌃⇧←/→ right after ⌃T were
+              // lost. None of them types a character a page search needs.
+              data-keybindings-allow={WORKSPACE_KEYS_WHILE_SEARCHING}
               placeholder="Search pages"
               aria-label="search pages"
               autoComplete="off"

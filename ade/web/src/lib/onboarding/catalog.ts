@@ -250,8 +250,8 @@ export const JUDGE_USES: readonly {
   {
     id: 'repair',
     where: 'Argument repair',
-    short: 'Fixes a broken tool call before it fails',
-    what: 'fixes a malformed tool call before it fails, without another round trip to the model',
+    short: 'Fixes a broken function call before it fails',
+    what: 'fixes a malformed function call before it fails, without another round trip to the model',
   },
   {
     id: 'browser',

@@ -1157,12 +1157,22 @@
 }
 
 @container (max-width: 560px) {
-  .wk-header {
-    min-height: 56px;
+  /* A narrow pane keeps the header's height and the button's own 32px:
+     "Add worker" folds to its + (named by its aria-label) instead of
+     growing to a 48px block that outgrew the bar and clipped its label. */
+  .wk-add-worker {
+    width: 2rem;
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0;
+    flex-shrink: 0;
   }
 
-  .wk-back,
-  .wk-add-worker {
+  .wk-add-worker-label {
+    display: none;
+  }
+
+  .wk-back {
     min-width: 48px;
     min-height: 48px;
     flex-shrink: 0;
@@ -1395,6 +1405,21 @@
 
 .wk-previous-settings button {
   min-height: 48px;
+}
+
+/* viewport: phone chrome — 48px touch targets on a 56px bar below the
+   console's 640px phone breakpoint. A narrow pane on a desktop keeps the
+   bar's 32px controls (the container rule above). */
+@media (max-width: 640px) {
+  .wk-header {
+    min-height: 56px;
+  }
+
+  .wk-add-worker {
+    width: 48px;
+    min-width: 48px;
+    height: 48px;
+  }
 }
 
 /* ── components ──────────────────────────────────────────────────────────

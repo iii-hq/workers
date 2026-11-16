@@ -191,7 +191,7 @@ export function JudgeStep({
         </ul>
         <p className="border-t border-border px-3.5 py-2 text-body leading-5 text-muted-foreground">
           Without Judge, function search falls back to keyword matching and a
-          broken tool call goes back to the main model.
+          broken function call goes back to the main model.
         </p>
       </section>
 

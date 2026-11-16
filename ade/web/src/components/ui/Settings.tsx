@@ -197,6 +197,16 @@ const settingsFieldWidths: Record<SettingsFieldControlSize, string> = {
   full: 'w-full',
 }
 
+/** Label and guidance read at the row recipe's size, not their own. */
+const INHERIT_TYPE = 'text-[length:inherit] leading-[inherit]'
+
+/** The control slot: a switch or checkbox is never stretched to its width. */
+// Written out whole: Tailwind finds class names by reading the source.
+const FIELD_CONTROL =
+  'min-w-0 [&>*]:max-w-full [&>*:not([role=switch],input[type=checkbox])]:w-full'
+const FITS_INTRINSIC_CONTROL =
+  'has-[>[role=switch],>input[type=checkbox]]:w-auto'
+
 /**
  * A labelled SettingsRow that owns IDs, validation associations, deep-link
  * metadata, and standard control widths. The render prop works for Input,
@@ -236,10 +246,18 @@ export const SettingsField = React.forwardRef<
     return (
       <SettingsRow
         ref={ref}
-        label={<FieldLabel htmlFor={controlId}>{label}</FieldLabel>}
+        // The row recipe owns the type scale (the settings page reads it at
+        // 16/14px, worker pages at their own): the field's label and
+        // guidance inherit it rather than set their own sizes, so a worker
+        // form built on SettingsField reads like every other settings row.
+        label={
+          <FieldLabel htmlFor={controlId} className={INHERIT_TYPE}>
+            {label}
+          </FieldLabel>
+        }
         description={
           hasDescription ? (
-            <FieldDescription id={descriptionId} className="text-xs">
+            <FieldDescription id={descriptionId} className={INHERIT_TYPE}>
               {description}
             </FieldDescription>
           ) : undefined
@@ -260,8 +278,12 @@ export const SettingsField = React.forwardRef<
           <div
             data-settings-field-control
             className={cn(
-              'min-w-0 [&>*]:max-w-full [&>*]:w-full',
+              // A switch or checkbox keeps its own size at every width and
+              // whatever `controlSize` says: stretched, it is a long pill
+              // with the knob stranded at one end.
+              FIELD_CONTROL,
               settingsFieldWidths[controlSize],
+              FITS_INTRINSIC_CONTROL,
             )}
           >
             {renderControl({

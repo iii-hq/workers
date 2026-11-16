@@ -13,13 +13,17 @@ export interface StepperStep {
 /**
  * Setup's progress: a numbered dot per step joined by a hairline that fills
  * as steps complete. Finished steps carry a check and, while setup is still
- * in progress, go back to that step on click; the current one is marked
- * `aria-current="step"`; the ones ahead are plain text, so the tab order
+ * in progress, go back to that step on click; the current one — the last
+ * included — is marked current (`aria-current="step"`, its number in a
+ * ringed dot), never done; the ones ahead are plain text, so the tab order
  * only ever stops on something that does something.
  *
  * `vertical` is the dialog's left rail, with a line under each title.
- * `horizontal` is the narrow fallback, one row, where labels collapse to the
- * current step's alone below the `@md` container width.
+ * `horizontal` is the narrow fallback, one row of dots. Below the `@md`
+ * container width the inline titles fold away and the current step is named
+ * on a line under the dots ("Step 2 of 5 · Models"): an inline title that
+ * came and went with the step moved every dot along the row, and on a phone
+ * cut "Judge" to "J…".
  */
 export function Stepper({
   steps,
@@ -39,20 +43,21 @@ export function Stepper({
 }) {
   const vertical = orientation === 'vertical'
   const index = steps.findIndex((step) => step.id === current)
-  return (
+  const list = (
     <ol
       aria-label="Setup steps"
       className={cn(
         'flex',
         vertical ? 'flex-col' : 'flex-row items-center',
-        className,
+        vertical && className,
       )}
     >
       {steps.map((step, position) => {
         const isCurrent = position === index
         const last = position === steps.length - 1
-        // The last step is the finish line: arriving there completes it.
-        const done = position < index || (isCurrent && last)
+        // Done means behind the current step; the current one, the last
+        // included, is current until setup moves past it.
+        const done = position < index
         const clickable = reachable.has(step.id) && !isCurrent
         const content = (
           <>
@@ -95,8 +100,9 @@ export function Stepper({
                   ? 'mt-0.5 flex gap-px'
                   : cn(
                       'whitespace-nowrap',
-                      // Only visually hidden: the label names the step's button.
-                      isCurrent ? 'flex' : 'sr-only @md:not-sr-only @md:flex',
+                      // Only visually hidden: the label names the step's
+                      // button. Every step's alike, so no dot moves.
+                      'sr-only @md:not-sr-only @md:flex',
                     ),
               )}
             >
@@ -201,5 +207,23 @@ export function Stepper({
         )
       })}
     </ol>
+  )
+  if (vertical) return list
+  const here = steps[index]
+  return (
+    <div className={cn('flex flex-col gap-1', className)}>
+      {list}
+      {here ? (
+        // The steps are named in the list for screen readers already.
+        <p
+          aria-hidden
+          data-stepper-caption
+          className="truncate text-sm leading-5 text-muted-foreground @md:hidden"
+        >
+          Step {index + 1} of {steps.length} ·{' '}
+          <span className="font-medium text-ink">{here.title}</span>
+        </p>
+      ) : null}
+    </div>
   )
 }

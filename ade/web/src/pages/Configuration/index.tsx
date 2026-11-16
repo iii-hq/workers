@@ -432,6 +432,7 @@ export function Configuration({
                   <ConsoleSettingsTab
                     theme={theme}
                     onThemeChange={onThemeChange}
+                    onClose={onClose}
                   />
                 </div>
               ) : settingsLoading ? (

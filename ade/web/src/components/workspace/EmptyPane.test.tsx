@@ -42,7 +42,9 @@ describe('EmptyPane', () => {
     )
 
     expect(markup.match(/role="option"/g)).toHaveLength(50)
-    expect(markup).toContain('aria-label="remove this panel"')
+    // QA 2026-11-16 F16: named like every other pane's close button.
+    expect(markup).toContain('aria-label="close panel"')
+    expect(markup).not.toContain('remove this panel')
     expect(markup).toContain('overflow-y-auto')
     expect(markup).not.toContain('max-h-72')
     expect(markup).not.toContain('autofocus')

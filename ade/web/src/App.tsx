@@ -80,6 +80,7 @@ import {
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { onShortcutsDialogRequest } from '@/lib/shortcuts-request'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
+import { createTabOrNotice } from '@/lib/tab-limit'
 import { trackScreens } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import {
@@ -483,7 +484,8 @@ export function App({
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
     'page.traces': () => openWorkspaceScreen('traces'),
-    'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    // At the limit ⌃T says so instead of doing nothing.
+    'workspace.create': () => createTabOrNotice(workspaceRef.current),
     'workspace.next': () => workspaceRef.current.activateAdjacent(1),
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
     'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),

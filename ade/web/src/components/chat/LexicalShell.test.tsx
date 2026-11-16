@@ -24,6 +24,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FunctionEntry } from '@/lib/functions'
+import { allowsWhileTyping } from '@/hooks/use-keybindings'
 import { saveSendKey } from '@/lib/send-key'
 import { LexicalShell } from './LexicalShell'
 import { $exportComposerMarkdown } from './lexical/composer-markdown'
@@ -165,6 +166,20 @@ function markdown(editor: LexicalEditor): string {
 // Enter sends from anywhere, Shift+Enter always breaks the line, and Mod+Enter
 // (⌘↵ on a Mac — the suite's default, see the top of the file — Ctrl+Enter
 // elsewhere) sends too.
+describe('workspace chords through the composer', () => {
+  it('hands the workspace keys back while it holds the caret, and no others', async () => {
+    const { editable } = await renderComposer()
+    for (const action of [
+      'workspace.create',
+      'workspace.close',
+      'workspace.next',
+    ])
+      expect(allowsWhileTyping(editable, action)).toBe(true)
+    // Keys that spell text stay the composer's.
+    expect(allowsWhileTyping(editable, 'palette.open')).toBe(false)
+  })
+})
+
 describe('composer keyboard submission', () => {
   it('Enter submits once without inserting a newline', async () => {
     const { editor, editable, onSubmit } = await renderComposer()

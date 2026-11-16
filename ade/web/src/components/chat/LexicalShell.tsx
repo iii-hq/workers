@@ -46,6 +46,7 @@ import {
   useRef,
 } from 'react'
 import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
+import { WORKSPACE_KEYS_WHILE_SEARCHING } from '@/lib/workspace-keys'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
@@ -840,6 +841,9 @@ export function LexicalShell({
                 ref={editorRef}
                 aria-label="message composer"
                 aria-placeholder={placeholder}
+                // The workspace's chords pass through the caret (a tab or
+                // pane switch from the composer, as from the page search).
+                data-keybindings-allow={WORKSPACE_KEYS_WHILE_SEARCHING}
                 placeholder={
                   <div className="composer-placeholder px-3 py-2">
                     {placeholder}

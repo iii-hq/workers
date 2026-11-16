@@ -8,7 +8,12 @@ const harness = vi.hoisted(() => ({
     command: { run: () => void }
   }[],
   listeners: new Set<() => void>(),
-  add: vi.fn(async () => ({ note: 'learn-iii running' })),
+  add: vi.fn(
+    async (
+      _workers: readonly string[],
+      _report: (progress: { note?: string }) => void,
+    ) => ({ note: 'learn-iii running' }),
+  ),
   wait: vi.fn(async () => true),
   panel: vi.fn(),
 }))
@@ -59,6 +64,25 @@ describe('prepareTour', () => {
     expect(harness.wait).toHaveBeenCalledWith('learn-iii', TOUR_PAGE_TIMEOUT_MS)
     registerCommand()
     await expect(ready).resolves.toBeUndefined()
+  })
+
+  // QA 2026-11-16 F17: the tour added registry workers while the wizard
+  // only said "Preparing the tour…". Each move is reported for it to show.
+  it('reports the worker it adds and the add’s progress', async () => {
+    harness.add.mockImplementationOnce(async (_workers, report) => {
+      report({ note: 'Adding to worker-compose.yaml' })
+      return { note: 'onboarding running' }
+    })
+    const seen: unknown[] = []
+    const ready = prepareTour((progress) => seen.push(progress))
+    await vi.waitFor(() => expect(harness.wait).toHaveBeenCalled())
+    registerCommand()
+    await ready
+    expect(seen).toEqual([
+      { adding: 'onboarding' },
+      { adding: 'onboarding', note: 'Adding to worker-compose.yaml' },
+      {},
+    ])
   })
 
   it('adds nothing when the tour command is already there', async () => {
