@@ -12,7 +12,8 @@ observer created before the harness is up stays `pending` and becomes active
 when the harness registers its function, and again after a harness restart.
 `workflow::start` is registered only after the stamp-reply observer is active,
 or after 10 s while the harness is absent, so an agent's call cannot reach it
-unstamped while the worker boots.
+unstamped while the worker boots. If the harness refuses the stamp-reply hook,
+`workflow::start` stays unregistered until a worker restart after the fix.
 The last — `harness::hook::on-pre-generate` → inject-guidance — follows the
 `inject_guidance` knob in the `workflow` configuration entry (ON by default):
 turning it off shrinks prompts (the harness's `# Granted functions` catalog
@@ -398,8 +399,11 @@ model. Callers compute idle time from `last_generate_at`.
   warning and counts `workflow.runs.ended_unobserved` for a run with a stamped
   caller, no `notify` and no observer of that run (an every-run observer does
   not count). A run that ends before its
-  caller's observe lands counts too: unobserved minus `workflow.runs.replayed`
-  is the number of stalled callers.
+  caller's observe lands counts too, so the counter is an upper bound on
+  stalled callers. Do not subtract `workflow.runs.replayed`: it counts every
+  replay (a second observer, or one re-listed after a restart). To find the
+  runs really stalled, match the warning's `run_id` against the `replayed the
+  run's end` log lines.
 
 ---
 

@@ -54,7 +54,7 @@ fn three_node_def() -> WorkflowDef {
             },
             depends_on: vec!["plan".to_string()],
             fanout: Some(FanoutSpec {
-                over: "node:plan.result.docs".to_string(),
+                over: "node:plan.docs".to_string(),
                 items: None,
             }),
             ..Default::default()
@@ -661,7 +661,7 @@ fn fanout_empty_def() -> WorkflowDef {
             },
             depends_on: vec!["a".to_string()],
             fanout: Some(FanoutSpec {
-                over: "node:a.result.items".to_string(),
+                over: "node:a.items".to_string(),
                 items: None,
             }),
             ..Default::default()

@@ -119,7 +119,12 @@ fn with_submit(policy: Option<Value>, json_node: bool) -> Option<Value> {
     if !json_node {
         return Some(policy);
     }
-    if let Some(allow) = policy.get_mut("allow").and_then(Value::as_array_mut) {
+    // A deny-only policy allows nothing, like `[]`, so it gets an allow-list too.
+    if let Some(allow) = policy
+        .as_object_mut()
+        .map(|obj| obj.entry("allow").or_insert_with(|| json!([])))
+        .and_then(Value::as_array_mut)
+    {
         let covered = allow
             .iter()
             .filter_map(Value::as_str)
@@ -391,6 +396,17 @@ pub(crate) fn mark_running(cp: &mut NodeCheckpoint, turn_id: Option<String>, now
     cp.result_error = None;
 }
 
+/// A probe found the node's session live, so its timeout counts from this
+/// attempt's latest saved send, or from now when none was saved (the first send
+/// was lost to a crash).
+pub(crate) fn adopt(cp: &mut NodeCheckpoint, turn_id: Option<String>, now: i64) {
+    // shortcut: sent_at is saved only after the send, so a crash right after a
+    // probe's re-send leaves the earlier send's time and the timeout can start
+    // early; save sent_at before the send if that window matters.
+    let at = cp.sent_at.unwrap_or(now);
+    mark_running(cp, turn_id, at);
+}
+
 /// A node that failed in this tick's Fire pass, or a probe that adopted a session
 /// (its turn may be over and its wake already spent), needs a follow-up tick so the
 /// run advances now instead of waiting for the sweep. Pure.
@@ -453,7 +469,7 @@ pub(crate) async fn fire_node(
             Ok(resp) if !resp.is_null() => {
                 let turn_id = resp["turn_id"].as_str().map(str::to_string);
                 if let Some(cp) = record.nodes.get_mut(node_uid) {
-                    mark_running(cp, turn_id, deps.now_ms());
+                    adopt(cp, turn_id, deps.now_ms());
                 }
                 return Ok(Fired::Running);
             }
@@ -485,6 +501,9 @@ pub(crate) async fn fire_node(
     }
 
     let send_payload = node_send_payload(node, def, record, node_uid, &sid, opening);
+    if let Some(cp) = record.nodes.get_mut(node_uid) {
+        cp.sent_at = Some(deps.now_ms());
+    }
 
     let resp = match deps
         .iii
@@ -681,6 +700,7 @@ fn next_step(record_step: u64, req_step: u64) -> u64 {
 /// probes instead of re-sending. A send failure stays in the checkpoint (see
 /// `timeout::apply_send_failure`); after the first transient one the remaining
 /// nodes are marked without calling the harness, bounding time under the run lock.
+/// A node skipped that way fails out only on its own attempt (`timeout::defer_send`).
 async fn fire_ready(
     deps: &Deps,
     def: &WorkflowDef,
@@ -716,14 +736,14 @@ async fn fire_ready(
     let mut transient: Option<String> = None;
     let mut expired = Vec::new();
     for uid in uids {
-        let fired = match &transient {
-            Some(err) => Fired::SendError(err.clone()),
-            None => {
-                let probe = probes.contains(uid.as_str());
-                fire_node(deps, record, def, uid, results, probe).await?
+        if let Some(err) = &transient {
+            if let Some(cp) = record.nodes.get_mut(uid) {
+                crate::timeout::defer_send(cp, err, deps.now_ms());
             }
-        };
-        let Fired::SendError(err) = fired else {
+            continue;
+        }
+        let probe = probes.contains(uid.as_str());
+        let Fired::SendError(err) = fire_node(deps, record, def, uid, results, probe).await? else {
             continue;
         };
         let Some(cp) = record.nodes.get_mut(uid) else {
@@ -875,7 +895,7 @@ mod tests {
                 },
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
-                    over: "node:plan.result.docs".to_string(),
+                    over: "node:plan.docs".to_string(),
                     items: None,
                 }),
                 ..Default::default()
@@ -1204,6 +1224,10 @@ mod tests {
         let all = Some(json!({"allow": ["*"], "deny": ["workflow::*"]}));
         assert_eq!(with_submit(all.clone(), true), all);
         assert_eq!(with_submit(None, true), None);
+        assert_eq!(
+            with_submit(Some(json!({"deny": ["web::*"]})), true),
+            Some(json!({"deny": ["web::*"], "allow": ["workflow-result::submit"]}))
+        );
     }
 
     #[test]
@@ -1419,6 +1443,19 @@ mod tests {
         assert_eq!(cp.pending_at, Some(9));
         assert_eq!(cp.send_failed_at, None);
         assert_eq!(cp.result_error, None);
+    }
+
+    #[test]
+    fn an_adopted_session_times_from_its_latest_send() {
+        let mut cp = NodeCheckpoint {
+            sent_at: Some(3),
+            ..Default::default()
+        };
+        adopt(&mut cp, None, 9);
+        assert_eq!((cp.state, cp.pending_at), (NodeState::Running, Some(3)));
+        let mut cp = NodeCheckpoint::default();
+        adopt(&mut cp, None, 9);
+        assert_eq!(cp.pending_at, Some(9));
     }
 
     // Covers the predicate only; live smoke 1 exercises fire_ready's follow-up enqueue.

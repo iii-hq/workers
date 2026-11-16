@@ -128,8 +128,7 @@ pub async fn emit_run_completed(events: &dyn EventDeliverer, record: &WorkflowRu
         ..Call::default()
     };
     if let Some(caller) = stalled_caller(record).filter(|_| !events.run_observed(&record.run_id)) {
-        // Also counts a run that ends before its caller's observe lands:
-        // read it against the replay counter.
+        // Also counts a run that ends before its caller's observe lands.
         tracing::warn!(
             run_id = %record.run_id,
             caller_session_id = caller,

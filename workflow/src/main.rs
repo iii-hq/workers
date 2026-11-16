@@ -13,7 +13,8 @@
 //!      hook::on-pre-call, plus hook::on-pre-generate per `inject_guidance` (each
 //!      stays pending until the harness registers its function). Register
 //!      `workflow::start` once the stamp-reply observer is active, or after a
-//!      bounded wait while the harness is absent.
+//!      bounded wait while the harness is absent; never while the harness
+//!      refuses the hook.
 //!   9. Resume-scan: re-enqueue a tick for every non-terminal run (crash recovery).
 //!  10. LAST: observe configuration changes so the handler closes over the
 //!      fully-built snapshot cell + the sweep handle.
@@ -149,18 +150,26 @@ async fn main() -> Result<()> {
     configuration::apply_guidance(&iii, &handles, cfg.inject_guidance);
     // An agent call that reaches workflow::start before the stamp hook is bound
     // runs unstamped, with its own caller_fs_root. Bounded: the observer stays
-    // pending while the harness is absent, and then no agent can call.
-    match tokio::time::timeout(STAMP_READY_WAIT, stamp.ready()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::error!(
-            error = %e,
-            "workflow::stamp-reply hook refused; agent workflow::start calls run unstamped"
-        ),
-        Err(_) => {
-            tracing::warn!("workflow::stamp-reply hook still pending; registering workflow::start")
+    // pending while the harness is absent, and then no agent can call. A refusal
+    // is final (the harness rejected the hook's args), so start stays unregistered.
+    let refused = match tokio::time::timeout(STAMP_READY_WAIT, stamp.ready()).await {
+        Ok(Ok(())) => false,
+        Ok(Err(e)) => {
+            tracing::error!(
+                error = %e,
+                "workflow::stamp-reply hook refused; workflow::start stays unregistered until \
+                 the harness accepts the hook and the worker restarts"
+            );
+            true
         }
+        Err(_) => {
+            tracing::warn!("workflow::stamp-reply hook still pending; registering workflow::start");
+            false
+        }
+    };
+    if !refused {
+        functions::register_start(&iii, &deps);
     }
-    functions::register_start(&iii, &deps);
 
     // Crash recovery: a parked AwaitingNodes run has no enqueued tick.
     // Re-drive each non-terminal run so it can make progress.

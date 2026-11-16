@@ -150,15 +150,14 @@ fn json_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Resolve an `over` path like `"node:plan.result.docs"` against a prefetched results map
+/// Resolve an `over` path like `"node:plan.docs"` against a prefetched results map
 /// (node_uid → that node's result Value).
 ///
 /// Protocol:
 /// 1. Strip the `"node:"` prefix; everything that follows is a dotted path.
 /// 2. The first segment is the node_id — look it up in `results`.
-/// 3. Skip a literal `"result"` segment (the next one after the node_id).
-/// 4. Walk the remaining segments into the JSON tree.
-/// 5. Return the value only if it is an array (`Value::Array`).
+/// 3. Walk the remaining segments into the JSON tree.
+/// 4. Return the value only if it is an array (`Value::Array`).
 ///
 /// On failure returns `Err(<reason>)` that NAMES the actual problem (missing node,
 /// missing key with the keys that ARE present, a non-object on the way down, or a
@@ -180,20 +179,11 @@ pub fn resolve_over_path(
         .clone();
 
     let rest = if parts.len() > 1 { parts[1] } else { "" };
-    let segments: Vec<&str> = rest.split('.').filter(|s| !s.is_empty()).collect();
-
-    // Skip the literal "result" segment (first of the remaining segments).
-    let walk_segments: &[&str] = if segments.first() == Some(&"result") {
-        &segments[1..]
-    } else {
-        &segments[..]
-    };
-
     let mut cur = root;
-    for seg in walk_segments {
+    for seg in rest.split('.').filter(|s| !s.is_empty()) {
         match cur {
             Value::Object(mut map) => {
-                cur = map.remove(*seg).ok_or_else(|| {
+                cur = map.remove(seg).ok_or_else(|| {
                     let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
                     keys.sort();
                     format!(
@@ -453,14 +443,18 @@ pub fn ready_frontier(def: &WorkflowDef, record: &WorkflowRunRecord) -> Vec<Stri
         if node_def.fanout.is_some() {
             // Fanout node: only emit already-materialized Pending items.
             if let Some(items) = record.fanout_src.get(node_id.as_str()) {
+                // Every item shares the fanout node's deps: check them once, not per item.
+                if !deps_settled(def, record, node_id, &groups) {
+                    continue;
+                }
                 for i in 0..items.len() {
                     let uid = node_uid(node_id, Some(i as u32));
-                    if let Some(cp) = record.nodes.get(&uid) {
-                        if cp.state == NodeState::Pending
-                            && deps_settled(def, record, node_id, &groups)
-                        {
-                            frontier.push(uid);
-                        }
+                    if record
+                        .nodes
+                        .get(&uid)
+                        .is_some_and(|cp| cp.state == NodeState::Pending)
+                    {
+                        frontier.push(uid);
                     }
                 }
             }
@@ -767,7 +761,7 @@ mod tests {
                 },
                 depends_on: vec!["plan".to_string()],
                 fanout: Some(FanoutSpec {
-                    over: "node:plan.result.docs".to_string(),
+                    over: "node:plan.docs".to_string(),
                     items: None,
                 }),
                 ..Default::default()
@@ -900,15 +894,25 @@ mod tests {
     fn resolve_over_path_returns_array() {
         let mut results = BTreeMap::new();
         results.insert("plan".to_string(), json!({"docs":["x","y","z"]}));
-        let arr = resolve_over_path("node:plan.result.docs", &results);
+        let arr = resolve_over_path("node:plan.docs", &results);
         assert_eq!(arr, Ok(vec![json!("x"), json!("y"), json!("z")]));
+    }
+
+    #[test]
+    fn resolve_over_path_walks_a_field_named_result() {
+        let mut results = BTreeMap::new();
+        results.insert("plan".to_string(), json!({"result": [1, 2], "items": [9]}));
+        assert_eq!(
+            resolve_over_path("node:plan.result", &results),
+            Ok(vec![json!(1), json!(2)])
+        );
     }
 
     #[test]
     fn resolve_over_path_errs_for_non_array_naming_the_type() {
         let mut results = BTreeMap::new();
         results.insert("plan".to_string(), json!({"docs": "not-an-array"}));
-        let err = resolve_over_path("node:plan.result.docs", &results).unwrap_err();
+        let err = resolve_over_path("node:plan.docs", &results).unwrap_err();
         assert!(
             err.contains("not an array"),
             "should name the shape problem: {err}"
@@ -939,7 +943,7 @@ mod tests {
     #[test]
     fn resolve_over_path_errs_for_missing_node() {
         let results: BTreeMap<String, Value> = BTreeMap::new();
-        let err = resolve_over_path("node:plan.result.docs", &results).unwrap_err();
+        let err = resolve_over_path("node:plan.docs", &results).unwrap_err();
         assert!(
             err.contains("no result in scope"),
             "should name the missing node: {err}"
@@ -1213,7 +1217,7 @@ mod tests {
     // Empty-fanout vacuous-completion tests (TDD — written before the fix)
     // -----------------------------------------------------------------------
 
-    /// Minimal 3-node def: a (normal) → b (fanout over node:a.result.items) → c (normal).
+    /// Minimal 3-node def: a (normal) → b (fanout over node:a.items) → c (normal).
     /// Output: node:c.
     fn empty_fanout_def() -> WorkflowDef {
         serde_json::from_value(serde_json::json!({
@@ -1229,7 +1233,7 @@ mod tests {
                     "agent": {"model": "m", "output": {"type": "json"}},
                     "input": {"from": "fanout_item", "template": "t"},
                     "depends_on": ["a"],
-                    "fanout": {"over": "node:a.result.items"}
+                    "fanout": {"over": "node:a.items"}
                 },
                 "c": {
                     "agent": {"model": "m", "output": {"type": "json"}},
@@ -1312,7 +1316,7 @@ mod tests {
         );
         assert_eq!(
             r.nodes["b"].result_error.as_deref(),
-            Some("fanout 'b' over 'a.result.items': value at path is string (not an array)")
+            Some("fanout 'b' over 'a.items': value at path is string (not an array)")
         );
     }
 

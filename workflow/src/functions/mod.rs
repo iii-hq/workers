@@ -180,7 +180,8 @@ pub struct TickResponse {
 
 /// Register `workflow::start`. Boot calls it after the `workflow::stamp-reply`
 /// observer is active (or a bounded wait ran out), so an agent's call cannot
-/// reach the worker unstamped while the worker connects.
+/// reach the worker unstamped while the worker connects. A refused stamp hook
+/// leaves it unregistered.
 pub fn register_start(iii: &Arc<IIIClient>, deps: &Deps) {
     let d = deps.clone();
     iii.register_function(

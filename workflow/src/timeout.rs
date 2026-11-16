@@ -76,6 +76,13 @@ pub fn apply_send_failure(cp: &mut NodeCheckpoint, err: &str, timeout_ms: u64, n
     }
 }
 
+/// A node skipped after another node's transient send failure: it shares the
+/// failure clock but fails out only on its own attempt, which may succeed.
+pub fn defer_send(cp: &mut NodeCheckpoint, err: &str, now: i64) {
+    cp.send_failed_at.get_or_insert(now);
+    cp.result_error = Some(format!("send failed: {err}"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +146,7 @@ mod tests {
             timeout_ms,
             retries,
             fanout: fanout.then(|| FanoutSpec {
-                over: "node:plan.result.docs".into(),
+                over: "node:plan.docs".into(),
                 items: None,
             }),
             ..Default::default()
@@ -213,6 +220,19 @@ mod tests {
         let mut cp = reserved();
         apply_send_failure(&mut cp, "invocation timed out", 60_000, 1_000);
         apply_send_failure(&mut cp, "invocation timed out", 60_000, 61_000);
+        assert_eq!(cp.state, NodeState::Failed);
+    }
+
+    #[test]
+    fn deferred_send_never_fails_out() {
+        let mut cp = reserved();
+        defer_send(&mut cp, "invocation timed out", 1_000);
+        defer_send(&mut cp, "invocation timed out", 1_000 + 120_000);
+        assert_eq!(cp.state, NodeState::Pending);
+        assert_eq!(cp.send_failed_at, Some(1_000));
+        assert!(cp.result_error.is_some());
+        // Its own attempt then counts from the shared clock.
+        apply_send_failure(&mut cp, "invocation timed out", 60_000, 1_000 + 120_000);
         assert_eq!(cp.state, NodeState::Failed);
     }
 

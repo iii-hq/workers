@@ -1040,6 +1040,36 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
         }
     }
 
+    // A JSON node delivers its result with workflow-result::submit; the harness
+    // lets a deny win over the allow tick::with_submit adds, so every submit fails.
+    let submit = crate::functions::submit::SUBMIT_ID;
+    for (node_id, node) in &def.nodes {
+        if node.agent.json_output().is_none() {
+            continue;
+        }
+        let (policy, from) = match &node.agent.functions {
+            Some(own) => (own, "its functions"),
+            None => match &def.default_functions {
+                Some(default) => (default, "default_functions"),
+                None => continue,
+            },
+        };
+        // shortcut: exact and trailing-* globs only, not ?/[..]/inner *; use globset if defs start writing those
+        let blocking = policy
+            .get("deny")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find(|g| *g == submit || g.strip_suffix('*').is_some_and(|p| submit.starts_with(p)));
+        if let Some(glob) = blocking {
+            return Err(WorkflowError::InvalidDef(format!(
+                "node '{node_id}': deny entry \"{glob}\" in {from} blocks {submit}, which a JSON \
+                 node delivers its result with; remove it or narrow it"
+            )));
+        }
+    }
+
     // Rule 1c: a JSON output contract whose `schema` is an object must give that
     // schema a non-empty `type`. An empty `{}` (or any typeless object) is rejected
     // by the provider at runtime with "input_schema.type: Field required", which
@@ -1371,8 +1401,8 @@ fn proven_nonarray_type(schema: &Value) -> Option<String> {
 
 /// Walk a `fanout.over` path (`"node:<id>.<seg>.<seg>"`) into the upstream node's
 /// DECLARED output schema and, if the leaf is provably non-array, return its type
-/// name. Mirrors `dag::resolve_over_path`'s path protocol (skip a leading
-/// `"result"` segment) but walks the schema instead of a runtime value. Returns
+/// name. Mirrors `dag::resolve_over_path`'s path protocol but walks the schema
+/// instead of a runtime value. Returns
 /// None whenever the type can't be proven — missing node/schema, a non-JSON
 /// output, an undeclared segment, a dynamic schema, or an array leaf — so the
 /// run proceeds and the runtime guard decides.
@@ -1393,13 +1423,7 @@ fn fanout_over_proven_nonarray(def: &WorkflowDef, over: &str) -> Option<String> 
     }
 
     let segments: Vec<&str> = rest.split('.').filter(|s| !s.is_empty()).collect();
-    let walk: &[&str] = if segments.first() == Some(&"result") {
-        &segments[1..]
-    } else {
-        &segments[..]
-    };
-
-    proven_nonarray_type(schema_at(schema, walk).ok()?)
+    proven_nonarray_type(schema_at(schema, &segments).ok()?)
 }
 
 /// Walk `segs` through a declared schema's `properties`: `Ok(leaf)`, `Err(Some(seg))`
@@ -1933,14 +1957,17 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
     // The Running record is already persisted; if the first tick fails to enqueue,
     // only the cron sweep would recover it (up to a sweep interval later). Mark the
     // run Failed best-effort so workflow::status / list don't surface a phantom
-    // Running run in the meantime, and free the key so a retry starts a new run.
+    // Running run in the meantime. Once the Failed record is stored, free the key
+    // so a retry starts a new run; a run left Running is re-driven by the sweep, so
+    // a retry must get that run back instead.
     if let Err(e) = enqueue_tick(&deps.iii, &run_id, 0).await {
         record.status = RunStatus::Failed;
         record.result_error = Some(format!("failed to enqueue initial tick: {e}"));
         record.updated_at = deps.now_ms();
-        let _ = state::put_run(&deps.iii, &record).await;
-        if let Some(key) = &record.idem_key {
-            let _ = state::delete_idem(&deps.iii, key).await;
+        if state::put_run(&deps.iii, &record).await.is_ok() {
+            if let Some(key) = &record.idem_key {
+                let _ = state::delete_idem(&deps.iii, key).await;
+            }
         }
         return Err(e);
     }
@@ -1968,7 +1995,7 @@ mod tests {
                 "plan": {"task": "Plan.", "model": "claude-3-5-haiku-20241022",
                          "schema": {"type": "object"}},
                 "read": {"task": "Read.", "model": "claude-3-5-haiku-20241022",
-                         "fanout": "plan.result.docs", "reads": "plan",
+                         "fanout": "plan.docs", "reads": "plan",
                          "schema": {"type": "object"}},
                 "summarize": {"task": "Summarize.", "model": "claude-3-5-haiku-20241022",
                               "reads": "read"}
@@ -2015,7 +2042,7 @@ mod tests {
     }
 
     /// A well-formed 3-node fan-out/barrier def:
-    ///   plan (output: json) → read (fanout over plan.result.docs, output: json) → summarize (barrier)
+    ///   plan (output: json) → read (fanout over plan.docs, output: json) → summarize (barrier)
     fn well_formed_def() -> WorkflowDef {
         let mut nodes = BTreeMap::new();
 
@@ -2034,7 +2061,7 @@ mod tests {
             make_node(
                 "claude-3-5-haiku-20241022",
                 Some(json!({"type": "json", "schema": {"type": "object"}})),
-                Some("node:plan.result.docs"),
+                Some("node:plan.docs"),
                 "node:plan",
             ),
         );
@@ -2100,6 +2127,30 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_a_deny_that_blocks_a_json_nodes_submit() {
+        // `plan` and `read` are JSON nodes, `summarize` a text node.
+        let mut def = well_formed_def();
+        def.nodes.get_mut("plan").unwrap().agent.functions =
+            Some(json!({"allow": ["web::fetch"], "deny": ["workflow-result::*"]}));
+        let err = validate_def(&def).unwrap_err().to_string();
+        assert!(
+            err.contains("node 'plan': deny entry \"workflow-result::*\" in its functions blocks"),
+            "{err}"
+        );
+
+        let mut def = well_formed_def();
+        def.default_functions = Some(json!({"allow": ["*"], "deny": ["workflow*"]}));
+        let err = validate_def(&def).unwrap_err().to_string();
+        assert!(err.contains("in default_functions blocks"), "{err}");
+
+        let mut def = well_formed_def();
+        def.default_functions = Some(json!({"allow": ["*"], "deny": ["workflow::*"]}));
+        def.nodes.get_mut("summarize").unwrap().agent.functions =
+            Some(json!({"allow": ["*"], "deny": ["*"]}));
+        assert!(validate_def(&def).is_ok());
     }
 
     #[test]
@@ -3303,6 +3354,24 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn fanout_walks_a_field_named_result() {
+        let req = parse(json!({"nodes": {
+            "plan": {"task": "t",
+                     "schema": {"type": "object", "properties": {"result": {"type": "array"}}}},
+            "each": {"task": "t", "fanout": "plan.result"}
+        }}));
+        let over = req.definition.nodes["each"]
+            .fanout
+            .as_ref()
+            .map(|f| f.over.as_str());
+        assert_eq!(over, Some("node:plan.result"));
+        assert_eq!(
+            validate_def(&req.definition).map_err(|e| e.to_string()),
+            Ok(())
+        );
     }
 
     #[test]

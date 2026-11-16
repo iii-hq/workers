@@ -425,6 +425,10 @@ pub struct NodeCheckpoint {
     /// the node's timeout has passed since then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_failed_at: Option<i64>,
+    /// When this attempt's latest `harness::send` went out; a probe that adopts
+    /// its session counts the node's timeout from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<i64>,
     /// When the node reached Done, Failed or Cancelled (stamped on the next write).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<i64>,

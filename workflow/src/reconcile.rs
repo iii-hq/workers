@@ -59,6 +59,10 @@ pub(crate) fn json_node_result(schema: Option<&Value>, result: Value) -> Result<
         Value::String(text) => parse_json_text(&text)?,
         other => other,
     };
+    // A stored null reads back as "no result", so it could never settle the node.
+    if value.is_null() {
+        return Err("the answer is null: deliver the value itself".into());
+    }
     validate_value(schema, &value)?;
     Ok(value)
 }
@@ -138,23 +142,22 @@ pub(crate) fn json_node_outcome(
 pub(crate) const NOT_SUBMITTED: &str = "no result was delivered with workflow-result::submit";
 
 /// The value a JSON node delivered with `workflow-result::submit` in this
-/// attempt, read back from the node's result slot; `None` when it delivered
-/// nothing (or the read failed: the final message is then checked instead).
+/// attempt, read back from the node's result slot; `Ok(None)` when it delivered
+/// nothing. A failed read is an `Err`: the node stays as it is and is read again
+/// next tick, never settled from its final message in place of an accepted submit.
 async fn submitted_result(
     deps: &crate::functions::Deps,
     record: &WorkflowRunRecord,
     uid: &str,
-) -> Option<Value> {
+) -> Result<Option<Value>, WorkflowError> {
     if !record.nodes.get(uid).is_some_and(|cp| cp.submitted) {
-        return None;
+        return Ok(None);
     }
     state::get_node_result(&deps.iii, &record.run_id, uid)
         .await
         .inspect_err(|e| {
-            tracing::warn!(run_id = %record.run_id, node = %uid, error = %e, "reconcile: submitted result unreadable; checking the final message")
+            tracing::warn!(run_id = %record.run_id, node = %uid, error = %e, "reconcile: submitted result unreadable; retrying next tick")
         })
-        .ok()
-        .flatten()
 }
 
 /// Corrections reconcile sends into a JSON node's session before a rejected
@@ -285,8 +288,9 @@ pub(crate) fn status_outcome(resp: &Value, abort: bool) -> NodeOutcome {
 // ---------------------------------------------------------------------------
 
 /// The caller session to ask `harness::status` when this pass cancelled an
-/// `on_error: continue` node. Stopping the caller cancels every node in its tree,
-/// and a tolerant node would otherwise settle as null and let its consumers fire. Pure.
+/// `on_error: continue` node of a run not already stopping. Stopping the caller
+/// cancels every node in its tree, and a tolerant node would otherwise settle as
+/// null and let its consumers fire. Pure.
 fn caller_to_check<'a>(
     def: &WorkflowDef,
     record: &'a WorkflowRunRecord,
@@ -295,7 +299,10 @@ fn caller_to_check<'a>(
     let tolerant = cancelled
         .iter()
         .any(|uid| crate::dag::tolerant(def, uid.split('#').next().unwrap_or(uid)));
-    record.caller_session_id.as_deref().filter(|_| tolerant)
+    record
+        .caller_session_id
+        .as_deref()
+        .filter(|_| tolerant && !record.abort)
 }
 
 /// For each `Running` checkpoint that has a `session_id`, poll
@@ -304,7 +311,8 @@ fn caller_to_check<'a>(
 /// still awaiting a wake (`expects_wake` — the run's outcome arrives on a
 /// later turn in the same session). A finished reply is trusted only from the
 /// confirming poll `SETTLE_CONFIRM_MS` later (`settle_outcomes`). A tolerant node
-/// cancelled by a stop of the caller's turn aborts the run (`caller_to_check`).
+/// cancelled by a stop of the caller's turn aborts the run (`caller_to_check`); a
+/// failed caller poll defers that cancel to the next pass.
 pub async fn reconcile_run(
     deps: &crate::functions::Deps,
     def: &WorkflowDef,
@@ -357,8 +365,9 @@ pub async fn reconcile_run(
     for (uid, outcome) in outcomes {
         let outcome = match outcome {
             NodeOutcome::Done(res) => match submitted_result(deps, record, &uid).await {
-                Some(value) => NodeOutcome::Done(value),
-                None => match json_node_outcome(def, &uid, res) {
+                Err(_) => NodeOutcome::StillRunning,
+                Ok(Some(value)) => NodeOutcome::Done(value),
+                Ok(None) => match json_node_outcome(def, &uid, res) {
                     Ok(value) => NodeOutcome::Done(value),
                     Err(reason) => {
                         let reason = format!("{NOT_SUBMITTED}, and the final message does not settle it either: {reason}");
@@ -369,8 +378,9 @@ pub async fn reconcile_run(
             // A turn that fails after its result was accepted (its closing line, say)
             // still delivered: settle with that result.
             NodeOutcome::Failed(err) => match submitted_result(deps, record, &uid).await {
-                Some(value) => NodeOutcome::Done(value),
-                None => NodeOutcome::Failed(err),
+                Err(_) => NodeOutcome::StillRunning,
+                Ok(Some(value)) => NodeOutcome::Done(value),
+                Ok(None) => NodeOutcome::Failed(err),
             },
             other => other,
         };
@@ -424,16 +434,35 @@ pub async fn reconcile_run(
         {
             Ok(resp) if resp["status"] == "cancelled" => record.abort = true,
             Ok(_) => {}
-            Err(e) => tracing::warn!(
-                run_id = %record.run_id,
-                caller = %caller,
-                error = %e,
-                "reconcile: caller status poll failed; not aborting"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    run_id = %record.run_id,
+                    caller = %caller,
+                    error = %e,
+                    "reconcile: caller status poll failed; re-checking next pass"
+                );
+                defer_tolerant_cancels(def, record, &cancelled);
+            }
         }
     }
 
     Ok(())
+}
+
+/// Put the tolerant nodes this pass cancelled back to Running when the caller
+/// check could not run: settled, they would let their consumers fire, and no
+/// later pass would check the caller again. The next poll cancels them again and
+/// retries the check; the node's timeout is the backstop. Pure.
+fn defer_tolerant_cancels(def: &WorkflowDef, record: &mut WorkflowRunRecord, cancelled: &[String]) {
+    for uid in cancelled {
+        if !crate::dag::tolerant(def, uid.split('#').next().unwrap_or(uid)) {
+            continue;
+        }
+        if let Some(cp) = record.nodes.get_mut(uid) {
+            cp.state = NodeState::Running;
+            cp.result_error = None;
+        }
+    }
 }
 
 /// Each polled node's outcome. A node whose first `poll` reply reads finished is
@@ -585,8 +614,29 @@ mod tests {
         assert_eq!(caller_to_check(&def, &record, &[]), None);
         record.caller_session_id = None;
         assert_eq!(caller_to_check(&def, &record, &["a".into()]), None);
-        def.nodes.clear();
+        // A run already stopping needs no check.
         record.caller_session_id = Some("S".into());
+        record.abort = true;
+        assert_eq!(caller_to_check(&def, &record, &["a".into()]), None);
+        record.abort = false;
+
+        // A failed caller poll puts the tolerant cancel back; the strict one stays.
+        for uid in ["a", "b"] {
+            record.nodes.insert(
+                uid.into(),
+                crate::types::NodeCheckpoint {
+                    state: NodeState::Cancelled,
+                    result_error: Some("cancelled".into()),
+                    ..Default::default()
+                },
+            );
+        }
+        defer_tolerant_cancels(&def, &mut record, &["a".into(), "b".into()]);
+        assert_eq!(record.nodes["a"].state, NodeState::Running);
+        assert_eq!(record.nodes["a"].result_error, None);
+        assert_eq!(record.nodes["b"].state, NodeState::Cancelled);
+
+        def.nodes.clear();
         assert_eq!(caller_to_check(&def, &record, &["a".into()]), None);
     }
 
@@ -674,6 +724,49 @@ mod tests {
             Ok(json!([1]))
         );
         assert_eq!(correction_reason(&output, "e".into()), "e");
+    }
+
+    #[test]
+    fn a_null_answer_never_settles_a_json_node() {
+        for (schema, result) in [
+            (None, json!("null")),
+            (None, Value::Null),
+            (Some(json!({})), json!("null")),
+        ] {
+            let err = json_node_result(schema.as_ref(), result).unwrap_err();
+            assert!(err.contains("null"), "{err}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unreadable_submit_is_an_error_not_a_missing_result() {
+        let deps = crate::functions::Deps {
+            iii: std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
+            cfg: Default::default(),
+            locks: Default::default(),
+            events: std::sync::Arc::new(crate::events::test_support::RecordingDeliverer::new(
+                false,
+            )),
+        };
+        let mut record: WorkflowRunRecord = serde_json::from_value(json!({
+            "run_id": "r", "step": 0, "status": "awaiting_nodes", "def_ref": "r",
+            "input": {}, "created_at": 0, "updated_at": 0
+        }))
+        .expect("record");
+        record.nodes.insert(
+            "j".into(),
+            crate::types::NodeCheckpoint {
+                submitted: true,
+                ..Default::default()
+            },
+        );
+        // The client never connects: the slot read times out.
+        assert!(submitted_result(&deps, &record, "j").await.is_err());
+        record.nodes.get_mut("j").unwrap().submitted = false;
+        assert!(matches!(
+            submitted_result(&deps, &record, "j").await,
+            Ok(None)
+        ));
     }
 
     #[test]
