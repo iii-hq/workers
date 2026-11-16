@@ -105,7 +105,9 @@ function readRun(runId: string, details: boolean): Promise<void> {
   const pending = inFlight.get(runId)
   // A read on its way serves this one too, unless it leaves out the details this one needs.
   if (pending && (pending.details || !details)) return pending.done
-  const done = getIiiClient()
+  // An upgrade waits for the read on its way, so its older reply never lands last.
+  const done = (pending?.done ?? Promise.resolve())
+    .then(() => getIiiClient())
     .then((client) =>
       client.call(
         'workflow::status',
@@ -149,7 +151,7 @@ export function useContextWorkflow({
   shown: boolean
   /** The section is unfolded. */
   open: boolean
-  /** The chat's status: a turn's end retries a read that failed. */
+  /** The chat's status: a turn's end re-reads at once. */
   status?: string
 }): { runs: WorkflowRunView[]; earlier: number } {
   const all = useMemo(
@@ -172,20 +174,16 @@ export function useContextWorkflow({
     let timer: number | undefined
     void Promise.all(
       due.map((id) =>
-        readRun(id, wantsDetails(runCache.get(id), open)).then(() => {
-          if (alive) setVersion((n) => n + 1)
-        }),
+        // A read that lands out of sight must still reach the view.
+        readRun(id, wantsDetails(runCache.get(id), open)).then(() =>
+          setVersion((n) => n + 1),
+        ),
       ),
     ).then(() => {
       // The next read waits for these, so a slow engine is never asked twice
-      // at once; armed from the cache, so a failed read of a known run retries.
-      if (
-        alive &&
-        due.some((id) => {
-          const entry = runCache.get(id)
-          return !!entry?.snapshot && isDue(entry, open)
-        })
-      )
+      // at once; armed from the cache, so a failed read retries and a run the
+      // worker no longer has does not.
+      if (alive && due.some((id) => isDue(runCache.get(id), open)))
         timer = window.setTimeout(
           () => setTick((n) => n + 1),
           WORKFLOW_REFRESH_MS,

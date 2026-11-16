@@ -263,7 +263,8 @@ describe('buildRunView', () => {
     expect(view.phases.at(-1)).toMatchObject({ phase: '', done: 0, total: 1 })
     expect(view.title).toBe('Work +5')
     expect(runFacts(view)).toBe(
-      '2/8 done · 1 running · 1 failed · 1.5k tokens · $0.423',
+      // verify and work#it1 started, but their usage is missing.
+      '2/8 done · 1 running · 1 failed · ≥1.5k tokens · ≥$0.423',
     )
     expect(runMark(view, T)).toEqual({
       tone: 'accent',
@@ -341,6 +342,25 @@ describe('buildRunView', () => {
     const [a, b] = view.phases.flatMap((phase) => phase.nodes)
     expect([a.sessionId, b.sessionId]).toEqual(['wf_r_x_a@r0', undefined])
     expect(runFacts(view)).toBe('2/3 done · ≥1.5k tokens')
+  })
+
+  it('marks totals that miss a started node whose usage read failed', () => {
+    const view = buildRunView(
+      { runId: 'r_x', at: 1 },
+      parsed({
+        status: 'completed',
+        nodes: { a: 'done', b: 'done' },
+        node_details: {
+          a: {
+            state: 'done',
+            started_at: 1,
+            usage: { input_tokens: 1500, cost_usd: 0.5 },
+          },
+          b: { state: 'done', started_at: 2 },
+        },
+      }),
+    )
+    expect(runFacts(view)).toBe('2 nodes · ≥1.5k tokens · ≥$0.500')
   })
 })
 

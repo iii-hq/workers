@@ -468,8 +468,17 @@ export function nodeLine(run: WorkflowRunView, node: WorkflowNodeView): string {
 export function runFacts(run: WorkflowRunView): string {
   const { counts } = run
   const failed = counts.failed + counts.cancelled
-  // Totals over the described nodes only: the status details at most 100.
-  const atLeast = run.unlisted > 0 ? '≥' : ''
+  // Totals cover only the described nodes (at most 100) whose usage was read:
+  // a started node without usage had its live read fail.
+  const atLeast =
+    run.unlisted > 0 ||
+    run.phases.some((phase) =>
+      phase.nodes.some(
+        (node) => node.startedAt !== undefined && node.tokens === null,
+      ),
+    )
+      ? '≥'
+      : ''
   const settled = counts.done === counts.total && failed === 0
   const named = run.phases.map((phase) => phase.phase).filter(Boolean)
   const shape = !settled

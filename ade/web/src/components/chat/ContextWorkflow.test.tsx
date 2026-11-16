@@ -268,6 +268,7 @@ describe('useContextWorkflow', () => {
     const messages = [start('r_gone')]
     await render({ messages, status: 'working' })
     await render({ messages, status: 'done' })
+    await advance(WORKFLOW_REFRESH_MS * 2)
     expect(statusCalls()).toHaveLength(1)
     expect(latest.runs).toEqual([])
   })
@@ -278,10 +279,61 @@ describe('useContextWorkflow', () => {
     const messages = [start('r_1')]
     await render({ messages, status: 'working' })
     expect(latest.runs).toEqual([])
-    await advance(WORKFLOW_REFRESH_MS * 2)
-    expect(statusCalls()).toHaveLength(1)
     await render({ messages, status: 'done' })
+    expect(statusCalls()).toHaveLength(2)
     expect(latest.runs).toHaveLength(1)
+  })
+
+  it('retries a failed first read at the next refresh', async () => {
+    mocks.call.mockRejectedValueOnce(new Error('offline'))
+    mocks.call.mockResolvedValue(snapshot('r_1', 'completed'))
+    await render({ messages: [start('r_1')] })
+    expect(latest.runs).toEqual([])
+    await advance(WORKFLOW_REFRESH_MS)
+    expect(statusCalls()).toHaveLength(2)
+    expect(latest.runs).toHaveLength(1)
+    await advance(WORKFLOW_REFRESH_MS * 2)
+    expect(statusCalls()).toHaveLength(2)
+  })
+
+  it('shows a read that landed while the panel was out of sight', async () => {
+    let answer: (value: unknown) => void = () => {}
+    mocks.call.mockImplementation(
+      () => new Promise((resolve) => (answer = resolve)),
+    )
+    const messages = [start('r_1')]
+    await render({ messages })
+    await render({ messages, active: false })
+    answer(snapshot('r_1', 'completed'))
+    await advance(0)
+    await render({ messages })
+    expect(statusCalls()).toHaveLength(1)
+    expect(latest.runs).toHaveLength(1)
+  })
+
+  it('unfolded during a status read, asks for the details once it is back', async () => {
+    const answers: ((value: unknown) => void)[] = []
+    mocks.call.mockImplementation(
+      () => new Promise((resolve) => answers.push(resolve)),
+    )
+    const messages = [start('r_1')]
+    await render({ messages, open: false })
+    await render({ messages, open: true })
+    expect(statusCalls()).toEqual([
+      ['workflow::status', { run_id: 'r_1', details: false }],
+    ])
+    answers[0](snapshot('r_1', 'running', false))
+    await advance(0)
+    expect(statusCalls()[1]).toEqual([
+      'workflow::status',
+      { run_id: 'r_1', details: true },
+    ])
+    answers[1](snapshot('r_1', 'completed'))
+    await advance(0)
+    expect(latest.runs[0]).toMatchObject({ status: 'completed', live: false })
+    expect(latest.runs[0].phases).toHaveLength(1)
+    await advance(WORKFLOW_REFRESH_MS * 3)
+    expect(statusCalls()).toHaveLength(2)
   })
 
   it('finds a run through its node sessions and lists the newest first', async () => {
