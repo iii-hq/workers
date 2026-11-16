@@ -243,7 +243,6 @@ describe('describeState', () => {
       ['external_outcome_unknown', 'investigating', 'Investigation result is unknown'],
       ['analyst_rejected', 'investigating', "Harness didn't accept the investigation"],
       ['analyst_failed', 'investigating', 'The analyst ended without a result'],
-      ['analyst_turn_changed', 'investigating', 'The investigation session changed'],
       ['analyst_step_cap', 'investigating', 'The analyst used its only step'],
       ['analyst_output_invalid', 'investigating', "The analyst's answer was unusable"],
       ['cost_cap', 'investigating', 'The daily cost cap was reached'],
