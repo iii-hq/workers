@@ -22,6 +22,7 @@ vi.mock('@iii-dev/console-ui', () => {
     DropdownMenu: Pass,
     DropdownMenuCheckboxItem: Pass,
     DropdownMenuContent: Pass,
+    DropdownMenuGroup: Pass,
     DropdownMenuLabel: Pass,
     DropdownMenuSeparator: Pass,
     DropdownMenuTrigger: Pass,

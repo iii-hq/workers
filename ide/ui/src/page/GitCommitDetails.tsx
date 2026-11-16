@@ -26,6 +26,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -352,24 +353,28 @@ export const GitCommitDetails = memo(function GitCommitDetails({
               </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="shui-git-view-menu">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem checked={view.grouped} onCheckedChange={(grouped) => onView({ grouped })}>
-                Directory
-              </DropdownMenuCheckboxItem>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Group by</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem checked={view.grouped} onCheckedChange={(grouped) => onView({ grouped })}>
+                  Directory
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Layout</DropdownMenuLabel>
-              {/* The preview sits in the details' place: they come back with it off. */}
-              <DropdownMenuCheckboxItem
-                checked={view.info}
-                disabled={view.preview}
-                onCheckedChange={(info) => onView({ info })}
-              >
-                Show details
-                {view.preview ? <span className="shui-git-faint"> (the diff preview is in their place)</span> : null}
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem checked={view.preview} onCheckedChange={(preview) => onView({ preview })}>
-                Show diff preview
-              </DropdownMenuCheckboxItem>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Layout</DropdownMenuLabel>
+                {/* The preview sits in the details' place: they come back with it off. */}
+                <DropdownMenuCheckboxItem
+                  checked={view.info}
+                  disabled={view.preview}
+                  onCheckedChange={(info) => onView({ info })}
+                >
+                  Show details
+                  {view.preview ? <span className="shui-git-faint"> (the diff preview is in their place)</span> : null}
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem checked={view.preview} onCheckedChange={(preview) => onView({ preview })}>
+                  Show diff preview
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
           <p className="shui-git-pane-title">

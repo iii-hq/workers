@@ -11,6 +11,7 @@ vi.mock('@iii-dev/console-ui', () => {
   return {
     DropdownMenu: Pass,
     DropdownMenuContent: Pass,
+    DropdownMenuGroup: Pass,
     DropdownMenuTrigger: Pass,
     DropdownMenuItem: (props: { onSelect: () => void; children?: ReactNode }) => {
       items.push(props)

@@ -60,7 +60,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
   return (
     <div className="console-catalog-invoke">
       <div className="console-catalog-note">
-        publishes to <code>{topic}</code> through the queue, so every consumer
+        Publishes to <code>{topic}</code> through the queue, so every consumer
         of this topic receives it and the subscriber's retry and dead-letter
         behavior applies.
       </div>
@@ -75,7 +75,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
         {confirming ? (
           <>
             <Button size="sm" onClick={publish} disabled={sending}>
-              {sending ? 'publishing…' : 'yes, publish'}
+              {sending ? 'Publishing…' : 'Yes, publish'}
             </Button>
             <Button
               variant="pill"
@@ -83,7 +83,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
               onClick={() => setConfirming(false)}
               disabled={sending}
             >
-              cancel
+              Cancel
             </Button>
           </>
         ) : (
@@ -92,7 +92,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
             onClick={() => setConfirming(true)}
             disabled={sending}
           >
-            publish message
+            Publish message
           </Button>
         )}
         {invalid ? (

@@ -3,6 +3,7 @@ import {
   Button,
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -495,85 +496,91 @@ export function A2uiPage({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>Interface</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        title="Keep this surface at the top of the conversation library"
-                        onSelect={() =>
-                          void run('a2ui::surface::pin', {
-                            surface_id: selected.surface_id,
-                            pinned: !selected.pinned,
-                          })
-                        }
-                      >
-                        {selected.pinned ? 'Unpin interface' : 'Pin interface'}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        title="Restore the previous saved revision"
-                        disabled={selected.history.length === 0}
-                        onSelect={() =>
-                          void run('a2ui::surface::undo', {
-                            surface_id: selected.surface_id,
-                          })
-                        }
-                      >
-                        Undo latest change
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        title="Create an independent copy in this conversation"
-                        onSelect={() =>
-                          void run('a2ui::surface::duplicate', {
-                            surface_id: selected.surface_id,
-                            new_surface_id: `${selected.surface_id.slice(0, 88)}-copy-${Date.now()}`,
-                          })
-                        }
-                      >
-                        Duplicate interface
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        title="Reuse this surface as a starting point later"
-                        onSelect={() =>
-                          void run('a2ui::template::save', {
-                            surface_id: selected.surface_id,
-                            template_id: selected.surface_id,
-                            description: `Saved from ${selected.title}`,
-                          })
-                        }
-                      >
-                        Save as template
-                      </DropdownMenuItem>
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>Interface</DropdownMenuLabel>
+                        <DropdownMenuItem
+                          title="Keep this surface at the top of the conversation library"
+                          onSelect={() =>
+                            void run('a2ui::surface::pin', {
+                              surface_id: selected.surface_id,
+                              pinned: !selected.pinned,
+                            })
+                          }
+                        >
+                          {selected.pinned ? 'Unpin interface' : 'Pin interface'}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          title="Restore the previous saved revision"
+                          disabled={selected.history.length === 0}
+                          onSelect={() =>
+                            void run('a2ui::surface::undo', {
+                              surface_id: selected.surface_id,
+                            })
+                          }
+                        >
+                          Undo latest change
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          title="Create an independent copy in this conversation"
+                          onSelect={() =>
+                            void run('a2ui::surface::duplicate', {
+                              surface_id: selected.surface_id,
+                              new_surface_id: `${selected.surface_id.slice(0, 88)}-copy-${Date.now()}`,
+                            })
+                          }
+                        >
+                          Duplicate interface
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          title="Reuse this surface as a starting point later"
+                          onSelect={() =>
+                            void run('a2ui::template::save', {
+                              surface_id: selected.surface_id,
+                              template_id: selected.surface_id,
+                              description: `Saved from ${selected.title}`,
+                            })
+                          }
+                        >
+                          Save as template
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel>Workspace</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        disabled={!workingDir}
-                        title={
-                          workingDir
-                            ? 'Create a complete editable React app as workspace files'
-                            : 'Choose a working directory in Harness first'
-                        }
-                        onSelect={() => void writeReactApp()}
-                      >
-                        Write React app to workspace
-                      </DropdownMenuItem>
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>Workspace</DropdownMenuLabel>
+                        <DropdownMenuItem
+                          disabled={!workingDir}
+                          title={
+                            workingDir
+                              ? 'Create a complete editable React app as workspace files'
+                              : 'Choose a working directory in Harness first'
+                          }
+                          onSelect={() => void writeReactApp()}
+                        >
+                          Write React app to workspace
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel>Export</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        title="Portable A2UI data for re-import"
-                        onSelect={() => void downloadSelected()}
-                      >
-                        Download JSON package
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        title="ZIP with a complete runnable React app"
-                        onSelect={() => void downloadCode('react')}
-                      >
-                        Download React app ZIP
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        title="ZIP with an iii worker template that serves this surface as data"
-                        onSelect={() => void downloadCode('worker')}
-                      >
-                        Download data worker template
-                      </DropdownMenuItem>
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>Export</DropdownMenuLabel>
+                        <DropdownMenuItem
+                          title="Portable A2UI data for re-import"
+                          onSelect={() => void downloadSelected()}
+                        >
+                          Download JSON package
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          title="ZIP with a complete runnable React app"
+                          onSelect={() => void downloadCode('react')}
+                        >
+                          Download React app ZIP
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          title="ZIP with an iii worker template that serves this surface as data"
+                          onSelect={() => void downloadCode('worker')}
+                        >
+                          Download data worker template
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         title="Permanently remove this surface"

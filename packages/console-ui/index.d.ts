@@ -856,7 +856,11 @@ export interface Host {
       agent?: string
       models?: { provider: string; model: string; effort?: string }[]
     }): Promise<string>
-    /** Live composer model for a conversation, including unsaved drafts. */
+    /**
+     * The model the chat would send with: the conversation's (or, with no id,
+     * the open chat's) live composer pick, including unsaved drafts, else the
+     * model a new chat starts on. `null` only when no model is known at all.
+     */
     composerModel?(conversationId?: string | null): string | null
   }
 }
@@ -1276,6 +1280,11 @@ export interface DropdownMenuItemProps extends Omit<React.HTMLAttributes<HTMLDiv
   closeOnClick?: boolean
 }
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
+/**
+ * A group heading. It must sit inside `DropdownMenuGroup` (or a radio group):
+ * outside one, Base UI throws "MenuGroupContext is missing" when the menu
+ * opens and the page crashes.
+ */
 export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
@@ -2046,6 +2055,11 @@ export declare const ShadcnDropdownMenuGroup: React.ComponentType<React.HTMLAttr
 export interface ShadcnDropdownMenuLabelProps extends React.HTMLAttributes<HTMLDivElement> {
   inset?: boolean
 }
+/**
+ * A group heading. It must sit inside `ShadcnDropdownMenuGroup` (or a radio group):
+ * outside one, Base UI throws "MenuGroupContext is missing" when the menu
+ * opens and the page crashes.
+ */
 export declare const ShadcnDropdownMenuLabel: React.ComponentType<ShadcnDropdownMenuLabelProps>
 export interface ShadcnDropdownMenuItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onClick'> {
   inset?: boolean

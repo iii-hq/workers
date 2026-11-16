@@ -20,6 +20,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
@@ -793,26 +794,28 @@ function OverflowMenu({
         align="start"
         className="max-h-[60vh] overflow-y-auto"
       >
-        <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
-        {tabs.map((tab, index) => (
-          <DropdownMenuCheckboxItem
-            key={tab.id}
-            checked={tab.id === activeTabId}
-            onSelect={() => onActivate(tab.id)}
-            indicator={
-              <Check aria-hidden className="size-4" strokeWidth={2.5} />
-            }
-          >
-            <span className="min-w-0 flex-1 truncate">
-              {tabLabel(tab, extPageTitles)}
-            </span>
-            {index < 9 ? (
-              <span className="ml-4 font-mono text-xs text-ink-faint">
-                {index + 1}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
+          {tabs.map((tab, index) => (
+            <DropdownMenuCheckboxItem
+              key={tab.id}
+              checked={tab.id === activeTabId}
+              onSelect={() => onActivate(tab.id)}
+              indicator={
+                <Check aria-hidden className="size-4" strokeWidth={2.5} />
+              }
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {tabLabel(tab, extPageTitles)}
               </span>
-            ) : null}
-          </DropdownMenuCheckboxItem>
-        ))}
+              {index < 9 ? (
+                <span className="ml-4 font-mono text-xs text-ink-faint">
+                  {index + 1}
+                </span>
+              ) : null}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   )

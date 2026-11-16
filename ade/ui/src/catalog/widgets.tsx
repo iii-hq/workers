@@ -115,7 +115,7 @@ export function CatalogShell({
         data-selected={hasSelection}
       >
         <PageSidebar
-          label="catalog"
+          label="Catalog"
           side={side}
           defaultWidth={320}
           collapsible
@@ -219,9 +219,9 @@ export function LiveDot() {
   return (
     <span
       className="console-catalog-live"
-      title="catalog updates live from the engine"
+      title="Catalog updates live from the engine"
       role="status"
-      aria-label="catalog updates live"
+      aria-label="Catalog updates live"
     >
       <StatusDot tone="accent" />
       Live
@@ -727,7 +727,7 @@ export function ErrorNote({
       action={
         onRetry ? (
           <Button variant="pill" size="sm" type="button" onClick={onRetry}>
-            retry
+            Retry
           </Button>
         ) : undefined
       }

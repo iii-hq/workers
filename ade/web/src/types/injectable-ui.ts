@@ -882,7 +882,11 @@ export interface Host {
       agent?: string
       models?: { provider: string; model: string; effort?: string }[]
     }): Promise<string>
-    /** Live composer model for a conversation, including unsaved drafts. */
+    /**
+     * The model the chat would send with: the conversation's (or, with no id,
+     * the open chat's) live composer pick, including unsaved drafts, else the
+     * model a new chat starts on. `null` only when no model is known at all.
+     */
     composerModel?(conversationId?: string | null): string | null
   }
 }

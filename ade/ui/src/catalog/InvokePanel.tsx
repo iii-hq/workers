@@ -87,8 +87,8 @@ export function InvokePanel({
   host,
   functionId,
   requestSchema,
-  label = 'call',
-  runningLabel = 'calling…',
+  label = 'Call',
+  runningLabel = 'Calling…',
   hint,
   prefill,
   runRef,
@@ -212,7 +212,7 @@ export function InvokePanel({
           onClick={reset}
           disabled={running}
         >
-          {split ? 'Reset' : 'reset'}
+          Reset
         </Button>
       </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
@@ -243,8 +243,8 @@ export function InvokePanel({
         </Button>
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
-          label={split ? 'Copy as command' : 'copy iii command'}
-          title="copies this exact call as an `iii call …` line to run from the terminal"
+          label={split ? 'Copy as command' : 'Copy iii command'}
+          title="Copies this exact call as an `iii call …` line to run from the terminal"
         />
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>
@@ -308,7 +308,7 @@ export function InvokePanel({
             className="console-catalog-attempt"
             data-latest={split && attempt.id === latest?.id}
             onClick={() => setBody(attempt.body)}
-            title="put this body back in the editor"
+            title="Put this body back in the editor"
           >
             <StatusDot tone={attempt.outcome.ok ? 'ok' : 'alert'} />
             {split ? (

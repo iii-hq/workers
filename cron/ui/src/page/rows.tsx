@@ -22,6 +22,11 @@ export function targetLabel(task: SessionCronTask): string {
   return task.target ?? (task.sessionTitle ? `wakes ${task.sessionTitle}` : 'wakes its session')
 }
 
+/** Where an agent-made schedule came from: the chat that asked for it. */
+export function chatLabel(task: SessionCronTask): string {
+  return task.sessionTitle ? `From chat ${task.sessionTitle}` : 'From a chat'
+}
+
 const cadenceCache = new Map<string, string>()
 
 export function cadenceLabel(expression: string): string {
@@ -86,7 +91,10 @@ export function TaskRow({
           <span>{view.label}</span>
         </span>
       </TableCell>
-      <TableCell className="cron-ui-cell-strong">{task.label ?? 'Untitled schedule'}</TableCell>
+      <TableCell className="cron-ui-cell-strong">
+        {task.label ?? 'Untitled schedule'}
+        {task.fromChat ? <span className="cron-ui-cell-note">{chatLabel(task)}</span> : null}
+      </TableCell>
       <TableCell>
         <Badge className="cron-ui-target">{targetLabel(task)}</Badge>
       </TableCell>
@@ -168,7 +176,11 @@ export function TaskListRow({
       onClick={onOpen}
       leading={<StatusDot tone={view.tone} aria-hidden />}
       label={task.label ?? 'Untitled schedule'}
-      description={`${cadenceLabel(task.expression)} · ${nextRunLabel(task.expression, now)}`}
+      description={[
+        cadenceLabel(task.expression),
+        nextRunLabel(task.expression, now),
+        ...(task.fromChat ? [chatLabel(task)] : []),
+      ].join(' · ')}
       trailing={<span className="cron-ui-list-meta">{runsLabel(task)}</span>}
     />
   )
