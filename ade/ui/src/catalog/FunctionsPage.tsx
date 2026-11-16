@@ -524,7 +524,8 @@ function FunctionDocument({
   }, [observers.data, functionId])
   // Selecting a function opens on its contract, not on the editor: the first
   // question an operator has is what the function takes and returns, and a
-  // JSON box answers neither. Run is one click away in the masthead.
+  // JSON box answers neither. Run is the next tab, and the contract's Call
+  // it column opens it with the template filled in.
   const [tab, setTab] = useState<DocTab>('contract')
   const [prefill, setPrefill] = useState<{ value: unknown; nonce: number }>()
 
@@ -571,20 +572,6 @@ function FunctionDocument({
         eyebrow="Function"
         title={breakable(functionId)}
         description={data ? data.description || 'No description provided.' : undefined}
-        primary={
-          data && !data.private && tab !== 'run' ? (
-            <Button
-              type="button"
-              variant="primary"
-              size="sm"
-              className="console-catalog-btn"
-              onClick={() => setTab('run')}
-            >
-              <Play aria-hidden />
-              Run
-            </Button>
-          ) : null
-        }
         menu={menu}
         menuLabel="More function actions"
         onBack={onBack}
@@ -609,7 +596,10 @@ function FunctionDocument({
         <ShadcnTabs value={tab} onValueChange={(value) => setTab(value as DocTab)} className="console-catalog-tabs">
           <ShadcnTabsList variant="line" activateOnFocus className="console-catalog-tablist">
             <ShadcnTabsTrigger value="contract">Contract</ShadcnTabsTrigger>
-            <ShadcnTabsTrigger value="run">Run</ShadcnTabsTrigger>
+            <ShadcnTabsTrigger value="run">
+              <Play aria-hidden />
+              Run
+            </ShadcnTabsTrigger>
             <ShadcnTabsTrigger value="observers">
               Observers
               {observerCount > 0 ? <span className="tab-count">{observerCount}</span> : null}

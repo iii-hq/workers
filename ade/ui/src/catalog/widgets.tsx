@@ -242,32 +242,42 @@ export function SwitchRow({
 }
 
 /**
- * One trigger, one menu: `Family · All ▾`. Single choice, drawn as
- * checkboxes (the console never draws radio circles); families with no
- * entries are not offered.
+ * One trigger, one menu: `Worker · All ▾`. Single choice, drawn as
+ * checkboxes (the console never draws radio circles). The choices are
+ * whatever `counts` carries, read from the data, never a list of the
+ * interface's own; a choice with no entries is not offered.
  */
-export function FamilyFilter<T extends string>({
+export function ChoiceFilter<T extends string>({
+  label,
   counts,
   selected,
   onSelect,
-  nameOf,
+  nameOf = (key) => key,
 }: {
+  label: string
   counts: ReadonlyMap<T, number>
   selected: T | null
   onSelect: (next: T | null) => void
-  nameOf: (key: T) => string
+  nameOf?: (key: T) => string
 }) {
   const entries = [...counts.entries()]
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1] || nameOf(a[0]).localeCompare(nameOf(b[0])))
+  // One choice settles it, so a pick closes the menu; the checkbox rows
+  // themselves stay open on click.
+  const [open, setOpen] = useState(false)
+  const pick = (next: T | null) => {
+    onSelect(next)
+    setOpen(false)
+  }
   if (entries.length < 2) return null
   const total = entries.reduce((n, [, count]) => n + count, 0)
   return (
-    <ShadcnDropdownMenu>
+    <ShadcnDropdownMenu open={open} onOpenChange={setOpen}>
       <ShadcnDropdownMenuTrigger
         render={
           <button type="button" className="console-catalog-filter" data-active={selected !== null || undefined}>
-            <span className="k">Family</span>
+            <span className="k">{label}</span>
             <span className="v">{selected ? nameOf(selected) : 'All'}</span>
             <ChevronDown aria-hidden />
           </button>
@@ -276,7 +286,7 @@ export function FamilyFilter<T extends string>({
       <ShadcnDropdownMenuContent align="start" sideOffset={6} className="console-catalog-menu">
         <ShadcnDropdownMenuGroup>
           <ShadcnDropdownMenuLabel>Choose one</ShadcnDropdownMenuLabel>
-          <ShadcnDropdownMenuCheckboxItem checked={selected === null} onCheckedChange={() => onSelect(null)}>
+          <ShadcnDropdownMenuCheckboxItem checked={selected === null} onCheckedChange={() => pick(null)}>
             All
             <span className="menu-count">{total}</span>
           </ShadcnDropdownMenuCheckboxItem>
@@ -284,7 +294,7 @@ export function FamilyFilter<T extends string>({
             <ShadcnDropdownMenuCheckboxItem
               key={key}
               checked={selected === key}
-              onCheckedChange={() => onSelect(selected === key ? null : key)}
+              onCheckedChange={() => pick(selected === key ? null : key)}
             >
               {nameOf(key)}
               <span className="menu-count">{count}</span>

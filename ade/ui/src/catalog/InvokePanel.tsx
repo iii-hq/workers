@@ -8,21 +8,23 @@
  *
  * Two things the old console did not do:
  *
- * - required fields are checked against the schema BEFORE the call, so an
- *   obvious mistake reads as "scope is required" instead of a worker-side
- *   serialization error
+ * - the body is checked against the schema BEFORE the call, so an obvious
+ *   mistake reads as "scope is required" or "weeks must be an integer"
+ *   instead of a worker-side serialization error, or no answer at all
+ * - a call that gets no answer comes back on its own (./engine.ts bounds
+ *   it), and can be stopped sooner, so the button never stays stuck
  * - every call this panel makes is kept for the session and can be replayed,
  *   so tuning a payload is a loop rather than a retype
  */
 
 import { Button, CodeEditor, type Host, JsonHighlight, StatusDot, StatusPanel } from '@iii-dev/console-ui'
-import { Play } from 'lucide-react'
+import { Play, Square } from 'lucide-react'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { formatDuration } from './ActivityFeed'
 import { asCliCommand } from './cli-command'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
-import { pretty, templateFromSchema } from './schema'
+import { pretty, schemaProblems, templateFromSchema } from './schema'
 import { CopyButton, CopyIconButton, ShortcutHint } from './widgets'
 
 interface Attempt {
@@ -36,15 +38,6 @@ let attemptSeq = 0
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/** Required top-level fields the body is missing, by the schema's own list. */
-function missingRequired(schema: unknown, payload: unknown): string[] {
-  if (!isRecord(schema) || !isRecord(payload)) return []
-  const required = Array.isArray(schema.required)
-    ? schema.required.filter((k): k is string => typeof k === 'string')
-    : []
-  return required.filter((key) => payload[key] === undefined || payload[key] === '')
 }
 
 export function InvokePanel({
@@ -103,7 +96,10 @@ export function InvokePanel({
     setInvalid(null)
   }
 
-  const inFlightRef = useRef(false)
+  // The id of the attempt in flight, or null. An attempt is a token, not a
+  // flag, so a stopped call that answers late cannot settle a newer one.
+  const inFlightRef = useRef<number | null>(null)
+  const stopRef = useRef<(() => void) | null>(null)
   const run = async () => {
     let payload: unknown
     try {
@@ -116,25 +112,35 @@ export function InvokePanel({
       setInvalid('The request body must be a JSON object')
       return
     }
-    const missing = missingRequired(requestSchema, payload)
-    if (missing.length > 0) {
-      setInvalid(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required by the schema`)
+    const problems = schemaProblems(requestSchema, payload)
+    if (problems.length > 0) {
+      setInvalid(problems.join('. '))
       return
     }
-    if (inFlightRef.current) return
-    inFlightRef.current = true
+    if (inFlightRef.current !== null) return
+    attemptSeq += 1
+    const id = attemptSeq
+    inFlightRef.current = id
     setInvalid(null)
     setRunning(true)
-    let result: Awaited<ReturnType<typeof invoke>>
-    try {
-      result = await invoke(host, functionId, payload)
-    } finally {
-      inFlightRef.current = false
+    const startedAt = Date.now()
+    const settle = (outcome: InvokeOutcome) => {
+      // Only the attempt still in flight may settle; a stopped one that
+      // answers later is dropped, not appended.
+      if (inFlightRef.current !== id) return
+      inFlightRef.current = null
       setRunning(false)
+      setAttempts((prev) => [{ id, atMs: startedAt, body, outcome }, ...prev.slice(0, 9)])
     }
-    attemptSeq += 1
-    setAttempts((prev) => [{ id: attemptSeq, atMs: Date.now(), body, outcome: result }, ...prev.slice(0, 9)])
+    stopRef.current = () =>
+      settle({
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: 'Stopped waiting. The worker may still be running it; check the Calls tab.',
+      })
+    void invoke(host, functionId, payload).then(settle)
   }
+  const stop = () => stopRef.current?.()
 
   if (runRef) runRef.current = run
   useEffect(() => {
@@ -149,7 +155,7 @@ export function InvokePanel({
       <div className="console-catalog-invoke-head">
         <div>
           <h3>Request</h3>
-          <p className="invoke-description">A JSON body; required fields are checked before the call.</p>
+          <p className="invoke-description">A JSON body; required fields and types are checked before the call.</p>
         </div>
         <Button
           className="console-catalog-btn"
@@ -198,6 +204,12 @@ export function InvokePanel({
           {running ? runningLabel : label}
           <ShortcutHint keys="enter" />
         </Button>
+        {running ? (
+          <Button className="console-catalog-btn" type="button" variant="ghost" size="sm" onClick={stop}>
+            <Square aria-hidden />
+            Stop
+          </Button>
+        ) : null}
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
           label="Copy as command"

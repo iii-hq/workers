@@ -54,7 +54,7 @@ import {
 } from './engine'
 import { HttpTester } from './HttpTester'
 import { InvokePanel } from './InvokePanel'
-import { familyKeyName, familyName, sentence } from './names'
+import { familyName, sentence } from './names'
 import { observerDeliveryFacts } from './observer-info'
 import {
   cronExpression,
@@ -69,6 +69,7 @@ import {
 import { QueuePublish } from './QueuePublish'
 import { SchemaTable } from './SchemaTable'
 import { pretty } from './schema'
+import { narrowToWorker, workerCounts } from './worker-filter'
 import {
   CatalogListSkeleton,
   CatalogRow,
@@ -78,7 +79,7 @@ import {
   EmptyDoc,
   ErrorNote,
   Facts,
-  FamilyFilter,
+  ChoiceFilter,
   FamilyIcon,
   GroupHeader,
   IdText,
@@ -114,7 +115,7 @@ export function ObserversPage({
 }) {
   const [showInternal, setShowInternal] = useState(false)
   const [search, setSearch] = useState('')
-  const [family, setFamily] = useState<Family | null>(null)
+  const [worker, setWorker] = useState<string | null>(null)
   const [selected, setSelected] = useState<Selection | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
@@ -194,21 +195,15 @@ export function ObserversPage({
   }, [catalog.data, functionsById, showInternal])
   const allGroups = partitioned.groups
 
-  const familyCounts = useMemo(() => {
-    const counts = new Map<Family, number>()
-    for (const group of allGroups) {
-      const key = familyOf(group.source.function_id).family
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
-    return counts
-  }, [allGroups])
+  // The filter offers the worker names the catalogue itself carries:
+  // whoever hosts an observed function or registered an observer.
+  const workers = useMemo(() => workerCounts(allGroups), [allGroups])
 
   const groups = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return allGroups
+    return narrowToWorker(allGroups, worker)
       .filter((group) => {
         const id = group.source.function_id
-        if (family && familyOf(id).family !== family) return false
         if (!needle) return true
         if (
           id.toLowerCase().includes(needle) ||
@@ -233,7 +228,7 @@ export function ObserversPage({
         if (count !== 0) return count
         return a.source.function_id.localeCompare(b.source.function_id)
       })
-  }, [allGroups, family, search])
+  }, [allGroups, worker, search])
 
   const shownObservers = groups.reduce((n, g) => n + g.observers.length, 0)
   const totalObservers = allGroups.reduce((n, g) => n + g.observers.length, 0)
@@ -290,7 +285,7 @@ export function ObserversPage({
     [commands, catalog.reload],
   )
 
-  const filtered = Boolean(search.trim() || family)
+  const filtered = Boolean(search.trim() || worker !== null)
   const isSelectedObserver = (observer: ObserverInfo) =>
     selected?.kind === 'observer' && selected.observer.id === observer.id
 
@@ -334,7 +329,7 @@ export function ObserversPage({
       }
       filters={
         <>
-          <FamilyFilter counts={familyCounts} selected={family} onSelect={setFamily} nameOf={familyKeyName} />
+          <ChoiceFilter label="Worker" counts={workers} selected={worker} onSelect={setWorker} />
           <SwitchRow label="Internal" checked={showInternal} onChange={setShowInternal} />
         </>
       }
@@ -371,7 +366,7 @@ export function ObserversPage({
                     label: 'Clear filters',
                     onClick: () => {
                       setSearch('')
-                      setFamily(null)
+                      setWorker(null)
                     },
                   }
                 : undefined
@@ -566,7 +561,7 @@ function SourceDocument({
         stats={
           data
             ? [
-                { label: 'Family', value: familyName(spec) },
+                { label: 'Kind', value: familyName(spec) },
                 { label: 'Worker', value: data.worker_name, mono: true },
                 { label: 'Observers', value: String(observerCount), mono: true },
                 { label: 'Private', value: data.private ? 'Yes' : 'No' },

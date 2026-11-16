@@ -87,3 +87,128 @@ export function pretty(value: unknown): string {
     return String(value)
   }
 }
+
+/* ── pre-flight check ───────────────────────────────────────────────── */
+
+/**
+ * What the schema can say for certain is wrong with a body, before the
+ * call is made. A worker that is handed `"weeks": "test"` where it expects
+ * an integer may answer with a serialization error, or may not answer at
+ * all, so the obvious mistakes are caught here and read in the schema's
+ * own words: `weeks must be an integer`.
+ *
+ * Only certainties are reported: a missing required field, a value of the
+ * wrong JSON type, a value outside an `enum`, a value no `anyOf` branch
+ * takes. Anything the schema leaves open (`$ref`, no `type`) passes, so a
+ * loose schema never blocks a call the worker would have accepted.
+ */
+export function schemaProblems(schema: unknown, payload: unknown): string[] {
+  const out: string[] = []
+  check(schema, payload, '', out, 0)
+  return out
+}
+
+const MAX_PROBLEMS = 6
+
+function jsonType(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+/** Every type the schema allows, or `null` when it names none. */
+function allowedTypes(schema: Record<string, unknown>): string[] | null {
+  const t = schema.type
+  if (typeof t === 'string') return [t]
+  if (Array.isArray(t)) {
+    const named = t.filter((x): x is string => typeof x === 'string')
+    return named.length > 0 ? named : null
+  }
+  if (isRecord(schema.properties)) return ['object']
+  if (schema.items !== undefined) return ['array']
+  return null
+}
+
+function accepts(types: readonly string[], value: unknown): boolean {
+  const actual = jsonType(value)
+  for (const t of types) {
+    if (t === actual) return true
+    if (t === 'integer' && typeof value === 'number' && Number.isInteger(value)) return true
+    if (t === 'number' && typeof value === 'number') return true
+  }
+  return false
+}
+
+function typeWord(types: readonly string[]): string {
+  const words = types.map((t) => {
+    if (t === 'integer') return 'an integer'
+    if (t === 'array') return 'an array'
+    if (t === 'object') return 'an object'
+    if (t === 'null') return 'null'
+    return `a ${t}`
+  })
+  return words.join(' or ')
+}
+
+function shown(value: unknown): string {
+  const text = JSON.stringify(value)
+  if (text === undefined) return String(value)
+  return text.length > 24 ? `${text.slice(0, 23)}…` : text
+}
+
+function check(schema: unknown, value: unknown, path: string, out: string[], depth: number): void {
+  if (!isRecord(schema) || depth > MAX_DEPTH || out.length >= MAX_PROBLEMS) return
+  const name = path || 'The body'
+
+  // `anyOf` / `oneOf`: the value must satisfy some branch. When every
+  // branch names a type, the problem reads as one union; otherwise the
+  // first branch's own complaint stands in.
+  const branches = schema.anyOf ?? schema.oneOf
+  if (Array.isArray(branches) && branches.length > 0 && schema.type === undefined) {
+    const complaints: string[][] = []
+    for (const branch of branches) {
+      const scratch: string[] = []
+      check(branch, value, path, scratch, depth + 1)
+      if (scratch.length === 0) return
+      complaints.push(scratch)
+    }
+    const named = branches.map((b) => (isRecord(b) ? allowedTypes(b) : null))
+    if (named.every((t): t is string[] => t !== null)) {
+      out.push(`${name} must be ${typeWord([...new Set(named.flat())])}, not ${shown(value)}`)
+    } else {
+      out.push(complaints[0][0])
+    }
+    return
+  }
+
+  const types = allowedTypes(schema)
+  if (types && !accepts(types, value)) {
+    out.push(`${name} must be ${typeWord(types)}, not ${shown(value)}`)
+    return
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    const allowed = schema.enum as unknown[]
+    if (!allowed.some((member) => JSON.stringify(member) === JSON.stringify(value))) {
+      out.push(`${name} must be one of ${allowed.map(shown).join(', ')}`)
+      return
+    }
+  }
+
+  if (isRecord(value) && (types === null || types.includes('object'))) {
+    const props = isRecord(schema.properties) ? schema.properties : {}
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((k): k is string => typeof k === 'string')
+      : []
+    for (const key of required) {
+      if (value[key] === undefined) out.push(`${path ? `${path}.${key}` : key} is required`)
+    }
+    for (const [key, sub] of Object.entries(props)) {
+      if (value[key] === undefined) continue
+      check(sub, value[key], path ? `${path}.${key}` : key, out, depth + 1)
+    }
+  }
+
+  if (Array.isArray(value) && isRecord(schema.items)) {
+    value.forEach((item, i) => check(schema.items, item, `${path}[${i}]`, out, depth + 1))
+  }
+}

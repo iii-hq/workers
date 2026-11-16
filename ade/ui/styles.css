@@ -1567,6 +1567,15 @@
 [data-iii-ui="console"] .console-catalog-tablist > button:first-child {
   margin-inline-start: -10px;
 }
+[data-iii-ui="console"] .console-catalog-tablist > button > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-catalog-tablist > button[data-state="active"] > svg,
+[data-iii-ui="console"] .console-catalog-tablist > button[data-active] > svg {
+  color: currentColor;
+}
 [data-iii-ui="console"] .console-catalog-tablist > button:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: -2px;
@@ -1762,6 +1771,9 @@
 /* --- ⋯ menu: the floating-surface canon (Inter 14px) ---------------------- */
 [data-iii-ui="console"] .console-catalog-menu {
   min-width: 200px;
+  /* A worker list is as long as the project; it scrolls past this. */
+  max-height: min(60vh, 440px);
+  overflow-y: auto;
 }
 
 /* --- run panel: request | response ---------------------------------------- */
