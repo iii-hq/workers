@@ -408,7 +408,9 @@ fn open_stream(
 }
 
 /// Write one stream item; `false` once the client is gone or another `GET`
-/// took the session's stream over (it sends the rest).
+/// took the session's stream over (it sends the rest). The item is claimed
+/// before it is written ([`Sessions::claim_stream_item`]), so a stream that
+/// takes over meanwhile never sends it a second time.
 async fn write_item(
     response: &OutputStream,
     sessions: &Sessions,
@@ -416,22 +418,16 @@ async fn write_item(
     generation: u64,
     item: StreamItem,
 ) -> bool {
-    if !sessions.is_current_stream(session_id, generation) {
-        return false;
-    }
     let (frame, id) = match item {
         StreamItem::Observation { id, observation } => {
             (encode_sse_observation(id, &observation), Some(id))
         }
         StreamItem::Gap { after, through } => (encode_sse_gap(after, through), None),
     };
-    if response.write(frame.as_bytes()).await.is_err() {
+    if !sessions.claim_stream_item(session_id, generation, id) {
         return false;
     }
-    if let Some(id) = id {
-        sessions.mark_sent(session_id, id);
-    }
-    true
+    response.write(frame.as_bytes()).await.is_ok()
 }
 
 #[cfg(test)]

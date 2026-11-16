@@ -582,6 +582,25 @@ impl Sessions {
             .is_some_and(|s| s.stream_gen == generation)
     }
 
+    /// Claim the next item for the stream `generation`: in one step under
+    /// the session lock, check that the stream still owns the session's SSE
+    /// and record observation `id` as sent. A stream that attaches afterwards
+    /// leaves it out of its backlog; one that attached before makes the claim
+    /// fail, and sends it itself. `false`: stop writing.
+    pub fn claim_stream_item(&self, session_id: &str, generation: u64, id: Option<u64>) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(session) = inner.sessions.get_mut(session_id) else {
+            return false;
+        };
+        if session.stream_gen != generation {
+            return false;
+        }
+        if let Some(id) = id {
+            session.sent_through = session.sent_through.max(id);
+        }
+        true
+    }
+
     /// A stream wrote the observation with event id `id`.
     pub fn mark_sent(&self, session_id: &str, id: u64) {
         if let Some(session) = self.inner.lock().unwrap().sessions.get_mut(session_id) {
@@ -1555,5 +1574,56 @@ mod tests {
         let (_, _rx_b, b) = s.attach_stream(&sid, None).unwrap();
         assert!(!s.is_current_stream(&sid, a), "the old writer must stop");
         assert!(s.is_current_stream(&sid, b));
+    }
+
+    /// The observation ids in a stream backlog.
+    fn backlog_ids(items: &[StreamItem]) -> Vec<u64> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                StreamItem::Observation { id, .. } => Some(*id),
+                StreamItem::Gap { .. } => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_writer_that_claimed_an_observation_keeps_it_from_the_next_stream() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx_a, a) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        let StreamItem::Observation { id, .. } = rx_a.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        // A claims it (ownership check and "sent" in one step), then B
+        // attaches before A has written it: B must not send it too.
+        assert!(s.claim_stream_item(&sid, a, Some(id)));
+        let (backlog_b, _rx_b, _) = s.attach_stream(&sid, None).unwrap();
+        assert!(
+            !backlog_ids(&backlog_b).contains(&id),
+            "both streams would write {id}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_writer_replaced_before_its_claim_leaves_the_observation_to_the_new_stream() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx_a, a) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        let StreamItem::Observation { id, .. } = rx_a.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        // B attaches between A receiving it and A claiming it.
+        let (backlog_b, _rx_b, b) = s.attach_stream(&sid, None).unwrap();
+        assert!(
+            !s.claim_stream_item(&sid, a, Some(id)),
+            "A no longer owns the stream"
+        );
+        assert!(backlog_ids(&backlog_b).contains(&id), "B sends it instead");
+        assert!(s.claim_stream_item(&sid, b, Some(id)));
     }
 }
