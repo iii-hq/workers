@@ -55,7 +55,9 @@ describe('the iii agent (iii mode)', () => {
 
   it('ships only a stub that loads default-mcp until sync replaces it', () => {
     expect(file('agents/iii.md').split('\n')[0]).toMatch(/^<!-- .*generated.*overwritten.* -->$/i);
-    const body = file('agents/iii.md').replace(/^<!--.*-->\n/, '').replace(/^---\n[\s\S]*?\n---\n/, '');
+    const body = file('agents/iii.md')
+      .replace(/^<!--.*-->\n/, '')
+      .replace(/^---\n[\s\S]*?\n---\n/, '');
     expect(body).toContain('default-mcp');
     expect(body).toContain('iii_get_agent');
     expect(body).toContain('activate: true');
