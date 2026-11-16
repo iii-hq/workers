@@ -1,6 +1,7 @@
 //! Webhook prerequisites as one checklist shared by the GitHub console page
-//! and agents: the quick-tunnel worker, the cloudflared binary it runs, and the
-//! http worker's restricted webhook listener. Nothing here installs software;
+//! and agents: the quick-tunnel worker, the cloudflared binary it runs (or,
+//! with OpenTunnel, the provider), and the http worker's restricted webhook
+//! listener. Nothing here installs software;
 //! the page installs the quick-tunnel worker only after the operator confirms.
 
 use super::*;
@@ -42,7 +43,7 @@ pub enum SetupFix {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SetupCheck {
-    /// quick_tunnel | cloudflared | http_listener
+    /// quick_tunnel | cloudflared | tunnel_provider | http_listener
     pub id: String,
     pub title: String,
     pub state: CheckState,
@@ -209,6 +210,14 @@ pub fn evaluate(
         ),
     };
     let cloudflared = match tunnel {
+        // OpenTunnel runs inside quick-tunnel: there is no binary to find.
+        Ok(status) if status["provider"] == "opentunnel" => check(
+            "tunnel_provider",
+            "tunnel provider",
+            CheckState::Ok,
+            "quick-tunnel uses OpenTunnel; no cloudflared binary is needed.".into(),
+            None,
+        ),
         Ok(status) => match status.pointer("/prerequisites/cloudflared") {
             Some(c) if c["found"] == true => check(
                 "cloudflared",
