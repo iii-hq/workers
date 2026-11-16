@@ -111,10 +111,12 @@ export function ContextUsage({
         >
           <RingGauge ratio={ratio} size={16} stroke={2.5} />
         </span>
+        {/* Under 24rem the counts give way to the chat's title too; the
+ ring stays and the trigger's label still says everything. */}
         {hasCapacity ? (
           <span
             className={cn(
-              'tabular-nums whitespace-nowrap',
+              'tabular-nums whitespace-nowrap @max-[24rem]:hidden',
               tone !== 'normal' && TEXT_TONE[tone],
             )}
           >
@@ -123,7 +125,7 @@ export function ContextUsage({
             {formatTokenCount(capacity)}
           </span>
         ) : (
-          <span className="tabular-nums text-ink">
+          <span className="tabular-nums text-ink @max-[24rem]:hidden">
             {formatTokenCount(tokens)}
           </span>
         )}

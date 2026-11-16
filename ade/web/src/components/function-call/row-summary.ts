@@ -27,14 +27,26 @@ function unwrapEnvelope(output: unknown): unknown {
   return output
 }
 
+/** Plurals the `s` rules get wrong, both ways (`children` is not `childrens`). */
+const IRREGULAR: Record<string, string> = {
+  child: 'children',
+  person: 'people',
+}
+const IRREGULAR_SINGULAR = Object.fromEntries(
+  Object.entries(IRREGULAR).map(([one, many]) => [many, one]),
+)
+
 /** `files` → `file`, `matches` → `match`, `entries` → `entry`. */
 function singular(noun: string): string {
+  if (noun in IRREGULAR_SINGULAR) return IRREGULAR_SINGULAR[noun]
+  if (noun in IRREGULAR) return noun
   if (/ies$/.test(noun)) return noun.replace(/ies$/, 'y')
   if (/(ch|sh|ss|x)es$/.test(noun)) return noun.replace(/es$/, '')
   return noun.replace(/s$/, '')
 }
 
 function plural(noun: string): string {
+  if (noun in IRREGULAR) return IRREGULAR[noun]
   if (/[^aeiou]y$/.test(noun)) return noun.replace(/y$/, 'ies')
   if (/(ch|sh|ss|x)$/.test(noun)) return `${noun}es`
   return `${noun}s`
@@ -60,6 +72,15 @@ export function resultSummary(output: unknown): string | null {
 
   const exit = record.exit_code ?? record.exitCode
   if (typeof exit === 'number') return `exit ${exit}`
+
+  // A status report (`harness::status` and the like): its one list is a
+  // side field (a child session's own `children`), not the answer, so
+  // counting it misleads ("0 children" for a sub-agent that exists). The
+  // state is what the row should say.
+  if (typeof record.status === 'string') {
+    const status = record.status.trim()
+    return status && status.length <= 24 ? status.replace(/_/g, ' ') : null
+  }
 
   const arrays = Object.entries(record).filter(([, v]) => Array.isArray(v))
   if (arrays.length === 1) {

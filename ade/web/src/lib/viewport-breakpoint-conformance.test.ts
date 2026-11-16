@@ -112,9 +112,9 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
 /** CSS files that may keep width media queries, with today's count. */
 const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
   'index.css': {
-    max: 3,
+    max: 4,
     reason:
-      'phone chrome: the one-line phone composer, 16px editor text, side-by-side panel motion',
+      'phone chrome: the one-line phone composer, 16px editor text, side-by-side panel motion, where the shell chrome ends for overlays',
   },
   'styles/ui-recipes.css': {
     max: 4,
@@ -124,6 +124,11 @@ const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/ReasoningEffortSlider.css': {
     max: 1,
     reason: 'phone chrome: one row in the popover, stacked in the phone sheet',
+  },
+  'pages/Workers/workers.css': {
+    max: 1,
+    reason:
+      'phone chrome: the header bar is 56px with 48px touch targets below 640px; a narrow desktop pane keeps 32px controls',
   },
 }
 

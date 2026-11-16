@@ -130,6 +130,9 @@ interface MessageListProps {
  zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
  when absent. */
   thinkingDetail?: string
+  /** The chat waits on the person (an open question card), not a model:
+   the indicator holds still and shows no elapsed clock. */
+  waitingOnPerson?: boolean
   /** Current protocol-derived phase; presence animations never own this. */
   turnVisualPhase?: TurnVisualPhase
   /** User message that began the active turn; keeps elapsed time across gaps. */
@@ -586,6 +589,7 @@ export function MessageList({
   transcriptHydrated = true,
   isThinking,
   thinkingDetail,
+  waitingOnPerson = false,
   turnVisualPhase = 'idle',
   turnKey,
   density = 'route',
@@ -1720,6 +1724,7 @@ export function MessageList({
                 <ModelWaitingIndicator
                   label={thinkingDetail}
                   active={Boolean(isThinking)}
+                  calm={waitingOnPerson}
                   turnKey={turnKey}
                 />
               </div>

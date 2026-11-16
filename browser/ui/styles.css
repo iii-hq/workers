@@ -1946,8 +1946,11 @@
  * fanned-out spots. Transitions are off while a finger or a fling drives the
  * box. Folded, the cards behind tilt a few degrees each way so their corners
  * show; fanned out they spread sideways like a hand of cards along a shallow
- * arc that bends away from the anchored edge. Touch layouts get the top-right
- * corner (under the mobile header), pointer layouts the bottom-right. */
+ * arc that bends away from the anchored edge. Every layout docks it to the
+ * top-right corner, below the console's chrome: `--overlay-inset-top` (the
+ * console's overlay layer) is where the top bar and the pane headers end, so
+ * the deck never covers a pane's split and close controls or the context
+ * panel's tabs. An older console without it keeps the old 72px. */
 [data-iii-ui="browser"] .br-ui-pip {
   --panel-translate-y: -24px;
   --panel-blur: 2px;
@@ -1956,7 +1959,7 @@
   --pip-peek: 1;
   --pip-fan-origin: top center;
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 72px);
+  top: calc(env(safe-area-inset-top, 0px) + var(--overlay-inset-top, 60px) + 12px);
   right: 12px;
   z-index: 1;
   pointer-events: auto;

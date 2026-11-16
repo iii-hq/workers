@@ -68,6 +68,7 @@ import type {
   ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { isWaitingOnAnswer, WAITING_ON_ANSWER_LABEL } from '@/lib/chat-activity'
 import {
   AskInSideChatContext,
   findSideChat,
@@ -178,6 +179,12 @@ import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
 import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
+import {
+  draftWithPulledBack,
+  pullBackQueued,
+  pulledBackNotice,
+  type QueuedRow,
+} from './stop-queued'
 import {
   agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -838,6 +845,28 @@ export function ChatView({
       .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
       .map((row) => ({ id: row.id, text: row.text || '(attachments only)' }))
     return [...drafts, ...server]
+  }, [queuedDrafts, serverQueued, conversation.messages])
+
+  // What a Stop takes back out of the queue (`stop-queued`): the person's
+  // rows in the strip, this tab's drafts with what they carry. Read through a
+  // ref so the Stop handler sees the strip as it is at the click.
+  const stopPullBackRef = useRef<
+    (QueuedRow & { draft?: UserMessage; attachments?: Attachment[] })[]
+  >([])
+  stopPullBackRef.current = useMemo(() => {
+    const seen = new Set<string>(queuedDrafts.map((d) => d.id))
+    for (const m of conversation.messages) seen.add(m.id)
+    return [
+      ...queuedDrafts.map((d) => ({
+        id: d.id,
+        text: d.content,
+        draft: d,
+        attachments: d.attachments,
+      })),
+      ...serverQueued
+        .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
+        .map((row) => ({ id: row.id, text: row.text })),
+    ]
   }, [queuedDrafts, serverQueued, conversation.messages])
 
   // Delivery window: the turn stream this tab owned finished normally while
@@ -2522,12 +2551,63 @@ export function ChatView({
     // Re-enable the button if the stop RPC fails while the server still
     // reports working — otherwise `stopping` never clears (the reset
     // effect waits on the indicator) and the user can't retry.
-    void backend.abortRun?.(sessionId).catch(() => {
-      stopRequestedRef.current = false
-      setStopping(false)
-      setStopRequested(false)
-    })
-  }, [backend, sessionId, readOnly])
+    const stopServer = () =>
+      void backend.abortRun?.(sessionId).catch(() => {
+        stopRequestedRef.current = false
+        setStopping(false)
+        setStopRequested(false)
+      })
+    // Stop means stop: what the person queued is not sent on its own after
+    // it, so it comes back to the composer (`stop-queued`). It has to leave
+    // the queue BEFORE the stop lands, or the cancelled turn drains it into
+    // the chat as a message nothing will answer.
+    const removeQueued = backend.removeQueued
+    const queued = stopPullBackRef.current
+    if (!removeQueued || !conversationsCtx || queued.length === 0) {
+      stopServer()
+      return
+    }
+    const conversationId = conversation.id
+    // Out of the strip now: the indicator just went idle, and the end-of-turn
+    // flush would show them in the chat as sent.
+    const pulling = new Set(queued.map((row) => row.id))
+    setQueuedDrafts((drafts) => drafts.filter((d) => !pulling.has(d.id)))
+    void pullBackQueued(queued, (id) => removeQueued(conversationId, id))
+      .then(({ restored, kept }) => {
+        // These already went to the agent: shown as sent, as the flush would.
+        for (const row of kept) {
+          if (row.draft) onAppendMessage(conversationId, row.draft)
+        }
+        if (restored.length === 0) return
+        conversationsCtx.setDraftText(
+          conversationId,
+          draftWithPulledBack(
+            conversationsCtx.getDraftText(conversationId),
+            restored,
+          ),
+        )
+        const chips = restored.flatMap((row) => row.attachments ?? [])
+        if (chips.length > 0) {
+          conversationsCtx.setDraftAttachments(conversationId, [
+            ...(conversationsCtx.getDraftAttachments(conversationId) ?? []),
+            ...chips,
+          ])
+        }
+        setComposerGeneration((generation) => generation + 1)
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(pulledBackNotice(restored.length)),
+        )
+      })
+      .finally(stopServer)
+  }, [
+    backend,
+    sessionId,
+    readOnly,
+    conversationsCtx,
+    conversation.id,
+    onAppendMessage,
+  ])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side
   // (status-changed arrives on the session-directory subscription) but the
@@ -2548,6 +2628,13 @@ export function ChatView({
     [conversation.messages, streamingIndicator],
   )
   const isThinking = turnVisualState.showWaiting
+  // A question card is up and only the person can move the chat on: the
+  // status line says so, holding still, instead of timing a model that is
+  // not what the chat waits on (the sidebar row says the same).
+  const waitingOnAnswer = useMemo(
+    () => isWaitingOnAnswer(conversation, streamingIndicator),
+    [conversation, streamingIndicator],
+  )
 
   // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
@@ -3099,8 +3186,11 @@ export function ChatView({
  narrow form under a 30rem pane (`@container`, the design
  system's narrow-container threshold): the context meter —
  built-in or the harness chip — drops to its `used/usable`
- counts, the sandbox chip is already `⬚ N`. */}
-                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5">
+ counts, the sandbox chip is already `⬚ N`. Under 24rem the
+ back arrow and the title come first: the meter keeps its ring
+ alone, the group and the status dot tighten, and nothing in
+ here ever slides over the title side. */}
+                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5 @max-[24rem]:gap-2 @max-[24rem]:px-1.5">
                   {sessionChips}
                   {hasInjectedContextChip ? null : (
                     <ContextUsage
@@ -3135,7 +3225,7 @@ export function ChatView({
                   }
                 >
                   {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1 @max-[24rem]:w-4">
                     <StatusDot
                       tone={
                         conversation.status === 'error'
@@ -3241,14 +3331,17 @@ export function ChatView({
                     appearance: conversation.subagentAppearance,
                   }}
                   transcriptHydrated={conversation.hydrated !== false}
-                  isThinking={isThinking}
+                  isThinking={isThinking || waitingOnAnswer}
+                  waitingOnPerson={waitingOnAnswer}
                   turnVisualPhase={turnVisualState.phase}
                   turnKey={turnVisualState.turnKey}
                   thinkingDetail={
-                    conversation.status === 'working' &&
-                    conversation.statusReason
-                      ? conversation.statusReason
-                      : (phaseDetail ?? waitingFallback)
+                    waitingOnAnswer
+                      ? WAITING_ON_ANSWER_LABEL
+                      : conversation.status === 'working' &&
+                          conversation.statusReason
+                        ? conversation.statusReason
+                        : (phaseDetail ?? waitingFallback)
                   }
                   density={density}
                   onResolveApproval={resolveApproval}

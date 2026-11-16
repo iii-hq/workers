@@ -2212,3 +2212,18 @@
 .monaco-editor .find-widget.visible > .button.toggle {
   margin-top: 3px;
 }
+
+/* viewport: phone chrome — the `overlays` slot's `--overlay-inset-top`
+   (ExtOverlays.tsx): the bottom of the shell's chrome, the top bar plus a
+   pane's header row and their hairlines. Phones stack a 56px bar over a
+   56px pane header; from 640px it is a 48px bar over a 44px header. A
+   worker overlay docked to a top corner sits below this line. */
+[data-ext-overlays] {
+  --overlay-inset-top: 113px;
+}
+
+@media (min-width: 640px) {
+  [data-ext-overlays] {
+    --overlay-inset-top: 93px;
+  }
+}

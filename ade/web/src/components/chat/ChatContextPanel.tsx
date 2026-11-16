@@ -1177,10 +1177,14 @@ function SubagentStatus({
   status: SubagentVisualStatus
   at: number
 }) {
+  // An ended child is not a success claim and not live: the sub-agent card
+  // in the chat says "Ended" with no green anywhere (SpawnView's
+  // SUBAGENT_STATUS_COPY), so the row's dot is the quiet ghost, not the
+  // green that reads as "active".
   if (status === 'completed') {
     return (
       <>
-        <StatusDot tone="ok" />
+        <StatusDot tone="ghost" />
         <span className={uiClasses.treeItemMeta}>{formatRelative(at)}</span>
       </>
     )

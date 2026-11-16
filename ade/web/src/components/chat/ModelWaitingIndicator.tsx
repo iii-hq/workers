@@ -74,11 +74,18 @@ export function ModelWaitingIndicator({
   label = 'thinking…',
   active = true,
   turnKey,
+  calm = false,
 }: {
   label?: string
   active?: boolean
   /** Resets the elapsed clock only when a genuinely new turn starts. */
   turnKey?: string
+  /**
+   * The chat waits on the person, not on a model (a question card is open):
+   * the mark holds still, the label does not shimmer, and there is no
+   * elapsed clock, since nothing is running late.
+   */
+  calm?: boolean
 }) {
   const resolvedLabel = label.trim() || 'thinking…'
   const elapsed = useModelWaitElapsed(active, turnKey)
@@ -130,6 +137,7 @@ export function ModelWaitingIndicator({
       aria-hidden={!active}
       aria-label={resolvedLabel}
       data-active={active}
+      data-calm={calm || undefined}
       data-model-waiting=""
       className="chat-model-waiting flex max-w-full min-w-0 items-center gap-2.5"
     >
@@ -164,12 +172,14 @@ export function ModelWaitingIndicator({
           {labelState.current}
         </span>
       </div>
-      <div
-        aria-hidden="true"
-        className="shrink-0 font-mono text-base text-ink-ghost tabular-nums sm:text-[0.75rem]"
-      >
-        {elapsed}
-      </div>
+      {calm ? null : (
+        <div
+          aria-hidden="true"
+          className="shrink-0 font-mono text-base text-ink-ghost tabular-nums sm:text-[0.75rem]"
+        >
+          {elapsed}
+        </div>
+      )}
     </div>
   )
 }

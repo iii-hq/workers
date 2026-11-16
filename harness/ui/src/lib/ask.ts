@@ -323,3 +323,99 @@ export function askCardState(
       return 'open'
   }
 }
+
+/**
+ * The slice of `host.iii` the card listens with: per-tab handlers and
+ * engine observers.
+ */
+export interface AskSessionIii {
+  browserId: string
+  on(functionId: string, handler: (payload: unknown) => void): () => void
+  observe(
+    source: { function_id: string; filters?: Record<string, unknown> },
+    target: string,
+  ): () => void
+}
+
+/**
+ * What changed in the card's session:
+ * - `settlements`: the session's settlement row was written (a card here or
+ *   in another tab or window was answered or dismissed);
+ * - `turn`: a turn of the session started or ended (the person said
+ *   something else, the card's own answer seeded a turn, the agent replied).
+ */
+export type AskSessionChange = 'settlements' | 'turn'
+
+/** State scope of the harness's settlement rows (`ask_settlement::ASK_SCOPE`;
+ *  key: the session id). */
+export const ASK_SETTLEMENT_SCOPE = 'harness_ask'
+const STATE_ON_CHANGED_FN = 'state::on-changed'
+const TURN_EVENT_FNS = ['harness::on-turn-started', 'harness::on-turn-completed'] as const
+const HANDLER_FN = 'iii::harness-ui::ask'
+
+/**
+ * Hear about the card's session as it changes, from any tab: observes the
+ * state worker's `state::on-changed` for the session's settlement row, and
+ * `harness::on-turn-started` / `on-turn-completed` for its turns. Without
+ * this an open card only re-read on mount, visibility and focus, so a card
+ * answered in another tab kept a live Send here, and the "chat moved on"
+ * note waited for a reload.
+ *
+ * `scope` keeps two mounts of the same card (two panes showing the chat)
+ * on separate handlers, so either one's teardown leaves the other's alone.
+ * Returns the disposer of every handler and observer.
+ */
+export function watchAskSession(
+  iii: AskSessionIii,
+  sessionId: string,
+  scope: string,
+  onChange: (change: AskSessionChange) => void,
+): () => void {
+  const offs: (() => void)[] = []
+  // `on()` appends `::<browserId>` itself; the observer's target repeats it
+  // to address the same handler.
+  const listen = (kind: AskSessionChange, accept: (event: unknown) => boolean) => {
+    const fn = `${HANDLER_FN}-${kind}::${scope}`
+    offs.push(
+      iii.on(fn, (event) => {
+        if (accept(event)) onChange(kind)
+      }),
+    )
+    return `${fn}::${iii.browserId}`
+  }
+
+  const settlementsTarget = listen(
+    'settlements',
+    (event) => !isRecord(event) || event.key === undefined || event.key === sessionId,
+  )
+  offs.push(
+    iii.observe(
+      {
+        function_id: STATE_ON_CHANGED_FN,
+        filters: {
+          'input.scope': { $eq: ASK_SETTLEMENT_SCOPE },
+          'input.key': { $eq: sessionId },
+        },
+      },
+      settlementsTarget,
+    ),
+  )
+
+  const turnTarget = listen(
+    'turn',
+    (event) =>
+      !isRecord(event) || event.session_id === undefined || event.session_id === sessionId,
+  )
+  for (const function_id of TURN_EVENT_FNS) {
+    offs.push(
+      iii.observe(
+        { function_id, filters: { 'input.session_id': { $eq: sessionId } } },
+        turnTarget,
+      ),
+    )
+  }
+
+  return () => {
+    for (const off of offs.splice(0).reverse()) off()
+  }
+}

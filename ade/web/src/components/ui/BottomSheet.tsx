@@ -26,8 +26,49 @@ export function BottomSheet({
 }) {
   return <Sheet {...props} onOpenChange={(open) => onOpenChange?.(open)} />
 }
-export const BottomSheetTrigger = SheetTrigger
-export const BottomSheetClose = SheetClose
+/**
+ * The public API (`packages/console-ui/index.d.ts`) types the trigger and
+ * close with `DialogTriggerProps`, Radix-shaped: `asChild` makes the single
+ * child the control. Base UI spells that `render`; passing `asChild` through
+ * would wrap the child button in a second one and leak an unknown DOM prop.
+ */
+type BottomSheetControlProps<P> = P & {
+  /** Radix: the single child element is the control (Base UI `render`). */
+  asChild?: boolean
+  children?: React.ReactNode
+}
+
+export function BottomSheetTrigger({
+  asChild,
+  children,
+  ...props
+}: BottomSheetControlProps<React.ComponentProps<typeof SheetTrigger>>) {
+  if (asChild && React.isValidElement(children)) {
+    return (
+      <SheetTrigger
+        {...props}
+        render={children as React.ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <SheetTrigger {...props}>{children}</SheetTrigger>
+}
+
+export function BottomSheetClose({
+  asChild,
+  children,
+  ...props
+}: BottomSheetControlProps<React.ComponentProps<typeof SheetClose>>) {
+  if (asChild && React.isValidElement(children)) {
+    return (
+      <SheetClose
+        {...props}
+        render={children as React.ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <SheetClose {...props}>{children}</SheetClose>
+}
 
 interface BottomSheetPageNavigationValue {
   activePageId: string | null

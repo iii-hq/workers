@@ -1,5 +1,5 @@
 import type { FunctionCallMessage } from '@iii-dev/console-ui'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   askCardState,
   type AskQuestionView,
@@ -13,6 +13,7 @@ import {
   SKIPPED_ANSWER,
   type TurnPosition,
   turnPositionOf,
+  watchAskSession,
 } from './ask'
 
 /**
@@ -502,5 +503,85 @@ describe('askCardState', () => {
 
   it('is failed when compose threw', () => {
     expect(askCardState(undefined, 'failed')).toBe('failed')
+  })
+})
+
+/** A stand-in for `host.iii`: handlers by full id, observers as registered. */
+function fakeIii() {
+  const handlers = new Map<string, (payload: unknown) => void>()
+  const observers: { source: { function_id: string; filters?: Record<string, unknown> }; target: string }[] = []
+  const iii = {
+    browserId: 'console-tab',
+    on(functionId: string, handler: (payload: unknown) => void) {
+      handlers.set(`${functionId}::console-tab`, handler)
+      return () => handlers.delete(`${functionId}::console-tab`)
+    },
+    observe(source: { function_id: string; filters?: Record<string, unknown> }, target: string) {
+      const row = { source, target }
+      observers.push(row)
+      return () => observers.splice(observers.indexOf(row), 1)
+    },
+  }
+  /** What the engine does when `function_id` runs: fire every observer of it. */
+  const fire = (function_id: string, event: unknown) => {
+    for (const { source, target } of observers) {
+      if (source.function_id === function_id) handlers.get(target)?.(event)
+    }
+  }
+  return { iii, handlers, observers, fire }
+}
+
+describe('watchAskSession', () => {
+  it('hears a settlement written for its session from anywhere (another tab answered)', () => {
+    const { iii, observers, fire } = fakeIii()
+    const onChange = vi.fn()
+    watchAskSession(iii, 's1', 'q1-a', onChange)
+
+    const settlement = observers.find((o) => o.source.function_id === 'state::on-changed')
+    expect(settlement?.source.filters).toEqual({
+      'input.scope': { $eq: 'harness_ask' },
+      'input.key': { $eq: 's1' },
+    })
+    fire('state::on-changed', { scope: 'harness_ask', key: 's1', new_value: [] })
+    expect(onChange).toHaveBeenCalledWith('settlements')
+  })
+
+  it('hears its session\'s turns start and end (the chat moved on)', () => {
+    const { iii, observers, fire } = fakeIii()
+    const onChange = vi.fn()
+    watchAskSession(iii, 's1', 'q1-a', onChange)
+
+    for (const fn of ['harness::on-turn-started', 'harness::on-turn-completed']) {
+      expect(observers.find((o) => o.source.function_id === fn)?.source.filters).toEqual({
+        'input.session_id': { $eq: 's1' },
+      })
+    }
+    fire('harness::on-turn-started', { session_id: 's1', turn_id: 't2' })
+    fire('harness::on-turn-completed', { session_id: 's1', turn_id: 't2' })
+    expect(onChange.mock.calls).toEqual([['turn'], ['turn']])
+  })
+
+  it('ignores another session\'s events', () => {
+    const { iii, fire } = fakeIii()
+    const onChange = vi.fn()
+    watchAskSession(iii, 's1', 'q1-a', onChange)
+    fire('state::on-changed', { scope: 'harness_ask', key: 's2' })
+    fire('harness::on-turn-started', { session_id: 's2', turn_id: 't9' })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('two mounts of one card keep separate handlers, and each disposes only its own', () => {
+    const { iii, handlers, observers, fire } = fakeIii()
+    const first = vi.fn()
+    const second = vi.fn()
+    const offFirst = watchAskSession(iii, 's1', 'q1-a', first)
+    watchAskSession(iii, 's1', 'q1-b', second)
+    offFirst()
+
+    fire('harness::on-turn-started', { session_id: 's1', turn_id: 't2' })
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledWith('turn')
+    // The observers address the handlers by their per-tab id.
+    for (const { target } of observers) expect(handlers.has(target)).toBe(true)
   })
 })

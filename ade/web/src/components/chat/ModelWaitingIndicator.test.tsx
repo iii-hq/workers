@@ -21,6 +21,16 @@ describe('ModelWaitingIndicator', () => {
     expect(html).toContain('0.0s')
   })
 
+  it('waiting on the person holds still: no running clock, a calm mark', () => {
+    const html = renderToStaticMarkup(
+      <ModelWaitingIndicator label="waiting for your answer" calm />,
+    )
+
+    expect(html).toContain('aria-label="waiting for your answer"')
+    expect(html).toContain('data-calm="true"')
+    expect(html).not.toContain('0.0s')
+  })
+
   it('formats elapsed seconds and minutes', () => {
     expect(formatModelWaitElapsed(12_345)).toBe('12.3s')
     expect(formatModelWaitElapsed(61_250)).toBe('1m 1.2s')

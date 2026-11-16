@@ -27,11 +27,13 @@
  *
  * Open vs settled: only a settlement closes a card, read from
  * `harness::ask::settlements` on mount, when the tab becomes visible again,
- * and when focus enters an open card (so a card settled in another tab
- * closes before a second send). The session moving to a later turn does
+ * when focus enters an open card, and whenever the session changes while
+ * the card is open (`watchAskSession`: its settlement row is written, or one
+ * of its turns starts or ends), so a card settled in another tab closes on
+ * its own, before a second send. The session moving to a later turn does
  * not close it: the person may have typed something else in the chat, and
  * the question still needs its answer. The card then says the chat moved on
- * and keeps taking an answer, or a dismissal.
+ * (as soon as that turn starts) and keeps taking an answer, or a dismissal.
  *
  * Anything `parseAsk` rejects (a refused ask, a running call) returns null
  * and falls through to the console's default card.
@@ -72,6 +74,7 @@ import {
   type SendPhase,
   settlementsOf,
   turnPositionOf,
+  watchAskSession,
 } from '../lib/ask'
 
 const ASK_ID = 'harness::ask'
@@ -378,6 +381,21 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
   // was chosen.
   const sentHere = settled && phase === 'sending'
   const text = formatAnswer(view, selections)
+
+  // While the card is open, every change to its session re-reads it: a
+  // settlement written anywhere (another tab answered) closes the card, and
+  // a turn starting or ending shows the "moved on" note as it happens. One
+  // scope per mounted card, so the same card in two panes keeps two handlers.
+  const [watchScope] = useState(
+    () => `${view.questionId}-${Math.random().toString(36).slice(2, 10)}`,
+  )
+  useEffect(() => {
+    if (settled) return
+    return watchAskSession(host.iii, view.sessionId, watchScope, (change) => {
+      void recheckSettlement()
+      if (change === 'turn') void rereadTurn()
+    })
+  }, [host, view.sessionId, watchScope, settled, recheckSettlement, rereadTurn])
 
   const update = (index: number, next: AskSelection) =>
     setSelections((previous) => previous.map((entry, i) => (i === index ? next : entry)))

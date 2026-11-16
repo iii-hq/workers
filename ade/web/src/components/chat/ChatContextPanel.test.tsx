@@ -287,6 +287,24 @@ describe('ChatContextPanel', () => {
     )
   })
 
+  it('marks an ended sub-agent with a quiet dot, never the live green', async () => {
+    // The chat's sub-agent card says "Ended" with no green; the panel row
+    // showed a green dot beside it that read as "active" (QA 2026-11-16).
+    const main = chat('main')
+    const ended = chat('e', {
+      title: 'ended-child',
+      parentId: 'main',
+      status: 'done',
+    })
+    const view = await render(main, { conversations: [main, ended] })
+    const row = view.querySelector('[aria-label$="(completed)"]')
+    expect(row).not.toBeNull()
+    expect(row?.querySelector('.bg-ok')).toBeNull()
+    expect(row?.querySelector('.bg-accent')).toBeNull()
+    expect(row?.querySelector('.bg-ink-ghost')).not.toBeNull()
+    expect(view.textContent).not.toContain('1 active')
+  })
+
   it('survives a link with a malformed escape', async () => {
     const view = await render(
       chat('main', {

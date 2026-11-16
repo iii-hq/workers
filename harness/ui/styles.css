@@ -88,6 +88,15 @@
     display: none;
   }
 }
+/* Under 24rem (a phone held narrow, a pane squeezed by a split) the counts
+   go too: the header's back arrow and the chat's title come first, and the
+   ring alone still shows how full the window is; the label says the rest.
+   Same threshold as the console's own meter (ContextUsage). */
+@container (max-width: 24rem) {
+  [data-iii-ui="harness"] .harness-ui-chip-counts {
+    display: none;
+  }
+}
 
 /* --- context breakdown (dialog on desktop, sheet on phones) ----------- */
 /* One card: headline, thin bar, legend, the recent steps as bars, three

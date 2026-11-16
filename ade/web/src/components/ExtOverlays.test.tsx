@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { act, Profiler } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -90,5 +93,24 @@ describe('ExtOverlays', () => {
     expect(seen).toEqual(['console-a', 'console-b'])
     act(() => ctx.set({ activeId: null }))
     expect(seen.at(-1)).toBeNull()
+  })
+
+  it('tells overlays where the shell chrome ends, phone and desktop', () => {
+    // A worker overlay docked at a fixed 72px covered the pane header's
+    // split and close controls (QA 2026-11-16). The layer publishes the
+    // chrome's bottom edge: a 56px bar + 56px header on phones, 48 + 44
+    // from 640px, each with its 1px hairline.
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../index.css'),
+      'utf8',
+    )
+    const phone = css.match(
+      /\[data-ext-overlays\] \{\s*--overlay-inset-top:\s*(\d+)px;/,
+    )
+    const desktop = css.match(
+      /@media \(min-width: 640px\) \{\s*\[data-ext-overlays\] \{\s*--overlay-inset-top:\s*(\d+)px;/,
+    )
+    expect(Number(phone?.[1])).toBe(56 + 56 + 1)
+    expect(Number(desktop?.[1])).toBe(48 + 44 + 1)
   })
 })
