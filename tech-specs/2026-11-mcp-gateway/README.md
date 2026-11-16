@@ -246,7 +246,8 @@ Rules shared by all tools:
 to iii-directory in this PR): the `default` identity rewritten for MCP clients, with `iii_call` and
 the observe tools in place of `agent_call` and `harness::*`, derived from
 `default` by a checked script. `activate: true` records it as the
-session's active profile, which `iii_status` reports as `active_profile`. They then name the discovery functions, each with what it
+session's active profile, which `iii_status` reports as `active_profile`
+(`default-mcp` until another profile is activated). They then name the discovery functions, each with what it
 returns (`directory::search_functions` for candidate ids by capability,
 `engine::functions::list`, `engine::workers::list`,
 `engine::functions::info` for a contract before the first call, and

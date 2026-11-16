@@ -108,7 +108,7 @@ pub fn tools_list() -> Value {
         tool("iii_unobserve", "Remove one of this session's observers, discarding its unread observations.", json!({
             "type": "object", "properties": { "observer_id": { "type": "string" } }, "required": ["observer_id"]
         })),
-        tool("iii_status", "This MCP server: version, session, the session's active profile (active_profile, null until one is loaded with activate: true), and access_control: rbac-proxy (with the rules in force) or disabled.", json!({ "type": "object", "properties": {} })),
+        tool("iii_status", "This MCP server: version, session, the session's active profile (active_profile: default-mcp until another is loaded with activate: true), and access_control: rbac-proxy (with the rules in force) or disabled.", json!({ "type": "object", "properties": {} })),
         tool("iii_list_agents", "List the agent profiles installed in the iii engine (id, name, description, model, counts).", json!({
             "type": "object", "properties": { "include_hidden": { "type": "boolean", "description": "Include hidden helper profiles." } }
         })),
@@ -421,7 +421,12 @@ pub async fn call_tool<B: Bus + Observe>(
                 "session_id": ctx.session_id,
             });
             if let Some(sid) = ctx.session_id {
-                v["active_profile"] = json!(ctx.sessions.active_profile(sid));
+                // Every session starts on the default profile (the
+                // instructions load it first) until it activates another.
+                v["active_profile"] = json!(ctx
+                    .sessions
+                    .active_profile(sid)
+                    .unwrap_or_else(|| DEFAULT_PROFILE.to_string()));
             }
             match ctx.mode {
                 RbacMode::Proxied { policy } => {
@@ -1350,13 +1355,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_has_no_active_profile_until_one_is_activated() {
+    async fn a_session_follows_default_mcp_until_another_is_activated() {
         let e = agents_bus();
         let s = sessions();
         let sid = s.create().unwrap();
-        let (_, v) = tool(&e, &s, Some(&sid), "iii_status", json!({})).await;
-        assert!(v.get("active_profile").is_some(), "{v}");
-        assert_eq!(v["active_profile"], Value::Null);
+        assert_eq!(active(&e, &s, &sid).await, "default-mcp");
     }
 
     #[tokio::test]
@@ -1464,7 +1467,7 @@ mod tests {
         )
         .await;
         assert_eq!(active(&e, &s, &a).await, "writer");
-        assert_eq!(active(&e, &s, &b).await, Value::Null);
+        assert_eq!(active(&e, &s, &b).await, "default-mcp");
     }
 
     #[tokio::test]
@@ -1487,7 +1490,7 @@ mod tests {
             e.bus.calls().is_empty(),
             "nothing is fetched for a refused call"
         );
-        assert_eq!(active(&e, &s, &sid).await, Value::Null);
+        assert_eq!(active(&e, &s, &sid).await, "default-mcp");
     }
 
     #[tokio::test]

@@ -249,7 +249,8 @@ impl Sessions {
         }
     }
 
-    /// The profile the session follows, if it activated one.
+    /// The profile the session activated, if any (`iii_status` reports the
+    /// default profile otherwise).
     pub fn active_profile(&self, session_id: &str) -> Option<String> {
         self.inner
             .lock()
