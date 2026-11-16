@@ -37,6 +37,25 @@ pub fn is_loopback(host: &str) -> bool {
     host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// What to do with the routes when the http worker's bind is re-checked
+/// after a reload.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RouteAction {
+    Keep,
+    /// Stop serving: the endpoint would be reachable where it must not be.
+    Withdraw(String),
+    /// Serve again: the bind is acceptable once more.
+    Restore,
+}
+
+pub fn transition(serving: bool, bind: &Bind) -> RouteAction {
+    match (serving, bind) {
+        (true, Bind::Refuse(why)) => RouteAction::Withdraw(why.clone()),
+        (false, Bind::Serve { .. }) => RouteAction::Restore,
+        _ => RouteAction::Keep,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Bind {
     Serve { warnings: Vec<String> },
@@ -49,22 +68,29 @@ pub fn decide(status: Result<Value, String>, flag: Result<bool, String>, api_pat
         Ok(f) => f,
         Err(msg) => return Bind::Refuse(msg),
     };
-    let host = match status.as_ref().map(|s| s.get("host").and_then(Value::as_str)) {
+    let unknown = |why: String| {
+        if allow_public {
+            Bind::Serve {
+                warnings: vec![format!(
+                    "mcp-server: WARNING: {why}; serving {api_path} anyway ({PUBLIC_HTTP_ENV}=true)."
+                )],
+            }
+        } else {
+            Bind::Refuse(format!(
+                "mcp-server: refusing to serve {api_path}: {why}, so it may be reachable from other machines.
+  Fix: let mcp-server read http::status (rbac-proxy must expose it), with the http
+  worker bound to 127.0.0.1. To serve without knowing:
+    {PUBLIC_HTTP_ENV}=true"
+            ))
+        }
+    };
+    let host = match status
+        .as_ref()
+        .map(|s| s.get("host").and_then(Value::as_str))
+    {
         Ok(Some(host)) => host.to_string(),
-        Ok(None) => {
-            return Bind::Serve {
-                warnings: vec![format!(
-                    "mcp-server: WARNING: http::status did not report a host; cannot tell whether {api_path} is reachable from the network."
-                )],
-            }
-        }
-        Err(e) => {
-            return Bind::Serve {
-                warnings: vec![format!(
-                    "mcp-server: WARNING: could not read http::status ({e}); cannot tell whether {api_path} is reachable from the network."
-                )],
-            }
-        }
+        Ok(None) => return unknown("http::status did not report a host".into()),
+        Err(e) => return unknown(format!("could not read http::status ({e})")),
     };
     if is_loopback(&host) {
         return Bind::Serve { warnings: vec![] };
@@ -172,19 +198,40 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_status_warns_and_a_bad_flag_refuses() {
-        let Bind::Serve { warnings } = decide(Err("function_not_found".into()), Ok(false), "/mcp")
-        else {
-            panic!()
-        };
-        assert!(warnings[0].contains("http::status"), "{warnings:?}");
+    fn an_unknown_bind_is_refused_unless_the_flag_is_set() {
+        // No host, or no answer at all: loopback is unconfirmed.
+        for status in [
+            Ok(json!({ "port": 1 })),
+            Err("function_not_found".to_string()),
+        ] {
+            let Bind::Refuse(msg) = decide(status.clone(), Ok(false), "/mcp") else {
+                panic!("{status:?}")
+            };
+            assert!(
+                msg.contains("http::status") && msg.contains(PUBLIC_HTTP_ENV),
+                "{msg}"
+            );
+            let Bind::Serve { warnings } = decide(status, Ok(true), "/mcp") else {
+                panic!()
+            };
+            assert_eq!(warnings.len(), 1);
+        }
         assert!(matches!(
             decide(status("127.0.0.1"), parse_flag(Some("on")), "/mcp"),
             Bind::Refuse(_)
         ));
-        let Bind::Serve { warnings } = decide(Ok(json!({ "port": 1 })), Ok(false), "/mcp") else {
-            panic!()
-        };
-        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_reload_withdraws_or_restores_the_routes() {
+        let serve = Bind::Serve { warnings: vec![] };
+        let refuse = Bind::Refuse("public".into());
+        assert_eq!(transition(true, &serve), RouteAction::Keep);
+        assert_eq!(transition(false, &refuse), RouteAction::Keep);
+        assert_eq!(
+            transition(true, &refuse),
+            RouteAction::Withdraw("public".into())
+        );
+        assert_eq!(transition(false, &serve), RouteAction::Restore);
     }
 }

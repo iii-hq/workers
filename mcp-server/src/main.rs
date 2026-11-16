@@ -163,26 +163,12 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &ctx);
 
     // The routes live as long as the connection; dropping the handles keeps
-    // them. Report whether they became active without blocking startup.
-    let routes = functions::observe_routes(&iii, &cfg.api_path);
-    let api_path = cfg.api_path.clone();
-    tokio::spawn(async move {
-        for route in routes {
-            match tokio::time::timeout(Duration::from_secs(30), route.ready()).await {
-                Ok(Ok(())) => {
-                    tracing::info!(api_path = %api_path, observer_id = %route.id(), "http::on-request route active")
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, api_path = %api_path, "http::on-request route rejected")
-                }
-                Err(_) => {
-                    tracing::warn!(api_path = %api_path, "http::on-request route still pending after 30s; is the http worker running?")
-                }
-            }
-        }
-    });
+    // them. A reload of the http worker re-checks its bind and withdraws or
+    // restores them.
+    let routes = functions::Routes::new(iii.clone(), cfg.api_path.clone());
+    routes.serve().await;
+    let _reloads = functions::watch_http_reloads(&iii, &ctx, routes.clone());
 
-    // Idle sessions lose their observers; check every minute.
     // Idle-session sweep: once a minute, end the sessions idle longer than
     // session_idle_ttl_secs (clients do not always send DELETE).
     let sweep = sessions.clone();

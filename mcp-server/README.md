@@ -231,16 +231,19 @@ can register functions on the engine directly could register a fake
 identity, so RBAC decides what "agents via MCP" may do as a whole.
 
 Next, `mcp-server` reads `http::status`. If the http worker listens anywhere but
-loopback (`0.0.0.0`, `::`, a LAN or public address), it refuses to start and
-says how to bind it to `127.0.0.1`; `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true`
-(or `1`) serves anyway, with a warning. If `http::status` cannot be read, it
-starts with a warning.
+loopback (`0.0.0.0`, `::`, a LAN or public address), or its bind cannot be
+read, it refuses to start and says how to bind it to `127.0.0.1`;
+`III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true` (or `1`) serves anyway, with a
+warning. The check repeats after every reload of the http worker: `mcp-server`
+observes `http::on-config-change`, and a rebind to a public address withdraws
+the `/mcp` routes until it is back on loopback (rbac-proxy must expose
+`http::status` and `http::on-config-change`).
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `iii_call` | Call a function by id with a JSON `payload` (default `{}`). `timeout_ms`; `void: true` to fire and forget; results over `max_chars` (default 100000) come back cut, with `truncated` and `total_chars`. `mcp-server::` functions (this worker's internals) are refused; everything else is RBAC's decision. |
+| `iii_call` | Call a function by id with a JSON `payload` (default `{}`). `timeout_ms`; `void: true` to fire and forget; the reply is compact JSON of at most `max_chars` (default 100000): over it, the result's JSON text is cut so the whole reply fits, with `truncated` and `total_chars`. `mcp-server::` functions (this worker's internals) are refused, as observe sources and targets too; everything else is RBAC's decision. |
 | `iii_secret_store` | Store a credential: `name` (`secret://<name>`), `value`, `consumers` (worker names allowed to resolve it, at least one), `description`. Calls `secrets::set` and returns only `{ ref, hint, fingerprint, consumers }`. Storing an existing name rotates it. rbac-proxy must expose `secrets::set`. |
 | `iii_observe` | Observe a function: `function_id`, `filters`, `args`, `capture`, `namespace`, `max_observations`, `expires_in_ms`, and optionally `target_function_id`. Without a target, observations are buffered for `iii_observations_poll`. With one, the engine runs that function with each observation and nothing comes back to the session. Returns `{ observer_id, function_id, state, delivery, target_function_id? }`. Needs a session. |
 | `iii_observations_sse` | Same arguments without `target_function_id`: each observation is sent on the session's `GET` stream as a `notifications/iii/observation` message, and waits in the session while no stream is open. Needs a session. |
@@ -317,7 +320,9 @@ An observer delivers in one of three ways:
   Nothing is written on a schedule: a quiet stream is ended by the http
   worker's idle timeout (`default_timeout`, 30 s), and the client reconnects.
   If the cap dropped observations the client never got, the replay starts
-  with a `notifications/iii/observations_dropped` message naming the ids;
+  with a `notifications/iii/observations_dropped` message naming the ids.
+  A stream more than `max_buffered_observations` behind is closed rather
+  than queued without bound; the client resumes with `Last-Event-ID`;
 - **target** (`iii_observe` with `target_function_id`): the engine runs that
   function with each observation; nothing reaches the session.
 

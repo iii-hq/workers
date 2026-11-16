@@ -143,7 +143,9 @@ struct Session {
     buffer: VecDeque<(u64, String, Value)>,
     /// Dropped since the last poll.
     dropped: u64,
-    stream: Option<mpsc::UnboundedSender<StreamItem>>,
+    /// Bounded: a stream that falls behind is let go (its client resumes
+    /// with `Last-Event-ID`), so a slow reader cannot grow memory.
+    stream: Option<mpsc::Sender<StreamItem>>,
     /// The highest SSE event id a stream wrote.
     sent_through: u64,
     /// The highest SSE event id the cap dropped.
@@ -167,7 +169,7 @@ impl Session {
     /// Push to the open stream, if any; a closed one is forgotten.
     fn push(&mut self, item: StreamItem) {
         if let Some(stream) = &self.stream {
-            if stream.send(item).is_err() {
+            if stream.try_send(item).is_err() {
                 self.stream = None;
             }
         }
@@ -309,9 +311,14 @@ impl Sessions {
             return Err(format!("unknown session: {session_id}"));
         }
         if let Ok(Err(e)) = tokio::time::timeout(READY_WAIT, handle.ready()).await {
-            self.forget(session_id, &observer_id);
-            handle.dispose().await;
-            return Err(format!("observe refused: {}: {}", e.code, e.message));
+            // `disposed` is an observer that already ended: it fired its
+            // max_observations (or expired) before activation was confirmed.
+            // Its observations stay. Only `error` is a refusal.
+            if handle.state() != "disposed" {
+                self.forget(session_id, &observer_id);
+                handle.dispose().await;
+                return Err(format!("observe refused: {}: {}", e.code, e.message));
+            }
         }
         let mut out = json!({
             "observer_id": observer_id,
@@ -363,6 +370,13 @@ impl Sessions {
         let Some(entry) = session.observers.get_mut(&observer_id) else {
             return false;
         };
+        // An observation of another function under this observer's id is
+        // forged: the engine names the function it observed.
+        if let Some(function_id) = observation.get("function_id").and_then(Value::as_str) {
+            if function_id != entry.function_id {
+                return false;
+            }
+        }
         let sse = match entry.delivery {
             Delivery::Target(_) => return false,
             Delivery::Sse => true,
@@ -378,12 +392,19 @@ impl Sessions {
         session.buffer.push_back((seq, observer_id, observation));
         while session.buffer.len() > max {
             if let Some((dropped_seq, id, _)) = session.buffer.pop_front() {
-                session.dropped += 1;
-                if session.is_sse(&id) {
+                let lost = if session.is_sse(&id) {
+                    // Out of the replay window: a gap for a client resuming
+                    // from before it, a loss only if no stream wrote it.
                     session.sse_dropped_through = session.sse_dropped_through.max(dropped_seq);
-                }
-                if let Some(e) = session.observers.get_mut(&id) {
-                    e.dropped += 1;
+                    dropped_seq > session.sent_through
+                } else {
+                    session.dropped += 1;
+                    true
+                };
+                if lost {
+                    if let Some(e) = session.observers.get_mut(&id) {
+                        e.dropped += 1;
+                    }
                 }
             }
         }
@@ -460,7 +481,7 @@ impl Sessions {
         &self,
         session_id: &str,
         last_event_id: Option<u64>,
-    ) -> Result<(Vec<StreamItem>, mpsc::UnboundedReceiver<StreamItem>), String> {
+    ) -> Result<(Vec<StreamItem>, mpsc::Receiver<StreamItem>), String> {
         let mut inner = self.inner.lock().unwrap();
         let session = inner
             .sessions
@@ -483,7 +504,7 @@ impl Sessions {
                 });
             }
         }
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(self.limits.max_buffered.max(1));
         session.stream = Some(tx);
         Ok((backlog, rx))
     }
@@ -558,7 +579,7 @@ impl Sessions {
 
     /// End every session idle longer than the TTL; returns how many.
     pub async fn end_idle(&self) -> usize {
-        let expired: Vec<String> = {
+        let candidates: Vec<String> = {
             let inner = self.inner.lock().unwrap();
             inner
                 .sessions
@@ -568,12 +589,38 @@ impl Sessions {
                 .collect()
         };
         let mut n = 0;
-        for id in expired {
-            if self.end(&id).await {
+        for id in candidates {
+            if self.end_if_idle(&id).await {
                 n += 1;
             }
         }
         n
+    }
+
+    /// End `session_id` only if it is still idle: the check and the removal
+    /// happen under one lock, so a request that refreshed it in between wins.
+    pub async fn end_if_idle(&self, session_id: &str) -> bool {
+        let handles: Vec<Arc<dyn ObserverLike>> = {
+            let mut inner = self.inner.lock().unwrap();
+            let idle = inner
+                .sessions
+                .get(session_id)
+                .is_some_and(|s| s.last_seen.elapsed() > self.limits.idle_ttl);
+            if !idle {
+                return false;
+            }
+            let Some(session) = inner.sessions.remove(session_id) else {
+                return false;
+            };
+            for id in session.observers.keys() {
+                inner.owner.remove(id);
+            }
+            session.observers.into_values().map(|e| e.handle).collect()
+        };
+        for h in handles {
+            h.dispose().await;
+        }
+        true
     }
 
     pub async fn close_all(&self) {
@@ -603,6 +650,8 @@ mod tests {
     struct FakeObserver {
         id: String,
         refused: Option<BusError>,
+        /// Reached its fire limit before activation was confirmed.
+        fired: bool,
         disposed: Arc<AtomicUsize>,
     }
 
@@ -611,14 +660,20 @@ mod tests {
             self.id.clone()
         }
         fn state(&self) -> String {
-            if self.refused.is_some() {
+            if self.fired {
+                "disposed".into()
+            } else if self.refused.is_some() {
                 "error".into()
             } else {
                 "active".into()
             }
         }
         fn ready(&self) -> BoxFuture<'_, Result<(), BusError>> {
-            let r = self.refused.clone();
+            let r = if self.fired {
+                Some(BusError::new("UNOBSERVED", "observer is disposed"))
+            } else {
+                self.refused.clone()
+            };
             Box::pin(async move { r.map_or(Ok(()), Err) })
         }
         fn dispose(&self) -> BoxFuture<'_, ()> {
@@ -632,6 +687,7 @@ mod tests {
     struct FakeObserve {
         next: AtomicUsize,
         refuse: Option<BusError>,
+        fire_early: bool,
         disposed: Arc<AtomicUsize>,
         asked: std::sync::Mutex<Vec<(ObserveRequest, String)>>,
     }
@@ -646,6 +702,7 @@ mod tests {
             Box::new(FakeObserver {
                 id: format!("obs-{n}"),
                 refused: self.refuse.clone(),
+                fired: self.fire_early,
                 disposed: self.disposed.clone(),
             })
         }
@@ -667,7 +724,7 @@ mod tests {
     }
 
     fn observation(observer_id: &str, input: Value) -> Value {
-        json!({ "observer_id": observer_id, "function_id": "state::set", "status": "success", "input": input })
+        json!({ "observer_id": observer_id, "status": "success", "input": input })
     }
 
     fn req(function_id: &str) -> ObserveRequest {
@@ -988,7 +1045,7 @@ mod tests {
             .collect()
     }
 
-    fn drain(rx: &mut mpsc::UnboundedReceiver<StreamItem>) -> Vec<StreamItem> {
+    fn drain(rx: &mut mpsc::Receiver<StreamItem>) -> Vec<StreamItem> {
         let mut out = vec![];
         while let Ok(item) = rx.try_recv() {
             out.push(item);
@@ -1188,6 +1245,112 @@ mod tests {
         assert!(!s.touch(&idle));
         assert!(s.touch(&busy));
         assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_observer_that_fired_before_activation_is_kept_not_refused() {
+        // max_observations: 1 can be spent before ready() returns: the
+        // observer is disposed, not refused, and its observation stays.
+        let s = store();
+        let o = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
+        let r = s
+            .observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        assert_eq!(r["state"], "disposed");
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(1)]);
+        assert_eq!(s.list(&sid).unwrap()[0]["state"], "disposed");
+    }
+
+    #[tokio::test]
+    async fn a_delivery_must_name_the_observed_function() {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("state::set"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        let forged = json!({ "observer_id": "obs-1", "function_id": "evil::own", "input": 1 });
+        assert!(!s.deliver(forged));
+        assert!(s.deliver(observation("obs-1", json!(2))));
+        assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(2)]);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_falls_behind_is_closed_and_nothing_is_lost() {
+        let s = Sessions::new(limits(16, 100, 3));
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("state::set"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        // Nobody reads: the queue is bounded, so the stream is let go.
+        for i in 1..=5 {
+            assert!(s.deliver(observation("obs-1", json!(i))));
+        }
+        let got = drain(&mut rx);
+        assert!(got.len() <= 3, "bounded: {}", got.len());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        ));
+        // The reconnect replays what the buffer still holds.
+        let last = ids_of(&got).first().copied().unwrap_or(0);
+        let (backlog, _rx) = s.attach_stream(&sid, Some(last)).unwrap();
+        let replayed = inputs_of(&backlog);
+        assert!(
+            replayed.ends_with(&[json!(3), json!(4), json!(5)]),
+            "{replayed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_idle_sweep_spares_a_session_refreshed_in_the_meantime() {
+        let s = Sessions::new(SessionLimits {
+            idle_ttl: Duration::from_millis(20),
+            ..SessionLimits::default()
+        });
+        let sid = s.create().unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // The sweep saw it idle, then a request refreshed it before removal.
+        assert!(s.touch(&sid));
+        assert!(!s.end_if_idle(&sid).await);
+        assert!(s.touch(&sid));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(s.end_if_idle(&sid).await);
+    }
+
+    #[tokio::test]
+    async fn sse_replay_eviction_is_not_a_poll_drop() {
+        let s = Sessions::new(limits(16, 100, 2));
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("state::set"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        for i in 1..=3 {
+            s.deliver(observation("obs-1", json!(i)));
+            for id in ids_of(&drain(&mut rx)) {
+                s.mark_sent(&sid, id);
+            }
+        }
+        // Evicting an observation a stream already wrote loses nothing.
+        assert_eq!(s.poll(&sid, None, 50).unwrap()["dropped"], 0);
+        assert_eq!(s.list(&sid).unwrap()[0]["dropped"], 0);
+        // One no stream wrote is a loss for that observer, still not a poll drop.
+        drop(rx);
+        for i in 4..=6 {
+            s.deliver(observation("obs-1", json!(i)));
+        }
+        assert_eq!(s.poll(&sid, None, 50).unwrap()["dropped"], 0);
+        assert_eq!(s.list(&sid).unwrap()[0]["dropped"], 1);
     }
 
     #[tokio::test]

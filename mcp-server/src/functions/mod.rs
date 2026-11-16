@@ -16,9 +16,11 @@ use iii_sdk::{errors::Error, IIIClient, ObserverHandle, OutputStream, RegisterFu
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::bus::Bus;
 use crate::config::McpConfig;
 use crate::engine::SdkEngine;
 use crate::handler::{handle_http, App, HttpReply};
+use crate::http_guard::{self, RouteAction};
 use crate::rbac_guard::RbacMode;
 use crate::sessions::Sessions;
 use crate::sessions::StreamItem;
@@ -31,6 +33,10 @@ pub const ROUTE_METHODS: [&str; 3] = ["POST", "GET", "DELETE"];
 pub const FUNCTION_ID: &str = "mcp-server::handler";
 pub const SINK_FUNCTION_ID: &str = "mcp-server::observed";
 pub const HTTP_ON_REQUEST_FN: &str = "http::on-request";
+/// Called after the http worker applies a configuration change.
+pub const HTTP_RELOAD_FN: &str = "http::on-config-change";
+/// Re-checks the http worker's bind after each of its reloads.
+pub const RELOAD_FUNCTION_ID: &str = "mcp-server::on-http-reload";
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -109,6 +115,113 @@ pub fn observe_routes(iii: &IIIClient, api_path: &str) -> Vec<ObserverHandle> {
             )
         })
         .collect()
+}
+
+/// The endpoint's `http::on-request` routes: served at boot, withdrawn when
+/// the http worker rebinds somewhere the endpoint must not be reachable,
+/// restored when it is back on loopback.
+pub struct Routes {
+    iii: Arc<IIIClient>,
+    api_path: String,
+    handles: tokio::sync::Mutex<Option<Vec<ObserverHandle>>>,
+}
+
+impl Routes {
+    pub fn new(iii: Arc<IIIClient>, api_path: String) -> Arc<Self> {
+        Arc::new(Self {
+            iii,
+            api_path,
+            handles: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    pub async fn serving(&self) -> bool {
+        self.handles.lock().await.is_some()
+    }
+
+    /// Observe the routes, unless already served. Reports whether they
+    /// became active without blocking.
+    pub async fn serve(&self) {
+        let mut handles = self.handles.lock().await;
+        if handles.is_some() {
+            return;
+        }
+        let routes = observe_routes(&self.iii, &self.api_path);
+        let (watch, api_path) = (routes.clone(), self.api_path.clone());
+        tokio::spawn(async move {
+            for route in watch {
+                match tokio::time::timeout(std::time::Duration::from_secs(30), route.ready()).await
+                {
+                    Ok(Ok(())) => {
+                        tracing::info!(api_path = %api_path, observer_id = %route.id(), "http::on-request route active")
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, api_path = %api_path, "http::on-request route rejected")
+                    }
+                    Err(_) => {
+                        tracing::warn!(api_path = %api_path, "http::on-request route still pending after 30s; is the http worker running?")
+                    }
+                }
+            }
+        });
+        *handles = Some(routes);
+    }
+
+    /// Stop serving: remove the routes from the http worker.
+    pub async fn withdraw(&self) {
+        if let Some(routes) = self.handles.lock().await.take() {
+            for route in routes {
+                let _ = route.dispose().await;
+            }
+        }
+    }
+}
+
+/// Re-check the bind after every reload of the http worker (it can rebind
+/// at runtime). No polling: the http worker's reload handler is observed,
+/// and each time it ran, `http::status` is read again and the routes are
+/// withdrawn or restored. Calling the target directly only re-checks.
+pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) -> ObserverHandle {
+    let ctx = ctx.clone();
+    iii.register_function(
+        RELOAD_FUNCTION_ID,
+        RegisterFunction::new_async(move |_: Value| {
+            let (ctx, routes) = (ctx.clone(), routes.clone());
+            async move {
+                recheck_bind(&ctx, &routes).await;
+                Ok::<Value, Error>(json!({}))
+            }
+        })
+        .metadata(json!({ "internal": true, "trace_hidden": true }))
+        .description("Internal: re-checks the http worker's bind after it reloads, and withdraws or restores the MCP routes."),
+    );
+    iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID)
+}
+
+pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) {
+    let status = Bus::call(&ctx.engine, "http::status", json!({}), Some(10_000))
+        .await
+        .map_err(|e| e.to_string());
+    let flag = http_guard::parse_flag(std::env::var(http_guard::PUBLIC_HTTP_ENV).ok().as_deref());
+    let bind = http_guard::decide(status, flag, &ctx.cfg.api_path);
+    match http_guard::transition(routes.serving().await, &bind) {
+        RouteAction::Keep => {}
+        RouteAction::Withdraw(why) => {
+            routes.withdraw().await;
+            tracing::error!(
+                "{why}\n  The MCP routes are withdrawn until the http worker is back on loopback."
+            );
+        }
+        RouteAction::Restore => {
+            routes.serve().await;
+            tracing::info!(api_path = %ctx.cfg.api_path, "the http worker is acceptable again; MCP routes restored");
+        }
+    }
+    if let http_guard::Bind::Serve { warnings } = bind {
+        for w in warnings {
+            tracing::warn!("{w}");
+        }
+    }
 }
 
 fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {
@@ -206,7 +319,9 @@ async fn respond(ctx: &Ctx, response: OutputStream, reply: HttpReply) -> Result<
             );
         }
     }
-    // Returning null ends the response.
+    // End the reply cleanly so the client reads its end, not an abort. (The
+    // SDK would close it on return too; closing twice does nothing.)
+    let _ = response.close().await;
     Ok(Value::Null)
 }
 

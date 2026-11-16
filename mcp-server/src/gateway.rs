@@ -123,6 +123,34 @@ pub fn tools_list() -> Value {
     ]})
 }
 
+/// `{"result": ...}` as compact JSON, at most `max` chars. Over it, the
+/// result's JSON text is cut so the whole reply, escaping included, fits:
+/// `{"result": "<cut JSON text>", "truncated": true, "total_chars": n}`.
+fn bounded(result: &Value, max: usize) -> String {
+    let whole = json!({ "result": result }).to_string();
+    if whole.chars().count() <= max {
+        return whole;
+    }
+    let serialized = result.to_string();
+    let total = serialized.chars().count();
+    let cut_reply = |n: usize| {
+        let cut: String = serialized.chars().take(n).collect();
+        json!({ "result": cut, "truncated": true, "total_chars": total }).to_string()
+    };
+    // The longest cut whose reply fits; the envelope alone may not fit a
+    // tiny limit, and then it is returned as is.
+    let (mut lo, mut hi) = (0usize, total.min(max));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if cut_reply(mid).chars().count() <= max {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut_reply(lo)
+}
+
 /// The observe tools' arguments; `with_target` adds `target_function_id`.
 fn observe_schema(with_target: bool) -> Value {
     let mut schema = json!({
@@ -145,6 +173,10 @@ fn observe_schema(with_target: bool) -> Value {
         });
     }
     schema
+}
+
+fn raw_text(body: String) -> Value {
+    json!({ "content": [{ "type": "text", "text": body }] })
 }
 
 fn text(v: &Value) -> Value {
@@ -199,14 +231,7 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
                 .filter(|m| *m > 0)
                 .map(|m| m as usize)
                 .unwrap_or(DEFAULT_MAX_CHARS);
-            let serialized = serde_json::to_string(&result).unwrap_or_default();
-            let total = serialized.chars().count();
-            if total <= max {
-                text(&json!({ "result": result }))
-            } else {
-                let cut: String = serialized.chars().take(max).collect();
-                text(&json!({ "result": cut, "truncated": true, "total_chars": total }))
-            }
+            raw_text(bounded(&result, max))
         }
         Err(e) => error(e.to_string()),
     }
@@ -281,6 +306,12 @@ async fn observe<B: Bus + Observe>(
     args: &Value,
     delivery: Delivery,
 ) -> Value {
+    let internal = |id: Option<&str>| id.is_some_and(|f| f.trim().starts_with(INTERNAL_PREFIX));
+    if internal(str_arg(args, "function_id")) || internal(str_arg(args, "target_function_id")) {
+        return error(format!(
+            "`{INTERNAL_PREFIX}` functions are this bridge's internals and cannot be observed or targeted through it"
+        ));
+    }
     match serde_json::from_value::<ObserveRequest>(args.clone()) {
         Err(e) => error(format!("invalid observe arguments: {e}")),
         Ok(req) => match ctx
@@ -862,6 +893,109 @@ mod tests {
         assert_eq!(e.bus.calls()[0].0, "secrets::resolve");
     }
 
+    /// The raw text of a tool result.
+    async fn raw(
+        e: &Engine,
+        s: &Sessions,
+        sid: Option<&str>,
+        name: &str,
+        args: Value,
+    ) -> (bool, String) {
+        let ctx = Ctx {
+            bus: e,
+            sessions: s,
+            session_id: sid,
+            mode: &proxied(),
+            sink: "mcp-server::observed",
+        };
+        let r = call_tool(&ctx, name, &args).await.unwrap();
+        (
+            r.get("isError").and_then(Value::as_bool) == Some(true),
+            r["content"][0]["text"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn max_chars_bounds_the_text_returned() {
+        let e = Engine::new(
+            FakeBus::new()
+                .on("a::zeros", |_| Ok(json!([0, 0, 0, 0])))
+                .on("a::big", |_| {
+                    Ok(json!((0..500)
+                        .map(|i| format!("\"q{i}\""))
+                        .collect::<Vec<_>>()))
+                }),
+        );
+        let s = sessions();
+        // [0,0,0,0] is 9 chars, but the text returned is longer: it is cut.
+        let (_, text) = raw(
+            &e,
+            &s,
+            None,
+            "iii_call",
+            json!({ "function_id": "a::zeros", "max_chars": 10 }),
+        )
+        .await;
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["truncated"], true, "{text}");
+        // Escaped quotes count too; the whole text stays within the limit.
+        for max in [80, 200, 1000] {
+            let (err, text) = raw(
+                &e,
+                &s,
+                None,
+                "iii_call",
+                json!({ "function_id": "a::big", "max_chars": max }),
+            )
+            .await;
+            assert!(!err);
+            assert!(
+                text.chars().count() <= max,
+                "{max}: {} chars",
+                text.chars().count()
+            );
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(v["truncated"], true);
+            assert!(v["total_chars"].as_u64().unwrap() > max as u64);
+        }
+        // Under the limit: the whole result, compact, as the limit measured it.
+        let (_, text) = raw(
+            &e,
+            &s,
+            None,
+            "iii_call",
+            json!({ "function_id": "a::zeros" }),
+        )
+        .await;
+        assert_eq!(text, r#"{"result":[0,0,0,0]}"#);
+    }
+
+    #[tokio::test]
+    async fn observe_tools_refuse_this_servers_internals() {
+        let e = Engine::new(FakeBus::new());
+        let s = sessions();
+        let sid = s.create().unwrap();
+        for (tool_name, args) in [
+            (
+                "iii_observe",
+                json!({ "function_id": "mcp-server::observed" }),
+            ),
+            (
+                "iii_observations_sse",
+                json!({ "function_id": "mcp-server::handler" }),
+            ),
+            (
+                "iii_observe",
+                json!({ "function_id": "a::b", "target_function_id": "mcp-server::observed" }),
+            ),
+        ] {
+            let (err, v) = tool(&e, &s, Some(&sid), tool_name, args.clone()).await;
+            assert!(err, "{args}");
+            assert!(v.as_str().unwrap().contains("mcp-server::"), "{v}");
+        }
+        assert!(e.observed.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn iii_call_returns_the_result_and_defaults_the_payload() {
         let e = Engine::new(FakeBus::new().on("engine::workers::list", |p| {
@@ -941,7 +1075,10 @@ mod tests {
         )
         .await;
         assert_eq!(v["truncated"], true);
-        assert_eq!(v["result"].as_str().unwrap().chars().count(), 100);
+        // The whole reply fits in max_chars, so the cut is shorter than it.
+        let cut = v["result"].as_str().unwrap().chars().count();
+        assert!(cut > 0 && cut < 100, "{cut}");
+        assert!(v.to_string().chars().count() <= 100);
         assert!(v["total_chars"].as_u64().unwrap() > 5000);
     }
 

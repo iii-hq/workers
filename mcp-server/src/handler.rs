@@ -214,6 +214,11 @@ pub async fn handle_http<B: Bus + Observe>(
     };
 
     let initializing = req.method == "initialize";
+    if initializing && req.id.is_none() {
+        // A notification gets no reply: a session opened here could never
+        // reach the client, which could not end it.
+        return HttpReply::empty(202);
+    }
     let session_id = if initializing {
         match app.sessions.create() {
             Ok(sid) => Some(sid),
@@ -627,6 +632,30 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Last-Event-ID"));
+    }
+
+    #[tokio::test]
+    async fn an_initialize_without_an_id_opens_no_session() {
+        // A notification gets no reply, so a session id could never reach the
+        // client, which could not end it; it would only use up max_sessions.
+        let mut f = Fixture::new(FakeBus::new());
+        f.sessions = Sessions::new(SessionLimits {
+            max_sessions: 1,
+            ..SessionLimits::default()
+        });
+        for _ in 0..3 {
+            let r = f
+                .post(
+                    json!({}),
+                    json!({ "jsonrpc": "2.0", "method": "initialize", "params": {} }),
+                )
+                .await;
+            assert_eq!(r.status, 202);
+            assert!(r.session_id.is_none());
+        }
+        let r = f.post(json!({}), rpc("initialize", json!({}))).await;
+        assert_eq!(r.status, 200, "the one slot is still free");
+        assert!(r.session_id.is_some());
     }
 
     #[tokio::test]
