@@ -625,18 +625,38 @@ async fn amqps_connects_with_a_process_default_crypto_provider() {
     let Some(container) = docker::start_rabbitmq_tls().await else {
         return; // skip: docker or openssl not available
     };
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::set_var("SSL_CERT_DIR", container.ca_dir()) };
+    // Configure trust before the child starts its runtime: mutating this process's
+    // environment while other test or native-library threads run is unsound.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "amqps_child_connect", "--ignored", "--nocapture"])
+        .env("SSL_CERT_DIR", container.ca_dir())
+        .env("QUEUE_TEST_AMQPS_URL", container.amqps_url())
+        .output()
+        .expect("start isolated AMQPS probe");
+    assert!(
+        output.status.success(),
+        "AMQPS probe failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "AMQPS probe did not execute"
+    );
+}
 
+#[tokio::test]
+#[ignore = "launched by amqps_connects_with_a_process_default_crypto_provider"]
+async fn amqps_child_connect() {
+    let url = std::env::var("QUEUE_TEST_AMQPS_URL").expect("parent supplies AMQPS URL");
     let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
     let adapter = tokio::time::timeout(
         Duration::from_secs(30),
-        RabbitMQAdapter::from_config(Some(&json!({"amqp_url": container.amqps_url()})), invoker),
+        RabbitMQAdapter::from_config(Some(&json!({"amqp_url": url})), invoker),
     )
     .await
     .expect("amqps connect must not hang")
     .expect("rabbitmq adapter should connect over amqps");
-
     adapter.shutdown().await;
 }
 
