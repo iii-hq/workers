@@ -159,7 +159,7 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
-import { idleComposerPlaceholder } from './agent-defaults'
+import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
 import {
   type AsideRequest,
   type AsideTab,
@@ -321,6 +321,13 @@ export function ChatView({
   asideSide = 'right',
 }: ChatViewProps) {
   const readOnly = conversation.sessionMetadata?.read_only === true
+  // Beside the title in the header: read-only, or a non-default agent.
+  const headerAside = readOnly
+    ? 'Read-only'
+    : conversation.agentProfile &&
+        conversation.agentProfile.id !== DEFAULT_AGENT_ID
+      ? conversation.agentProfile.name
+      : null
   const imported =
     typeof conversation.sessionMetadata?.external_source === 'string'
   const [importedTurnEstablished, setImportedTurnEstablished] = useState<
@@ -3175,14 +3182,18 @@ export function ChatView({
             >
               {panelTitle ?? 'Chat'}
             </h2>
-            <span className="shrink-0 text-ink-ghost" aria-hidden>
-              ·
-            </span>
-            <span className="min-w-0 shrink-[2] truncate">
-              {readOnly
-                ? 'Read-only'
-                : (conversation.agentProfile?.name ?? effectiveModel)}
-            </span>
+            {/* Beside the title only what sets this chat apart: read-only,
+ or an agent other than the default. The model is in the composer. */}
+            {headerAside ? (
+              <>
+                <span className="shrink-0 text-ink-ghost" aria-hidden>
+                  ·
+                </span>
+                <span className="min-w-0 shrink-[2] truncate">
+                  {headerAside}
+                </span>
+              </>
+            ) : null}
           </div>
         </PageHeader>
       )}
