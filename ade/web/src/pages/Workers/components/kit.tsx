@@ -100,7 +100,9 @@ export function Notice({
           {headline}
         </div>
         {detail ? (
-          <div className="text-body leading-5 text-muted-foreground [overflow-wrap:anywhere]">
+          // A reading measure, not the pane's width: a notice in a wide pane
+          // stays a paragraph a person can read (≈77 characters a line).
+          <div className="max-w-[64ch] text-body leading-5 text-muted-foreground [overflow-wrap:anywhere]">
             {detail}
           </div>
         ) : null}

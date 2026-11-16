@@ -749,7 +749,9 @@
 }
 
 .wk-apply-copy .wk-note {
-  max-width: 55ch;
+  /* Under 80 characters a line in any font: `ch` is the zero's width, wider
+     than an average letter, so 55ch still painted 81 characters on CI. */
+  max-width: 50ch;
   overflow-wrap: anywhere;
 }
 
