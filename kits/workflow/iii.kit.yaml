@@ -10,11 +10,12 @@ workers:
   # The flat workflow::start request (`nodes` at the top level, `task` on a node; an older
   # worker refuses every run), node options (profile, model, label, phase, loop,
   # filesystem_root), an `output` naming a loop body node, the caller folder, workflow::status
-  # details and the run-end observe (`next` + replay of workflow::on-run-completed): set the
-  # floor to the first release with all of them. No caret, like state and ide.
-  workflow: ">=0.2.3"
-  # 1.9.4 ends a parked node on workflow::stop without a spurious turn.
-  harness: ^1.9.4
+  # details and the run-end observe (`next` + replay of workflow::on-run-completed): 0.3.0 is
+  # the first release with all of them. No caret, like state and ide.
+  workflow: ">=0.3.0"
+  # 1.9.9: a parked node keeps waiting while its wake is delivered, and every exchange ends
+  # with its terminal completion (a reseeded turn, a failed reseed, a crashed finalize).
+  harness: ^1.9.9
   # iii-directory, state, kanban and ide: their first releases on iii-sdk 0.26 (observe v2),
   # the same floors as iii/deepwork, so the two kits install side by side.
   # No caret: harness pulls iii-directory@latest.
