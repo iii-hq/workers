@@ -43,6 +43,32 @@ def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | Non
     return None
 
 
+def root_package_manager(root: pathlib.Path) -> str | None:
+    """The repo-root package.json `packageManager`, the pin every package follows."""
+    try:
+        return json.loads((root / "package.json").read_text(encoding="utf-8")).get("packageManager")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def package_manager_error(label: str, package_json: pathlib.Path, expected: str) -> str | None:
+    """Return why a package.json pins another package manager than the repo root, or None.
+
+    A package with its own pnpm-lock.yaml is installed on its own, so it must
+    pin one; a workspace member without a pin uses the root's.
+    """
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return f"{label}: could not parse {package_json.name}: {error}"
+    pinned = package.get("packageManager")
+    if pinned is None and not (package_json.parent / "pnpm-lock.yaml").exists():
+        return None
+    if pinned != expected:
+        return f'{label}: packageManager is {pinned!r}, must be "{expected}" (the repo-root package.json pin)'
+    return None
+
+
 def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     """Validate the public `iii.worker.yaml` manifest while keeping it out of release planning."""
     try:
@@ -238,6 +264,14 @@ def main(argv: list[str] | None = None) -> int:
                             f"{worker}/{spec.manifest} version {current_version} "
                             f"is less than base {base_version}"
                         )
+
+        # The pnpm pin: a worker's package.json follows the repo root's.
+        root_pin = root_package_manager(spec.path.parent)
+        package_json = spec.path / (spec.manifest or "")
+        if root_pin and package_json.name == "package.json" and package_json.is_file():
+            pin_error = package_manager_error(f"{worker}/{spec.manifest}", package_json, root_pin)
+            if pin_error:
+                hard(pin_error)
 
         tests = spec.path / "tests"
         go_tests = spec.artifact_kind == "go-binary" and any(spec.path.rglob("*_test.go"))
