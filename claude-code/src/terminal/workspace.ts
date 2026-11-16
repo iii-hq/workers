@@ -9,7 +9,7 @@ import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
 import { installOnHost } from '../iii-plugin/install.js';
 import { MODE_FILE } from '../plugin.js';
-import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
+import { exec, fileExists, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
 
@@ -176,7 +176,9 @@ async function writeNotes(
   });
   const block = `${NOTES_BEGIN}\n${notes.trim()}\n${NOTES_END}`;
   const path = `${workspace}/CLAUDE.md`;
-  const current = (await readFile(iii, path)) ?? '';
+  // Unknown (null) is read anyway: only a sure "absent" skips the read.
+  const current =
+    (await fileExists(iii, path)) === false ? '' : ((await readFile(iii, path)) ?? '');
   let next: string;
   if (current.includes(NOTES_BEGIN) && current.includes(NOTES_END)) {
     const start = current.indexOf(NOTES_BEGIN);

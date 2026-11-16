@@ -72,6 +72,40 @@ export async function writeFile(iii: IIIClient, path: string, content: string): 
 }
 
 /**
+ * Whether `path` is a file on the terminal host: true or false from `test -f`,
+ * or null when the host could not say (the call failed, or no shell `test`).
+ * Asking first spares a `coder::read-file` that would fail: a miss answers
+ * C211, which callers read as "absent", but the engine records every one as
+ * a failed invocation.
+ */
+export async function fileExists(iii: IIIClient, path: string): Promise<boolean | null> {
+  try {
+    const r = await exec(iii, `test -f ${quote(path)}`, { timeoutMs: 15_000 });
+    if (r.exit_code === 0) return true;
+    if (r.exit_code === 1) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every file under `dir` on the terminal host, each as `${dir}/<relative>`
+ * (an absent `dir` is an empty set), or null when the host could not list it.
+ * One call in place of a read per file, for the same reason as `fileExists`.
+ */
+export async function listFiles(iii: IIIClient, dir: string): Promise<Set<string> | null> {
+  try {
+    const q = quote(dir);
+    const r = await exec(iii, `if [ -d ${q} ]; then find ${q} -type f; fi`, { timeoutMs: 15_000 });
+    if (r.exit_code !== 0) return null;
+    return new Set(r.stdout.split('\n').filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * File contents, or null when the file is absent. `coder::read-file` returns
  * the text inline; `shell::fs::read` streams through a channel, which a
  * worker reading a small settings file does not need.

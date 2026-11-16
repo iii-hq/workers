@@ -20,9 +20,13 @@ function fakeShell(
     noMcpServer?: boolean;
     /** A read failure that is NOT "missing": a timeout, a read budget. */
     readError?: Error;
+    /** The host cannot list a folder or test a file (a shell without find). */
+    listingFails?: boolean;
   } = {},
 ) {
   const calls: Call[] = [];
+  /** Reads of a file that is not there: each is a failed invocation on the bus. */
+  const missedReads: string[] = [];
   const files: Record<string, string> = { ...options.files };
   const iii = {
     // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the SDK client
@@ -43,6 +47,20 @@ function fakeShell(
             return options.noIiiCli
               ? { stdout: '', stderr: '', exit_code: 1 }
               : { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
+          }
+          // One listing of the plugin folder, so a missing file is never read.
+          const listing = command.match(/^if \[ -d '([^']*)' \]; then find '[^']*' -type f; fi$/);
+          if (listing) {
+            if (options.listingFails)
+              return { stdout: '', stderr: 'find: not found', exit_code: 127 };
+            const under = Object.keys(files).filter((f) => f.startsWith(`${listing[1]}/`));
+            return { stdout: under.map((f) => `${f}\n`).join(''), stderr: '', exit_code: 0 };
+          }
+          const test = command.match(/^test -f '([^']*)'$/);
+          if (test) {
+            if (options.listingFails)
+              return { stdout: '', stderr: 'test: not found', exit_code: 127 };
+            return { stdout: '', stderr: '', exit_code: files[test[1]] === undefined ? 1 : 0 };
           }
           return { stdout: '', stderr: '', exit_code: 0 };
         }
@@ -87,7 +105,10 @@ function fakeShell(
           const content = files[String(payload.path)];
           // The shape the coder surface answers with: C211 is missing-or-denied,
           // and it is the only failure that means "there is nothing to preserve".
-          if (content === undefined) throw new Error('error[C211]: no such file');
+          if (content === undefined) {
+            missedReads.push(String(payload.path));
+            throw new Error('error[C211]: no such file');
+          }
           return { content };
         }
         default:
@@ -95,7 +116,7 @@ function fakeShell(
       }
     },
   } as unknown as IIIClient;
-  return { iii, calls, files };
+  return { iii, calls, files, missedReads };
 }
 
 /** A stored value an older schema wrote must not reach a session. */
@@ -249,6 +270,84 @@ describe('preparing the terminal host', () => {
     expect(notes).toContain('# My own notes');
     expect(notes).toContain('keep me');
     expect(notes.indexOf('<!-- iii:begin')).toBeLessThan(notes.indexOf('# My own notes'));
+  });
+
+  it('reads no file that is not there, so a fresh workspace logs no failed calls', async () => {
+    // A miss answers C211, which the installer reads as "absent", but the
+    // engine still records each one as a failed invocation: one per plugin
+    // file on every fresh workspace. The installer lists the folder once and
+    // reads only what it found.
+    const { iii, calls, files, missedReads } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.detail).toBe('');
+    expect(missedReads).toEqual([]);
+    const dir = '/hostroot/claude-code/.iii-plugin';
+    expect(files[`${dir}/skills/iii-runtime/SKILL.md`]).toContain('name: iii-runtime');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('<!-- iii:begin');
+    const listings = calls.filter(
+      (c) => c.function_id === 'shell::exec' && String(c.payload.command).includes('find'),
+    );
+    expect(listings).toHaveLength(1);
+  });
+
+  it('on a second start, reads only what is there and rewrites nothing unchanged', async () => {
+    const { iii, calls, files, missedReads } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+    const before = { ...files };
+    calls.length = 0;
+    missedReads.length = 0;
+
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(missedReads).toEqual([]);
+    expect(files).toEqual(before);
+    expect(calls.filter((c) => c.function_id === 'shell::fs::write')).toEqual([]);
+    // The existing files are still read, so a hand-edited one is put back.
+    expect(calls.some((c) => c.function_id === 'coder::read-file')).toBe(true);
+  });
+
+  it('puts back a plugin file someone changed', async () => {
+    const { iii, files } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+    // A generated file: the static ones are rewritten when the build changes.
+    const path = '/hostroot/claude-code/.iii-plugin/default-mcp.md';
+    const original = files[path];
+    files[path] = 'edited';
+
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(files[path]).toBe(original);
+  });
+
+  it('falls back to reading each file when the host cannot list the folder', async () => {
+    // No listing says nothing about the files, so every one is read as before:
+    // a miss still answers C211, and nothing the operator wrote is lost.
+    const { iii, files, missedReads } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      listingFails: true,
+      files: { '/hostroot/claude-code/CLAUDE.md': '# My own notes\n' },
+    });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.detail).toBe('');
+    expect(missedReads.length).toBeGreaterThan(0);
+    expect(files['/hostroot/claude-code/.iii-plugin/.claude-plugin/plugin.json']).toBeTruthy();
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('# My own notes');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('<!-- iii:begin');
+  });
+
+  it('quotes a workspace path with spaces and quotes in the listing', async () => {
+    const { iii, calls } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    await prepareWorkspace(iii, { ...DEFAULTS, workspace_dir: "/home/o'neil/my space" });
+
+    const listing = calls.find(
+      (c) => c.function_id === 'shell::exec' && String(c.payload.command).includes('find'),
+    );
+    const quoted = `'/home/o'\\''neil/my space/.iii-plugin'`;
+    expect(String(listing?.payload.command)).toBe(
+      `if [ -d ${quoted} ]; then find ${quoted} -type f; fi`,
+    );
   });
 
   it('keeps CLAUDE.md and the terminal when a read fails for another reason', async () => {

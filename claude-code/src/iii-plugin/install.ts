@@ -27,7 +27,12 @@ import { dirname, join } from 'node:path';
 import type { IIIClient } from 'iii-sdk';
 import { fetchIiiContext } from '../iii-context.js';
 import { MODE_FILE, pluginDetail, pluginFiles } from '../plugin.js';
-import { readFile as hostRead, writeFile as hostWrite, probe } from '../terminal/host.js';
+import {
+  readFile as hostRead,
+  writeFile as hostWrite,
+  listFiles,
+  probe,
+} from '../terminal/host.js';
 import { PLUGIN_STATIC_FILES } from './assets.generated.js';
 import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
 import type { AgentProfile, AgentRow } from './directory.js';
@@ -292,16 +297,28 @@ export async function installLocal(
   }
 }
 
-function hostOps(iii: IIIClient): Ops {
+/**
+ * File operations on the terminal host, for the plugin in `dir`. `known` is the
+ * folder's listing (`listFiles`): a file under `dir` that is not in it reads as
+ * null without a call, since `coder::read-file` on a missing file fails (C211)
+ * and the engine records each miss. Writes and removals keep it current. With
+ * no listing (null), every read goes to the host, as before.
+ */
+function hostOps(iii: IIIClient, dir: string, known: Set<string> | null): Ops {
+  const absent = (path: string) => known !== null && path.startsWith(`${dir}/`) && !known.has(path);
   return {
-    read: (path) => hostRead(iii, path),
-    write: (path, content) => hostWrite(iii, path, content),
+    read: async (path) => (absent(path) ? null : hostRead(iii, path)),
+    write: async (path, content) => {
+      await hostWrite(iii, path, content);
+      known?.add(path);
+    },
     remove: async (path) => {
       try {
         await iii.call({ function_id: 'shell::fs::rm', payload: { path }, timeoutMs: 30_000 });
       } catch (err) {
         if (!String(err).includes('S211')) throw err; // already gone
       }
+      known?.delete(path);
     },
   };
 }
@@ -318,12 +335,13 @@ export async function installOnHost(
 ): Promise<Installed & { bridge: string }> {
   const dir = `${workspace}/${PLUGIN_DIR_NAME}`;
   const bridge = await probe(iii, 'command -v iii');
-  const [listed, mcp, def] = await Promise.all([
+  const [listed, mcp, def, known] = await Promise.all([
     listAgents(iii),
     resolveWorkerMcp(iii),
     readDefaultProfile(iii),
+    listFiles(iii, dir),
   ]);
-  const installed = await installWith(dir, hostOps(iii), {
+  const installed = await installWith(dir, hostOps(iii, dir, known), {
     cli: bridge || 'iii',
     context,
     agents: listed.agents,
