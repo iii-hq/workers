@@ -209,6 +209,36 @@ mod tests {
         assert!(serde_yaml_ng::from_str::<Config>("provider: ngrok\n").is_err());
     }
 
+    // An upgrade from 0.2.2 validates the package defaults against 0.2.2's
+    // schema, which refuses unknown keys: shipped defaults keep to its keys.
+    #[test]
+    fn package_defaults_use_only_keys_the_0_2_2_schema_accepts() {
+        const V022_KEYS: [&str; 11] = [
+            "targets",
+            "cloudflared",
+            "state_path",
+            "startup_timeout_ms",
+            "max_retries",
+            "retry_initial_ms",
+            "retry_max_ms",
+            "failed_cooldown_ms",
+            "retry_budget_reset_ms",
+            "max_leases",
+            "max_lease_seconds",
+        ];
+        let manifest: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(include_str!("../iii.worker.yaml")).unwrap();
+        let config = manifest["config"].as_mapping().expect("config mapping");
+        for key in config.keys() {
+            let key = key.as_str().unwrap();
+            assert!(V022_KEYS.contains(&key), "{key} is not in the 0.2.2 schema");
+        }
+        // Absent keys fall back to their code defaults.
+        let shipped: Config = serde_yaml_ng::from_value(manifest["config"].clone()).unwrap();
+        assert_eq!(shipped.provider, ProviderKind::Cloudflared);
+        assert!(shipped.validate().is_ok());
+    }
+
     #[test]
     fn opentunnel_needs_http_origins_and_profile_ids() {
         assert!(opentunnel("webhooks", "http://127.0.0.1:3112")

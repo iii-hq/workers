@@ -11,7 +11,9 @@ tags: [cloudflare, opentunnel, quick-tunnel, webhooks, tunnel, leases]
 dependencies:
   configuration: latest
 config:
-  provider: cloudflared
+  # Only keys the 0.2.2 schema knows: compose validates these defaults against
+  # the previously registered schema before the new version can start.
+  # `provider` (cloudflared) and `proxy_protocol` stay at their code defaults.
   targets:
     webhooks: http://127.0.0.1:3112
   cloudflared: cloudflared
