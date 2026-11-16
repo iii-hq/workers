@@ -130,7 +130,15 @@ the RBAC check it reads `http::status`:
 | loopback (`127.0.0.0/8`, `::1`, `localhost`) | any | serve |
 | anything else (`0.0.0.0`, `::`, LAN, public, multicast) | off | **refuse**, with how to set the http worker's `host` to `127.0.0.1` |
 | anything else | `true` / `1` | serve, with a warning |
-| `http::status` unreadable | any | serve, with a warning |
+| no host reported, or `http::status` unreadable | off | **refuse**: the bind is unknown |
+| no host reported, or `http::status` unreadable | `true` / `1` | serve, with a warning |
+
+The http worker can rebind at runtime, so the check repeats after each of its
+reloads: `mcp-server` observes `http::on-config-change` (its deliveries come
+after the reload is applied) with the internal target
+`mcp-server::on-http-reload`, reads `http::status` again, and withdraws the
+routes on a rebind it would refuse, restoring them when the bind is
+acceptable again. No polling; a direct call of the target only re-checks.
 
 Several MCP servers share one http worker on different `api_path`s; one
 rbac-proxy per server gives each its own rules.
@@ -169,7 +177,8 @@ The worker observes `http::on-request` for `POST`, `GET` and `DELETE
    opens the session's SSE stream (see Observe; **404** unknown; **400**
    without the header). Anything else but `POST`: **405**.
 3. **JSON-RPC shape.** Batches and non-JSON-RPC bodies: -32600 (HTTP 200).
-4. **Session.** `initialize` opens a new session and returns its id in the
+4. **Session.** An `initialize` without an `id` (a notification) gets 202
+   and opens nothing. Otherwise `initialize` opens a new session and returns its id in the
    `Mcp-Session-Id` response header, or gets **503** when `max_sessions`
    (default 16) are open. Any other request carrying an unknown
    or expired id gets **404** ("Session not found"), which tells the client to
@@ -187,7 +196,7 @@ the body.
 |---|---|
 | `initialize` | new session (UUID v4) |
 | any request with its id | refreshes `last_seen` |
-| idle longer than `session_idle_ttl_secs` (default 1800) | ended by the idle-session sweep: a tokio task in `mcp-server` that wakes every 60 s and ends every session idle past the TTL |
+| idle longer than `session_idle_ttl_secs` (default 1800) | ended by the idle-session sweep: a tokio task in `mcp-server` that wakes every 60 s and ends every session still idle past the TTL, checked under the lock that removes it |
 | `DELETE` | ended |
 | worker shutdown | every session ended |
 | ended | all its observers disposed on the engine; buffers dropped |
@@ -201,7 +210,7 @@ and re-initialize.
 
 | Tool | Input | Output | Session |
 |---|---|---|---|
-| `iii_call` | `function_id` (required), `payload` (object, default `{}`), `timeout_ms`, `void`, `max_chars` (default 100000) | `{ result }`; `{ result: <cut JSON text>, truncated: true, total_chars }` when larger than `max_chars`; `{ result: null, void: true }` for `void` | no |
+| `iii_call` | `function_id` (required), `payload` (object, default `{}`), `timeout_ms`, `void`, `max_chars` (default 100000) | `{ result }` as compact JSON; when the reply would exceed `max_chars`, `{ result: <cut JSON text>, truncated: true, total_chars }`, cut so the whole reply fits; `{ result: null, void: true }` for `void` | no |
 | `iii_secret_store` | `name`, `value`, `consumers` (all required), `description` | `{ ref, hint, fingerprint, consumers }` | no |
 | `iii_observe` | `function_id` (required), `filters`, `args`, `capture`, `namespace`, `max_observations`, `expires_in_ms`, `target_function_id` | `{ observer_id, function_id, state, delivery: "poll" \| "target", target_function_id? }` | yes |
 | `iii_observations_sse` | as `iii_observe`, without `target_function_id` | `{ observer_id, function_id, state, delivery: "sse" }` | yes |
@@ -223,7 +232,8 @@ Rules shared by all tools:
   params, a malformed request).
 - Argument errors (missing `function_id`, non-object `payload`) are tool
   errors and make no engine call.
-- `iii_call` refuses `mcp-server::*`, the worker's own internals. Nothing else is
+- `iii_call` and the observe tools (as source or `target_function_id`)
+  refuse `mcp-server::*`, the worker's own internals. Nothing else is
   filtered locally: RBAC decides.
 - A session tool without a session returns a tool error telling the client to
   initialize and send `Mcp-Session-Id`.
@@ -333,13 +343,25 @@ lists it, `iii_unobserve` removes it, and ending the session disposes it.
   announced first, as `notifications/iii/observations_dropped`
   `{ after_event_id, through_event_id }`. A new `GET` replaces the previous
   stream; ending the session ends it.
+- **Function binding.** An observation is routed only to an observer of the
+  function it names, so a worker cannot deliver its own function under
+  another session's `observer_id`.
+- **Bounded stream.** The live SSE queue holds at most
+  `max_buffered_observations`; a stream that falls that far behind is
+  closed and the client resumes with `Last-Event-ID` from the buffer.
+- **Drop accounting.** Only poll evictions count in
+  `iii_observations_poll`'s `dropped`; an SSE observation leaving the replay
+  window is a loss for its observer only if no stream wrote it.
 - **Caps.** At most `max_sessions` (default 16) sessions and
   `max_observers_per_session` (default 100) observers each; over the cap,
   `initialize` gets 503 and observe tools a tool error.
 - **Activation.** Observe tools wait up to 5 s for activation. An observer of
   a function no one hosts yet stays `pending` and is returned as such. A
-  refused observer (bad filter, unknown `capture`, RBAC `FORBIDDEN`) is
-  disposed and reported as `observe refused: <code>: <message>`.
+  refused observer (bad filter, unknown `capture`, RBAC `FORBIDDEN`) ends in
+  `error` and is disposed and reported as `observe refused: <code>:
+  <message>`. One that ends `disposed` instead already fired its
+  `max_observations` (or expired) before activation was confirmed: it is
+  kept with its observations.
 - `max_observations` maps to the observer's `max_fires`, `expires_in_ms` to
   its expiry; the engine enforces both.
 
