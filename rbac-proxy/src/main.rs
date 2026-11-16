@@ -109,7 +109,9 @@ async fn main() -> Result<()> {
         rbac_enabled = cfg.rbac_enabled(),
         "starting rbac-proxy"
     );
-    if let Some(warning) = rbac_proxy::endpoints::empty_warning(&cfg.rbac.expose_endpoints) {
+    if let Some(warning) =
+        rbac_proxy::endpoints::endpoints_warning(cfg.rbac.expose_endpoints.as_deref())
+    {
         tracing::warn!("{warning}");
     }
 

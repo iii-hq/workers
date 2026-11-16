@@ -6,8 +6,9 @@ WebSocket port, speaks the iii worker protocol verbatim, and transparently
 reverse-proxies every frame — functions **and** channels — to a trusted engine
 listener, while at the boundary it:
 
-- **serves only the endpoints you list** in `rbac.expose_endpoints` (`/`,
-  `/ws/channels/*`, `/otel`); with none listed it refuses every connection,
+- **serves only the engine endpoints you list** in `rbac.expose_endpoints`
+  (`/`, `/ws/channels/*`, `/otel`; `/` alone without the key, nothing with an
+  empty list), and no other path at all,
 - **authenticates** each connection (the operator's `auth_function_id`),
 - **gates** every invocation in the namespace it is made in (vendored
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
@@ -25,7 +26,8 @@ listener, while at the boundary it:
 - **pins identities**: a proxied worker registers as
   `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
   name>` for a session without `function_registration_prefix`), unless the
-  auth function granted that name in `worker_names`, and an
+  auth function granted that name in `worker_names` (one live session at a
+  time, never an `rbac-proxy:` name), and an
   `engine::*` call is
   forwarded only as a direct call (a queued one is refused), so a session
   never runs anything as a trusted worker or as another prefix's worker, and
@@ -71,10 +73,10 @@ rbac-proxy --url ws://127.0.0.1:49134
 
 ## Before you start: expose the endpoints
 
-rbac-proxy serves **no endpoint until you list it** in
-`rbac.expose_endpoints`, the same way `expose_functions` exposes no function
-until you list it. With the list empty every connection gets `403`, and the
-proxy logs a warning at startup and on every config change.
+rbac-proxy serves the engine endpoints listed in `rbac.expose_endpoints`.
+Without the key it serves the worker endpoint `/` only, as earlier versions
+did (minus channels), and logs a warning; with an empty list it serves
+nothing. The warning repeats at startup and on every config change.
 
 Most setups want all three of the engine's endpoints:
 
@@ -89,22 +91,32 @@ rbac:
 | Endpoint | What it carries | Leave it out and |
 |---|---|---|
 | `/` | The worker protocol. Each connection is authenticated by `auth_function_id`, then every frame is checked against the RBAC rules. | No worker can connect. |
-| `/ws/channels/*` | Channel sockets. Relayed as is; the engine checks each channel's access key, as it does for direct connections. | Functions that stream through channels fail. |
-| `/otel` | Telemetry from the SDK. Authenticated by the same auth function as `/`, then relayed as is. | Workers log `Failed to connect to engine WebSocket: HTTP error: 403 Forbidden` and their telemetry is not exported. |
+| `/ws/channels/{id}` | Channel sockets. Relayed as is; the engine checks each channel's access key, as it does for direct connections. | Functions that stream through channels fail. |
+| `/otel` | Telemetry from the SDK. Authenticated by the same auth function as `/` before the upgrade, then relayed as is (see below). | Workers log `Failed to connect to engine WebSocket` and their telemetry is not exported. |
 
 Rules use the `expose_functions` wildcard syntax over the request path:
 `match("/otel")` or `{ match: "/otel" }`, where `*` matches any run of
 characters and the pattern must match the whole path. A bare `"/otel"`
-is an error that tells you to write `match("/otel")`. Any other path you
-expose is authenticated like `/otel` and relayed to the same path on the
-engine. A refused request's `403` body names the rule to add, for example
-`Add match("/otel") to rbac.expose_endpoints.` `rbac-proxy::status` lists
-the exposed patterns.
+is an error that tells you to write `match("/otel")`. Only these three
+endpoints are ever served: any other path (`/ws/channels/a/b`, `/otel/v2`,
+`/admin`) is a `404`, whatever the rules match, so an endpoint the engine
+adds later stays closed until the proxy learns to handle it. A refused
+request gets a bare `404 not found`; the rule that would expose it is logged
+for the operator, not returned. `rbac-proxy::status` lists the rules in force.
+
+**Telemetry is not attributed.** The engine names relayed spans, logs and
+metrics by the `service.name` inside them, and through the proxy every sender
+has the proxy's address. So a client accepted on `/otel` can write telemetry
+under any service name, another worker's or another tenant's included, and
+send messages up to tungstenite's limits (64 MiB per message, 16 MiB per
+frame). Expose `/otel` only to clients you trust with that: the auth
+function is told the endpoint (`endpoint: "/otel"`, see below) and can refuse
+it per credential.
 
 **Upgrading from an earlier version:** earlier versions always served `/`
-and `/ws/channels/*` and never `/otel`. Add `expose_endpoints` to your
-`rbac-proxy` configuration entry before upgrading, or every worker behind the
-proxy is refused.
+and `/ws/channels/*` and never `/otel`, and refuse the `expose_endpoints`
+key, so set it after upgrading. Until you do, the new version serves `/`, so
+workers stay connected; channels need `match("/ws/channels/*")`.
 
 ## Configuration
 
@@ -141,13 +153,20 @@ grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
 namespaces a connection may declare, and `allowed_functions` applies in
 `default` only.
 
+The auth function receives `{ headers, query_params, ip_address, endpoint }`,
+`endpoint` being the path being opened (`"/"` or `"/otel"`), so it can grant
+an endpoint per credential.
+
 The auth function may also return `worker_names: ["mcp-server"]`, which rbac-proxy
 adds on top of the engine's auth result. A worker that declares one of these
 names keeps it, instead of getting `rbac-proxy:<...>:<name>`. Names must match
-exactly; patterns are not supported. Grant a name when something waits for the
-worker by name, such as compose readiness. That worker then shares its name with
-every other connection that has the same name, so only grant it to credentials
-you trust to be that worker:
+exactly; patterns are not supported, and names starting with `rbac-proxy:` are
+ignored (those are the names the proxy gives sessions). Grant a name when
+something waits for the worker by name, such as compose readiness. One live
+session at a time holds a granted name; another session declaring it
+meanwhile gets its own `rbac-proxy:<...>:<name>`. A worker connected to the
+engine directly under the same name would share it, so only grant names no
+trusted worker uses, to credentials you trust to be that worker:
 
 ```js
 // my-project::auth-function
@@ -270,7 +289,7 @@ them with `observable: false`. Details:
 | Function | Input | Output |
 |---|---|---|
 | `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, expose_endpoints, active_connections, version }` |
-| `rbac-proxy::session` | `{}` | `{ proxied: true, proxy_version, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, expose_endpoints } }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, expose_endpoints } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
@@ -279,13 +298,16 @@ worker version.
 
 `rbac-proxy::session` answers "is **this** connection behind rbac-proxy?",
 while `rbac-proxy::status` reports on the proxy as a whole. The proxy's
-interceptor answers the session probe for every proxied connection, before any
-RBAC gate, and never forwards it, so a worker connected straight to the engine
-gets `function_not_found`. `policy` is the configuration the session runs
-under: whether an auth function is configured, and the `expose_functions`
-and `expose_endpoints` rules as written. A client reads the globs to decide
-what to warn its users about, for example a `match("*")` without an auth
-function.
+interceptor answers the session probe for every proxied connection and never
+forwards it, so a worker connected straight to the engine gets
+`function_not_found`. No expose rule applies to it (it is not a function on
+the engine), but `forbidden_functions` does: an auth function that lists
+`rbac-proxy::session` denies it with `FORBIDDEN`. `policy` is the
+configuration the session runs under: whether an auth function is
+configured, the `expose_functions` rules as written (they apply to every
+session, in every namespace) and the endpoint rules in force. A client reads
+the globs to decide what to warn its users about, for example a `match("*")`
+without an auth function.
 
 A worker that must only run behind the proxy (the `mcp` worker does) calls
 it at boot and refuses to start on `function_not_found`. This guards against

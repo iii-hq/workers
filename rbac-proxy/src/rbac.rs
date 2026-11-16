@@ -49,11 +49,12 @@ pub struct RbacConfig {
     /// exposed if **any** filter matches.
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
-    /// Paths of the engine's worker port the proxy serves (`/`, `/otel`,
-    /// `/ws/channels/*`, ...); a path is served if **any** rule matches.
-    /// Empty, the default, serves nothing.
-    #[serde(default)]
-    pub expose_endpoints: Vec<crate::endpoints::EndpointFilter>,
+    /// Endpoints of the engine's worker port the proxy serves (`/`, `/otel`,
+    /// `/ws/channels/*`); one is served if **any** rule matches it. Unset
+    /// serves `/` only, as earlier versions did (minus channels), so an
+    /// upgrade keeps workers connected; an empty list serves nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_endpoints: Option<Vec<crate::endpoints::EndpointFilter>>,
     /// Called before a function is registered, with its `function_id`,
     /// `description`, `metadata`, `namespace`, `private`, `observable`,
     /// `args_format` (when set) and the session's `context`. An object answer
@@ -69,6 +70,13 @@ pub struct RbacConfig {
     /// `filters` and `metadata`; anything else denies (`FORBIDDEN`).
     #[serde(default)]
     pub on_observer_registration_function_id: Option<String>,
+}
+
+impl RbacConfig {
+    /// The endpoint rules in force ([`crate::endpoints::effective_endpoints`]).
+    pub fn endpoints(&self) -> Vec<crate::endpoints::EndpointFilter> {
+        crate::endpoints::effective_endpoints(self.expose_endpoints.as_deref())
+    }
 }
 
 /// `rbac` keys that configuration entries stored before 0.26 may set, with
@@ -661,11 +669,15 @@ impl ProxySession {
     ///
     /// A name the auth function listed in `worker_names` is the exception:
     /// it reaches the engine as declared, so a supervisor that waits for the
-    /// worker by name (compose) sees it. The grant is the auth function's
-    /// decision: that worker shares its name, and its suspended observers,
-    /// with any other connection holding the name, proxied or direct.
+    /// worker by name (compose) sees it. One live session at a time holds a
+    /// granted name: another session declaring it meanwhile gets its own
+    /// prefixed name, so two sessions never share one worker identity (or
+    /// its suspended observers) through the proxy. A worker connected to the
+    /// engine directly under the same name is the operator's to avoid.
     pub fn proxied_worker_name(&self, declared: &str) -> String {
-        if self.worker_names.iter().any(|granted| granted == declared) {
+        if self.worker_names.iter().any(|granted| granted == declared)
+            && claim_worker_name(declared, self.session_id)
+        {
             return declared.to_string();
         }
         match &self.function_registration_prefix {
@@ -678,6 +690,39 @@ impl ProxySession {
 /// Start of every worker name a proxied connection declares
 /// ([`ProxySession::proxied_worker_name`]).
 pub const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
+
+/// Granted worker names in use, by the session holding each.
+static GRANTED_NAMES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Uuid>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Take `name` for `session`; `false` when another live session holds it.
+fn claim_worker_name(name: &str, session: Uuid) -> bool {
+    let mut held = GRANTED_NAMES.lock().unwrap();
+    match held.get(name) {
+        Some(holder) => *holder == session,
+        None => {
+            held.insert(name.to_string(), session);
+            true
+        }
+    }
+}
+
+/// Frees the session's granted names when dropped (its connection ended).
+pub struct WorkerNamesGuard(pub Uuid);
+
+impl Drop for WorkerNamesGuard {
+    fn drop(&mut self) {
+        release_worker_names(self.0);
+    }
+}
+
+/// Free every granted name `session` holds; called when its connection ends.
+pub fn release_worker_names(session: Uuid) {
+    GRANTED_NAMES
+        .lock()
+        .unwrap()
+        .retain(|_, holder| *holder != session);
+}
 
 // ---------------------------------------------------------------------------
 // AuthResult — VENDORED defaults from rbac_session.rs (`AuthResult`).
@@ -722,9 +767,24 @@ impl AuthResult {
             allow_function_registration: self.allow_function_registration,
             context: self.context,
             function_registration_prefix: self.function_registration_prefix,
-            worker_names: self.worker_names,
+            worker_names: granted_worker_names(self.worker_names),
         }
     }
+}
+
+/// The granted names a session may use: never one under `rbac-proxy:`, the
+/// names the proxy gives sessions (another tenant's worker among them).
+fn granted_worker_names(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| {
+            let reserved = name.starts_with(WORKER_NAME_PREFIX);
+            if reserved {
+                tracing::warn!(name = %name, "auth function granted a reserved worker name; ignored");
+            }
+            !reserved
+        })
+        .collect()
 }
 
 /// Auth result fields that auth functions written before 0.26 may return;
@@ -775,6 +835,7 @@ pub async fn resolve_session(
     headers: HashMap<String, String>,
     query_params: HashMap<String, Vec<String>>,
     ip_address: String,
+    endpoint: &str,
 ) -> Result<ProxySession, AuthRejection> {
     let Some(auth_fn) = rbac.and_then(|c| c.auth_function_id.as_deref()) else {
         // No auth function: refuse (unlike the engine's permissive default).
@@ -786,10 +847,13 @@ pub async fn resolve_session(
         });
     };
 
+    // `endpoint` ("/" or "/otel") lets the auth function grant an endpoint
+    // per credential, for example /otel to trusted tokens only.
     let input = json!({
         "headers": headers,
         "query_params": query_params,
         "ip_address": ip_address,
+        "endpoint": endpoint,
     });
 
     let result = iii.call(CallRequest::new(auth_fn, input)).await;
@@ -1109,7 +1173,9 @@ mod tests {
     #[test]
     fn a_granted_worker_name_reaches_the_engine_as_declared() {
         for prefix in [None, Some("tenant1")] {
-            assert_eq!(granted(prefix, &["mcp"]).proxied_worker_name("mcp"), "mcp");
+            let s = granted(prefix, &["mcp-declared"]);
+            assert_eq!(s.proxied_worker_name("mcp-declared"), "mcp-declared");
+            release_worker_names(s.session_id);
         }
     }
 
@@ -1157,6 +1223,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 "ip".into(),
+                "/",
             )
             .await
             .unwrap_err();
@@ -1463,5 +1530,35 @@ mod tests {
             c.on_observer_registration_function_id.as_deref(),
             Some("p::on-observe")
         );
+    }
+
+    #[test]
+    fn a_grant_cannot_name_a_proxied_worker() {
+        let r: AuthResult = serde_json::from_value(json!({
+            "worker_names": ["mcp-server", "rbac-proxy:tenant2::queue", "rbac-proxy:x"]
+        }))
+        .unwrap();
+        assert_eq!(r.into_session("ip".into()).worker_names, vec!["mcp-server"]);
+    }
+
+    #[test]
+    fn one_live_session_at_a_time_holds_a_granted_name() {
+        let grant = |prefix: &str| ProxySession {
+            worker_names: vec!["granted-once".to_string()],
+            function_registration_prefix: Some(prefix.to_string()),
+            ..ProxySession::permissive("ip".into())
+        };
+        let (a, b) = (grant("tenant1"), grant("tenant2"));
+        assert_eq!(a.proxied_worker_name("granted-once"), "granted-once");
+        // Declaring it again keeps it.
+        assert_eq!(a.proxied_worker_name("granted-once"), "granted-once");
+        // Another session gets its own prefixed name while `a` holds it.
+        assert_eq!(
+            b.proxied_worker_name("granted-once"),
+            "rbac-proxy:tenant2::granted-once"
+        );
+        release_worker_names(a.session_id);
+        assert_eq!(b.proxied_worker_name("granted-once"), "granted-once");
+        release_worker_names(b.session_id);
     }
 }

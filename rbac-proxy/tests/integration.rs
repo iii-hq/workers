@@ -90,6 +90,9 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
     false
 }
 
+/// Every `endpoint` the auth function was asked about.
+static AUTH_ENDPOINTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Register the auth function and target functions on the engine's internal
 /// listener (the proxy fronts these from its own port).
 fn register_support(engine_ws: &str) -> IIIClient {
@@ -113,6 +116,9 @@ fn register_support(engine_ws: &str) -> IIIClient {
     support.register_function(
         "test::auth",
         RegisterFunction::new_async(|input: Value| async move {
+            if let Some(endpoint) = input["endpoint"].as_str() {
+                AUTH_ENDPOINTS.lock().unwrap().push(endpoint.to_string());
+            }
             let mut session = json!({ "context": { "tenant": "itest" } });
             if input["headers"]["authorization"] == "Bearer reject" {
                 return Err(Error::Remote {
@@ -602,42 +608,70 @@ async fn end_to_end_child() {
         let _ = second.close(None).await;
     }
 
-    // (k) /otel is relayed to the engine after the same auth function as `/`.
+    // (k) /otel is authenticated before the upgrade by the same auth function
+    // as `/`, which is told the endpoint, then relayed to the engine.
     {
-        let mut refused = raw_client_at(proxy_port, "/otel", "Bearer reject").await;
-        let first = timeout(Duration::from_secs(5), refused.next())
-            .await
-            .expect("a refused /otel connection gets an answer");
-        match first {
-            Some(Ok(Message::Text(t))) => {
-                let v: Value = serde_json::from_str(t.as_str()).unwrap();
-                assert_eq!(v["type"], "error", "got {v}");
+        let url = format!("ws://127.0.0.1:{proxy_port}/otel");
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                url.as_str(),
+            )
+            .expect("request");
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer reject".parse().unwrap());
+        match tokio_tungstenite::connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 401, "a refused /otel is an HTTP status");
             }
-            other => panic!("expected an error frame, got {other:?}"),
+            other => panic!("expected a 401 before the upgrade, got {other:?}"),
         }
 
         let mut otel = raw_client_at(proxy_port, "/otel", "Bearer test-token").await;
-        otel.send(Message::Binary(b"not an otlp frame".to_vec().into()))
+        assert!(
+            AUTH_ENDPOINTS.lock().unwrap().iter().any(|e| e == "/otel"),
+            "the auth function was told the endpoint"
+        );
+        // A log frame as the SDKs send it: `LOGS` + OTLP JSON.
+        let mut frame = b"LOGS".to_vec();
+        frame.extend_from_slice(
+            json!({ "resourceLogs": [{
+                "resource": { "attributes": [{ "key": "service.name",
+                    "value": { "stringValue": "rbac-proxy-itest" } }] },
+                "scopeLogs": [{ "logRecords": [{ "severityText": "INFO",
+                    "body": { "stringValue": "relayed through rbac-proxy" } }] }]
+            }]})
+            .to_string()
+            .as_bytes(),
+        );
+        otel.send(Message::Binary(frame.into()))
             .await
             .expect("an accepted /otel connection takes binary frames");
+        // The relay stays open: anything but silence (a close, EOF, an error,
+        // a frame) means it did not relay.
         let quiet = timeout(Duration::from_millis(500), otel.next()).await;
         assert!(
-            !matches!(&quiet, Ok(Some(Ok(Message::Text(_))))),
-            "an accepted /otel connection got a frame: {quiet:?}"
+            quiet.is_err(),
+            "the /otel relay did not stay open: {quiet:?}"
         );
         let _ = otel.close(None).await;
     }
 
-    // (l) An endpoint not in expose_endpoints is refused before the upgrade.
-    {
-        let url = format!("ws://127.0.0.1:{proxy_port}/nope");
+    // (l) A path that is not an engine endpoint is a bare 404 before the
+    // upgrade, and so is one no rule exposes.
+    for path in ["/nope", "/ws/channels/a/b"] {
+        let url = format!("ws://127.0.0.1:{proxy_port}{path}");
         match tokio_tungstenite::connect_async(url.as_str()).await {
             Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
-                assert_eq!(resp.status(), 403);
+                assert_eq!(resp.status(), 404, "{path}");
             }
-            other => panic!("expected a 403, got {other:?}"),
+            other => panic!("expected a 404 for {path}, got {other:?}"),
         }
     }
+    assert!(
+        AUTH_ENDPOINTS.lock().unwrap().iter().any(|e| e == "/"),
+        "the auth function was told the endpoint for `/` too"
+    );
 }
 
 type RawClient =

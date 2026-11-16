@@ -1,18 +1,20 @@
 //! Which engine endpoints the proxy serves: `rbac.expose_endpoints`.
 //!
 //! The engine's worker port has three WebSocket endpoints: `/` (the worker
-//! protocol), `/ws/channels/{id}` (channels) and `/otel` (telemetry). The
-//! proxy serves a path only when a rule matches it; with no rules it serves
-//! nothing. Rules are the `expose_functions` wildcards over the request path:
-//! `match("/otel")` or `{ match: "/otel" }`, `*` matching any run of
-//! characters, anchored at both ends, case-sensitive.
+//! protocol), `/ws/channels/{id}` (channels) and `/otel` (telemetry), and the
+//! proxy serves those three and nothing else ([`Endpoint::of`]). Of them it
+//! serves a path only when a rule matches it. Rules are the
+//! `expose_functions` wildcards over the request path: `match("/otel")` or
+//! `{ match: "/otel" }`, `*` matching any run of characters, anchored at
+//! both ends, case-sensitive. Without the key it serves `/` only (what
+//! earlier versions served, minus channels); an empty list serves nothing.
 //!
-//! How an exposed path is handled ([`Endpoint::of`]):
+//! How an exposed endpoint is handled:
 //! - `/`: authenticated, then every frame goes through the interceptor;
 //! - `/ws/channels/{id}`: relayed as is; the engine checks the channel's
 //!   `access_key`, as it does for direct connections;
-//! - anything else (`/otel`): authenticated with the same auth function as
-//!   `/`, then relayed as is, as the engine does for `/otel` itself.
+//! - `/otel`: authenticated before the upgrade with the same auth function
+//!   as `/` (told the endpoint), then relayed as is.
 
 use schemars::JsonSchema;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -54,32 +56,38 @@ pub fn endpoint_exposed(rules: &[EndpointFilter], path: &str) -> bool {
     rules.iter().any(|rule| rule.matches(path))
 }
 
-/// How the proxy handles an exposed path.
+/// The engine endpoints the proxy can serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     /// `/`: the worker protocol, through the interceptor.
     Worker,
+    /// `/otel`: authenticated, then relayed.
+    Telemetry,
     /// `/ws/channels/{id}`: relayed; the engine checks the access key.
     Channel(String),
-    /// Anything else: authenticated, then relayed.
-    Relay,
 }
 
 impl Endpoint {
-    pub fn of(path: &str) -> Self {
-        if path == "/" {
-            return Self::Worker;
-        }
-        match path.strip_prefix(CHANNEL_PREFIX) {
-            Some(id) if !id.is_empty() && !id.contains('/') => Self::Channel(id.to_string()),
-            _ => Self::Relay,
+    /// The endpoint at `path`, or `None`: any other path is not one, whatever
+    /// the rules match, so an engine route added later stays closed until
+    /// the proxy learns to handle it.
+    pub fn of(path: &str) -> Option<Self> {
+        match path {
+            "/" => Some(Self::Worker),
+            "/otel" => Some(Self::Telemetry),
+            _ => match path.strip_prefix(CHANNEL_PREFIX) {
+                Some(id) if !id.is_empty() && !id.contains('/') && id != "." && id != ".." => {
+                    Some(Self::Channel(id.to_string()))
+                }
+                _ => None,
+            },
         }
     }
 }
 
 /// The rule that would expose `path`: one rule covers every channel.
 pub fn suggested_rule(path: &str) -> String {
-    let pattern = if matches!(Endpoint::of(path), Endpoint::Channel(_)) {
+    let pattern = if matches!(Endpoint::of(path), Some(Endpoint::Channel(_))) {
         "/ws/channels/*"
     } else {
         path
@@ -87,29 +95,57 @@ pub fn suggested_rule(path: &str) -> String {
     format!("match(\"{pattern}\")")
 }
 
-/// The body of the 403 for a path no rule exposes.
-pub fn not_exposed_message(path: &str) -> String {
+/// The log line for an endpoint no rule exposes. The client gets a bare 404:
+/// the hint is for the operator, not for whoever is probing.
+pub fn not_exposed_hint(path: &str) -> String {
     format!(
-        "rbac-proxy: endpoint {path} is not exposed. Add {} to rbac.expose_endpoints.",
+        "endpoint {path} is not exposed; add {} to rbac.expose_endpoints to serve it",
         suggested_rule(path)
     )
 }
 
-/// The warning for a configuration that exposes no endpoint at all.
-pub fn empty_warning(rules: &[EndpointFilter]) -> Option<&'static str> {
-    rules.is_empty().then_some(
-        "rbac.expose_endpoints is empty, so every connection is refused. Add \
-         match(\"/\") for workers, match(\"/ws/channels/*\") for channels and \
-         match(\"/otel\") for telemetry.",
-    )
+/// The rules in force: the configured ones, or `match("/")` without the key.
+pub fn effective_endpoints(rules: Option<&[EndpointFilter]>) -> Vec<EndpointFilter> {
+    match rules {
+        Some(rules) => rules.to_vec(),
+        None => vec![EndpointFilter::new("/").expect("a valid rule")],
+    }
 }
 
-/// `{engine_url}{path}?{query}`, for relaying an exposed path.
+/// The warning for a missing key (only `/` served) or an empty list
+/// (nothing served).
+pub fn endpoints_warning(rules: Option<&[EndpointFilter]>) -> Option<&'static str> {
+    match rules {
+        None => Some(
+            "rbac.expose_endpoints is not set, so only the worker endpoint is served, as if it \
+             were [match(\"/\")]. Set it to serve channels (match(\"/ws/channels/*\")) or \
+             telemetry (match(\"/otel\")) as well.",
+        ),
+        Some([]) => Some(
+            "rbac.expose_endpoints is empty, so every connection is refused. Add \
+             match(\"/\") for workers, match(\"/ws/channels/*\") for channels and \
+             match(\"/otel\") for telemetry.",
+        ),
+        Some(_) => None,
+    }
+}
+
+/// `{engine_url}{path}?{query}`, for relaying an exposed endpoint. A query on
+/// `engine_url` itself stays a query, merged with the request's.
 pub fn upstream_url(engine_url: &str, path: &str, query: Option<&str>) -> String {
-    let mut url = format!("{}{path}", engine_url.trim_end_matches('/'));
-    if let Some(q) = query.filter(|q| !q.is_empty()) {
+    let (base, own) = match engine_url.split_once('?') {
+        Some((base, own)) => (base, Some(own)),
+        None => (engine_url, None),
+    };
+    let mut url = format!("{}{path}", base.trim_end_matches('/'));
+    let queries: Vec<&str> = [own, query]
+        .into_iter()
+        .flatten()
+        .filter(|q| !q.is_empty())
+        .collect();
+    if !queries.is_empty() {
         url.push('?');
-        url.push_str(q);
+        url.push_str(&queries.join("&"));
     }
     url
 }
@@ -265,29 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn each_path_is_handled_by_its_kind() {
-        assert_eq!(Endpoint::of("/"), Endpoint::Worker);
-        assert_eq!(
-            Endpoint::of("/ws/channels/abc"),
-            Endpoint::Channel("abc".into())
-        );
-        // A channel id is one segment; anything else is relayed as is.
-        assert_eq!(Endpoint::of("/ws/channels/a/b"), Endpoint::Relay);
-        assert_eq!(Endpoint::of("/ws/channels/"), Endpoint::Relay);
-        assert_eq!(Endpoint::of("/otel"), Endpoint::Relay);
-        assert_eq!(Endpoint::of("/anything"), Endpoint::Relay);
-    }
-
-    #[test]
-    fn the_refusal_names_the_rule_to_add() {
-        let m = not_exposed_message("/otel");
-        assert!(
-            m.contains("rbac.expose_endpoints") && m.contains("match(\"/otel\")"),
-            "{m}"
-        );
-    }
-
-    #[test]
     fn the_refusal_suggests_one_rule_for_all_channels() {
         assert_eq!(
             suggested_rule("/ws/channels/abc"),
@@ -298,8 +311,54 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_warns_with_the_rules_to_add() {
-        let w = empty_warning(&[]).expect("a warning");
+    fn only_the_engines_three_endpoints_exist() {
+        assert_eq!(Endpoint::of("/"), Some(Endpoint::Worker));
+        assert_eq!(Endpoint::of("/otel"), Some(Endpoint::Telemetry));
+        assert_eq!(
+            Endpoint::of("/ws/channels/abc"),
+            Some(Endpoint::Channel("abc".into()))
+        );
+        // Anything else is not an endpoint, whatever the rules say.
+        for path in [
+            "/ws/channels/a/b",
+            "/ws/channels/",
+            "/ws/channels/.",
+            "/ws/channels/..",
+            "/ws/channels/x/../../",
+            "/ws/channels/abc/ack",
+            "/otel/v2",
+            "/ws",
+            "/ws/admin",
+            "//",
+            "/anything",
+        ] {
+            assert_eq!(Endpoint::of(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn the_log_hint_names_the_rule_to_add() {
+        let m = not_exposed_hint("/otel");
+        assert!(
+            m.contains("rbac.expose_endpoints") && m.contains("match(\"/otel\")"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn a_missing_key_serves_the_worker_endpoint_and_says_so() {
+        let served = effective_endpoints(None);
+        assert!(endpoint_exposed(&served, "/"));
+        assert!(!endpoint_exposed(&served, "/otel"));
+        assert!(!endpoint_exposed(&served, "/ws/channels/abc"));
+        let w = endpoints_warning(None).expect("a warning");
+        assert!(w.contains("not set") && w.contains("match(\"/\")"), "{w}");
+    }
+
+    #[test]
+    fn an_empty_list_serves_nothing_and_warns_with_the_rules_to_add() {
+        assert!(effective_endpoints(Some(&[])).is_empty());
+        let w = endpoints_warning(Some(&[])).expect("a warning");
         for rule in [
             "match(\"/\")",
             "match(\"/ws/channels/*\")",
@@ -307,19 +366,28 @@ mod tests {
         ] {
             assert!(w.contains(rule), "{w}");
         }
-        assert!(empty_warning(&rules(json!(["match(\"/\")"]))).is_none());
+        assert!(endpoints_warning(Some(&rules(json!(["match(\"/\")"])))).is_none());
     }
 
     #[test]
     fn the_upstream_url_keeps_path_and_query() {
         assert_eq!(upstream_url("ws://e:1", "/otel", None), "ws://e:1/otel");
+        assert_eq!(upstream_url("ws://e:1/", "/otel", None), "ws://e:1/otel");
         assert_eq!(
-            upstream_url("ws://e:1/", "/otel", Some("")),
-            "ws://e:1/otel"
+            upstream_url("ws://e:1", "/ws/channels/c", Some("key=k&dir=read")),
+            "ws://e:1/ws/channels/c?key=k&dir=read"
+        );
+    }
+
+    #[test]
+    fn the_engine_urls_own_query_stays_a_query() {
+        assert_eq!(
+            upstream_url("ws://e:1/?token=t", "/otel", None),
+            "ws://e:1/otel?token=t"
         );
         assert_eq!(
-            upstream_url("ws://e:1/", "/ws/channels/c", Some("key=k&dir=read")),
-            "ws://e:1/ws/channels/c?key=k&dir=read"
+            upstream_url("ws://e:1?token=t", "/ws/channels/c", Some("key=k&dir=read")),
+            "ws://e:1/ws/channels/c?token=t&key=k&dir=read"
         );
     }
 }

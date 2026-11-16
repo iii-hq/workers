@@ -592,6 +592,12 @@ impl Interceptor {
             .unwrap_or(&bare_id)
             .to_string();
         let engine_id = self.apply_prefix(&mapped_bare);
+        // Checked again on the final id: a prefix (`rbac-proxy` + `session`)
+        // or a hook mapping could still produce it.
+        if engine_id == SESSION_PROBE_ID {
+            tracing::warn!("refusing to register {SESSION_PROBE_ID}: the proxy answers it itself");
+            return DownstreamAction::Drop;
+        }
         self.registered_ids.lock().await.insert(engine_id.clone());
         {
             let mut private_ids = self.private_ids.lock().await;
@@ -905,6 +911,24 @@ impl Interceptor {
         // "Is this connection behind rbac-proxy?" Answered here, before any
         // gate: it describes the connection, not a function on the engine.
         if function_id == SESSION_PROBE_ID {
+            // Not a function on the engine, so no expose rule applies, but an
+            // operator can still forbid it like any other.
+            if self
+                .session
+                .forbidden_functions
+                .iter()
+                .any(|f| f == SESSION_PROBE_ID)
+            {
+                return self.reply_invoke_error(
+                    SESSION_PROBE_ID,
+                    inv_id,
+                    &v,
+                    "FORBIDDEN",
+                    &format!(
+                        "function '{SESSION_PROBE_ID}' not allowed (remove from rbac.forbidden_functions)"
+                    ),
+                );
+            }
             return self.reply_session_probe(inv_id, &v);
         }
 
@@ -1202,14 +1226,13 @@ impl Interceptor {
             "function_id": SESSION_PROBE_ID,
             "result": {
                 "proxied": true,
-                "proxy_version": env!("CARGO_PKG_VERSION"),
                 "session_id": self.session.session_id.to_string(),
                 "function_registration_prefix": self.session.function_registration_prefix,
                 "worker_names": self.session.worker_names,
                 "policy": {
                     "auth_function": rbac.auth_function_id.is_some(),
                     "expose_functions": rbac.expose_functions,
-                    "expose_endpoints": rbac.expose_endpoints,
+                    "expose_endpoints": rbac.endpoints(),
                 },
             },
         });
@@ -2020,18 +2043,21 @@ mod tests {
         let frame = json!({
             "type": "invokefunction",
             "function_id": "engine::workers::register",
-            "data": { "name": "mcp", "runtime": "rust" },
+            "data": { "name": "mcp-forwarded", "runtime": "rust" },
             "action": { "type": "void" }
         })
         .to_string();
         for prefix in [None, Some("tenant1")] {
             let sess = Arc::new(ProxySession {
-                worker_names: vec!["mcp".to_string()],
+                worker_names: vec!["mcp-forwarded".to_string()],
                 ..(*session(prefix)).clone()
             });
+            let id = sess.session_id;
             let i = interceptor(config_with(expose(&["api::*"]), None), sess);
             let v = forwarded(i.handle_downstream(&frame).await);
-            assert_eq!(v["data"]["name"], "mcp");
+            assert_eq!(v["data"]["name"], "mcp-forwarded");
+            // One live holder at a time: this session's connection ends.
+            rbac::release_worker_names(id);
         }
     }
 
@@ -3616,7 +3642,8 @@ mod tests {
         assert!(r.get("error").is_none(), "unexpected error: {r}");
         let res = &r["result"];
         assert_eq!(res["proxied"], true);
-        assert_eq!(res["proxy_version"], env!("CARGO_PKG_VERSION"));
+        // No version: a client has no use for it, a scanner does.
+        assert!(res.get("proxy_version").is_none(), "{res}");
         assert!(res["session_id"]
             .as_str()
             .is_some_and(|s| Uuid::parse_str(s).is_ok()));
@@ -3628,7 +3655,8 @@ mod tests {
             res["policy"]["expose_functions"],
             json!(["match(\"api::*\")"])
         );
-        assert_eq!(res["policy"]["expose_endpoints"], json!([]));
+        // No expose_endpoints key: the worker endpoint only.
+        assert_eq!(res["policy"]["expose_endpoints"], json!(["match(\"/\")"]));
         assert!(res["policy"].get("exposes_everything").is_none(), "{res}");
     }
 
@@ -3712,6 +3740,32 @@ mod tests {
         // directly, telling them they are behind the proxy when they are not.
         let i = interceptor(config_with(expose(&["*"]), None), session(None));
         let frame = json!({ "type": "registerfunction", "id": "rbac-proxy::session" });
+        assert!(matches!(
+            i.handle_downstream(&frame.to_string()).await,
+            DownstreamAction::Drop
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_operator_can_forbid_the_session_probe() {
+        let sess = Arc::new(ProxySession {
+            forbidden_functions: vec!["rbac-proxy::session".to_string()],
+            ..(*session(None)).clone()
+        });
+        let i = interceptor(config_with(expose(&["*"]), None), sess);
+        let r = reply(i.handle_downstream(&probe_frame().to_string()).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN", "{r}");
+        assert!(r.get("result").is_none(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_prefix_cannot_turn_a_registration_into_the_session_probe() {
+        // Prefix `rbac-proxy` + bare id `session` = `rbac-proxy::session`.
+        let i = interceptor(
+            config_with(expose(&["*"]), None),
+            session(Some("rbac-proxy")),
+        );
+        let frame = json!({ "type": "registerfunction", "id": "session" });
         assert!(matches!(
             i.handle_downstream(&frame.to_string()).await,
             DownstreamAction::Drop

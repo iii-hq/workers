@@ -36,7 +36,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &ProxyState) {
                     rbac_enabled: cfg.rbac_enabled(),
                     expose_endpoints: cfg
                         .rbac
-                        .expose_endpoints
+                        .endpoints()
                         .iter()
                         .map(|rule| rule.pattern().to_string())
                         .collect(),

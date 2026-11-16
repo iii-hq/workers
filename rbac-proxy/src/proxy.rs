@@ -29,35 +29,24 @@ use crate::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use crate::rbac;
 use crate::server::ProxyState;
 
-/// Authenticate an exposed endpoint other than `/` and the channels
-/// (`/otel`) with the same auth function as `/`, then relay it to the engine
-/// as is. The engine does the same for `/otel` on its own RBAC port.
-pub async fn authenticated_relay(
-    client: WebSocket,
-    state: ProxyState,
-    peer: SocketAddr,
-    uri: Uri,
-    headers: HeaderMap,
-) {
+/// Relay an authenticated `/otel` socket to the engine as is. The server
+/// authenticated it before the upgrade. Relayed telemetry is not attributed:
+/// the engine names it by the `service.name` inside it (see the README).
+pub async fn telemetry_relay(client: WebSocket, state: ProxyState, uri: Uri) {
     let cfg = state.config.read().await.clone();
-    if let Err(rej) = rbac::resolve_session(
-        &state.iii,
-        Some(&cfg.rbac),
-        headers_to_map(&headers),
-        query_to_multi_map(uri.query()),
-        peer.ip().to_string(),
+    let target = crate::endpoints::upstream_url(&cfg.engine_url, uri.path(), uri.query());
+    crate::channels::relay(
+        client,
+        state,
+        uri.path().to_string(),
+        target,
+        "engine dial failed",
     )
     .await
-    {
-        reject(client, &rej.code, &rej.message).await;
-        return;
-    }
-    let target = crate::endpoints::upstream_url(&cfg.engine_url, uri.path(), uri.query());
-    crate::channels::relay(client, target, "engine dial failed").await
 }
 
 /// Decrement the live-connection gauge when a connection ends.
-struct ActiveGuard(Arc<AtomicU32>);
+pub(crate) struct ActiveGuard(pub(crate) Arc<AtomicU32>);
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
@@ -84,6 +73,7 @@ pub async fn handle_connection(
         headers_to_map(&headers),
         query_to_multi_map(uri.query()),
         ip,
+        "/",
     )
     .await
     {
@@ -120,6 +110,8 @@ pub async fn handle_connection(
 
     state.active.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(state.active.clone());
+    // The granted worker names this session holds go with the connection.
+    let _names = rbac::WorkerNamesGuard(session.session_id);
 
     // Out-of-band reply channel for spawned middleware results (see the
     // Interceptor's `reply_tx` — spawning avoids a head-of-line deadlock).
@@ -340,7 +332,7 @@ async fn reject(client: WebSocket, code: &str, message: &str) {
 
 /// Build the `AuthInput.headers` map (`Record<string, string>`). Header names
 /// are already lowercased by axum; non-UTF-8 values are skipped.
-fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
+pub(crate) fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
     headers
         .iter()
         .filter_map(|(name, value)| {
@@ -354,7 +346,7 @@ fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
 
 /// Build the `AuthInput.query_params` map (`Record<string, string[]>`),
 /// preserving repeated keys, with values URL-decoded.
-fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
+pub(crate) fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     if let Some(q) = query {
         for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
