@@ -326,9 +326,11 @@ pub fn register_all(
             vms,
             WORKER_DESTROY,
             "Remove the state of `state_key`'s worker VM: with `prune`, all of it; without, \
-             all but its data disk, which a later start of the key boots over again. Needs \
-             the project token or the VM's scoped token; S502 while that VM is preparing or \
-             running, S509 while a build of it runs.",
+             all but its data (the reply lists it in `kept`): a later start with `build` \
+             boots over the kept data disk, one without `build` begins with a new disk and \
+             what the previous one held stays under the pre-build names. Needs the project \
+             token or the VM's scoped token; S502 while that VM is preparing or running, \
+             S509 while a build of it runs.",
             // Off the runtime: removing a legacy rootfs clone takes seconds.
             |vms, req| async move {
                 tokio::task::spawn_blocking(move || vms.destroy(req))
@@ -362,11 +364,11 @@ pub fn adapter_info() -> AdapterInfo {
 /// so only it advertises `worker.build`.
 fn adapter_info_for(overlay: bool) -> AdapterInfo {
     let mut features = vec![FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
+    // A destroy without prune keeps the data for a start with build to boot on,
+    // which only the overlay mode does.
     if overlay {
-        features.extend([FEATURE_BUILD, FEATURE_BINARY]);
+        features.extend([FEATURE_BUILD, FEATURE_BINARY, FEATURE_PRUNE]);
     }
-    // A destroy keeps or prunes the data in either mode.
-    features.push(FEATURE_PRUNE);
     AdapterInfo {
         adapter: ADAPTER_NAME.to_string(),
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -783,18 +785,14 @@ mod registration_tests {
         );
     }
 
-    /// Only the overlay mode boots a build, a binary package's included: the
-    /// legacy mode keeps quiet about both, and still prunes or keeps on destroy.
+    /// Only the overlay mode boots a build, a binary package's included, and
+    /// only a start with build boots on the data a destroy kept: the legacy
+    /// mode advertises neither `worker.build`, `worker.binary` nor `worker.prune`.
     #[test]
     fn the_legacy_mode_does_not_advertise_worker_build() {
         assert_eq!(
             adapter_info_for(false).features,
-            [
-                "worker.scoped_auth",
-                "worker.lease",
-                "worker.logs_from_end",
-                "worker.prune"
-            ]
+            ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
         );
     }
 

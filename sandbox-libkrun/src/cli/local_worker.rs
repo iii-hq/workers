@@ -1063,6 +1063,15 @@ pub(crate) fn validate_binary(
              or `..`"
         ));
     }
+    // The build's copy and the source share leave `.iii` out, in any case.
+    if relative
+        .components()
+        .any(|c| super::source_watcher::is_compose_state(c.as_os_str().as_encoded_bytes()))
+    {
+        return Err(format!(
+            "executable {executable:?} is under `.iii`, which never reaches the image"
+        ));
+    }
     let path = root.join(relative);
     let resolved = path.canonicalize().map_err(|e| {
         format!(

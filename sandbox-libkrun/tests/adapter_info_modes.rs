@@ -17,9 +17,10 @@ fn advertises(feature: &str) -> bool {
 
 fn advertises_build() -> bool {
     let build = advertises(FEATURE_BUILD);
-    // A binary package boots only a build; a destroy prunes or keeps in every mode.
+    // A binary package boots only a build, and only a start with build boots on
+    // the data a destroy without prune kept.
     assert_eq!(advertises(FEATURE_BINARY), build);
-    assert!(advertises(FEATURE_PRUNE));
+    assert_eq!(advertises(FEATURE_PRUNE), build);
     build
 }
 
