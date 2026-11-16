@@ -72,6 +72,36 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
+def test_rust_job_shares_a_read_only_sccache_on_prs() -> None:
+    rust = workflow("ci.yml")["jobs"]["rust"]
+    env = rust["env"]
+    assert env["SCCACHE_GHA_ENABLED"] == "true"
+    # Only the trusted push after merge may publish compile cache entries.
+    assert env["SCCACHE_GHA_RW_MODE"] == (
+        "${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}"
+    )
+
+    steps = rust["steps"]
+    names = [step.get("name") for step in steps]
+    install = named_step(steps, "Install sccache")
+    assert install["continue-on-error"] == "true"
+    enable = named_step(steps, "Enable sccache")["run"]
+    assert "CARGO_INCREMENTAL=0" in enable
+    assert "sccache rustc -vV" in enable
+    assert "RUSTC_WRAPPER=sccache" in enable
+    rust_cache = next(
+        index for index, step in enumerate(steps) if step.get("uses") == RUST_CACHE_ACTION
+    )
+    # rust-cache hashes CARGO_* variables into its key: enable sccache after it.
+    assert rust_cache < names.index("Enable sccache")
+    assert names[-1] == "sccache stats"
+    assert "sccache --show-stats" in steps[-1]["run"]
+
+    # Release builds keep their own S3 cache and never read the CI one.
+    deploy = (WORKFLOWS / "_deploy-build.yml").read_text()
+    assert "SCCACHE_GHA" not in deploy
+
+
 def test_harness_integration_builds_once_then_fans_out_on_standard_runners() -> None:
     reusable = workflow("_harness-integration.yml")
     assert reusable["on"]["workflow_call"]["inputs"]["runner"]["default"] == (

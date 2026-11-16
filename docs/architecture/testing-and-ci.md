@@ -65,6 +65,18 @@ in both `rust` and `interface-smoke` jobs.
 - CI compilation and tests use committed lockfiles via `--locked`.
 - Pull requests restore Rust caches but do not save branch-scoped copies. The
   trusted push after merge advances caches for changed Rust workspaces.
+- The `rust` job also wraps rustc in [sccache](https://github.com/mozilla/sccache)
+  on the GitHub Actions cache backend (`SCCACHE_GHA_VERSION` namespace
+  `ci-rust-v1`). One compile cache serves every worker, so a dependency that
+  resolves to the same crate, features and flags compiles once for all of
+  them. Pull requests run it `READ_ONLY`; only the push after merge writes.
+  GitHub scopes cache entries by ref, and release builds use their own S3
+  cache (`_deploy-build.yml`), so pull request code can never place entries a
+  release build reads. `rust-cache` still restores each worker's `target/`;
+  sccache covers the jobs where that restore misses. When sccache cannot
+  start (for example an unavailable cache service) the job compiles without
+  it, and a lookup the cache service rate-limits (HTTP 429) compiles as a
+  miss. Each job prints `sccache --show-stats` at the end.
 - `rust-version` is a package-level MSRV promise, not an alias for the CI
   toolchain. Add or change it only when that package is actually tested on the
   claimed minimum compiler; the repository does not infer an MSRV from the
