@@ -179,8 +179,10 @@ The worker observes `http::on-request` for `POST`, `GET` and `DELETE
 3. **JSON-RPC shape.** Batches and non-JSON-RPC bodies: -32600 (HTTP 200).
 4. **Session.** An `initialize` without an `id` (a notification) gets 202
    and opens nothing. Otherwise `initialize` opens a new session and returns its id in the
-   `Mcp-Session-Id` response header, or gets **503** when `max_sessions`
-   (default 16) are open. Any other request carrying an unknown
+   `Mcp-Session-Id` response header. When `max_sessions` (default 16) are
+   open, it first ends the session seen least recently (one without an open
+   stream), whose client gets 404 next and initializes again; it gets
+   **503** only when every session holds a stream. Any other request carrying an unknown
    or expired id gets **404** ("Session not found"), which tells the client to
    initialize again. Requests without the header are served; only the
    session-scoped tools need one.
@@ -355,8 +357,11 @@ lists it, `iii_unobserve` removes it, and ending the session disposes it.
   `iii_observations_poll`'s `dropped`; an SSE observation leaving the replay
   window is a loss for its observer only if no stream wrote it.
 - **Caps.** At most `max_sessions` (default 16) sessions and
-  `max_observers_per_session` (default 100) observers each; over the cap,
-  `initialize` gets 503 and observe tools a tool error.
+  `max_observers_per_session` (default 100) observers each. At the session
+  cap, `initialize` ends the least recently used session without a stream
+  (headless clients such as Claude Code turns never end theirs), and gets 503
+  only when all hold streams; over the observer cap, observe tools get a tool
+  error.
 - **Activation.** Observe tools wait up to 5 s for activation. An observer of
   a function no one hosts yet stays `pending` and is returned as such. A
   refused observer (bad filter, unknown `capture`, RBAC `FORBIDDEN`) ends in
@@ -440,7 +445,7 @@ replaces it.
   the per-session buffer and drop counting, streams attached, waiting and
   replaced, unobserve, end, the idle sweep, close), the gateway tools and
   their descriptions (no tool says "event"), the HTTP handler (status codes,
-  `GET` streams, 503 at the session cap, resources), `iii_secret_store`, the
+  `GET` streams, eviction and 503 at the session cap, resources), `iii_secret_store`, the
   SSE frames, the SDK adapter's `capture` parsing, config, manifest, declared
   dependencies. The engine is a fake `Bus`.
 - In `rbac-proxy`: the probe (answered before RBAC, the globs as written,

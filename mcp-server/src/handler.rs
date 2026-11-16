@@ -2,7 +2,8 @@
 //!
 //! Order of checks: Origin (403), HTTP method (`DELETE` ends a session, `GET`
 //! opens the session's SSE stream, anything but `POST` is 405), session
-//! (`initialize` opens one and returns its id, or 503 at `max_sessions`; an
+//! (`initialize` opens one and returns its id, ending the least recently used
+//! session at `max_sessions`, or 503 when every session holds a stream; an
 //! unknown `Mcp-Session-Id` is 404 so the client re-initializes), then
 //! JSON-RPC dispatch.
 
@@ -220,8 +221,13 @@ pub async fn handle_http<B: Bus + Observe>(
         return HttpReply::empty(202);
     }
     let session_id = if initializing {
-        match app.sessions.create() {
-            Ok(sid) => Some(sid),
+        match app.sessions.open().await {
+            Ok((sid, evicted)) => {
+                if let Some(old) = evicted {
+                    tracing::info!(session = %old, "max_sessions reached: ended the least recently used session");
+                }
+                Some(sid)
+            }
             Err(message) => return refusal(503, &message),
         }
     } else {
@@ -659,22 +665,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_past_max_sessions_is_refused_with_503() {
+    async fn initialize_past_max_sessions_ends_the_least_recently_used_session() {
         let mut f = Fixture::new(FakeBus::new());
         f.sessions = Sessions::new(SessionLimits {
             max_sessions: 1,
             ..SessionLimits::default()
         });
-        assert_eq!(
-            f.post(json!({}), rpc("initialize", json!({}))).await.status,
-            200
-        );
-        let r = f.post(json!({}), rpc("initialize", json!({}))).await;
-        assert_eq!(r.status, 503);
-        assert!(r.session_id.is_none());
-        assert!(rpc_error(&r)["message"]
-            .as_str()
-            .unwrap()
-            .contains("max_sessions"));
+        let first = f.post(json!({}), rpc("initialize", json!({}))).await;
+        assert_eq!(first.status, 200);
+        let old = first.session_id.unwrap();
+        let second = f.post(json!({}), rpc("initialize", json!({}))).await;
+        assert_eq!(second.status, 200);
+        assert!(second.session_id.is_some());
+        // The evicted client is told its session is gone, and re-initializes.
+        let stale = f
+            .post(
+                json!({ "mcp-session-id": old }),
+                rpc("tools/list", json!({})),
+            )
+            .await;
+        assert_eq!(stale.status, 404);
     }
 }

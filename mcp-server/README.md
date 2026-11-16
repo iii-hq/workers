@@ -328,8 +328,12 @@ An observer delivers in one of three ways:
 
 Limits and cleanup:
 
-- at most `max_sessions` sessions (default 16; `initialize` beyond it gets
-  **503**) and `max_observers_per_session` observers (default 100);
+- at most `max_sessions` sessions (default 16) and
+  `max_observers_per_session` observers (default 100). At the limit,
+  `initialize` ends the session seen least recently (its client gets 404 and
+  initializes again), so clients that never end theirs, such as headless
+  Claude Code turns, cannot lock the server; it answers **503** only when every
+  session holds an open SSE stream;
 - each session holds up to `max_buffered_observations` (default 500) across
   its observers; beyond that the oldest are dropped and counted;
 - the idle-session sweep, a task in `mcp-server` that runs once a minute, ends every

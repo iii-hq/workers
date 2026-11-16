@@ -227,6 +227,41 @@ impl Sessions {
         Ok(id)
     }
 
+    /// Open a session for `initialize`. At `max_sessions`, the session seen
+    /// least recently is ended to make room (a client that cannot end its
+    /// own, such as a headless Claude Code turn that exits, would otherwise
+    /// lock every client out until the idle TTL); its client re-initializes
+    /// on the 404 its next request gets. A session with an open stream is
+    /// never ended this way. Returns the new id and the ended one.
+    pub async fn open(&self) -> Result<(String, Option<String>), String> {
+        let evicted = {
+            let inner = self.inner.lock().unwrap();
+            if inner.sessions.len() < self.limits.max_sessions {
+                None
+            } else {
+                let victim = inner
+                    .sessions
+                    .iter()
+                    .filter(|(_, s)| !s.stream.as_ref().is_some_and(|tx| !tx.is_closed()))
+                    .min_by_key(|(_, s)| s.last_seen)
+                    .map(|(id, _)| id.clone());
+                match victim {
+                    Some(id) => Some(id),
+                    None => {
+                        return Err(format!(
+                            "this MCP server already has {} sessions (max_sessions), each with an open stream; end one with DELETE",
+                            self.limits.max_sessions
+                        ))
+                    }
+                }
+            }
+        };
+        if let Some(id) = &evicted {
+            self.end(id).await;
+        }
+        Ok((self.create()?, evicted))
+    }
+
     /// Mark a session used; `false` when it does not exist.
     pub fn touch(&self, session_id: &str) -> bool {
         match self.inner.lock().unwrap().sessions.get_mut(session_id) {
@@ -1391,5 +1426,62 @@ mod tests {
         }
         s.close_all().await;
         assert_eq!(o.disposed.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_full_server_ends_the_least_recently_used_session_for_a_new_one() {
+        let s = Sessions::new(limits(2, 100, 500));
+        let o = FakeObserve::default();
+        let old = s.create().unwrap();
+        s.observe(&o, &old, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let recent = s.create().unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(s.touch(&recent));
+        let (fresh, evicted) = s.open().await.unwrap();
+        assert_eq!(evicted.as_deref(), Some(old.as_str()));
+        assert!(!s.touch(&old), "the evicted session is gone");
+        assert!(s.touch(&recent));
+        assert!(s.touch(&fresh));
+        // Its observers are disposed like on DELETE.
+        assert_eq!(o.disposed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn opening_below_the_limit_ends_nothing() {
+        let s = Sessions::new(limits(2, 100, 500));
+        let a = s.create().unwrap();
+        let (b, evicted) = s.open().await.unwrap();
+        assert_eq!(evicted, None);
+        assert!(s.touch(&a) && s.touch(&b));
+    }
+
+    #[tokio::test]
+    async fn a_session_with_an_open_stream_is_never_evicted() {
+        let s = Sessions::new(limits(2, 100, 500));
+        let streaming = s.create().unwrap();
+        let _rx = s.attach_stream(&streaming, None).unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let idle = s.create().unwrap();
+        let (_, evicted) = s.open().await.unwrap();
+        assert_eq!(
+            evicted.as_deref(),
+            Some(idle.as_str()),
+            "the older one streams"
+        );
+        assert!(s.touch(&streaming));
+    }
+
+    #[tokio::test]
+    async fn when_every_session_streams_a_new_one_is_refused() {
+        let s = Sessions::new(limits(1, 100, 500));
+        let only = s.create().unwrap();
+        let _rx = s.attach_stream(&only, None).unwrap();
+        let err = s.open().await.unwrap_err();
+        assert!(err.contains("max_sessions"), "{err}");
+        assert!(err.contains("stream"), "{err}");
+        assert!(s.touch(&only));
     }
 }
