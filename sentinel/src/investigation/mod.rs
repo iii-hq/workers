@@ -675,38 +675,44 @@ impl<D: Db> Investigations<D> {
         error: Option<String>,
     ) -> Result<Vec<Announcement>, SentinelError> {
         let metrics = self.harness.metrics(&investigation.session_id).await;
+        let members = self.member_ids(&investigation.id).await?;
         // A doorbell, the sweep and a cancel can race to close the same pass:
         // only the one that moves it out of running writes and announces.
-        let closed = self
+        // One transaction, so a close that fails stays running with its groups
+        // held, for the next doorbell, sweep or cancel to retry.
+        let steps = self
             .store
             .db()
-            .execute(
-                "UPDATE sentinel_investigations SET status = ?, error = ?, finished_ms = ?, \
-                 turns = ?, duration_ms = ?, cost_usd = ? WHERE id = ? AND status = ?",
-                vec![
-                    json!(status.as_str()),
-                    json!(error),
-                    json!(ids::now_ms()),
-                    json!(metrics.turns),
-                    json!(metrics.duration_ms),
-                    json!(metrics.cost_usd),
-                    json!(investigation.id),
-                    json!(InvestigationStatusV1::Running.as_str()),
-                ],
-            )
+            .transaction(&[
+                Statement::new(
+                    "UPDATE sentinel_investigations SET status = ?, error = ?, finished_ms = ?, \
+                     turns = ?, duration_ms = ?, cost_usd = ? WHERE id = ? AND status = ? \
+                     RETURNING id",
+                    vec![
+                        json!(status.as_str()),
+                        json!(error),
+                        json!(ids::now_ms()),
+                        json!(metrics.turns),
+                        json!(metrics.duration_ms),
+                        json!(metrics.cost_usd),
+                        json!(investigation.id),
+                        json!(InvestigationStatusV1::Running.as_str()),
+                    ],
+                ),
+                Statement::new(
+                    "UPDATE sentinel_investigation_members SET active = 0 \
+                     WHERE investigation_id = ?",
+                    vec![json!(investigation.id)],
+                ),
+            ])
             .await?;
-        if closed == 0 {
+        if !steps
+            .first()
+            .is_some_and(|step| step.affected_rows > 0 || !step.rows.is_empty())
+        {
             return Ok(Vec::new());
         }
 
-        let members = self.member_ids(&investigation.id).await?;
-        self.store
-            .db()
-            .execute(
-                "UPDATE sentinel_investigation_members SET active = 0 WHERE investigation_id = ?",
-                vec![json!(investigation.id)],
-            )
-            .await?;
         if members.len() > 1 {
             return Ok(members
                 .into_iter()

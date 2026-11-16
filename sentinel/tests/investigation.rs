@@ -1360,6 +1360,66 @@ async fn a_cancel_that_loses_the_race_to_the_doorbell_announces_nothing() {
 }
 
 #[tokio::test]
+async fn a_close_the_database_drops_keeps_the_pass_running_until_it_closes_whole() {
+    let fixture = fixture(MODEL).await;
+    // shortcut: the refusing trigger is SQLite syntax; port it if this suite runs on Postgres in CI.
+    if !matches!(fixture.store.db(), TestDb::Sqlite(_)) {
+        return;
+    }
+    let (investigation_id, _) = open(&fixture).await;
+    let db = fixture.store.db();
+    db.execute(
+        "CREATE TRIGGER refuse_release BEFORE UPDATE OF active ON sentinel_investigation_members \
+         WHEN NEW.active = 0 BEGIN SELECT RAISE(ABORT, 'database went away'); END",
+        vec![],
+    )
+    .await
+    .unwrap();
+    let cancel = || {
+        fixture
+            .investigations
+            .cancel(sentinel::InvestigationCancelRequestV1 {
+                investigation_id: investigation_id.clone(),
+                _caller_worker_id: None,
+            })
+    };
+
+    cancel()
+        .await
+        .expect_err("the reservations could not be released");
+    let left = fixture
+        .store
+        .investigation_by_id(&investigation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        left.status,
+        InvestigationStatusV1::Running,
+        "a pass that still holds its groups is not over"
+    );
+
+    db.execute("DROP TRIGGER refuse_release", vec![])
+        .await
+        .unwrap();
+    let retried = cancel().await.expect("the retry closes it");
+    assert_eq!(retried.value.status, InvestigationStatusV1::Cancelled);
+    let active = db
+        .query(
+            "SELECT active FROM sentinel_investigation_members WHERE investigation_id = ?",
+            vec![json!(investigation_id)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(active[0]["active"], json!(0));
+    let (reopened, _) = open(&fixture).await;
+    assert_ne!(
+        reopened, investigation_id,
+        "the group is free for a new pass"
+    );
+}
+
+#[tokio::test]
 async fn the_group_page_shows_the_diagnosis_and_the_session_to_reopen() {
     let fixture = fixture(MODEL).await;
     let (investigation_id, session_id) = open(&fixture).await;
