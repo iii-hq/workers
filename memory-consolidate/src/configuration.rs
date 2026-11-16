@@ -42,7 +42,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "id": config_id(),
         "name": "Memory Consolidate",
         "description": "Scheduled memory hygiene: dedup interval, dry-run mode, bank allowlist, \
-                        and the per-pass supersede cap.",
+                        and the per-pass supersede and model-call caps.",
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });

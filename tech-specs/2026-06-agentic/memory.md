@@ -96,7 +96,8 @@ Consumer-facing:
   pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded.
   Agent-denied by default.
 - `memory::doctor` — real save→recall→trash roundtrip plus sibling reachability; names degraded
-  states instead of a bare process-up health.
+  states instead of a bare process-up health. Its `extraction` field reports what extraction spent
+  (model calls, tokens, the router's cost) and wrote since boot; a draining backlog is not a failure.
 - `memory::reload` — drop RAM state and re-read every bank from disk (the recovery hatch after
   hand-editing files).
 
@@ -130,7 +131,8 @@ at-least-once, unordered.
   one is due is read from the window the step sends (its newest rules update, else the frozen
   section), so a lost or compacted-away update is re-sent and a delivered one never is. Hook
   annotations (`memory_bank`, `memory_recalled`, `memory_ids`, `memory_rules`,
-  `memory_rules_truncated`, `memory_rules_updated`, `memory_retrieval`) land on the entry
+  `memory_rules_truncated`, `memory_rules_updated`, `memory_retrieval`, `memory_recall`,
+  `memory_recall_skip_reason`, `memory_injected_chars`) land on the entry
   origin — which bank and which memories fed a turn is product surface, not plumbing.
 - `harness::turn-completed` — spawns the extraction pass.
 - `session::deleted` — drops the session's extraction cursor.
@@ -176,7 +178,7 @@ siblings over one on-disk contract, not a monolith with modes.
   one differing word never merges), survivor = pinned > corroboration > oldest. Strictly
   supersede-only through `memory::supersede` + `memory::save`, never touches pinned records; every
   change lands as a `memory::item-changed` event. `dry_run` plans without writing;
-  `max_supersedes_per_run` caps a pass. Promotion of corroborated clusters toward rules is its
+  `max_supersedes_per_run` and `max_llm_calls_per_run` cap a pass. Promotion of corroborated clusters toward rules is its
   An optional LLM tier (`llm_assist_enabled`, off by default) runs after the deterministic pass:
   one `router::complete` judge per bank confirms which reorder groups really are equivalent
   (merged through the same seam) and promotes standing instructions observed

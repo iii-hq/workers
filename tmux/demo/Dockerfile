@@ -14,9 +14,11 @@ ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 # What every demo script checks (with /.dockerenv) before it writes a file or
 # talks to tmux: they never run on the host.
 ENV DEMO_CONTAINER=1
-COPY files/claude files/codex files/claude-state /usr/local/bin/
+COPY files/claude files/codex files/claude-state files/demo-browser /usr/local/bin/
 COPY files/entrypoint.sh files/mock_usage.py files/setup_demo.py files/seed-inside.sh /opt/demo/
-RUN chmod 755 /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/claude-state /opt/demo/*.sh /opt/demo/*.py
+RUN chmod 755 /usr/local/bin/claude /usr/local/bin/codex /usr/local/bin/claude-state /usr/local/bin/demo-browser /opt/demo/*.sh /opt/demo/*.py
+# The worker's browser for `browser: "host"` sign-ins: notes the link only.
+ENV BROWSER=/usr/local/bin/demo-browser
 USER dev
 WORKDIR /home/dev
 ENTRYPOINT ["/opt/demo/entrypoint.sh"]

@@ -26,9 +26,14 @@ export function useEmailPrompt(): {
   onSnooze: () => void
   onDismiss: () => void
   onSubscribed: () => void
+  onRetryLater: () => void
+  onClose: () => void
 } {
   const [record, setRecord] = React.useState<EmailPromptRecord>(loadRecord)
   const [open, setOpen] = React.useState(false)
+  // Set when the list could not take the address right now. Memory only, so
+  // the record stays `pending` with no snooze and the next run asks again.
+  const [deferred, setDeferred] = React.useState(false)
 
   const update = React.useCallback(
     (next: (current: EmailPromptRecord) => EmailPromptRecord) => {
@@ -66,8 +71,8 @@ export function useEmailPrompt(): {
   React.useEffect(() => {
     // Opening is one-way here: once shown, only a decision closes it, so a
     // later tick cannot reopen the dialog under the operator.
-    if (!open && shouldPrompt(record, Date.now())) setOpen(true)
-  }, [open, record])
+    if (!open && !deferred && shouldPrompt(record, Date.now())) setOpen(true)
+  }, [open, deferred, record])
 
   return {
     open,
@@ -79,9 +84,14 @@ export function useEmailPrompt(): {
       setOpen(false)
       update(dismiss)
     },
-    onSubscribed: () => {
+    // Saved at once but left open: the dialog goes on to ask the person to
+    // confirm from their inbox, and a reload before they close it must not
+    // ask for the address again.
+    onSubscribed: () => update(subscribed),
+    onRetryLater: () => {
       setOpen(false)
-      update(subscribed)
+      setDeferred(true)
     },
+    onClose: () => setOpen(false),
   }
 }

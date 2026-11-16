@@ -1,5 +1,5 @@
 {
-  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. Use when the user says `remember this`.",
+  "description": "Save one memory explicitly. Content-fingerprinted: re-saving the same text reinforces the existing memory instead of duplicating it. Called from a turn, it records that session and turn as the source. Needed where the `# Memory` header asks for it (a sub-agent, extraction off): save what a later session would need.",
   "function_id": "memory::save",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14,7 +14,7 @@
       },
       "entities": {
         "default": [],
-        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank: `user`, read under every repository's bank.",
+        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank from outside a turn (the memory page, the CLI): `user`, read under every repository's bank; a save from a turn names `user` itself for a fact about the user.",
         "items": {
           "type": "string"
         },
@@ -26,7 +26,7 @@
       },
       "session_id": {
         "default": null,
-        "description": "Provenance session, when saved on behalf of a conversation.",
+        "description": "Provenance session for a save made outside a turn on behalf of a conversation. A save from a turn records that turn's session and turn id instead.",
         "type": [
           "string",
           "null"
@@ -200,6 +200,13 @@
             ]
           },
           "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "description": "The turn an explicit save was called from (`memory::save` inside a turn).",
             "type": [
               "string",
               "null"

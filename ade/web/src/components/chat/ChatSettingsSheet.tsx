@@ -64,8 +64,11 @@ interface ChatSettingsSheetProps {
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onPermissionModeChange: (next: PermissionMode) => void
-  /** A compact composer has no attach button of its own: it lives here. */
+  /** A phone composer has no attach button of its own: it lives here. */
   onAttachFiles?: () => void
+  /** Attaching follows the editor, not the turn options: a queued message
+      can still take files mid-stream. Defaults to `disabled`. */
+  attachDisabled?: boolean
 }
 
 interface SettingsSectionProps {
@@ -130,6 +133,7 @@ export function ChatSettingsSheet({
   onThinkingLevelChange,
   onPermissionModeChange,
   onAttachFiles,
+  attachDisabled,
 }: ChatSettingsSheetProps) {
   const navigation = useSheetNavigation<ChatSettingsPage>('settings')
   const [configurationProvider, setConfigurationProvider] = useState<
@@ -174,7 +178,7 @@ export function ChatSettingsSheet({
                 <SheetMenuRow
                   label="Attach files"
                   icon={<Paperclip className="size-[18px]" aria-hidden />}
-                  disabled={disabled}
+                  disabled={attachDisabled ?? disabled}
                   onClick={onAttachFiles}
                 />
               </SettingsSection>

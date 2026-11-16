@@ -82,16 +82,16 @@ pub async fn run_stdio(handler: Arc<AcpHandler>) -> anyhow::Result<()> {
                 if method == "session/prompt" {
                     let h = handler.clone();
                     tokio::spawn(async move {
-                        if let Some(reply) = h.handle(body).await {
-                            if let Err(e) = h.outbound().write(&reply).await {
-                                tracing::error!(error = %e, "stdout write failed");
-                            }
+                        if let Some(reply) = h.handle(body).await
+                            && let Err(e) = h.outbound().write(&reply).await
+                        {
+                            tracing::error!(error = %e, "stdout write failed");
                         }
                     });
-                } else if let Some(reply) = handler.handle(body).await {
-                    if let Err(e) = handler.outbound().write(&reply).await {
-                        tracing::error!(error = %e, "stdout write failed");
-                    }
+                } else if let Some(reply) = handler.handle(body).await
+                    && let Err(e) = handler.outbound().write(&reply).await
+                {
+                    tracing::error!(error = %e, "stdout write failed");
                 }
             }
             Err(err) => {

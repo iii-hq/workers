@@ -81,8 +81,6 @@ shape a headless one does. `claude-code` is the same shape for Claude Code.
 - `pi::status` — point-in-time session view: live flag, status, turns, usage,
   cost.
 - `pi::sessions::list` — every session this worker has run.
-- `run::start_and_wait` — alias for `pi::run` under the entrypoint the console
-  and acp worker drive, so both run Pi with no changes.
 - `pi::on-agent-event`, `pi::on-raw-event` — the event feeds: private functions
   you observe with args `{ session_id }` (at most 256 observers each); never
   call them.

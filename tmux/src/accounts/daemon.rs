@@ -430,6 +430,12 @@ pub async fn run_rules(collector: &Arc<Collector>) -> bool {
             );
             read
         }
+        // A sign-in from the app runs where the switch would go: the rules
+        // switch once it is over.
+        Err(super::switch::SwitchError::SigningIn(account)) => {
+            tracing::debug!(%account, "a sign-in is under way; the rules switch after it");
+            read
+        }
         Err(error) => {
             tracing::warn!(error = %error.sentence(), "the global account was not switched");
             read

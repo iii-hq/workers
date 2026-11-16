@@ -26,7 +26,9 @@ async function runtime() {
 }
 
 async function openModelPicker(page: Page) {
-  const settings = page.getByRole('button', { name: 'chat settings' })
+  const settings = page.getByRole('button', {
+    name: 'attach files, model and settings',
+  })
   if (await settings.count()) {
     await settings.click()
     await page.locator('[aria-labelledby="chat-settings-model"] button').click()

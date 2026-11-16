@@ -1,15 +1,19 @@
 //! Adding, changing and removing accounts, and what signs one in
 //! (agent-accounts §3.4, D1, D2, D17, G2, G10).
 
-use super::launch::login_command;
+use super::launch::Target;
 use super::paths::ClaudePaths;
 use super::registry::{self, Entry, Registry};
+use super::slot::Place;
 use super::{shared, Accounts, DEFAULT};
 use crate::model::now_ms;
 
 /// An account a swap involves is not removed until the swap is over.
 pub const SWAP_UNDER_WAY: &str =
     "A switch of the global account involving it is under way; try again once it is over.";
+
+/// `remove` with `delete_files` while the account signs in.
+pub const SIGNING_IN_THERE: &str = "A sign-in runs on it: cancel it (tmux::accounts::login_cancel) and let Claude Code stop, or remove the account and keep its folder.";
 
 pub fn no_account(id: &str) -> String {
     format!("There is no Claude Code account \"{id}\".")
@@ -136,9 +140,10 @@ impl Accounts {
     /// Take account `id` off the list. Never `default`, the global one, the
     /// one a switch waits to make global, nor one a swap running or left
     /// half-way involves ([`SWAP_UNDER_WAY`]).
-    /// Its panes keep running. With `delete_files` its folder goes too (only
-    /// inside the accounts root, never what its links point at), refused
-    /// while `running` Claude Code panes still run on it.
+    /// Its panes keep running; a sign-in of it from the app stops. With
+    /// `delete_files` its folder goes too (only inside the accounts root,
+    /// never what its links point at), refused while `running` Claude Code
+    /// panes still run on it, or a sign-in does.
     pub fn remove(&self, id: &str, delete_files: bool, running: u32) -> Result<(), String> {
         let paths = self.paths_or_err()?;
         if id == DEFAULT {
@@ -177,6 +182,10 @@ impl Accounts {
                     "{running} Claude Code {panes} still {run} on it: move or close {them} first, or remove the account and keep its folder."
                 ));
             }
+            // Claude Code would save that sign-in in the folder deleted.
+            if delete_files && self.logins.signing_in(id) {
+                return Err(SIGNING_IN_THERE.into());
+            }
             if delete_files {
                 shared::delete_account_dir(&paths.root, &paths.account_dir(id))?;
             }
@@ -185,14 +194,20 @@ impl Accounts {
             Ok(())
         })?;
         self.forget(id);
+        // A sign-in of the account removed has nowhere to land.
+        self.logins.cancel_account(id);
         Ok(())
     }
 
-    /// The command that signs account `id` in (G10): on the slot for the
-    /// global account (a sign-in to another account there is taken in, G6),
-    /// on its folder otherwise; makes its folder again if it went missing,
-    /// and checks its links.
-    pub fn login_command(&self, id: &str) -> Result<String, String> {
+    /// Where account `id` signs in (G10) and the email its sign-in page is
+    /// filled with: on the slot for the global account (a sign-in to
+    /// another account there is taken in, G6), on its folder otherwise.
+    /// Makes its folder again if it went missing, and checks its links.
+    pub fn login_plan(
+        &self,
+        id: &str,
+        browser: crate::model::LoginBrowser,
+    ) -> Result<super::login::Plan, String> {
         let paths = self.paths_or_err()?;
         let registry = self.registry();
         let entry = registry.get(id).ok_or_else(|| no_account(id))?;
@@ -202,7 +217,23 @@ impl Accounts {
             tracing::warn!(account = %id, %error, "shared items not linked");
         }
         self.reread_credentials(id);
-        Ok(login_command(&self.login_target(id)?))
+        let config_dir = match self.login_target(id)? {
+            Target::Dir(dir) => Some(std::path::PathBuf::from(dir)),
+            Target::Slot | Target::Plain => None,
+        };
+        let before = self.place_mark(&if config_dir.is_some() {
+            Place::Folder(id.to_string())
+        } else {
+            Place::Slot
+        });
+        Ok(super::login::Plan {
+            account: id.to_string(),
+            config_dir,
+            home: paths.home.clone(),
+            email: self.email_of(id),
+            browser,
+            before,
+        })
     }
 
     /// "Not now" on suggestion `id`: no suggestion from that account for
@@ -399,23 +430,24 @@ mod tests {
     }
 
     #[test]
-    fn login_commands_name_the_slot_or_the_account_folder() {
+    fn logins_run_on_the_slot_or_the_account_folder() {
+        use crate::model::LoginBrowser;
         let home = Home::new("login");
         let accounts = home.accounts();
         // The global account signs in on the slot (G10).
-        assert_eq!(
-            accounts.login_command("default").unwrap(),
-            "env -u CLAUDE_CONFIG_DIR claude auth login"
-        );
+        let plan = accounts.login_plan("default", LoginBrowser::None).unwrap();
+        assert_eq!(plan.config_dir, None);
+        assert_eq!(plan.home, home.paths.home);
+        assert_eq!(plan.account, "default");
         let id = accounts.add("Personal", "green", Some(vec![])).unwrap();
         let dir = home.paths.account_dir(&id);
         std::fs::remove_dir(&dir).unwrap();
-        assert_eq!(
-            accounts.login_command(&id).unwrap(),
-            format!("env CLAUDE_CONFIG_DIR={} claude auth login", dir.display())
-        );
+        let plan = accounts.login_plan(&id, LoginBrowser::Host).unwrap();
+        assert_eq!(plan.config_dir.as_deref(), Some(dir.as_path()));
+        assert_eq!(plan.browser, LoginBrowser::Host);
+        assert_eq!(plan.email, None, "signed out: no email yet");
         assert!(dir.is_dir(), "made again");
-        assert!(accounts.login_command("nobody").is_err());
+        assert!(accounts.login_plan("nobody", LoginBrowser::None).is_err());
     }
 
     #[test]

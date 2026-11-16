@@ -41,7 +41,8 @@ pub struct PreviewMemory {
 pub struct PreviewResponse {
     pub bank: String,
     /// The memory section appended to the system prompt (ambient header +
-    /// rules), exactly as injected — truncation markers included.
+    /// rules) as the user's own session gets it, truncation markers included;
+    /// a sub-agent's or automation session's header says nothing is captured.
     pub system_prompt_section: String,
     /// Rules included, and whether any were cut by `max_rule_chars`.
     pub rules: usize,
@@ -85,6 +86,11 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
             bank_name,
             &layers,
             true,
+            if cfg.extraction_enabled {
+                hooks::Capture::Extracted
+            } else {
+                hooks::Capture::Save
+            },
             Some(&req.query),
             &seen,
         )

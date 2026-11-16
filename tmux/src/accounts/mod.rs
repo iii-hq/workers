@@ -19,6 +19,7 @@ pub mod credentials;
 pub mod daemon;
 pub mod launch;
 pub mod lockdir;
+pub mod login;
 pub mod manage;
 pub mod moves;
 pub mod panes;
@@ -199,6 +200,8 @@ pub struct Accounts {
     login_release: Mutex<Option<String>>,
     /// The tries of the switch that waits, after failures that may pass.
     pending_retry: Mutex<Option<PendingRetry>>,
+    /// Sign-ins from the app (`tmux::accounts::login_start`).
+    pub logins: login::Logins,
 }
 
 /// The swap gate held by whoever owns it, a task included.
@@ -295,6 +298,7 @@ impl Accounts {
             global_waiting: Mutex::new(None),
             login_release: Mutex::new(None),
             pending_retry: Mutex::new(None),
+            logins: login::Logins::default(),
         }
     }
 
@@ -915,6 +919,16 @@ impl Accounts {
             .unwrap_or(Ok(None))
     }
 
+    /// The email account `id` was last seen signed in with.
+    pub fn email_of(&self, id: &str) -> Option<String> {
+        self.lock()
+            .profiles
+            .get(id)
+            .and_then(|cached| cached.value.as_ref())
+            .and_then(|profile| profile.email.clone())
+            .filter(|email| !email.is_empty())
+    }
+
     /// Whether account `id` is signed in, as last loaded.
     pub fn is_signed_in(&self, id: &str) -> bool {
         Self::cached_credentials(&self.lock(), id)
@@ -1065,6 +1079,7 @@ impl Accounts {
                 last_switch: registry.last_switch.clone(),
                 pending_global,
                 switch_delay_s: self.switch_delay_s(),
+                logins: self.logins.entries(now),
             },
             codex,
             generated_at_ms: now,

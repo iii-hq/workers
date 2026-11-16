@@ -210,6 +210,13 @@
               "string",
               "null"
             ]
+          },
+          "turn_id": {
+            "description": "The turn an explicit save was called from (`memory::save` inside a turn).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"

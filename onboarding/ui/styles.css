@@ -935,6 +935,43 @@
   }
 }
 
+/* What follows a signup: the confirmation hint, and the quiet note when the
+   API could not take the address now. */
+[data-iii-ui='learn-iii'] .learn-signup-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  text-wrap: pretty;
+}
+
+/* The note reads as the headline's second line, not a separate block. */
+[data-iii-ui='learn-iii'] .learn-signup-done + .learn-signup-note {
+  margin-top: -0.375rem;
+}
+
+/* A refused address is outlined like the console's own invalid fields. */
+[data-iii-ui='learn-iii'] .learn-field[aria-invalid='true'] {
+  box-shadow: inset 0 0 0 1px var(--color-alert);
+}
+
+[data-iii-ui='learn-iii'] .learn-signup-address {
+  color: var(--color-ink);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='learn-iii'] .learn-signup-error {
+  margin: 0;
+  color: var(--color-alert);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-form-actions--end {
+  justify-content: flex-end;
+}
+
 /* The quieter way to keep up: a label on the left, the marks on the right. */
 [data-iii-ui='learn-iii'] .learn-follow {
   display: flex;

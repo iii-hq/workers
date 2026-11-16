@@ -1,6 +1,6 @@
 # pi
 
-Pi coding agent as an iii worker: the Pi API exposed as functions on the iii bus, nothing else. The worker runs the same in-process agent loop Pi runs in the terminal, with the same tools (read, bash, edit, write) against any host directory. `pi::run` executes one headless turn and returns the result; the raw Pi events are published verbatim on the `pi::on-raw-event` function, and a translated AgentEvent view on `pi::on-agent-event`, so the iii console, the acp worker, and any sibling worker observe a Pi run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Pi with no changes.
+Pi coding agent as an iii worker: the Pi API exposed as functions on the iii bus, nothing else. The worker runs the same in-process agent loop Pi runs in the terminal, with the same tools (read, bash, edit, write) against any host directory. `pi::run` executes one headless turn and returns the result; the raw Pi events are published verbatim on the `pi::on-raw-event` function, and a translated AgentEvent view on `pi::on-agent-event`, so the iii console, the acp worker, and any sibling worker observe a Pi run exactly like a native harness turn. The acp worker drives it with `--brain-fn pi::run`.
 
 The same worker also runs pi as a **terminal on the console**: `pi::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens pi in a `shell::pty` session on its own page — always pi, never a shell. Both halves report onto one event feed (`pi::on-agent-event`), so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs (see [Logging in](#logging-in)). Its sibling [`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) is the same shape for Claude Code.
 
@@ -95,7 +95,6 @@ Long turns: use `pi::start` to return immediately, then observe `pi::on-agent-ev
 | `pi::stop` | Interrupt a live run |
 | `pi::status` | Session state, live flag, usage, cost |
 | `pi::sessions::list` | All sessions this worker has run |
-| `run::start_and_wait` | Alias for `pi::run` under the entrypoint the console and acp worker drive |
 | `pi::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`. Internal. |
 | `pi::terminal::activity` | One pi extension event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the feed, not the delivery. |
 | `pi::auth::status` | Which plan a terminal session spends (see Billing). Agent-denied. |
@@ -127,7 +126,7 @@ iii call pi::follow_up --json '{"session_id":"s1","prompt":"then add tests for t
 ## Event feeds
 
 The worker hosts two event feeds and publishes every turn on them (headless
-runs, `pi::task` sub-agents, `run::start_and_wait`, and the console terminal).
+runs, `pi::task` sub-agents, and the console terminal).
 Both are private functions: only this worker calls them, and anyone may
 observe them.
 
@@ -174,8 +173,7 @@ consumer that fails or disappears never fails the turn.
 
 The feeds do not use iii-stream (see the guide "Migrate from iii-stream and
 pubsub"). The acp worker observes `pi::on-agent-event` for the brain
-`pi::run`; when it drives `run::start_and_wait` instead, start it with
-`--events-function pi::on-agent-event`.
+`pi::run`.
 
 ## The agent on the bus
 

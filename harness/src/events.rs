@@ -374,12 +374,7 @@ impl TurnEvents {
         if let Some(preview) = message_preview.filter(|p| !p.trim().is_empty()) {
             payload["message_preview"] = Value::String(preview.to_string());
         }
-        if let Some(p) = parent {
-            payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
-        }
-        if let Some(dp) = display_parent {
-            payload["parent_session_id"] = Value::String(dp.to_string());
-        }
+        put_parent(&mut payload, parent, display_parent);
         self.emit(ON_TURN_STARTED_FN, payload).await;
     }
 
@@ -429,12 +424,7 @@ impl TurnEvents {
         if let Some(r) = reason {
             payload["reason"] = Value::String(r.to_string());
         }
-        if let Some(p) = parent {
-            payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
-        }
-        if let Some(dp) = display_parent {
-            payload["parent_session_id"] = Value::String(dp.to_string());
-        }
+        put_parent(&mut payload, parent, display_parent);
         // The latest generation's context accounting (categories, budget,
         // usage) so live consumers never re-walk the transcript for it.
         if let Some(snapshot) = context {
@@ -500,6 +490,21 @@ async fn send_ready(iii: Arc<IIIClient>, ready: Arc<AtomicBool>, obs: Observer) 
     }
 }
 
+/// A turn's parent on an event or a hook input: `parent` is a sub-agent's
+/// live link, `parent_session_id` the session it is displayed under.
+pub(crate) fn put_parent(
+    payload: &mut Value,
+    parent: Option<&ParentLink>,
+    display_parent: Option<&str>,
+) {
+    if let Some(p) = parent {
+        payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
+    }
+    if let Some(dp) = display_parent {
+        payload["parent_session_id"] = Value::String(dp.to_string());
+    }
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -549,6 +554,47 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(compaction.status.as_deref(), Some("ok"));
+    }
+
+    /// The turn events and the pre_generate hook input share these fields,
+    /// so a consumer reads one shape on both.
+    #[test]
+    fn put_parent_writes_what_the_turn_events_publish() {
+        let link = ParentLink {
+            session_id: "p_1".into(),
+            turn_id: "t_p".into(),
+            function_call_id: "fc".into(),
+        };
+
+        let mut completed = json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "status": "completed",
+            "terminal": true,
+            "timestamp": 2,
+        });
+        put_parent(&mut completed, Some(&link), Some("root_1"));
+        assert_eq!(completed["parent"], serde_json::to_value(&link).unwrap());
+        assert_eq!(completed["parent_session_id"], json!("root_1"));
+        let event: TurnCompletedEvent = serde_json::from_value(completed).unwrap();
+        assert_eq!(event.parent, Some(link.clone()));
+        assert_eq!(event.parent_session_id.as_deref(), Some("root_1"));
+
+        let mut started = json!({
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "timestamp": 1,
+            "depth": 1,
+        });
+        put_parent(&mut started, Some(&link), Some("root_1"));
+        let event: TurnStartedEvent = serde_json::from_value(started).unwrap();
+        assert_eq!(event.parent, Some(link));
+        assert_eq!(event.parent_session_id.as_deref(), Some("root_1"));
+
+        let mut top = json!({ "session_id": "s_1", "turn_id": "t_1" });
+        let before = top.clone();
+        put_parent(&mut top, None, None);
+        assert_eq!(top, before);
     }
 
     #[test]

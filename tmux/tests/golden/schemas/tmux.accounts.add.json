@@ -1,5 +1,5 @@
 {
-  "description": "Add a Claude Code account: a config folder of its own (CLAUDE_CONFIG_DIR) under the accounts folder, sharing with ~/.claude what `shared` names (settings, extensions, plugins, conversations; all of them by default) through links. It starts signed out: tmux::accounts::login signs it in.",
+  "description": "Add a Claude Code account: a config folder of its own (CLAUDE_CONFIG_DIR) under the accounts folder, sharing with ~/.claude what `shared` names (settings, extensions, plugins, conversations; all of them by default) through links. It starts signed out: tmux::accounts::login_start signs it in.",
   "function_id": "tmux::accounts::add",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

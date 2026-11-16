@@ -114,34 +114,65 @@ if (!prism.languages.json) {
   }
 }
 
-/* The token palette is a set of CSS variables (`--syntax-*`, index.css).
-   Their defaults are the monochrome blueprint: keys get the strongest ink,
-   structural punctuation fades to `ink-ghost`, and the single tonal hit is
-   the accent reserved for literals (numbers, booleans, null) so the eye
-   lands on the values that actually matter. A surface may repoint them —
-   the trace panes wear `code-theme-editor` — without touching this file,
-   and every palette inverts with `[data-theme="dark"]` because the tokens
-   do. */
+/* Token palette for read-only code. Every colour is a design token, so the
+   palette flips with `[data-theme="dark"]`: the `syntax-*` tones (GitHub
+   "prettylights" in light, Vesper in dark, the editor's own dark theme; AA
+   against `bg`) carry the token kinds, comments and
+   punctuation recede through the `--syntax-*` palette, and diff lines reuse the `ok` /
+   `alert-strong` status tones. prism-react-renderer merges a nested token's
+   styles parent -> child -> alias with the last one winning, so `property`
+   is deliberately unstyled: JSON keys keep the plain ink and aliased kinds
+   such as Rust's `macro` (alias `property`) or TOML's `key` keep their own
+   colour. A surface that repoints `--syntax-*` (`code-theme-editor`)
+   still recolours plain text, comments and punctuation. */
 export const syntaxTheme: PrismTheme = {
   plain: { color: 'var(--syntax-plain)' },
   styles: [
-    { types: ['property'], style: { color: 'var(--syntax-key)' } },
-    { types: ['string'], style: { color: 'var(--syntax-string)' } },
-    // Italic or not is the theme's call too (`--syntax-literal-style`), but
-    // PrismTheme only types a literal `normal`/`italic`, so the slant is a
-    // rule on `.token.number/.boolean/.null/.keyword` in index.css.
     {
-      types: ['number', 'boolean', 'null', 'keyword'],
-      style: { color: 'var(--syntax-literal)' },
+      types: ['comment', 'prolog', 'doctype', 'cdata', 'shebang'],
+      style: { color: 'var(--syntax-comment)', fontStyle: 'italic' },
     },
     {
       types: ['punctuation', 'operator'],
       style: { color: 'var(--syntax-punctuation)' },
     },
+    { types: ['keyword'], style: { color: 'var(--color-syntax-keyword)' } },
     {
-      types: ['comment'],
-      style: { color: 'var(--syntax-comment)', fontStyle: 'italic' },
+      types: ['function', 'function-definition', 'method', 'macro', 'coord'],
+      style: { color: 'var(--color-syntax-function)' },
     },
+    {
+      types: ['number', 'boolean', 'null', 'constant', 'date'],
+      style: { color: 'var(--color-syntax-constant)' },
+    },
+    {
+      types: ['string', 'char', 'regex', 'attr-value', 'url'],
+      style: { color: 'var(--color-syntax-string)' },
+    },
+    {
+      types: [
+        'class-name',
+        'builtin',
+        'type-definition',
+        'tag',
+        'selector',
+        'table',
+      ],
+      style: { color: 'var(--color-syntax-type)' },
+    },
+    {
+      types: [
+        'attribute',
+        'attr-name',
+        'decorator',
+        'annotation',
+        'lifetime-annotation',
+        'key',
+      ],
+      style: { color: 'var(--color-syntax-attribute)' },
+    },
+    { types: ['inserted'], style: { color: 'var(--color-ok)' } },
+    { types: ['deleted'], style: { color: 'var(--color-alert-strong)' } },
   ],
 }
 
@@ -209,6 +240,86 @@ if (!prism.languages.bash) {
   }
   prism.languages.sh = prism.languages.bash
   prism.languages.shell = prism.languages.bash
+}
+
+if (!prism.languages.toml) {
+  /* prismjs/components/prism-toml.js, verbatim. */
+  const key = /(?:[\w-]+|'[^'\n\r]*'|"(?:\\.|[^\\"\r\n])*")/.source
+  const withKey = (pattern: string) => pattern.replace(/__/g, () => key)
+  prism.languages.toml = {
+    comment: { pattern: /#.*/, greedy: true },
+    table: {
+      pattern: new RegExp(
+        withKey(/(^[\t ]*\[\s*(?:\[\s*)?)__(?:\s*\.\s*__)*(?=\s*\])/.source),
+        'm',
+      ),
+      lookbehind: true,
+      greedy: true,
+      alias: 'class-name',
+    },
+    key: {
+      pattern: new RegExp(
+        withKey(/(^[\t ]*|[{,]\s*)__(?:\s*\.\s*__)*(?=\s*=)/.source),
+        'm',
+      ),
+      lookbehind: true,
+      greedy: true,
+      alias: 'property',
+    },
+    string: {
+      pattern:
+        /"""(?:\\[\s\S]|[^\\])*?"""|'''[\s\S]*?'''|'[^'\n\r]*'|"(?:\\.|[^\\"\r\n])*"/,
+      greedy: true,
+    },
+    date: [
+      {
+        pattern:
+          /\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?\b/i,
+        alias: 'number',
+      },
+      { pattern: /\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b/, alias: 'number' },
+    ],
+    number:
+      /(?:\b0(?:x[\da-zA-Z]+(?:_[\da-zA-Z]+)*|o[0-7]+(?:_[0-7]+)*|b[10]+(?:_[10]+)*))\b|[-+]?\b\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+(?:_\d+)*)?\b|[-+]?\b(?:inf|nan)\b/,
+    boolean: /\b(?:false|true)\b/,
+    punctuation: /[.,=[\]{}]/,
+  }
+}
+
+if (!prism.languages.diff) {
+  /* Unified and normal diffs: file and hunk headers as `coord`, then whole
+     removed / added lines. Trimmed from prismjs/components/prism-diff.js. */
+  prism.languages.diff = {
+    coord: [
+      /^(?:diff --git|index) .*$/m,
+      /^(?:\*{3}|-{3}|\+{3}).*$/m,
+      /^@@.*$/m,
+      /^\d.*$/m,
+    ],
+    deleted: /^[-<].*$/m,
+    inserted: /^[+>].*$/m,
+  }
+}
+
+/* Fence names people and models write that Prism does not register under
+   that id. Each points at a grammar registered by now, so a ```rs or
+   ```golang block highlights instead of falling back to plain text. */
+const LANGUAGE_ALIASES: Record<string, string> = {
+  rs: 'rust',
+  golang: 'go',
+  zsh: 'bash',
+  patch: 'diff',
+  jsonc: 'json',
+  json5: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  mts: 'typescript',
+  cts: 'typescript',
+}
+for (const [alias, target] of Object.entries(LANGUAGE_ALIASES)) {
+  if (!prism.languages[alias] && prism.languages[target]) {
+    prism.languages[alias] = prism.languages[target]
+  }
 }
 
 interface JsonHighlightProps {

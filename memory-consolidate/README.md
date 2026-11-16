@@ -18,7 +18,7 @@ Plan without writing; the `run` response is the plan:
 iii call memory-consolidate::run dry_run=true
 ```
 
-A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, `last_report` or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it as `last_report` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
+A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, pass report or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it in `reports` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
 
 Apply for one bank only:
 
@@ -33,7 +33,7 @@ The report names every group: the surviving memory, the retired duplicates, and 
 | Function | Input | What it does |
 |---|---|---|
 | `memory-consolidate::run` | `{ bank?, dry_run? }` | One consolidation pass on demand, over every configured bank or one bank; returns the per-bank report |
-| `memory-consolidate::status` | `{}` | The schedule and the last pass: `enabled`, `interval_hours`, `last_run`, `due`, the latest per-bank results |
+| `memory-consolidate::status` | `{}` | The schedule and the last passes: `enabled`, `interval_hours`, `last_run`, `due`, and `reports`, the last 30 pass reports newest first (`{ ms, dry_run, banks }`, each bank with its LLM calls, tokens and cost; only the newest keeps its banks' `groups` and `semantic` lists) |
 | `memory-consolidate::on-tick` | the `cron::on-tick` event | Internal: the schedule heartbeat |
 | `memory-consolidate::on-config-change` | the `configuration::on-updated` event | Internal: hot-reloads the configuration |
 | `memory-consolidate::rest` | the http worker's `HttpRequest` | Internal: serves the `run` and `status` REST routes |
@@ -48,7 +48,7 @@ Each observer stays `pending` until its function registers, so the cron, configu
 
 ## Configuration
 
-All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass).
+All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge and semantic tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls).
 
 ## The LLM tier (optional)
 
@@ -57,11 +57,11 @@ All fields hot-reload through the `configuration` worker: `enabled`, `interval_h
 - **Reorder groups** — word-order matches the deterministic pass surfaces report-only ("The deploy runs on Fridays" vs "On Fridays the deploy runs") are merged only when the judge confirms the meaning is identical; role swaps ("Alice manages Bob") stay untouched.
 - **Rule promotion** — memories re-observed `promote_corroboration_threshold`+ times are offered as candidates; ones the judge classifies as standing instructions land as one-line entries in the bank's auto-managed `learned` rule, fingerprint-deduped, append-only. Hand-authored rules are never touched, and the judge can only act on candidates it was offered — it cannot invent targets.
 
-Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed.
+Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed. Each bank's report counts the tiers' model calls in `llm_calls`, the router's reported usage in `llm_input_tokens` and `llm_output_tokens`, and its cost in `llm_cost_usd` when the router priced the call; past `max_llm_calls_per_run` the tier is `deferred` with a note.
 
 ## The semantic tier (on by default)
 
-`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
+`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. Its calls count in the bank's `llm_calls`, `llm_input_tokens`, `llm_output_tokens` and `llm_cost_usd`, and it is `deferred` with a note once the pass reaches `max_llm_calls_per_run`. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
 
 - **merge**: both state the same fact (paraphrase, another language). The duplicate retires and the survivor absorbs its observations. The survivor must keep every detail; when both are equally complete, the older one survives.
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
@@ -75,7 +75,7 @@ Every change goes through `memory::supersede` and carries the judge's one-senten
 - **Freshness.** Each record is re-read right before the write, so a record edited since the judge read it drops its action.
 - **Failure handling.**
   - Transport, auth or quota errors stop the tier for that bank with a note, and the cursor stays put.
-  - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails is listed in `semantic_failed` and skipped, so it cannot wedge the tier.
+  - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails alone is listed in `semantic_failed` and skipped once another reply of the pass parses. Until one does, the cursor stays before it and the tier goes on to the next batch; when that batch has failed replies too and none parsed, the tier stops with a note naming the first such memory and the cursor stays put.
 - **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied.
 - **Dry runs** skip this tier with an `unevaluated` note.
 

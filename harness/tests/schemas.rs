@@ -294,7 +294,9 @@ fn hook_inputs_validate_against_their_published_formats() {
                 "functions_generation": 3,
                 "tools": [{ "name": "shell::run" }],
                 "expose": "agent_call",
-            } }),
+            },
+            "parent": { "session_id": "s_p", "turn_id": "t_p", "function_call_id": "fc" },
+            "parent_session_id": "s_root" }),
         ),
         (
             HookPoint::PostGenerate,

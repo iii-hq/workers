@@ -76,18 +76,6 @@ pub fn claude_command(target: &Target, skip_permissions: bool, resume: Option<&s
     words.join(" ")
 }
 
-/// The command that signs in on `target` (`claude auth login`): the slot
-/// for the global account (G10), else the account's folder.
-pub fn login_command(target: &Target) -> String {
-    let target = match target {
-        Target::Plain => &Target::Slot,
-        other => other,
-    };
-    let mut words: Vec<String> = target.prefix().into_iter().collect();
-    words.extend(["claude", "auth", "login"].map(String::from));
-    words.join(" ")
-}
-
 /// A planned start of Claude Code: the command and the pane's marks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -311,22 +299,6 @@ mod tests {
                 .restart_command(&Place::Slot, false, Some("s1"))
                 .unwrap(),
             "env -u CLAUDE_CONFIG_DIR claude --resume s1"
-        );
-    }
-
-    #[test]
-    fn login_signs_in_on_the_slot_or_the_folder() {
-        assert_eq!(
-            login_command(&Target::Slot),
-            "env -u CLAUDE_CONFIG_DIR claude auth login"
-        );
-        assert_eq!(
-            login_command(&Target::Plain),
-            "env -u CLAUDE_CONFIG_DIR claude auth login"
-        );
-        assert_eq!(
-            login_command(&Target::Dir("/r/side project".into())),
-            "env CLAUDE_CONFIG_DIR='/r/side project' claude auth login"
         );
     }
 }

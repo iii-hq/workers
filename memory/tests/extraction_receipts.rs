@@ -146,6 +146,7 @@ fn record() -> Memory {
         pinned: false,
         source: Some(Provenance {
             session_id: Some("synthetic-source".into()),
+            turn_id: None,
             entry_id: Some("entry".into()),
             agent: None,
         }),

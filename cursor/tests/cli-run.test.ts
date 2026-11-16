@@ -545,7 +545,7 @@ describe('CursorWorker CLI ACP backend', () => {
       worker.register();
 
       const run = Promise.resolve(
-        iii.functions.get('run::start_and_wait')?.handler({
+        iii.functions.get('cursor::run')?.handler({
           cwd: '/repo',
           model: 'composer-2',
           provider: 'cursor',

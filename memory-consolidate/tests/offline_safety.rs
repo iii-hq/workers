@@ -47,7 +47,7 @@ impl Boundary {
             rules: "Permanent rule; preserve bytes.\n".into(),
             state: HashMap::from([
                 ("last_run".into(), json!({"ms":7})),
-                ("last_report".into(), json!({"previous":true})),
+                ("reports".into(), json!([{"previous":true}])),
                 (
                     "semantic_cursor:offline".into(),
                     json!({"updated_at":0,"id":""}),
@@ -195,7 +195,7 @@ impl ConsolidationTransport for Boundary {
         &'a self,
         _model: &'a str,
         prompt: String,
-    ) -> TransportFuture<'a, memory_consolidate::llm::JudgeReply> {
+    ) -> TransportFuture<'a, (memory_consolidate::llm::JudgeReply, Value)> {
         Box::pin(async move {
             let mut inner = self.0.lock().unwrap();
             inner
@@ -205,8 +205,9 @@ impl ConsolidationTransport for Boundary {
                 .replies
                 .pop_front()
                 .unwrap_or_else(|| Err("no synthetic reorder decision supplied".into()))?;
-            Ok(memory_consolidate::llm::parse_reply(
-                reply.as_str().unwrap(),
+            Ok((
+                memory_consolidate::llm::parse_reply(reply.as_str().unwrap()),
+                json!({"input":50,"cache_read":10,"output":5,"cost_usd":0.001}),
             ))
         })
     }
@@ -381,11 +382,14 @@ async fn configured_dry_run_and_rejected_bank_preserve_state() {
         before["state"]["semantic_cursor:offline"],
         after["state"]["semantic_cursor:offline"]
     );
-    assert_eq!(after["state"]["last_report"]["dry_run"], true);
+    let reports = &after["state"]["reports"];
+    assert_eq!(reports[0]["dry_run"], true);
     assert_eq!(
-        after["state"]["last_report"]["banks"][0]["groups"][0]["loser_ids"],
+        reports[0]["banks"][0]["groups"][0]["loser_ids"],
         json!(["b"])
     );
+    assert!(reports[0]["ms"].is_u64());
+    assert_eq!(reports[1], json!({"previous":true}), "older reports kept");
     assert_ne!(before["state"]["last_run"], after["state"]["last_run"]);
     assert_eq!(
         boundary
@@ -395,7 +399,8 @@ async fn configured_dry_run_and_rejected_bank_preserve_state() {
             .collect::<Vec<_>>(),
         [
             "memory::list ",
-            "state::set last_report",
+            "state::get reports",
+            "state::set reports",
             "state::set last_run"
         ]
     );
@@ -740,6 +745,7 @@ fn options() -> SemanticOptions {
         batch: 1,
         candidates: 1,
         max_per_run: 1,
+        max_llm_calls: usize::MAX,
     }
 }
 
@@ -805,6 +811,7 @@ async fn operator_variants_never_reach_the_optional_reorder_tier() {
         [
             "memory::bank::list",
             "memory::list",
+            "state::get",
             "state::set",
             "state::set"
         ]
@@ -833,6 +840,10 @@ async fn supplied_reorder_decision_uses_the_shared_mutation_cap() {
     let response = run(&boundary, cfg, false).await;
     assert_eq!(response.superseded, 1);
     assert_eq!(response.banks[0].llm_merged, 1);
+    let bank = &response.banks[0];
+    assert_eq!(bank.llm_calls, 1);
+    assert_eq!((bank.llm_input_tokens, bank.llm_output_tokens), (60, 5));
+    assert_eq!(bank.llm_cost_usd, Some(0.001));
     let calls = boundary.calls();
     assert_eq!(
         calls
@@ -1181,4 +1192,200 @@ async fn golden_duplicate_pairs_pass_the_validator_as_supplied_merges() {
         pairs += 1;
     }
     assert!(pairs > 0, "the golden set has no dup_of pairs");
+}
+
+fn model_calls(boundary: &Boundary) -> usize {
+    boundary
+        .calls()
+        .iter()
+        .filter(|(f, _)| f == "router::complete")
+        .count()
+}
+
+#[tokio::test]
+async fn a_batch_where_no_reply_parses_holds_the_cursor() {
+    let boundary = Boundary::with_rows(vec![
+        row("a", "User prefers tea", 1),
+        row("b", "Tea is the user's preferred drink", 2),
+    ]);
+    for _ in 0..3 {
+        boundary.decision(json!({"missing_actions":true}));
+    }
+    let mut opts = options();
+    opts.batch = 2;
+    opts.max_per_run = 2;
+    let mut budget = 1;
+    let mut report = consolidate::BankReport::default();
+    semantic::run_semantic_tier(&boundary, "offline", &opts, &mut budget, &mut report).await;
+    // The pair, then each record alone: the judge itself is failing.
+    assert_eq!(model_calls(&boundary), 3);
+    assert_eq!(report.llm_calls, 3);
+    assert_eq!(
+        boundary.snapshot()["state"]["semantic_cursor:offline"],
+        json!({"updated_at":0,"id":""})
+    );
+    assert!(report.semantic_failed.is_empty());
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("cursor held before `a`")),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[tokio::test]
+async fn a_poison_record_is_skipped_once_a_sibling_parses() {
+    let boundary = Boundary::with_rows(vec![
+        row("a", "User prefers tea", 1),
+        row("b", "Tea is the user's preferred drink", 2),
+    ]);
+    boundary.decision(json!({"missing_actions":true}));
+    boundary.decision(json!({"missing_actions":true}));
+    boundary.decision(json!({"actions":[]}));
+    let mut opts = options();
+    opts.batch = 2;
+    opts.max_per_run = 2;
+    let mut budget = 1;
+    let mut report = consolidate::BankReport::default();
+    semantic::run_semantic_tier(&boundary, "offline", &opts, &mut budget, &mut report).await;
+    assert_eq!(model_calls(&boundary), 3);
+    assert_eq!(report.semantic_failed, ["a"]);
+    assert_eq!(
+        boundary.snapshot()["state"]["semantic_cursor:offline"],
+        json!({"updated_at":2,"id":"b"})
+    );
+}
+
+#[tokio::test]
+async fn a_lone_record_is_poison_once_a_later_batch_parses() {
+    let rows = || {
+        vec![
+            row("a", "User prefers tea", 1),
+            row("b", "Tea is the user's preferred drink", 2),
+            row("c", "Tea is what the user drinks", 3),
+        ]
+    };
+    let mut opts = options();
+    opts.max_per_run = 3;
+    let held = json!({"updated_at":0,"id":""});
+
+    // One record per batch: the first reply fails, the next one parses.
+    let boundary = Boundary::with_rows(rows());
+    boundary.decision(json!({"missing_actions":true}));
+    boundary.decision(json!({"actions":[]}));
+    boundary.decision(json!({"actions":[]}));
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(&boundary, "offline", &opts, &mut budget, &mut report).await;
+    assert_eq!(report.semantic_failed, ["a"]);
+    assert_eq!(
+        boundary.snapshot()["state"]["semantic_cursor:offline"],
+        json!({"updated_at":3,"id":"c"})
+    );
+
+    // Two batches with failed replies and none parsed: the judge is failing.
+    let boundary = Boundary::with_rows(rows());
+    for _ in 0..3 {
+        boundary.decision(json!({"missing_actions":true}));
+    }
+    let (mut budget, mut report) = (1, consolidate::BankReport::default());
+    semantic::run_semantic_tier(&boundary, "offline", &opts, &mut budget, &mut report).await;
+    assert_eq!(model_calls(&boundary), 2, "stopped before `c`");
+    assert!(report.semantic_failed.is_empty());
+    assert_eq!(
+        boundary.snapshot()["state"]["semantic_cursor:offline"],
+        held
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("cursor held before `a`")),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_report_ring_is_never_overwritten() {
+    let boundary = Boundary::with_rows(vec![row("a", "User prefers tea", 1)]);
+    boundary.fail_once("state::get:reports");
+    let cfg = WorkerConfig {
+        semantic_enabled: false,
+        ..WorkerConfig::default()
+    };
+    run(&boundary, cfg, false).await;
+    assert_eq!(
+        boundary.snapshot()["state"]["reports"],
+        json!([{"previous":true}])
+    );
+    assert!(boundary
+        .calls()
+        .iter()
+        .all(|(f, p)| !(f == "state::set" && p["key"] == "reports")));
+}
+
+#[tokio::test]
+async fn the_llm_call_cap_defers_the_rest_across_banks() {
+    let boundary = Boundary::with_rows(vec![
+        row("a", "User prefers tea", 1),
+        row("b", "Tea is the user's preferred drink", 2),
+    ]);
+    boundary.0.lock().unwrap().replies.push_back(Ok(json!({
+        "message":{"stop_reason":"stop","content":[{"type":"text","text":"{\"actions\":[]}"}]},
+        "usage":{"input":100,"cache_read":20,"output":7,"cost_usd":0.002}
+    })));
+    let cfg = WorkerConfig {
+        banks: vec!["offline".into(), "second".into()],
+        max_llm_calls_per_run: 1,
+        ..semantic_only()
+    };
+    let response = run(&boundary, cfg, false).await;
+    assert_eq!(model_calls(&boundary), 1);
+    let (first, second) = (&response.banks[0], &response.banks[1]);
+    assert_eq!(first.llm_calls, 1);
+    assert_eq!(first.llm_input_tokens, 120);
+    assert_eq!(first.llm_output_tokens, 7);
+    assert_eq!(first.llm_cost_usd, Some(0.002));
+    assert_eq!(second.llm_calls, 0);
+    assert!(
+        second
+            .notes
+            .iter()
+            .any(|n| n.contains("per-run LLM call cap reached")),
+        "{:?}",
+        second.notes
+    );
+    assert!(boundary.snapshot()["state"]
+        .get("semantic_cursor:second")
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_zero_call_cap_defers_both_tiers() {
+    let boundary = Boundary::with_rows(vec![
+        row("a", "concise direct answers", 1),
+        row("b", "direct concise answers", 2),
+    ]);
+    let cfg = WorkerConfig {
+        llm_assist_enabled: true,
+        semantic_enabled: true,
+        max_llm_calls_per_run: 0,
+        ..WorkerConfig::default()
+    };
+    let response = run(&boundary, cfg, false).await;
+    assert!(boundary
+        .calls()
+        .iter()
+        .all(|(f, _)| f != "router::complete" && f != "offline::reorder-decision"));
+    let notes = &response.banks[0].notes;
+    assert!(
+        notes.iter().any(|n| n.contains("llm tier deferred")),
+        "{notes:?}"
+    );
+    assert!(
+        notes.iter().any(|n| n.contains("semantic tier deferred")),
+        "{notes:?}"
+    );
 }

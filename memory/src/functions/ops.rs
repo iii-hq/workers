@@ -31,6 +31,9 @@ pub struct DoctorResponse {
     /// rest are reported but advisory).
     pub ok: bool,
     pub checks: Vec<DoctorCheck>,
+    /// Extraction passes since boot: how they went, what the model calls
+    /// cost and what they wrote.
+    pub extraction: PassHealth,
 }
 
 pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, MemoryError> {
@@ -83,14 +86,13 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     checks.push(embeddings_check(deps, cfg.embeddings_enabled).await);
 
     // 6. Advisory: extraction passes succeed (a failing one only logs).
-    checks.push(extraction_check(
-        cfg.extraction_enabled,
-        &crate::extract::pass_health(),
-    ));
+    let health = crate::extract::pass_health();
+    checks.push(extraction_check(cfg.extraction_enabled, &health));
 
     Ok(DoctorResponse {
         ok: roundtrip_ok,
         checks,
+        extraction: health,
     })
 }
 
@@ -129,10 +131,13 @@ fn extraction_check(enabled: bool, health: &PassHealth) -> DoctorCheck {
             ),
         ),
         None if health.passes == 0 => (true, "no extraction pass since boot".into()),
-        None => (
-            true,
-            format!("{} passes since boot, the latest succeeded", health.passes),
-        ),
+        None => {
+            let mut detail = format!("{} passes since boot, the latest succeeded", health.passes);
+            if health.pending > 0 {
+                detail += &format!("; {} left a backlog for the queue to drain", health.pending);
+            }
+            (true, detail)
+        }
     };
     DoctorCheck {
         name: "extraction-passes".into(),
@@ -292,6 +297,7 @@ mod tests {
             passes: 4,
             failed_in_a_row: 3,
             last_error: Some("router::complete: no provider".into()),
+            ..PassHealth::default()
         };
         let check = extraction_check(true, &failing);
         assert!(!check.ok);
@@ -308,5 +314,18 @@ mod tests {
             ..PassHealth::default()
         };
         assert!(extraction_check(true, &recovered).ok);
+
+        let draining = PassHealth {
+            passes: 5,
+            pending: 2,
+            ..PassHealth::default()
+        };
+        let check = extraction_check(true, &draining);
+        assert!(check.ok, "a backlog is not a failure");
+        assert!(
+            check.detail.contains("2 left a backlog"),
+            "{}",
+            check.detail
+        );
     }
 }

@@ -1,6 +1,6 @@
 //! `memory-consolidate::*` — the manual run surface, status, and the
-//! schedule bookkeeping (last run + last report persisted in the state
-//! worker so catch-up-on-boot survives restarts).
+//! schedule bookkeeping (last run + the last 30 pass reports persisted in
+//! the state worker so catch-up-on-boot survives restarts).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -27,7 +27,8 @@ pub const RUN_DESC: &str =
 pub const STATUS_ID: &str = "memory-consolidate::status";
 pub const STATUS_DESC: &str =
     "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
-     the latest per-bank results.";
+     the reports of the last 30 passes (newest first), each with per-bank results and LLM \
+     calls, tokens and cost; only the newest lists its groups and semantic actions.";
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
 pub const TICK_DESC: &str =
@@ -36,7 +37,8 @@ pub const TICK_DESC: &str =
 
 const STATE_SCOPE: &str = "memory_consolidate";
 const STATE_LAST_RUN: &str = "last_run";
-const STATE_LAST_REPORT: &str = "last_report";
+const STATE_REPORTS: &str = "reports";
+const REPORTS_KEPT: usize = 30;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct RunRequest {
@@ -72,8 +74,9 @@ pub struct StatusResponse {
     pub last_run: u64,
     /// A scheduled pass is overdue right now.
     pub due: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_report: Option<Value>,
+    /// The last 30 passes, newest first: `{ ms, dry_run, banks }`. Older
+    /// passes' banks leave out `groups` and `semantic`.
+    pub reports: Vec<Value>,
 }
 
 pub struct Deps {
@@ -99,6 +102,27 @@ pub(crate) fn is_due(now_ms: u64, last_run_ms: u64, interval_hours: u64) -> bool
     let interval_ms = interval_hours.saturating_mul(3_600_000);
     let slack_ms = 300_000u64.min(interval_ms / 10);
     now_ms.saturating_sub(last_run_ms) + slack_ms >= interval_ms
+}
+
+/// The ring with `report` in front, at most [`REPORTS_KEPT`]. Only the newest
+/// keeps its banks' `groups` and `semantic` lists, which repeat memory texts,
+/// so 30 passes stay about the size of one.
+pub(crate) fn with_report(ring: Option<Value>, report: Value) -> Vec<Value> {
+    let mut reports = vec![report];
+    if let Some(Value::Array(older)) = ring {
+        reports.extend(older);
+    }
+    reports.truncate(REPORTS_KEPT);
+    for bank in reports[1..]
+        .iter_mut()
+        .filter_map(|r| r.get_mut("banks").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        bank.remove("groups");
+        bank.remove("semantic");
+    }
+    reports
 }
 
 /// Checkpoint policy: only a pass with zero bank errors advances
@@ -203,6 +227,7 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
     };
 
     let mut budget = cfg.max_supersedes_per_run;
+    let mut llm_calls_left = cfg.max_llm_calls_per_run;
     let mut reports = Vec::new();
     for bank in &banks {
         let (mut report, rows) = consolidate::run_bank(transport, bank, dry_run, &mut budget).await;
@@ -210,6 +235,7 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
             let opts = consolidate::LlmOptions {
                 model: cfg.llm_model.clone(),
                 promote_threshold: cfg.promote_corroboration_threshold,
+                max_llm_calls: llm_calls_left,
             };
             consolidate::run_llm_tier(transport, bank, &rows, &mut report, &mut budget, &opts)
                 .await;
@@ -228,10 +254,12 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
                 batch: cfg.semantic_batch,
                 candidates: cfg.semantic_candidates,
                 max_per_run: cfg.semantic_max_per_run,
+                max_llm_calls: llm_calls_left,
             };
             crate::semantic::run_semantic_tier(transport, bank, &opts, &mut budget, &mut report)
                 .await;
         }
+        llm_calls_left = llm_calls_left.saturating_sub(report.llm_calls);
         reports.push(report);
     }
     let superseded = reports.iter().map(|r| r.superseded).sum();
@@ -252,14 +280,17 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
         });
     }
     let report_json = serde_json::to_value(&reports).unwrap_or(Value::Null);
-    if let Err(e) = state_set(
-        transport,
-        STATE_LAST_REPORT,
-        json!({ "dry_run": dry_run, "banks": report_json }),
-    )
-    .await
-    {
-        tracing::warn!(error = %e, "last-report write failed");
+    let report = json!({ "ms": now_ms(), "dry_run": dry_run, "banks": report_json });
+    // A failed read skips the write: it must never erase the older reports.
+    match state_try_get(transport, STATE_REPORTS).await {
+        Ok(ring) => {
+            if let Err(e) =
+                state_set(transport, STATE_REPORTS, json!(with_report(ring, report))).await
+            {
+                tracing::warn!(error = %e, "pass report write failed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "pass reports unreadable; this report not kept"),
     }
     let clean = should_checkpoint(&reports);
     let checkpointed = if clean {
@@ -301,7 +332,10 @@ pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, 
         dry_run: cfg.dry_run,
         last_run,
         due,
-        last_report: state_get(deps.iii.as_ref(), STATE_LAST_REPORT).await,
+        reports: match state_get(deps.iii.as_ref(), STATE_REPORTS).await {
+            Some(Value::Array(reports)) => reports,
+            _ => Vec::new(),
+        },
     })
 }
 
@@ -428,6 +462,34 @@ pub fn register_all(iii: &IIIClient, deps: &Arc<Deps>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ring_keeps_the_last_30_reports_newest_first() {
+        let stored = json!((0..30).map(|n| json!({ "n": n })).collect::<Vec<_>>());
+        let ring = with_report(Some(stored), json!({ "n": "new" }));
+        assert_eq!(ring.len(), 30);
+        assert_eq!(ring[0], json!({ "n": "new" }));
+        assert_eq!(ring[1], json!({ "n": 0 }));
+        assert_eq!(ring[29], json!({ "n": 28 }), "the oldest goes");
+
+        assert_eq!(with_report(None, json!(1)), vec![json!(1)]);
+        assert_eq!(
+            with_report(Some(json!({ "n": 0 })), json!(1)),
+            vec![json!(1)]
+        );
+
+        // Only the newest keeps the lists that repeat memory texts.
+        let pass = |n: usize| {
+            json!({ "n": n, "banks": [{ "bank": "b", "superseded": 1,
+                "groups": [{ "texts": ["a long memory"] }], "semantic": [{ "reason": "same" }] }] })
+        };
+        let ring = with_report(Some(json!([pass(1)])), pass(0));
+        assert_eq!(ring[0], pass(0));
+        assert_eq!(
+            ring[1],
+            json!({ "n": 1, "banks": [{ "bank": "b", "superseded": 1 }] })
+        );
+    }
 
     #[test]
     fn never_run_is_due_on_any_realistic_clock() {

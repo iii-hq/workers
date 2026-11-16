@@ -42,11 +42,12 @@ pub trait ConsolidationTransport: Send + Sync {
         max_tokens: u32,
     ) -> TransportFuture<'a, Value>;
 
+    /// The judge's reply and the router's `usage` for the call.
     fn judge<'a>(
         &'a self,
         model: &'a str,
         prompt: String,
-    ) -> TransportFuture<'a, crate::llm::JudgeReply>;
+    ) -> TransportFuture<'a, (crate::llm::JudgeReply, Value)>;
 }
 
 impl ConsolidationTransport for IIIClient {
@@ -83,7 +84,7 @@ impl ConsolidationTransport for IIIClient {
         &'a self,
         model: &'a str,
         prompt: String,
-    ) -> TransportFuture<'a, crate::llm::JudgeReply> {
+    ) -> TransportFuture<'a, (crate::llm::JudgeReply, Value)> {
         Box::pin(crate::llm::judge(self, model, prompt))
     }
 }
@@ -186,10 +187,24 @@ pub struct BankReport {
     /// wrong direction, a lost number, ...).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub semantic_rejected: usize,
-    /// New memories the judge could not decide even alone (a poison input);
-    /// skipped past the cursor so they cannot wedge the tier.
+    /// New memories the judge could not decide even alone while another
+    /// reply of the pass parsed (a poison input); skipped past the cursor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub semantic_failed: Vec<String>,
+    /// Model call attempts by the judge and semantic tiers, failed ones
+    /// included.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_calls: usize,
+    /// Prompt tokens the router reported, cached ones included.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_input_tokens: usize,
+    /// Output tokens the router reported.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_output_tokens: usize,
+    /// The router's cost in USD, summed over the calls the router priced;
+    /// absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_cost_usd: Option<f64>,
 }
 
 /// Reason carried on the `memory::on-item-changed` events of a deterministic
@@ -214,6 +229,17 @@ pub(crate) fn tally_reinforcement(report: &mut BankReport, reply: &Value) {
                 report.notes.push(NOTE_OLD_MEMORY.into());
             }
         }
+    }
+}
+
+/// Adds a `router::complete` reply's `usage` to the bank's tally; never
+/// prices a call the router did not.
+pub(crate) fn tally_usage(report: &mut BankReport, usage: &Value) {
+    let n = |key: &str| usage[key].as_u64().unwrap_or(0) as usize;
+    report.llm_input_tokens += n("input") + n("cache_read") + n("cache_write");
+    report.llm_output_tokens += n("output");
+    if let Some(cost) = usage["cost_usd"].as_f64() {
+        *report.llm_cost_usd.get_or_insert(0.0) += cost;
     }
 }
 
@@ -540,6 +566,9 @@ async fn apply_group<T: ConsolidationTransport + ?Sized>(
 pub struct LlmOptions {
     pub model: String,
     pub promote_threshold: u32,
+    /// Model calls this bank may still make: the run's cap less what
+    /// earlier banks used.
+    pub max_llm_calls: usize,
 }
 
 /// The judge tier for one bank: confirmed reorder merges + rule
@@ -559,7 +588,14 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
     let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates) else {
         return;
     };
-    let reply = match iii.judge(&opts.model, prompt).await {
+    if report.llm_calls >= opts.max_llm_calls {
+        report
+            .notes
+            .push("llm tier deferred: per-run LLM call cap reached".into());
+        return;
+    }
+    report.llm_calls += 1;
+    let (reply, usage) = match iii.judge(&opts.model, prompt).await {
         Ok(r) => r,
         Err(e) => {
             // An unavailable optional decision provider remains a soft skip;
@@ -571,6 +607,7 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
 
     // Confirmed merges: clone the groups first (report holds them).
     let confirmed = confirmed_groups(&reply.merge_groups, &reorder);
+    tally_usage(report, &usage);
     for group in &confirmed {
         let applied = apply_group(iii, bank, group, rows, budget, report, REASON_REORDER).await;
         report.llm_merged += applied;
@@ -637,6 +674,25 @@ mod tests {
             stated_at: None,
             snapshot: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn usage_tally_sums_tokens_and_only_a_reported_cost() {
+        let mut report = BankReport::default();
+        tally_usage(
+            &mut report,
+            &json!({"input": 100, "cache_read": 40, "cache_write": 10, "output": 20, "cost_usd": 0.003}),
+        );
+        tally_usage(&mut report, &json!({"input": 5, "output": 2}));
+        assert_eq!(report.llm_input_tokens, 155);
+        assert_eq!(report.llm_output_tokens, 22);
+        assert_eq!(report.llm_cost_usd, Some(0.003));
+
+        let mut unpriced = BankReport::default();
+        tally_usage(&mut unpriced, &json!({"input": 5, "output": 2}));
+        tally_usage(&mut unpriced, &Value::Null);
+        assert_eq!(unpriced.llm_input_tokens, 5);
+        assert_eq!(unpriced.llm_cost_usd, None, "never priced here");
     }
 
     #[test]

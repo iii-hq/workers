@@ -78,3 +78,52 @@ export function typeInto(element: HTMLElement, text: string): boolean {
   }
   return false
 }
+
+/**
+ * Whether the running dictation was started by a finger on the mic. Set when
+ * a dictation starts, so a keyboard shortcut or command on a touch-first
+ * device (a tablet with a hardware keyboard) keeps its usual focus.
+ */
+let startedByTouch = false
+
+/** Record how the dictation now starting was started. */
+export function setDictationStartedByTouch(touch: boolean): void {
+  startedByTouch = touch
+}
+
+/** True while the running dictation was started by touch. */
+export function dictationStartedByTouch(): boolean {
+  return startedByTouch
+}
+
+/** A finger or pen, not a mouse: the pointer types `takeFocusOnTouch` acts on. */
+export function isTouchPointer(event: { pointerType?: string } | undefined): boolean {
+  return event?.pointerType !== undefined && event.pointerType !== 'mouse'
+}
+
+/**
+ * Pointer-down on a voice control under a finger. The console cancels
+ * pointer-down on the composer toolbar so a tap keeps the caret, but on a
+ * phone a tap while the message box still holds focus (keyboard hidden, not
+ * blurred) brings the keyboard back. The control takes focus itself: a
+ * button raises no keyboard, and focus stays inside the composer, so its
+ * toolbar stays shown.
+ */
+export function takeFocusOnTouch(event: { pointerType?: string; currentTarget: EventTarget | null; preventDefault(): void } | undefined): void {
+  if (!event || !isTouchPointer(event)) return
+  event.preventDefault()
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.focus({ preventScroll: true })
+}
+
+/** After text from a touch-started dictation lands in the chat composer,
+    drop the caret the console gave it, so the keyboard does not cover the
+    message. */
+export function releaseComposerFocus(): void {
+  const release = () => {
+    const active = deepActiveElement()
+    if (active instanceof HTMLElement && isChatComposer(active)) active.blur()
+  }
+  // The console focuses the editor as its insert commits; blur after it.
+  window.setTimeout(release, 0)
+  window.setTimeout(release, 120)
+}

@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react'
 import { doctor } from '../lib/client'
 import type { DictationController } from '../lib/dictation'
 import { useDictation, useDictationLevel } from '../lib/dictation'
+import { setDictationStartedByTouch } from '../lib/focus-target'
 import { dictationShortcutLabel, MicButton, toggleDictation, useMicPointer } from '../lib/mic'
 import { type DictationKeys, useFnAvailable } from '../keys'
 import type { ComposerActionProps, ComposerActionRegistration } from '../lib/types'
@@ -101,7 +102,10 @@ export function createVoiceComposerAction(
             status={state.status}
             holding={pointer.holding}
             onDone={() => void toggleDictation(controller, finish)}
-            onCancel={() => void controller.cancel()}
+            onCancel={() => {
+              setDictationStartedByTouch(false)
+              void controller.cancel()
+            }}
           />
         ) : null}
         <MicButton pointer={pointer} className="voice-composer-btn" phase={state.status} level={level} shortcut={dictationShortcutLabel(fnReady)} />

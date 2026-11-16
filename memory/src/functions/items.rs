@@ -28,7 +28,7 @@ struct SaveInput {
     entities: Vec<String>,
     tags: Vec<String>,
     pinned: bool,
-    session_id: Option<String>,
+    source: Option<Provenance>,
     now: u64,
 }
 
@@ -45,7 +45,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
         entities,
         tags,
         pinned,
-        session_id,
+        source,
         now,
     } = input;
     match existing {
@@ -82,11 +82,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                 confidence: Confidence::Stated,
                 corroboration: 0,
                 pinned,
-                source: session_id.map(|session_id| Provenance {
-                    session_id: Some(session_id),
-                    entry_id: None,
-                    agent: None,
-                }),
+                source,
                 created_at: now,
                 updated_at: now,
                 invalid_at: None,
@@ -102,9 +98,24 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
 
 /// A save into the default bank that names no entities is the user's own
 /// (the memory page's add field, the CLI): about the user, so it is read
-/// under every directory bank too.
-fn about_the_user(entities: &[String], bank: &str, default_bank: &str) -> bool {
-    entities.iter().all(|e| e.trim().is_empty()) && bank == default_bank
+/// under every directory bank too. A save from a turn is the agent's note,
+/// never tagged as the user's.
+fn about_the_user(entities: &[String], bank: &str, default_bank: &str, in_turn: bool) -> bool {
+    !in_turn && entities.iter().all(|e| e.trim().is_empty()) && bank == default_bank
+}
+
+/// Where a save came from: the turn it was called from (invocation
+/// baggage: its session and turn id), else the session the request names.
+fn save_source(named: Option<String>, caller: crate::scope::Caller) -> Option<Provenance> {
+    let (session_id, turn_id) = match caller.session_id {
+        Some(session_id) => (session_id, caller.turn_id),
+        None => (named?, None),
+    };
+    Some(Provenance {
+        session_id: Some(session_id),
+        turn_id,
+        ..Provenance::default()
+    })
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -115,8 +126,9 @@ pub struct SaveRequest {
     /// The memory, one self-contained sentence.
     pub text: String,
     /// Entity handles (people/projects/tools) used as a retrieval signal.
-    /// None into the default bank: `user`, read under every repository's
-    /// bank.
+    /// None into the default bank from outside a turn (the memory page, the
+    /// CLI): `user`, read under every repository's bank; a save from a turn
+    /// names `user` itself for a fact about the user.
     #[serde(default)]
     pub entities: Vec<String>,
     /// Topical labels for filtering within the bank (organization, not
@@ -125,7 +137,9 @@ pub struct SaveRequest {
     pub tags: Vec<String>,
     #[serde(default)]
     pub pinned: bool,
-    /// Provenance session, when saved on behalf of a conversation.
+    /// Provenance session for a save made outside a turn on behalf of a
+    /// conversation. A save from a turn records that turn's session and turn
+    /// id instead.
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -139,6 +153,8 @@ pub struct SaveResponse {
 }
 
 pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryError> {
+    let caller = crate::scope::Caller::from_baggage();
+    let in_turn = caller.session_id.is_some();
     let text = req.text.trim();
     crate::redact::reject_injection("text", text)?;
     // Redact before the fingerprint: dedup and the stored text agree, and
@@ -158,7 +174,12 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     labels.extend(crate::redact::drop_secrets(&mut entities));
     labels.extend(crate::redact::drop_secrets(&mut tags));
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
-    if about_the_user(&entities, &bank_name, &deps.config().await.default_bank) {
+    if about_the_user(
+        &entities,
+        &bank_name,
+        &deps.config().await.default_bank,
+        in_turn,
+    ) {
         crate::scope::into_layer(&mut entities);
     }
     let store = deps.store().await;
@@ -173,7 +194,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
         entities,
         tags,
         pinned: req.pinned,
-        session_id: req.session_id,
+        source: save_source(req.session_id, caller),
         now: stated_now_ms(),
     };
     // The same text saved twice at once: the commit that lands second
@@ -577,13 +598,56 @@ mod tests {
 
     #[test]
     fn an_entityless_save_into_the_default_bank_is_about_the_user() {
-        assert!(about_the_user(&[], "main", "main"));
+        assert!(about_the_user(&[], "main", "main", false));
         assert!(
-            about_the_user(&[" ".into()], "main", "main"),
+            about_the_user(&[" ".into()], "main", "main", false),
             "blank entities name nothing"
         );
-        assert!(!about_the_user(&["ledger-sync".into()], "main", "main"));
-        assert!(!about_the_user(&[], "w-abc123", "main"));
+        assert!(!about_the_user(
+            &["ledger-sync".into()],
+            "main",
+            "main",
+            false
+        ));
+        assert!(!about_the_user(&[], "w-abc123", "main", false));
+        assert!(
+            !about_the_user(&[], "main", "main", true),
+            "a save from a turn is the agent's note"
+        );
+    }
+
+    #[test]
+    fn a_save_from_a_turn_records_its_session_and_turn() {
+        let in_turn = || crate::scope::Caller {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+        };
+        let recorded = |source: Option<Provenance>| {
+            source.map(|p| (p.session_id, p.turn_id, p.entry_id, p.agent))
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            recorded(save_source(None, in_turn())),
+            Some((some("s"), some("t"), None, None))
+        );
+        assert_eq!(
+            recorded(save_source(some("other"), in_turn())),
+            Some((some("s"), some("t"), None, None)),
+            "inside a turn the turn wins"
+        );
+        let no_turn = crate::scope::Caller {
+            session_id: Some("s".into()),
+            turn_id: None,
+        };
+        assert_eq!(
+            recorded(save_source(None, no_turn)),
+            Some((some("s"), None, None, None))
+        );
+        assert_eq!(
+            recorded(save_source(some("named"), crate::scope::Caller::default())),
+            Some((some("named"), None, None, None))
+        );
+        assert_eq!(save_source(None, crate::scope::Caller::default()), None);
     }
 
     fn record(id: &str, revision: u64, live: bool, pinned: bool) -> Memory {
@@ -615,7 +679,11 @@ mod tests {
                 entities: vec![" Mike ".into(), "".into(), "BLOG".into()],
                 tags: vec![" Intro ".into()],
                 pinned: true,
-                session_id: Some("s_1".into()),
+                source: Some(Provenance {
+                    session_id: Some("s_1".into()),
+                    turn_id: Some("t_1".into()),
+                    ..Provenance::default()
+                }),
                 now: 99,
             },
         );
@@ -626,7 +694,9 @@ mod tests {
         assert_eq!(m.entities, vec!["mike", "blog"]);
         assert_eq!(m.tags, vec!["intro"]);
         assert!(m.pinned);
-        assert_eq!(m.source.unwrap().session_id.as_deref(), Some("s_1"));
+        let source = m.source.unwrap();
+        assert_eq!(source.session_id.as_deref(), Some("s_1"));
+        assert_eq!(source.turn_id.as_deref(), Some("t_1"));
     }
 
     #[test]
@@ -640,7 +710,7 @@ mod tests {
                 entities: many,
                 tags: vec![],
                 pinned: false,
-                session_id: None,
+                source: None,
                 now: 1,
             },
         );
@@ -657,7 +727,7 @@ mod tests {
                 entities: vec![],
                 tags: vec!["fresh-tag".into()],
                 pinned: false,
-                session_id: None,
+                source: None,
                 now: 99,
             },
         );
@@ -680,7 +750,7 @@ mod tests {
                 entities: vec![],
                 tags: vec![],
                 pinned: false,
-                session_id: None,
+                source: None,
                 now: 99,
             },
         );
