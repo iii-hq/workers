@@ -230,18 +230,6 @@ async fn run_completed_is_private_returns_the_event_and_reaches_matching_observe
         info["args_format"]["properties"]["run_id"].is_object(),
         "observer args are {{run_id}}: {info}"
     );
-    // main.rs registers workflow::start only after the stamp-reply hook is bound.
-    let start = call(
-        &observer,
-        "engine::functions::info",
-        json!({ "function_id": "workflow::start" }),
-    )
-    .await;
-    assert!(
-        start.is_err(),
-        "register_all registered workflow::start: {start:?}"
-    );
-
     // Its handler returns the event it is called with.
     let event = json!({
         "run_id": "r-direct",
@@ -803,4 +791,39 @@ async fn a_run_observer_added_again_after_a_reconnect_is_replayed() {
     consumer.shutdown_async().await;
     host.shutdown_async().await;
     state.shutdown_async().await;
+}
+
+/// The registry's function list is taken from the worker booted alone, with no
+/// queue worker and no harness, so `workflow::start` must be registered there,
+/// refusing calls while boot has not settled its stamp hook.
+#[tokio::test]
+async fn start_is_registered_and_gated_when_the_worker_boots_alone() {
+    let Some(engine) = engine_or_skip().await else {
+        return;
+    };
+    let mut worker = Command::new(env!("CARGO_BIN_EXE_workflow"))
+        .env("III_URL", &engine.url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the workflow binary");
+    let caller = register_worker(&engine.url, named("workflow-test-caller"));
+    let not_ready = |reply: &Result<Value, Error>| matches!(reply, Err(e) if e.to_string().contains("not ready"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let reply = loop {
+        let reply = call(
+            &caller,
+            "workflow::start",
+            json!({ "nodes": { "a": { "task": "t" } } }),
+        )
+        .await;
+        if not_ready(&reply) || Instant::now() > deadline {
+            break reply;
+        }
+        sleep(Duration::from_millis(100)).await;
+    };
+    let _ = worker.kill();
+    let _ = worker.wait();
+    caller.shutdown_async().await;
+    assert!(not_ready(&reply), "{reply:?}");
 }
