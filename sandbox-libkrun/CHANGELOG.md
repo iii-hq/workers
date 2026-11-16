@@ -22,12 +22,15 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   manifest may then leave it out.
 - **`worker::destroy` keeps the data.** Without `prune`, a destroy removes the
   VM's runtime state and its build-dir record, which frees its build directory,
-  and keeps its data disk, the pre-build copies of an earlier adapter and the
-  seal: a later start of the same `state_key` boots over the same data. A VM
-  with no data goes whole. The reply lists what stayed in `kept`; `destroyed`
+  and keeps its data disk, the pre-build copies and the seal. It first moves
+  the disk of a start without `build`, or a legacy rootfs clone, to the next
+  free pre-build name, so it never deletes what a guest wrote. A later start
+  with `build` of the same `state_key` boots over the kept data disk; a start
+  without `build` begins with a new disk, and what the previous one held stays
+  under the pre-build names. A VM with no data goes whole. The reply lists what stayed in `kept`; `destroyed`
   is false when only data was there.
   `prune: true` removes everything, as 0.4.x did. `adapter::info` advertises
-  `worker.prune`.
+  `worker.prune` in the overlay mode, with `worker.build`.
 
 ### Fixed
 
@@ -52,6 +55,13 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   spelling of a recorded directory (same device and inode) is still its VM's;
   `worker::destroy` deletes the VM's record; the project token is not checked.
   The check reads no directory name.
+
+### Release
+
+Publish this release with the exact version `0.5.0`, never as a patch bump of
+0.4.3: the bytes say 0.5.0 and contract 1.4, and a 0.4.x version would reach
+Compose installs pinned to `^0.4` (contract 1.3), which send no `prune`, so
+their `compose::remove` would keep the data. The caret range is the only guard.
 
 ### Upgrading from 0.4.x
 

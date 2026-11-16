@@ -136,7 +136,7 @@ so a run never installs anything. It advertises `worker.build` in
 `adapter::info` only in the overlay rootfs mode; the legacy mode
 (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) cannot boot
 a build and keeps quiet about it. From 0.5.0 (sandbox contract 1.4) it also
-advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
+advertises `worker.binary` and `worker.prune` in the overlay mode only.
 
 - **`worker::build`** boots a build VM on the cached base image (pulling it when
   missing) with a fresh upper, copies the worker's code into `/workspace` (a
@@ -195,17 +195,21 @@ advertises `worker.binary` in the overlay mode only, and `worker.prune` in both.
   destroy without `prune` removes the VM's runtime state (its `root/` share,
   console log, instance and state-key records, build scratch) and its build-dir
   record, which frees its build directory, and keeps its data: the data disk,
-  the pre-build copies and the seal. A later start of the same `state_key`
-  boots over the same data. A VM an earlier adapter ran first moves its disk to
-  a pre-build copy, as its first build start would; a VM with no data goes
-  whole. The reply lists in `kept` the absolute paths it kept; `destroyed` is
+  the pre-build copies and the seal. Every such destroy first moves the disk of
+  a start without `build` (`root/upper.ext4`, a 0.26 disk among them) or a
+  legacy rootfs clone (`root/`) to the next free pre-build name, so it never
+  deletes what a guest wrote. A later start with `build` of the same
+  `state_key` boots over the kept data disk; a start without `build` begins
+  with a new disk, and what the previous one held stays under the pre-build
+  names. A VM with no data goes whole. The reply lists in `kept` the absolute paths it kept; `destroyed` is
   false when the directory held data only. `prune: true`
   removes everything, as 0.4.x did. The data stays in
   `~/.iii/sandbox/workers/<vm_id>/`, which the log of the destroy names.
 - **Binary packages.** From 0.5.0 (sandbox contract 1.4) a `Binary` source names
   the directory where Compose put a binary package's Linux build and its
   `executable`, relative to it: a relative path of plain components naming an
-  executable regular file in the package, through no symlink (S501 otherwise).
+  executable regular file in the package, through no symlink and under no
+  `.iii` (in any case, which the build's copy leaves out); S501 otherwise.
   `worker::build` needs a `base_image` for it (S001 without one), copies the
   package whole into `/workspace`, and runs its `scripts.install` when the
   package ships an `iii.worker.yaml`. That manifest passes the bundle gates but
