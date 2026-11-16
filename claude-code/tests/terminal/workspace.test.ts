@@ -49,7 +49,9 @@ function fakeShell(
               : { stdout: '/usr/bin/iii\n', stderr: '', exit_code: 0 };
           }
           // One listing of the plugin folder, so a missing file is never read.
-          const listing = command.match(/^if \[ -d '([^']*)' \]; then find '[^']*' -type f; fi$/);
+          const listing = command.match(
+            /^if \[ -d '([^']*)' \]; then find -L '[^']*' -type f; fi$/,
+          );
           if (listing) {
             if (options.listingFails)
               return { stdout: '', stderr: 'find: not found', exit_code: 127 };
@@ -340,7 +342,8 @@ describe('preparing the terminal host', () => {
     );
     const quoted = `'/home/o'\\''neil/my space/.iii-plugin'`;
     expect(String(listing?.payload.command)).toBe(
-      `if [ -d ${quoted} ]; then find ${quoted} -type f; fi`,
+      // -L: a symlinked plugin folder is listed through the link, not as empty.
+      `if [ -d ${quoted} ]; then find -L ${quoted} -type f; fi`,
     );
   });
 

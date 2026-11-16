@@ -27,7 +27,7 @@
  * `mcp_url` option, then http://127.0.0.1:3111/mcp.
  */
 
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,23 +53,36 @@ function pluginRoot(argv: string[], env: NodeJS.ProcessEnv): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), '..');
 }
 
+/**
+ * Write `path` through a temporary file in the same directory, renamed over
+ * it: `sync` runs in the background at session start, and a process cut off
+ * mid-write must not leave a truncated agent or command for the next session.
+ */
+async function replaceFile(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  try {
+    await writeFile(tmp, content, 'utf8');
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+}
+
 async function sync(dir: McpDirectory, argv: string[], io: CliIo): Promise<void> {
   const root = pluginRoot(argv, io.env);
   const agents = await dir.listAgents(true);
   const result = await writeProfileCommands(root, agents, {
     read: (path) => readFile(path, 'utf8').catch(() => null),
-    write: async (path, content) => {
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, content, 'utf8');
-    },
+    write: replaceFile,
     remove: (path) => rm(path, { force: true }),
   });
   // The `iii` agent is built from default-mcp; if it cannot be read, the
   // agent the plugin has stays.
   const agent = await dir.getAgent(DEFAULT_PROFILE).catch(() => null);
   if (agent?.system_prompt) {
-    await mkdir(join(root, 'agents'), { recursive: true });
-    await writeFile(join(root, 'agents', 'iii.md'), agentFile(agent), 'utf8');
+    await replaceFile(join(root, 'agents', 'iii.md'), agentFile(agent));
   }
   if (!argv.includes('--quiet')) {
     io.stderr(

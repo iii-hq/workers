@@ -9,6 +9,6 @@
     "src/iii-plugin/mcp.ts",
     "src/iii-plugin/session.ts"
   ],
-  "inputs_sha256": "1aef34ae10e05860c1df40189f19f963ee679cc7caada485b0599d1f98ae33ea",
-  "output_sha256": "66879bd4f8f44493b96a98d58842516b6dd92ae594ee63c123e7562609515583"
+  "inputs_sha256": "7a32d65b644fa8b9ecc2fd49ca40ca641fddd0433b02f5baa7201ddae64c4fe3",
+  "output_sha256": "e9acc1ded76a375a3e3161c29f9437c13cb6bc357f9ef32e6bfaad2c255a7353"
 }

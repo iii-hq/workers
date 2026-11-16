@@ -40,12 +40,15 @@ describe('the session-start hook loads default-mcp', () => {
       id: 'default-mcp',
       system_prompt: 'You are an iii agent.\n\nUse iii_call.',
     });
-    // First line: an HTML comment saying the file is generated.
-    const note = md.split('\n')[0];
-    expect(note).toMatch(/^<!-- .* -->$/);
+    // Claude Code reads the frontmatter only when `---` opens the file, so
+    // the note saying it is generated is a YAML comment inside it, which
+    // also keeps it out of the agent's instructions.
+    expect(md.startsWith('---\n')).toBe(true);
+    const [, fm, body] = md.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/) ?? [];
+    const note = fm.split('\n')[0];
+    expect(note).toMatch(/^# /);
     for (const word of ['Generated', 'default-mcp', 'overwritten']) expect(note).toContain(word);
-    const [, fm, body] =
-      md.replace(/^<!--.*-->\n/, '').match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/) ?? [];
+    expect(body).not.toContain('Generated');
     expect(fm).toContain('name: iii');
     expect(fm).toMatch(/description: .*default-mcp/);
     // A plain YAML scalar cannot hold `: `; the value is quoted.
@@ -56,6 +59,20 @@ describe('the session-start hook loads default-mcp', () => {
         ?.slice(13) ?? '';
     expect(JSON.parse(value)).toContain('default-mcp');
     expect(body.trim()).toBe('You are an iii agent.\n\nUse iii_call.');
+  });
+
+  it("carries the profile's skills into the agent, as the SessionStart hook does", () => {
+    const md = agentFile({
+      id: 'default-mcp',
+      system_prompt: 'Use iii_call.',
+      skills: ['ide', 'fp'],
+    });
+    const body = md.split('\n---\n\n')[1];
+    expect(body).toContain('Use iii_call.');
+    expect(body).toContain('read each of its skills with `iii_get_skill`: `ide`, `fp`.');
+    expect(agentFile({ id: 'default-mcp', system_prompt: 'Use iii_call.' })).not.toContain(
+      'iii_get_skill',
+    );
   });
 
   it('keeps the fallback small however many skills the profile preloads', () => {

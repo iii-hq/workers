@@ -38,7 +38,7 @@ import { PLUGIN_STATIC_FILES } from './assets.generated.js';
 import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
 import type { AgentProfile, AgentRow } from './directory.js';
 import { DEFAULT_MCP_URL, normalizeMcpUrl } from './mcp.js';
-import { agentFile } from './session.js';
+import { agentFile, profileText } from './session.js';
 
 export const PLUGIN_NAME = 'iii';
 /** Where it lands inside a terminal workspace. */
@@ -117,7 +117,7 @@ export async function installWith(
   // nothing to append: the session works through the `iii` CLI, as before.
   const available = options.mcp.available;
   const profile = available ? options.defaultProfile : null;
-  const mode = profile?.system_prompt?.trim() ?? '';
+  const mode = profile?.system_prompt?.trim() ? profileText(profile) : '';
   const stubAgent = embedded.find((f) => f.path === 'agents/iii.md')?.content ?? '';
   const worker = {
     cli: options.cli,

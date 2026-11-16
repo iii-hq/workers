@@ -106,7 +106,11 @@ export async function fileExists(iii: IIIClient, path: string): Promise<boolean 
 export async function listFiles(iii: IIIClient, dir: string): Promise<Set<string> | null> {
   try {
     const q = quote(dir);
-    const r = await exec(iii, `if [ -d ${q} ]; then find ${q} -type f; fi`, { timeoutMs: 15_000 });
+    // -L: a symlinked folder (or file) is listed through the link; without it
+    // find reports nothing under a linked folder, and every file would read as absent.
+    const r = await exec(iii, `if [ -d ${q} ]; then find -L ${q} -type f; fi`, {
+      timeoutMs: 15_000,
+    });
     if (r.exit_code !== 0) return null;
     return new Set(r.stdout.split('\n').filter(Boolean));
   } catch {

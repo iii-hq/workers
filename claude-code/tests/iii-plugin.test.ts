@@ -429,6 +429,21 @@ describe('the iii agent and the mcp-server fallback', () => {
     expect(r.detail).toBe('');
   });
 
+  it("appends the profile's skills too: the worker installs no SessionStart hook", async () => {
+    const m = memoryOps();
+    const r = await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, mcp: mcp(true), defaultProfile: { ...profile, skills: ['ide'] } },
+      embedded,
+    );
+    const line = 'read each of its skills with `iii_get_skill`: `ide`.';
+    expect(r.mode).toContain('You are an iii agent. Use iii_call.');
+    expect(r.mode).toContain(line);
+    expect(m.disk['/w/p/default-mcp.md']).toContain(line);
+    expect(m.disk['/w/p/agents/iii.md']).toContain(line);
+  });
+
   it('removes a runtime skill left from before mcp-server was running', async () => {
     const m = memoryOps();
     await installWith(

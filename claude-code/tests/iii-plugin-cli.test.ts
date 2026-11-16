@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -67,6 +67,23 @@ describe('runCli', () => {
     const agent = await readFile(join(dir, 'agents', 'iii.md'), 'utf8');
     expect(agent).toContain('name: iii');
     expect(agent).toContain('default-mcp profile text, with iii_call.');
+  });
+
+  it('sync replaces the agent file whole instead of writing into it', async () => {
+    // A write in place can leave a truncated agent when the background hook
+    // is cut off; a temporary file renamed over it cannot. A hard link shows
+    // the difference: writing in place changes the other name too.
+    const dir = await pluginDir();
+    const other = join(dir, 'other.md');
+    await link(join(dir, 'agents', 'iii.md'), other);
+    const fetchFn = fakeFetch({
+      iii_list_agents: () => JSON.stringify([]),
+      iii_get_agent: (a) => JSON.stringify({ id: a.id, system_prompt: 'new prompt' }),
+    });
+    expect(await runCli(['sync', '--plugin-dir', dir, '--quiet'], io({}, fetchFn).io)).toBe(0);
+    expect(await readFile(join(dir, 'agents', 'iii.md'), 'utf8')).toContain('new prompt');
+    expect(await readFile(other, 'utf8')).toBe('---\nname: iii\n---\n\nUse iii_call.\n');
+    expect((await readdir(join(dir, 'agents'))).filter((f) => f.endsWith('.tmp'))).toEqual([]);
   });
 
   it('sync keeps the agent it has when default-mcp cannot be read', async () => {
