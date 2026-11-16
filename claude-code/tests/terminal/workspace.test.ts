@@ -151,11 +151,10 @@ describe('preparing the terminal host', () => {
     // A dark page wants a light-on-dark palette from whatever runs in it.
     expect(prepared.env.COLORFGBG).toBe('15;0');
 
-    // The notes live in one marked block Claude reads on startup.
-    const notes = files['/hostroot/claude-code/CLAUDE.md'];
-    expect(notes).toContain('<!-- iii:begin');
-    expect(notes).toContain('<!-- iii:end -->');
-    expect(notes).toContain('/hostroot/claude-code');
+    // No CLAUDE.md: what it said is the plugin's now (the iii-runtime skill,
+    // default-mcp appended), and the workspace and engine are in the session.
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBeUndefined();
+    expect(prepared.env.III_URL).toBeTruthy();
 
     // The hooks and the iii skill ride in ONE plugin directory, which is what
     // a session loads — the same directory a headless turn is given.
@@ -266,10 +265,7 @@ describe('preparing the terminal host', () => {
       },
     });
 
-    const notes = files['/hostroot/claude-code/CLAUDE.md'];
-    expect(notes).toContain('# My own notes');
-    expect(notes).toContain('keep me');
-    expect(notes.indexOf('<!-- iii:begin')).toBeLessThan(notes.indexOf('# My own notes'));
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBe('# My own notes\n\nkeep me\n');
   });
 
   it('reads no file that is not there, so a fresh workspace logs no failed calls', async () => {
@@ -284,7 +280,7 @@ describe('preparing the terminal host', () => {
     expect(missedReads).toEqual([]);
     const dir = '/hostroot/claude-code/.iii-plugin';
     expect(files[`${dir}/skills/iii-runtime/SKILL.md`]).toContain('name: iii-runtime');
-    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('<!-- iii:begin');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBeUndefined();
     const listings = calls.filter(
       (c) => c.function_id === 'shell::exec' && String(c.payload.command).includes('find'),
     );
@@ -333,8 +329,7 @@ describe('preparing the terminal host', () => {
     expect(prepared.detail).toBe('');
     expect(missedReads.length).toBeGreaterThan(0);
     expect(files['/hostroot/claude-code/.iii-plugin/.claude-plugin/plugin.json']).toBeTruthy();
-    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('# My own notes');
-    expect(files['/hostroot/claude-code/CLAUDE.md']).toContain('<!-- iii:begin');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBe('# My own notes\n');
   });
 
   it('quotes a workspace path with spaces and quotes in the listing', async () => {
@@ -348,6 +343,65 @@ describe('preparing the terminal host', () => {
     expect(String(listing?.payload.command)).toBe(
       `if [ -d ${quoted} ]; then find ${quoted} -type f; fi`,
     );
+  });
+
+  // The block earlier versions wrote, as they wrote it: first, then the
+  // operator's text after a blank line.
+  const LEGACY =
+    '<!-- iii:begin — written by the claude-code worker on every boot; edits inside are lost -->\n' +
+    '# You run inside an iii engine\n\nthe `shell` worker owns the session.\n<!-- iii:end -->';
+
+  it('takes the old block out of CLAUDE.md and keeps the operator text', async () => {
+    const { iii, files } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      files: { '/hostroot/claude-code/CLAUDE.md': `${LEGACY}\n\n# My own notes\n\nkeep me\n` },
+    });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.detail).toBe('');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBe('# My own notes\n\nkeep me\n');
+  });
+
+  it('keeps operator text on both sides of the old block', async () => {
+    const { iii, files } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      files: { '/hostroot/claude-code/CLAUDE.md': `# Top\n\n${LEGACY}\n\n# Bottom\n` },
+    });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBe('# Top\n\n# Bottom\n');
+  });
+
+  it('removes a CLAUDE.md that holds nothing but the old block', async () => {
+    const { iii, files, calls } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      files: { '/hostroot/claude-code/CLAUDE.md': `${LEGACY}\n` },
+    });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBeUndefined();
+    expect(
+      calls.some(
+        (c) =>
+          c.function_id === 'shell::fs::rm' && c.payload.path === '/hostroot/claude-code/CLAUDE.md',
+      ),
+    ).toBe(true);
+  });
+
+  it('writes nothing to a CLAUDE.md without the old block', async () => {
+    const { iii, calls } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      // An unterminated marker is not the block: the file is left as it is.
+      files: { '/hostroot/claude-code/CLAUDE.md': '# Notes\n<!-- iii:begin but no end\n' },
+    });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    const touched = calls.filter(
+      (c) =>
+        ['shell::fs::write', 'shell::fs::rm'].includes(c.function_id) &&
+        c.payload.path === '/hostroot/claude-code/CLAUDE.md',
+    );
+    expect(touched).toEqual([]);
   });
 
   it('keeps CLAUDE.md and the terminal when a read fails for another reason', async () => {

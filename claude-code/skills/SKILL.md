@@ -92,7 +92,7 @@ instead of bolting anything onto this one.
 
 The same worker also runs Claude Code as a terminal page on the console: it
 installs the CLI on the terminal host (the `shell` worker's), equips a
-workspace with the iii skills and engine notes, and opens Claude in a
+workspace with the iii plugin, and opens Claude in a
 `shell::pty` session. A person opens it; the session's turns are published on
 `claude::on-agent-event` with the same frames a `claude::run` turn produces, so both
 halves render alike. Use it when an operator wants to talk to Claude Code

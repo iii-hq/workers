@@ -86,7 +86,7 @@ const ConfigSchema = z.object({
         .boolean()
         .default(true)
         .describe(
-          'Keep the workspace equipped on every boot: the iii skills, the engine notes, and the hooks that report activity',
+          'Keep the workspace equipped on every boot: the iii plugin, with its skills, commands and the hooks that report activity',
         ),
     })
     .prefault({})

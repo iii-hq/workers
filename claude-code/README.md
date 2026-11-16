@@ -218,7 +218,7 @@ The approval step is whatever sits between the two calls — a human reading the
 A **claude** page appears in the console nav; opening it starts a session. The
 first run installs the CLI and the skills, so it takes a minute. Answer the
 login prompt in the terminal, then ask Claude to build something on the engine
-— the workspace notes and the installed iii skills teach it how to register
+— the iii plugin (default-mcp and the iii skills) teaches it how to register
 functions and observers. Every prompt and tool call it runs is published on
 `claude::on-agent-event`, exactly like a `claude::run` turn.
 
@@ -251,17 +251,9 @@ page went light.
 
 On every boot, when `terminal.setup_workspace` is on:
 
-- `CLAUDE.md`, inside an `<!-- iii:begin -->` block the worker rewrites.
-  Anything outside the markers is the operator's and survives. The iii half of
-  that block — how to work against a live engine, and what skills are installed
-  — is FETCHED from the [`iii-directory`](https://github.com/iii-hq/workers/tree/main/iii-directory)
-  worker (`directory::system-prompts::get name=iii-runtime` plus
-  `directory::skills::index`), which is also what a headless turn is given. One
-  copy, one owner: this worker ships neither the prompt nor a second set of
-  skills on disk. When the directory answers nothing, the block says so and
-  points the agent at `engine::functions::list`.
 - `.iii-plugin/`, a Claude Code **plugin** the session loads with
-  `--plugin-dir`. It carries the hooks for `SessionStart`, `SessionEnd`,
+  `--plugin-dir` (see [the iii plugin](iii-plugin/README.md)). It carries the
+  hooks for `SessionStart`, `SessionEnd`,
   `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
   payload to `claude::terminal::activity` with the `iii` CLI, so it works
   whether or not the terminal host is this worker's host — and the
@@ -276,6 +268,11 @@ On every boot, when `terminal.setup_workspace` is on:
   `.claude/settings.json` is no longer written at all. It is the operator's
   file; the plugin directory is this worker's, so it is written whole instead of
   merged into.
+
+  `CLAUDE.md` is not written either. Earlier versions kept an
+  `<!-- iii:begin -->` block in it; the plugin carries what it said, so the
+  worker takes that block out on the next boot, keeps any text of yours around
+  it, and removes the file when nothing else is in it.
 
 ## Billing: which plan a session spends
 
@@ -386,7 +383,7 @@ terminal:                      # the console terminal page — a DIFFERENT host:
   args: []                     # extra argv for every terminal session
   workspace_dir: ""            # empty = `claude-code` under shell's primary root
   auto_install: true           # install Claude Code from https://claude.ai/install.sh when missing
-  setup_workspace: true        # keep the skills, the engine notes, and the activity hooks in place
+  setup_workspace: true        # keep the iii plugin (skills, commands, activity hooks) in place
 ```
 
 Settings live in the `configuration` worker under the **Claude Code** entry —

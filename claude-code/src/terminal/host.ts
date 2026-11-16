@@ -71,6 +71,15 @@ export async function writeFile(iii: IIIClient, path: string, content: string): 
   });
 }
 
+/** Remove a file on the terminal host; one already gone (S211) is not an error. */
+export async function removeFile(iii: IIIClient, path: string): Promise<void> {
+  try {
+    await iii.call({ function_id: 'shell::fs::rm', payload: { path }, timeoutMs: 30_000 });
+  } catch (err) {
+    if (!String(err).includes('S211')) throw err;
+  }
+}
+
 /**
  * Whether `path` is a file on the terminal host: true or false from `test -f`,
  * or null when the host could not say (the call failed, or no shell `test`).

@@ -29,6 +29,7 @@ import { fetchIiiContext } from '../iii-context.js';
 import { MODE_FILE, pluginDetail, pluginFiles } from '../plugin.js';
 import {
   readFile as hostRead,
+  removeFile as hostRemove,
   writeFile as hostWrite,
   listFiles,
   probe,
@@ -313,11 +314,7 @@ function hostOps(iii: IIIClient, dir: string, known: Set<string> | null): Ops {
       known?.add(path);
     },
     remove: async (path) => {
-      try {
-        await iii.call({ function_id: 'shell::fs::rm', payload: { path }, timeoutMs: 30_000 });
-      } catch (err) {
-        if (!String(err).includes('S211')) throw err; // already gone
-      }
+      await hostRemove(iii, path);
       known?.delete(path);
     },
   };
