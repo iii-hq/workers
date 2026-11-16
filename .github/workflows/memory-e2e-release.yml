@@ -129,10 +129,8 @@ jobs:
 
       - name: Run the memory-gain suite on the ${{ matrix.stack }} stack
         id: e2e
-        # BUMP: the iii-hq/harness-e2e commit that merges the memory gain arms, once
-        # a harness-e2e release carries the memory-gain suite (the stacks run
-        # harness-e2e: latest). Until then the pin test fails on this placeholder.
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@0000000000000000000000000000000000000000
+        # The memory gain arms; the stacks run harness-e2e latest, 0.30.0 or later.
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@34f19f5c331d993777c58decab0a0c7d0062c96d
         with:
           token: ${{ steps.app.outputs.token }}
           versions: ${{ needs.version.outputs.versions }}
@@ -194,10 +192,8 @@ jobs:
 
       - name: Compare the arms
         id: gain
-        # BUMP: the iii-hq/harness-e2e commit that merges the memory gain arms, once
-        # a harness-e2e release carries the memory-gain suite (the stacks run
-        # harness-e2e: latest). Until then the pin test fails on this placeholder.
-        uses: iii-hq/harness-e2e/.github/actions/memory-gain@0000000000000000000000000000000000000000
+        # The memory gain arms; the stacks run harness-e2e latest, 0.30.0 or later.
+        uses: iii-hq/harness-e2e/.github/actions/memory-gain@34f19f5c331d993777c58decab0a0c7d0062c96d
         with:
           token: ${{ steps.app.outputs.token }}
           runs: ${{ steps.runs.outputs.runs }}
