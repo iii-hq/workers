@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn expose_endpoints_is_optional_and_in_the_schema() {
         assert!(WorkerConfig::default().rbac.expose_endpoints.is_none());
-        let cfg: WorkerConfig = serde_yaml::from_str(
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(
             "rbac:\n  expose_endpoints:\n    - match(\"/\")\n    - match(\"/otel\")\n",
         )
         .unwrap();
