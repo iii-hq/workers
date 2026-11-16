@@ -86,6 +86,9 @@ def test_go_descriptor_uses_worker_version_and_binary_runtime(tmp_path):
 @pytest.mark.parametrize(("field", "value", "message"), [
     ("toolchain", {"name": "rust", "version": "1.97.1"}, "Go version"),
     ("targets", ["invented-go-target"], "unknown release target"),
+    ("tags", None, "Go build tag names"),
+    ("tags", [], "Go build tag names"),
+    ("tags", ["not-a-tag"], "Go build tag names"),
 ])
 def test_go_descriptor_rejects_invalid_build_inputs(tmp_path, field, value, message):
     entry = go_worker(tmp_path)
