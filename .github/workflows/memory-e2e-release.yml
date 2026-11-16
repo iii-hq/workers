@@ -141,8 +141,10 @@ jobs:
           model: ${{ matrix.model }}
           extraction-model: ${{ inputs.extraction_model }}
 
+      # Every arm leaves a record, one without a run included, so the report
+      # names an unmeasured model instead of leaving it out.
       - name: Name the arm for the report
-        if: steps.e2e.outputs.run_url != ''
+        if: always()
         env:
           MODEL: ${{ matrix.model }}
           ARM: ${{ matrix.stack }}
@@ -154,7 +156,7 @@ jobs:
             '{model: $model, arm: $arm, run_url: $run_url}' > "arm/arm-${INDEX}.json"
 
       - name: Keep the arm for the report
-        if: steps.e2e.outputs.run_url != ''
+        if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: memory-gain-arm-${{ strategy.job-index }}
