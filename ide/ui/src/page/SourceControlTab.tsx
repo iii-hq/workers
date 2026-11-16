@@ -59,6 +59,9 @@ interface SourceControlTabProps {
   /** The repository setup's terminal steps (`gh auth login`, installing gh). */
   onRunInTerminal?: (command: string) => void
   onChanged: () => void
+  /** The worktree the folder sits in (the branch chip's read), so an empty
+      Commit list can say whether changes sit elsewhere in it. */
+  worktree?: { top: string; dirty: boolean } | null
 }
 
 export function SourceControlTab({
@@ -76,6 +79,7 @@ export function SourceControlTab({
   onDeleteFile,
   onRunInTerminal,
   onChanged,
+  worktree = null,
 }: SourceControlTabProps) {
   const [tab, setTab] = useState<ScmTab>(readTab)
   const activeSource = activeDiff?.source ?? null
@@ -130,6 +134,7 @@ export function SourceControlTab({
           onShowHistory={onShowHistory}
           onDeleteFile={onDeleteFile}
           onRunInTerminal={onRunInTerminal}
+          worktree={worktree}
         />
       </TabsContent>
       <TabsContent value="stash" className="shui-scm-panel">

@@ -58,9 +58,20 @@ export function DropdownMenuTrigger({
   ...props
 }: DropdownMenuTriggerProps) {
   if (asChild && isValidElement(children)) {
+    // Base UI expects the trigger to render a native <button> unless told
+    // otherwise. A Radix-style `asChild` span or div (the IDE's invisible
+    // right-click anchor) logged "expected a native <button>" on every open,
+    // so a plain non-button element says so itself. A component child keeps
+    // the default: what it renders is its own business.
+    const nativeButton =
+      props.nativeButton ??
+      (typeof children.type === 'string'
+        ? children.type === 'button'
+        : undefined)
     return (
       <BaseDropdownMenuTrigger
         {...props}
+        {...(nativeButton === undefined ? {} : { nativeButton })}
         render={children as ReactElement<Record<string, unknown>>}
       />
     )

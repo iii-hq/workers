@@ -337,3 +337,38 @@
 [data-iii-ui="state"] .state-ui-config-number {
   max-width: 180px;
 }
+
+/* ── new key / new scope dialog (NewEntryDialog) ─────────────────────── */
+
+[data-iii-ui="state"] .state-ui-dialog {
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+[data-iii-ui="state"] .state-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+[data-iii-ui="state"] .state-ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="state"] .state-ui-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-field-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-alert-strong);
+}
+/* Scope and key names and the JSON value are machine values: mono. */
+[data-iii-ui="state"] .state-ui-input-mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+[data-iii-ui="state"] .state-ui-input-mono:read-only {
+  color: var(--color-ink-faint);
+}

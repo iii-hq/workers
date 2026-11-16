@@ -26,6 +26,24 @@ vi.mock('@iii-dev/console-ui', () => ({
     </button>
   ),
   StatusDot: () => null,
+  // The console's Select (shadcn); a native element is enough to read the
+  // field markup these tests check.
+  Select: ({
+    options,
+    onChange: _onChange,
+    ...props
+  }: { options?: ReadonlyArray<{ value: string; label: string }>; onChange?: unknown } & Record<
+    string,
+    unknown
+  >) => (
+    <select {...props}>
+      {(options ?? []).map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  ),
   Input: ({ preserveCase: _preserveCase, onChange: _onChange, ...props }: Record<string, unknown>) => (
     <input {...props} />
   ),

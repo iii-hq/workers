@@ -14,10 +14,16 @@
  * scope list (only the worker knows when a scope emptied — debounced
  * across bursts). The value workspace guards its own draft (ValueEditor
  * reports dirty up); column navigation asks before discarding one.
+ *
+ * Create and delete (./entries): "New scope" in the scopes column and
+ * "New key" in the keys column open one form (./NewEntryDialog); the keys
+ * column deletes its scope and the value header deletes its key, each
+ * behind the console's ConfirmDialog.
  */
 
 import {
   Button,
+  ConfirmDialog,
   EmptyState,
   type Host,
   IconButton,
@@ -34,10 +40,21 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ArrowLeft, Database, FolderClosed, KeyRound, RefreshCw } from 'lucide-react'
+import {
+  ArrowLeft,
+  Database,
+  FolderClosed,
+  FolderPlus,
+  KeyRound,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
+import { deleteEntry, deleteScope } from './entries'
+import { type NewEntryRequest, NewEntryDialog } from './NewEntryDialog'
 import { parseStatePanelContext } from './panel-context'
 import { ValueEditor } from './ValueEditor'
 
@@ -292,6 +309,53 @@ export function StateBrowser({
     setKey(null)
   }
 
+  // ── create / delete ────────────────────────────────────────────────
+  const [newEntry, setNewEntry] = useState<NewEntryRequest | null>(null)
+  const openNewEntry = async (request: NewEntryRequest) => {
+    if (!(await confirmDiscard())) return
+    setNewEntry(request)
+  }
+  const onCreated = (entry: { scope: string; key: string }) => {
+    setNewEntry(null)
+    // Show it now; the created event that follows is idempotent with this.
+    if (scopesRef.current && !scopesRef.current.includes(entry.scope)) {
+      setScopes([...scopesRef.current, entry.scope].sort())
+    }
+    if (entry.scope === scopeRef.current) {
+      if (keysRef.current && !keysRef.current.includes(entry.key)) {
+        setKeys([...keysRef.current, entry.key])
+      }
+    } else {
+      setScope(entry.scope)
+    }
+    // The panel-context effect's pattern: a scope switch reloads keys, so
+    // the key is selected directly — the editor loads it by name.
+    setKey(entry.key)
+  }
+
+  const [pendingDelete, setPendingDelete] = useState<
+    { kind: 'key'; scope: string; key: string } | { kind: 'scope'; scope: string } | null
+  >(null)
+  const confirmDelete = async () => {
+    const target = pendingDelete
+    if (!target) return
+    if (target.kind === 'key') {
+      await deleteEntry(host.iii, target.scope, target.key)
+      if (scopeRef.current === target.scope) {
+        setKeys((prev) => prev?.filter((k) => k !== target.key) ?? prev)
+      }
+      setKey((current) => (scopeRef.current === target.scope && current === target.key ? null : current))
+    } else {
+      await deleteScope(host.iii, target.scope)
+      setScopes((prev) => prev?.filter((s) => s !== target.scope) ?? prev)
+      if (scopeRef.current === target.scope) {
+        setScope(null)
+        setKey(null)
+      }
+    }
+    scheduleScopesRefetch()
+  }
+
   // Narrow: one pane at a time — scopes, keys, or the opened value.
   const showScopes = !narrow || scope === null
   const showKeys = !narrow || (scope !== null && key === null)
@@ -303,6 +367,30 @@ export function StateBrowser({
       ref={rootRef}
     >
       {dialog}
+      <NewEntryDialog
+        host={host}
+        request={newEntry}
+        onOpenChange={(open) => {
+          if (!open) setNewEntry(null)
+        }}
+        onCreated={onCreated}
+      />
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null)
+        }}
+        title={pendingDelete?.kind === 'scope' ? 'Delete this scope?' : 'Delete this key?'}
+        description={
+          pendingDelete?.kind === 'scope'
+            ? 'Every key in the scope and its value are deleted. This cannot be undone.'
+            : 'The key and its value are deleted from the scope. This cannot be undone.'
+        }
+        confirmLabel={pendingDelete?.kind === 'scope' ? 'Delete scope' : 'Delete key'}
+        busyLabel="Deleting…"
+        tone="danger"
+        onConfirm={confirmDelete}
+      />
       {showScopes ? (
         <PageSidebar
           label="scopes"
@@ -321,6 +409,12 @@ export function StateBrowser({
               {scopes !== null && !scopesError ? (
                 <span className="count">{scopes.length}</span>
               ) : null}
+              <IconButton
+                label="New scope"
+                onClick={() => void openNewEntry({ kind: 'scope', scope: '' })}
+              >
+                <FolderPlus size={16} aria-hidden />
+              </IconButton>
               <IconButton label="refresh scopes" onClick={loadScopes}>
                 <RefreshCw size={16} aria-hidden />
               </IconButton>
@@ -372,8 +466,20 @@ export function StateBrowser({
                 {keys !== null && !keysError ? (
                   <span className="count">{keys.length}</span>
                 ) : null}
+                <IconButton
+                  label="New key"
+                  onClick={() => void openNewEntry({ kind: 'key', scope })}
+                >
+                  <Plus size={16} aria-hidden />
+                </IconButton>
                 <IconButton label={`refresh keys of ${scope}`} onClick={loadKeys}>
                   <RefreshCw size={16} aria-hidden />
+                </IconButton>
+                <IconButton
+                  label="Delete scope"
+                  onClick={() => setPendingDelete({ kind: 'scope', scope })}
+                >
+                  <Trash2 size={16} aria-hidden />
                 </IconButton>
               </header>
               <ColumnBody
@@ -421,6 +527,7 @@ export function StateBrowser({
               narrow={narrow}
               onBack={backToKeys}
               onDirtyChange={onDirtyChange}
+              onRequestDelete={() => setPendingDelete({ kind: 'key', scope, key })}
               commands={commands}
             />
           )}

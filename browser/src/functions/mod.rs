@@ -90,8 +90,9 @@ pub const NAVIGATE_ID: &str = "browser::navigate";
 pub const NAVIGATE_DESC: &str =
     "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure \
      or an empty HTTP error response leaves Chromium's error page in the tab and is reported \
-     in `error` rather than failing the call. Element refs from earlier snapshots are \
-     invalidated by navigation.";
+     in `error` rather than failing the call. A url that is a file downloads instead: the \
+     call returns once the download begins, with `download` set, and the tab stays on its \
+     page. Element refs from earlier snapshots are invalidated by navigation.";
 pub const SNAPSHOT_ID: &str = "browser::snapshot";
 pub const SNAPSHOT_DESC: &str =
     "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
@@ -850,19 +851,26 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 if let Some(policy_error) = session.take_navigation_error() {
                     return Err(handler_err(policy_error));
                 }
-                let (_, error, timed_out) = navigation.map_err(handler_err)?;
+                let outcome = navigation.map_err(handler_err)?;
+                let (error, timed_out) = (outcome.error, outcome.timed_out);
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
+                // A url that was a file left the tab on its page: nothing to
+                // commit, and no title to read (the page is reloading, see
+                // `release_after_download`).
+                let downloaded = outcome.download.is_some();
                 // Chromium leaves Runtime.evaluate unanswered while the
                 // navigation is still pending: a timed-out load has no title.
-                let title = if timed_out {
+                let title = if timed_out || downloaded {
                     None
                 } else {
                     session.page.get_title().await.ok().flatten()
                 };
-                session.tab.commit_location(&url, title.as_deref());
-                if session.tab.persists() {
-                    sx.persist();
+                if !downloaded {
+                    session.tab.commit_location(&url, title.as_deref());
+                    if session.tab.persists() {
+                        sx.persist();
+                    }
                 }
                 session.touch();
                 Ok::<_, Error>(navigate::NavigateOutput {
@@ -871,6 +879,7 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     title,
                     timed_out,
                     error,
+                    download: outcome.download,
                 })
             }
         })

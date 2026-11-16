@@ -214,6 +214,14 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.toggleDevtools(),
         },
         {
+          id: 'downloads',
+          title: 'Show downloads',
+          detail: 'Files this tab downloaded: send them to the chat or save them',
+          keywords: ['download', 'file', 'files', 'saved'],
+          enabled: () => selected !== null && sessionActionsRef.current !== null,
+          run: () => sessionActionsRef.current?.showDownloads(),
+        },
+        {
           id: 'annotate',
           title: 'Annotate the view',
           detail: 'Freeze the live view and pin elements with notes',

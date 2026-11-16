@@ -1091,7 +1091,8 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           title={head.branch ?? 'Detached HEAD'}
           lines={[
             head.linked ? `Worktree ${head.worktree}` : 'Main worktree',
-            ...(head.dirty ? ['Uncommitted changes'] : []),
+            // The dot is the whole worktree's, whichever folder is open.
+            ...(head.dirty ? ['Uncommitted changes in this worktree'] : []),
             ...(unseenWarning && note ? [note] : []),
           ]}
           side={side === 'top' ? 'top' : 'bottom'}

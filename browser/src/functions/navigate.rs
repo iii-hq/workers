@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::session::BeganDownload;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct NavigateInput {
     pub session_id: String,
@@ -32,4 +34,10 @@ pub struct NavigateOutput {
     /// and stays usable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Set when the url was a file: Chromium downloaded it instead of loading
+    /// a page, and the tab stays on the page it was on. The file is listed by
+    /// `browser::downloads::list`; read it with `browser::download` and this
+    /// guid once it completes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<BeganDownload>,
 }

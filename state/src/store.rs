@@ -454,6 +454,10 @@ impl KvStore {
                 let removed = index_map.shift_remove(&key);
                 let dirty_op = if removed.is_some() {
                     if index_map.is_empty() {
+                        // A scope exists while it holds a key: drop the empty
+                        // map too, or `list_groups` keeps naming the scope
+                        // until the next restart reloads from disk.
+                        store.remove(&index);
                         Some(DirtyOp::Delete)
                     } else {
                         Some(DirtyOp::Upsert)

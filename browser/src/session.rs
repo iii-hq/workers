@@ -226,6 +226,32 @@ fn remove_oldest_upload_dir(upload_dirs: &mut Vec<PathBuf>) -> Result<(), String
     Ok(())
 }
 
+/// A download the tab's main frame began: what `browser::navigate` reports
+/// when the url it was given turned out to be a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct BeganDownload {
+    /// The download's CDP guid, for `browser::download`.
+    pub guid: String,
+    pub file_name: String,
+    /// The origin policy refused it: nothing was saved.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub refused: bool,
+}
+
+/// What `Session::navigate_like_a_browser` ended with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigationOutcome {
+    /// The url that ended up loading (an `http://` fallback, say).
+    pub loaded: String,
+    /// Chromium's error text, when the tab shows its error page.
+    pub error: Option<String>,
+    /// The load did not finish inside the budget.
+    pub timed_out: bool,
+    /// The url was a file: Chromium downloaded it and the tab stayed on
+    /// the page it was on.
+    pub download: Option<BeganDownload>,
+}
+
 /// A download Chromium started, tracked by its CDP guid.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DownloadRecord {
@@ -943,6 +969,10 @@ pub struct Session {
     /// Held while chromiumoxide has a `Page.navigate` of this tab in hand;
     /// see `navigate_page`.
     page_navigation: Arc<tokio::sync::Mutex<()>>,
+    /// The latest download the main frame began (or the policy refused), so
+    /// a navigation that turned into a download ends instead of waiting for
+    /// a load that never comes; see `navigate_like_a_browser`.
+    download_began: tokio::sync::watch::Sender<Option<BeganDownload>>,
     /// Loud policy denial captured by the session navigation gate for the
     /// explicit navigation or execute call currently holding the lock.
     navigation_error: Mutex<Option<String>>,
@@ -1061,15 +1091,22 @@ impl Session {
     /// `budget` bounds the whole call, including the wait for a navigation
     /// the tab is still busy with: past it, or past chromiumoxide's own fixed
     /// 30 s wait for the load, the call reports it timed out, and a
-    /// navigation already handed to chromiumoxide goes on in the tab. Returns
-    /// the url that ended up loading, Chromium's error text, if any, and
-    /// whether the load timed out.
+    /// navigation already handed to chromiumoxide goes on in the tab.
+    ///
+    /// A url that is a file never loads: Chromium hands it to the download
+    /// manager and the tab stays on its page. The call ends as soon as the
+    /// download begins, with `download` set (see `release_after_download`).
     pub async fn navigate_like_a_browser(
         &self,
         url: &str,
         allow_http: bool,
         budget: std::time::Duration,
-    ) -> Result<(String, Option<String>, bool), String> {
+    ) -> Result<NavigationOutcome, String> {
+        // Subscribed before the navigation goes out, so a download that
+        // begins at once is still seen; the document generation tells a
+        // download the navigation became from one a newly loaded page began.
+        let mut began = self.download_began.subscribe();
+        let generation = self.generation();
         let navigation = async {
             let mut loaded = url.to_string();
             let mut error = self.navigate_page(url).await?;
@@ -1085,11 +1122,57 @@ impl Session {
             }
             Ok((loaded, error))
         };
-        match tokio::time::timeout(budget, navigation).await {
-            Ok(Ok((loaded, error))) => Ok((loaded, error, false)),
-            Err(_) | Ok(Err(CdpError::Timeout)) => Ok((url.to_string(), None, true)),
-            Ok(Err(e)) => Err(format!("navigation failed: {e}")),
+        let download = async {
+            loop {
+                if began.changed().await.is_err() {
+                    return std::future::pending::<BeganDownload>().await;
+                }
+                let latest = began.borrow_and_update().clone();
+                if let Some(download) = latest {
+                    if self.generation() == generation {
+                        return download;
+                    }
+                }
+            }
+        };
+        tokio::select! {
+            result = tokio::time::timeout(budget, navigation) => match result {
+                Ok(Ok((loaded, error))) => Ok(NavigationOutcome {
+                    loaded,
+                    error,
+                    timed_out: false,
+                    download: None,
+                }),
+                Err(_) | Ok(Err(CdpError::Timeout)) => Ok(NavigationOutcome {
+                    loaded: url.to_string(),
+                    error: None,
+                    timed_out: true,
+                    download: None,
+                }),
+                Ok(Err(e)) => Err(format!("navigation failed: {e}")),
+            },
+            download = download => {
+                self.release_after_download().await;
+                Ok(NavigationOutcome {
+                    loaded: url.to_string(),
+                    error: download
+                        .refused
+                        .then(|| "downloads from this site are blocked by the origin policy".to_string()),
+                    timed_out: false,
+                    download: Some(download),
+                })
+            }
         }
+    }
+
+    /// chromiumoxide holds a tab's `Page.navigate` until the frame loads a new
+    /// document or its own 30 s deadline passes, and queues every later
+    /// navigation behind it. A navigation that became a download loads
+    /// nothing, so the next address typed would wait out those 30 s. Reloading
+    /// the page the tab stayed on gives the frame the new document the
+    /// navigation waits for, and the tab is free again at once.
+    async fn release_after_download(&self) {
+        let _ = self.page.execute(cdp_page::ReloadParams::default()).await;
     }
 
     pub fn create_upload_dir(&self) -> Result<PathBuf, String> {
@@ -1947,10 +2030,10 @@ impl Sessions {
                 return Err(policy_error);
             }
             match navigation {
-                Ok((loaded, error, load_timed_out)) => {
-                    open_error = error;
-                    timed_out = load_timed_out;
-                    tab.set_location(&loaded, None);
+                Ok(outcome) => {
+                    open_error = outcome.error;
+                    timed_out = outcome.timed_out;
+                    tab.set_location(&outcome.loaded, None);
                 }
                 Err(error) => {
                     self.stop(&id, "stopped").await;
@@ -2107,6 +2190,7 @@ impl Sessions {
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             page_navigation: Arc::default(),
+            download_began: tokio::sync::watch::Sender::new(None),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
@@ -2508,6 +2592,7 @@ impl Sessions {
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             page_navigation: Arc::default(),
+            download_began: tokio::sync::watch::Sender::new(None),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
@@ -4426,17 +4511,27 @@ async fn spawn_event_pumps(
                     if main_frame.as_ref().is_some_and(|id| *id != event.frame_id) {
                         continue;
                     }
-                    if !origin_policy_for(&sx.config.load(), &event.url).downloads {
+                    let refused = !origin_policy_for(&sx.config.load(), &event.url).downloads;
+                    if refused {
                         let _ = s
                             .page
                             .execute(cdp_browser::CancelDownloadParams::new(event.guid.clone()))
                             .await;
                         s.tab.remove_download_file(&event.guid);
-                        continue;
+                    } else {
+                        s.tab
+                            .download_begin(&event.guid, &event.suggested_filename, &event.url);
                     }
-                    s.tab
-                        .download_begin(&event.guid, &event.suggested_filename, &event.url);
-                    emit_download_changed(&sx, &s).await;
+                    // A navigation waiting on this frame ends here: the url
+                    // was a file, not a page.
+                    s.download_began.send_replace(Some(BeganDownload {
+                        guid: event.guid.clone(),
+                        file_name: event.suggested_filename.clone(),
+                        refused,
+                    }));
+                    if !refused {
+                        emit_download_changed(&sx, &s).await;
+                    }
                 }
             }));
         }

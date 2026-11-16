@@ -170,6 +170,7 @@ export interface SessionActions {
   printToPdf: () => void
   clearSiteData: () => void
   toggleDevtools: () => void
+  showDownloads: () => void
   toggleDeviceToolbar: () => void
   importCookies: () => void
   copyCookies: () => void
@@ -240,6 +241,11 @@ export function SessionView({
     () => setDevtoolsOpen(!devtoolsOpen),
     [devtoolsOpen, setDevtoolsOpen],
   )
+  // A browser's download bubble: the downloads pane, opened on the file.
+  const showDownloads = useCallback(() => {
+    setDevtoolsPane('downloads')
+    setDevtoolsOpen(true)
+  }, [setDevtoolsPane, setDevtoolsOpen])
 
   const [reseedToken, setReseedToken] = useState(0)
   // Bumped when the tab wakes under us, so the screencast is started again
@@ -308,11 +314,20 @@ export function SessionView({
     void runLoad(async () => {
       const result = await navigateBrowser(host.iii, sessionId, url)
       onSessionsRefresh()
+      if (result?.download) {
+        // The url was a file: the tab stayed on its page, so the bar goes
+        // back to that page and the file shows in the downloads pane.
+        pendingUrlRef.current = null
+        if (!urlFocusedRef.current) setUrlDraft(lastSessionUrlRef.current)
+        showDownloads()
+        if (result.error) throw new Error(`download blocked: ${result.error}`)
+        return
+      }
       // Like a browser: the tab shows Chromium's error page; say why here.
       if (result?.error) throw new Error(`page failed to load: ${result.error}`)
     })
     urlInputRef.current?.blur()
-  }, [host, urlDraft, sessionId, runLoad, onSessionsRefresh])
+  }, [host, urlDraft, sessionId, runLoad, onSessionsRefresh, showDownloads])
 
   const handleHistory = useCallback(
     (action: 'back' | 'forward' | 'reload') => {
@@ -955,7 +970,8 @@ export function SessionView({
     })
   }, [host, sessionId, runAction])
 
-  const downloadCount = useDownloadCount(host, sessionId, enabled)
+  // A download that begins from a link in the page shows the same way.
+  const downloadCount = useDownloadCount(host, sessionId, enabled, showDownloads)
   const [confirmingClear, setConfirmingClear] = useState(false)
   const [showDoctor, setShowDoctor] = useState(false)
   // Handoffs queue: several can be pending at once, and any of them may
@@ -1042,6 +1058,7 @@ export function SessionView({
       printToPdf,
       clearSiteData: () => setConfirmingClear(true),
       toggleDevtools,
+      showDownloads,
       toggleDeviceToolbar,
       importCookies,
       copyCookies,
@@ -1064,6 +1081,7 @@ export function SessionView({
     screenshotToChat,
     printToPdf,
     toggleDevtools,
+    showDownloads,
     toggleDeviceToolbar,
     importCookies,
     copyCookies,
@@ -1241,6 +1259,7 @@ export function SessionView({
               zoomOut: () => applyZoom('out'),
               zoomReset: () => applyZoom('reset'),
               toggleDevtools,
+              showDownloads,
               clearSiteData: () => setConfirmingClear(true),
               toggleDeviceToolbar,
               importCookies,

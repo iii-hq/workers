@@ -60,6 +60,8 @@ import {
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, SIDE_VIEWS, type SideView } from './ActivityBar'
+import { selectSideView } from './side-view'
+import { useHead } from './worktree-head'
 import { EditorWarmup } from './EditorWarmup'
 import { editorFontStack, useEditorPrefs } from './editor-prefs'
 import { createFilePrefetcher } from './file-prefetch'
@@ -2297,6 +2299,21 @@ export function ShellExplorerPage({
   // a browse to add one, every pick validated by the worker. The branch
   // beside it is the composer's worktree menu, for the IDE's folder.
   const sideViewLabel = SIDE_VIEWS.find((view) => view.id === sideTab)?.label ?? 'Explorer'
+  // The branch chip's read of the folder's worktree (shared with it, so no
+  // second git): the Commit list's empty state names its scope from it.
+  const worktreeHead = useHead(host, sideTab === 'scm' ? root : null, String(gitEpoch))
+  // A press on a view icon (./side-view): Search takes the caret into its
+  // box, so typing searches instead of landing on the icon.
+  const pickSideView = (view: SideView, from: 'strip' | 'rail') => {
+    const next = selectSideView({ view: sideTab, collapsed }, view, { from, narrow })
+    setSideTab(next.view)
+    setCollapsed(next.collapsed)
+    if (next.focusSearch) {
+      window.requestAnimationFrame(() => {
+        frameEl?.querySelector<HTMLElement>('[data-shell-search-input]')?.focus()
+      })
+    }
+  }
   const header = (
     <PageHeader
       className="shui-page-header"
@@ -2594,14 +2611,7 @@ export function ShellExplorerPage({
                 active={sideTab}
                 badges={activityBadges}
                 changes={branchChanges !== null}
-                onSelect={(view) => {
-                  if (view === sideTab && !narrow) {
-                    setCollapsed(true)
-                    return
-                  }
-                  setSideTab(view)
-                  setCollapsed(false)
-                }}
+                onSelect={(view) => pickSideView(view, 'strip')}
               >
                 <DropdownMenu>
                   <Tooltip label="More">
@@ -2641,10 +2651,7 @@ export function ShellExplorerPage({
                 orientation="vertical"
                 badges={activityBadges}
                 changes={branchChanges !== null}
-                onSelect={(view) => {
-                  setSideTab(view)
-                  setCollapsed(false)
-                }}
+                onSelect={(view) => pickSideView(view, 'rail')}
               />
             }
           >
@@ -2725,6 +2732,7 @@ export function ShellExplorerPage({
                     onDeleteFile={(rel) => explorerActions.remove(rel, false)}
                     onRunInTerminal={runInTerminal}
                     onChanged={afterDiskChange}
+                    worktree={worktreeHead ? { top: worktreeHead.worktree, dirty: worktreeHead.dirty } : null}
                   />
                 ) : (
                   <TimelineTab
