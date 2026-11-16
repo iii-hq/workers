@@ -206,17 +206,31 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
     // check once more, so a rebind in between is caught.
     let (watch, ctx, routes) = (handle.clone(), ready_ctx, ready_routes);
     tokio::spawn(async move {
-        match tokio::time::timeout(std::time::Duration::from_secs(30), watch.ready()).await {
-            Ok(Ok(())) => {
-                tracing::info!("watching {HTTP_RELOAD_FN}: the MCP routes follow the http worker's bind");
+        // Warn if activation is slow, but keep waiting: the SDK keeps the
+        // observer, and it can still become active (or be refused) later.
+        let ready = watch.ready();
+        tokio::pin!(ready);
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(30), &mut ready)
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    "observing {HTTP_RELOAD_FN} is still pending after 30s; until it is active, a rebind of the http worker is not seen"
+                );
+                ready.await
+            }
+        };
+        match result {
+            Ok(()) => {
+                tracing::info!(
+                    "watching {HTTP_RELOAD_FN}: the MCP routes follow the http worker's bind"
+                );
                 recheck_bind(&ctx, &routes).await;
             }
-            Ok(Err(e)) => tracing::warn!(
+            Err(e) => tracing::warn!(
                 error = %e,
                 "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
-            ),
-            Err(_) => tracing::warn!(
-                "observing {HTTP_RELOAD_FN} is still pending after 30s; until it is active, a rebind of the http worker is not seen"
             ),
         }
     });
