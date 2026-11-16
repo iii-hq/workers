@@ -46,6 +46,7 @@ export function sessionStartOutput(result: { profile: AgentProfile } | { error: 
   const body = `${header}${preload}\n\n<profile id="${id}">\n${profile.system_prompt ?? ''}\n</profile>`;
   if (body.length < MAX_CONTEXT) return output(body);
   return output(
-    `${header} It is too long to include here: load it now with \`iii_get_agent\` (\`activate: true\`, id \`${id}\`) and follow its \`system_prompt\`.${preload}`,
+    // Bounded whatever the profile holds: no prompt, no skill list.
+    `${header} It is too long to include here: load it now with \`iii_get_agent\` (\`activate: true\`, id \`${id}\`), follow its \`system_prompt\`, and read each id in its \`skills\` with \`iii_get_skill\`.`,
   );
 }

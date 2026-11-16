@@ -59,3 +59,11 @@ export function approveHookEntry(): HookEntry {
     hooks: [{ type: 'command', command: `printf '%s\\n' '${JSON.stringify(DECISION)}'` }],
   };
 }
+
+/**
+ * The iii tools a headless turn allows. With the approval gate on, calling
+ * and observing are left to the gate (an allow rule would skip it).
+ */
+export function headlessTools(approvalGate: boolean): string[] {
+  return approvalGate ? APPROVED_TOOLS.map((t) => `${TOOL_PREFIX}${t}`) : HEADLESS_TOOLS;
+}

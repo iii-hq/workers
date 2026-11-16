@@ -13,7 +13,7 @@ import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
 import { installLocal } from './iii-plugin/install.js';
-import { HEADLESS_TOOLS } from './iii-plugin/mode.js';
+import { headlessTools } from './iii-plugin/mode.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -343,7 +343,7 @@ async function runReserved(
         ...(iiiContext ? ['Bash(iii *)'] : []),
         // With mcp-server, the iii tools run without a prompt nobody would
         // answer: rbac-proxy is what bounds them.
-        ...(plugin.mcp ? HEADLESS_TOOLS : []),
+        ...(plugin.mcp ? headlessTools(cfg.approval_gate) : []),
       ],
       disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
       systemPrompt: payload.system_prompt

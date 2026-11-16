@@ -161,12 +161,18 @@ export class McpClient {
     return this.opening;
   }
 
-  /** Call a tool; its text is parsed as JSON when it is JSON. */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  /** Call a tool and return its text as sent. */
+  async callToolText(name: string, args: Record<string, unknown> = {}): Promise<string> {
     await this.open();
     const result = await this.request('tools/call', { name, arguments: args });
     const text = (result?.content ?? []).map((c) => c.text ?? '').join('');
     if (result?.isError) throw new Error(`${name}: ${text}`);
+    return text;
+  }
+
+  /** Call a tool; its text is parsed as JSON when it is JSON. */
+  async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    const text = await this.callToolText(name, args);
     try {
       return JSON.parse(text);
     } catch {
@@ -210,9 +216,9 @@ export class McpDirectory {
     ) as SkillRow[];
   }
 
+  /** A skill's body is its markdown, kept as text even when it parses as JSON. */
   async getSkill(id: string): Promise<Skill> {
-    const res = await this.client.callTool('iii_get_skill', { id });
-    return typeof res === 'string' ? { id, body: res } : ({ id, ...(res as object) } as Skill);
+    return { id, body: await this.client.callToolText('iii_get_skill', { id }) };
   }
 
   async status(): Promise<Record<string, unknown>> {

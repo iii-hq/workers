@@ -10,6 +10,7 @@ import { profileCommand } from '../src/iii-plugin/commands.js';
 import {
   APPROVED_TOOLS,
   HEADLESS_TOOLS,
+  headlessTools,
   approveHookEntry,
   III_AGENT,
   NEVER_APPROVED_TOOLS,
@@ -224,5 +225,15 @@ describe('headless turns', () => {
     ])
       expect(HEADLESS_TOOLS).toContain(tool(t));
     expect(HEADLESS_TOOLS).not.toContain(tool('iii_secret_store'));
+  });
+});
+
+describe('headless turns with the approval gate on', () => {
+  it('leave calling and observing to the gate', () => {
+    expect(headlessTools(false)).toEqual(HEADLESS_TOOLS);
+    const gated = headlessTools(true);
+    expect(gated).not.toContain(tool('iii_call'));
+    expect(gated).not.toContain(tool('iii_observe'));
+    expect(gated).toContain(tool('iii_status'));
   });
 });

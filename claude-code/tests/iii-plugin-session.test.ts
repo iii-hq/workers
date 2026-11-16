@@ -44,6 +44,18 @@ describe('the session-start hook loads default-mcp', () => {
     expect(profile).toContain('p'.repeat(7000));
   });
 
+  it('keeps the fallback small however many skills the profile preloads', () => {
+    const skills = Array.from({ length: 200 }, (_, n) => `skill-${String(n).padStart(54, '0')}`);
+    const text = context(
+      sessionStartOutput({
+        profile: { id: 'default-mcp', system_prompt: 'x'.repeat(MAX_CONTEXT), skills },
+      }),
+    );
+    expect(text.length).toBeLessThan(1000);
+    expect(text).not.toContain(skills[0]);
+    expect(text).toContain('iii_get_skill');
+  });
+
   it('says why when mcp-server does not answer', () => {
     const text = context(
       sessionStartOutput({ error: 'mcp-server is not reachable at http://127.0.0.1:3111/mcp' }),

@@ -117,7 +117,8 @@ skills, `iii_observations_poll`, `iii_observations_sse`, `iii_observers`,
 `iii_secret_store` with the permission mode. Headless worker turns, which no
 one is there to prompt, also allow `iii_call` and `iii_observe`: rbac-proxy
 bounds what they reach, which is narrower than the `Bash(iii *)` a turn
-already has. `iii_secret_store` stays with the approval gate.
+already has. With the worker's `approval_gate` on, those two go through the
+gate instead, and `iii_secret_store` always does.
 
 Every `/iii:*` command carries the same rule: `iii_call` instead of the `iii`
 CLI, `iii_observe` instead of polling, and `agent_call` / `harness::observe`

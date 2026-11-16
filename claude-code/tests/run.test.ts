@@ -238,6 +238,19 @@ describe('executeRun', () => {
     );
   });
 
+  it('with the approval gate on, iii_call and iii_observe go through the gate', async () => {
+    const { capture } = await runTurn(
+      { prompt: 'x', session_id: 's1' },
+      fullTurn,
+      { approval_gate: true },
+      true,
+    );
+    const allowed = capture.options?.allowedTools as string[];
+    expect(allowed).not.toContain('mcp__plugin_iii_iii__iii_call');
+    expect(allowed).not.toContain('mcp__plugin_iii_iii__iii_observe');
+    expect(allowed).toContain('mcp__plugin_iii_iii__iii_status');
+  });
+
   it('without mcp-server, the turn works through the iii CLI as before', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
     const sp = capture.options?.systemPrompt as { append?: string };

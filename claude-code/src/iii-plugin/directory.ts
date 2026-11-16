@@ -81,6 +81,25 @@ ${(skill.body ?? '').trim()}
  * The directory each skill exports to, by its slug. Refuses ids that land in
  * the same directory, so no `SKILL.md` silently replaces another.
  */
+/**
+ * The `agents/iii-<slug>.md` file each profile exports to, refusing two ids
+ * that land in one file (`Deep Work` and `deep-work`).
+ */
+export function agentFiles(ids: string[]): Map<string, string> {
+  const files = new Map<string, string>();
+  for (const id of ids) {
+    const file = `iii-${slug(id)}.md`;
+    const taken = files.get(file);
+    if (taken !== undefined) {
+      throw new Error(
+        `profiles ${taken} and ${id} would both export to agents/${file}; rename one`,
+      );
+    }
+    files.set(file, id);
+  }
+  return files;
+}
+
 export function skillDirectories(ids: string[]): Map<string, string> {
   const dirs = new Map<string, string>();
   for (const id of ids) {

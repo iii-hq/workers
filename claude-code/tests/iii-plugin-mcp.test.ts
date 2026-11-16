@@ -240,6 +240,14 @@ describe('McpDirectory', () => {
     expect(await dir.getSkill('kanban')).toEqual({ id: 'kanban', body: '# kanban' });
   });
 
+  it('keeps a skill body that happens to be valid JSON as its text', async () => {
+    for (const body of ['{"example":true}', 'null', '42']) {
+      const server = fakeServer({ iii_get_skill: () => ({ text: body }) });
+      const dir = new McpDirectory(new McpClient('http://x/mcp', server.fetchFn));
+      expect(await dir.getSkill('s')).toEqual({ id: 's', body });
+    }
+  });
+
   it('reports the server, its access control and the active profile', async () => {
     const server = fakeServer({
       iii_status: () => ({
