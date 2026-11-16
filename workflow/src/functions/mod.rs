@@ -178,17 +178,68 @@ pub struct TickResponse {
 // register_all
 // ---------------------------------------------------------------------------
 
-/// Register `workflow::start`. Boot calls it after the `workflow::stamp-reply`
-/// observer is active (or a bounded wait ran out), so an agent's call cannot
-/// reach the worker unstamped while the worker connects. A refused stamp hook
-/// leaves it unregistered.
-pub fn register_start(iii: &Arc<IIIClient>, deps: &Deps) {
+/// Boot gate of `workflow::start`. The function is registered before anything
+/// that needs another worker, so the published function list has it when the
+/// worker boots alone. Calls are refused, not held, until boot settles the
+/// `workflow::stamp-reply` hook: a call that arrived before the hook was bound
+/// is unstamped and would run in a folder the agent chose.
+#[derive(Clone, Default)]
+pub struct StartGate(Arc<std::sync::Mutex<Option<Result<(), String>>>>);
+
+impl StartGate {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Result<(), String>>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The hook is active, or the harness is absent and no agent can call.
+    pub fn open(&self) {
+        self.slot().get_or_insert(Ok(()));
+    }
+
+    /// The harness refused the hook, at boot or after it opened the gate: final
+    /// until the worker restarts. The first reason wins and is logged once.
+    pub fn refuse(&self, why: String) {
+        let mut slot = self.slot();
+        if !matches!(*slot, Some(Err(_))) {
+            tracing::error!(
+                error = %why,
+                "workflow::stamp-reply hook refused; workflow::start refuses every call until \
+                 the harness accepts the hook and the worker restarts"
+            );
+            *slot = Some(Err(why));
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        match &*self.slot() {
+            Some(Ok(())) => Ok(()),
+            None => Err(
+                "workflow::start is not ready: the workflow worker is still starting. Retry in \
+                 a few seconds."
+                    .into(),
+            ),
+            Some(Err(why)) => Err(format!(
+                "workflow::start is disabled: the harness refused the workflow::stamp-reply \
+                 pre-call hook ({why}). Fix the hook, then restart the workflow worker."
+            )),
+        }
+    }
+}
+
+/// Register `workflow::start` behind `gate`, which boot opens once the
+/// `workflow::stamp-reply` observer is active or a bounded wait ran out, and
+/// which a refusal of the hook closes for good (see [`StartGate`]).
+pub fn register_start(iii: &Arc<IIIClient>, deps: &Deps, gate: StartGate) {
     let d = deps.clone();
     iii.register_function(
         "workflow::start",
         RegisterFunction::new_async(move |req: start::StartRequest| {
             let d = d.clone();
-            async move { start::handle(&d, req).await.map_err(Error::from) }
+            let gate = gate.clone();
+            async move {
+                gate.check().map_err(Error::Handler)?;
+                start::handle(&d, req).await.map_err(Error::from)
+            }
         })
         .description(
             "Run a multi-agent workflow and return {run_id, next} immediately. Declarative DAG: \
@@ -319,8 +370,37 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
 #[cfg(test)]
 mod tests {
-    use super::listed_ids;
+    use super::{listed_ids, StartGate};
     use serde_json::{json, Value};
+
+    #[test]
+    fn start_gate_refuses_until_boot_decides() {
+        let gate = StartGate::default();
+        let refused = gate.check().unwrap_err();
+        assert!(refused.contains("Retry"), "{refused}");
+        gate.open();
+        assert_eq!(gate.check(), Ok(()));
+    }
+
+    #[test]
+    fn start_gate_refusal_names_the_hook_and_is_final() {
+        let gate = StartGate::default();
+        gate.refuse("INVALID_ARGS".into());
+        gate.open();
+        gate.refuse("LATER".into());
+        let refused = gate.check().unwrap_err();
+        for part in ["workflow::stamp-reply", "INVALID_ARGS", "restart"] {
+            assert!(refused.contains(part), "{refused}");
+        }
+    }
+
+    #[test]
+    fn start_gate_closes_on_a_refusal_after_it_opened() {
+        let gate = StartGate::default();
+        gate.open();
+        gate.refuse("INVALID_ARGS".into());
+        assert!(gate.check().unwrap_err().contains("INVALID_ARGS"));
+    }
 
     #[test]
     fn listed_ids_reads_tree_sessions_and_observer_ids() {
