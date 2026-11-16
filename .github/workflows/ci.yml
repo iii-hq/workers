@@ -1552,6 +1552,14 @@ jobs:
             export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
           elif [[ "$WORKER" == judge-clef ]]; then
             export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
+          elif [[ "$WORKER" == mcp-server ]]; then
+            # mcp-server refuses to start unless it connects through
+            # rbac-proxy and can read a loopback http::status; this smoke
+            # boots it against a bare engine (no rbac-proxy, no http worker)
+            # only to collect its interface, so use its documented escape
+            # hatches.
+            export III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true
+            export III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
