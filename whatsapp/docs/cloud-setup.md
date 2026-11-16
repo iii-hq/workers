@@ -191,14 +191,17 @@ Enable the `messages` field and subscribe the app to the WABA. Starting a
 tunnel does not register or change the callback in Meta.
 
 The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
-`cloudflared` installed and its `webhooks` target pointing to the HTTP worker's
-restricted webhook listener (normally `http://127.0.0.1:3112`). Only routes
+`cloudflared` installed when quick-tunnel uses its default provider (none is
+needed with `provider: opentunnel`) and its `webhooks` target pointing to the
+HTTP worker's restricted webhook listener (normally `http://127.0.0.1:3112`).
+Only routes
 explicitly marked `public_webhook` are exposed there. The worker observes
 `quick-tunnel::on-changed`, filtered on `input.tunnel_id` `webhooks`, to follow
-the tunnel's status and URL. The generated URL is:
+the tunnel's status and URL. The generated URL is one of:
 
 ```text
 https://<host>.trycloudflare.com/webhooks/whatsapp-cloud/<configuration ID>
+https://<route>.<id>.opentunnel.xyz/webhooks/whatsapp-cloud/<configuration ID>
 ```
 
 The worker owns a separate renewable tunnel lease, so **Stop tunnel** releases
@@ -208,9 +211,10 @@ resumes after a worker restart. Shutdown releases WhatsApp's lease; unexpected
 termination leaves a bounded lease that expires unless renewed.
 
 The page displays a callback URL only while the tunnel is ready. A recreated
-Quick Tunnel can have a different hostname: copy the new URL into Meta and
-verify it again. Development tunnels are temporary; use a stable HTTPS origin
-for a production callback. Linked-device sessions do not need this tunnel.
+cloudflared Quick Tunnel can have a different hostname: copy the new URL into
+Meta and verify it again. An OpenTunnel URL stays the same across restarts.
+Development tunnels are temporary; use a stable HTTPS origin for a production
+callback. Linked-device sessions do not need this tunnel.
 
 The same controls are available as functions; use your deployment namespace:
 
