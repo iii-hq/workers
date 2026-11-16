@@ -29,6 +29,7 @@ const findings = (dir) => {
 }
 
 const browser = await chromium.launch()
+const introFile = join(run, 'intro.txt')
 const page = await browser.newPage({ viewport: { width: W, height: H } })
 async function card(name, title, lines) {
   await page.setContent(`<html><body style="margin:0;width:${W}px;height:${H}px;display:flex;flex-direction:column;justify-content:center;padding:0 120px;box-sizing:border-box;background:#0a0a0a;color:#fafafa;font-family:-apple-system,system-ui,sans-serif">
@@ -59,7 +60,9 @@ const clipsByGroup = groups.map(({ dir, title }) => {
   if (f) for (const k of Object.keys(totals)) totals[k] += f[k]
   return { dir, title, vids, f }
 })
-parts.push(await card('00-intro', 'ADE end-to-end QA', [
+parts.push(existsSync(introFile)
+  ? await card('00-intro', ...((([t, ...l]) => [t, l])(readFileSync(introFile, 'utf8').trim().split('\n'))))
+  : await card('00-intro', 'ADE end-to-end QA', [
   'A brand-new user\'s stack, built from this branch',
   `${clipsByGroup.reduce((n, g) => n + g.vids.length, 0)} recorded journeys in ${groups.length} groups`,
   ...clipsByGroup.map((g) => `• ${g.title}`),
@@ -67,7 +70,7 @@ parts.push(await card('00-intro', 'ADE end-to-end QA', [
 for (const [gi, g] of clipsByGroup.entries()) {
   parts.push(await card(`${gi + 1}0-group`, g.title, [
     `${g.vids.length} ${g.vids.length === 1 ? 'journey' : 'journeys'}`,
-    g.f ? `Findings: ${g.f.p0} P0 · ${g.f.p1} P1 · ${g.f.p2} P2 · ${g.f.p3} P3` : 'No report found',
+    ...(g.f ? [`Findings: ${g.f.p0} P0 · ${g.f.p1} P1 · ${g.f.p2} P2 · ${g.f.p3} P3`] : []),
   ]))
   for (const [vi, v] of g.vids.entries()) {
     console.log('clip', g.dir, v)
@@ -81,11 +84,17 @@ if (existsSync(merged)) {
   const text = readFileSync(merged, 'utf8')
   for (const k of Object.keys(totals)) totals[k] = (text.match(new RegExp(`^\\| Q\\d+ \\| ${k.toUpperCase()} \\|`, 'gm')) ?? []).length
 }
-parts.push(await card('99-outro', 'Results', [
+const outroFile = join(run, 'outro.txt')
+if (existsSync(outroFile)) {
+  // A run's own closing card (e.g. a fixes film): title line, then lines.
+  const [title, ...lines] = readFileSync(outroFile, 'utf8').trim().split('\n')
+  parts.push(await card('99-outro', title, lines))
+} else parts.push(await card('99-outro', 'Results', [
   `P0 ${totals.p0} · P1 ${totals.p1} · P2 ${totals.p2} · P3 ${totals.p3}`,
   existsSync(merged) ? 'after re-checks; per-group counts above are the testers\' raw numbers' : 'testers\' raw counts',
   `Full report: ${join(run, 'report.md')}`,
 ]))
+
 await browser.close()
 
 const list = join(work, 'list.txt')
