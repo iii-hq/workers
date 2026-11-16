@@ -46,7 +46,10 @@ pub struct AskSettlement {
 /// `settlements` with `next` recorded: a repeat for the same question
 /// replaces the earlier entry (the newest outcome wins), and the list keeps
 /// its newest [`MAX_SETTLEMENTS`] entries in recording order.
-pub fn with_settlement(mut settlements: Vec<AskSettlement>, next: AskSettlement) -> Vec<AskSettlement> {
+pub fn with_settlement(
+    mut settlements: Vec<AskSettlement>,
+    next: AskSettlement,
+) -> Vec<AskSettlement> {
     settlements.retain(|s| s.question_id != next.question_id);
     settlements.push(next);
     let overflow = settlements.len().saturating_sub(MAX_SETTLEMENTS);
@@ -79,7 +82,14 @@ pub async fn settle(
     let cfg = deps.cfg().await;
     let value = serde_json::to_value(&settlements)
         .map_err(|e| HarnessError::State(format!("ask settlement serialize: {e}")))?;
-    crate::state::state_set(&deps.iii, ASK_SCOPE, session_id, value, cfg.session_timeout_ms).await?;
+    crate::state::state_set(
+        &deps.iii,
+        ASK_SCOPE,
+        session_id,
+        value,
+        cfg.session_timeout_ms,
+    )
+    .await?;
     Ok(settlements)
 }
 
@@ -105,7 +115,9 @@ mod tests {
         let list = with_settlement(vec![], settled("call_1", AskOutcome::Answered, 1));
         let list = with_settlement(list, settled("call_2", AskOutcome::Dismissed, 2));
         assert_eq!(
-            list.iter().map(|s| s.question_id.as_str()).collect::<Vec<_>>(),
+            list.iter()
+                .map(|s| s.question_id.as_str())
+                .collect::<Vec<_>>(),
             ["call_1", "call_2"]
         );
     }
@@ -132,7 +144,10 @@ mod tests {
         }
         assert_eq!(list.len(), MAX_SETTLEMENTS);
         assert_eq!(list[0].question_id, "call_3");
-        assert_eq!(list.last().unwrap().question_id, format!("call_{}", MAX_SETTLEMENTS + 2));
+        assert_eq!(
+            list.last().unwrap().question_id,
+            format!("call_{}", MAX_SETTLEMENTS + 2)
+        );
     }
 
     #[test]
