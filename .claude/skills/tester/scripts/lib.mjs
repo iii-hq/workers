@@ -15,22 +15,86 @@ export const OUT =
   new URL('../../../../../.context/tester/', import.meta.url).pathname
 mkdirSync(OUT, { recursive: true })
 
-/** Launch Chrome on the ADE. `theme` is 'dark' | 'light'. */
-export async function launch({ width = 1800, height = 1000, theme = 'dark', mobile = false } = {}) {
+/**
+ * Launch Chrome on the ADE. `theme` is 'dark' | 'light'.
+ * `video: 'name'` records the context to `<OUT>videos/<name>.webm` (saved on
+ * `finish()`), with a visible cursor and a caption strip (`caption()`), so
+ * the clip explains itself. Both overlays ignore the pointer and sit in
+ * `[data-qa-overlay]`: they are the recorder's, not the product's.
+ */
+export async function launch({
+  width = 1800,
+  height = 1000,
+  theme = 'dark',
+  mobile = false,
+  video,
+} = {}) {
+  // Recordings use Playwright's own Chromium: Chrome's screencast cuts the
+  // bottom of the frame off.
   const browser = await chromium.launch({
-    channel: 'chrome',
+    ...(video ? {} : { channel: 'chrome' }),
     args: ['--disable-blink-features=AutomationControlled'],
   })
+  const viewport = mobile ? { width: 390, height: 844 } : { width, height }
+  const videoDir = `${OUT}videos/`
+  if (video) mkdirSync(videoDir, { recursive: true })
   const context = await browser.newContext({
-    viewport: mobile ? { width: 390, height: 844 } : { width, height },
+    viewport,
     isMobile: mobile,
     hasTouch: mobile,
     colorScheme: theme,
+    ...(video ? { recordVideo: { dir: videoDir, size: viewport } } : {}),
   })
+  if (video) await context.addInitScript(OVERLAY_SCRIPT)
   const page = await context.newPage()
   const problems = watchProblems(page)
-  return { browser, context, page, problems }
+  /** Close the context and keep the clip as `<name>.webm`; returns its path. */
+  const finish = async () => {
+    const recording = page.video()
+    await context.close()
+    if (recording) {
+      const path = `${videoDir}${video}.webm`
+      await recording.saveAs(path)
+      await recording.delete().catch(() => {})
+      await browser.close()
+      return path
+    }
+    await browser.close()
+    return null
+  }
+  return { browser, context, page, problems, finish }
 }
+
+/** Show what the test is doing in the recording's caption strip. */
+export async function caption(page, text) {
+  await page
+    .evaluate((t) => window.__qaCaption?.(t), text)
+    .catch(() => {})
+  await page.waitForTimeout(400)
+}
+
+const OVERLAY_SCRIPT = `(() => {
+  if (window.top !== window) return
+  const mount = () => {
+    if (document.querySelector('[data-qa-overlay]')) return
+    const root = document.createElement('div')
+    root.setAttribute('data-qa-overlay', '')
+    root.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647'
+    const dot = document.createElement('div')
+    dot.style.cssText = 'position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:rgba(255,64,129,.55);border:2px solid #fff;box-shadow:0 0 0 1px #000;transition:transform .12s;left:-40px;top:-40px'
+    const cap = document.createElement('div')
+    cap.style.cssText = 'position:absolute;left:50%;bottom:10px;transform:translateX(-50%);max-width:92%;padding:6px 12px;border-radius:8px;background:rgba(20,20,20,.88);color:#fff;font:600 13px/1.35 -apple-system,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.4);display:none'
+    root.append(dot, cap)
+    document.documentElement.append(root)
+    addEventListener('mousemove', (e) => { dot.style.left = e.clientX + 'px'; dot.style.top = e.clientY + 'px' }, true)
+    addEventListener('mousedown', () => { dot.style.transform = 'scale(.6)' }, true)
+    addEventListener('mouseup', () => { dot.style.transform = '' }, true)
+    window.__qaCaption = (t) => { cap.textContent = 'QA ▸ ' + t; cap.style.display = t ? 'block' : 'none' }
+    if (window.__qaPending) window.__qaCaption(window.__qaPending)
+  }
+  if (document.documentElement) mount()
+  addEventListener('DOMContentLoaded', mount)
+})()`
 
 /** Console errors, uncaught exceptions and failed requests, as they happen. */
 export function watchProblems(page) {

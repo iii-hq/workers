@@ -89,7 +89,10 @@ another. Each prompt contains only:
   it exactly. Your brief:";
 - the QA URL, and the output folder `.context/qa/<run>/<group>/`;
 - that group's charters and journeys, copied from the brief;
-- whether a model is connected.
+- whether a model is connected;
+- when the person wants a video: "Video: REQUIRED", with clip names prefixed
+  by the group letter (`A-01-…`). The testers record with `launch({ video })`
+  and `caption()` from the tester helpers.
 
 Don't add hints about the implementation, suspected bugs, or file names. A
 tester that is told where the bug is will find it there and stop looking
@@ -110,6 +113,15 @@ covered), with a table at the top:
 Show the person the table, the worst three findings with their screenshots
 inline, and the "Not covered" list. Ask which ones to fix. Fixing goes
 through the `tester` skill, one bug at a time, each with before/after.
+
+**Video.** Combine the clips into one film with title cards and a results
+card, then open it for the person:
+
+```sh
+cp $S/video.mjs ade/web/node_modules/.cache/qa-video.mjs
+node ade/web/node_modules/.cache/qa-video.mjs .context/qa/<run> "chat-harness=Chat and harness" "worker-pages=Worker pages" …
+open .context/qa/<run>/qa-video.mp4
+```
 
 When done, `stack.sh down` and stop the vite on 5197 (`lsof -ti
 tcp:5197 | xargs kill`). Leave `.context/qa/` in place, because the next

@@ -36,16 +36,33 @@ developer can reproduce it in one go.
 
 ## How to work
 
-1. Copy the helpers: `mkdir -p ade/web/node_modules/.cache/qa && cp .claude/skills/tester/scripts/lib.mjs ade/web/node_modules/.cache/qa/`.
+1. Copy the helpers into your own folder (testers can run side by side):
+   `mkdir -p ade/web/node_modules/.cache/qa-<group> && cp .claude/skills/tester/scripts/lib.mjs ade/web/node_modules/.cache/qa-<group>/`.
    Write each journey as its own script there (`j01-first-run.mjs`, …) so
    `@playwright/test` resolves, and run it with `node` from `ade/web`. Set
-   `TESTER_URL` to the QA URL and `TESTER_OUT` to your output folder.
+   `TESTER_URL` to the QA URL and `TESTER_OUT` to your output folder (with a
+   trailing slash).
 2. For each charter in your brief: confirm the claim the way a user would,
    then try at least three ways to break it (§ Attack list), across both
    themes and at 1440×900 and 390×844 (phone).
 3. Then explore: anything nearby that looks off. Note it too.
 4. Look at every screenshot you take (Read the PNG). A test that only
    checks for "no exception" misses most UI bugs.
+
+### Recording (when the brief asks for video)
+
+Record every journey: `const { page, finish } = await launch({ width: 1440,
+height: 900, video: '<group>-<NN>-<slug>' })`, and call `await finish()` at the
+end (also in a `finally`), which saves `<output>/videos/<name>.webm`. Before
+each step, `await caption(page, 'J3 · send a message and stop it')`. When
+something fails, caption it as well (`'✗ F2: Send did nothing'`) and hold
+for 2 s so the viewer can see it. Move the mouse with
+`page.mouse.move(x, y, { steps: 12 })` or `locator.hover()` before clicking,
+and wait about 600 ms after each action, so a person can follow. Keep each
+clip under 3 minutes. The pink cursor and the caption strip
+(`[data-qa-overlay]`) are the recorder's own overlay, so never report them
+as product UI. List the clips, in order, in the report under
+`## Videos`.
 
 ### Attack list (pick what fits)
 
