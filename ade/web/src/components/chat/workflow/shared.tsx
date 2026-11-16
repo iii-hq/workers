@@ -2,7 +2,7 @@ import { Chip, StatusPill } from '@/components/chat/sandbox/shared'
 import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import {
-  consumedDeps,
+  inputSources,
   isJoinNode,
   type NodeState,
   type RunStatus,
@@ -84,9 +84,9 @@ interface DagSummaryProps {
  *  This is the core "better view" — structure instead of a raw JSON blob. */
 export function DagSummary({ def, states }: DagSummaryProps) {
   const entries = Object.entries(def.nodes)
-  const outputId = def.output?.from
-    ? def.output.from.replace(/^node:/, '').split('.')[0]
-    : undefined
+  const outputIds = inputSources(def.output?.from).map(
+    (s) => s.replace(/^node:/, '').split('.')[0],
+  )
 
   return (
     <div className="border-b border-rule-2">
@@ -95,9 +95,9 @@ export function DagSummary({ def, states }: DagSummaryProps) {
         <span className="font-mono text-[11px] text-ink-faint">
           {entries.length} {entries.length === 1 ? 'node' : 'nodes'}
         </span>
-        {outputId ? (
+        {outputIds.length > 0 ? (
           <span className="font-mono text-[11px] text-ink-ghost">
-            → output <span className="text-accent">{outputId}</span>
+            → output <span className="text-accent">{outputIds.join(', ')}</span>
           </span>
         ) : null}
       </div>
@@ -105,7 +105,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
         {entries.map(([id, node]) => {
           const deps = node.depends_on ?? []
           const join = isJoinNode(node)
-          const consumes = consumedDeps(node.input?.from)
+          const items = node.fanout?.items?.length
           const state = states?.[id]
           return (
             <li key={id} className="flex items-start gap-2 px-3 py-1.5">
@@ -119,7 +119,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                   <span className="font-mono text-[12.5px] text-ink font-medium break-all">
                     {id}
                   </span>
-                  {id === outputId ? (
+                  {outputIds.includes(id) ? (
                     <Chip className="bg-accent-muted text-accent">Output</Chip>
                   ) : null}
                   {join ? <Chip className="text-accent">Join</Chip> : null}
@@ -128,8 +128,11 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                 </div>
                 <DagEdges
                   deps={deps}
-                  consumes={consumes}
-                  fanoutOver={node.fanout?.over}
+                  fanoutOver={
+                    items != null
+                      ? `${items} ${items === 1 ? 'item' : 'items'}`
+                      : node.fanout?.over?.replace(/^node:/, '')
+                  }
                 />
               </div>
             </li>
@@ -140,31 +143,19 @@ export function DagSummary({ def, states }: DagSummaryProps) {
   )
 }
 
-/** The wiring line under a node: which deps it waits on, which outputs it
- *  actually reads (join clarity), and its fan-out source. Kept terse + mono. */
+/** The wiring line under a node: which deps it waits on and its fan-out
+ *  source. Kept terse + mono. */
 function DagEdges({
   deps,
-  consumes,
   fanoutOver,
 }: {
   deps: string[]
-  consumes: string[]
   fanoutOver?: string
 }) {
   if (deps.length === 0 && !fanoutOver) return null
   return (
     <div className="mt-0.5 font-mono text-[11px] text-ink-faint break-all">
-      {deps.length > 0 ? (
-        <span>
-          ← {deps.join(', ')}
-          {/* When a node depends on more than it reads, the gap is the exact
-              footgun the worker now rejects; surface it so a stale def reads
-              clearly. */}
-          {consumes.length > 0 && consumes.length < deps.length ? (
-            <span className="text-warn"> · reads {consumes.join(', ')}</span>
-          ) : null}
-        </span>
-      ) : null}
+      {deps.length > 0 ? <span>← {deps.join(', ')}</span> : null}
       {fanoutOver ? (
         <span className={cn(deps.length > 0 && 'ml-2')}>
           ⋔ over {fanoutOver}

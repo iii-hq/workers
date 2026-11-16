@@ -266,6 +266,8 @@ export interface QueuedMessagePreview {
   id: string
   text: string
   queuedAt: number
+  /** The row's origin as queued; `{notification: true}` marks a notification. */
+  origin?: unknown
 }
 
 /**

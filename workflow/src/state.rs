@@ -6,7 +6,7 @@ use serde_json::{from_value, json, Value};
 
 use crate::{
     error::WorkflowError,
-    ids::{def_key, node_result_key},
+    ids::{attempt_session_id, def_key, node_result_key},
     types::{NodeState, WorkflowDef, WorkflowRunRecord},
 };
 
@@ -144,11 +144,11 @@ pub async fn get_run(
 /// serializes every read-modify-write path (tick, reconcile, sweep, stop) for
 /// a given `run_id` within one process so writes never clobber each other.
 ///
-/// NOTE: `state::set` is an unconditional overwrite — iii-state (sdk 0.19.2)
-/// exposes no compare-and-set.  A multi-process deployment therefore requires
-/// run-level sharding (route all `workflow::tick` events for a `run_id` to one
-/// owning instance) rather than record-level CAS.  See README §Scaling for the
-/// supported multi-instance topology.
+/// NOTE: `state::set` is an unconditional overwrite. `state::compare-and-set`
+/// exists but is not adopted (see README §Scaling): it compares the whole value,
+/// treats an absent key as a stored null, has no size guard, and on Redis
+/// retries a scope-wide WATCH up to 8 times. One worker instance per namespace
+/// keeps a single writer per run instead.
 pub async fn put_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(), WorkflowError> {
     let v = serde_json::to_value(record)?;
     state_set(iii, SCOPE_RUN, &record.run_id, v).await
@@ -171,19 +171,28 @@ pub async fn list_runs(iii: &IIIClient) -> Result<Vec<WorkflowRunRecord>, Workfl
 /// result/def/index rows forever. (`state::delete` is idempotent on a missing key,
 /// so a retry that re-deletes an already-removed child is a harmless no-op.)
 pub async fn delete_run(iii: &IIIClient, record: &WorkflowRunRecord) -> Result<(), WorkflowError> {
-    for cp in record.nodes.values() {
-        if let Some(key) = &cp.result_ref {
-            state_delete(iii, SCOPE_RESULT, key).await?;
-        }
+    for (uid, cp) in &record.nodes {
+        // Every slot, not only `result_ref`: a node that submitted and then did
+        // not settle has a value there and no ref.
+        state_delete(iii, SCOPE_RESULT, &node_result_key(&record.run_id, uid)).await?;
         // Clear the session → run reverse index (used by workflow::wake) so a
         // long-lived worker doesn't accumulate orphaned index rows for every run
-        // it GCs.
-        if let Some(session_id) = &cp.session_id {
-            state_delete(iii, SCOPE_INDEX, session_id).await?;
+        // it GCs. Each attempt indexed its own session.
+        if cp.session_id.is_some() {
+            for session_id in attempt_sessions(&record.run_id, uid, cp.retries) {
+                state_delete(iii, SCOPE_INDEX, &session_id).await?;
+            }
         }
     }
     state_delete(iii, SCOPE_DEF, &def_key(&record.run_id)).await?;
     state_delete(iii, SCOPE_RUN, &record.run_id).await
+}
+
+/// The session id of every attempt `0..=retries` of a node. Pure.
+pub fn attempt_sessions(run_id: &str, uid: &str, retries: u32) -> Vec<String> {
+    (0..=retries)
+        .map(|attempt| attempt_session_id(run_id, uid, attempt))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +337,16 @@ pub async fn put_idem(iii: &IIIClient, key: &str, run_id: &str) -> Result<(), Wo
     state_set(iii, SCOPE_IDEM, key, json!(run_id)).await
 }
 
+pub async fn delete_idem(iii: &IIIClient, key: &str) -> Result<(), WorkflowError> {
+    state_delete(iii, SCOPE_IDEM, key).await
+}
+
+/// The GC deletes a run's idempotency key only while it still names that run: a
+/// later start may have re-pointed a dangling key at a new run. Pure.
+pub fn idem_points_at(stored: Option<&str>, run_id: &str) -> bool {
+    stored == Some(run_id)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -389,5 +408,25 @@ mod tests {
         let list3 = parse_record_list(&v3);
         assert_eq!(list3.len(), 1, "key→value map should yield 1 record");
         assert_eq!(list3[0].run_id, "r_1");
+    }
+
+    #[test]
+    fn attempt_session_ids_cover_all_retries() {
+        assert_eq!(
+            attempt_sessions("r_1", "read#2", 2),
+            vec![
+                "wf_r_1_read#2@r0".to_string(),
+                "wf_r_1_read#2@r1".to_string(),
+                "wf_r_1_read#2@r2".to_string(),
+            ]
+        );
+        assert_eq!(attempt_sessions("r_1", "plan", 0), vec!["wf_r_1_plan@r0"]);
+    }
+
+    #[test]
+    fn idem_deleted_only_when_it_points_at_this_run() {
+        assert!(idem_points_at(Some("r_1"), "r_1"));
+        assert!(!idem_points_at(Some("r_2"), "r_1"));
+        assert!(!idem_points_at(None, "r_1"));
     }
 }

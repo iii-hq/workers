@@ -1054,15 +1054,7 @@ async fn seed_or_merge_queued(
 ) -> Result<StartOutcome, HarnessError> {
     let mut outcome =
         with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
-            seed_or_merge(
-                deps,
-                cfg,
-                session_id,
-                options.clone(),
-                message_preview(d.message),
-                d.lineage,
-                d.skills_explicit,
-            )
+            seed_or_merge(deps, cfg, session_id, options.clone(), d)
         })
         .await?;
     outcome.queued = true;
@@ -1227,7 +1219,6 @@ pub(crate) async fn deliver(
         ..d
     };
     record_recall_delivery(deps, session_id, &d).await?;
-    let preview = message_preview(d.message);
     if d.skills_explicit {
         return with_delivery_guard(
             &deps.locks,
@@ -1245,8 +1236,7 @@ pub(crate) async fn deliver(
                         session.append(session_id, d.message, d.entry_id, None, d.origin)
                     })
                     .await?;
-                let outcome =
-                    seed_or_merge(deps, cfg, session_id, options, preview, d.lineage, true).await?;
+                let outcome = seed_or_merge(deps, cfg, session_id, options, &d).await?;
                 Ok((outcome, appended))
             },
         )
@@ -1264,15 +1254,7 @@ pub(crate) async fn deliver(
     // An in-turn spawn targeting its own session already holds that
     // non-reentrant lock; every other target acquires it here.
     let outcome = with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
-        seed_or_merge(
-            deps,
-            cfg,
-            session_id,
-            options,
-            preview,
-            d.lineage,
-            d.skills_explicit,
-        )
+        seed_or_merge(deps, cfg, session_id, options, &d)
     })
     .await?;
     Ok((outcome, appended))
@@ -1740,10 +1722,9 @@ async fn seed_or_merge(
     cfg: &WorkerConfig,
     session_id: &str,
     mut options: TurnOptions,
-    message_preview: Option<String>,
-    lineage: &TurnLineage,
-    skills_explicit: bool,
+    d: &Delivery<'_>,
 ) -> Result<StartOutcome, HarnessError> {
+    let skills_explicit = d.skills_explicit;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     apply_default_filesystem_root(
@@ -1760,9 +1741,16 @@ async fn seed_or_merge(
                 crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
+                    // The merged turn takes a wake's fire: it reads the entry
+                    // at its next step, and predates the claim.
                     let changed = r.options.refresh_filesystem_root_from(&options)
                         | r.options.adopt_response_language_from(&options)
-                        | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?;
+                        | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?
+                        | crate::bindings::note_took_wake(
+                            &mut r,
+                            d.entry_id.unwrap_or_default(),
+                            d.origin,
+                        );
                     if changed {
                         r.updated_at = AgentMessage::now_ms();
                         crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
@@ -1787,8 +1775,8 @@ async fn seed_or_merge(
                         session_id,
                         options,
                         Some(previous),
-                        message_preview,
-                        lineage,
+                        message_preview(d.message),
+                        d.lineage,
                     )
                     .await
                 }
@@ -1804,8 +1792,8 @@ async fn seed_or_merge(
                 session_id,
                 options,
                 previous.as_ref(),
-                message_preview,
-                lineage,
+                message_preview(d.message),
+                d.lineage,
             )
             .await
         }
@@ -1929,6 +1917,8 @@ pub(crate) async fn seed_new(
         message_preview,
         abort: false,
         exchange_finished: false,
+        continues: false,
+        took_wakes: Vec::new(),
         watermark_entry_id: None,
         stream_request_id: None,
         options,
@@ -2656,6 +2646,8 @@ mod tests {
             message_preview: None,
             abort: false,
             exchange_finished: false,
+            continues: false,
+            took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,
             options: options_with(None),

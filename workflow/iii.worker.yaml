@@ -11,3 +11,7 @@ description: Deterministic, crash-resumable multi-agent workflow orchestrator ov
 
 dependencies:
   configuration: "latest"
+  queue: "latest"
+  state: "latest"
+  cron: "latest"
+  harness: "latest"

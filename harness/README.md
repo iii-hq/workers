@@ -653,7 +653,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
@@ -751,7 +751,9 @@ briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
 reads every call of the function it observes, other sessions' included, so the
 session's dispatch policy must allow that function, as it must allow a target
 or a condition; functions no agent may call (credential and private state
-accessors, `harness::observer::deliver`) are refused either way. Allowing a
+accessors, `harness::observer::deliver`) are refused either way. `workflow::start`
+is refused as a target, and a stored binding that names it does not fire: a
+delivered call skips the pre-call hook that stamps the caller's folder. Allowing a
 private event source (`state::on-changed`, `shell::on-job-finished`,
 `harness::on-timer`) lets the agent observe it, never call it, and it is not
 offered as a tool. Bindings stored by harness versions before 0.26 are

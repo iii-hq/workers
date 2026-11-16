@@ -30,11 +30,15 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 async-trait = "0.1"
 schemars = "0.8"
+# A JSON node's answer is checked against its `schema` (same version and
+# features as the harness).
+jsonschema = { version = "0.18", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "test-util"] }
 
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller

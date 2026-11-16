@@ -117,9 +117,10 @@ function dispatchDeniedCardProps(
         <ul className="list-disc space-y-1.5 pl-5">
           <li>
             <span className="font-medium text-ink">Workflow node</span> — add
-            the function to <code className="text-ink">agent.functions</code>,
-            widen <code className="text-ink">default_functions</code>, or remove
-            the narrowing to inherit the run’s allowed functions
+            the function to the node’s{' '}
+            <code className="text-ink">functions</code>, widen{' '}
+            <code className="text-ink">default_functions</code>, or remove the
+            narrowing to inherit the run’s allowed functions
           </li>
           <li>
             <span className="font-medium text-ink">Chat or session</span> — add

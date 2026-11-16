@@ -509,6 +509,7 @@ async function realListQueued(
       .map((b) => b.text)
       .join('\n'),
     queuedAt: row.queued_at,
+    origin: row.origin,
   }))
 }
 

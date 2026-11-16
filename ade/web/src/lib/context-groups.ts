@@ -10,6 +10,7 @@ const GROUP_LABELS: Record<ContextGroup, string> = {
   tickets: 'Tickets',
   prs: 'Pull requests',
   assets: 'Assets',
+  workflow: 'Workflow',
   subagents: 'Sub-agents',
   observers: 'Observers',
   links: 'Links',
