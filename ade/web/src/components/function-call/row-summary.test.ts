@@ -36,6 +36,20 @@ describe('resultSummary', () => {
     )
   })
 
+  it('counts a question card by its questions, not the status it was asked with', () => {
+    // harness::ask returns `awaiting_answer`; after Send or Dismiss the row
+    // must not keep saying so beside a settled card.
+    expect(
+      resultSummary({
+        status: 'awaiting_answer',
+        question_id: 'q1',
+        session_id: 's1',
+        turn_id: 't1',
+        questions: [{ header: 'Pet' }],
+      }),
+    ).toBe('1 question')
+  })
+
   it('unwraps the iii result envelope', () => {
     expect(
       resultSummary({

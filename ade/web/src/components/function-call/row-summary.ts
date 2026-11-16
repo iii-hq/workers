@@ -56,6 +56,9 @@ function pluralize(n: number, noun: string): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? noun : plural(noun)}`
 }
 
+/** Lists a status report carries beside its state, never its answer. */
+const SIDE_LISTS = new Set(['children'])
+
 /**
  * A short count the reader can scan without opening the row: `4 results`
  * for a list, `3 files` for a single array field, `exit 0` for a process.
@@ -73,16 +76,23 @@ export function resultSummary(output: unknown): string | null {
   const exit = record.exit_code ?? record.exitCode
   if (typeof exit === 'number') return `exit ${exit}`
 
+  const arrays = Object.entries(record).filter(([, v]) => Array.isArray(v))
+
   // A status report (`harness::status` and the like): its one list is a
   // side field (a child session's own `children`), not the answer, so
   // counting it misleads ("0 children" for a sub-agent that exists). The
-  // state is what the row should say.
-  if (typeof record.status === 'string') {
+  // state is what the row should say. A result that carries its own subject
+  // list keeps the count: `harness::ask` returns `questions` with the status
+  // it had when asked (`awaiting_answer`), which a later answer or dismissal
+  // would contradict, while "2 questions" stays true.
+  if (
+    typeof record.status === 'string' &&
+    arrays.every(([key]) => SIDE_LISTS.has(key))
+  ) {
     const status = record.status.trim()
     return status && status.length <= 24 ? status.replace(/_/g, ' ') : null
   }
 
-  const arrays = Object.entries(record).filter(([, v]) => Array.isArray(v))
   if (arrays.length === 1) {
     const [key, list] = arrays[0] as [string, unknown[]]
     return pluralize(list.length, singular(key.replace(/_/g, ' ')))
