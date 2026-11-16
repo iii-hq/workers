@@ -5,6 +5,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/index.mjs\" mode",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/index.mjs\" session-start",
             "timeout": 20
           },

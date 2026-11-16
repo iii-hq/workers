@@ -13,34 +13,44 @@
  *   - one `/iii:<profile>` command per visible profile (`./commands.ts`),
  *     generated now, so a session sees the engine's current profiles.
  *
- * Headless turns get it under the OS temp dir (never the caller's repository);
+ * Headless turns get it in a private directory of their own under the OS temp
+ * dir, removed when the turn ends (never the caller's repository);
  * terminal sessions get it in `<workspace>/.iii-plugin` on the shell worker's
  * host, through `shell::fs::*`. A `.build-id` hash of the static files makes an
  * unchanged install one small read rather than re-writing every file.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { IIIClient } from 'iii-sdk';
 import { fetchIiiContext } from '../iii-context.js';
-import { pluginDetail, pluginFiles } from '../plugin.js';
+import { MODE_FILE, pluginDetail, pluginFiles } from '../plugin.js';
 import { readFile as hostRead, writeFile as hostWrite, probe } from '../terminal/host.js';
 import { PLUGIN_STATIC_FILES } from './assets.generated.js';
 import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
 import type { AgentRow } from './directory.js';
 import { DEFAULT_MCP_URL, normalizeMcpUrl } from './mcp.js';
+import { modeRules } from './session.js';
 
 export const PLUGIN_NAME = 'iii';
 /** Where it lands inside a terminal workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
-const LOCAL_ROOT = join(tmpdir(), 'iii-claude-code-plugin');
+/** Prefix of each headless turn's own private plugin directory. */
+const LOCAL_PREFIX = join(tmpdir(), 'iii-claude-code-plugin-');
 const MARKER = '.build-id';
-/** The standalone hook file; the worker writes its own. */
-const STANDALONE_HOOKS = 'hooks/hooks.json';
+/** Static files the worker replaces with its own. */
+const WORKER_OWNED = ['hooks/hooks.json', '.mcp.json'];
 
-export type Installed = { dir: string; detail: string };
+export type Installed = {
+  dir: string;
+  detail: string;
+  /** The iii mode rules to append to the system prompt; '' without mcp-server. */
+  mode: string;
+  /** Whether the session's `iii` MCP server is the engine's mcp-server. */
+  mcp: boolean;
+};
 export type Ops = CommandOps;
 
 export type InstallOptions = {
@@ -50,15 +60,17 @@ export type InstallOptions = {
   /** All profiles (hidden included), or null when they could not be read. */
   agents: AgentRow[] | null;
   agentsDetail?: string;
-  /** The engine's mcp-server endpoint, and why it may not answer. */
-  mcp: { url: string; detail: string };
+  /** The engine's mcp-server endpoint, whether it runs, and what to say. */
+  mcp: { url: string; detail: string; available: boolean };
 };
 
 /** Files without which the plugin is not one. */
-const REQUIRED = ['.claude-plugin/plugin.json', '.mcp.json'];
+const REQUIRED = ['.claude-plugin/plugin.json'];
+/** Written only while they apply; removed otherwise, so nothing stale loads. */
+const CONDITIONAL = ['.mcp.json', MODE_FILE, 'skills/iii-runtime/SKILL.md'];
 
 function staticFiles(files: PluginFile[] = PLUGIN_STATIC_FILES): PluginFile[] {
-  return files.filter((f) => f.path !== STANDALONE_HOOKS);
+  return files.filter((f) => !WORKER_OWNED.includes(f.path));
 }
 
 export function buildId(files: PluginFile[] = staticFiles()): string {
@@ -66,9 +78,6 @@ export function buildId(files: PluginFile[] = staticFiles()): string {
   for (const f of files) hash.update(f.path).update('\0').update(f.content).update('\0');
   return hash.digest('hex').slice(0, 16);
 }
-
-/** Where the worker writes the runtime skill, when it has a context. */
-const RUNTIME_SKILL = 'skills/iii-runtime/SKILL.md';
 
 /** Write the whole plugin into `dir` through `ops`. */
 export async function installWith(
@@ -83,6 +92,8 @@ export async function installWith(
       dir: '',
       detail:
         'the iii plugin was not embedded in this build (run `pnpm run build:iii-plugin`); the session runs without it',
+      mode: '',
+      mcp: false,
     };
   }
   const id = buildId(fixed);
@@ -92,21 +103,28 @@ export async function installWith(
     await ops.write(`${dir}/${MARKER}`, `${id}\n`);
   }
 
+  // Without mcp-server there is no `iii` MCP server and no iii mode: the
+  // session works through the `iii` CLI, as it did before the plugin.
+  const available = options.mcp.available;
+  const agent = embedded.find((f) => f.path === 'agents/iii.md')?.content ?? '';
+  const mode = available ? modeRules(agent) : '';
   const worker = {
     cli: options.cli,
     context: options.context.text,
     contextDetail: options.context.detail,
-    mcpUrl: options.mcp.url,
+    mcpUrl: available ? options.mcp.url : '',
+    mode,
   };
   const generated = pluginFiles(worker);
   for (const f of generated) {
     const path = `${dir}/${f.path}`;
     if ((await ops.read(path)) !== f.content) await ops.write(path, f.content);
   }
-  // The runtime skill exists only while there is a context to put in it: a
-  // stale one would keep loading old instructions.
-  if (!generated.some((f) => f.path === RUNTIME_SKILL)) {
-    const path = `${dir}/${RUNTIME_SKILL}`;
+  // The MCP server, the mode rules and the runtime skill exist only while
+  // they apply: a stale one would keep loading.
+  for (const file of CONDITIONAL) {
+    if (generated.some((f) => f.path === file)) continue;
+    const path = `${dir}/${file}`;
     if ((await ops.read(path)) !== null) await ops.remove(path);
   }
 
@@ -118,11 +136,11 @@ export async function installWith(
       `the /iii:<profile> commands were not refreshed: ${options.agentsDetail || 'the profiles could not be read'}`,
     );
   }
-  return { dir, detail: details.filter(Boolean).join('; ') };
+  return { dir, detail: details.filter(Boolean).join('; '), mode, mcp: available };
 }
 
 const MCP_SETUP =
-  "the session's iii tools are unavailable until it runs; add the mcp-server worker behind rbac-proxy (see its README)";
+  'sessions work through the `iii` CLI, without the iii tools or iii mode, until it runs; add the mcp-server worker behind rbac-proxy (see its README)';
 
 /**
  * Where the engine's mcp-server answers: `III_PLUGIN_MCP_URL` (for a custom
@@ -133,9 +151,10 @@ const MCP_SETUP =
 export async function resolveWorkerMcp(
   iii: IIIClient,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ url: string; detail: string }> {
+): Promise<{ url: string; detail: string; available: boolean }> {
   const details: string[] = [];
   let url = DEFAULT_MCP_URL;
+  let available = false;
   const override = env.III_PLUGIN_MCP_URL?.trim();
   if (override) {
     url = normalizeMcpUrl(override);
@@ -157,13 +176,12 @@ export async function resolveWorkerMcp(
       payload: { prefix: 'mcp-server::' },
       timeoutMs: 5_000,
     });
-    if (!(res?.functions ?? []).some((f) => f.function_id === 'mcp-server::handler')) {
-      details.push(`mcp-server is not running on this engine: ${MCP_SETUP}`);
-    }
+    available = (res?.functions ?? []).some((f) => f.function_id === 'mcp-server::handler');
+    if (!available) details.push(`mcp-server is not running on this engine: ${MCP_SETUP}`);
   } catch (err) {
     details.push(`could not check for mcp-server (${String(err)}); ${MCP_SETUP}`);
   }
-  return { url, detail: details.join('; ') };
+  return { url, detail: details.join('; '), available };
 }
 
 async function listAgents(iii: IIIClient): Promise<{ agents: AgentRow[] | null; detail: string }> {
@@ -203,24 +221,39 @@ const localOps: Ops = {
 };
 
 /** The plugin on this worker's own disk, for headless turns. Best-effort. */
-export async function installLocal(iii: IIIClient): Promise<Installed> {
+/**
+ * The plugin for one headless turn, in a directory of its own: created
+ * private (0700) by `mkdtemp`, so no other user can plant files in it and no
+ * other worker on the host can point it at another engine. `dispose` removes
+ * it when the turn ends. Best-effort: a failure runs the turn without it.
+ */
+export async function installLocal(
+  iii: IIIClient,
+): Promise<Installed & { dispose: () => Promise<void> }> {
+  let dir = '';
+  const dispose = async () => {
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  };
   try {
+    dir = await mkdtemp(LOCAL_PREFIX);
     const [context, listed, mcp] = await Promise.all([
       fetchIiiContext(iii),
       listAgents(iii),
       resolveWorkerMcp(iii),
     ]);
-    return await installWith(LOCAL_ROOT, localOps, {
+    const installed = await installWith(dir, localOps, {
       cli: process.env.III_CLI ?? 'iii',
       context,
       agents: listed.agents,
       agentsDetail: listed.detail,
       mcp,
     });
+    return { ...installed, dispose };
   } catch (err) {
-    const detail = `the iii plugin could not be written to ${LOCAL_ROOT}: ${String(err)}`;
+    const detail = `the iii plugin could not be written to ${dir || tmpdir()}: ${String(err)}`;
     console.warn(`claude-code: ${detail}`);
-    return { dir: '', detail };
+    await dispose();
+    return { dir: '', detail, mode: '', mcp: false, dispose: async () => {} };
   }
 }
 

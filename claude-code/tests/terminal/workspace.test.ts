@@ -16,6 +16,8 @@ function fakeShell(
     noIiiCli?: boolean;
     /** No `iii-directory` on the bus: the context cannot be fetched. */
     noDirectory?: boolean;
+    /** No mcp-server on the engine. */
+    noMcpServer?: boolean;
     /** A read failure that is NOT "missing": a timeout, a read budget. */
     readError?: Error;
   } = {},
@@ -58,7 +60,9 @@ function fakeShell(
         case 'http::status':
           return { host: '127.0.0.1', port: 3111, url: 'http://127.0.0.1:3111' };
         case 'engine::functions::list':
-          return { functions: [{ function_id: 'mcp-server::handler' }] };
+          return {
+            functions: options.noMcpServer ? [] : [{ function_id: 'mcp-server::handler' }],
+          };
         case 'directory::agents::list':
           return options.noDirectory
             ? Promise.reject(new Error('function_not_found'))
@@ -173,9 +177,17 @@ describe('preparing the terminal host', () => {
     // `sync` hook is not installed beside the activity hooks.
     expect(files[`${dir}/hooks/hooks.json`]).not.toContain(' sync ');
 
-    // And the session is told to load it.
-    // And the session is started in iii mode: the plugin's `iii` agent.
-    expect(prepared.args).toEqual([...DEFAULTS.args, '--plugin-dir', dir, '--agent', 'iii:iii']);
+    // And the session loads it, with the iii mode rules appended to Claude
+    // Code's own system prompt (an agent would replace it).
+    expect(prepared.args).toEqual([
+      ...DEFAULTS.args,
+      '--plugin-dir',
+      dir,
+      '--append-system-prompt-file',
+      `${dir}/iii-mode.md`,
+    ]);
+    expect(files[`${dir}/iii-mode.md`]).toContain('iii_call');
+    expect(files[`${dir}/iii-mode.md`]).not.toMatch(/^---/);
     expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
 
     // `.claude/settings.json` is the operator's file and is never written.
@@ -280,26 +292,46 @@ describe('preparing the terminal host', () => {
     expect(prepared.detail).toBe('');
   });
 
-  it('keeps an --agent the operator configured instead of iii mode', async () => {
+  it("never starts the session as an agent: that would replace Claude Code's prompt", async () => {
     const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
-    const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: ['--agent', 'mine'] });
-    expect(prepared.args.filter((a) => a === '--agent')).toHaveLength(1);
-    expect(prepared.args).toContain('mine');
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+    expect(prepared.args).not.toContain('--agent');
     expect(prepared.args).not.toContain('iii:iii');
   });
 
-  it('keeps an --agent=<name> the operator configured too', async () => {
+  it('keeps an --agent the operator configured', async () => {
     const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: ['--agent=mine'] });
     expect(prepared.args).toContain('--agent=mine');
-    expect(prepared.args).not.toContain('iii:iii');
-    expect(prepared.args).not.toContain('--agent');
+  });
+
+  it('adds no iii mode rules over an append the operator configured', async () => {
+    for (const own of [
+      ['--append-system-prompt', 'house rules'],
+      ['--append-system-prompt-file=x.md'],
+    ]) {
+      const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+      const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: own });
+      expect(prepared.args.filter((a) => a.startsWith('--append-system-prompt'))).toHaveLength(1);
+      expect(prepared.detail).toContain('iii mode');
+    }
   });
 
   it('starts no iii mode when the workspace is not set up (no plugin)', async () => {
     const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS, setup_workspace: false });
-    expect(prepared.args).not.toContain('--agent');
+    expect(prepared.args.some((a) => a.startsWith('--append-system-prompt'))).toBe(false);
+  });
+
+  it('without mcp-server, the session works through the iii CLI as before', async () => {
+    const { iii, files } = fakeShell({ whichClaude: '/usr/local/bin/claude', noMcpServer: true });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+    const dir = '/hostroot/claude-code/.iii-plugin';
+    expect(prepared.plugin).toBe(dir);
+    expect(prepared.args.some((a) => a.startsWith('--append-system-prompt'))).toBe(false);
+    expect(files[`${dir}/.mcp.json`]).toBeUndefined();
+    expect(files[`${dir}/hooks/hooks.json`]).not.toContain('session-start');
+    expect(prepared.detail).toContain('mcp-server is not running on this engine');
   });
 
   it('uses the configured workspace as given', async () => {

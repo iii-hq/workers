@@ -10,10 +10,14 @@ It works in two places:
   carries this folder in its bundle and installs it wherever Claude Code runs:
   the OS temp dir for headless `claude::run` turns (when `iii_context` is on),
   and `<workspace>/.iii-plugin` on the terminal host for terminal sessions
-  (when `setup_workspace` is on). It points the plugin, and its
-  `default-mcp` SessionStart hook, at the engine's mcp-server (the http
-  worker's address plus `/mcp`, or `III_PLUGIN_MCP_URL`) and adds what only
-  it can: hooks that report every turn onto
+  (when `setup_workspace` is on). A headless turn's copy lives in a private
+  directory of its own (`mkdtemp`, mode 0700), removed when the turn ends.
+  The worker points the plugin, and its `default-mcp` SessionStart hook, at
+  the engine's mcp-server (the http worker's address plus `/mcp`, or
+  `III_PLUGIN_MCP_URL`). When the engine runs no mcp-server, it installs the
+  plugin without its MCP server, hook and iii mode, so the session works
+  through the `iii` CLI as before, and says so. It also adds what only it
+  can: hooks that report every turn onto
   `claude::on-agent-event`, the `iii-runtime` skill, and the `/iii:<profile>`
   commands, generated fresh for each session.
 - **In a standalone `claude`** on your own machine:
@@ -92,19 +96,28 @@ See mcp-server's README for each one in full.
 
 ## iii mode
 
-Claude Code has no plugin-defined permission modes, so the iii mode is the
-plugin's `iii` agent plus a hook, on top of whichever built-in mode is active:
+The iii mode is a set of rules (the body of `agents/iii.md`): work through
+the engine, find a function, read its contract, `iii_call` it, `iii_observe`
+instead of polling. They are **appended** to Claude Code's own system prompt,
+never in place of it, so its operating rules (confirming hard-to-reverse
+actions, reporting faithfully, memory, the security policy) stay:
 
-- **The `iii:iii` agent** (`agents/iii.md`) makes the whole session work
-  through the engine: load `default-mcp`, find a function, read its contract,
-  `iii_call` it, `iii_observe` instead of polling. The worker starts every
-  session with `--agent iii:iii` (an operator-configured `--agent` wins);
-  standalone, run `claude --plugin-dir ... --agent iii:iii`.
-- **Read-only tools are pre-approved** by a PreToolUse hook: status,
-  profiles, skills, `iii_observations_poll`, `iii_observations_sse`,
-  `iii_observers`, `iii_unobserve`. `iii_call`, `iii_observe` and
-  `iii_secret_store` are never pre-approved: they stay with the session's
-  permission mode (and, for a headless turn, the worker's approval gate).
+- **Standalone**, a SessionStart hook (`cli/index.mjs mode`) adds them, in
+  a hook of their own beside the `default-mcp` one.
+- **In the worker**, headless turns append them to the system prompt and
+  terminal sessions get `--append-system-prompt-file <plugin>/iii-mode.md`
+  (an `--append-system-prompt` in the terminal args wins, and the worker
+  says so).
+- `claude --agent iii:iii` still runs the `iii` agent for anyone who wants
+  it, knowing that an agent replaces Claude Code's prompt.
+
+**Read-only tools are pre-approved** by a PreToolUse hook: status, profiles,
+skills, `iii_observations_poll`, `iii_observations_sse`, `iii_observers`,
+`iii_unobserve`. Interactive sessions keep `iii_call`, `iii_observe` and
+`iii_secret_store` with the permission mode. Headless worker turns, which no
+one is there to prompt, also allow `iii_call` and `iii_observe`: rbac-proxy
+bounds what they reach, which is narrower than the `Bash(iii *)` a turn
+already has. `iii_secret_store` stays with the approval gate.
 
 Every `/iii:*` command carries the same rule: `iii_call` instead of the `iii`
 CLI, `iii_observe` instead of polling, and `agent_call` / `harness::observe`
@@ -117,7 +130,8 @@ node iii-plugin/cli/index.mjs status   # which mcp-server, and what it reports
 node iii-plugin/cli/index.mjs sync     # regenerate /iii:<profile> commands now
 node iii-plugin/cli/index.mjs export   # profiles as native ~/.claude/agents/iii-<id>.md
 node iii-plugin/cli/index.mjs export --skills --target ./.claude --include-hidden
-node iii-plugin/cli/index.mjs session-start  # what the SessionStart hook adds
+node iii-plugin/cli/index.mjs session-start  # what the default-mcp hook adds
+node iii-plugin/cli/index.mjs mode           # what the iii mode hook adds
 ```
 
 Each takes `--url <mcp-url>`. `export` is a snapshot for people who want the

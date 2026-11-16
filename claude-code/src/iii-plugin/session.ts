@@ -18,6 +18,17 @@ function output(additionalContext: string): string {
   });
 }
 
+/** The iii mode rules: the `iii` agent's body, without its frontmatter. */
+export function modeRules(agentMarkdown: string): string {
+  return agentMarkdown.replace(/^---\n[\s\S]*?\n---\n/, '').trim();
+}
+
+/** The hook's stdout for the iii mode rules: a hook of their own, so the
+ * rules and the profile each get the whole context budget of a hook. */
+export function modeOutput(rules: string): string {
+  return output(rules.trim());
+}
+
 /** The hook's stdout, for the profile mcp-server returned or the error it hit. */
 export function sessionStartOutput(result: { profile: AgentProfile } | { error: string }): string {
   if ('error' in result) {

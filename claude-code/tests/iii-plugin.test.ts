@@ -120,7 +120,7 @@ describe('installer', () => {
     cli: '/usr/bin/iii',
     context: { text: '# iii runtime', detail: '' },
     agents: [{ id: 'writer' }],
-    mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '' },
+    mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: true },
   };
 
   it('ships one plugin named iii inside the worker build', () => {
@@ -151,6 +151,8 @@ describe('installer', () => {
     expect(await installWith('/w/p', m.ops, options, embedded)).toEqual({
       dir: '/w/p',
       detail: '',
+      mode: '',
+      mcp: true,
     });
     expect(m.disk['/w/p/cli/index.mjs']).toBe('x');
     // The worker points the session at the mcp-server it found.
@@ -158,7 +160,8 @@ describe('installer', () => {
       mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3111/mcp' } },
     });
     expect(m.disk['/w/p/.build-id'].trim()).toBe(
-      buildId(embedded.filter((f) => f.path !== 'hooks/hooks.json')),
+      // The worker writes its own hooks and .mcp.json.
+      buildId(embedded.filter((f) => !['hooks/hooks.json', '.mcp.json'].includes(f.path))),
     );
     // The worker's activity hooks replace the standalone sync hook.
     expect(m.disk['/w/p/hooks/hooks.json']).toContain('claude::terminal::activity');
@@ -212,7 +215,11 @@ describe('review fixes', () => {
       { path: '.mcp.json', content: '{}' },
       { path: 'cli/index.mjs', content: 'x' },
     ];
-    const base = { cli: 'iii', agents: [], mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '' } };
+    const base = {
+      cli: 'iii',
+      agents: [],
+      mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: true },
+    };
     await installWith(
       '/w/p',
       m.ops,
@@ -282,7 +289,7 @@ describe('the plugin talks to mcp-server', () => {
 
   it('syncs the profile commands with the CLI at session start', () => {
     const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
-    expect(hooks.SessionStart[0].hooks[1].command).toContain('/cli/index.mjs" sync');
+    expect(hooks.SessionStart[0].hooks[2].command).toContain('/cli/index.mjs" sync');
   });
 });
 
@@ -314,6 +321,7 @@ describe('resolveWorkerMcp', () => {
     expect(await resolveWorkerMcp(fakeIii(running), {})).toEqual({
       url: 'http://127.0.0.1:3211/mcp',
       detail: '',
+      available: true,
     });
   });
 
@@ -330,6 +338,7 @@ describe('resolveWorkerMcp', () => {
       {},
     );
     expect(r.url).toBe('http://127.0.0.1:3211/mcp');
+    expect(r.available).toBe(false);
     expect(r.detail).toContain('mcp-server is not running on this engine');
     expect(r.detail).toContain('rbac-proxy');
     expect(r.detail).toContain('iii tools');
@@ -356,6 +365,7 @@ describe('resolveWorkerMcp', () => {
         mcp: {
           url: 'http://127.0.0.1:3111/mcp',
           detail: 'mcp-server is not running on this engine',
+          available: false,
         },
       },
       [
@@ -365,5 +375,70 @@ describe('resolveWorkerMcp', () => {
     );
     expect(r.dir).toBe('/w/p');
     expect(r.detail).toContain('mcp-server is not running on this engine');
+  });
+});
+
+describe('iii mode and the mcp-server fallback', () => {
+  const embedded = [
+    { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
+    {
+      path: '.mcp.json',
+      content: '{"mcpServers":{"iii":{"type":"http","url":"${user_config.mcp_url}"}}}',
+    },
+    {
+      path: 'agents/iii.md',
+      content: '---\nname: iii\ndescription: iii mode\n---\n\nUse iii_call.\n',
+    },
+    { path: 'cli/index.mjs', content: 'x' },
+  ];
+  const base = {
+    cli: 'iii',
+    context: { text: '# iii runtime', detail: '' },
+    agents: [],
+  };
+
+  it('with mcp-server: .mcp.json, the session-start hook and the iii mode rules', async () => {
+    const m = memoryOps();
+    const r = await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, mcp: { url: 'http://127.0.0.1:3211/mcp', detail: '', available: true } },
+      embedded,
+    );
+    expect(r.mcp).toBe(true);
+    expect(r.mode).toBe('Use iii_call.');
+    expect(m.disk['/w/p/iii-mode.md']).toBe('Use iii_call.\n');
+    expect(JSON.parse(m.disk['/w/p/.mcp.json']).mcpServers.iii.url).toBe(
+      'http://127.0.0.1:3211/mcp',
+    );
+    expect(m.disk['/w/p/hooks/hooks.json']).toContain('session-start');
+  });
+
+  it('without mcp-server: no MCP server, no hook, no rules, and an old .mcp.json removed', async () => {
+    const m = memoryOps();
+    m.disk['/w/p/.mcp.json'] = '{"mcpServers":{}}';
+    m.disk['/w/p/iii-mode.md'] = 'old rules';
+    const r = await installWith(
+      '/w/p',
+      m.ops,
+      {
+        ...base,
+        mcp: {
+          url: 'http://127.0.0.1:3111/mcp',
+          detail: 'mcp-server is not running',
+          available: false,
+        },
+      },
+      embedded,
+    );
+    expect(r.dir).toBe('/w/p');
+    expect(r.mcp).toBe(false);
+    expect(r.mode).toBe('');
+    expect(m.disk['/w/p/.mcp.json']).toBeUndefined();
+    expect(m.disk['/w/p/iii-mode.md']).toBeUndefined();
+    expect(m.disk['/w/p/hooks/hooks.json']).not.toContain('session-start');
+    expect(r.detail).toContain('mcp-server is not running');
+    // The rest of the plugin still lands.
+    expect(m.disk['/w/p/.claude-plugin/plugin.json']).toBeDefined();
   });
 });

@@ -1,5 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
@@ -25,12 +24,25 @@ async function baseConfig(): Promise<Config> {
   return loadConfig('/nonexistent/config.yaml');
 }
 
+/** The engine answers like one running mcp-server behind the http worker. */
+function withMcpServer(fake: FakeIii): void {
+  const realCall = fake.iii.call.bind(fake.iii);
+  (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+    if (req.function_id === 'http::status') return { url: 'http://127.0.0.1:3111' };
+    if (req.function_id === 'engine::functions::list')
+      return { functions: [{ function_id: 'mcp-server::handler' }] };
+    return realCall(req as never);
+  };
+}
+
 async function runTurn(
   payload: Record<string, unknown>,
   messages: Array<Record<string, unknown>> = fullTurn,
   cfgOverrides: Partial<Config> = {},
+  mcpServer = false,
 ) {
   const fake = fakeIii();
+  if (mcpServer) withMcpServer(fake);
   const cfg = { ...(await baseConfig()), ...cfgOverrides };
   const capture: QueryCapture = { interrupted: false };
   queryMock.mockImplementation(scriptedQuery(messages, capture) as never);
@@ -185,33 +197,66 @@ describe('executeRun', () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
     const plugins = capture.options?.plugins as Array<{ type: string; path: string }> | undefined;
     expect(plugins?.[0]?.type).toBe('local');
-    expect(plugins?.[0]?.path).toContain('iii-claude-code-plugin');
-
-    const manifest = JSON.parse(
-      readFileSync(join(plugins?.[0]?.path ?? '', '.claude-plugin/plugin.json'), 'utf8'),
-    );
-    expect(manifest.name).toBe('iii');
-    const hooks = JSON.parse(
-      readFileSync(join(plugins?.[0]?.path ?? '', 'hooks/hooks.json'), 'utf8'),
-    ).hooks;
+    const files = capture.pluginFiles ?? {};
+    expect(JSON.parse(files['.claude-plugin/plugin.json'] ?? '{}').name).toBe('iii');
+    const hooks = JSON.parse(files['hooks/hooks.json'] ?? '{}').hooks;
     expect(hooks.PreToolUse[0].hooks[0].command).toContain('claude::terminal::activity');
-    expect(
-      readFileSync(join(plugins?.[0]?.path ?? '', 'skills/iii-runtime/SKILL.md'), 'utf8'),
-    ).toContain('name: iii-runtime');
+    expect(files['skills/iii-runtime/SKILL.md']).toContain('name: iii-runtime');
   });
 
-  it('runs the turn in iii mode: the iii agent of the plugin', async () => {
+  it('installs the plugin in a private directory of its own for each turn, removed after it', async () => {
+    const first = await runTurn({ prompt: 'x', session_id: 's1' });
+    const second = await runTurn({ prompt: 'x', session_id: 's2' });
+    const dirOf = (c: QueryCapture) =>
+      (c.options?.plugins as Array<{ path: string }> | undefined)?.[0]?.path ?? '';
+    const [a, b] = [dirOf(first.capture), dirOf(second.capture)];
+    expect(a).toContain('iii-claude-code-plugin-');
+    expect(a).not.toBe(b);
+    expect(existsSync(a)).toBe(false);
+    expect(existsSync(b)).toBe(false);
+  });
+
+  it("never replaces Claude Code's system prompt with an agent", async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' }, fullTurn, {}, true);
+    expect(capture.options?.agent).toBeUndefined();
+    const sp = capture.options?.systemPrompt as { type: string; preset?: string; append?: string };
+    expect(sp).toMatchObject({ type: 'preset', preset: 'claude_code' });
+  });
+
+  it('with mcp-server on the engine, appends the iii mode rules and allows the iii tools', async () => {
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' }, fullTurn, {}, true);
+    const sp = capture.options?.systemPrompt as { append?: string };
+    expect(sp.append).toContain('# iii runtime');
+    expect(sp.append).toContain('iii_call');
+    expect(sp.append).not.toMatch(/^---/m);
+    const allowed = capture.options?.allowedTools as string[];
+    for (const t of ['iii_call', 'iii_observe', 'iii_observations_poll', 'iii_status'])
+      expect(allowed).toContain(`mcp__plugin_iii_iii__${t}`);
+    expect(allowed).not.toContain('mcp__plugin_iii_iii__iii_secret_store');
+    expect(JSON.parse(capture.pluginFiles?.['.mcp.json'] ?? '{}').mcpServers.iii.url).toBe(
+      'http://127.0.0.1:3111/mcp',
+    );
+  });
+
+  it('without mcp-server, the turn works through the iii CLI as before', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
-    expect(capture.options?.agent).toBe('iii:iii');
+    const sp = capture.options?.systemPrompt as { append?: string };
+    expect(sp.append).toContain('# iii runtime');
+    expect(sp.append).not.toContain('iii_call');
+    const allowed = capture.options?.allowedTools as string[];
+    expect(allowed).toContain('Bash(iii *)');
+    expect(allowed.filter((t) => t.startsWith('mcp__plugin_iii_iii__'))).toEqual([]);
+    expect(capture.pluginFiles?.['.mcp.json']).toBeNull();
+    expect(capture.pluginFiles?.['hooks/hooks.json']).not.toContain('session-start');
   });
 
-  it('does not select the iii agent when the plugin is not loaded', async () => {
+  it('does not load the plugin when the iii context is off', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1', iii_context: false });
     expect(capture.options?.plugins).toBeUndefined();
     expect(capture.options?.agent).toBeUndefined();
   });
 
-  it("lets a caller's own options.agent win over iii mode", async () => {
+  it("lets a caller's own options.agent through", async () => {
     const { capture } = await runTurn({
       prompt: 'x',
       session_id: 's1',

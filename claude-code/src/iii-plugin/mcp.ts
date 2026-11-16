@@ -123,6 +123,10 @@ export class McpClient {
     } catch (err) {
       throw new Error(`mcp-server is not reachable at ${this.url} (${describe(err)}). ${SETUP}`);
     }
+    if (res.status === 503) {
+      const why = (await res.text().catch(() => '')).slice(0, 300);
+      throw new Error(`mcp-server at ${this.url} refused a new session (HTTP 503): ${why}`);
+    }
     if (!res.ok) {
       throw new Error(`no mcp-server answers at ${this.url} (HTTP ${res.status}). ${SETUP}`);
     }

@@ -9,6 +9,7 @@ import { PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
 import { profileCommand } from '../src/iii-plugin/commands.js';
 import {
   APPROVED_TOOLS,
+  HEADLESS_TOOLS,
   approveHookEntry,
   III_AGENT,
   NEVER_APPROVED_TOOLS,
@@ -93,7 +94,7 @@ describe('the read-only approval hook', () => {
   it('is in the standalone hooks file, beside the SessionStart sync', () => {
     const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
     expect(hooks.PreToolUse).toEqual([entry]);
-    expect(hooks.SessionStart[0].hooks[1].command).toContain(' sync ');
+    expect(hooks.SessionStart[0].hooks[2].command).toContain(' sync ');
   });
 
   it('is in the worker hooks too, after the activity hook', () => {
@@ -209,5 +210,19 @@ describe('the active profile', () => {
       expect(md).toContain('mcp-server');
       expect(md).toContain('mcp_url');
     }
+  });
+});
+
+describe('headless turns', () => {
+  it('may run the iii tools: rbac-proxy, not a permission prompt nobody answers, is the boundary', () => {
+    for (const t of [
+      'iii_call',
+      'iii_observe',
+      'iii_observations_poll',
+      'iii_unobserve',
+      'iii_status',
+    ])
+      expect(HEADLESS_TOOLS).toContain(tool(t));
+    expect(HEADLESS_TOOLS).not.toContain(tool('iii_secret_store'));
   });
 });

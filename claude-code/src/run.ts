@@ -13,7 +13,7 @@ import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
 import { installLocal } from './iii-plugin/install.js';
-import { III_AGENT } from './iii-plugin/mode.js';
+import { HEADLESS_TOOLS } from './iii-plugin/mode.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -311,157 +311,169 @@ async function runReserved(
   // worker keeps no copy of the prompt or of the skills index.
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
-  const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
   // The same `iii` plugin the terminal half loads (hooks, runtime skill, the
   // engine's mcp-server as its MCP server, /iii:* commands): the SDK turns a
-  // local plugin into the CLI's own `--plugin-dir`.
-  const plugin = iiiContext ? await installLocal(iii) : { dir: '', detail: '' };
+  // local plugin into the CLI's own `--plugin-dir`. It lives in a directory
+  // of this turn's own, removed when the turn ends.
+  const plugin = iiiContext
+    ? await installLocal(iii)
+    : { dir: '', detail: '', mode: '', mcp: false, dispose: async () => {} };
   if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
-  const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
-  const options: Options = {
-    // iii mode: the turn runs as the plugin's `iii` agent. A caller's raw
-    // `options.agent` still wins, since raw options spread over these.
-    ...(plugins.length ? { plugins, agent: III_AGENT } : {}),
-    ...(record.model ? { model: record.model } : {}),
-    ...(record.cwd ? { cwd: record.cwd } : {}),
-    ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
-    maxTurns: payload.max_turns ?? d.max_turns,
-    // with the approval gate on, the operator wants every tool call routed
-    // through canUseTool; bypassPermissions skips it, so the gate forces a
-    // mode that keeps canUseTool authoritative regardless of the caller
-    permissionMode: cfg.approval_gate ? 'default' : (payload.permission_mode ?? d.permission_mode),
-    allowedTools: [
-      ...(payload.allowed_tools ?? d.allowed_tools),
-      // the iii context teaches discovery through the CLI; the matching
-      // allow rule is what lets those calls run headless
-      ...(iiiContext ? ['Bash(iii *)'] : []),
-    ],
-    disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
-    systemPrompt: payload.system_prompt
-      ? payload.system_prompt
-      : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
-    settingSources: [],
-    ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
-    ...callerOptions(payload, cfg),
-    ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
-  };
-
-  const q = query({ prompt, options });
-  // promote the placeholder to the real interrupt now that the query exists.
-  // Its answer is discarded on purpose: a caller of `claude::stop` learns
-  // whether a run WAS live from the stop response, and the SDK's control
-  // reply adds nothing a caller can act on.
-  handle.interrupt = async () => {
-    await q.interrupt();
-  };
-
-  // persist `working` only once the query + live handle exist, so a throw
-  // during setup never leaves the record stuck in `working`
-  record.status = 'working';
-  record.updated_at_ms = Date.now();
-  await saveSession(iii, record);
-
-  const transcript: AgentMessage[] = [];
-  const pendingResults: FunctionResultMessage[] = [];
-  const calls: ToolCallIndex = new Map();
-  let resultText = '';
-  let stopReason = 'end';
-  let isError = false;
-
   try {
-    for await (const msg of q) {
-      await emitRaw(session_id, msg);
-      if (msg.type === 'system' && msg.subtype === 'init') {
-        record.claude_session_id = msg.session_id;
-        await saveSession(iii, record);
-      } else if (msg.type === 'assistant') {
-        const usage = mapUsage(msg.message.usage);
-        const content = mapAssistantContent(msg.message.content as never, calls);
-        const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
-        transcript.push(assistant);
-        await emit(session_id, { type: 'message_complete', message: assistant });
-        for (const block of content) {
-          if (block.type === 'function_call') {
+    // iii mode is appended to Claude Code's own system prompt: an agent
+    // (`--agent`) would replace it, and with it Claude Code's operating rules.
+    const append = [context?.text ?? '', plugin.mode, userAppend].filter(Boolean).join('\n\n');
+    const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
+    const options: Options = {
+      ...(plugins.length ? { plugins } : {}),
+      ...(record.model ? { model: record.model } : {}),
+      ...(record.cwd ? { cwd: record.cwd } : {}),
+      ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
+      maxTurns: payload.max_turns ?? d.max_turns,
+      // with the approval gate on, the operator wants every tool call routed
+      // through canUseTool; bypassPermissions skips it, so the gate forces a
+      // mode that keeps canUseTool authoritative regardless of the caller
+      permissionMode: cfg.approval_gate
+        ? 'default'
+        : (payload.permission_mode ?? d.permission_mode),
+      allowedTools: [
+        ...(payload.allowed_tools ?? d.allowed_tools),
+        // the iii context teaches discovery through the CLI; the matching
+        // allow rule is what lets those calls run headless
+        ...(iiiContext ? ['Bash(iii *)'] : []),
+        // With mcp-server, the iii tools run without a prompt nobody would
+        // answer: rbac-proxy is what bounds them.
+        ...(plugin.mcp ? HEADLESS_TOOLS : []),
+      ],
+      disallowedTools: payload.disallowed_tools ?? d.disallowed_tools,
+      systemPrompt: payload.system_prompt
+        ? payload.system_prompt
+        : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
+      settingSources: [],
+      ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+      ...callerOptions(payload, cfg),
+      ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
+    };
+
+    const q = query({ prompt, options });
+    // promote the placeholder to the real interrupt now that the query exists.
+    // Its answer is discarded on purpose: a caller of `claude::stop` learns
+    // whether a run WAS live from the stop response, and the SDK's control
+    // reply adds nothing a caller can act on.
+    handle.interrupt = async () => {
+      await q.interrupt();
+    };
+
+    // persist `working` only once the query + live handle exist, so a throw
+    // during setup never leaves the record stuck in `working`
+    record.status = 'working';
+    record.updated_at_ms = Date.now();
+    await saveSession(iii, record);
+
+    const transcript: AgentMessage[] = [];
+    const pendingResults: FunctionResultMessage[] = [];
+    const calls: ToolCallIndex = new Map();
+    let resultText = '';
+    let stopReason = 'end';
+    let isError = false;
+
+    try {
+      for await (const msg of q) {
+        await emitRaw(session_id, msg);
+        if (msg.type === 'system' && msg.subtype === 'init') {
+          record.claude_session_id = msg.session_id;
+          await saveSession(iii, record);
+        } else if (msg.type === 'assistant') {
+          const usage = mapUsage(msg.message.usage);
+          const content = mapAssistantContent(msg.message.content as never, calls);
+          const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
+          transcript.push(assistant);
+          await emit(session_id, { type: 'message_complete', message: assistant });
+          for (const block of content) {
+            if (block.type === 'function_call') {
+              await emit(session_id, {
+                type: 'function_execution_start',
+                function_call_id: block.id,
+                function_id: block.function_id,
+                args: block.arguments,
+              });
+            }
+          }
+        } else if (msg.type === 'user') {
+          const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
+          for (const b of blocks as unknown as Array<Record<string, unknown>>) {
+            if (b.type !== 'tool_result') continue;
+            const callId = String(b.tool_use_id ?? '');
+            const call = calls.get(callId);
+            const content = mapToolResultContent(b.content);
+            const fr = makeFunctionResult(
+              callId,
+              call?.function_id ?? 'claude-code::unknown',
+              content,
+              b.is_error === true,
+            );
+            transcript.push(fr);
+            pendingResults.push(fr);
             await emit(session_id, {
-              type: 'function_execution_start',
-              function_call_id: block.id,
-              function_id: block.function_id,
-              args: block.arguments,
+              type: 'function_execution_end',
+              function_call_id: callId,
+              function_id: fr.function_id,
+              result: { content, details: null },
+              is_error: fr.is_error,
+              duration_ms: call ? Date.now() - call.started_at : 0,
             });
           }
+        } else if (msg.type === 'result') {
+          record.claude_session_id = msg.session_id ?? record.claude_session_id;
+          record.turns += msg.num_turns ?? 1;
+          record.total_cost_usd += msg.total_cost_usd ?? 0;
+          record.usage = mapUsage(msg.usage);
+          isError = msg.is_error === true;
+          stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
+          resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
         }
-      } else if (msg.type === 'user') {
-        const blocks = Array.isArray(msg.message.content) ? msg.message.content : [];
-        for (const b of blocks as unknown as Array<Record<string, unknown>>) {
-          if (b.type !== 'tool_result') continue;
-          const callId = String(b.tool_use_id ?? '');
-          const call = calls.get(callId);
-          const content = mapToolResultContent(b.content);
-          const fr = makeFunctionResult(
-            callId,
-            call?.function_id ?? 'claude-code::unknown',
-            content,
-            b.is_error === true,
-          );
-          transcript.push(fr);
-          pendingResults.push(fr);
-          await emit(session_id, {
-            type: 'function_execution_end',
-            function_call_id: callId,
-            function_id: fr.function_id,
-            result: { content, details: null },
-            is_error: fr.is_error,
-            duration_ms: call ? Date.now() - call.started_at : 0,
-          });
-        }
-      } else if (msg.type === 'result') {
-        record.claude_session_id = msg.session_id ?? record.claude_session_id;
-        record.turns += msg.num_turns ?? 1;
-        record.total_cost_usd += msg.total_cost_usd ?? 0;
-        record.usage = mapUsage(msg.usage);
-        isError = msg.is_error === true;
-        stopReason = msg.subtype === 'success' ? 'end' : msg.subtype;
-        resultText = 'result' in msg && typeof msg.result === 'string' ? msg.result : '';
       }
+    } catch (err) {
+      isError = true;
+      stopReason = 'error';
+      resultText = String(err);
     }
-  } catch (err) {
-    isError = true;
-    stopReason = 'error';
-    resultText = String(err);
+    // slot release is handled by executeRun's finally (covers setup throws too)
+
+    record.status = isError ? 'error' : 'done';
+    record.updated_at_ms = Date.now();
+    await saveSession(iii, record);
+
+    if (transcript.length === 0) {
+      transcript.push(
+        makeAssistantMessage(
+          [{ type: 'text', text: resultText }],
+          record.model,
+          record.usage,
+          stopReason,
+        ),
+      );
+    }
+    await emit(session_id, {
+      type: 'turn_end',
+      message: lastAssistant(transcript),
+      function_results: pendingResults,
+    });
+    await emit(session_id, { type: 'agent_end', messages: transcript });
+
+    return {
+      session_id,
+      claude_session_id: record.claude_session_id,
+      result: resultText,
+      stop_reason: stopReason,
+      is_error: isError,
+      num_turns: record.turns,
+      total_cost_usd: record.total_cost_usd,
+      usage: record.usage,
+    };
+  } finally {
+    await plugin.dispose();
   }
-  // slot release is handled by executeRun's finally (covers setup throws too)
-
-  record.status = isError ? 'error' : 'done';
-  record.updated_at_ms = Date.now();
-  await saveSession(iii, record);
-
-  if (transcript.length === 0) {
-    transcript.push(
-      makeAssistantMessage(
-        [{ type: 'text', text: resultText }],
-        record.model,
-        record.usage,
-        stopReason,
-      ),
-    );
-  }
-  await emit(session_id, {
-    type: 'turn_end',
-    message: lastAssistant(transcript),
-    function_results: pendingResults,
-  });
-  await emit(session_id, { type: 'agent_end', messages: transcript });
-
-  return {
-    session_id,
-    claude_session_id: record.claude_session_id,
-    result: resultText,
-    stop_reason: stopReason,
-    is_error: isError,
-    num_turns: record.turns,
-    total_cost_usd: record.total_cost_usd,
-    usage: record.usage,
-  };
 }
 
 export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitRaw: Emit): void {

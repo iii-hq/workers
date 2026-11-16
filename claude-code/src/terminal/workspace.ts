@@ -8,7 +8,7 @@
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
 import { installOnHost } from '../iii-plugin/install.js';
-import { III_AGENT } from '../iii-plugin/mode.js';
+import { MODE_FILE } from '../plugin.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { fetchIiiContext } from '../iii-context.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
@@ -54,6 +54,7 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   let bridge = '';
   let plugin = '';
+  let mode = false;
   if (config.setup_workspace) {
     // Equipping the workspace is not what makes a terminal usable: a read-only
     // `CLAUDE.md` or an unreadable `.claude/` still leaves a working CLI in a
@@ -67,6 +68,7 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
       const written = await installOnHost(iii, workspace, context);
       bridge = written.bridge;
       plugin = written.dir;
+      mode = Boolean(written.mode);
       if (written.detail) {
         console.warn(`claude-code: ${written.detail}`);
         detail = detail ? `${detail}; ${written.detail}` : written.detail;
@@ -87,10 +89,20 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
   // The plugin is how a session gets its hooks and the iii skill; the flag is
   // the same one the Agent SDK emits for a headless turn.
   const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
-  // iii mode: the session runs as the plugin's `iii` agent, unless the
-  // operator configured an agent of their own.
-  const ownAgent = config.args.some((a) => a === '--agent' || a.startsWith('--agent='));
-  if (plugin && !ownAgent) args.push('--agent', III_AGENT);
+  // iii mode (only with mcp-server): its rules are appended to Claude Code's
+  // own system prompt. An agent (`--agent`) would replace that prompt. An
+  // append the operator configured is kept, and ours is left out.
+  if (plugin && mode) {
+    const ownAppend = config.args.some((a) => a.startsWith('--append-system-prompt'));
+    if (ownAppend) {
+      const skipped =
+        'the iii mode rules were not appended: the terminal args already carry an --append-system-prompt';
+      console.warn(`claude-code: ${skipped}`);
+      detail = detail ? `${detail}; ${skipped}` : skipped;
+    } else {
+      args.push('--append-system-prompt-file', `${plugin}/${MODE_FILE}`);
+    }
+  }
   return { ...base, args, executable, detail, bridge, plugin };
 }
 

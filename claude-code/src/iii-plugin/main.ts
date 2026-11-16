@@ -20,8 +20,12 @@
  *       Print which mcp-server was used, and what it reports.
  *
  *   index.mjs session-start [--url ...]
- *       The SessionStart hook: print the `default-mcp` profile as the hook's
+ *       A SessionStart hook: print the `default-mcp` profile as the hook's
  *       additionalContext, so every session starts on it.
+ *
+ *   index.mjs mode
+ *       A SessionStart hook: print the iii mode rules (the `iii` agent's
+ *       body) as additionalContext. Needs no mcp-server.
  *
  * The mcp-server URL: --url, then III_PLUGIN_MCP_URL, then the plugin's
  * `mcp_url` option, then http://127.0.0.1:3111/mcp.
@@ -34,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { writeProfileCommands } from './commands.js';
 import { renderSkill, renderSubagent, skillDirectories, slug } from './directory.js';
 import { McpClient, McpDirectory, resolveMcpUrl } from './mcp.js';
-import { DEFAULT_PROFILE, sessionStartOutput } from './session.js';
+import { DEFAULT_PROFILE, modeOutput, modeRules, sessionStartOutput } from './session.js';
 
 function option(argv: string[], name: string): string {
   const i = argv.indexOf(name);
@@ -116,12 +120,18 @@ try {
       .then((profile) => ({ profile }))
       .catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
     process.stdout.write(`${sessionStartOutput(result)}\n`);
+  } else if (command === 'mode') {
+    // The iii mode rules: this plugin's `iii` agent, without its frontmatter.
+    const agent = await readFile(join(pluginRoot(argv), 'agents', 'iii.md'), 'utf8');
+    process.stdout.write(`${modeOutput(modeRules(agent))}\n`);
   } else if (command === 'status') {
     const status = await dir.status();
     const agents = await dir.listAgents(true);
     console.error(JSON.stringify({ mcp_server: mcp, ...status, agents: agents.length }, null, 2));
   } else {
-    console.error(`unknown command: ${command} (expected sync, export, status or session-start)`);
+    console.error(
+      `unknown command: ${command} (expected sync, export, status, session-start or mode)`,
+    );
     process.exitCode = 2;
   }
 } catch (err) {

@@ -23,6 +23,9 @@ import { approveHookEntry } from './iii-plugin/mode.js';
 /** Where the plugin is materialised, relative to a workspace. */
 export const PLUGIN_DIR_NAME = '.iii-plugin';
 
+/** The iii mode rules, appended to Claude Code's system prompt (not an agent). */
+export const MODE_FILE = 'iii-mode.md';
+
 /** Where every hook posts, and therefore how a hook entry is recognised. */
 export const ACTIVITY_TARGET = 'claude::terminal::activity';
 
@@ -45,8 +48,13 @@ export type PluginOptions = {
   context: string;
   /** Why the context is missing, when it is. */
   contextDetail?: string;
-  /** The mcp-server endpoint the session's `iii` MCP server is. */
-  mcpUrl: string;
+  /**
+   * The mcp-server endpoint the session's `iii` MCP server is; empty when the
+   * engine runs none, and the session works through the `iii` CLI instead.
+   */
+  mcpUrl?: string;
+  /** The iii mode rules, written for `--append-system-prompt-file`. */
+  mode?: string;
 };
 
 /**
@@ -74,27 +82,34 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
   // The iii mode's read-only approvals, after the activity report.
   hooks.PreToolUse.push(approveHookEntry());
   // Every session starts on the default profile, read from mcp-server.
-  hooks.SessionStart.push({
-    hooks: [
-      {
-        type: 'command',
-        command: `node "\${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start --url ${quote(options.mcpUrl)}`,
-        timeout: 20,
-      },
-    ],
-  });
+  if (options.mcpUrl) {
+    hooks.SessionStart.push({
+      hooks: [
+        {
+          type: 'command',
+          command: `node "\${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start --url ${quote(options.mcpUrl)}`,
+          timeout: 20,
+        },
+      ],
+    });
+  }
 
   // The manifest and commands are the committed `iii-plugin/` folder (see
   // `iii-plugin/install.ts`); these are the parts only a worker can write:
   // hooks that call this host's `iii` CLI, the mcp-server address, and the
   // runtime skill.
-  const mcp = { mcpServers: { iii: { type: 'http', url: options.mcpUrl } } };
   const files: PluginFile[] = [
     { path: 'hooks/hooks.json', content: `${JSON.stringify({ hooks }, null, 2)}\n` },
+  ];
+  if (options.mcpUrl) {
     // The committed `.mcp.json` reads the user's `mcp_url` option; a worker
     // knows where mcp-server is, so it writes the address itself.
-    { path: '.mcp.json', content: `${JSON.stringify(mcp, null, 2)}\n` },
-  ];
+    const mcp = { mcpServers: { iii: { type: 'http', url: options.mcpUrl } } };
+    files.push({ path: '.mcp.json', content: `${JSON.stringify(mcp, null, 2)}\n` });
+  }
+  if (options.mode?.trim()) {
+    files.push({ path: MODE_FILE, content: `${options.mode.trim()}\n` });
+  }
 
   const context = options.context.trim();
   if (context) {

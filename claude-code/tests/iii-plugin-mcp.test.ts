@@ -180,6 +180,16 @@ describe('McpClient', () => {
     expect(message).toContain('rbac-proxy');
   });
 
+  it('says mcp-server is full, not missing, when it refuses a new session', async () => {
+    const server = fakeServer({}, { status: 503 });
+    const client = new McpClient('http://127.0.0.1:3111/mcp', server.fetchFn);
+    const err = (await client.callTool('iii_status').catch((e: Error) => e)) as Error;
+    expect(err.message).toContain(
+      'mcp-server at http://127.0.0.1:3111/mcp refused a new session (HTTP 503)',
+    );
+    expect(err.message).not.toContain('no mcp-server answers');
+  });
+
   it('says no mcp-server answers when the URL answers something else', async () => {
     const server = fakeServer({}, { status: 404 });
     const client = new McpClient('http://127.0.0.1:3111/mcp', server.fetchFn);

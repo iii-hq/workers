@@ -32,6 +32,16 @@ export const APPROVED_TOOLS = [
 /** Calling and observing can do anything on the bus; storing writes the vault. */
 export const NEVER_APPROVED_TOOLS = ['iii_call', 'iii_observe', 'iii_secret_store'];
 
+/**
+ * What a headless turn may run without a prompt nobody is there to answer:
+ * the read-only tools plus calling and observing. rbac-proxy decides what
+ * those reach, which is narrower than the `Bash(iii *)` a turn already has.
+ * Storing a secret stays with the approval gate.
+ */
+export const HEADLESS_TOOLS = [...APPROVED_TOOLS, 'iii_call', 'iii_observe'].map(
+  (t) => `${TOOL_PREFIX}${t}`,
+);
+
 const DECISION = {
   hookSpecificOutput: {
     hookEventName: 'PreToolUse',
