@@ -98,6 +98,15 @@ fn remote_scoped(function_id: &str) -> bool {
             .any(|(index, _)| is_scoped_function(&function_id[index + 2..]))
 }
 
+/// A node-prefixed fp::pipe or fp::batch: the remote fp would take a
+/// model-written top-level `fs_scope` for the harness stamp.
+fn remote_carrier(function_id: &str) -> bool {
+    !carries_scoped_steps(function_id)
+        && function_id
+            .match_indices("::")
+            .any(|(index, _)| carries_scoped_steps(&function_id[index + 2..]))
+}
+
 /// Functions that receive the trusted stamp: scoped calls themselves, plus
 /// fp::pipe and fp::batch, which carry the stamp on behalf of their steps.
 fn is_stamped_function(function_id: &str) -> bool {
@@ -112,7 +121,7 @@ pub fn inject(
     grants: &[String],
     boundary: FilesystemBoundary,
 ) -> Value {
-    let remote = remote_scoped(function_id);
+    let remote = remote_scoped(function_id) || remote_carrier(function_id);
     if !remote && !is_stamped_function(function_id) {
         return args;
     }
@@ -172,6 +181,22 @@ mod tests {
             workspace(),
         );
         assert_eq!(out, json!({ "path": "a" }));
+    }
+
+    #[test]
+    fn strips_model_fs_scope_from_node_prefixed_carriers() {
+        for function_id in ["laptop::fp::pipe", "a::b::fp::batch"] {
+            for root in [Some("/work/session-7"), None] {
+                let out = inject(
+                    function_id,
+                    json!({ "through": [], "fs_scope": { "root": "/evil" } }),
+                    root,
+                    &[],
+                    workspace(),
+                );
+                assert_eq!(out, json!({ "through": [] }), "{function_id}");
+            }
+        }
     }
 
     #[test]
