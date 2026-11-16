@@ -146,6 +146,9 @@ struct Session {
     /// Bounded: a stream that falls behind is let go (its client resumes
     /// with `Last-Event-ID`), so a slow reader cannot grow memory.
     stream: Option<mpsc::Sender<StreamItem>>,
+    /// The profile this session follows: the last one loaded with
+    /// `iii_get_agent { activate: true }`.
+    active_profile: Option<String>,
     /// The highest SSE event id a stream wrote.
     sent_through: u64,
     /// The highest SSE event id the cap dropped.
@@ -216,6 +219,7 @@ impl Sessions {
                 buffer: VecDeque::new(),
                 dropped: 0,
                 stream: None,
+                active_profile: None,
                 sent_through: 0,
                 sse_dropped_through: 0,
             },
@@ -232,6 +236,27 @@ impl Sessions {
             }
             None => false,
         }
+    }
+
+    /// Record the profile the session follows; `false` when it does not exist.
+    pub fn set_active_profile(&self, session_id: &str, profile_id: &str) -> bool {
+        match self.inner.lock().unwrap().sessions.get_mut(session_id) {
+            Some(s) => {
+                s.active_profile = Some(profile_id.to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The profile the session follows, if it activated one.
+    pub fn active_profile(&self, session_id: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap()
+            .sessions
+            .get(session_id)
+            .and_then(|s| s.active_profile.clone())
     }
 
     /// Create an observer for the session. Poll and SSE observers target

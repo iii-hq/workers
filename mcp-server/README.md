@@ -250,13 +250,13 @@ the `/mcp` routes until it is back on loopback (rbac-proxy must expose
 | `iii_observations_poll` | Read and remove buffered observations of poll observers, oldest first, for one `observer_id` or all of them; `max` (default 50). Returns `{ observations, remaining, dropped }`. Needs a session. |
 | `iii_observers` | The session's observers with `delivery`, `state`, `buffered`, `received`, `dropped` (and `target_function_id`). Needs a session. |
 | `iii_unobserve` | Remove one observer, discarding its unread observations. Needs a session. |
-| `iii_status` | Server version, session id, and `access_control`: `rbac-proxy` with its `policy` (the exposed globs), or `disabled` with a warning. |
-| `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). `iii_get_agent` without an `id` returns the `default-mcp` profile. |
+| `iii_status` | Server version, session id, the session's `active_profile` (`null` until one is activated), and `access_control`: `rbac-proxy` with its `policy` (the exposed globs), or `disabled` with a warning. |
+| `iii_list_agents`, `iii_get_agent` | Agent profiles from `directory::agents::*` (hidden ones with `include_hidden`). `iii_get_agent` without an `id` returns the `default-mcp` profile; with `activate: true` the profile becomes the session's active profile. |
 | `iii_list_skills`, `iii_get_skill` | Skills from `directory::skills::*` (`search`, `prefix`). |
 
 The `initialize` instructions tell the agent, in this order, to:
 
-1. load the default profile with `iii_get_agent` (no arguments; it reads
+1. load the default profile with `iii_get_agent { activate: true }` (no id; it reads
    `directory::agents::get {"id": "default-mcp"}` from iii-directory) and
    follow it. `default-mcp` is iii-directory's `default` identity rewritten
    for MCP clients: `iii_call` and the observe tools instead of `agent_call`

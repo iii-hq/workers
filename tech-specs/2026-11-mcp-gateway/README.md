@@ -219,7 +219,7 @@ and re-initialize.
 | `iii_unobserve` | `observer_id` (required) | `{ observer_id, removed: true, discarded }` | yes |
 | `iii_status` | — | `{ server, version, session_id, access_control: "rbac-proxy" \| "disabled", policy?, warning? }` | no |
 | `iii_list_agents` | `include_hidden` | profiles from `directory::agents::list` | no |
-| `iii_get_agent` | `id` (required) | `directory::agents::get` | no |
+| `iii_get_agent` | `id` (default `default-mcp`), `activate` (records the session's active profile, reported by `iii_status`) | `directory::agents::get` | no |
 | `iii_list_skills` | `search`, `prefix` | rows from `directory::skills::list` | no |
 | `iii_get_skill` | `id` (required) | the skill's markdown body | no |
 
@@ -241,11 +241,12 @@ Rules shared by all tools:
   names (`myworker__echo`) are **not** forwarded.
 
 `initialize.instructions` open with the first call every agent makes:
-`iii_get_agent` with no arguments, which reads iii-directory's built-in
+`iii_get_agent { activate: true }` with no id, which reads iii-directory's built-in
 `default-mcp` profile (`directory::agents::get {"id": "default-mcp"}`, added
 to iii-directory in this PR): the `default` identity rewritten for MCP clients, with `iii_call` and
 the observe tools in place of `agent_call` and `harness::*`, derived from
-`default` by a checked script. They then name the discovery functions, each with what it
+`default` by a checked script. `activate: true` records it as the
+session's active profile, which `iii_status` reports as `active_profile`. They then name the discovery functions, each with what it
 returns (`directory::search_functions` for candidate ids by capability,
 `engine::functions::list`, `engine::workers::list`,
 `engine::functions::info` for a contract before the first call, and

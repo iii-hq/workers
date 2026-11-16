@@ -57,7 +57,7 @@ pub struct Ctx<'a, B> {
 /// `default` identity, written for MCP clients.
 pub const DEFAULT_PROFILE: &str = "default-mcp";
 
-const INSTRUCTIONS: &str = "Start by loading the default agent profile with iii_get_agent (no arguments, or id \"default-mcp\"; it reads directory::agents::get from iii-directory) and follow it. Everything on the running iii engine is a function, called by id with iii_call (a function id and a JSON payload) instead of the `iii call` CLI or curl; never use a function id from memory. Discover what this system can do with iii_call: directory::search_functions { capabilities: [...] } returns candidate function ids for what you need, engine::functions::list ({ prefix } or { search }) the functions registered now, engine::workers::list the workers connected now, directory::skills::index the skills relevant to this system (guidance documents, not one per worker; use it sparingly), and engine::functions::info { function_id } a function's contract, which you read before its first call. Some functions are higher-order: they call other functions for you, so their payload names function ids and payloads. fp::pipe runs a chain of calls worker-side, each result passed to the next, so a large value moves between other functions without passing through you; fp::batch runs independent calls at once. Call them with iii_call like any other function. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
+const INSTRUCTIONS: &str = "Start by loading the default agent profile with iii_get_agent { activate: true } (no id means \"default-mcp\"; it reads directory::agents::get from iii-directory) and follow it. To switch, load another profile the same way with its id; iii_status reports the session's active_profile. Everything on the running iii engine is a function, called by id with iii_call (a function id and a JSON payload) instead of the `iii call` CLI or curl; never use a function id from memory. Discover what this system can do with iii_call: directory::search_functions { capabilities: [...] } returns candidate function ids for what you need, engine::functions::list ({ prefix } or { search }) the functions registered now, engine::workers::list the workers connected now, directory::skills::index the skills relevant to this system (guidance documents, not one per worker; use it sparingly), and engine::functions::info { function_id } a function's contract, which you read before its first call. Some functions are higher-order: they call other functions for you, so their payload names function ids and payloads. fp::pipe runs a chain of calls worker-side, each result passed to the next, so a large value moves between other functions without passing through you; fp::batch runs independent calls at once. Call them with iii_call like any other function. React to the engine with iii_observe instead of polling functions: each matching invocation becomes an observation, buffered for this session and read with iii_observations_poll, or handed to a target_function_id the engine runs; iii_observations_sse streams observations on this session's GET stream instead. List observers with iii_observers and remove each one with iii_unobserve when done. This server cannot register functions: to add one, create or change a worker you control and register it with the iii-sdk. Agent profiles: iii_list_agents / iii_get_agent. Skills: iii_list_skills / iii_get_skill (also resources at iii://<id>). iii_status reports the access control in force. Never put a credential in an iii_call payload: store it with iii_secret_store and pass the secret://NAME reference it returns.";
 
 /// The server instructions MCP clients show the model.
 pub fn instructions(mode: &RbacMode) -> String {
@@ -108,13 +108,16 @@ pub fn tools_list() -> Value {
         tool("iii_unobserve", "Remove one of this session's observers, discarding its unread observations.", json!({
             "type": "object", "properties": { "observer_id": { "type": "string" } }, "required": ["observer_id"]
         })),
-        tool("iii_status", "This MCP server: version, session, and access_control: rbac-proxy (with the rules in force) or disabled.", json!({ "type": "object", "properties": {} })),
+        tool("iii_status", "This MCP server: version, session, the session's active profile (active_profile, null until one is loaded with activate: true), and access_control: rbac-proxy (with the rules in force) or disabled.", json!({ "type": "object", "properties": {} })),
         tool("iii_list_agents", "List the agent profiles installed in the iii engine (id, name, description, model, counts).", json!({
             "type": "object", "properties": { "include_hidden": { "type": "boolean", "description": "Include hidden helper profiles." } }
         })),
-        tool("iii_get_agent", "Fetch an agent profile: its full system prompt (resolved through extends), preloaded skills and functions. Without an id, the default profile, which every session loads first.", json!({
+        tool("iii_get_agent", "Fetch an agent profile: its full system prompt (resolved through extends), preloaded skills and functions. Without an id, the default profile (default-mcp), which every session loads first. Pass activate: true when you adopt the profile: it becomes this session's active profile, which iii_status reports.", json!({
             "type": "object",
-            "properties": { "id": { "type": "string", "description": "Profile id. Default: default." } }
+            "properties": {
+                "id": { "type": "string", "description": "Profile id. Default: default-mcp." },
+                "activate": { "type": "boolean", "description": "Make it this session's active profile. Default: false (only read it)." }
+            }
         })),
         tool("iii_list_skills", "List skills installed in the iii engine. Filter with search (substring) or prefix (worker namespace).", json!({
             "type": "object", "properties": { "search": { "type": "string" }, "prefix": { "type": "string" } }
@@ -202,6 +205,38 @@ fn need_session<'a, B>(ctx: &Ctx<'a, B>) -> Result<&'a str, Value> {
     ctx.session_id.ok_or_else(|| {
         error("this tool needs an MCP session: initialize first and send the Mcp-Session-Id header the server returned")
     })
+}
+
+/// Read a profile; with `activate: true`, also make it the session's active
+/// profile, which `iii_status` reports.
+async fn iii_get_agent<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
+    if matches!(args.get("id"), Some(v) if !v.is_null() && !v.is_string()) {
+        return error("id must be a profile id (a string)");
+    }
+    let activate = match args.get("activate") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return error("activate must be true or false"),
+    };
+    let session = if activate {
+        match need_session(ctx) {
+            Ok(sid) => Some(sid),
+            Err(e) => return e,
+        }
+    } else {
+        None
+    };
+    let id = str_arg(args, "id").unwrap_or(DEFAULT_PROFILE);
+    match directory_bridge::get_agent(ctx.bus, id).await {
+        Ok(v) => {
+            if let Some(sid) = session {
+                let loaded = v.get("id").and_then(Value::as_str).unwrap_or(id);
+                ctx.sessions.set_active_profile(sid, loaded);
+            }
+            text(&v)
+        }
+        Err(e) => error(e.to_string()),
+    }
 }
 
 async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
@@ -385,6 +420,9 @@ pub async fn call_tool<B: Bus + Observe>(
                 "version": env!("CARGO_PKG_VERSION"),
                 "session_id": ctx.session_id,
             });
+            if let Some(sid) = ctx.session_id {
+                v["active_profile"] = json!(ctx.sessions.active_profile(sid));
+            }
             match ctx.mode {
                 RbacMode::Proxied { policy } => {
                     v["access_control"] = json!("rbac-proxy");
@@ -404,18 +442,7 @@ pub async fn call_tool<B: Bus + Observe>(
                 Err(e) => error(e.to_string()),
             }
         }
-        "iii_get_agent" => match args.get("id") {
-            Some(v) if !v.is_null() && !v.is_string() => error("id must be a profile id (a string)"),
-            _ => match directory_bridge::get_agent(
-                ctx.bus,
-                str_arg(args, "id").unwrap_or(DEFAULT_PROFILE),
-            )
-            .await
-            {
-                Ok(v) => text(&v),
-                Err(e) => error(e.to_string()),
-            },
-        },
+        "iii_get_agent" => iii_get_agent(ctx, args).await,
         "iii_list_skills" => match directory_bridge::list_skills(
             ctx.bus,
             str_arg(args, "search"),
@@ -1306,5 +1333,200 @@ mod tests {
         let v: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(v["access_control"], "disabled");
         assert_eq!(v["warning"], DANGEROUS_NOTICE);
+    }
+
+    fn agents_bus() -> Engine {
+        Engine::new(FakeBus::new().on("directory::agents::get", |p| {
+            if p["id"] == "missing" {
+                return Err(crate::bus::BusError::new("NOT_FOUND", "no such profile"));
+            }
+            Ok(json!({ "id": p["id"], "system_prompt": "Be." }))
+        }))
+    }
+
+    async fn active(e: &Engine, s: &Sessions, sid: &str) -> Value {
+        let (_, v) = tool(e, s, Some(sid), "iii_status", json!({})).await;
+        v["active_profile"].clone()
+    }
+
+    #[tokio::test]
+    async fn a_session_has_no_active_profile_until_one_is_activated() {
+        let e = agents_bus();
+        let s = sessions();
+        let sid = s.create().unwrap();
+        let (_, v) = tool(&e, &s, Some(&sid), "iii_status", json!({})).await;
+        assert!(v.get("active_profile").is_some(), "{v}");
+        assert_eq!(v["active_profile"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn activating_without_an_id_makes_the_default_profile_active() {
+        let e = agents_bus();
+        let s = sessions();
+        let sid = s.create().unwrap();
+        let (err, v) = tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "activate": true }),
+        )
+        .await;
+        assert!(!err, "{v}");
+        assert_eq!(v["id"], "default-mcp");
+        assert_eq!(active(&e, &s, &sid).await, "default-mcp");
+    }
+
+    #[tokio::test]
+    async fn the_last_activated_profile_is_the_active_one() {
+        let e = agents_bus();
+        let s = sessions();
+        let sid = s.create().unwrap();
+        tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "activate": true }),
+        )
+        .await;
+        tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "id": "writer", "activate": true }),
+        )
+        .await;
+        assert_eq!(active(&e, &s, &sid).await, "writer");
+    }
+
+    #[tokio::test]
+    async fn reading_a_profile_without_activate_leaves_the_active_one() {
+        let e = agents_bus();
+        let s = sessions();
+        let sid = s.create().unwrap();
+        tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "id": "writer", "activate": true }),
+        )
+        .await;
+        for args in [
+            json!({ "id": "reviewer" }),
+            json!({ "id": "reviewer", "activate": false }),
+        ] {
+            let (err, v) = tool(&e, &s, Some(&sid), "iii_get_agent", args).await;
+            assert!(!err, "{v}");
+        }
+        assert_eq!(active(&e, &s, &sid).await, "writer");
+    }
+
+    #[tokio::test]
+    async fn a_profile_that_fails_to_load_is_not_activated() {
+        let e = agents_bus();
+        let s = sessions();
+        let sid = s.create().unwrap();
+        tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "id": "writer", "activate": true }),
+        )
+        .await;
+        let (err, _) = tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "id": "missing", "activate": true }),
+        )
+        .await;
+        assert!(err);
+        assert_eq!(active(&e, &s, &sid).await, "writer");
+    }
+
+    #[tokio::test]
+    async fn active_profiles_belong_to_their_session() {
+        let e = agents_bus();
+        let s = sessions();
+        let a = s.create().unwrap();
+        let b = s.create().unwrap();
+        tool(
+            &e,
+            &s,
+            Some(&a),
+            "iii_get_agent",
+            json!({ "id": "writer", "activate": true }),
+        )
+        .await;
+        assert_eq!(active(&e, &s, &a).await, "writer");
+        assert_eq!(active(&e, &s, &b).await, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn activating_needs_a_session_and_a_boolean() {
+        let e = agents_bus();
+        let s = sessions();
+        let (err, v) = tool(&e, &s, None, "iii_get_agent", json!({ "activate": true })).await;
+        assert!(err && v.as_str().unwrap().contains("session"), "{v}");
+        let sid = s.create().unwrap();
+        let (err, v) = tool(
+            &e,
+            &s,
+            Some(&sid),
+            "iii_get_agent",
+            json!({ "activate": "yes" }),
+        )
+        .await;
+        assert!(err && v.as_str().unwrap().contains("activate"), "{v}");
+        assert!(
+            e.bus.calls().is_empty(),
+            "nothing is fetched for a refused call"
+        );
+        assert_eq!(active(&e, &s, &sid).await, Value::Null);
+    }
+
+    #[tokio::test]
+    async fn status_without_a_session_has_no_active_profile() {
+        let e = agents_bus();
+        let s = sessions();
+        let (_, v) = tool(&e, &s, None, "iii_status", json!({})).await;
+        assert!(v.get("active_profile").is_none(), "{v}");
+    }
+
+    #[test]
+    fn the_instructions_and_get_agent_say_how_to_activate() {
+        let i = instructions(&proxied());
+        assert!(i.contains("activate: true"), "{i}");
+        assert!(i.contains("active_profile"), "{i}");
+        let list = tools_list();
+        let get = list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "iii_get_agent")
+            .unwrap();
+        assert_eq!(
+            get["inputSchema"]["properties"]["activate"]["type"],
+            "boolean"
+        );
+        assert!(get["description"].as_str().unwrap().contains("activate"));
+        let status = list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "iii_status")
+            .unwrap();
+        assert!(
+            status["description"]
+                .as_str()
+                .unwrap()
+                .contains("active profile"),
+            "{status}"
+        );
     }
 }
