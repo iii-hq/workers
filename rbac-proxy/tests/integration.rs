@@ -617,7 +617,7 @@ async fn end_to_end_child() {
         }
 
         let mut otel = raw_client_at(proxy_port, "/otel", "Bearer test-token").await;
-        otel.send(Message::Binary(b"not an otlp frame".to_vec()))
+        otel.send(Message::Binary(b"not an otlp frame".to_vec().into()))
             .await
             .expect("an accepted /otel connection takes binary frames");
         let quiet = timeout(Duration::from_millis(500), otel.next()).await;

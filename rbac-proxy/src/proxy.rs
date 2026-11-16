@@ -53,7 +53,7 @@ pub async fn authenticated_relay(
         return;
     }
     let target = crate::endpoints::upstream_url(&cfg.engine_url, uri.path(), uri.query());
-    crate::channels::relay(client, target).await
+    crate::channels::relay(client, target, "engine dial failed").await
 }
 
 /// Decrement the live-connection gauge when a connection ends.

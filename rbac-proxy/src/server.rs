@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::http::{HeaderMap, Uri};
@@ -75,14 +76,14 @@ async fn endpoint(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     uri: Uri,
     headers: HeaderMap,
-    ws: Option<WebSocketUpgrade>,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
     let path = uri.path().to_string();
     let cfg = state.config.read().await.clone();
     if !endpoints::endpoint_exposed(&cfg.rbac.expose_endpoints, &path) {
         return (StatusCode::FORBIDDEN, endpoints::not_exposed_message(&path)).into_response();
     }
-    let Some(ws) = ws else {
+    let Ok(ws) = ws else {
         return (
             StatusCode::UPGRADE_REQUIRED,
             "rbac-proxy: this endpoint takes a WebSocket upgrade",
@@ -359,7 +360,7 @@ mod tests {
         (serve_with_deadline(listener, state(), header_timeout), addr)
     }
 
-    async fn serve_exposing(patterns: &[&str]) -> (watch::Sender<bool>, SocketAddr) {
+    async fn serve_exposing(patterns: &[&str]) -> (RunningServer, SocketAddr) {
         let mut cfg = WorkerConfig::default();
         cfg.rbac.expose_endpoints = serde_json::from_value(serde_json::json!(patterns
             .iter()
@@ -416,7 +417,7 @@ mod tests {
                 );
             }
         }
-        let _ = tx.send(true);
+        tx.stop().await;
     }
 
     #[tokio::test]
@@ -427,7 +428,7 @@ mod tests {
             assert!(res.starts_with("HTTP/1.1 101"), "{path}: {res}");
         }
         assert!(get(addr, "/nope", true).await.starts_with("HTTP/1.1 403"));
-        let _ = tx.send(true);
+        tx.stop().await;
     }
 
     #[tokio::test]
@@ -438,7 +439,7 @@ mod tests {
             res.starts_with("HTTP/1.1 4") && !res.starts_with("HTTP/1.1 403"),
             "{res}"
         );
-        let _ = tx.send(true);
+        tx.stop().await;
     }
 
     #[tokio::test]
@@ -467,10 +468,13 @@ mod tests {
             "ws://127.0.0.1:1",
             iii_sdk::InitOptions::default(),
         ));
-        let config = WorkerConfig {
+        let mut config = WorkerConfig {
             engine_url: "ws://127.0.0.1:1".to_string(),
             ..WorkerConfig::default()
         };
+        // Nothing is served until exposed.
+        config.rbac.expose_endpoints =
+            serde_json::from_value(serde_json::json!(["match(\"/ws/channels/*\")"])).unwrap();
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

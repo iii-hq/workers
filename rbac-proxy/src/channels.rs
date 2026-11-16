@@ -25,12 +25,13 @@ use crate::proxy::{axum_to_tungstenite, tungstenite_to_axum};
 /// the same query string (the `access_key` the engine checks).
 pub async fn channel(client: WebSocket, engine_url: String, path: String, query: Option<String>) {
     let target = upstream_url(&engine_url, &path, query.as_deref());
-    relay(client, target).await
+    relay(client, target, "engine channel dial failed").await
 }
 
 /// Dial `target` on the engine and pass frames 1:1 both ways until either
 /// side closes. A failed dial closes the client with 1011.
-pub async fn relay(client: WebSocket, target: String) {
+/// `dial_failed` is the close reason sent when the engine cannot be reached.
+pub async fn relay(client: WebSocket, target: String, dial_failed: &'static str) {
     let (engine, _resp) =
         match tokio_tungstenite::connect_async_with_config(&target, None, true).await {
             Ok(pair) => pair,
@@ -44,7 +45,7 @@ pub async fn relay(client: WebSocket, target: String) {
                 let _ = client
                     .send(AxumMessage::Close(Some(axum::extract::ws::CloseFrame {
                         code: 1011,
-                        reason: "engine dial failed".into(),
+                        reason: dial_failed.into(),
                     })))
                     .await;
                 return;
