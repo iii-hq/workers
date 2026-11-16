@@ -26,6 +26,17 @@ function portOf(value: JsonValue | undefined) {
   } catch { return null }
 }
 
+// quick-tunnel registers its entry with this form id; Compose names the entry <namespace>-<container>.
+const FORM = 'quick-tunnel'
+type Listed = { id?: string; metadata?: { ui_form?: string } | null }
+/** The id of quick-tunnel's configuration entry, or null when none is registered. Several (another
+ * project's, a renamed container) prefer the one in this mesh's namespace. */
+export function quickTunnelEntryId(entries: Listed[], meshId: string): string | null {
+  const ids = entries.filter((e) => e.metadata?.ui_form === FORM && typeof e.id === 'string').map((e) => e.id as string).sort()
+  const sibling = meshId.endsWith('mesh') ? `${meshId.slice(0, -'mesh'.length)}${FORM}` : FORM
+  return ids.includes(sibling) ? sibling : ids[0] ?? null
+}
+
 export type QuickTunnelPlan = {
   ok: boolean
   // What a fix changes, in plain words.

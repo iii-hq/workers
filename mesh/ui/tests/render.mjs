@@ -168,6 +168,7 @@ try {
       // quick-tunnel's raw entry; null while quick-tunnel was never started (configuration::get answers NOT_FOUND).
       let quickTunnelConfig = null
       const quickTunnelSaved = []
+      const QUICK_TUNNEL_ID = 'lab-quick-tunnel'
       let clientState = 'connected'
       // The machines this context's hub lists; mesh::nodes::remove drops one.
       let hubNodes = nodes
@@ -261,14 +262,16 @@ try {
                 assert.deepEqual(frame.data, { container: 'mesh' }); running = config?.mode === 'client' ? 'client' : 'hub'; return send({})
               // Compose accepts the install and runs it later; the page learns of quick-tunnel from its next read.
               case 'compose::add': return send({ operation_id: frame.data.operation_id, requested: 1, status: 'accepted' })
-              case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
+              // Compose names quick-tunnel's entry after its namespace: the page must find it by its form, never by the bare name.
+              case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema },
+                ...(quickTunnelConfig === null ? [] : [{ id: QUICK_TUNNEL_ID, name: 'Quick Tunnel', metadata: { ui_form: 'quick-tunnel' } }])] })
               case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
               case 'configuration::get':
-                if (frame.data.id === 'quick-tunnel') return mode === 'quick-tunnel-read-error' ? send(null, 'the configuration worker is not responding')
-                  : quickTunnelConfig === null ? send(null, 'configuration quick-tunnel not found', 'NOT_FOUND') : send({ id: 'quick-tunnel', value: quickTunnelConfig })
+                if (frame.data.id === QUICK_TUNNEL_ID) return mode === 'quick-tunnel-read-error' ? send(null, 'the configuration worker is not responding')
+                  : quickTunnelConfig === null ? send(null, `configuration ${QUICK_TUNNEL_ID} not found`, 'NOT_FOUND') : send({ id: QUICK_TUNNEL_ID, value: quickTunnelConfig })
                 assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
               case 'configuration::set':
-                if (frame.data.id === 'quick-tunnel') { quickTunnelSaved.push(frame.data); quickTunnelConfig = frame.data.value; return send({ new_value: quickTunnelConfig }) }
+                if (frame.data.id === QUICK_TUNNEL_ID) { quickTunnelSaved.push(frame.data); quickTunnelConfig = frame.data.value; return send({ new_value: quickTunnelConfig }) }
                 assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
               case 'engine::functions::list': {
                 if (mode === 'functions-error') return send(null, 'Engine function list is unavailable.')
@@ -546,8 +549,8 @@ try {
         await textbox('Public URL').fill('https://mesh.example.com')
         hold = new Set(['mesh::status', 'configuration::get'])
         release()
-        // mesh::status and both entries: mesh's and quick-tunnel's.
-        await expect.poll(() => held.length).toBe(3)
+        // mesh::status and mesh's entry: quick-tunnel has none to read until it is installed.
+        await expect.poll(() => held.length).toBe(2)
         let stored = { ...initialConfig, tunnel: { enabled: true } }
         assert.deepEqual(saved.at(-1).value, stored, 'configuration::set receives the stored entry with only the changed keys')
         await expect(page.getByText('Settings saved.', { exact: true })).toBeAttached()

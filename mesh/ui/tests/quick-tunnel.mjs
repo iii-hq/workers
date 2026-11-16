@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { quickTunnelPlan } from '../quick-tunnel.ts'
+import { quickTunnelEntryId, quickTunnelPlan } from '../quick-tunnel.ts'
 
 // quick-tunnel's entry as its manifest installs it.
 const installed = {
@@ -82,4 +82,12 @@ const many = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`t${i}`, `
 blocked({ ...setUp, targets: many }, 'mesh', '0.0.0.0:49180', /already carries 32 targets/)
 const { t0, ...fewer } = many
 assert.equal(quickTunnelPlan({ ...setUp, targets: { ...fewer, mesh: 'http://127.0.0.1:1' } }, 'mesh', '0.0.0.0:49180').blocked, '', 'pointing the 32nd target at the hub adds none')
+// Compose names entries <namespace>-<container>; the form id finds quick-tunnel's, preferring this mesh's namespace.
+const form = (id) => ({ id, metadata: { ui_form: 'quick-tunnel' } })
+assert.equal(quickTunnelEntryId([{ id: 'default-mesh', metadata: { ui_form: 'mesh' } }], 'default-mesh'), null, 'no quick-tunnel entry')
+assert.equal(quickTunnelEntryId([form('default-quick-tunnel')], 'default-mesh'), 'default-quick-tunnel')
+assert.equal(quickTunnelEntryId([form('other-quick-tunnel'), form('default-quick-tunnel')], 'default-mesh'), 'default-quick-tunnel', 'this namespace wins')
+assert.equal(quickTunnelEntryId([form('tunnels'), { id: 'quick-tunnel', metadata: null }], 'mesh-lab'), 'tunnels', 'a renamed entry is found by its form')
+assert.equal(quickTunnelEntryId([form('quick-tunnel')], 'mesh'), 'quick-tunnel', 'a project from before namespaces')
+console.log('PASS quickTunnelEntryId: by form, this namespace first')
 console.log('PASS quickTunnelPlan: fresh, cloudflared with webhooks, already set up, templates and numeric strings kept, custom id and port, proxy_protocol merged, blocked cases')

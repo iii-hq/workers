@@ -8,7 +8,7 @@ import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorCode, errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useCopyFlash, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Network, RefreshCw } from 'lucide-react'
-import { quickTunnelPlan, type QuickTunnelPlan } from './quick-tunnel'
+import { quickTunnelEntryId, quickTunnelPlan, type QuickTunnelPlan } from './quick-tunnel'
 
 // functions: the worker's hub function ids (<machine>::<local id>), sorted.
 type ComponentState = { name: string; state: string; functions?: string[] }
@@ -446,11 +446,15 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // Raw keeps ${VAR} templates intact when the entry is written back.
       host.iii.call<{ value: JsonValue }>('configuration::get', { id: configurationId, raw: true }),
       host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', { include_internal: true }),
-      host.iii.call<{ value: JsonValue }>('configuration::get', { id: QUICK_TUNNEL, raw: true }),
+      // Compose names the entry after its namespace, so it is found by the form quick-tunnel registers.
+      host.iii.call<{ configurations?: { id?: string; metadata?: { ui_form?: string } | null }[] }>('configuration::list', {}).then(async (listed) => {
+        const id = quickTunnelEntryId(listed?.configurations ?? [], configurationId)
+        return id ? { id, value: (await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true }))?.value ?? null } : null
+      }),
     ])
     const engineFunctions = functions.status === 'fulfilled' ? functions.value.functions ?? [] : []
     // quick-tunnel creates its entry when it first starts.
-    const tunnelAbsent = tunnelConfig.status === 'rejected' && errorCode(tunnelConfig.reason) === 'NOT_FOUND'
+    const tunnelAbsent = tunnelConfig.status === 'fulfilled' ? tunnelConfig.value === null : errorCode(tunnelConfig.reason) === 'NOT_FOUND'
     return {
       client: status.status === 'fulfilled' && status.value?.mode === 'client' ? status.value as ClientStatus : null,
       hub: status.status === 'fulfilled' && status.value?.mode !== 'client' ? status.value as HubStatus : null,
@@ -468,7 +472,8 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // shortcut: a worker name or public id ValidateShare refuses as an entry is not listed; list it without a control if such names appear.
       local: engineFunctions.filter((fn) => /^[a-z0-9-]+$/.test(fn.worker_name ?? '') && !NEVER_SHARED.has(fn.worker_name ?? '') && canShareId(fn.function_id)),
       functionsError: functions.status === 'rejected' ? errorMessage(functions.reason) : null,
-      quickTunnel: tunnelConfig.status === 'fulfilled' ? tunnelConfig.value?.value ?? null : undefined,
+      quickTunnelId: tunnelConfig.status === 'fulfilled' ? tunnelConfig.value?.id ?? null : null,
+      quickTunnel: tunnelConfig.status === 'fulfilled' && tunnelConfig.value ? tunnelConfig.value.value : undefined,
       quickTunnelAbsent: tunnelAbsent,
       quickTunnelError: tunnelConfig.status === 'rejected' && !tunnelAbsent ? errorMessage(tunnelConfig.reason) : null,
     }
@@ -625,10 +630,12 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const setUp = async () => {
     try {
       // Re-read: quick-tunnel's settings may have changed since the page read them.
-      const current = await host.iii.call<{ value: JsonValue }>('configuration::get', { id: QUICK_TUNNEL, raw: true })
+      const id = data?.quickTunnelId
+      if (!id) throw new Error('quick-tunnel has no settings entry yet. Refresh, then try again.')
+      const current = await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true })
       const fresh = quickTunnelPlan(current?.value, tunnelId, listen)
       if (!fresh.next) throw new Error(fresh.blocked)
-      if (!fresh.ok) await host.iii.call('configuration::set', { id: QUICK_TUNNEL, value: fresh.next })
+      if (!fresh.ok) await host.iii.call('configuration::set', { id, value: fresh.next })
       await restartQuickTunnel()
       announce('quick-tunnel is set up for the mesh and restarted.')
     } catch (err) { throw failed(err) } finally { refresh() }
