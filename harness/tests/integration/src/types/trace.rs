@@ -260,6 +260,21 @@ impl TraceSpanV1 {
         )
     }
 
+    /// Close the spans `service` still had open when it was SIGKILLed at
+    /// `killed_at_unix_nano`: that process can never end them, so they are
+    /// abandoned, not still running.
+    pub(crate) fn abandon_open_spans(&mut self, service: &str, killed_at_unix_nano: u64) {
+        if self.pending
+            && self.service_name == service
+            && self.start_time_unix_nano < killed_at_unix_nano
+        {
+            self.pending = false;
+        }
+        for child in &mut self.children {
+            child.abandon_open_spans(service, killed_at_unix_nano);
+        }
+    }
+
     fn sort_children(&mut self) {
         for child in &mut self.children {
             child.sort_children();
@@ -420,6 +435,30 @@ mod tests {
         assert!(encoded["roots"][0]["attributes"].is_object());
         let decoded: TraceTreeV1 = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded, tree);
+    }
+
+    #[test]
+    fn only_spans_the_killed_service_opened_before_the_kill_are_abandoned() {
+        let open = |name: &str, service: &str, start: u64| TraceSpanV1 {
+            service_name: service.into(),
+            start_time_unix_nano: start,
+            ..span(name, true)
+        };
+        let mut root = TraceSpanV1 {
+            children: vec![
+                open("killed-child", "harness", 5),
+                open("respawned", "harness", 20),
+                open("other-worker", "integration", 5),
+            ],
+            ..open("killed-root", "harness", 1)
+        };
+        root.abandon_open_spans("harness", 10);
+        let pending: Vec<_> = root
+            .self_and_descendants()
+            .filter(|span| span.pending)
+            .map(|span| span.name.as_str())
+            .collect();
+        assert_eq!(pending, ["respawned", "other-worker"]);
     }
 
     #[test]

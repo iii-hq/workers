@@ -72,7 +72,7 @@ impl Default for ConsoleConfig {
 
 pub fn load_config(path: &str) -> Result<ConsoleConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: ConsoleConfig = serde_yaml::from_str(&contents)?;
+    let cfg: ConsoleConfig = serde_yaml_ng::from_str(&contents)?;
     Ok(cfg)
 }
 
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: ConsoleConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.http_host, "127.0.0.1");
         assert_eq!(cfg.http_port, 3113);
         assert!(cfg.injectable_ui);
@@ -91,22 +91,22 @@ mod tests {
 
     #[test]
     fn custom_yaml_overrides_data_dir() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("data_dir: /var/lib/iii/ade\n").unwrap();
+        let cfg: ConsoleConfig = serde_yaml_ng::from_str("data_dir: /var/lib/iii/ade\n").unwrap();
         assert_eq!(cfg.data_dir, "/var/lib/iii/ade");
     }
 
     #[test]
     fn custom_yaml_allows_explicit_wildcard_host() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 0.0.0.0\n").unwrap();
+        let cfg: ConsoleConfig = serde_yaml_ng::from_str("http_host: 0.0.0.0\n").unwrap();
         assert_eq!(cfg.http_host, "0.0.0.0");
     }
 
     #[test]
     fn shipped_configs_restrict_the_listener_to_loopback() {
-        let seed: ConsoleConfig = serde_yaml::from_str(include_str!("../config.yaml")).unwrap();
-        let worker: serde_yaml::Value =
-            serde_yaml::from_str(include_str!("../iii.worker.yaml")).unwrap();
-        let packaged: ConsoleConfig = serde_yaml::from_value(worker["config"].clone()).unwrap();
+        let seed: ConsoleConfig = serde_yaml_ng::from_str(include_str!("../config.yaml")).unwrap();
+        let worker: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(include_str!("../iii.worker.yaml")).unwrap();
+        let packaged: ConsoleConfig = serde_yaml_ng::from_value(worker["config"].clone()).unwrap();
 
         for cfg in [seed, packaged] {
             let host: std::net::IpAddr = cfg.http_host.parse().unwrap();
@@ -119,19 +119,19 @@ mod tests {
 
     #[test]
     fn injectable_ui_kill_switch() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("injectable_ui: false\n").unwrap();
+        let cfg: ConsoleConfig = serde_yaml_ng::from_str("injectable_ui: false\n").unwrap();
         assert!(!cfg.injectable_ui);
     }
 
     #[test]
     fn custom_yaml_overrides_http_port() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("http_port: 9090\n").unwrap();
+        let cfg: ConsoleConfig = serde_yaml_ng::from_str("http_port: 9090\n").unwrap();
         assert_eq!(cfg.http_port, 9090);
     }
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_empty: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
+        let from_empty: ConsoleConfig = serde_yaml_ng::from_str("{}").unwrap();
         let from_default = ConsoleConfig::default();
         assert_eq!(from_empty.http_host, from_default.http_host);
         assert_eq!(from_empty.http_port, from_default.http_port);

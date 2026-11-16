@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
                 return None;
             }
         };
-        match serde_yaml::from_str::<serde_json::Value>(&contents) {
+        match serde_yaml_ng::from_str::<serde_json::Value>(&contents) {
             Ok(v) => match WorkerConfig::from_json(&v) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {

@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
         let contents = std::fs::read_to_string(path)
             .map_err(|error| tracing::warn!(path, %error, "ignoring unreadable seed config"))
             .ok()?;
-        let value: serde_json::Value = serde_yaml::from_str(&contents)
+        let value: serde_json::Value = serde_yaml_ng::from_str(&contents)
             .map_err(|error| tracing::warn!(path, %error, "ignoring invalid seed YAML"))
             .ok()?;
         WorkerConfig::from_json(&value)

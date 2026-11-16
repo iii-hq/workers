@@ -339,7 +339,9 @@ fn runtime_config_from(
                 "stored `console.http_port` must be an integer from 0 to 65535".to_string()
             })?,
         Some(_) => {
-            return Err("stored `console.http_port` must be an integer from 0 to 65535".to_string());
+            return Err(
+                "stored `console.http_port` must be an integer from 0 to 65535".to_string(),
+            );
         }
     };
 

@@ -1251,7 +1251,7 @@ impl Store {
                 &dir.join(BANK_META),
                 format!(
                     "description: {}\n",
-                    serde_yaml::to_string(&desc).unwrap_or_default().trim()
+                    serde_yaml_ng::to_string(&desc).unwrap_or_default().trim()
                 )
                 .as_bytes(),
             )?;
@@ -1339,7 +1339,7 @@ impl Bank {
     fn load(name: &str, dir: PathBuf) -> Result<Self, MemoryError> {
         let description = std::fs::read_to_string(dir.join(BANK_META))
             .ok()
-            .and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(&raw).ok())
+            .and_then(|raw| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&raw).ok())
             .and_then(|v| {
                 v.get("description")
                     .and_then(|d| d.as_str().map(String::from))

@@ -75,7 +75,7 @@ impl CodeRunnerConfig {
 
 pub fn load_config(path: &str) -> Result<CodeRunnerConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: CodeRunnerConfig = serde_yaml::from_str(&contents)?;
+    let cfg: CodeRunnerConfig = serde_yaml_ng::from_str(&contents)?;
     Ok(cfg)
 }
 
@@ -86,13 +86,13 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: CodeRunnerConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: CodeRunnerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg, CodeRunnerConfig::default());
     }
 
     #[test]
     fn custom_yaml_overrides_each_field() {
-        let cfg: CodeRunnerConfig = serde_yaml::from_str(
+        let cfg: CodeRunnerConfig = serde_yaml_ng::from_str(
             "default_timeout_ms: 100\nmax_timeout_ms: 200\nidle_ttl_secs: 5\n",
         )
         .unwrap();
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn partial_yaml_keeps_other_defaults() {
-        let cfg: CodeRunnerConfig = serde_yaml::from_str("idle_ttl_secs: 60").unwrap();
+        let cfg: CodeRunnerConfig = serde_yaml_ng::from_str("idle_ttl_secs: 60").unwrap();
         assert_eq!(cfg.idle_ttl_secs, 60);
         assert_eq!(cfg.default_timeout_ms, default_default_timeout_ms());
     }

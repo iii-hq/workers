@@ -119,7 +119,8 @@ const KILL_SESSION_JOBS_TIMEOUT_MS: u64 = 5_000;
 /// `stopping`; deletion additionally fails closed on any `unconfirmed` reason.
 #[derive(Debug, Default)]
 pub(crate) struct StopOutcome {
-    /// A matching non-terminal turn was found and its stop accepted.
+    /// A matching non-terminal turn, or a finished one still promising a
+    /// continuation, was found and its stop accepted.
     pub stopping: bool,
     /// Why the stop could not be confirmed (router abort failure, unknown
     /// external pending work). The abort flag is persisted regardless.
@@ -155,18 +156,40 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     }
     if record.status.is_terminal() {
         let turn_id = record.turn_id.clone();
+        let continues = record.continues;
         crate::session_status::spawn_project(deps, record);
-        if req.quiet_deadlines {
-            let _guard = deps.locks.guard(&req.session_id).await;
-            if let Some(mut record) = crate::state::get_turn_unhydrated(
+        if req.quiet_deadlines || continues {
+            let guard = deps.locks.guard(&req.session_id).await;
+            match crate::state::get_turn_unhydrated(
                 &deps.iii,
                 &req.session_id,
                 cfg.session_timeout_ms,
             )
             .await?
-            .filter(|record| record.turn_id == turn_id && record.status.is_terminal())
             {
-                flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+                Some(mut record) if record.turn_id == turn_id && record.status.is_terminal() => {
+                    if record.continues {
+                        cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+                        return Ok(StopOutcome {
+                            stopping: true,
+                            ..Default::default()
+                        });
+                    }
+                    if req.quiet_deadlines {
+                        flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+                    }
+                }
+                // The finalize kept the lock through its reseed: the turn it seeded
+                // is the one this stop came for.
+                Some(next) if continues && !next.status.is_terminal() => {
+                    drop(guard);
+                    let req = StopRequest {
+                        turn_id: Some(next.turn_id),
+                        ..req
+                    };
+                    return Box::pin(stop_one(deps, req)).await;
+                }
+                _ => {}
             }
         }
         return Ok(StopOutcome::default());
@@ -299,8 +322,25 @@ async fn flag_parked_turn(
     record: &mut crate::types::turn::TurnRecord,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    if !record.abort && crate::bindings::session_expects_wake(deps, &record.session_id).await {
+    if !record.abort && crate::bindings::session_expects_wake(deps, record).await {
         record.abort = true;
+        crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+    }
+    Ok(())
+}
+
+/// Take back the turn a finished one still promises: the stop reached the session
+/// before the reseed, so the drained message waits in the transcript for the next
+/// send. The exchange ends as cancelled, now or when its last wake goes. The caller
+/// holds the session lock and read `record` under it.
+async fn cancel_continuation(
+    deps: &Deps,
+    record: &mut crate::types::turn::TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    record.continues = false;
+    record.abort = true;
+    if !crate::turn_loop::end_stopped_exchange(deps, record).await? {
         crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
     }
     Ok(())

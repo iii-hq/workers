@@ -1,0 +1,14 @@
+iii: v1
+name: mesh
+language: go
+deploy: binary
+manifest: package.json
+bin: mesh
+license: MIT
+iii_engine_version: ">=0.26.0"
+description: "Mesh hub and client: join iii engines and share workers between them."
+tags: [mesh, networking, hub, go]
+dependencies:
+  configuration: latest
+  rbac-proxy: latest
+config: {}

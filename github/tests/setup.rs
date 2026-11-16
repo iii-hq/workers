@@ -114,6 +114,41 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
 }
 
 #[test]
+fn opentunnel_provider_replaces_the_cloudflared_row() {
+    let checks = evaluate(
+        &Ok(json!({"status": "stopped", "leases": [], "provider": "opentunnel"})),
+        &listener_on(),
+    );
+    assert_eq!(states(&checks), [CheckState::Ok; 3]);
+    assert_eq!(checks[1].id, "tunnel_provider");
+    assert_eq!(checks[1].title, "tunnel provider");
+    assert_eq!(checks[1].state, CheckState::Ok);
+    assert_eq!(
+        checks[1].detail,
+        "quick-tunnel uses OpenTunnel; no cloudflared binary is needed."
+    );
+    assert_eq!(checks[1].fix, None);
+    assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn only_the_exact_opentunnel_provider_replaces_the_cloudflared_row() {
+    for provider in [json!("OpenTunnel"), json!("cloudflared"), json!(true)] {
+        let checks = evaluate(
+            &Ok(json!({"status": "stopped", "leases": [], "provider": provider})),
+            &listener_on(),
+        );
+        assert_eq!(checks[1].id, "cloudflared", "provider {provider}");
+        assert_eq!(checks[1].title, "cloudflared binary", "provider {provider}");
+        assert_eq!(checks[1].state, CheckState::Unknown, "provider {provider}");
+        assert!(
+            matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "quick-tunnel"),
+            "provider {provider}"
+        );
+    }
+}
+
+#[test]
 fn missing_http_offers_install_while_declared_old_http_offers_update() {
     let tunnel = tunnel_with(json!({"found": true}));
     let missing = evaluate(&tunnel, &Err(HttpProbeFailure::NotInstalled));

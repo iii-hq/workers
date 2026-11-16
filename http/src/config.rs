@@ -396,7 +396,7 @@ mod tests {
     }
 
     // =========================================================================
-    // YAML deserialization (via serde_yaml)
+    // YAML deserialization (via serde_yaml_ng)
     // =========================================================================
 
     #[test]
@@ -414,7 +414,7 @@ cors:
     - "POST"
     - "PUT"
 "#;
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.port, 4000);
         assert_eq!(config.host, "192.168.1.1");
         assert_eq!(config.default_timeout, 60000);
@@ -427,7 +427,7 @@ cors:
     #[test]
     fn rest_api_config_from_yaml_defaults() {
         let yaml = "{}";
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.port, 3111);
         assert_eq!(config.host, "0.0.0.0");
     }
@@ -482,7 +482,7 @@ middleware:
     phase: "preHandler"
     priority: 2
 "#;
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.middleware.len(), 2);
         assert_eq!(config.middleware[0].function_id, "fn::rate_limiter");
         assert_eq!(config.middleware[0].priority, 1);

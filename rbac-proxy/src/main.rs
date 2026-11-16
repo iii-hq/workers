@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
 fn load_seed(path: &str) -> Result<WorkerConfig> {
     let contents = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     let raw: serde_json::Value =
-        serde_yaml::from_str(&contents).with_context(|| format!("parsing {path}"))?;
+        serde_yaml_ng::from_str(&contents).with_context(|| format!("parsing {path}"))?;
     WorkerConfig::from_json(&raw)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("parsing {path}"))

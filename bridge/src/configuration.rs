@@ -523,7 +523,7 @@ mod tests {
     use super::*;
 
     fn cfg(yaml: &str) -> BridgeConfig {
-        serde_yaml::from_str(yaml).unwrap()
+        serde_yaml_ng::from_str(yaml).unwrap()
     }
 
     fn set(names: &[&str]) -> HashSet<String> {

@@ -270,6 +270,7 @@ mod tests {
                 "action": "run completion received",
             })),
             fires: 3,
+            claimed_at: None,
             created_at,
         }
     }

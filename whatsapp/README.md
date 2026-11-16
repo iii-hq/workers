@@ -12,7 +12,7 @@ iii call compose::add worker=whatsapp
 
 Compose resolves the declared `database`, `configuration`, `http`, and `quick-tunnel` dependencies, updates `worker-compose.yaml`, and starts the project. Dependency installation does not create the dedicated WhatsApp database or configure a Meta account. Configure storage before the worker's first successful start, as described under [Configuration](#configuration).
 
-Release binaries support Linux and macOS on x64 and arm64. Windows is not supported. Cloudflared is needed only when you start a development webhook tunnel; linked phones do not need it.
+Release binaries support Linux and macOS on x64 and arm64. Windows is not supported. Cloudflared is needed only when you start a development webhook tunnel with quick-tunnel's default `cloudflared` provider; its `opentunnel` provider needs no binary. Linked phones do not need a tunnel.
 
 ## Quickstart
 
@@ -136,7 +136,7 @@ Set actual credentials in your deployment environment or a private, uncommitted 
 
 Use **Meta Cloud API** in ADE to check the connection, test text or templates, send attachments, and inspect the local Cloud archive. Configure a public HTTPS callback and subscribe the Meta app to the WABA and `messages` field. Local readiness does not prove remote authentication or webhook reachability.
 
-For development, **Webhook setup → Start development tunnel** creates a callback URL through `quick-tunnel`. Enable the HTTP worker's restricted webhook listener, install cloudflared on the tunnel worker's host, and point its `webhooks` target at that listener. Copy the URL into Meta with the matching verify token; starting a tunnel does not register it with Meta. Temporary URLs can change after a tunnel restart. See the [webhook walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#development-webhook-url).
+For development, **Webhook setup → Start development tunnel** creates a callback URL through `quick-tunnel`. Enable the HTTP worker's restricted webhook listener, install cloudflared on the tunnel worker's host (not needed when quick-tunnel uses its `opentunnel` provider), and point its `webhooks` target at that listener. Copy the URL into Meta with the matching verify token; starting a tunnel does not register it with Meta. A cloudflared URL changes after a tunnel restart; an OpenTunnel URL stays the same. See the [webhook walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#development-webhook-url).
 
 ### Upload and send documents
 

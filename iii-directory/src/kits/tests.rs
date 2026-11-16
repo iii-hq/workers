@@ -41,14 +41,14 @@ struct MockRegistry {
 
 fn frontmatter_field(content: &str, key: &str) -> Option<String> {
     let (fm, _) = crate::fs_source::split_frontmatter(content);
-    let value: serde_yaml::Value = serde_yaml::from_str(fm?).ok()?;
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(fm?).ok()?;
     value.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
 fn frontmatter_list(content: &str, key: &str) -> Vec<String> {
     let (fm, _) = crate::fs_source::split_frontmatter(content);
     let Some(fm) = fm else { return vec![] };
-    let value: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or_default();
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(fm).unwrap_or_default();
     value
         .get(key)
         .and_then(|v| v.as_sequence())

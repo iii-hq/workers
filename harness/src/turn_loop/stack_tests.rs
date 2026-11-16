@@ -729,6 +729,742 @@ async fn resolves_after_a_stop_keep_its_stopping_ack() {
     );
 }
 
+/// A wake queued during a parking turn's final step reseeds the session once
+/// the turn finishes. The parking turn is not the run's outcome: a consumer
+/// that settled on it lost the woken turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finalize_that_drains_a_wake_reports_the_turn_as_continuing() {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    let (result, calls, turn) =
+        run_on_fake_engine(json!({}), json!([]), None, hooks, |deps| async move {
+            let cfg = deps.cfg().await;
+            let wake = crate::state::QueuedMessage {
+                id: "q_wake".into(),
+                session_id: "s".into(),
+                message: AgentMessage::user_text("[notification] woke"),
+                entry_id: "e_fire_sub_1".into(),
+                origin: None,
+                queued_at: 1,
+            };
+            crate::state::enqueue_message(&deps.iii, &wake, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            finalize_completed(&deps, &deps.session().await, &mut record, None).await
+        })
+        .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed);
+    let completed: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, _)| function == "harness::on-turn-completed")
+        .map(|(_, data)| data)
+        .collect();
+    assert_eq!(completed.len(), 1, "{calls:?}");
+    assert_eq!(completed[0]["turn_id"], "t1");
+    assert_eq!(completed[0]["terminal"], false);
+    // `harness::status` reads `continues` on every write of the finished turn,
+    // so it reports `expects_wake` until the reseed replaces the record.
+    let finished: Vec<&Value> = calls
+        .iter()
+        .filter(|(function, data)| {
+            function == "state::set"
+                && data["scope"] == "harness_turn"
+                && data["value"]["turn_id"] == "t1"
+        })
+        .map(|(_, data)| &data["value"])
+        .collect();
+    assert!(!finished.is_empty());
+    assert!(
+        finished
+            .iter()
+            .all(|record| record["status"] == "completed" && record["continues"] == true),
+        "{finished:?}"
+    );
+    assert_eq!(turn["status"], "running");
+    assert_ne!(
+        turn["turn_id"], "t1",
+        "the drained wake reseeds the session"
+    );
+    assert!(turn.get("continues").is_none(), "{turn}");
+}
+
+/// The reseed after a finalize drain fails before any reseeded turn is stored.
+/// Nothing replaces the finished turn, so it completes again, terminally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_reseed_ends_the_exchange() {
+    let refuse = |function: &str, data: &Value| function == "state::set" && reseeds(data);
+    let (status, calls, turn) = finalize_with_a_queued_wake(refuse, false).await;
+    assert_eq!(
+        completions(&calls),
+        [(json!("t1"), json!(false)), (json!("t1"), json!(true))]
+    );
+    assert_eq!(turn["turn_id"], "t1");
+    assert_eq!(turn["status"], "completed");
+    assert!(turn.get("continues").is_none(), "{turn}");
+    assert!(!status.expects_wake);
+    assert_eq!(
+        turn["took_wakes"],
+        json!(["sub"]),
+        "its finalize drained the wake"
+    );
+}
+
+/// A step whose drain fails after it delivered a wake still notes the wake:
+/// the re-drain on a retry no longer lists that row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_drain_failing_after_a_wake_still_notes_it() {
+    let refuse = |function: &str, data: &Value| {
+        function == "session::append" && data["entry_id"] == "e_user_2"
+    };
+    let ((result, queued), _, turn) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        json!({}),
+        refuse,
+        |deps| async move {
+            queue_wake_then_message(&deps).await;
+            let result = step_one(deps.clone()).await;
+            (result, queued_entries(&deps).await)
+        },
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(turn["took_wakes"], json!(["sub"]), "{turn}");
+    assert_eq!(queued, ["e_user_2"]);
+}
+
+/// The finalize drain notes a delivered wake even when a later row fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finalize_drain_failing_after_a_wake_still_notes_it() {
+    let refuse = |function: &str, data: &Value| {
+        function == "session::append" && data["entry_id"] == "e_user_2"
+    };
+    let ((took_wakes, reseeds, queued), _, _) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        json!({}),
+        refuse,
+        |deps| async move {
+            queue_wake_then_message(&deps).await;
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let session = deps.session().await;
+            let reseeds = drain_queued_best_effort(&deps, &session, &mut record).await;
+            (record.took_wakes, reseeds, queued_entries(&deps).await)
+        },
+    )
+    .await;
+    assert_eq!(took_wakes, ["sub"]);
+    assert!(!reseeds, "a failed drain does not reseed");
+    assert_eq!(queued, ["e_user_2"]);
+}
+
+/// Queue a wake fire, then a user message behind it.
+async fn queue_wake_then_message(deps: &Deps) {
+    let cfg = deps.cfg().await;
+    let rows = [
+        (
+            "q_1",
+            "e_fire_sub_1",
+            Some(json!({ "notification": true, "binding": "sub" })),
+        ),
+        ("q_2", "e_user_2", None),
+    ];
+    for (queued_at, (id, entry_id, origin)) in (1..).zip(rows) {
+        let row = crate::state::QueuedMessage {
+            id: id.into(),
+            session_id: "s".into(),
+            message: AgentMessage::user_text(entry_id),
+            entry_id: entry_id.into(),
+            origin,
+            queued_at,
+        };
+        crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms)
+            .await
+            .unwrap();
+    }
+}
+
+/// Entry ids still in the session's queue.
+async fn queued_entries(deps: &Deps) -> Vec<String> {
+    let cfg = deps.cfg().await;
+    crate::state::list_queued(&deps.iii, "s", cfg.session_timeout_ms)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.entry_id)
+        .collect()
+}
+
+/// A reseeded turn whose first enqueue fails has finalized itself: the turn
+/// before it is not settled again over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reseed_that_cannot_be_scheduled_is_not_settled_over() {
+    let refuse = |function: &str, data: &Value| function == "harness::turn" && reseeds(data);
+    let (status, calls, turn) = finalize_with_a_queued_wake(refuse, false).await;
+    assert_ne!(turn["turn_id"], "t1", "{turn}");
+    assert_eq!(turn["status"], "failed", "{turn}");
+    assert!(!status.expects_wake);
+    assert!(
+        !completions(&calls).contains(&(json!("t1"), json!(true))),
+        "{calls:?}"
+    );
+}
+
+/// A failed turn's reseed fails the same way: the second completion carries
+/// its failure and ends the exchange.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_turn_whose_reseed_fails_ends_the_exchange() {
+    let refuse = |function: &str, data: &Value| function == "state::set" && reseeds(data);
+    let (status, calls, turn) = finalize_with_a_queued_wake(refuse, true).await;
+    assert_eq!(
+        completions(&calls),
+        [(json!("t1"), json!(false)), (json!("t1"), json!(true))]
+    );
+    let settled = &calls
+        .iter()
+        .rfind(|(function, _)| function == "harness::on-turn-completed")
+        .unwrap()
+        .1;
+    assert_eq!(settled["status"], "failed", "{settled}");
+    assert!(settled["result_error"].is_string(), "{settled}");
+    assert_eq!(settled["result_error"], turn["result_error"], "{turn}");
+    assert_eq!(settled["reason"], turn["result_error"], "{settled}");
+    assert_eq!(turn["status"], "failed");
+    assert_eq!(turn["exchange_finished"], true, "{turn}");
+    assert!(turn.get("continues").is_none(), "{turn}");
+    assert!(!status.expects_wake);
+}
+
+/// A store that also refuses the settling write still gets the completion: a
+/// waiter left without it stays stuck.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reseed_failure_completes_even_when_the_settle_write_fails() {
+    let refuse = |function: &str, data: &Value| {
+        let settles = data["scope"] == "harness_turn"
+            && data["value"]["turn_id"] == "t1"
+            && data["value"]["status"] == "completed"
+            && data["value"].get("continues").is_none();
+        function == "state::set" && (reseeds(data) || settles)
+    };
+    let (_, calls, turn) = finalize_with_a_queued_wake(refuse, false).await;
+    assert_eq!(
+        turn["continues"], true,
+        "the settle write was refused: {turn}"
+    );
+    assert_eq!(
+        completions(&calls),
+        [(json!("t1"), json!(false)), (json!("t1"), json!(true))]
+    );
+}
+
+/// The process died after the finalize wrote `continues` and before its
+/// reseed: the redelivered step seeds the turn that write promised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_redoes_the_reseed_its_finalize_never_reached() {
+    for status in [TurnStatus::Completed, TurnStatus::Failed] {
+        let ((result, report), calls, turn) =
+            redeliver_finished(status, true, false, |_, _| false).await;
+        assert!(result.unwrap().skipped);
+        assert_ne!(turn["turn_id"], "t1", "{turn}");
+        assert_eq!(turn["status"], "running", "{turn}");
+        assert!(turn.get("continues").is_none(), "{turn}");
+        assert!(
+            calls
+                .iter()
+                .any(|(function, data)| function == "harness::turn" && reseeds(data)),
+            "{calls:?}"
+        );
+        assert_eq!(report.status, TurnStatus::Running, "{report:?}");
+    }
+}
+
+/// The redone reseed fails like a live one: the finished turn ends the
+/// exchange instead of promising a turn nobody seeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_whose_reseed_fails_ends_the_exchange() {
+    let refuse = |function: &str, data: &Value| function == "state::set" && reseeds(data);
+    let ((result, report), calls, turn) =
+        redeliver_finished(TurnStatus::Completed, true, false, refuse).await;
+    assert!(result.unwrap().skipped);
+    assert_eq!(completions(&calls), [(json!("t1"), json!(true))]);
+    assert_eq!(turn["turn_id"], "t1");
+    assert!(turn.get("continues").is_none(), "{turn}");
+    assert!(!report.expects_wake);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_that_does_not_continue_is_only_dropped() {
+    let ((result, _), calls, turn) =
+        redeliver_finished(TurnStatus::Completed, false, false, |_, _| false).await;
+    assert!(result.unwrap().skipped);
+    assert_eq!(turn["turn_id"], "t1");
+    assert!(completions(&calls).is_empty(), "{calls:?}");
+    assert!(
+        !calls
+            .iter()
+            .any(
+                |(function, data)| (function == "harness::turn" || function == "state::set")
+                    && reseeds(data)
+            ),
+        "{calls:?}"
+    );
+}
+
+/// A stop that reaches the session between the crashed finalize and its
+/// redelivery takes back the turn that finalize promised: the exchange ends as
+/// a stop does, and the redelivery seeds nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_before_the_redelivery_takes_back_the_promised_turn() {
+    for (status, ended) in [
+        (TurnStatus::Completed, "cancelled"),
+        (TurnStatus::Failed, "failed"),
+    ] {
+        let ((result, report), calls, turn) =
+            redeliver_finished(status, true, true, |_, _| false).await;
+        assert!(result.unwrap().skipped);
+        assert_eq!(turn["turn_id"], "t1", "{turn}");
+        assert_eq!(turn["status"], ended, "{turn}");
+        assert!(turn.get("continues").is_none(), "{turn}");
+        assert_eq!(turn["abort"], true, "{turn}");
+        assert_eq!(turn["exchange_finished"], true, "{turn}");
+        let completed: Vec<(Value, Value, Value)> = calls
+            .iter()
+            .filter(|(function, _)| function == "harness::on-turn-completed")
+            .map(|(_, data)| {
+                (
+                    data["turn_id"].clone(),
+                    data["status"].clone(),
+                    data["terminal"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(completed, [(json!("t1"), json!(ended), json!(true))]);
+        assert!(
+            !calls
+                .iter()
+                .any(
+                    |(function, data)| (function == "harness::turn" || function == "state::set")
+                        && reseeds(data)
+                ),
+            "{calls:?}"
+        );
+        assert!(!report.expects_wake);
+    }
+}
+
+/// On the live finalize path the reseed holds the session lock with the
+/// terminal write, so a stop that read the finished turn first finds the turn
+/// it seeded once it gets the lock: that turn is the one it came for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_that_waited_out_the_reseed_stops_the_turn_it_seeded() {
+    let (outcome, calls, turn) =
+        run_on_fake_engine(json!({}), json!([]), None, json!({}), |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let mut reseeded = record.clone();
+            reseeded.turn_id = "t2".into();
+            record.status = TurnStatus::Completed;
+            record.continues = true;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let guard = deps.locks.guard("s").await;
+            let stopping = tokio::spawn({
+                let deps = deps.clone();
+                async move {
+                    let req = crate::functions::stop::StopRequest {
+                        session_id: "s".into(),
+                        turn_id: None,
+                        quiet_deadlines: true,
+                    };
+                    crate::functions::stop::stop_one(&deps, req).await
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            crate::state::put_turn(&deps.iii, &reseeded, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            drop(guard);
+            stopping.await.unwrap().unwrap()
+        })
+        .await;
+    assert!(outcome.stopping);
+    assert_eq!(turn["turn_id"], "t2", "{turn}");
+    assert_eq!(turn["abort"], true, "{turn}");
+    let finished = calls
+        .iter()
+        .position(|(function, data)| {
+            function == "state::set"
+                && data["scope"] == "harness_turn"
+                && data["value"]["continues"] == true
+        })
+        .unwrap();
+    let seeded = calls
+        .iter()
+        .position(|(function, data)| {
+            function == "state::set"
+                && data["scope"] == "harness_turn"
+                && data["value"]["turn_id"] == "t2"
+        })
+        .unwrap();
+    assert!(
+        calls[finished..seeded]
+            .iter()
+            .any(|(function, data)| function.ends_with("state::get")
+                && data["scope"] == "harness_turn"),
+        "the stop read the finished turn before the reseed: {calls:?}"
+    );
+}
+
+/// A store that fails the settling re-read after the reseed failed leaves the
+/// redelivery unacknowledged: it is the only delivery that can still finish the
+/// promised turn, so its retry does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_retries_when_settlement_cannot_reread_the_turn() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    // 0: refuse the reseed's write, then 1: refuse turn reads, 2: refuse nothing.
+    static STAGE: AtomicU8 = AtomicU8::new(0);
+    fn refuse(function: &str, data: &Value) -> bool {
+        match STAGE.load(Ordering::SeqCst) {
+            0 if function == "state::set" && reseeds(data) => {
+                STAGE.store(1, Ordering::SeqCst);
+                true
+            }
+            1 => function.ends_with("state::get") && data["scope"] == "harness_turn",
+            _ => false,
+        }
+    }
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    let ((first, settled, second), calls, turn) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        hooks,
+        refuse,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            record.continues = true;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let first = step_one(deps.clone()).await;
+            STAGE.store(2, Ordering::SeqCst);
+            let settled = crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                .await
+                .unwrap()
+                .unwrap();
+            let second = step_one(deps.clone()).await;
+            (first, settled, second)
+        },
+    )
+    .await;
+    assert!(first.is_err(), "{first:?}");
+    assert!(settled.continues, "nothing settled over the failed read");
+    assert!(completions(&calls).is_empty(), "{calls:?}");
+    assert!(second.unwrap().skipped);
+    assert_ne!(turn["turn_id"], "t1", "{turn}");
+    assert_eq!(turn["status"], "running", "{turn}");
+    assert!(turn.get("continues").is_none(), "{turn}");
+}
+
+/// A prompt body the store failed to read is not lost: the redelivery fails
+/// without settling, and its retry reloads the prompt and seeds the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REFUSING: AtomicBool = AtomicBool::new(true);
+    fn refuse(function: &str, data: &Value) -> bool {
+        REFUSING.load(Ordering::SeqCst)
+            && function == "state::get"
+            && data["scope"] == crate::state::PROMPT_SCOPE
+    }
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    let ((first, settled, second), calls, turn) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        hooks,
+        refuse,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            record.continues = true;
+            // No other test reads this body, so no process cache answers for the store.
+            record.options.system_prompt =
+                Some("a_redelivered_finished_step_retries_when_its_prompt_cannot_be_read".into());
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let first = step_one(deps.clone()).await;
+            let settled = crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                .await
+                .unwrap()
+                .unwrap();
+            REFUSING.store(false, Ordering::SeqCst);
+            let second = step_one(deps.clone()).await;
+            (first, settled, second)
+        },
+    )
+    .await;
+    assert!(first.is_err(), "{first:?}");
+    assert!(settled.continues, "nothing settled over the failed read");
+    assert!(completions(&calls).is_empty(), "{calls:?}");
+    assert!(second.unwrap().skipped);
+    assert_ne!(turn["turn_id"], "t1", "{turn}");
+    assert_eq!(turn["status"], "running", "{turn}");
+    assert!(turn.get("continues").is_none(), "{turn}");
+}
+
+/// Any stop takes back the promised turn, quiet or not. With a wake left the
+/// exchange is not over: the stop only records the abort, ends nothing, and
+/// still keeps the redelivery from seeding the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_with_a_wake_left_takes_back_the_promised_turn_and_ends_nothing() {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    let ((stopping, result), calls, turn) =
+        run_on_fake_engine(json!({}), json!([]), None, hooks, |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            record.continues = true;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let wake = json!({"id": "w", "owner": {"session_id": "s"},
+                "target": {"function_id": crate::functions::SEND_ID},
+                "lifecycle": {"once": true}, "created_at": 1});
+            crate::state::state_set(
+                &deps.iii,
+                crate::state::BINDING_SCOPE,
+                "w",
+                wake,
+                cfg.session_timeout_ms,
+            )
+            .await
+            .unwrap();
+            let req = crate::functions::stop::StopRequest {
+                session_id: "s".into(),
+                turn_id: None,
+                quiet_deadlines: false,
+            };
+            let outcome = crate::functions::stop::stop_one(&deps, req).await.unwrap();
+            (outcome.stopping, step_one(deps.clone()).await)
+        })
+        .await;
+    assert!(stopping);
+    assert!(result.unwrap().skipped);
+    assert_eq!(turn["turn_id"], "t1", "{turn}");
+    assert_eq!(turn["status"], "completed", "{turn}");
+    assert!(turn.get("continues").is_none(), "{turn}");
+    assert_eq!(turn["abort"], true, "{turn}");
+    assert_ne!(turn["exchange_finished"], true, "{turn}");
+    assert!(completions(&calls).is_empty(), "{calls:?}");
+    assert!(
+        !calls
+            .iter()
+            .any(
+                |(function, data)| (function == "harness::turn" || function == "state::set")
+                    && reseeds(data)
+            ),
+        "{calls:?}"
+    );
+}
+
+/// Store `t1` finished with `status` and `continues`, as a finalize leaves it
+/// when the process dies before its reseed, then (after a quiet session stop
+/// when `stop`) deliver its step 1 again, refusing every engine call `refuse`
+/// matches. Returns the step outcome and the status after it, the engine calls
+/// and the stored turn.
+async fn redeliver_finished(
+    status: TurnStatus,
+    continues: bool,
+    stop: bool,
+    refuse: fn(&str, &Value) -> bool,
+) -> (
+    (
+        Result<TurnStepResult, HarnessError>,
+        crate::functions::status::StatusReport,
+    ),
+    Vec<(String, Value)>,
+    Value,
+) {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        hooks,
+        refuse,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = status;
+            record.continues = continues;
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            if stop {
+                let req = crate::functions::stop::StopRequest {
+                    session_id: "s".into(),
+                    turn_id: None,
+                    quiet_deadlines: true,
+                };
+                let outcome = crate::functions::stop::stop_one(&deps, req).await.unwrap();
+                assert!(outcome.stopping);
+            }
+            let result = step_one(deps.clone()).await;
+            let req = crate::functions::status::StatusRequest {
+                session_id: "s".into(),
+                verbose: false,
+            };
+            let report = crate::functions::status::handle(&deps, req)
+                .await
+                .unwrap()
+                .unwrap();
+            (result, report)
+        },
+    )
+    .await
+}
+
+/// Whether an engine call is made for a turn other than `t1`: a reseed's.
+fn reseeds(data: &Value) -> bool {
+    data["value"]["turn_id"]
+        .as_str()
+        .or(data["turn_id"].as_str())
+        .is_some_and(|id| id != "t1")
+}
+
+/// Finalize `t1` with a wake queued, completed or `failed`, refusing every
+/// engine call `refuse` matches; returns the status after it, the engine
+/// calls and the stored turn.
+async fn finalize_with_a_queued_wake(
+    refuse: fn(&str, &Value) -> bool,
+    failed: bool,
+) -> (
+    crate::functions::status::StatusReport,
+    Vec<(String, Value)>,
+    Value,
+) {
+    let hooks = json!({ "harness::on-turn-completed": {} });
+    run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        hooks,
+        refuse,
+        |deps| async move {
+            let cfg = deps.cfg().await;
+            let wake = crate::state::QueuedMessage {
+                id: "q_wake".into(),
+                session_id: "s".into(),
+                message: AgentMessage::user_text("[notification] woke"),
+                entry_id: "e_fire_sub_1".into(),
+                origin: Some(json!({ "notification": true, "binding": "sub" })),
+                queued_at: 1,
+            };
+            crate::state::enqueue_message(&deps.iii, &wake, cfg.session_timeout_ms)
+                .await
+                .unwrap();
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let session = deps.session().await;
+            let finalized = if failed {
+                finalize_failed(&deps, &session, &mut record, "boom", INTERNAL_FAILURE).await
+            } else {
+                finalize_completed(&deps, &session, &mut record, None).await
+            };
+            assert!(finalized.unwrap().status.is_terminal());
+            let req = crate::functions::status::StatusRequest {
+                session_id: "s".into(),
+                verbose: false,
+            };
+            crate::functions::status::handle(&deps, req)
+                .await
+                .unwrap()
+                .unwrap()
+        },
+    )
+    .await
+}
+
+/// `(turn_id, terminal)` of every `harness::on-turn-completed`, in order.
+fn completions(calls: &[(String, Value)]) -> Vec<(Value, Value)> {
+    calls
+        .iter()
+        .filter(|(function, _)| function == "harness::on-turn-completed")
+        .map(|(_, data)| (data["turn_id"].clone(), data["terminal"].clone()))
+        .collect()
+}
+
+/// `continues` alone keeps `expects_wake` up once the wake's record is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_expects_a_wake_on_a_finished_turn_that_continues() {
+    let (expects, _, _) =
+        run_on_fake_engine(json!({}), json!([]), None, json!({}), |deps| async move {
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            record.status = TurnStatus::Completed;
+            let mut expects = Vec::new();
+            for continues in [true, false] {
+                record.continues = continues;
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+                    .await
+                    .unwrap();
+                let req = crate::functions::status::StatusRequest {
+                    session_id: "s".into(),
+                    verbose: false,
+                };
+                let report = crate::functions::status::handle(&deps, req).await.unwrap();
+                expects.push(report.unwrap().expects_wake);
+            }
+            expects
+        })
+        .await;
+    assert_eq!(expects, [true, false], "no binding is stored");
+}
+
 fn held_call() -> Value {
     json!({"state": "pending", "function_id": "test::hold",
         "held_by": "test::gate", "held_arguments": {}})
@@ -840,6 +1576,18 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
     hooks: Value,
     drive: impl FnOnce(Deps) -> F,
 ) -> (T, Vec<(String, Value)>, Value) {
+    run_on_faulty_engine(checkpoints, stored, reply, hooks, |_, _| false, drive).await
+}
+
+/// [`run_on_fake_engine`], refusing every engine call `refuse` matches.
+async fn run_on_faulty_engine<T, F: std::future::Future<Output = T>>(
+    checkpoints: Value,
+    stored: Value,
+    reply: Option<Value>,
+    hooks: Value,
+    refuse: fn(&str, &Value) -> bool,
+    drive: impl FnOnce(Deps) -> F,
+) -> (T, Vec<(String, Value)>, Value) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let calls = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
@@ -856,6 +1604,9 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
     let stored_turn = turn.clone();
     let observed_hooks: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
     let server = tokio::spawn(async move {
+        let mut queue = serde_json::Map::new();
+        let mut prompts = serde_json::Map::new();
+        let mut bindings = serde_json::Map::new();
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
         // The hook functions only register on an engine advertising observe.v2.
@@ -914,6 +1665,18 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 .lock()
                 .unwrap()
                 .push((function.clone(), data.clone()));
+            if refuse(&function, &data) {
+                let reply = json!({
+                    "type": "invocationresult", "invocation_id": message["invocation_id"],
+                    "function_id": function,
+                    "error": {"code": "UNAVAILABLE", "message": "store busy"}
+                });
+                let frame = tokio_tungstenite::tungstenite::Message::Text(reply.to_string().into());
+                if socket.send(frame).await.is_err() {
+                    break;
+                }
+                continue;
+            }
             let result = match function.as_str() {
                 hook if !hooks[hook].is_null() => hooks[hook].clone(),
                 "engine::workers::register" => json!({"success": true}),
@@ -923,6 +1686,35 @@ async fn run_on_fake_engine<T, F: std::future::Future<Output = T>>(
                 "state::set" if data["scope"] == "harness_turn" => {
                     *stored_turn.lock().unwrap() = data["value"].clone();
                     json!({})
+                }
+                "state::set" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    let key = data["key"].as_str().unwrap().to_string();
+                    queue.insert(key, data["value"].clone());
+                    json!({})
+                }
+                "state::delete" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    queue.remove(data["key"].as_str().unwrap());
+                    json!({})
+                }
+                "state::list" if data["scope"] == crate::state::QUEUE_SCOPE => {
+                    Value::Array(queue.values().cloned().collect())
+                }
+                "state::set" if data["scope"] == crate::state::PROMPT_SCOPE => {
+                    let key = data["key"].as_str().unwrap().to_string();
+                    prompts.insert(key, data["value"].clone());
+                    json!({})
+                }
+                "state::get" if data["scope"] == crate::state::PROMPT_SCOPE => prompts
+                    .get(data["key"].as_str().unwrap())
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "state::set" if data["scope"] == crate::state::BINDING_SCOPE => {
+                    let key = data["key"].as_str().unwrap().to_string();
+                    bindings.insert(key, data["value"].clone());
+                    json!({})
+                }
+                "harness::state::list" if data["scope"] == crate::state::BINDING_SCOPE => {
+                    Value::Array(bindings.values().cloned().collect())
                 }
                 "state::list" | "harness::state::list" => json!([]),
                 "state::list_keys" => json!({"keys": []}),

@@ -491,6 +491,14 @@ async fn load_prompt_body(
     Ok(body)
 }
 
+/// Whether a [`hydrate`] error says a body is gone for good (absent, or not the
+/// text its digest names) rather than a failed store read a retry can still
+/// load. String-matched for the same reason as [`is_timeout`].
+pub(crate) fn is_lost_prompt_body(error: &HarnessError) -> bool {
+    let message = error.to_string();
+    message.contains("missing prompt body") || message.contains("does not match its digest")
+}
+
 /// Whether a state error is the caller-side invocation timeout (the SDK's
 /// wording, carried through [`state_set`]'s error mapping). String-matched
 /// because `HarnessError::State` flattens the SDK error to text.
@@ -1623,7 +1631,9 @@ mod tests {
             (TURN_SCOPE.into(), "mb_1".into()),
             serde_json::to_value(&record).unwrap(),
         );
-        let error = get_turn(&iii, "mb_1", 2_000).await.unwrap_err().to_string();
+        let error = get_turn(&iii, "mb_1", 2_000).await.unwrap_err();
+        assert!(is_lost_prompt_body(&error), "{error}");
+        let error = error.to_string();
         assert!(
             error.contains("missing prompt body sha256:missing_body_is_an_error for mb_1"),
             "{error}"
@@ -1649,8 +1659,12 @@ mod tests {
             (PROMPT_SCOPE.into(), digest.clone()),
             json!({ "body": "a tampered prompt", "created_at": 1 }),
         );
-        let error = get_turn(&iii, "bd_1", 2_000).await.unwrap_err().to_string();
-        assert!(error.contains("does not match its digest"), "{error}");
+        let error = get_turn(&iii, "bd_1", 2_000).await.unwrap_err();
+        assert!(is_lost_prompt_body(&error), "{error}");
+        assert!(
+            error.to_string().contains("does not match its digest"),
+            "{error}"
+        );
         store.lock().unwrap().insert(
             (PROMPT_SCOPE.into(), digest.clone()),
             json!({ "body": prompt, "created_at": 1 }),

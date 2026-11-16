@@ -1101,6 +1101,8 @@ mod tests {
             message_preview: None,
             abort: false,
             exchange_finished: false,
+            continues: false,
+            took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,
             options: TurnOptions {

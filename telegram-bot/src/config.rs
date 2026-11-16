@@ -298,7 +298,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let raw: WorkerConfigRaw =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         Ok(raw.into())
     }
 

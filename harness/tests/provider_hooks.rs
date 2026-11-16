@@ -345,6 +345,7 @@ async fn a_binding_observer_carries_its_id_pointer_and_expiry_backstop() {
         capability: None,
         dedup_key: None,
         fires: 0,
+        claimed_at: None,
         created_at: 0,
     };
     harness::bindings::observe_binding(&engine.deps, &binding).expect("a binding with a source");

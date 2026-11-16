@@ -575,7 +575,7 @@ pub async fn local_vm_command(
 /// A local VM runs only on an explicit, valid OCI image: an invalid VM request
 /// must not silently change into another image.
 fn validate_compose_base_image(
-    doc: &serde_yaml::Value,
+    doc: &serde_yaml_ng::Value,
     manifest_path: &Path,
 ) -> Result<(), String> {
     let value = doc
@@ -935,7 +935,7 @@ pub(crate) fn validate_source(
     // scripts.setup, scripts.install, or runtime.base_image. The permissive
     // project_from_doc path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
-    // defuses billion-laughs YAML expansion before serde_yaml sees it.
+    // defuses billion-laughs YAML expansion before serde_yaml_ng sees it.
     if let Some(package) = package
         && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, package)
     {
