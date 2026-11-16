@@ -26,8 +26,9 @@ struct PartialToolCall {
 }
 
 pub struct PartialState {
-    /// One entry per assistant `message` output item, in stream order.
-    texts: Vec<String>,
+    /// One entry per assistant `message` output item, in stream order, with
+    /// the number of tool calls before it.
+    texts: Vec<(usize, String)>,
     thinking: String,
     tool_calls: Vec<PartialToolCall>,
     open_block: Option<OpenBlock>,
@@ -108,13 +109,14 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             signature: None,
         });
     }
-    // A text block is only empty inside its own TextStart snapshot. It goes
-    // last (after the calls) so readers seed it as the open block instead of
-    // keeping a stray empty block mid-message.
-    for text in state.texts.iter().filter(|t| !t.is_empty()) {
-        out.push(ContentBlock::Text { text: text.clone() });
-    }
-    for tc in &state.tool_calls {
+    // Text blocks keep their stream position among the calls. The only empty
+    // one is the block its own TextStart just opened, and it sits past every
+    // call, so readers seed it as the open block.
+    let mut texts = state.texts.iter().peekable();
+    for (i, tc) in state.tool_calls.iter().enumerate() {
+        while let Some((_, text)) = texts.next_if(|(at, _)| *at <= i) {
+            out.push(ContentBlock::Text { text: text.clone() });
+        }
         if tc.function_id.is_empty() {
             continue;
         }
@@ -135,11 +137,7 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             arguments,
         });
     }
-    if state.texts.last().is_some_and(String::is_empty) {
-        out.push(ContentBlock::Text {
-            text: String::new(),
-        });
-    }
+    out.extend(texts.map(|(_, text)| ContentBlock::Text { text: text.clone() }));
     out
 }
 
@@ -253,7 +251,7 @@ fn open_text(state: &mut PartialState, model: &str, events: &mut Vec<AssistantMe
         state.open_block = Some(OpenBlock::Text);
         // A message item's deltas are contiguous, so (re)opening text always
         // means a new output item.
-        state.texts.push(String::new());
+        state.texts.push((state.tool_calls.len(), String::new()));
         events.push(AssistantMessageEvent::TextStart {
             partial: build_partial(state, model),
         });
@@ -340,7 +338,7 @@ pub fn handle_chunk(
                 return events;
             }
             open_text(state, model, &mut events);
-            if let Some(text) = state.texts.last_mut() {
+            if let Some((_, text)) = state.texts.last_mut() {
                 text.push_str(&delta);
             }
             events.push(AssistantMessageEvent::TextDelta {
@@ -408,7 +406,7 @@ pub fn handle_chunk(
                     .filter(|p| p.get("type").and_then(Value::as_str) == Some("output_text"))
                     .filter_map(|p| p.get("text").and_then(Value::as_str))
                     .collect();
-                if let (false, Some(text)) = (done.is_empty(), state.texts.last_mut()) {
+                if let (false, Some((_, text))) = (done.is_empty(), state.texts.last_mut()) {
                     *text = done;
                 }
                 close_open_block(state, model, &mut events);
@@ -749,7 +747,8 @@ mod tests {
     }
 
     /// The open text block stays last in its TextStart snapshot, so a live
-    /// view never holds a stray empty Text block before the calls.
+    /// view never holds a stray empty Text block before the calls, and text
+    /// after a call stays after it once the text closes.
     #[test]
     fn text_after_a_call_never_leaves_an_empty_block_in_the_live_view() {
         let chunks = [
@@ -757,9 +756,11 @@ mod tests {
             json!({ "type": "response.output_item.added", "item": { "type": "function_call", "call_id": "c1", "name": "shell__exec" } }),
             json!({ "type": "response.function_call_arguments.done", "arguments": "{}" }),
             json!({ "type": "response.output_text.delta", "delta": "B" }),
+            json!({ "type": "response.completed" }),
         ];
         let mut state = PartialState::new(vec![]);
         let mut live = llm_router::chat::accumulate::PartialAccumulator::default();
+        let mut events = Vec::new();
         for c in &chunks {
             for ev in handle_chunk(c, &mut state, "codex/gpt-test") {
                 live.apply(&ev);
@@ -772,13 +773,22 @@ mod tests {
                     "live view holds an empty text block: {:?}",
                     view.content
                 );
+                events.push(ev);
             }
         }
-        assert!(matches!(
-            &live.current().unwrap().content[..],
-            [ContentBlock::Text { text: a }, ContentBlock::FunctionCall { .. }, ContentBlock::Text { text: b }]
-                if a == "A" && b == "B"
-        ));
+        let Some(AssistantMessageEvent::Done { message }) = events.last() else {
+            panic!("want done, got {:?}", events.last());
+        };
+        assert!(
+            matches!(
+                &message.content[..],
+                [ContentBlock::Text { text: a }, ContentBlock::FunctionCall { .. }, ContentBlock::Text { text: b }]
+                    if a == "A" && b == "B"
+            ),
+            "{:?}",
+            message.content
+        );
+        assert_eq!(live.current().unwrap().content, message.content);
     }
 
     #[test]
