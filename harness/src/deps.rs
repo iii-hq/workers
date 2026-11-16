@@ -117,6 +117,15 @@ impl Deps {
         self.functions.read().await.clone()
     }
 
+    /// True only when the registry snapshot is loaded and does not list
+    /// `function_id`, internal ids included. Optional workers (the approval
+    /// gate) are then skipped without a call: calling an unregistered function
+    /// is an engine error every time, which Sentinel reports as an issue. An
+    /// unseeded snapshot answers false, so the caller calls as before.
+    pub async fn function_known_absent(&self, function_id: &str) -> bool {
+        crate::discovery::known_absent(&*self.functions().await, function_id)
+    }
+
     pub async fn skills(&self) -> Arc<SkillsSnapshot> {
         self.skills.read().await.clone()
     }

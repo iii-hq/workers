@@ -12,6 +12,7 @@
  * travels browser → engine → `secrets::set` and is kept nowhere else.
  */
 
+import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 
@@ -235,6 +236,9 @@ export interface SecretsStatus {
 
 /** `undefined` when the secrets worker is not running. */
 export async function getSecretsStatus(): Promise<SecretsStatus | undefined> {
+  // Ask the catalog first: a call to an unregistered function is an engine
+  // error each time, even though it is handled here.
+  if (!(await functionRegistered('secrets::status'))) return undefined
   const client = await getIiiClient()
   try {
     return await client.call<SecretsStatus>(
@@ -252,6 +256,7 @@ export async function getSecretsStatus(): Promise<SecretsStatus | undefined> {
 export async function detectKeys(
   names: readonly string[],
 ): Promise<KeyDetection[] | null> {
+  if (!(await functionRegistered('secrets::detect'))) return null
   const client = await getIiiClient()
   try {
     const result = await client.call<{ results?: KeyDetection[] }>(
@@ -275,6 +280,7 @@ export async function getSecret(
   name: string,
   store: KeyStore = 'vault',
 ): Promise<SecretMeta | null | undefined> {
+  if (!(await functionRegistered('secrets::get'))) return undefined
   const client = await getIiiClient()
   try {
     return await client.call<SecretMeta | null>(

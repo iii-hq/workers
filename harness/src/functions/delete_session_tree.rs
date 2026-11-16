@@ -717,6 +717,14 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     crate::ask_settlement::purge(deps, id, timeout).await?;
     // Approval owns its data. Its existing purge is best effort; explicitly
     // read the inbox afterwards so a failed purge cannot be reported completed.
+    // No approval gate on this stack: nothing of it to purge (as the
+    // `function_not_found` arm below), and no engine error for the call.
+    if deps
+        .function_known_absent("approval::on-session-deleted")
+        .await
+    {
+        return Ok(());
+    }
     let purge = deps
         .iii
         .call(CallRequest {
