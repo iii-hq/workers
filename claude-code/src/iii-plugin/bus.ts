@@ -151,6 +151,8 @@ export type BufferOptions = {
 export class ObserverBuffer {
   private readonly entries = new Map<string, Entry>();
   private sink: { unregister(): void } | null = null;
+  /** The connection the sink and the entries live on. */
+  private sinkBus: Bus | null = null;
   private seq = 0;
   private readonly sinkId: string;
   private readonly maxBuffered: number;
@@ -184,6 +186,13 @@ export class ObserverBuffer {
     const function_id = typeof req.function_id === 'string' ? req.function_id.trim() : '';
     if (!function_id) throw new Error('function_id is required');
     const bus = await this.getBus();
+    if (this.sinkBus && this.sinkBus !== bus) {
+      // The connection was replaced (the old client failed): its sink and
+      // observers died with it. Register the sink again on the new one.
+      this.sink = null;
+      this.entries.clear();
+    }
+    this.sinkBus = bus;
     this.sink ??= bus.registerFunction(
       this.sinkId,
       (payload) => {

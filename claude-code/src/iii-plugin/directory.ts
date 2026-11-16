@@ -60,6 +60,10 @@ export class Directory {
   private client: IIIClient | null = null;
   private engine: Resolved | null = null;
   private connecting: Promise<IIIClient> | null = null;
+  /** One `Bus` per connection, so a replaced client is a different `Bus`. */
+  private clientBusFor: { client: IIIClient; bus: Bus } | null = null;
+  /** Closed: no connection is kept from now on, even one already dialing. */
+  private closed = false;
 
   constructor(
     private readonly resolve: () => Promise<Resolved> = () => resolveEngine(),
@@ -81,7 +85,10 @@ export class Directory {
 
   /** The live connection as a `Bus`, for iii_call / iii_observe. */
   async bus(): Promise<Bus> {
-    return clientBus(await this.ready());
+    const client = await this.ready();
+    if (this.clientBusFor?.client !== client)
+      this.clientBusFor = { client, bus: clientBus(client) };
+    return this.clientBusFor.bus;
   }
 
   /** Resolve and connect now, without making a call. */
@@ -90,6 +97,7 @@ export class Directory {
   }
 
   private async ready(): Promise<IIIClient> {
+    if (this.closed) throw new Error('the iii plugin is closed');
     const state = this.client?.getConnectionState();
     if (this.client && state !== 'failed') return this.client;
     if (this.client) {
@@ -111,6 +119,12 @@ export class Directory {
           );
         }
         await new Promise((r) => setTimeout(r, 50));
+      }
+      if (this.closed) {
+        // Closed while dialing: keep nothing alive (the SDK heartbeat would
+        // hold the process open).
+        await client.shutdown().catch(() => {});
+        throw new Error('the iii plugin is closed');
       }
       this.client = client;
       return client;
@@ -148,8 +162,10 @@ export class Directory {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.client?.shutdown().catch(() => {});
     this.client = null;
+    this.clientBusFor = null;
   }
 }
 
@@ -201,4 +217,21 @@ description: ${yamlString(description)}
 
 ${(skill.body ?? '').trim()}
 `;
+}
+
+/**
+ * The directory each skill exports to, by its slug. Refuses ids that land in
+ * the same directory, so no `SKILL.md` silently replaces another.
+ */
+export function skillDirectories(ids: string[]): Map<string, string> {
+  const dirs = new Map<string, string>();
+  for (const id of ids) {
+    const dir = slug(id);
+    const taken = dirs.get(dir);
+    if (taken !== undefined) {
+      throw new Error(`skills ${taken} and ${id} would both export to skills/${dir}; rename one`);
+    }
+    dirs.set(dir, id);
+  }
+  return dirs;
 }

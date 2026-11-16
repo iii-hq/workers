@@ -26,7 +26,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeProfileCommands } from './commands.js';
-import { Directory, renderSkill, renderSubagent, slug } from './directory.js';
+import { Directory, renderSkill, renderSubagent, skillDirectories, slug } from './directory.js';
 import { serve } from './server.js';
 
 function option(argv: string[], name: string): string {
@@ -79,6 +79,8 @@ async function exportNative(dir: Directory, argv: string[]): Promise<void> {
   console.error(`wrote ${agents.length} agent profile(s) to ${join(target, 'agents')}`);
   if (!argv.includes('--skills')) return;
   const skills = await dir.listSkills();
+  // Refuse before writing anything if two ids land in one directory.
+  skillDirectories(skills.map((row) => row.id));
   for (const row of skills) {
     const skill = await dir.getSkill(row.id);
     const path = join(target, 'skills', slug(row.id));

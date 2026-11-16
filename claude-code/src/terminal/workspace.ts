@@ -88,7 +88,8 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
   const args = plugin ? [...config.args, '--plugin-dir', plugin] : [...config.args];
   // iii mode: the session runs as the plugin's `iii` agent, unless the
   // operator configured an agent of their own.
-  if (plugin && !config.args.includes('--agent')) args.push('--agent', III_AGENT);
+  const ownAgent = config.args.some((a) => a === '--agent' || a.startsWith('--agent='));
+  if (plugin && !ownAgent) args.push('--agent', III_AGENT);
   return { ...base, args, executable, detail, bridge, plugin };
 }
 

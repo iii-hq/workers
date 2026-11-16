@@ -58,8 +58,11 @@ The `iii` MCP server gives the agent the engine itself, through `iii-sdk`:
 Claude Code cannot be woken by an MCP server mid-turn, so observed
 invocations are **buffered** in the plugin process (500 per observer, oldest
 dropped first) and read with `iii_events`. Observers belong to the session:
-they are removed when it ends. Each session registers its own private sink
-function (`iii-plugin-<host>-<pid>::observed`) to receive them.
+they are removed when it ends. Each session registers its own sink function
+(`iii-plugin-<host>-<pid>::observed`) to receive them. It is internal
+(unlisted, hidden from traces) but public, since the engine refuses a private
+observer target, so any caller on the bus can reach it; the plugin keeps only
+the deliveries for its own observer ids.
 
 Every skill is also an `iii-skill://<id>` resource. Everything is read live;
 the connection opens on first use, so `claude` starts cleanly before the

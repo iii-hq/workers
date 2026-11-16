@@ -279,6 +279,14 @@ describe('preparing the terminal host', () => {
     expect(prepared.args).not.toContain('iii:iii');
   });
 
+  it('keeps an --agent=<name> the operator configured too', async () => {
+    const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS, args: ['--agent=mine'] });
+    expect(prepared.args).toContain('--agent=mine');
+    expect(prepared.args).not.toContain('iii:iii');
+    expect(prepared.args).not.toContain('--agent');
+  });
+
   it('starts no iii mode when the workspace is not set up (no plugin)', async () => {
     const { iii } = fakeShell({ whichClaude: '/usr/local/bin/claude' });
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS, setup_workspace: false });

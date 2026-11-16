@@ -87,9 +87,23 @@ ${ENGINE_NOTE}`,
   };
 }
 
-/** Commands for every visible profile; hidden helpers stay reachable through /iii:profile. */
+/**
+ * Commands for every visible profile; hidden helpers stay reachable through
+ * /iii:profile. A profile whose id slugs to an empty name, or to the name of
+ * an earlier profile, gets no command of its own (still reachable through
+ * /iii:profile): one file per path, and nothing the removal pass cannot see.
+ */
 export function profileCommands(agents: AgentRow[]): PluginFile[] {
-  return agents.filter((a) => !a.hidden).map(profileCommand);
+  const taken = new Set<string>();
+  const files: PluginFile[] = [];
+  for (const row of agents) {
+    if (row.hidden) continue;
+    const name = profileCommandName(row.id);
+    if (!name || taken.has(name)) continue;
+    taken.add(name);
+    files.push(profileCommand(row));
+  }
+  return files;
 }
 
 export type CommandOps = {

@@ -8,8 +8,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { type Bus, callFunction, ObserverBuffer, sinkFunctionId } from '../src/iii-plugin/bus.js';
-import type { Directory } from '../src/iii-plugin/directory.js';
-import { createHandler } from '../src/iii-plugin/server.js';
+import { Directory } from '../src/iii-plugin/directory.js';
+import { createHandler, createLineReader } from '../src/iii-plugin/server.js';
 
 type Handler = (payload: unknown) => unknown;
 
@@ -398,5 +398,128 @@ describe('MCP tools for call and observe', () => {
     const r = await tool(server(f), 'iii_observe', { function_id: 'a::b' });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('INVALID_ARGS');
+  });
+});
+
+describe('a replaced connection', () => {
+  it('re-registers the sink on the new bus and drops the dead observers', async () => {
+    const a = fakeBus();
+    const b = fakeBus();
+    let current = a.bus;
+    const buffer = new ObserverBuffer(async () => current, { sinkId: 'sink', readyTimeoutMs: 10 });
+    await buffer.observe({ function_id: 'orders::create' });
+    expect(a.functions.has('sink')).toBe(true);
+    current = b.bus; // the old client failed and Directory connected a new one
+    await buffer.observe({ function_id: 'orders::create' });
+    expect(b.functions.has('sink')).toBe(true);
+    // Only the observer on the live connection is left.
+    expect(buffer.list().map((o) => o.observer_id)).toEqual([b.observes[0].id]);
+  });
+});
+
+describe('Directory', () => {
+  type FakeClient = {
+    state: string;
+    shutdowns: number;
+    getConnectionState: () => string;
+    shutdown: () => Promise<void>;
+    call: () => Promise<unknown>;
+    registerFunction: () => { unregister(): void };
+    observe: () => unknown;
+  };
+  const client = (): FakeClient => {
+    const c: FakeClient = {
+      state: 'connected',
+      shutdowns: 0,
+      getConnectionState: () => c.state,
+      shutdown: async () => {
+        c.shutdowns += 1;
+      },
+      call: async () => ({}),
+      registerFunction: () => ({ unregister() {} }),
+      observe: () => ({}),
+    };
+    return c;
+  };
+  const resolved = async () => ({ url: 'ws://e', source: 'env', detail: '' }) as never;
+
+  it('hands out one Bus per connection, a new one after a failed client', async () => {
+    const clients: FakeClient[] = [];
+    const dir = new Directory(resolved, () => {
+      const c = client();
+      clients.push(c);
+      return c as never;
+    });
+    const first = await dir.bus();
+    expect(await dir.bus()).toBe(first);
+    clients[0].state = 'failed';
+    const second = await dir.bus();
+    expect(second).not.toBe(first);
+    expect(clients).toHaveLength(2);
+  });
+
+  it('shuts down a connection that completes after close instead of keeping it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const late = client();
+    late.state = 'connecting';
+    const dir = new Directory(resolved, () => late as never);
+    const pending = dir.bus().catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    const closing = dir.close();
+    late.state = 'connected';
+    release();
+    await gate;
+    await closing;
+    expect(String(await pending)).toContain('closed');
+    expect(late.shutdowns).toBeGreaterThan(0);
+    expect(dir.status().state).toBe('disconnected');
+  });
+});
+
+describe('createLineReader (stdin)', () => {
+  const reader = (handle: (req: { id?: unknown; method: string }) => Promise<unknown>) => {
+    const out: Record<string, unknown>[] = [];
+    const r = createLineReader(handle as never, (m) => out.push(m as Record<string, unknown>));
+    return { r, out };
+  };
+
+  it('answers lines that are not request objects with -32600 and keeps serving', async () => {
+    const { r, out } = reader(async () => 'ok');
+    r.onData('null\n[]\n5\n"x"\n{"id":1}\n{oops\n');
+    r.onData('{"jsonrpc":"2.0","id":2,"method":"ping"}\n');
+    await r.drain();
+    const codes = out.map((m) => (m.error as { code?: number } | undefined)?.code ?? 'ok');
+    expect(codes).toEqual([-32600, -32600, -32600, -32600, -32600, -32700, 'ok']);
+    expect(out.at(-1)).toMatchObject({ id: 2, result: 'ok' });
+  });
+
+  it('drain waits for requests still in flight', async () => {
+    let finish!: (v: unknown) => void;
+    const { r, out } = reader(
+      () =>
+        new Promise((res) => {
+          finish = res;
+        }),
+    );
+    r.onData('{"jsonrpc":"2.0","id":7,"method":"tools/call"}\n');
+    let drained = false;
+    const d = r.drain().then(() => {
+      drained = true;
+    });
+    await new Promise((res) => setTimeout(res, 10));
+    expect(drained).toBe(false);
+    finish('done');
+    await d;
+    expect(out).toEqual([{ jsonrpc: '2.0', id: 7, result: 'done' }]);
+  });
+
+  it('ignores notifications', async () => {
+    const { r, out } = reader(async () => 'ok');
+    r.onData('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+    await r.drain();
+    expect(out).toEqual([]);
   });
 });

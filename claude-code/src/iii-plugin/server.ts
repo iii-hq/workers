@@ -278,35 +278,21 @@ export function createHandler(
   };
 }
 
-/** Serve MCP on stdin/stdout until stdin closes. */
-export async function serve(dir: Directory): Promise<void> {
-  const observers = new ObserverBuffer(() => dir.bus());
-  // stdout is the protocol channel: anything else printed there corrupts it,
-  // and iii-sdk logs its connection banners to stdout. Keep the real writer for
-  // JSON-RPC and send every other stdout write to stderr.
-  const out = process.stdout.write.bind(process.stdout);
-  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
-  const handle = createHandler(dir, observers);
-  const write = (msg: unknown) => out(`${JSON.stringify(msg)}\n`);
+/**
+ * The stdin side of the MCP server: splits chunks into lines, answers each
+ * request through `handle`, and tracks the answers still in flight so EOF
+ * can wait for them. A line that parses but is not a request object gets
+ * JSON-RPC's Invalid Request (-32600) instead of crashing the server.
+ */
+export function createLineReader(
+  handle: (req: Request) => Promise<unknown>,
+  write: (msg: unknown) => void,
+): { onData(chunk: string): void; drain(): Promise<void> } {
   let buffer = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk: string) => {
-    buffer += chunk;
-    let nl = buffer.indexOf('\n');
-    while (nl >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      nl = buffer.indexOf('\n');
-      if (!line) continue;
-      let req: Request;
-      try {
-        req = JSON.parse(line);
-      } catch {
-        write({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
-        continue;
-      }
-      if (req.id === undefined) continue; // notifications need no answer
-      handle(req).then(
+  const inflight = new Set<Promise<void>>();
+  const answer = (req: Request) => {
+    const done: Promise<void> = handle(req)
+      .then(
         (result) => write({ jsonrpc: '2.0', id: req.id, result }),
         (err) =>
           write({
@@ -317,10 +303,63 @@ export async function serve(dir: Directory): Promise<void> {
               message: String(err instanceof Error ? err.message : err),
             },
           }),
-      );
-    }
-  });
+      )
+      .finally(() => inflight.delete(done));
+    inflight.add(done);
+  };
+  return {
+    onData(chunk: string) {
+      buffer += chunk;
+      let nl = buffer.indexOf('\n');
+      while (nl >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf('\n');
+        if (!line) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          write({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+          continue;
+        }
+        if (
+          parsed === null ||
+          typeof parsed !== 'object' ||
+          Array.isArray(parsed) ||
+          typeof (parsed as { method?: unknown }).method !== 'string'
+        ) {
+          write({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } });
+          continue;
+        }
+        const req = parsed as Request;
+        if (req.id === undefined) continue; // notifications need no answer
+        answer(req);
+      }
+    },
+    async drain() {
+      while (inflight.size) await Promise.allSettled([...inflight]);
+    },
+  };
+}
+
+/** Serve MCP on stdin/stdout until stdin closes. */
+export async function serve(dir: Directory): Promise<void> {
+  const observers = new ObserverBuffer(() => dir.bus());
+  // stdout is the protocol channel: anything else printed there corrupts it,
+  // and iii-sdk logs its connection banners to stdout. Keep the real writer for
+  // JSON-RPC and send every other stdout write to stderr.
+  const out = process.stdout.write.bind(process.stdout);
+  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+  const reader = createLineReader(createHandler(dir, observers), (msg) =>
+    out(`${JSON.stringify(msg)}\n`),
+  );
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk: string) => reader.onData(chunk));
   await new Promise<void>((resolve) => process.stdin.once('end', resolve));
+  // Answer what is still in flight before cleaning up, so no request is left
+  // connecting a client after the directory closed.
+  await reader.drain();
   // Observers are not replayed on reconnect and die with the connection, but
   // dispose them explicitly so the engine forgets them at once.
   await observers.close();

@@ -17,8 +17,8 @@
  * unchanged install one small read rather than re-writing the 500 KB server.
  */
 
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { IIIClient } from 'iii-sdk';
@@ -59,6 +59,9 @@ export function buildId(files: PluginFile[] = staticFiles()): string {
   return hash.digest('hex').slice(0, 16);
 }
 
+/** Where the worker writes the runtime skill, when it has a context. */
+const RUNTIME_SKILL = 'skills/iii-runtime/SKILL.md';
+
 /** Write the whole plugin into `dir` through `ops`. */
 export async function installWith(
   dir: string,
@@ -86,9 +89,16 @@ export async function installWith(
     context: options.context.text,
     contextDetail: options.context.detail,
   };
-  for (const f of pluginFiles(worker)) {
+  const generated = pluginFiles(worker);
+  for (const f of generated) {
     const path = `${dir}/${f.path}`;
     if ((await ops.read(path)) !== f.content) await ops.write(path, f.content);
+  }
+  // The runtime skill exists only while there is a context to put in it: a
+  // stale one would keep loading old instructions.
+  if (!generated.some((f) => f.path === RUNTIME_SKILL)) {
+    const path = `${dir}/${RUNTIME_SKILL}`;
+    if ((await ops.read(path)) !== null) await ops.remove(path);
   }
 
   const details = [pluginDetail(worker)];
@@ -115,12 +125,26 @@ async function listAgents(iii: IIIClient): Promise<{ agents: AgentRow[] | null; 
   }
 }
 
+/**
+ * Write `content` to `path` through a temporary file in the same directory,
+ * renamed into place: concurrent installers (sessions run side by side) and
+ * a session starting its MCP server meanwhile never see a partial file.
+ */
+export async function atomicWrite(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, content, 'utf8');
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+}
+
 const localOps: Ops = {
   read: (path) => readFile(path, 'utf8').catch(() => null),
-  write: async (path, content) => {
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, 'utf8');
-  },
+  write: atomicWrite,
   remove: (path) => rm(path, { force: true }),
 };
 

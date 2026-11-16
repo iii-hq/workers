@@ -9,10 +9,15 @@ import {
 import { normalizeUrl, resolveEngine } from '../src/iii-plugin/engine.js';
 import { createHandler } from '../src/iii-plugin/server.js';
 import { PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
-import { buildId, installWith } from '../src/iii-plugin/install.js';
+import { atomicWrite, buildId, installWith } from '../src/iii-plugin/install.js';
+import { skillDirectories } from '../src/iii-plugin/directory.js';
+import { mkdtemp, readdir, readFile as fsRead } from 'node:fs/promises';
+import { tmpdir as osTmp } from 'node:os';
+import { join as pjoin } from 'node:path';
 import {
   profileCommand,
   profileCommandName,
+  profileCommands,
   writeProfileCommands,
 } from '../src/iii-plugin/commands.js';
 
@@ -348,5 +353,69 @@ describe('pluginWorkerName', () => {
     const name = pluginWorkerName(env);
     expect(name).toMatch(new RegExp(`^iii-plugin:.+:${process.pid}$`));
     expect(env.III_WORKER_NAME).toBeUndefined();
+  });
+});
+
+describe('review fixes', () => {
+  it('skips profiles whose command name is empty or already taken', () => {
+    const files = profileCommands([
+      { id: 'Deep Work' },
+      { id: 'deep-work' },
+      { id: 'a/b' },
+      { id: 'a-b' },
+      { id: '***' },
+    ]);
+    expect(files.map((f) => f.path)).toEqual(['commands/deep-work.md', 'commands/a-b.md']);
+    // The first profile keeps the name.
+    expect(files[0].content).toContain('`Deep Work`');
+  });
+
+  it('removes the runtime skill when the context becomes empty', async () => {
+    const m = memoryOps();
+    const embedded = [
+      { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
+      { path: 'server/index.mjs', content: 'x' },
+    ];
+    const base = { cli: 'iii', agents: [] };
+    await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, context: { text: '# iii runtime', detail: '' } },
+      embedded,
+    );
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeDefined();
+    await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, context: { text: '', detail: 'unavailable' } },
+      embedded,
+    );
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
+  });
+
+  it('writes files atomically: a temp file renamed into place, none left behind', async () => {
+    const dir = await mkdtemp(pjoin(osTmp(), 'iii-plugin-'));
+    const path = pjoin(dir, 'server', 'index.mjs');
+    await atomicWrite(path, 'old');
+    // Two concurrent installers: the file is always one complete version.
+    await Promise.all([
+      atomicWrite(path, 'a'.repeat(100_000)),
+      atomicWrite(path, 'b'.repeat(100_000)),
+    ]);
+    const content = await fsRead(path, 'utf8');
+    expect(content === 'a'.repeat(100_000) || content === 'b'.repeat(100_000)).toBe(true);
+    expect(await readdir(pjoin(dir, 'server'))).toEqual(['index.mjs']);
+  });
+
+  it('refuses a skill export whose ids land in one directory', () => {
+    expect(skillDirectories(['foo/bar', 'baz'])).toEqual(
+      new Map([
+        ['foo-bar', 'foo/bar'],
+        ['baz', 'baz'],
+      ]),
+    );
+    expect(() => skillDirectories(['foo/bar-baz', 'foo-bar/baz'])).toThrow(
+      /foo\/bar-baz.*foo-bar\/baz|foo-bar\/baz.*foo\/bar-baz/,
+    );
   });
 });
