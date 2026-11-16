@@ -4208,9 +4208,9 @@ mod tests {
         assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
     }
 
-    /// A VM with no data (it never booted a build) goes whole without `prune`
-    /// too; a VM an earlier adapter ran keeps its disk as a pre-build copy, as
-    /// its first build start would have.
+    /// A VM with no data goes whole without `prune` too, seal included; a VM an
+    /// earlier adapter ran keeps its disk as a pre-build copy, as its first
+    /// build start would have.
     #[tokio::test]
     async fn a_destroy_without_prune_keeps_only_what_holds_data() {
         let t = tempfile::tempdir().unwrap();

@@ -194,17 +194,19 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
 - **`worker::destroy` and `prune`.** From 0.5.0 (sandbox contract 1.4) a
   destroy without `prune` removes the VM's runtime state (its `root/` share,
   console log, instance and state-key records, build scratch) and its build-dir
-  record, which frees its build directory, and keeps its data: the data disk,
-  the pre-build copies and the seal. Every such destroy first moves the disk of
-  a start without `build` (`root/upper.ext4`, a 0.26 disk among them) or a
-  legacy rootfs clone (`root/`) to the next free pre-build name, so it never
-  deletes what a guest wrote. A later start with `build` of the same
-  `state_key` boots over the kept data disk; a start without `build` begins
-  with a new disk, and what the previous one held stays under the pre-build
-  names. A VM with no data goes whole. The reply lists in `kept` the absolute paths it kept; `destroyed` is
-  false when the directory held data only. `prune: true`
-  removes everything, as 0.4.x did. The data stays in
-  `~/.iii/sandbox/workers/<vm_id>/`, which the log of the destroy names.
+  record, which frees its build directory. It keeps the data disk and the
+  pre-build copies, and keeps or writes the seal; a VM with no data goes whole,
+  seal included. Every such destroy first moves the disk of a start without
+  `build` (`root/upper.ext4`, a 0.26 disk among them) or a legacy rootfs clone
+  (`root/`) to the next free pre-build name, so it never deletes what a guest
+  wrote. A later start with `build` of the same `state_key` boots on the kept
+  data disk; a start without `build` begins with a new disk, and what the
+  previous one held stays under the pre-build names. The reply lists in `kept`
+  the absolute paths it kept; `destroyed` is false when the directory held data
+  only. The legacy mode does not advertise `worker.prune` but keeps the data the
+  same way: a caller that wants it gone sends `prune: true`, which removes
+  everything, as 0.4.x did. The data stays in `~/.iii/sandbox/workers/<vm_id>/`,
+  which the log of the destroy names.
 - **Binary packages.** From 0.5.0 (sandbox contract 1.4) a `Binary` source names
   the directory where Compose put a binary package's Linux build and its
   `executable`, relative to it: a relative path of plain components naming an

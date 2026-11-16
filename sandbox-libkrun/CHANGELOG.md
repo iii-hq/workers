@@ -22,15 +22,17 @@ are those of 0.4.x. 0.4.1 to 0.4.3 were published from `main` with contract
   manifest may then leave it out.
 - **`worker::destroy` keeps the data.** Without `prune`, a destroy removes the
   VM's runtime state and its build-dir record, which frees its build directory,
-  and keeps its data disk, the pre-build copies and the seal. It first moves
-  the disk of a start without `build`, or a legacy rootfs clone, to the next
-  free pre-build name, so it never deletes what a guest wrote. A later start
-  with `build` of the same `state_key` boots over the kept data disk; a start
-  without `build` begins with a new disk, and what the previous one held stays
-  under the pre-build names. A VM with no data goes whole. The reply lists what stayed in `kept`; `destroyed`
-  is false when only data was there.
-  `prune: true` removes everything, as 0.4.x did. `adapter::info` advertises
-  `worker.prune` in the overlay mode, with `worker.build`.
+  keeps its data disk and the pre-build copies, and keeps or writes the seal; a
+  VM with no data goes whole, seal included. It first moves the disk of a start
+  without `build`, or a legacy rootfs clone, to the next free pre-build name,
+  so it never deletes what a guest wrote. A later start with `build` of the
+  same `state_key` boots on the kept data disk; a start without `build` begins
+  with a new disk, and what the previous one held stays under the pre-build
+  names. The reply lists what stayed in `kept`; `destroyed` is false when only
+  data was there. `prune: true` removes everything, as 0.4.x did.
+  `adapter::info` advertises `worker.prune` in the overlay mode, with
+  `worker.build`; the legacy mode keeps the data the same way without
+  advertising it, so a caller that wants the data gone sends `prune: true`.
 
 ### Fixed
 
