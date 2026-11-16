@@ -10,7 +10,9 @@ name: Memory E2E on release
 # and memory-consolidated stacks for each model, and one report compares them:
 # how much better each class of case goes with memory than without it. The
 # report is advisory; it is what a person reads before turning the learned-rule
-# and verify-tier changes on by default.
+# and verify-tier changes on by default. Releases measure deepseek-flash, whose
+# key the executor holds; another model runs when a dispatch names it, with its
+# provider's key in the executor, or locally (harness-e2e README, "Memory gain").
 #
 # A release event runs this file as it exists at the tagged commit, so a memory
 # release of a commit that predates this workflow does not trigger it; dispatch
@@ -27,7 +29,8 @@ on:
       models:
         description: >-
           JSON list of provider/model subjects for the gain arms; empty runs
-          ["deepseek/deepseek-flash","anthropic/claude-haiku-5-5"]
+          ["deepseek/deepseek-flash"]. Each provider's key must be in the
+          harness-e2e executor.
         required: false
       extraction_model:
         description: >-
@@ -114,7 +117,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        model: ${{ fromJSON(inputs.models || '["deepseek/deepseek-flash","anthropic/claude-haiku-5-5"]') }}
+        model: ${{ fromJSON(inputs.models || '["deepseek/deepseek-flash"]') }}
         stack: [memory, memory-off, memory-consolidated]
     steps:
       - name: Mint a token that can run iii-hq/harness-e2e
