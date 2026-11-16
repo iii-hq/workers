@@ -536,11 +536,15 @@ async fn generate_step(
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
     // at once (harness.md § Concurrency & steering).
-    let drained = drain_rows(deps, &session, &record.session_id).await?;
-    // Stored now: a step that fails next is finalized from the stored record.
+    let mut drained = Vec::new();
+    let drain = drain_rows(deps, &session, &record.session_id, &mut drained).await;
+    // Stored now, even when the drain failed part-way: a step that fails next
+    // is finalized from the stored record. A re-drain may append one of these
+    // rows again (its delete failed); the append and the wake note are idempotent.
     if note_took_wakes(&mut record, &drained) {
         crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
     }
+    drain?;
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     // The reason is the live phase detail UIs render while the shimmer shows;
@@ -2538,24 +2542,26 @@ pub(crate) async fn drain_queued(
     session: &SessionClient,
     session_id: &str,
 ) -> Result<usize, HarnessError> {
-    Ok(count_model_visible(
-        &drain_rows(deps, session, session_id).await?,
-    ))
+    let mut rows = Vec::new();
+    drain_rows(deps, session, session_id, &mut rows).await?;
+    Ok(count_model_visible(&rows))
 }
 
 /// Drain the session's message queue into the transcript in arrival order,
-/// returning the drained rows. Idempotent: each row appends under its stored
-/// deterministic entry id, and rows are deleted only after the append lands —
-/// a redelivered step re-drains as a no-op and returns nothing, since there is
-/// nothing left to drain.
+/// pushing each row onto `delivered` once it is in the transcript — on error
+/// it still holds the rows that reached the transcript before the failure.
+/// Idempotent: each row appends under its stored deterministic entry id, and
+/// rows are deleted only after the append lands — a redelivered step re-drains
+/// as a no-op and delivers nothing, since there is nothing left to drain.
 async fn drain_rows(
     deps: &Deps,
     session: &SessionClient,
     session_id: &str,
-) -> Result<Vec<crate::state::QueuedMessage>, HarnessError> {
+    delivered: &mut Vec<crate::state::QueuedMessage>,
+) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
     let rows = crate::state::list_queued(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    for row in &rows {
+    for row in rows {
         session
             .append(
                 session_id,
@@ -2565,9 +2571,11 @@ async fn drain_rows(
                 row.origin.as_ref(),
             )
             .await?;
-        crate::state::delete_queued(&deps.iii, session_id, &row.id, cfg.session_timeout_ms).await?;
+        let id = row.id.clone();
+        delivered.push(row);
+        crate::state::delete_queued(&deps.iii, session_id, &id, cfg.session_timeout_ms).await?;
     }
-    Ok(rows)
+    Ok(())
 }
 
 /// [`crate::bindings::note_took_wake`] for every row a drain delivered. True
@@ -2590,11 +2598,11 @@ async fn drain_queued_best_effort(
     session: &SessionClient,
     record: &mut TurnRecord,
 ) -> bool {
-    match drain_rows(deps, session, &record.session_id).await {
-        Ok(rows) => {
-            note_took_wakes(record, &rows);
-            count_model_visible(&rows) > 0
-        }
+    let mut rows = Vec::new();
+    let drained = drain_rows(deps, session, &record.session_id, &mut rows).await;
+    note_took_wakes(record, &rows);
+    match drained {
+        Ok(()) => count_model_visible(&rows) > 0,
         Err(e) => {
             tracing::warn!(session_id = %record.session_id, error = %e, "finalize queue drain failed");
             false

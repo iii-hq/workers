@@ -483,6 +483,33 @@ async fn a_pass_cleans_up_a_consumed_binding_without_an_outcome() {
     );
 }
 
+/// A pass that leaves a spent record to an in-flight delivery rechecks it:
+/// the delivery holding the marker may be a duplicate that only loses its
+/// claim, after the one that spent the record failed its retire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spent_binding_left_to_a_delivery_is_rechecked() {
+    let stack = Stack::new().await;
+    let mut consumed = call_binding("sub_left", true, AgentMessage::now_ms() - 1);
+    consumed.fires = 1;
+    stack.insert_binding(&consumed);
+
+    let duplicate = stack.deps.deliveries.enter("sub_left");
+    assert!(!harness::bindings::expiry::retire_due(&stack.deps, "sub_left", 0).await);
+    assert!(stack.binding_stored("sub_left"));
+
+    drop(duplicate);
+    stack
+        .wait_for("the recheck", |store| {
+            store.get("harness_binding", "sub_left").is_null()
+        })
+        .await;
+    assert!(
+        stack.fired_records("sub_left").is_empty(),
+        "{:?}",
+        stack.fired_records("sub_left")
+    );
+}
+
 /// A once wake delivered back into its owner session.
 fn wake_binding(id: &str) -> Binding {
     let mut wake = call_binding(id, true, AgentMessage::now_ms() + 60_000);

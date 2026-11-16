@@ -813,6 +813,99 @@ async fn a_failed_reseed_ends_the_exchange() {
     );
 }
 
+/// A step whose drain fails after it delivered a wake still notes the wake:
+/// the re-drain on a retry no longer lists that row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_drain_failing_after_a_wake_still_notes_it() {
+    let refuse = |function: &str, data: &Value| {
+        function == "session::append" && data["entry_id"] == "e_user_2"
+    };
+    let ((result, queued), _, turn) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        json!({}),
+        refuse,
+        |deps| async move {
+            queue_wake_then_message(&deps).await;
+            let result = step_one(deps.clone()).await;
+            (result, queued_entries(&deps).await)
+        },
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(turn["took_wakes"], json!(["sub"]), "{turn}");
+    assert_eq!(queued, ["e_user_2"]);
+}
+
+/// The finalize drain notes a delivered wake even when a later row fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finalize_drain_failing_after_a_wake_still_notes_it() {
+    let refuse = |function: &str, data: &Value| {
+        function == "session::append" && data["entry_id"] == "e_user_2"
+    };
+    let ((took_wakes, reseeds, queued), _, _) = run_on_faulty_engine(
+        json!({}),
+        json!([]),
+        None,
+        json!({}),
+        refuse,
+        |deps| async move {
+            queue_wake_then_message(&deps).await;
+            let cfg = deps.cfg().await;
+            let mut record =
+                crate::state::get_turn_unhydrated(&deps.iii, "s", cfg.session_timeout_ms)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let session = deps.session().await;
+            let reseeds = drain_queued_best_effort(&deps, &session, &mut record).await;
+            (record.took_wakes, reseeds, queued_entries(&deps).await)
+        },
+    )
+    .await;
+    assert_eq!(took_wakes, ["sub"]);
+    assert!(!reseeds, "a failed drain does not reseed");
+    assert_eq!(queued, ["e_user_2"]);
+}
+
+/// Queue a wake fire, then a user message behind it.
+async fn queue_wake_then_message(deps: &Deps) {
+    let cfg = deps.cfg().await;
+    let rows = [
+        (
+            "q_1",
+            "e_fire_sub_1",
+            Some(json!({ "notification": true, "binding": "sub" })),
+        ),
+        ("q_2", "e_user_2", None),
+    ];
+    for (queued_at, (id, entry_id, origin)) in (1..).zip(rows) {
+        let row = crate::state::QueuedMessage {
+            id: id.into(),
+            session_id: "s".into(),
+            message: AgentMessage::user_text(entry_id),
+            entry_id: entry_id.into(),
+            origin,
+            queued_at,
+        };
+        crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms)
+            .await
+            .unwrap();
+    }
+}
+
+/// Entry ids still in the session's queue.
+async fn queued_entries(deps: &Deps) -> Vec<String> {
+    let cfg = deps.cfg().await;
+    crate::state::list_queued(&deps.iii, "s", cfg.session_timeout_ms)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.entry_id)
+        .collect()
+}
+
 /// A reseeded turn whose first enqueue fails has finalized itself: the turn
 /// before it is not settled again over it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

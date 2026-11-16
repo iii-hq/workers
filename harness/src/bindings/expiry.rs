@@ -41,9 +41,10 @@ use crate::timer::OneShots;
 use crate::types::message::AgentMessage;
 use crate::types::turn::TurnStatus;
 
-/// Store reads at a deadline that fail are retried this many times, on a
-/// doubling backoff from [`RETRY_BASE_MS`]. Past that, the next sweep — the
-/// state worker coming back is itself an engine worker event — retires it.
+/// Store reads at a deadline that fail, and spent records left to an
+/// in-flight delivery, are rechecked this many times, on a doubling backoff
+/// from [`RETRY_BASE_MS`]. Past that, the next sweep — the state worker
+/// coming back is itself an engine worker event — retires it.
 const RETRY_ATTEMPTS: u32 = 5;
 const RETRY_BASE_MS: i64 = 1_000;
 /// Compare-and-delete rounds against concurrent fires before giving up to
@@ -156,6 +157,12 @@ async fn retire_due_attempt(deps: &Deps, binding_id: &str, due: i64, attempt: u3
             return false;
         }
         if left_to_its_delivery(&binding, deps.deliveries.contains(&binding.id)) {
+            if !recheck_later(deps, binding_id, due, attempt) {
+                tracing::debug!(
+                    binding = %binding_id,
+                    "spent binding still left to its delivery; the next binding pass retires it"
+                );
+            }
             return false;
         }
         if retire_spent(deps, &store, &binding).await {
@@ -171,33 +178,47 @@ async fn retire_due_attempt(deps: &Deps, binding_id: &str, due: i64, attempt: u3
 
 /// A spent record whose delivery still runs in this process: that delivery
 /// retires it once the woken turn is seeded, and deleting it first unparks
-/// the session mid-delivery.
+/// the session mid-delivery. The caller still rechecks it later: the marker
+/// can belong to a duplicate fire that only loses its claim, while the pass
+/// woken by the delivery that failed its own retire is this very check.
 fn left_to_its_delivery(binding: &Binding, dispatching: bool) -> bool {
     dispatching && binding.is_spent()
 }
 
 fn retry_later(deps: &Deps, binding_id: &str, due: i64, attempt: u32, error: &str) {
-    if attempt >= RETRY_ATTEMPTS {
+    if recheck_later(deps, binding_id, due, attempt) {
+        tracing::warn!(
+            binding = %binding_id,
+            error,
+            backoff_ms = RETRY_BASE_MS << attempt,
+            "binding store unreadable at its deadline; retrying"
+        );
+    } else {
         tracing::warn!(
             binding = %binding_id,
             error,
             "binding store unreadable at its deadline; the next binding pass retires it"
         );
-        return;
     }
-    let backoff = RETRY_BASE_MS << attempt;
-    tracing::warn!(
-        binding = %binding_id,
-        error,
-        backoff_ms = backoff,
-        "binding store unreadable at its deadline; retrying"
-    );
+}
+
+/// Run [`retire_due_attempt`] again after a doubling backoff, in place of
+/// the binding's timer (a store delete cancels it). `false` once the
+/// attempts are used up.
+fn recheck_later(deps: &Deps, binding_id: &str, due: i64, attempt: u32) -> bool {
+    if attempt >= RETRY_ATTEMPTS {
+        return false;
+    }
     let worker = deps.clone();
     let id = binding_id.to_string();
-    deps.expiry_timers
-        .arm(binding_id, AgentMessage::now_ms() + backoff, async move {
+    deps.expiry_timers.arm(
+        binding_id,
+        AgentMessage::now_ms() + (RETRY_BASE_MS << attempt),
+        async move {
             retire_due_attempt(&worker, &id, due, attempt + 1).await;
-        });
+        },
+    );
+    true
 }
 
 /// Retire one spent binding: compare-and-delete FIRST (only while the record
