@@ -14,7 +14,7 @@
 //! write; a human or a stronger verifier promotes those. Grouping keys are designed to grow: when
 //! memories gain tags, tags join the group key next to entities.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -584,16 +584,54 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
     opts: &LlmOptions,
 ) {
     let reorder: Vec<&PlannedGroup> = report.groups.iter().filter(|g| g.report_only).collect();
-    let candidates = crate::llm::promotion_candidates(rows, opts.promote_threshold);
-    let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates) else {
+    let mut ledger = BTreeSet::new();
+    let mut candidates = Vec::new();
+    if opts.promote_threshold > 0
+        && rows
+            .iter()
+            .any(|r| r.corroboration >= opts.promote_threshold)
+    {
+        let read = crate::functions::state_try_get(iii, &ledger_key(bank))
+            .await
+            .and_then(|v| {
+                v.map(serde_json::from_value::<BTreeSet<String>>)
+                    .transpose()
+                    .map_err(|e| e.to_string())
+            });
+        match read {
+            Ok(ids) => {
+                ledger = ids.unwrap_or_default();
+                candidates =
+                    crate::llm::promotion_candidates(rows, opts.promote_threshold, &ledger);
+            }
+            Err(e) => report
+                .notes
+                .push(format!("promotion skipped: ledger unreadable: {e}")),
+        }
+    }
+    if reorder.is_empty() && candidates.is_empty() {
         return;
-    };
+    }
     if report.llm_calls >= opts.max_llm_calls {
         report
             .notes
             .push("llm tier deferred: per-run LLM call cap reached".into());
         return;
     }
+    // Only for the judge's `learned_lines`: the write re-reads the rule.
+    let mut learned = String::new();
+    if !candidates.is_empty() {
+        match read_learned(iii, bank).await {
+            Ok(content) => learned = content,
+            Err(e) => {
+                report.notes.push(format!("promotion skipped: {e}"));
+                candidates.clear();
+            }
+        }
+    }
+    let Some(prompt) = crate::llm::judge_prompt(&reorder, &candidates, &learned) else {
+        return;
+    };
     report.llm_calls += 1;
     let (reply, usage) = match iii.judge(&opts.model, prompt).await {
         Ok(r) => r,
@@ -617,46 +655,101 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
     // judge cannot invent targets.
     let offered: std::collections::HashSet<&str> =
         candidates.iter().map(|c| c.id.as_str()).collect();
-    let rules: Vec<String> = reply
+    let promotions: Vec<crate::llm::Promotion> = reply
         .promotions
         .into_iter()
         .filter(|p| offered.contains(p.id.as_str()))
-        .map(|p| p.rule)
         .collect();
-    if rules.is_empty() {
+    // With no learned line in the prompt nothing can cover a candidate, so a
+    // `covered` verdict there is wrong and must not reach the permanent ledger.
+    let has_learned_lines = learned.lines().any(|l| l.starts_with("- "));
+    let covered: Vec<String> = reply
+        .covered
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|id| has_learned_lines && offered.contains(id))
+        .map(str::to_string)
+        .collect();
+    if promotions.is_empty() && covered.is_empty() {
         return;
     }
-    let existing = match call(iii, "memory::rule::list", json!({ "bank": bank })).await {
-        Ok(v) => v
-            .get("rules")
-            .and_then(Value::as_array)
-            .and_then(|rs| {
-                rs.iter().find(|r| {
-                    r.get("name").and_then(Value::as_str) == Some(crate::llm::LEARNED_RULE)
-                })
-            })
-            .and_then(|r| r.get("content").and_then(Value::as_str))
-            .unwrap_or_default()
-            .to_string(),
-        Err(e) => {
-            report.notes.push(format!("promotion skipped: {e}"));
-            return;
+    // Each try merges onto a fresh read and sends it as `expected`, so the
+    // read-to-write window never spans the judge call; a memory worker that
+    // predates `expected` ignores it and writes unguarded.
+    for _ in 0..RULE_SET_TRIES {
+        let existing = match read_learned(iii, bank).await {
+            Ok(content) => content,
+            Err(e) => {
+                report.notes.push(format!("promotion skipped: {e}"));
+                return;
+            }
+        };
+        let (merged, added, landed) = crate::llm::merge_promotions(&existing, &promotions);
+        if added > 0 {
+            let payload = json!({
+                "bank": bank,
+                "name": crate::llm::LEARNED_RULE,
+                "content": merged,
+                "expected": existing,
+            });
+            match call(iii, "memory::rule::set", payload).await {
+                Ok(_) => {}
+                Err(e) if e.contains(RULE_CHANGED) => continue,
+                Err(e) => {
+                    report.errors.push(format!("promotion write failed: {e}"));
+                    return;
+                }
+            }
         }
-    };
-    let (merged, added) = crate::llm::merge_promotions(&existing, &rules);
-    if added == 0 {
+        report.promoted += added;
+        // Written after the rule: a lost ledger only re-judges, a ledger
+        // written first would drop a promotion whose write then failed.
+        let known = ledger.len();
+        ledger.extend(landed.into_iter().chain(covered));
+        if ledger.len() > known {
+            if let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
+            {
+                report
+                    .notes
+                    .push(format!("promotion ledger not saved: {e}"));
+            }
+        }
         return;
     }
-    match call(
-        iii,
-        "memory::rule::set",
-        json!({ "bank": bank, "name": crate::llm::LEARNED_RULE, "content": merged }),
-    )
-    .await
-    {
-        Ok(_) => report.promoted += added,
-        Err(e) => report.errors.push(format!("promotion write failed: {e}")),
-    }
+    report
+        .notes
+        .push("promotion deferred: the learned rule kept changing".into());
+}
+
+/// Tries per pass at the guarded `learned` write before deferring.
+const RULE_SET_TRIES: usize = 3;
+/// The memory worker's stale-write refusal on `memory::rule::set{expected}`.
+const RULE_CHANGED: &str = "rule_changed";
+
+/// State key of the bank's promotion ledger: memory ids whose line is in the
+/// `learned` rule (promoted, or covered by a line already there).
+fn ledger_key(bank: &str) -> String {
+    format!("promoted:{bank}")
+}
+
+/// The bank's `learned` rule as `memory::rule::list` returns it; `""` when
+/// it does not exist.
+async fn read_learned<T: ConsolidationTransport + ?Sized>(
+    iii: &T,
+    bank: &str,
+) -> Result<String, String> {
+    let v = call(iii, "memory::rule::list", json!({ "bank": bank })).await?;
+    Ok(v.get("rules")
+        .and_then(Value::as_array)
+        .and_then(|rs| {
+            rs.iter()
+                .find(|r| r.get("name").and_then(Value::as_str) == Some(crate::llm::LEARNED_RULE))
+        })
+        .and_then(|r| r.get("content").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string())
 }
 
 #[cfg(test)]

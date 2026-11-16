@@ -3141,6 +3141,137 @@ mod productive {
         assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
     }
 
+    /// A learning stack over `user_text` whose model returns `items`, with
+    /// `private`'s `learned` rule seeded from `lines`.
+    async fn learning_stack(
+        user_text: &str,
+        items: Value,
+        lines: &[&str],
+        learned_max_chars: usize,
+    ) -> Boundary {
+        let stack = Boundary::new(Script {
+            path: vec![message("anchor", ""), message("end", user_text)],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([items]),
+            ..Script::default()
+        })
+        .await;
+        let mut cfg = (*stack.deps.config().await).clone();
+        cfg.rule_learning_enabled = true;
+        cfg.learned_max_chars = learned_max_chars;
+        *stack.deps.config.write().await = Arc::new(cfg);
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        let seed: String = lines.iter().map(|l| format!("- {l}\n")).collect();
+        bank.set_rule("learned", &seed).unwrap();
+        stack
+    }
+
+    async fn learned_rule(stack: &Boundary) -> String {
+        let bank = stack.deps.store().await.bank("private").await.unwrap();
+        let rules = bank.list_rules().unwrap();
+        rules
+            .into_iter()
+            .find(|r| r.name == "learned")
+            .unwrap()
+            .content
+    }
+
+    #[tokio::test]
+    async fn a_listed_rule_the_user_restates_becomes_the_newest_line() {
+        let first = "Always calibrate Amber instruments with copper before shipping.";
+        let second = "Never ship Amber instruments without a signed manifest.";
+        let stack = learning_stack(
+            first,
+            json!([{"text":first,"scope":"project","kind":"rule","replaces":1}]),
+            &[first, second],
+            0,
+        )
+        .await;
+        stack.run(&job("end")).await.unwrap();
+        assert_eq!(
+            learned_rule(&stack).await,
+            format!("- {second}\n- {first}\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn restated_rules_leave_the_per_turn_cap_to_a_new_one() {
+        let kept = "Always weigh Amber crates twice before sealing them.";
+        let restated = [
+            "Always calibrate Amber instruments with copper before shipping.",
+            "Never ship Amber instruments without a signed manifest.",
+            "Always label Amber crates with the batch number first.",
+        ];
+        let new = "Always photograph Amber pallets before loading the truck.";
+        let mut items: Vec<Value> = restated
+            .iter()
+            .enumerate()
+            .map(|(i, r)| json!({"text":r,"scope":"project","kind":"rule","replaces":i + 1}))
+            .collect();
+        items.push(json!({"text":new,"scope":"project","kind":"rule"}));
+        let stack = learning_stack(
+            &format!("As always: {} From now on: {new}", restated.join(" ")),
+            Value::Array(items),
+            &[restated[0], restated[1], restated[2], kept],
+            0,
+        )
+        .await;
+        stack.run(&job("end")).await.unwrap();
+        assert_eq!(
+            learned_rule(&stack).await,
+            format!(
+                "- {kept}\n- {}\n- {}\n- {}\n- {new}\n",
+                restated[0], restated[1], restated[2]
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn an_extraction_write_past_the_cap_demotes_the_oldest_lines() {
+        let seeded = [
+            "Always calibrate Amber instruments with copper before shipping.",
+            "Never ship Amber instruments without a signed manifest.",
+            "Always label Amber crates with the batch number first.",
+        ];
+        let learned = "Always weigh Amber crates twice before sealing them.";
+        let stack = learning_stack(
+            learned,
+            json!([{"text":learned,"scope":"project","kind":"rule"}]),
+            &seeded,
+            200,
+        )
+        .await;
+        stack.run(&job("end")).await.unwrap();
+        let rule = learned_rule(&stack).await;
+        assert!(rule.trim().len() <= 200, "{rule}");
+        assert!(rule.ends_with(&format!("- {learned}\n")), "{rule}");
+        let records = stack.log_records("private");
+        let demoted: Vec<&str> = seeded
+            .iter()
+            .copied()
+            .filter(|line| !rule.contains(line))
+            .collect();
+        assert_eq!(demoted, seeded[..demoted.len()], "the oldest go first");
+        assert!(!demoted.is_empty(), "{rule}");
+        for line in demoted {
+            let memory = records.iter().find(|m| m.text == line).expect(line);
+            assert!(
+                memory
+                    .tags
+                    .iter()
+                    .any(|t| t == memory::learned::DEMOTED_TAG),
+                "{line}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn pending_recovery_runs_changed_source_text_as_the_path_holds_it() {
         let text = "Amber instruments require copper calibration.";

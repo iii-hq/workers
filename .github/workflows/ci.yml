@@ -265,6 +265,12 @@ jobs:
             (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
+      # The rule editor's save merges and retries; installed by the pre-build.
+      - name: Memory UI tests
+        if: matrix.worker == 'memory'
+        working-directory: memory/ui
+        run: pnpm test
+
       # The worker's web/, ui/ and native-ui/ projects are members of the root
       # pnpm workspace, which the pre-build above installed. Warning only.
       - name: Check unused Node dependencies (warning only)

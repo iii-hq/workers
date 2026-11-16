@@ -14,7 +14,9 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { z } from 'zod'
+import { mergeRule } from './rule-merge'
 
 const provenanceSchema = z.object({
   session_id: z.string().nullish(),
@@ -174,13 +176,74 @@ export async function listRules(
     .map((p) => p.data)
 }
 
-export async function setRule(
+/** `expected`: the content the caller last read; the worker refuses the
+ * write as `rule_changed` when the rule holds anything else ('' = must not
+ * exist yet). Omitted, it replaces unchecked. */
+async function setRule(
   host: Host,
   bank: string,
   name: string,
   content: string,
+  expected?: string,
 ): Promise<void> {
-  await host.iii.call('memory::rule::set', { bank, name, content })
+  await host.iii.call('memory::rule::set', {
+    bank,
+    name,
+    content,
+    ...(expected !== undefined ? { expected } : {}),
+  })
+}
+
+const SAVE_TRIES = 3
+
+/**
+ * Saves a rule edited from `expected`. When something else wrote the rule
+ * meanwhile (a learned correction, a promotion, a demotion), the draft is
+ * merged with what the rule holds now and sent again, up to 3 tries. A
+ * create or a delete is never merged, nor is a merge sent that would become
+ * one: the refusal is thrown. Resolves to
+ * what the rule holds after the write ('' once deleted), redacted and
+ * already capped by the worker.
+ */
+export async function saveRule(
+  host: Host,
+  bank: string,
+  name: string,
+  content: string,
+  expected: string,
+): Promise<string> {
+  let draft = content
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await setRule(host, bank, name, draft, expected)
+      break
+    } catch (err) {
+      const mergeable = expected !== '' && draft.trim() !== ''
+      if (
+        attempt >= SAVE_TRIES ||
+        !mergeable ||
+        !errorMessage(err).includes('rule_changed')
+      )
+        throw err
+      const theirs = await ruleContent(host, bank, name)
+      const merged = mergeRule(expected, draft, theirs)
+      // Deleted meanwhile, or merged down to nothing: a merge never turns
+      // into a create or an unconfirmed delete.
+      if (theirs === '' || merged.trim() === '') throw err
+      draft = merged
+      expected = theirs
+    }
+  }
+  return ruleContent(host, bank, name)
+}
+
+async function ruleContent(
+  host: Host,
+  bank: string,
+  name: string,
+): Promise<string> {
+  const rules = await listRules(host, bank)
+  return rules.find((r) => r.name === name)?.content ?? ''
 }
 
 const tagsSchema = z.object({

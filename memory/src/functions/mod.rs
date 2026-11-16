@@ -101,12 +101,14 @@ pub const RECALL_DESC: &str =
 pub const RULE_LIST_ID: &str = "memory::rule::list";
 pub const RULE_LIST_DESC: &str =
     "List a bank's rules (markdown, injected whole into the system prompt on every turn). \
-     Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent.";
+     Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent. \
+     Content is returned redacted, as it is injected.";
 
 pub const RULE_SET_ID: &str = "memory::rule::set";
 pub const RULE_SET_DESC: &str =
-    "Create or replace one rule (atomic write; empty content removes it). Rules are plain \
-     markdown files under the bank's rules/ folder.";
+    "Create or replace one rule (atomic write; empty content removes it). With `expected`, \
+     the write is refused as `rule_changed` when the rule no longer holds that content. Rules \
+     are plain markdown files under the bank's rules/ folder.";
 
 pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
