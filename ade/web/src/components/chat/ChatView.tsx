@@ -255,13 +255,8 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
-  /** Header label for a session-pinned workspace panel. */
+  /** The chat's title, the header's label ('Chat' when absent). */
   panelTitle?: string
-  /**
-   * The open-chats tab row: when set (and there is no ← back button), it
-   * takes the header's left side in place of the title and agent label.
-   */
-  headerTabs?: ReactNode
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
   /** The pane's command registrar: chat's keys and palette rows. */
@@ -313,7 +308,6 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   panelTitle,
-  headerTabs,
   onRequestClose,
   commands,
   onBack,
@@ -3175,21 +3169,20 @@ export function ChatView({
                 </button>
               </Hint>
             ) : null}
-            {headerTabs && !onBack ? (
-              headerTabs
-            ) : (
-              <>
-                <span className="min-w-0 truncate font-medium text-ink">
-                  {panelTitle ?? 'Chat'}
-                </span>
-                <span className="shrink-0 text-ink-ghost">·</span>
-                <span className="min-w-0 truncate">
-                  {readOnly
-                    ? 'Read-only'
-                    : (conversation.agentProfile?.name ?? effectiveModel)}
-                </span>
-              </>
-            )}
+            <h2
+              className="min-w-0 truncate font-medium text-ink"
+              title={panelTitle ?? 'Chat'}
+            >
+              {panelTitle ?? 'Chat'}
+            </h2>
+            <span className="shrink-0 text-ink-ghost" aria-hidden>
+              ·
+            </span>
+            <span className="min-w-0 shrink-[2] truncate">
+              {readOnly
+                ? 'Read-only'
+                : (conversation.agentProfile?.name ?? effectiveModel)}
+            </span>
           </div>
         </PageHeader>
       )}
