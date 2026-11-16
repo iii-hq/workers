@@ -303,10 +303,10 @@ mod tests {
     #[test]
     fn swap_needed_only_when_effective_adapter_changes() {
         let none = PubSubConfig::default();
-        let local: PubSubConfig = serde_yaml::from_str("{adapter: {name: local}}").unwrap();
-        let redis: PubSubConfig = serde_yaml::from_str("{adapter: {name: redis}}").unwrap();
+        let local: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: local}}").unwrap();
+        let redis: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: redis}}").unwrap();
         let redis_url: PubSubConfig =
-            serde_yaml::from_str("{adapter: {name: redis, config: {redis_url: 'redis://y'}}}")
+            serde_yaml_ng::from_str("{adapter: {name: redis, config: {redis_url: 'redis://y'}}}")
                 .unwrap();
 
         assert!(!swap_needed(&local, &local));

@@ -134,7 +134,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml_resolve_to_fs() {
-        let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.default_list_limit, 50);
         assert_eq!(cfg.max_list_limit, 500);
         assert_eq!(cfg.max_attachment_bytes, 50 * 1024 * 1024);
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn fs_yaml_overrides_data_dir() {
         let yaml = "adapter:\n  name: fs\n  config:\n    data_dir: /tmp/sessions";
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let StorageAdapter::Fs(fs) = cfg.resolve_adapter() else {
             panic!("expected fs adapter");
         };
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn bridge_yaml_parses_with_defaulted_timeout() {
         let yaml = "adapter:\n  name: bridge\n  config:\n    url: ws://main:49134";
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let StorageAdapter::Bridge(bridge) = cfg.resolve_adapter() else {
             panic!("expected bridge adapter");
         };
@@ -322,7 +322,7 @@ mod tests {
         // `url` is required by `BridgeBackendConfig`, so a bridge adapter
         // without it fails at parse time rather than silently at boot.
         let yaml = "adapter:\n  name: bridge\n  config:\n    timeout_ms: 100";
-        let err = serde_yaml::from_str::<WorkerConfig>(yaml).unwrap_err();
+        let err = serde_yaml_ng::from_str::<WorkerConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("url"), "got: {err}");
     }
 
@@ -331,25 +331,25 @@ mod tests {
         // Each adapter `config` is `deny_unknown_fields`, so a typo'd key
         // fails at parse time.
         let yaml = "adapter:\n  name: fs\n  config:\n    datadir: /tmp/x";
-        let err = serde_yaml::from_str::<WorkerConfig>(yaml).unwrap_err();
+        let err = serde_yaml_ng::from_str::<WorkerConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 
     #[test]
     fn unknown_adapter_name_is_rejected_at_parse() {
         let yaml = "adapter:\n  name: cloud\n  config: {}";
-        assert!(serde_yaml::from_str::<WorkerConfig>(yaml).is_err());
+        assert!(serde_yaml_ng::from_str::<WorkerConfig>(yaml).is_err());
     }
 
     #[test]
     fn unknown_root_key_is_rejected_at_parse() {
-        let err = serde_yaml::from_str::<WorkerConfig>("backnd: bridge").unwrap_err();
+        let err = serde_yaml_ng::from_str::<WorkerConfig>("backnd: bridge").unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_yaml: WorkerConfig = serde_yaml::from_str("{}").unwrap();
+        let from_yaml: WorkerConfig = serde_yaml_ng::from_str("{}").unwrap();
         let from_default = WorkerConfig::default();
         assert_eq!(from_yaml, from_default);
     }

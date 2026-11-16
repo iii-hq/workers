@@ -2863,8 +2863,8 @@ async fn starting_a_validation_pins_both_commits_and_the_sweep_attaches_the_pair
             assert_eq!(parameters["provider"], "deepseek");
             let stack = &parameters["stack"];
             assert!(stack["name"].as_str().unwrap().contains(side), "{stack}");
-            let yaml: serde_yaml::Value =
-                serde_yaml::from_str(stack["yaml"].as_str().unwrap()).unwrap();
+            let yaml: serde_yaml_ng::Value =
+                serde_yaml_ng::from_str(stack["yaml"].as_str().unwrap()).unwrap();
             let harness = &yaml["containers"]["harness"];
             assert_eq!(harness["worker"], "package://harness");
             assert_eq!(harness["commit"], commit.as_str());

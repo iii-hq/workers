@@ -180,7 +180,7 @@ impl WorkerConfig {
     /// `configuration::get` are already env-expanded), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {

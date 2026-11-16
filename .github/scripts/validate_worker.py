@@ -24,6 +24,44 @@ BUNDLE_PRESET_IMAGES = frozenset({
 })
 
 
+# Crates first-party manifests must not depend on: the deprecated serde_yaml
+# moved to serde_yaml_ng, and serde_yml is unmaintained (RUSTSEC-2025-0068).
+# The repo has no cargo-deny config, so this is the deny list.
+DENIED_CRATES = {
+    "serde_yaml": "serde_yaml is deprecated upstream; use serde_yaml_ng",
+    "serde_yml": "serde_yml is unmaintained (RUSTSEC-2025-0068); use serde_yaml_ng",
+}
+
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _dependency_names(manifest: dict) -> set[str]:
+    """Every crate a manifest names, under its own key or a `package = ` rename."""
+    tables = [manifest.get(table, {}) for table in DEPENDENCY_TABLES]
+    tables.append(manifest.get("workspace", {}).get("dependencies", {}))
+    for target in manifest.get("target", {}).values():
+        tables.extend(target.get(table, {}) for table in DEPENDENCY_TABLES)
+    names: set[str] = set()
+    for table in tables:
+        for key, value in table.items():
+            names.add(key)
+            if isinstance(value, dict) and isinstance(value.get("package"), str):
+                names.add(value["package"])
+    return names
+
+
+def denied_crate_errors(label: str, manifest_path: pathlib.Path) -> list[str]:
+    """Return one error per denied crate a Cargo.toml depends on, in any dependency table."""
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"{label}: could not parse {manifest_path.name}: {error}"]
+    return [
+        f"{label}: depends on {name}: {DENIED_CRATES[name]}"
+        for name in sorted(_dependency_names(manifest) & DENIED_CRATES.keys())
+    ]
+
+
 def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | None:
     """Return why a rust-binary manifest lacks an explicit `[profile.release]`, or None.
 
@@ -227,6 +265,9 @@ def main(argv: list[str] | None = None) -> int:
                     profile_error = release_profile_error(worker, manifest_path)
                     if profile_error:
                         hard(profile_error)
+                if manifest_path.name == "Cargo.toml":
+                    for denied_error in denied_crate_errors(f"{worker}/{spec.manifest}", manifest_path):
+                        hard(denied_error)
                 try:
                     current_version = _lib.read_version(manifest_path)
                 except (ValueError, FileNotFoundError) as error:

@@ -83,7 +83,8 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
 #[test]
 fn the_public_manifest_ships_the_same_defaults_the_binary_seeds() {
     let source = include_str!("../iii.worker.yaml");
-    let document: serde_yaml::Value = serde_yaml::from_str(source).expect("iii.worker.yaml parses");
+    let document: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(source).expect("iii.worker.yaml parses");
 
     assert_eq!(document["name"].as_str(), Some("sentinel"));
     assert_eq!(document["bin"].as_str(), Some("sentinel"));
@@ -101,7 +102,7 @@ fn the_public_manifest_ships_the_same_defaults_the_binary_seeds() {
     // The published defaults and the seeded defaults are the same document:
     // an operator reading the manifest sees what the worker actually starts
     // with, and a drift between the two fails here rather than in the field.
-    let published: WorkerConfig = serde_yaml::from_value(document["config"].clone())
+    let published: WorkerConfig = serde_yaml_ng::from_value(document["config"].clone())
         .expect("the published config block parses as WorkerConfig");
     assert_eq!(published, WorkerConfig::default());
     published.validate().expect("published defaults validate");

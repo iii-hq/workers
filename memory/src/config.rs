@@ -184,7 +184,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).

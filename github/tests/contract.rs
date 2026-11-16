@@ -91,11 +91,12 @@ fn catalog_covers_the_full_surface() {
 #[test]
 fn manifest_config_matches_config_yaml() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let manifest: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap())
+    let manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap())
             .unwrap();
-    let mut seed: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(root.join("config.yaml")).unwrap()).unwrap();
+    let mut seed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join("config.yaml")).unwrap())
+            .unwrap();
     seed.as_mapping_mut().unwrap().remove("token");
     assert_eq!(
         manifest["config"], seed,

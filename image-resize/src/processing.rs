@@ -218,7 +218,7 @@ mod tests {
     }
 
     fn default_config() -> ResizeConfig {
-        serde_yaml::from_str("{}").unwrap()
+        serde_yaml_ng::from_str("{}").unwrap()
     }
 
     #[test]

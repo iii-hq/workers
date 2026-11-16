@@ -193,7 +193,7 @@ mod tests {
                 - metadata:
                     public: true
         "#;
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let back = WorkerConfig::from_json(&cfg.to_json()).unwrap();
         assert_eq!(cfg, back);
     }
