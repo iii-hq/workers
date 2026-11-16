@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::IpAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+    path::PathBuf,
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,12 +26,30 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 
+/// Which tunnel service publishes the targets. One per worker instance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    /// cloudflared Quick Tunnel child processes (operator-provided binary).
+    #[default]
+    Cloudflared,
+    /// OpenTunnel, in-process: TLS ends in this worker, the hostname is stable.
+    Opentunnel,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Operator allowlist. Only literal loopback IP HTTP(S) origins are accepted.
+    pub provider: ProviderKind,
+    /// Operator allowlist. Only literal loopback IP HTTP(S) origins are accepted
+    /// (`http://` only, and DNS-label ids, with provider `opentunnel`).
     pub targets: BTreeMap<String, String>,
-    /// Prerequisite executable; never downloaded by this worker.
+    /// Target ids whose local service reads a PROXY protocol v2 header: the first
+    /// bytes of every connection then carry the visitor's address. Provider
+    /// `opentunnel` only.
+    pub proxy_protocol: BTreeSet<String>,
+    /// Prerequisite executable; never downloaded by this worker. Ignored by
+    /// provider `opentunnel`.
     pub cloudflared: String,
     pub state_path: PathBuf,
     pub startup_timeout_ms: u64,
@@ -49,7 +71,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            provider: ProviderKind::Cloudflared,
             targets: BTreeMap::from([("webhooks".into(), "http://127.0.0.1:3112".into())]),
+            proxy_protocol: BTreeSet::new(),
             cloudflared: "cloudflared".into(),
             state_path: PathBuf::from("data/quick-tunnel/leases.json"),
             startup_timeout_ms: 30_000,
@@ -90,6 +114,41 @@ impl Config {
             {
                 return Err("targets must be HTTP(S) literal loopback origins without credentials, path, query or fragment".into());
             }
+            // The id names the OpenTunnel profile; the worker hands plaintext to the target.
+            if self.provider == ProviderKind::Opentunnel
+                && (u.scheme() != "http" || !opentunnel::protocol::names::is_valid_profile(id))
+            {
+                return Err(
+                    "opentunnel targets must be http:// origins with lowercase DNS-label ids"
+                        .into(),
+                );
+            }
+        }
+        if self
+            .proxy_protocol
+            .iter()
+            .any(|id| !self.targets.contains_key(id))
+            || (!self.proxy_protocol.is_empty() && self.provider != ProviderKind::Opentunnel)
+        {
+            return Err(
+                "proxy_protocol needs provider opentunnel and ids listed in targets".into(),
+            );
+        }
+        // A local listener reads the header or it does not: every target on its port must agree.
+        let port = |origin: &String| {
+            Url::parse(origin)
+                .ok()
+                .and_then(|u| u.port_or_known_default())
+        };
+        let (listed, unlisted): (Vec<_>, Vec<_>) = self
+            .targets
+            .iter()
+            .partition(|(id, _)| self.proxy_protocol.contains(*id));
+        if listed
+            .iter()
+            .any(|(_, a)| unlisted.iter().any(|(_, b)| port(a) == port(b)))
+        {
+            return Err("targets on the same port must all be in proxy_protocol or none".into());
         }
         if self.cloudflared.trim().is_empty()
             || (self.cloudflared.contains('/') && !PathBuf::from(&self.cloudflared).is_absolute())
@@ -109,6 +168,11 @@ impl Config {
         }
         Ok(())
     }
+
+    /// "v2" when every connection to this target starts with a PROXY protocol v2 header.
+    pub fn proxy_protocol_of(&self, id: &str) -> Option<String> {
+        self.proxy_protocol.contains(id).then(|| "v2".to_owned())
+    }
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -117,4 +181,126 @@ pub fn valid_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opentunnel(id: &str, origin: &str) -> Config {
+        Config {
+            provider: ProviderKind::Opentunnel,
+            targets: BTreeMap::from([(id.into(), origin.into())]),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn provider_defaults_to_cloudflared_and_stored_configs_without_it_load() {
+        assert_eq!(Config::default().provider, ProviderKind::Cloudflared);
+        let stored: Config = serde_yaml::from_str(
+            "targets:\n  webhooks: http://127.0.0.1:3112\ncloudflared: cloudflared\n",
+        )
+        .unwrap();
+        assert_eq!(stored.provider, ProviderKind::Cloudflared);
+        assert!(stored.validate().is_ok());
+        let chosen: Config = serde_yaml::from_str("provider: opentunnel\n").unwrap();
+        assert_eq!(chosen.provider, ProviderKind::Opentunnel);
+        assert!(serde_yaml::from_str::<Config>("provider: ngrok\n").is_err());
+    }
+
+    #[test]
+    fn opentunnel_needs_http_origins_and_profile_ids() {
+        assert!(opentunnel("webhooks", "http://127.0.0.1:3112")
+            .validate()
+            .is_ok());
+        assert!(opentunnel("mesh", "http://[::1]:49180").validate().is_ok());
+        assert!(opentunnel("webhooks", "https://127.0.0.1:3112")
+            .validate()
+            .is_err());
+        for id in [
+            "Webhooks",
+            "web_hooks",
+            "web.hooks",
+            "-webhooks",
+            "webhooks-",
+            "a:b",
+        ] {
+            assert!(
+                opentunnel(id, "http://127.0.0.1:3112").validate().is_err(),
+                "{id}"
+            );
+        }
+        // cloudflared keeps accepting what it accepted before.
+        let https = Config {
+            targets: BTreeMap::from([("Web_hooks".into(), "https://127.0.0.1:3112".into())]),
+            ..Config::default()
+        };
+        assert!(https.validate().is_ok());
+    }
+
+    #[test]
+    fn proxy_protocol_needs_opentunnel_listed_targets_and_one_mode_per_port() {
+        assert!(Config::default().proxy_protocol.is_empty());
+        let stored: Config = serde_yaml::from_str(
+            "provider: opentunnel\ntargets:\n  mesh: http://127.0.0.1:49180\n",
+        )
+        .unwrap();
+        assert!(stored.proxy_protocol.is_empty());
+        let listed = |provider, targets: &[(&str, &str)], ids: &[&str]| Config {
+            provider,
+            targets: targets
+                .iter()
+                .map(|(id, origin)| (id.to_string(), origin.to_string()))
+                .collect(),
+            proxy_protocol: ids.iter().map(|id| id.to_string()).collect(),
+            ..Config::default()
+        };
+        let mesh = listed(
+            ProviderKind::Opentunnel,
+            &[("mesh", "http://127.0.0.1:49180")],
+            &["mesh"],
+        );
+        assert!(mesh.validate().is_ok());
+        assert_eq!(mesh.proxy_protocol_of("mesh").as_deref(), Some("v2"));
+        assert_eq!(mesh.proxy_protocol_of("webhooks"), None);
+        // The documented setup: one listed and one unlisted target, on different ports.
+        let documented = listed(
+            ProviderKind::Opentunnel,
+            &[
+                ("webhooks", "http://127.0.0.1:3112"),
+                ("mesh", "http://127.0.0.1:49180"),
+            ],
+            &["mesh"],
+        );
+        assert_eq!(documented.validate(), Ok(()));
+        let refused = "proxy_protocol needs provider opentunnel and ids listed in targets";
+        let ghost = listed(
+            ProviderKind::Opentunnel,
+            &[("mesh", "http://127.0.0.1:49180")],
+            &["ghost"],
+        );
+        assert_eq!(ghost.validate().unwrap_err(), refused);
+        let cloudflared = listed(
+            ProviderKind::Cloudflared,
+            &[("webhooks", "http://127.0.0.1:3112")],
+            &["webhooks"],
+        );
+        assert_eq!(cloudflared.validate().unwrap_err(), refused);
+        let shared = [
+            ("mesh", "http://127.0.0.1:49180"),
+            ("mesh2", "http://[::1]:49180"),
+        ];
+        assert_eq!(
+            listed(ProviderKind::Opentunnel, &shared, &["mesh"])
+                .validate()
+                .unwrap_err(),
+            "targets on the same port must all be in proxy_protocol or none"
+        );
+        assert!(
+            listed(ProviderKind::Opentunnel, &shared, &["mesh", "mesh2"])
+                .validate()
+                .is_ok()
+        );
+    }
 }

@@ -6,7 +6,7 @@ version = "0.2.2"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
-description = "Lease-managed cloudflared Quick Tunnels on the iii worker mesh"
+description = "Lease-managed public tunnels (cloudflared Quick Tunnels or OpenTunnel) on the iii worker mesh"
 repository = "https://github.com/iii-hq/workers"
 
 [[bin]]
@@ -17,10 +17,13 @@ path = "src/main.rs"
 iii-sdk = "=0.26.0"
 iii-config-client = { path = "../crates/config-client" }
 anyhow = "1"
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 futures-util = "0.3"
+# Young crate: pin exactly.
+opentunnel = "=0.6.2"
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,6 +38,8 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+# Self-signed certificate for a seeded OpenTunnel identity; same features opentunnel uses.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 tokio-tungstenite = "0.28"
 
 [lints.rust]
