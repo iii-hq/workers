@@ -461,6 +461,41 @@ pub async fn run_step(
     Box::pin(finish_step(deps, generated)).await
 }
 
+/// A redelivered step of a finished turn that still promised a reseed, or still owes its
+/// completion. Only this redelivery can still seed that turn, so a failed store read fails
+/// it for the queue to retry; only a prompt gone for good settles the exchange instead.
+async fn redeliver_finished(
+    deps: &Deps,
+    mut record: TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let reseeded = if !record.continues {
+        // Only the completion is left of a settle or a stop that did not finish.
+        if record.abort {
+            Box::pin(end_stopped_exchange(deps, &mut record))
+                .await
+                .map(|_| ())
+        } else {
+            Box::pin(settle_unreseeded(deps, &mut record, timeout_ms)).await
+        }
+    } else {
+        match crate::state::hydrate(&deps.iii, &mut record, timeout_ms).await {
+            Ok(()) => Box::pin(reseed_after_finalize_drain(deps, &mut record)).await,
+            Err(error) if crate::state::is_lost_prompt_body(&error) => {
+                tracing::warn!(session_id = %record.session_id, %error, "could not reload a finished turn to seed the one it promised");
+                Box::pin(settle_unreseeded(deps, &mut record, timeout_ms)).await
+            }
+            Err(error) => Err(error),
+        }
+    };
+    if let Err(error) = reseeded {
+        // The queue's retries can run out: the orphan redrive follows up.
+        crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn generate_step(
     deps: &Deps,
     payload: TurnStepPayload,
@@ -496,15 +531,10 @@ async fn generate_step(
         // this redelivery can still seed the turn that write promised, so a
         // failed store read fails it for the queue to retry. Only a prompt
         // that is gone for good settles the exchange instead.
-        if record.continues {
-            match crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await {
-                Ok(()) => reseed_after_finalize_drain(deps, &mut record).await?,
-                Err(error) if crate::state::is_lost_prompt_body(&error) => {
-                    tracing::warn!(session_id = %record.session_id, %error, "could not reload a finished turn to seed the one it promised");
-                    settle_unreseeded(deps, &mut record, cfg.session_timeout_ms).await?;
-                }
-                Err(error) => return Err(error),
-            }
+        if record.continues || record.owes_completion {
+            // Boxed out of line: inline, these finalize paths grow this frame past a default
+            // thread stack in debug builds.
+            Box::pin(redeliver_finished(deps, record, cfg.session_timeout_ms)).await?;
         }
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
@@ -2668,8 +2698,9 @@ async fn reseed_after_finalize_drain(
 /// No reseeded turn replaces this record, so the terminal decision its
 /// finalize deferred is this turn's to make: drop `continues` and complete it
 /// again. Skipped once a reseeded record replaced it (a reseed whose first
-/// enqueue failed has finalized that turn itself). A failed read settles
-/// nothing and is the caller's to retry.
+/// enqueue failed has finalized that turn itself). A failed read or write is
+/// the caller's to retry: the stored record still awaits a step, for the
+/// reseed or for this completion.
 async fn settle_unreseeded(
     deps: &Deps,
     record: &mut TurnRecord,
@@ -2680,16 +2711,15 @@ async fn settle_unreseeded(
         _ => return Ok(()),
     }
     record.continues = false;
+    record.owes_completion = true;
     let terminal = turn_is_terminal(deps, record).await;
     let failed = record.status == TurnStatus::Failed;
     if failed {
         record.exchange_finished = terminal;
     }
-    // Completes even when the write fails: a waiter left without the event
-    // stays stuck, while a stale stored record is only a stale read.
-    if let Err(error) = crate::state::put_turn(&deps.iii, record, timeout_ms).await {
-        tracing::warn!(session_id = %record.session_id, %error, "could not settle a turn whose reseed failed");
-    }
+    // Written before the completion: the orphan redrive reseeds a stored
+    // `continues`, which must not happen after a terminal completion.
+    crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     let error = record.result_error.as_deref().filter(|_| failed);
     deps.events
@@ -2706,7 +2736,9 @@ async fn settle_unreseeded(
             record.context_snapshot.as_ref(),
         )
         .await;
-    Ok(())
+    // A failed write leaves the marker: the completion can repeat, never be lost.
+    record.owes_completion = false;
+    crate::state::put_turn(&deps.iii, record, timeout_ms).await
 }
 
 /// Consume a `submit_result` call: validate its arguments against the
@@ -3047,10 +3079,11 @@ async fn finalize_completed(
     // first step (on another instance) could write `working` and emit its
     // `on-turn-started` before this turn's `done` and `on-turn-completed`.
     if woke {
-        // Best effort: the turn is already final. Nothing retries a failed
-        // settle here: the record keeps `continues` until the next stop or send.
+        // Best effort: the turn is already final. The record keeps `continues`
+        // or the owed completion, so the orphan redrive retries a failed settle.
         if let Err(error) = reseed_after_finalize_drain(deps, record).await {
             tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+            crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
         }
     }
     Ok(TurnStepResult {
@@ -3353,6 +3386,7 @@ async fn finalize_failed(
         // Best effort, as in `finalize_completed`.
         if let Err(error) = reseed_after_finalize_drain(deps, record).await {
             tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+            crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
         }
     }
     Ok(TurnStepResult {
@@ -3606,8 +3640,9 @@ async fn try_finish_stopped_exchange(
 }
 
 /// [`try_finish_stopped_exchange`] for a caller that holds the session lock and read
-/// `record`, finished and not yet `exchange_finished`, under it. False, with nothing
-/// written, while a wake is left: its going ends the exchange.
+/// `record`, finished and not yet `exchange_finished`, under it. False while a wake
+/// is left, with at most the owed-completion marker dropped: its going ends the
+/// exchange.
 pub(crate) async fn end_stopped_exchange(
     deps: &Deps,
     record: &mut TurnRecord,
@@ -3623,6 +3658,11 @@ pub(crate) async fn end_stopped_exchange(
         .iter()
         .any(|binding| crate::bindings::is_armed_wake(binding, now));
     if wake_left {
+        // A stored marker would have the orphan redrive deliver the step every window.
+        if record.owes_completion {
+            record.owes_completion = false;
+            crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+        }
         return Ok(false);
     }
     if record.status == TurnStatus::Completed {
@@ -3653,6 +3693,7 @@ pub(crate) async fn end_stopped_exchange(
         )
         .await;
     record.exchange_finished = true;
+    record.owes_completion = false;
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     crate::hooks::recall::finish_extraction(deps, record, true).await;
     Ok(true)

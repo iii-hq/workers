@@ -250,8 +250,12 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         // The in-process cancel signal and router abort above can finalize the
         // turn before this handler reacquires the session lock. The stop was
         // accepted against the matching non-terminal pre-read; report that
-        // acceptance even though the durable abort bit can no longer be set.
-        if req.quiet_deadlines {
+        // acceptance even though the durable abort bit can no longer be set. A
+        // finalize whose reseed and settle both failed left its promised turn
+        // stored: take it back, or the orphan redrive seeds it after this stop.
+        if record.continues {
+            cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+        } else if req.quiet_deadlines {
             flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
         }
         return Ok(outcome);
@@ -340,10 +344,19 @@ async fn cancel_continuation(
 ) -> Result<(), HarnessError> {
     record.continues = false;
     record.abort = true;
-    if !crate::turn_loop::end_stopped_exchange(deps, record).await? {
+    record.owes_completion = true;
+    // Written before the exchange ends: the orphan redrive would reseed a
+    // stored `continues` after the stop's terminal completion.
+    let ended = async {
         crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+        crate::turn_loop::end_stopped_exchange(deps, record).await
     }
-    Ok(())
+    .await;
+    if ended.is_err() {
+        // Whichever write landed, the stored record still awaits a step.
+        crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+    }
+    ended.map(|_| ())
 }
 
 /// A pending call that is neither a hook hold nor a legacy child spawn: an

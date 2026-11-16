@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use crate::error::HarnessError;
 use crate::trace_tags::run_hidden;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{IdemRecord, TurnRecord, TurnStatus};
+use crate::types::turn::{IdemRecord, TurnRecord};
 
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
@@ -580,14 +580,14 @@ async fn read_listed_turn(
 /// `state::get` is a root trace carrying the whole record, so re-reading every
 /// session ever run each pass flooded the trace store.
 ///
-/// `view` maps each turn key to whether its record was last seen `Running`
-/// (an orphan candidate). One `state::list_keys`, then a read of each key
-/// that is new to the view (an empty view reads them all: the first pass
-/// after boot), that this process wrote or deleted since the last pass, or
-/// that was last seen `Running`. Keys gone from `list_keys` leave the view.
-/// Returns the records read, which include every `Running` one. Callers
-/// serialize passes over one view (a stale pass must not overwrite a newer
-/// one's entries).
+/// `view` maps each turn key to whether its record was last seen awaiting a
+/// step ([`TurnRecord::awaits_step`], an orphan candidate). One
+/// `state::list_keys`, then a read of each key that is new to the view (an
+/// empty view reads them all: the first pass after boot), that this process
+/// wrote or deleted since the last pass, or that was last seen awaiting a
+/// step. Keys gone from `list_keys` leave the view. Returns the records read,
+/// which include every one awaiting a step. Callers serialize passes over one
+/// view (a stale pass must not overwrite a newer one's entries).
 ///
 /// Limitation: an EXISTING key rewritten behind this process's writes (by a
 /// second harness process, a state-store rollback, a console edit) is seen
@@ -612,10 +612,7 @@ pub async fn read_changed_turns(
                 continue;
             }
             let record = read_listed_turn(iii, &key, timeout_ms, &mut BTreeSet::new()).await?;
-            let running = record
-                .as_ref()
-                .is_some_and(|r| r.status == TurnStatus::Running);
-            view.insert(key, running);
+            view.insert(key, record.as_ref().is_some_and(TurnRecord::awaits_step));
             records.extend(record);
         }
         Ok(records)
@@ -1121,14 +1118,16 @@ mod tests {
 
     /// The orphan redrive reads only what changed: every key on the first
     /// pass, then keys new to the view, keys this process wrote or deleted, and
-    /// keys last seen `Running`. A pass that fails re-marks what it drained,
-    /// and a write is marked after it lands.
+    /// keys last seen awaiting a step. A pass that fails re-marks what it
+    /// drained, and a write is marked after it lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_changed_turns_reads_only_what_changed() {
         use futures_util::{SinkExt, StreamExt};
         use std::sync::{Arc, Mutex};
         use tokio_tungstenite::tungstenite::Message;
 
+        // The orphan redrive's passes drain the same marks: one at a time.
+        let _redrive = crate::inflight::TURN_VIEW.lock().await;
         fn turn(id: &str, status: &str) -> Value {
             json!({ "turn_id": "t", "session_id": id, "status": status, "step": 0,
                 "turn_count": 0, "depth": 0, "options": { "model": "m", "max_turns": 16 },
@@ -1269,6 +1268,15 @@ mod tests {
         *hang.lock().unwrap() = None;
         assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_c"]);
         assert_eq!(view.get("rv_c"), Some(&true));
+        // A finished turn that still promises a reseed awaits its step too:
+        // re-read every pass.
+        let mut promised = record("rv_c", "completed");
+        promised.continues = true;
+        put_turn(&iii, &promised, 2_000).await.unwrap();
+        for _ in 0..2 {
+            assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_c"]);
+            assert_eq!(view.get("rv_c"), Some(&true));
+        }
 
         iii.shutdown();
         server.abort();

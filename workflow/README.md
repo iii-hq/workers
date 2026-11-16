@@ -10,10 +10,12 @@ The always-on harness observers (`harness::on-turn-completed` → wake,
 validate-result) are created once at startup. An
 observer created before the harness is up stays `pending` and becomes active
 when the harness registers its function, and again after a harness restart.
-`workflow::start` is registered only after the stamp-reply observer is active,
-or after 10 s while the harness is absent, so an agent's call cannot reach it
-unstamped while the worker boots. If the harness refuses the stamp-reply hook,
-`workflow::start` stays unregistered until a worker restart after the fix.
+`workflow::start` is registered at boot, but answers "not ready, retry" until
+the stamp-reply observer is active, or until 10 s passed while the harness is
+absent, so an agent's call cannot run unstamped while the worker boots. If the
+harness refuses the stamp-reply hook, at boot or when it starts or restarts
+later, `workflow::start` refuses every call with the reason until a worker
+restart after the fix.
 The last — `harness::hook::on-pre-generate` → inject-guidance — follows the
 `inject_guidance` knob in the `workflow` configuration entry (ON by default):
 turning it off shrinks prompts (the harness's `# Granted functions` catalog

@@ -1426,7 +1426,7 @@ async fn interrupt_external(deps: &Deps, record: &AnalysisRecordV1) {
         tracing::warn!(evaluation_id = %record.evaluation_id, %error, "judge::cancel failed");
     }
     if let Some(analyst) = &record.analyst {
-        stop_session(deps, &analyst.session_id, analyst.turn_id.as_deref()).await;
+        stop_session(deps, &analyst.session_id).await;
         // Usage so far is kept on the cancelled record.
         let metrics: Result<SessionMetricsResponseV1, EvalError> = call(
             deps,
@@ -1448,11 +1448,11 @@ async fn interrupt_external(deps: &Deps, record: &AnalysisRecordV1) {
     }
 }
 
-async fn stop_session(deps: &Deps, session_id: &str, turn_id: Option<&str>) {
+async fn stop_session(deps: &Deps, session_id: &str) {
     if let Err(error) = call::<_, Value>(
         deps,
         "harness::stop",
-        json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
+        json!({ "session_id": session_id, "quiet_deadlines": true }),
         BUS_TIMEOUT_MS,
     )
     .await
@@ -3199,7 +3199,7 @@ async fn investigate_stage(
             // Cancelled or expired while the send was in flight: the stop
             // may have preceded the turn the send just started.
             if let Some(response) = response.as_ref().ok().filter(|response| response.accepted) {
-                stop_session(deps, &response.session_id, Some(&response.turn_id)).await;
+                stop_session(deps, &response.session_id).await;
             }
             return Ok(skipped(EvalStatusV1::Cancelled));
         };
@@ -3289,18 +3289,8 @@ async fn investigate_stage(
     if let Some(metrics) = &metrics {
         set_llm_usage(deps, &mut record.usage, metrics).await;
     }
-    if status.turn_id.as_deref() != Some(analyst_turn.as_str()) {
-        return fail(
-            deps,
-            &mut record,
-            "analyst_turn_changed",
-            format!(
-                "the investigation session moved from turn {analyst_turn} to {}",
-                status.turn_id.as_deref().unwrap_or("none")
-            ),
-        )
-        .await;
-    }
+    // A finalize that drained a queued message goes on in a new turn with the
+    // same frozen options, so the session's settled turn is the result.
     if status.status != TurnStatus::Completed || status.result_error.is_some() {
         return fail(
             deps,
@@ -3388,7 +3378,7 @@ async fn investigate_stage(
     record.counters.rejected_suggestions = rejected.len() as u32;
     assets.investigation = Some(InvestigationV1 {
         session_id,
-        turn_id: analyst_turn,
+        turn_id: status.turn_id.clone().unwrap_or(analyst_turn),
         requested_model: record.model.model.clone(),
         requested_provider: record.model.provider.clone(),
         effective_model: effective.as_ref().and_then(|(model, _)| model.clone()),

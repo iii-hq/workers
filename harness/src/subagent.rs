@@ -1102,6 +1102,7 @@ mod tests {
             abort: false,
             exchange_finished: false,
             continues: false,
+            owes_completion: false,
             took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,

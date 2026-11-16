@@ -1,16 +1,18 @@
 //! Orphaned-turn recovery.
 //!
-//! A turn record can be `Running` with no `harness::turn` step on the queue:
-//! the enqueue that should carry its current step failed (queue worker down,
-//! namespace-unaware queue provider, engine restart) after the record was
-//! persisted, or the worker holding the step went away. Nothing would ever
-//! run that step again, so the session stays "working" forever and even
-//! `harness::stop` cannot finish it — stop only sets the abort bit the next
-//! step observes.
+//! A turn record can await a step ([`TurnRecord::awaits_step`]: `Running`, or
+//! finished but still promising a reseed or owing its exchange's completion)
+//! with no `harness::turn` step on the queue: the enqueue that should carry its
+//! current step failed (queue worker down, namespace-unaware queue provider,
+//! engine restart) after the record was persisted, the worker holding the step
+//! went away, or a finished turn's reseed, settle or stop failed part way.
+//! Nothing would ever run that step again, so the session stays "working"
+//! forever, and `harness::stop` cannot finish a running one — stop only sets
+//! the abort bit the next step observes.
 //!
 //! [`InflightSteps`] tracks the sessions whose step is executing in this
 //! process right now. [`redrive_orphans`] re-enqueues the current step of
-//! every `Running` turn that has not moved for [`ORPHAN_REDRIVE_AFTER_MS`] and
+//! every turn awaiting one that has not moved for [`ORPHAN_REDRIVE_AFTER_MS`] and
 //! is not executing here. Re-enqueueing is safe because steps are
 //! at-least-once: the queue is FIFO per `session_id` and `generate_step` acks
 //! any delivery whose `(turn_id, step)` is no longer current, so a duplicate
@@ -24,7 +26,7 @@
 //!   provider going away, an engine restart reconnecting everyone;
 //! * the daily pending sweep (`harness::sweep-pending`).
 //!
-//! A pass cannot judge a turn that moved within the window, so each `Running`
+//! A pass cannot judge a turn that moved within the window, so each awaiting
 //! turn it finds not yet stale becomes a [`Suspects`] entry with ONE
 //! follow-up at its own staleness deadline (`updated_at` + the window): still
 //! unmoved then, it is re-driven; moved, it is alive and forgotten. A failed
@@ -36,9 +38,9 @@ use std::sync::{Arc, Mutex};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{TurnRecord, TurnStatus};
+use crate::types::turn::TurnRecord;
 
-/// How long a `Running` turn may go without a record update, while no step
+/// How long a turn awaiting a step may go without a record update, while no step
 /// for it executes in this process, before its current step is re-enqueued.
 pub const ORPHAN_REDRIVE_AFTER_MS: u64 = 120_000;
 
@@ -87,10 +89,10 @@ impl Drop for InflightGuard {
     }
 }
 
-/// Whether `record` looks orphaned: `Running`, unchanged for the redrive
-/// window, and not executing a step in this process.
+/// Whether `record` looks orphaned: awaiting a step, unchanged for the
+/// redrive window, and not executing a step in this process.
 pub fn is_orphan_candidate(record: &TurnRecord, executing_here: bool, now: i64) -> bool {
-    record.status == TurnStatus::Running
+    record.awaits_step()
         && !executing_here
         && now.saturating_sub(record.updated_at) >= ORPHAN_REDRIVE_AFTER_MS as i64
 }
@@ -98,7 +100,7 @@ pub fn is_orphan_candidate(record: &TurnRecord, executing_here: bool, now: i64) 
 /// Re-enqueue the current step of a turn whose step is not executing in this
 /// process. Used by `harness::stop` so a stop on an orphaned turn is observed.
 pub async fn redrive_if_idle(deps: &Deps, record: &TurnRecord) -> Result<bool, HarnessError> {
-    if record.status != TurnStatus::Running || deps.inflight.contains(&record.session_id) {
+    if !record.awaits_step() || deps.inflight.contains(&record.session_id) {
         return Ok(false);
     }
     crate::turn_loop::enqueue_step(
@@ -113,11 +115,11 @@ pub async fn redrive_if_idle(deps: &Deps, record: &TurnRecord) -> Result<bool, H
     Ok(true)
 }
 
-/// The redrive's view of the turn scope (key -> last seen `Running`), held
+/// The redrive's view of the turn scope (key -> last seen awaiting a step), held
 /// for a whole read so the event-driven passes and the cron sweep's (and the
 /// sweep's full read, [`read_all_turns`]) serialize; see
 /// [`crate::state::read_changed_turns`].
-static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
+pub(crate) static TURN_VIEW: tokio::sync::Mutex<BTreeMap<String, bool>> =
     tokio::sync::Mutex::const_new(BTreeMap::new());
 
 /// Every turn record ([`crate::state::list_turns`]), with the redrive's view
@@ -133,23 +135,23 @@ pub async fn read_all_turns(deps: &Deps) -> Result<crate::state::TurnListing, Ha
     *view = listing
         .records
         .iter()
-        .map(|r| (r.session_id.clone(), r.status == TurnStatus::Running))
+        .map(|r| (r.session_id.clone(), r.awaits_step()))
         .collect();
     Ok(listing)
 }
 
-/// Re-enqueue the current step of every orphaned `Running` turn. Returns the
+/// Re-enqueue the current step of every orphaned turn. Returns the
 /// number of steps re-enqueued. Reads only the turn records that changed
 /// since the last pass ([`crate::state::read_changed_turns`]).
 pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
     Ok(redrive_pass(deps).await?.redriven)
 }
 
-/// What one pass did, and which `Running` turns it could not judge yet.
+/// What one pass did, and which awaiting turns it could not judge yet.
 #[derive(Debug, Default)]
 pub struct RedrivePass {
     pub redriven: u64,
-    /// `Running`, not executing here, and moved within the window:
+    /// Awaiting a step, not executing here, and moved within the window:
     /// `(session_id, turn_id, step, updated_at)`.
     pub too_recent: Vec<(String, String, u64, i64)>,
 }
@@ -165,7 +167,7 @@ async fn redrive_pass(deps: &Deps) -> Result<RedrivePass, HarnessError> {
     for record in records {
         let executing_here = deps.inflight.contains(&record.session_id);
         if !is_orphan_candidate(&record, executing_here, now) {
-            if record.status == TurnStatus::Running && !executing_here {
+            if record.awaits_step() && !executing_here {
                 pass.too_recent.push((
                     record.session_id.clone(),
                     record.turn_id.clone(),
@@ -190,7 +192,7 @@ async fn redrive_pass(deps: &Deps) -> Result<RedrivePass, HarnessError> {
 /// redriven, then re-enqueue and restart its window. `Ok(false)` when the
 /// fresh record is no longer an orphan. Unhydrated: the check reads no prompt
 /// text, and a turn whose prompt body is gone must still be redriven so its
-/// step fails it instead of leaving it Running.
+/// step fails it instead of leaving it awaiting.
 async fn redrive_candidate(
     deps: &Deps,
     mut record: TurnRecord,
@@ -228,7 +230,7 @@ async fn redrive_candidate(
                 session_id = %record.session_id,
                 turn_id = %record.turn_id,
                 step = record.step,
-                "re-enqueued the step of an orphaned running turn"
+                "re-enqueued the step of an orphaned turn"
             );
             Ok(true)
         }
@@ -238,14 +240,14 @@ async fn redrive_candidate(
                 session_id = %record.session_id,
                 turn_id = %record.turn_id,
                 error = %e,
-                "could not re-enqueue an orphaned running turn"
+                "could not re-enqueue an orphaned turn"
             );
             Err(e)
         }
     }
 }
 
-/// A `Running` turn awaiting one follow-up check at a known instant.
+/// A turn awaiting one follow-up check at a known instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Suspect {
     turn_id: String,
@@ -292,7 +294,7 @@ fn verdict(
     let Some(record) = record else {
         return Verdict::Alive;
     };
-    if record.status != TurnStatus::Running
+    if !record.awaits_step()
         || record.turn_id != suspect.turn_id
         || record.step != suspect.step
         || executing_here
@@ -417,7 +419,7 @@ impl Suspects {
 /// [`Deps`]) as well as by the passes, drained by [`run`].
 static SUSPECTS: std::sync::LazyLock<Suspects> = std::sync::LazyLock::new(Suspects::default);
 
-/// A `Running` turn's step could not be enqueued: unless something else moves
+/// A turn's step could not be enqueued: unless something else moves
 /// it, nothing will ever run it. Follow up once its window has passed — the
 /// same staleness bar every orphan meets before it is re-driven.
 pub fn suspect_unenqueued(session_id: &str, turn_id: &str, step: u64) {
@@ -498,7 +500,7 @@ const BOOT_DELAY_MS: u64 = 30_000;
 /// the outage that preceded a restart), then [`serve`].
 ///
 /// Boot starts with one full read ([`read_all_turns`]): it seeds the
-/// redrive's view, so later passes read only running turns, and the records
+/// redrive's view, so later passes read only awaiting turns, and the records
 /// feed one compaction ([`crate::turn_compaction`]) after that pass.
 pub async fn run(deps: std::sync::Arc<Deps>) {
     tokio::time::sleep(std::time::Duration::from_millis(BOOT_DELAY_MS)).await;
@@ -575,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn only_stale_running_turns_idle_here_are_orphans() {
+    fn only_stale_awaiting_turns_idle_here_are_orphans() {
         let window = ORPHAN_REDRIVE_AFTER_MS as i64;
         let now = 10 * window;
         let stale = now - window;
@@ -593,6 +595,33 @@ mod tests {
                 !is_orphan_candidate(&record(status, stale), false, now),
                 "{status}"
             );
+        }
+        // A finished turn that still promises a reseed awaits its step too.
+        for status in ["completed", "failed"] {
+            assert!(
+                is_orphan_candidate(&continuing(status, stale), false, now),
+                "{status}"
+            );
+            assert!(
+                !is_orphan_candidate(&continuing(status, stale), true, now),
+                "{status}"
+            );
+            assert!(
+                !is_orphan_candidate(&continuing(status, now - window + 1), false, now),
+                "{status}"
+            );
+        }
+        let owing = TurnRecord {
+            owes_completion: true,
+            ..record("completed", stale)
+        };
+        assert!(is_orphan_candidate(&owing, false, now));
+    }
+
+    fn continuing(status: &str, updated_at: i64) -> TurnRecord {
+        TurnRecord {
+            continues: true,
+            ..record(status, updated_at)
         }
     }
 
@@ -656,6 +685,16 @@ mod tests {
         assert_eq!(
             verdict(Some(&stopped), &suspect(None), false, seen + 5 + window),
             Verdict::Orphan
+        );
+        // A finished turn whose reseed failed still awaits its step.
+        let promised = continuing("completed", seen);
+        assert_eq!(
+            verdict(Some(&promised), &suspect(None), false, stale_now),
+            Verdict::Orphan
+        );
+        assert_eq!(
+            verdict(Some(&promised), &suspect(None), false, stale_now - 1),
+            Verdict::NotYet(stale_now)
         );
     }
 

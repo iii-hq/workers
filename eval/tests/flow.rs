@@ -1148,6 +1148,8 @@ async fn cancel_stops_only_the_monitor_and_beats_late_steps() {
     assert_eq!(stops[0]["session_id"], ids::analyst_session(&evaluation_id));
     // A cancelled evaluation has no reader for another turn.
     assert_eq!(stops[0]["quiet_deadlines"], true);
+    // The session's current turn, not the first one: a stale id stops nothing.
+    assert!(stops[0].get("turn_id").is_none());
     // A step queued before the cancel is ignored.
     let late = runtime::step(
         &h.deps,
@@ -1213,6 +1215,51 @@ async fn recovery_republishes_lost_indexes_and_deadlines_fail_pending_work() {
         (EvalStatusV1::Collecting, "deadline")
     );
     assert!(failure.message.contains("descendant"));
+}
+
+#[tokio::test]
+async fn an_investigation_ends_on_the_sessions_settled_turn_after_a_reseed() {
+    let mut world = World::new();
+    world.analyst_result = json!({"suggestions": [suggestion(&format!("e_{TURN}_c2"))]});
+    let h = Harness::start(world).await;
+    h.configure(true).await;
+    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    h.drain().await;
+    let record = h.result(&evaluation_id).await.record;
+    assert_eq!(record.status, EvalStatusV1::Investigating);
+    let analyst = record.analyst.unwrap();
+    let sent = analyst.turn_id.clone().unwrap();
+    // The sent turn ended, but the Harness is reseeding the session into the
+    // next turn: the investigation keeps waiting.
+    h.world().status.get_mut(&analyst.session_id).unwrap()["expects_wake"] = json!(true);
+    h.end_turn(&analyst.session_id, &sent).await;
+    h.drain().await;
+    let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
+    assert_eq!(record.status, EvalStatusV1::Investigating);
+    assert!(assets.investigation.is_none());
+    assert_eq!(record.analyst.unwrap().turn_id, Some(sent));
+    {
+        // A message queued for the monitor's session was drained at
+        // finalize: the session went on in a new turn that settled with the
+        // result.
+        let mut world = h.world();
+        let mut report = status(&analyst.session_id, "t_reseeded", "completed", None);
+        report["result"] = world.analyst_result.clone();
+        world.status.insert(analyst.session_id.clone(), report);
+    }
+    h.end_turn(&analyst.session_id, "t_reseeded").await;
+    h.drain().await;
+    let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
+    assert_eq!(
+        record.status,
+        EvalStatusV1::Completed,
+        "{:?}",
+        record.failure
+    );
+    assert_eq!(record.counters.suggestions, 1);
+    let investigation = assets.investigation.unwrap();
+    assert_eq!(investigation.turn_id, "t_reseeded");
+    assert_eq!(investigation.suggestions.len(), 1);
 }
 
 #[tokio::test]
