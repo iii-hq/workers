@@ -3472,6 +3472,7 @@ export function ChatView({
                 }
                 externalInput={!side}
                 composerId={composerId}
+                sessionId={conversation.id}
                 compact={side?.compact}
                 header={
                   side?.quote ? (

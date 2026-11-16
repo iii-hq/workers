@@ -300,6 +300,9 @@ interface ComposerProps {
  with several chats open, an insert or a focus request reaches one
  composer only. Generated when absent. */
   composerId?: string
+  /** The chat session this composer sends into: an insert addressed to that
+      session (`host.chat.compose({ sessionId })`) reaches this composer. */
+  sessionId?: string
   /** Shown at the top of the card, above attachments: a side chat's quote. */
   header?: ReactNode
   /**
@@ -433,6 +436,7 @@ export function Composer({
   autoFocus,
   externalInput = true,
   composerId: composerIdProp,
+  sessionId,
   header,
   compact = false,
   initialContent,
@@ -739,8 +743,8 @@ export function Composer({
   const composerId = composerIdProp ?? generatedComposerId
   // One of the chats outside text can be handed to while it is mounted.
   useEffect(
-    () => (externalInput ? registerComposer(composerId) : undefined),
-    [composerId, externalInput],
+    () => (externalInput ? registerComposer(composerId, sessionId) : undefined),
+    [composerId, externalInput, sessionId],
   )
   useEffect(
     () =>

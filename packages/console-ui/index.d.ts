@@ -119,8 +119,9 @@ export interface ScreenOpenRequest {
 
 /** What `host.chat.compose` did: handed the draft to a composer (or held it
     for the chat being opened), or, with `ifUnambiguous`, left it alone
-    because several chats are open. */
-export type ComposeResult = 'composed' | 'ambiguous'
+    because several chats are open, or, with `sessionId`, left it alone
+    because that chat's composer is not mounted. */
+export type ComposeResult = 'composed' | 'ambiguous' | 'unavailable'
 
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
@@ -804,6 +805,14 @@ export interface Host {
        * the text.
        */
       ifUnambiguous?: boolean
+      /**
+       * The chat session the draft belongs to (a card inside that chat
+       * answering for it). Only that chat's composer takes it; when it is
+       * not mounted nothing lands and `'unavailable'` comes back. Wins over
+       * `beside` and `ifUnambiguous`. Older consoles ignore it and hand the
+       * draft to the chat used last.
+       */
+      sessionId?: string
     }): ComposeResult | void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */

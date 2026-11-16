@@ -21,6 +21,7 @@ import {
 } from '@/lib/backend/projects'
 import {
   attachToComposer,
+  composerForSession,
   insertIntoComposer,
   mountedComposerCount,
   requestComposerFocus,
@@ -439,6 +440,22 @@ function makeHost(
         )
       },
       compose(draft) {
+        // Addressed to one chat (a card inside it): that chat's composer or
+        // nothing. Never the chat used last, which may be another session.
+        if (draft.sessionId !== undefined) {
+          const target = composerForSession(draft.sessionId)
+          if (target === null) return 'unavailable'
+          if (draft.files && draft.files.length > 0) attachToComposer(draft.files, target)
+          if (draft.text) {
+            insertIntoComposer(draft.text, {
+              inline: draft.inline === true,
+              submit: draft.submit === true,
+              composerId: target,
+            })
+          }
+          requestComposerFocus(target)
+          return 'composed'
+        }
         const open = mountedComposerCount()
         // Several chats and a caller that must not guess: nothing lands.
         if (draft.ifUnambiguous === true && open > 1) return 'ambiguous'

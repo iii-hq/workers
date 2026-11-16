@@ -11,7 +11,9 @@
  * and a single-line "Other" field. A skipped question sends
  * `Header: (skipped)` and takes no pick. The foot has Dismiss, which sends
  * the dismissal notice instead of answers, and Send, which hands the
- * formatted answer to the composer (`host.chat.compose`, submitted); either
+ * formatted answer to the composer of the card's own chat
+ * (`host.chat.compose` with the card's `sessionId`, submitted; never the
+ * chat used last, which with several open may be another session); either
  * starts the next turn.
  *
  * Send is not proof of sending: `compose` returns nothing and the composer
@@ -406,7 +408,17 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
     if (!interactive || sending || pending.current) return
     const before = knownTurn.current
     try {
-      host.chat?.compose?.({ text: sent, submit: true })
+      // Addressed to this card's own chat: with several chats open, the one
+      // used last may be another session, and the answer must not land there.
+      const result = host.chat?.compose?.({
+        text: sent,
+        submit: true,
+        sessionId: view.sessionId,
+      })
+      if (result === 'unavailable' || result === 'ambiguous') {
+        setPhase('failed')
+        return
+      }
     } catch {
       setPhase('failed')
       return
