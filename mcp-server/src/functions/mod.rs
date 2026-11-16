@@ -90,6 +90,50 @@ fn schema_value<T: schemars::JsonSchema>() -> Value {
     v
 }
 
+/// An observation delivered to [`SINK_FUNCTION_ID`] by an observer an MCP
+/// session created; [`sink_guard::admit`] checks it before delivery.
+fn sink_request_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "An observation from one of an MCP session's poll or SSE observers.",
+    })
+}
+
+/// The `http::on-config-change` observation; only its arrival matters.
+fn reload_request_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "The http worker's configuration-change observation; its content is not read.",
+    })
+}
+
+/// Both internal functions answer an empty object.
+fn empty_response_schema() -> Value {
+    json!({ "type": "object", "additionalProperties": false })
+}
+
+/// `(function_id, request_schema, response_schema)` of every function the
+/// worker registers.
+pub fn function_schemas() -> Vec<(&'static str, Value, Value)> {
+    vec![
+        (
+            FUNCTION_ID,
+            schema_value::<McpRequest>(),
+            json!({ "type": "null" }),
+        ),
+        (
+            SINK_FUNCTION_ID,
+            sink_request_schema(),
+            empty_response_schema(),
+        ),
+        (
+            RELOAD_FUNCTION_ID,
+            reload_request_schema(),
+            empty_response_schema(),
+        ),
+    ]
+}
+
 pub fn register_all(iii: &Arc<IIIClient>, ctx: &Ctx) {
     register_handler(iii, ctx);
     register_sink(iii, ctx);
@@ -197,6 +241,8 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
                 Ok::<Value, Error>(json!({}))
             }
         })
+        .request_format(reload_request_schema())
+        .response_format(empty_response_schema())
         .metadata(json!({ "internal": true, "trace_hidden": true }))
         .description("Internal: re-checks the http worker's bind after it reloads, and withdraws or restores the MCP routes."),
     );
@@ -320,6 +366,8 @@ fn register_sink(iii: &Arc<IIIClient>, ctx: &Ctx) {
                 Ok(json!({}))
             }
         })
+        .request_format(sink_request_schema())
+        .response_format(empty_response_schema())
         .metadata(json!({ "internal": true, "trace_hidden": true }))
         .description("Receives the observations of MCP sessions' poll and SSE observers; internal."),
     );
@@ -433,6 +481,42 @@ async fn write_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keys the interface collector (`collect_worker_interface.py`)
+    /// accepts as a typed schema; anything else is "unknown" and fails the
+    /// boot smoke and publication.
+    fn is_typed(schema: &Value) -> bool {
+        const KEYS: [&str; 9] = [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+            "items",
+            "const",
+        ];
+        schema
+            .as_object()
+            .is_some_and(|o| KEYS.iter().any(|k| o.contains_key(*k)))
+    }
+
+    #[test]
+    fn every_registered_function_has_typed_schemas() {
+        let ids: Vec<&str> = function_schemas().iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, [FUNCTION_ID, SINK_FUNCTION_ID, RELOAD_FUNCTION_ID]);
+        for (id, request, response) in function_schemas() {
+            assert!(
+                is_typed(&request),
+                "{id} request schema is untyped: {request}"
+            );
+            assert!(
+                is_typed(&response),
+                "{id} response schema is untyped: {response}"
+            );
+        }
+    }
 
     #[test]
     fn the_endpoint_serves_post_get_and_delete() {
