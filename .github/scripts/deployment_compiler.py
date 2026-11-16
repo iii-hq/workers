@@ -312,7 +312,7 @@ def validate_artifact(
             if not (worker_dir / "go.mod").is_file():
                 fail(f"{worker}: go-binary requires go.mod")
             tags = artifact.get("tags")
-            if tags is not None and (
+            if "tags" in artifact and (
                 not isinstance(tags, list)
                 or not tags
                 or any(not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9_.]+", tag) for tag in tags)
