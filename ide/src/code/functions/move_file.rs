@@ -12,7 +12,7 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::code::error::{err_to_string, CoderError, WireError};
+use crate::code::error::{CoderError, WireError, err_to_string};
 use crate::code::path::PathResolver;
 
 // ---------------------------------------------------------------------------
@@ -114,10 +114,10 @@ pub async fn handle(
     let fs_scope = req.fs_scope.as_ref();
     for spec in &req.files {
         for path in [&spec.from, &spec.to] {
-            if let Err(e) = resolver.require_writable_scope(fs_scope, path) {
-                if is_jail_scope_error(&e) {
-                    return Err(err_to_string(e));
-                }
+            if let Err(e) = resolver.require_writable_scope(fs_scope, path)
+                && is_jail_scope_error(&e)
+            {
+                return Err(err_to_string(e));
             }
         }
     }
@@ -154,7 +154,7 @@ fn move_one(
                 success: false,
                 moved: false,
                 error: Some((&e).into()),
-            }
+            };
         }
     };
 
@@ -168,7 +168,7 @@ fn move_one(
                 success: false,
                 moved: false,
                 error: Some((&e).into()),
-            }
+            };
         }
     };
 
@@ -293,10 +293,8 @@ fn try_move_one(
     // ------------------------------------------------------------------
 
     // Create destination parent directories if requested.
-    if parents {
-        if let Some(parent) = abs_to.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, wire_to))?;
-        }
+    if parents && let Some(parent) = abs_to.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, wire_to))?;
     }
 
     if same_root {
@@ -615,7 +613,9 @@ mod tests {
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
         if euid == 0 {
-            eprintln!("SKIP: rollback_on_src_delete_failure skipped when euid==0 (CI-as-root makes chmod ineffective)");
+            eprintln!(
+                "SKIP: rollback_on_src_delete_failure skipped when euid==0 (CI-as-root makes chmod ineffective)"
+            );
             return;
         }
 

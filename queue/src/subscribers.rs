@@ -20,8 +20,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use tokio::sync::{watch, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, watch};
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::boot::ConfigCell;
@@ -135,10 +135,10 @@ impl EngineChanges {
     /// was taken or since the previous `changed` returned (bursts coalesce).
     /// Never resolves on an unbound or closed feed.
     pub async fn changed(&mut self) {
-        if let Some(rx) = self.rx.as_mut() {
-            if rx.changed().await.is_ok() {
-                return;
-            }
+        if let Some(rx) = self.rx.as_mut()
+            && rx.changed().await.is_ok()
+        {
+            return;
         }
         std::future::pending::<()>().await
     }
@@ -761,8 +761,8 @@ mod tests {
     use crate::store::TopicStats;
     use serde_json::json;
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     #[test]

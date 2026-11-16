@@ -8,21 +8,21 @@
 mod db;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use db::TestDb;
 use sentinel::ingest::{
-    ring::PhantomRing, CheckoutVersions, Ingest, IngestJob, Telemetry, TICK_BACKLOG_MAX,
+    CheckoutVersions, Ingest, IngestJob, TICK_BACKLOG_MAX, Telemetry, ring::PhantomRing,
 };
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::store::Db;
 use sentinel::{
     Counters, GroupStatusV1, SentinelError, Store, TraceStoreStateV1, TraceSummary, WorkerConfig,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const NOW_NANOS: u64 = 1_789_000_000_500_000_000;
 /// What the engine answers, as the SDK and the runtime render it, with no span store.
@@ -548,12 +548,14 @@ async fn a_disabled_span_store_queues_nothing_and_says_so() {
     };
     let harness = harness(telemetry).await;
 
-    assert!(harness
-        .ingest
-        .filter_tick(&ids(&["t1", "t2"]))
-        .await
-        .0
-        .is_empty());
+    assert!(
+        harness
+            .ingest
+            .filter_tick(&ids(&["t1", "t2"]))
+            .await
+            .0
+            .is_empty()
+    );
     assert_eq!(harness.counters.trace_store(), TraceStoreStateV1::Disabled);
 }
 

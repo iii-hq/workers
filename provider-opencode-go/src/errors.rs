@@ -7,10 +7,10 @@ use serde_json::Value;
 /// Map an OpenCode Go HTTP status + error body to the shared taxonomy.
 /// `None` status = the request never got a response (connect/read failure).
 pub fn classify(status: Option<u16>, message: &str) -> ErrorKind {
-    if let Ok(v) = serde_json::from_str::<Value>(message) {
-        if let Some(kind) = classify_opencode_go_value(&v, status) {
-            return kind;
-        }
+    if let Ok(v) = serde_json::from_str::<Value>(message)
+        && let Some(kind) = classify_opencode_go_value(&v, status)
+    {
+        return kind;
     }
     match status {
         Some(401) | Some(403) => ErrorKind::AuthExpired,

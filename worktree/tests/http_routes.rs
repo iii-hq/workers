@@ -21,8 +21,8 @@ use bus::{
     call, engine, free_port, git, http_bin, post, post_chunked, post_raw, register_state,
     registered, request, require, spawn_http, spawn_worker,
 };
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::time::sleep;
 
 fn skip(reason: &str) {

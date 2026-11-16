@@ -10,7 +10,7 @@ mod supervisor;
 
 pub(crate) use spec::ProcessSpec;
 pub use supervisor::EarlyExit;
-pub(crate) use supervisor::{ProcessSupervisor, TeardownReport, DEFAULT_TEARDOWN_BUDGET};
+pub(crate) use supervisor::{DEFAULT_TEARDOWN_BUDGET, ProcessSupervisor, TeardownReport};
 
 #[cfg(test)]
 mod tests;

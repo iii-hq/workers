@@ -13,7 +13,7 @@ use std::time::Duration;
 use super::{Accounts, UNWATCHED_GLOBAL_EVERY_MS};
 use crate::collector::Collector;
 use crate::events::Monitor;
-use crate::model::{now_ms, RulesMode};
+use crate::model::{RulesMode, now_ms};
 
 /// How often the loop looks.
 const TICK: Duration = Duration::from_secs(15);

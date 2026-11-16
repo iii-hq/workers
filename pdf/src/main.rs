@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
@@ -50,7 +50,7 @@ struct Cli {
 /// dropped connection instead of a clean disconnect.
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
         result = tokio::signal::ctrl_c() => result?,
@@ -65,8 +65,7 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -87,6 +86,14 @@ async fn main() -> anyhow::Result<()> {
     // ToUnicode table decode to empty text and nothing says so.
     cmaps::materialize();
 
+    // Environment mutation must finish before Tokio creates worker threads.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     let iii = register_worker(
         &cli.url,
         InitOptions {

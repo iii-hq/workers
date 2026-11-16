@@ -1,7 +1,7 @@
-use approval_gate::permissions::{parse_rules_from_config, Decision, Permissions};
+use approval_gate::permissions::{Decision, Permissions, parse_rules_from_config};
 use approval_gate::types::PermissionMode;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 struct RepositoryPermissions {

@@ -69,10 +69,10 @@ pub(crate) async fn cascade_stop_running(
     dispatch_timeout_ms: u64,
 ) {
     for cp in record.nodes.values() {
-        if matches!(cp.state, crate::types::NodeState::Running) {
-            if let Some(sid) = &cp.session_id {
-                harness_stop_session(deps, sid, dispatch_timeout_ms).await;
-            }
+        if matches!(cp.state, crate::types::NodeState::Running)
+            && let Some(sid) = &cp.session_id
+        {
+            harness_stop_session(deps, sid, dispatch_timeout_ms).await;
         }
     }
 }

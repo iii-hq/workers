@@ -22,7 +22,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::{AsyncMessage, Client, Connection, NoTls, Socket};
 
-use super::bus::{now_ms, RowChangeBus, RowChangedEvent, KEY_CAP};
+use super::bus::{KEY_CAP, RowChangeBus, RowChangedEvent, now_ms};
 use super::sql::Op;
 use crate::config::{CaptureMode, WorkerConfig};
 use crate::connector::Connector;

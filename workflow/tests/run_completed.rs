@@ -16,14 +16,14 @@ use std::time::{Duration, Instant};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, Observed, RegisterFunction,
-    Source,
+    CallRequest, Capture, IIIClient, InitOptions, Observed, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, RwLock};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::{sleep, timeout};
 
-use workflow::events::{emit_run_completed, RunCompletedEvent, ON_RUN_COMPLETED_FN};
+use workflow::events::{ON_RUN_COMPLETED_FN, RunCompletedEvent, emit_run_completed};
 use workflow::functions::{self, Deps};
 use workflow::types::{RunStatus, WorkflowRunRecord};
 

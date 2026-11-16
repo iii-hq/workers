@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::compose::{declared_workers, DeclaredWorker};
+use super::compose::{DeclaredWorker, declared_workers};
 use super::kitref::{bump_kind, is_major_jump, satisfies};
-use super::lock::{local_sha, sha256_hex, FileState, KitsLock, LockedKit};
-use super::merge::{three_way, MergeStatus};
+use super::lock::{FileState, KitsLock, LockedKit, local_sha, sha256_hex};
+use super::merge::{MergeStatus, three_way};
 use super::origin::{OriginIndex, SourceKind};
 use super::paths::{
     agent_id_for_path, install_path_for_source, skill_id_for_source, source_for_install_path,
@@ -553,7 +553,10 @@ fn collision_issue(path: &str, c: &Collision) -> Issue {
             format!(
                 "{path} came from worker {}{} and will be replaced{}.",
                 c.worker.as_deref().unwrap_or("?"),
-                c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default(),
+                c.version
+                    .as_deref()
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default(),
                 if c.modified == Some(true) {
                     " (it was edited in this project)"
                 } else {
@@ -566,7 +569,10 @@ fn collision_issue(path: &str, c: &Collision) -> Issue {
             format!(
                 "{path} belongs to kit {}{}; replacing it moves the file to this kit.",
                 c.kit.as_deref().unwrap_or("?"),
-                c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default()
+                c.version
+                    .as_deref()
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default()
             ),
         ),
         SourceKind::Local if path.starts_with("agents/") => (
@@ -1157,10 +1163,8 @@ pub async fn build_update_plan(
                     contents.blobs.insert(old.sha256.clone(), base);
                 }
                 let edited = state == FileState::Edited;
-                if edited {
-                    if let Some(text) = view.read(&path) {
-                        contents.ours.insert(path.clone(), text);
-                    }
+                if edited && let Some(text) = view.read(&path) {
+                    contents.ours.insert(path.clone(), text);
                 }
                 plan_files.push(PlanFile {
                     path: path.clone(),

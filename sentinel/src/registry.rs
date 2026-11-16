@@ -204,13 +204,12 @@ fn resolve_in(
     };
 
     // 1. The span said which namespace it is in.
-    if let Some(namespace) = span_namespace.filter(|value| !value.is_empty()) {
-        if let Some(worker) = snapshot
+    if let Some(namespace) = span_namespace.filter(|value| !value.is_empty())
+        && let Some(worker) = snapshot
             .owners
             .get(&(namespace.to_string(), function_id.to_string()))
-        {
-            return owner(snapshot, namespace, worker, false);
-        }
+    {
+        return owner(snapshot, namespace, worker, false);
     }
 
     let candidates = snapshot.namespaces.get(function_id);

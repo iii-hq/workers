@@ -10,13 +10,13 @@
 //! late, same as the WebSocket behavior in the Node SDK. The SDK reader only
 //! dispatches text frames while `next_binary()` is polled, so a pump task
 //! drives it; pump exit (close/error) drops the sender → EOF for the relay.
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
-use iii_sdk::{errors::Error, IIIClient};
-use tokio::sync::{mpsc, Notify};
+use iii_sdk::{IIIClient, errors::Error};
+use tokio::sync::{Notify, mpsc};
 
 use crate::chat::relay::{CallerGone, FrameSink, ReadEvent, RelayRead, RouterChannel};
 

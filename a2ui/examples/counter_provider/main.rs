@@ -33,9 +33,9 @@ mod provider;
 
 use std::sync::Arc;
 
+use iii_sdk::InitOptions;
 use iii_sdk::register_worker;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::InitOptions;
 
 #[tokio::main]
 async fn main() {

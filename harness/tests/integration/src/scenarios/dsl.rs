@@ -4,7 +4,7 @@
 //! types. Request differences and function history remain explicit at each
 //! scenario call site.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{ScenarioDriver, VerifyFn};
 use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};

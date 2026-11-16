@@ -11,14 +11,14 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use email::events::Event;
 use email::events::dispatcher::{EngineDispatcher, EventDispatcher};
 use email::events::new_mail::{self, NewMailEvent, ON_NEW_MAIL_FN};
-use email::events::Event;
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const TARGET: &str = "support-bot::on-mail";
 

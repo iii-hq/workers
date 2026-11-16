@@ -3,7 +3,7 @@
 [package]
 name = "tmux"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 publish = false
 description = "tmux worker for iii — sessions and windows as tmux::* functions, agent/compose/port status per pane, and a live console terminal attached as a real tmux client"
 

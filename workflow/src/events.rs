@@ -8,8 +8,7 @@ use crate::types::RunStatus;
 /// The event function every terminal run calls. Private: only this worker
 /// calls it; anyone may observe it.
 pub const ON_RUN_COMPLETED_FN: &str = "workflow::on-run-completed";
-pub const ON_RUN_COMPLETED_DESC: &str =
-    "A workflow run reached a terminal state (completed, failed or cancelled). Takes no \
+pub const ON_RUN_COMPLETED_DESC: &str = "A workflow run reached a terminal state (completed, failed or cancelled). Takes no \
      args; observe it with filters on input.run_id or input.status. Called by the workflow \
      worker only.";
 

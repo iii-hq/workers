@@ -9,7 +9,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_node_core::manager::RuntimeManager;
 use iii_node_core::runtime;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 
 #[derive(Parser, Debug)]
 #[command(

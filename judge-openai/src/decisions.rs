@@ -2,12 +2,12 @@
 //! evaluations out (`POST /v1/decisions`), validated judge-contract answers
 //! back, and the supported part of `GET /v1/models` as model cards.
 use judge_contract::{
-    validate_answer, Answer, Content, ErrorCode, Evaluation, ModelCard, ProviderError, Question,
-    ScoreLevel, Usage,
+    Answer, Content, ErrorCode, Evaluation, ModelCard, ProviderError, Question, ScoreLevel, Usage,
+    validate_answer,
 };
 use judge_provider::Failure;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Refused question ids listed in a refusal diagnostic, which stays bounded.

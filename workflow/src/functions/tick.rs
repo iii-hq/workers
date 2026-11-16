@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     dag,
@@ -362,10 +362,10 @@ async fn finalize(
     // provider-default caller leaves it empty and emit_reply would otherwise drop
     // the outcome silently. Fall back to the output node's model — node models are
     // validated non-empty at start, so this is always a usable model.
-    if let Some(reply) = record.reply_to.as_mut() {
-        if reply.model.as_deref().map(str::is_empty).unwrap_or(true) {
-            reply.model = def.nodes.get(out_node).map(|n| n.agent.model.clone());
-        }
+    if let Some(reply) = record.reply_to.as_mut()
+        && reply.model.as_deref().map(str::is_empty).unwrap_or(true)
+    {
+        reply.model = def.nodes.get(out_node).map(|n| n.agent.model.clone());
     }
 
     // Stop any sibling nodes still Running. `quiescence` returns Failed the instant
@@ -1018,7 +1018,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use crate::events::test_support::RecordingDeliverer;
-    use crate::events::{RunCompletedEvent, ON_RUN_COMPLETED_FN};
+    use crate::events::{ON_RUN_COMPLETED_FN, RunCompletedEvent};
     use std::sync::Arc;
 
     /// Deps whose client never connects. Finalizing a run with no Running

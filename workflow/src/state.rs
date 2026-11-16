@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{from_value, json, Value};
+use serde_json::{Value, from_value, json};
 
 use crate::{
     error::WorkflowError,
@@ -231,11 +231,7 @@ pub async fn get_node_result(
 ) -> Result<Option<Value>, WorkflowError> {
     let key = node_result_key(run_id, node_uid);
     let v = state_get(iii, SCOPE_RESULT, &key).await?;
-    if v.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(v))
-    }
+    if v.is_null() { Ok(None) } else { Ok(Some(v)) }
 }
 
 /// For each `NodeState::Done` checkpoint that has a `result_ref`, fetch the

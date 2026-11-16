@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 
 use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    CleanupFuture, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation, ScenarioObservation,
+    ScenarioSpec, common,
 };
 
 pub const ID: &str = "receiving_operation";

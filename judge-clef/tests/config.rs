@@ -1,4 +1,4 @@
-use judge_clef::{configuration, ClefConfig};
+use judge_clef::{ClefConfig, configuration};
 use serde_json::json;
 
 #[test]

@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use async_trait::async_trait;
@@ -425,8 +425,10 @@ async fn fix_pr_materializes_an_exact_sha_checkout_then_starts_a_session() {
     let plans = runtime.plans.lock().await;
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].filesystem_root, "/private/tmp/wt_action");
-    assert!(plans[0]
-        .allowed_functions
-        .iter()
-        .any(|function| function == "github::pr::create"));
+    assert!(
+        plans[0]
+            .allowed_functions
+            .iter()
+            .any(|function| function == "github::pr::create")
+    );
 }

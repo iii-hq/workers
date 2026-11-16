@@ -6,14 +6,14 @@
 //! origin.
 
 use base64::Engine as _;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{config_from_resolve, ConfigError, SarvamConfig};
+use crate::config::{ConfigError, SarvamConfig, config_from_resolve};
 use crate::errors::classify_bus_error;
 use crate::state;
 
@@ -224,10 +224,10 @@ fn segments_from_timestamps(t: &WireTimestamps) -> Vec<TranscriptSegment> {
         }
         let this_start = t.start_time_seconds.get(i).copied();
         let this_end = t.end_time_seconds.get(i).copied();
-        if let (Some(prev_end), Some(this_start)) = (end, this_start) {
-            if this_start - prev_end > SEGMENT_GAP_SECS {
-                flush(&mut words, &mut start, &mut end, &mut out);
-            }
+        if let (Some(prev_end), Some(this_start)) = (end, this_start)
+            && this_start - prev_end > SEGMENT_GAP_SECS
+        {
+            flush(&mut words, &mut start, &mut end, &mut out);
         }
         if start.is_none() {
             start = this_start;

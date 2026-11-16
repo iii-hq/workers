@@ -1,6 +1,6 @@
 use std::io::Read as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use harness::config::WorkerConfig;
@@ -14,8 +14,8 @@ use harness::skills;
 use harness::types::message::AgentMessage;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 struct Engine {
@@ -260,9 +260,11 @@ async fn imported_session_start_requires_explicit_runtime_options() {
     .await
     .expect_err("an imported session needs an explicit filesystem root");
     assert_eq!(missing_root.code(), "harness/invalid_request");
-    assert!(missing_root
-        .to_string()
-        .contains("options.metadata.fs_scope.root"));
+    assert!(
+        missing_root
+            .to_string()
+            .contains("options.metadata.fs_scope.root")
+    );
     assert_eq!(ensures.load(Ordering::SeqCst), 0);
 
     for (session_id, options) in [

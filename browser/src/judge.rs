@@ -181,11 +181,7 @@ pub fn choice(answer: Option<&Value>, keys: &[&str]) -> Result<Choice, JudgeErro
         && unit(parsed.confidence)
         && (parsed.probabilities.values().sum::<f64>() - 1.0).abs() <= 0.02
         && parsed.probabilities[&parsed.choice] >= top - 1e-6;
-    if valid {
-        Ok(parsed)
-    } else {
-        Err(bad())
-    }
+    if valid { Ok(parsed) } else { Err(bad()) }
 }
 
 #[cfg(test)]

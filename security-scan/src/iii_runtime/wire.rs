@@ -664,11 +664,10 @@ fn normalize_dependabot_alert(
     if let Some(identifier) = structured_identifier(&alert.ghsa_id) {
         structured_ids.push(identifier);
     }
-    if let Some(identifier) = alert.cve_id.as_deref().and_then(structured_identifier) {
-        if !structured_ids.contains(&identifier) {
+    if let Some(identifier) = alert.cve_id.as_deref().and_then(structured_identifier)
+        && !structured_ids.contains(&identifier) {
             structured_ids.push(identifier);
         }
-    }
     Ok(ReconciliationAlertV1 {
         source: ReconciliationSourceV1::Dependabot,
         number: alert.number,

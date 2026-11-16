@@ -4,7 +4,7 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{register_fn, run_text, spec, EmptyInput, FunctionSpec};
+use super::{EmptyInput, FunctionSpec, register_fn, run_text, spec};
 use crate::config::{SharedConfig, WorkerConfig};
 
 pub const FILE_TARGETS_ID: &str = "tailscale::file::targets";

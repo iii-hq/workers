@@ -77,9 +77,11 @@ async fn concurrent_acquire_is_idempotent_and_independent_leases_keep_child_aliv
     let calls = (0..20).map(|_| manager.acquire(request("github", 5000)));
     let responses = futures_util::future::join_all(calls).await;
     let first = responses[0].as_ref().unwrap();
-    assert!(responses
-        .iter()
-        .all(|r| r.as_ref().unwrap().lease_id == first.lease_id));
+    assert!(
+        responses
+            .iter()
+            .all(|r| r.as_ref().unwrap().lease_id == first.lease_id)
+    );
     let other = manager.acquire(request("preview", 5000)).await.unwrap();
     event(&mut events, Status::Ready).await;
     assert_eq!(pids(dir.path()).len(), 1);

@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::configuration::{self, ConfigCell};

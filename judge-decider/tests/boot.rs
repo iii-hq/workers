@@ -1,6 +1,6 @@
 //! Exercise the real binary (tiny local GGUF) against an isolated configuration/engine websocket.
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader},
@@ -260,11 +260,13 @@ async fn check_boot(shutdown_signal: Option<&str>) {
         })
         .await
         .expect("worker reports readiness");
-        assert!(Command::new("kill")
-            .args([signal, &worker.0.id().to_string()])
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("kill")
+                .args([signal, &worker.0.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
         // Exit status alone does not prove the SDK's background thread finished.
         // This record comes from its final telemetry shutdown, after flushing.
         let flushed = timeout(Duration::from_secs(20), async {

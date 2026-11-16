@@ -768,9 +768,11 @@ mod tests {
         }
         for invalid in [".nan", ".inf", "-.inf"] {
             let yaml = format!("function_search_judge_min_relevance: {invalid}\n");
-            assert!(SkillsConfig::from_yaml(&yaml)
-                .unwrap_err()
-                .contains("function_search_judge_min_relevance"));
+            assert!(
+                SkillsConfig::from_yaml(&yaml)
+                    .unwrap_err()
+                    .contains("function_search_judge_min_relevance")
+            );
         }
     }
 

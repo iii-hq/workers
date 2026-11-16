@@ -32,7 +32,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{Binding, BindingStore};
 use crate::deps::Deps;

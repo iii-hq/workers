@@ -3,7 +3,7 @@
 //! `make_decider_prompts.py`).
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, Question};
 use judge_decider::{client::prompts, prompt::render_state};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/decider_prompts.json")).unwrap()
@@ -27,7 +27,7 @@ fn rows(case: &Value) -> Vec<(String, Vec<String>)> {
 #[tokio::test]
 async fn tiny_decider_answers_every_type() {
     use judge_contract::ErrorCode;
-    use judge_decider::{download, engine, DeciderClient};
+    use judge_decider::{DeciderClient, download, engine};
     let gguf =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny-qwen3.gguf");
     let client = DeciderClient::load(
@@ -113,7 +113,7 @@ fn prompts_match_decider() {
 #[tokio::test]
 #[ignore]
 async fn gguf_matches_the_reference() {
-    use judge_decider::{download, engine, DeciderClient};
+    use judge_decider::{DeciderClient, download, engine};
     let gguf = std::env::var("DECIDER_GGUF").expect("DECIDER_GGUF points at the decider GGUF");
     let checkpoint = download::local("decider-4b-v2", gguf.as_ref()).unwrap();
     let options = engine::Options {

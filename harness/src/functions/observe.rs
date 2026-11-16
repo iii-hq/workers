@@ -27,11 +27,11 @@ use iii_sdk::protocol::CallRequest;
 use iii_sdk::{ObserverHandle, ObserverOptions, ObserverState, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bindings::{
-    Binding, BindingTarget, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome, SourceSpec,
-    STATE_ON_CHANGED_FN,
+    Binding, BindingTarget, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome,
+    STATE_ON_CHANGED_FN, SourceSpec,
 };
 use crate::call::{self, ResultData};
 use crate::clients::EngineClient;
@@ -183,16 +183,14 @@ pub struct UnobserveResponse {
 /// The contract agents get for the intercepted observe tools — shown as the
 /// native tool AND overlaid onto `engine::functions::info/list` responses, so
 /// discovery describes exactly what the intercept accepts.
-pub const OBSERVE_TOOL_DESC: &str =
-    "Observe a function for the current harness session: each time it runs, omit `target` to be \
+pub const OBSERVE_TOOL_DESC: &str = "Observe a function for the current harness session: each time it runs, omit `target` to be \
      notified in this session with what it returned, or name a non-harness `target.function_id` \
      to call with it. Pass the function's `args` when it takes them and `filters` on its \
      `input.<field>` to choose calls. Set `lifecycle.expires_in_ms` on every wake except a timer, \
      to how long the work should take; a one-shot wake without it expires after 10 minutes with a \
      notice. Returns `{ observer_id, once }`; a `note` is advice about the observer, which was \
      created either way. Call-target results are discarded and do not return to this session.";
-pub const UNOBSERVE_TOOL_DESC: &str =
-    "Remove an observer the current harness session created (`id` is the observer_id \
+pub const UNOBSERVE_TOOL_DESC: &str = "Remove an observer the current harness session created (`id` is the observer_id \
      harness::observe returned).";
 
 /// The intercept's request schema for a control id, for discovery overlays.
@@ -317,7 +315,7 @@ pub async fn invoke(
         match super::delete_session_tree::begin_dispatch(deps, session_id, function_id).await {
             Ok(id) => id,
             Err(error) => {
-                return call::invocation_error_result(Some(error.code().into()), error.to_string())
+                return call::invocation_error_result(Some(error.code().into()), error.to_string());
             }
         };
     let send = send_invocation_context(
@@ -360,10 +358,10 @@ pub async fn invoke(
     // fails closed instead of treating the local error result as tool exit.
     // The flag is classified by the harness from the structured SDK error,
     // never from the target-controlled result text.
-    if !outcome_unknown {
-        if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
-            return call::invocation_error_result(Some(error.code().into()), error.to_string());
-        }
+    if !outcome_unknown
+        && let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await
+    {
+        return call::invocation_error_result(Some(error.code().into()), error.to_string());
     }
     if let (Some(note), false) = (start_note, result.is_error) {
         result.content.push(ContentBlock::text(note));
@@ -743,7 +741,7 @@ async fn intercept_unobserve(deps: &Deps, args: &Value, session_id: &str) -> Res
     let req: UnobserveRequest = match serde_json::from_value(args.clone()) {
         Ok(req) => req,
         Err(error) => {
-            return error_result(format!("{UNOBSERVE_ID} requires a string `id`: {error}"))
+            return error_result(format!("{UNOBSERVE_ID} requires a string `id`: {error}"));
         }
     };
     let id = req.id.as_str();
@@ -1797,7 +1795,7 @@ async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHo
                 return SourceHost {
                     namespace: Some(namespace.clone()),
                     unhosted_in: Vec::new(),
-                }
+                };
             }
             Ok(_) => {}
             Err(e) if e.to_string().contains("NOT_FOUND") => {}
@@ -1805,7 +1803,7 @@ async fn resolve_source_namespace(deps: &Deps, req: &ObserveRequest) -> SourceHo
                 return SourceHost {
                     namespace: None,
                     unhosted_in: Vec::new(),
-                }
+                };
             }
         }
     }
@@ -2148,12 +2146,10 @@ pub(crate) mod tests {
     fn the_tool_contract_states_the_default_deadline() {
         assert_eq!(DEFAULT_WAKE_EXPIRY_MS, 600_000, "10 minutes in the text");
         assert!(OBSERVE_TOOL_DESC.contains("expires after 10 minutes"));
-        assert!(default_deadline_advisory(
-            &req(state(None, Some("k"))),
-            DEFAULT_WAKE_EXPIRY_MS,
-            true
-        )
-        .contains("10 minutes"));
+        assert!(
+            default_deadline_advisory(&req(state(None, Some("k"))), DEFAULT_WAKE_EXPIRY_MS, true)
+                .contains("10 minutes")
+        );
         // A leaf's cap below the default is what the note must state, and a leaf
         // cannot unobserve, so it must not be told to.
         let leaf = default_deadline_advisory(&req(state(None, Some("k"))), 120_000, false);
@@ -2372,11 +2368,13 @@ pub(crate) mod tests {
         );
         // Keyless and non-state shapes are never probed.
         assert!(watched_state_key(&req(state(Some("run"), None))).is_none());
-        assert!(watched_state_key(&req(json!({
-            "function_id": CRON_ON_TICK_FN,
-            "filters": state_filters(Some("run"), Some("done")),
-        })))
-        .is_none());
+        assert!(
+            watched_state_key(&req(json!({
+                "function_id": CRON_ON_TICK_FN,
+                "filters": state_filters(Some("run"), Some("done")),
+            })))
+            .is_none()
+        );
 
         let note = prewritten_key_note("receiving_events", "done");
         assert!(note.contains("receiving_events/done"), "got: {note}");
@@ -2447,11 +2445,13 @@ pub(crate) mod tests {
     #[test]
     fn lifecycle_deadlines_are_relative_only() {
         assert!(validate_lifecycle(None).is_ok());
-        assert!(validate_lifecycle(Some(&LifecycleRequest {
-            max_fires: Some(0),
-            ..Default::default()
-        }))
-        .is_err());
+        assert!(
+            validate_lifecycle(Some(&LifecycleRequest {
+                max_fires: Some(0),
+                ..Default::default()
+            }))
+            .is_err()
+        );
         for bad in [0_i64, -5] {
             let err = validate_lifecycle(Some(&LifecycleRequest {
                 expires_in_ms: Some(bad),
@@ -2461,12 +2461,14 @@ pub(crate) mod tests {
             .to_string();
             assert!(err.contains("must be positive"), "got: {err}");
         }
-        assert!(validate_lifecycle(Some(&LifecycleRequest {
-            max_fires: Some(1),
-            expires_in_ms: Some(60_000),
-            ..Default::default()
-        }))
-        .is_ok());
+        assert!(
+            validate_lifecycle(Some(&LifecycleRequest {
+                max_fires: Some(1),
+                expires_in_ms: Some(60_000),
+                ..Default::default()
+            }))
+            .is_ok()
+        );
 
         // Relative resolves against the observe clock.
         let lifecycle = LifecycleRequest {
@@ -2565,9 +2567,11 @@ pub(crate) mod tests {
         let tools = native_control_tools(&both);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, [OBSERVE_ID, UNOBSERVE_ID]);
-        assert!(tools
-            .iter()
-            .all(|t| t.execution_mode.as_deref() == Some("sequential")));
+        assert!(
+            tools
+                .iter()
+                .all(|t| t.execution_mode.as_deref() == Some("sequential"))
+        );
 
         let observe_only = policy_allowing(&[OBSERVE_ID]);
         let names: Vec<String> = native_control_tools(&observe_only)
@@ -2638,12 +2642,10 @@ pub(crate) mod tests {
         assert!(text.contains("database::execute"), "{text}");
         assert!(text.contains("Omit `target`"), "{text}");
         // A root (or an explicit orchestrator child) keeps both shapes.
-        assert!(reject_leaf_control_plane(
-            &policy_allowing(&["*"]),
-            true,
-            Some("database::execute")
-        )
-        .is_ok());
+        assert!(
+            reject_leaf_control_plane(&policy_allowing(&["*"]), true, Some("database::execute"))
+                .is_ok()
+        );
     }
 
     // Which statuses mean "nothing left to wait for". Getting this wrong in
@@ -2969,10 +2971,12 @@ pub(crate) mod tests {
         )
         .await;
         assert!(result.is_error);
-        assert!(result.details["error"]
-            .as_str()
-            .unwrap()
-            .contains("target.function_id"));
+        assert!(
+            result.details["error"]
+                .as_str()
+                .unwrap()
+                .contains("target.function_id")
+        );
     }
 
     /// A running step holds its session lock across tool execution and
@@ -3039,9 +3043,11 @@ pub(crate) mod tests {
             err.contains("not permitted by this session's dispatch policy"),
             "unhelpful error: {err}"
         );
-        assert!(validate_call_target("", &policy)
-            .unwrap_err()
-            .contains("must name the function"));
+        assert!(
+            validate_call_target("", &policy)
+                .unwrap_err()
+                .contains("must name the function")
+        );
     }
 
     /// Prevents: a binding or post-turn validator on coder::scaffold-worker
@@ -3194,11 +3200,13 @@ pub(crate) mod tests {
         assert!(validate_event_action(None).is_ok());
         assert!(validate_event_action(Some("new Explorer message received")).is_ok());
         assert!(validate_event_action(Some("  ")).is_err());
-        assert!(serde_json::from_value::<ObserveRequest>(json!({
-            "function_id": STATE_ON_CHANGED_FN,
-            "action": 7
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ObserveRequest>(json!({
+                "function_id": STATE_ON_CHANGED_FN,
+                "action": 7
+            }))
+            .is_err()
+        );
     }
 
     #[test]

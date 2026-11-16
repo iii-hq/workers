@@ -4,10 +4,10 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PAGE_SIZE: usize = 25;
 /// Histories one discovery page may read, matches or not. A search that matches little would
@@ -1130,7 +1130,12 @@ mod tests {
                 "user",
                 json!("<local-command-stdout>Set model to example</local-command-stdout>"),
             ),
-            claude("typed", Some("command-output"), "user", json!("fix the build")),
+            claude(
+                "typed",
+                Some("command-output"),
+                "user",
+                json!("fix the build"),
+            ),
             claude(
                 "bash",
                 Some("typed"),

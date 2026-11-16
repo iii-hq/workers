@@ -20,8 +20,8 @@ pub mod sandbox;
 pub mod semantic_only;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

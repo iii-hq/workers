@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::{
     api::*,
-    config::{valid_id, Config},
+    config::{Config, valid_id},
     parser::{self, LogEvent},
 };
 
@@ -403,21 +403,21 @@ impl Actor {
     async fn expire(&mut self) {
         let before = self.leases.len();
         self.leases.retain(|l| l.expires_at > Utc::now());
-        if before != self.leases.len() {
-            if let Err(error) = persist(&self.config.state_path, &self.leases) {
-                tracing::error!(%error, "expiry persistence failed; closing all tunnels");
-                self.persistence_failed = true;
-                for tunnel in self.tunnels.values_mut() {
-                    if let Some(p) = tunnel.process.take() {
-                        p.stop().await;
-                    }
-                    tunnel.retry_at = None;
-                    tunnel.emit(
-                        &self.events,
-                        Status::Failed,
-                        Some("lease persistence failed; restart required".into()),
-                    );
+        if before != self.leases.len()
+            && let Err(error) = persist(&self.config.state_path, &self.leases)
+        {
+            tracing::error!(%error, "expiry persistence failed; closing all tunnels");
+            self.persistence_failed = true;
+            for tunnel in self.tunnels.values_mut() {
+                if let Some(p) = tunnel.process.take() {
+                    p.stop().await;
                 }
+                tunnel.retry_at = None;
+                tunnel.emit(
+                    &self.events,
+                    Status::Failed,
+                    Some("lease persistence failed; restart required".into()),
+                );
             }
         }
     }

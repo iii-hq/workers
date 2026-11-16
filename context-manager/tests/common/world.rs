@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cucumber::World;
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use serde_json::Value;
 use tokio::sync::RwLock;
 

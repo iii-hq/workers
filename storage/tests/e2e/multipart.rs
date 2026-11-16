@@ -3,13 +3,13 @@
 use aws_credential_types::Credentials;
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::{
+    Client,
     primitives::ByteStream,
     types::{
         ChecksumAlgorithm, ChecksumMode, ChecksumType, CompletedMultipartUpload, CompletedPart,
     },
-    Client,
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::FutureExt;
 use rand::RngCore;
 use sha2::{Digest, Sha256};

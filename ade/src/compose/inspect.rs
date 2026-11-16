@@ -353,10 +353,12 @@ mod tests {
 
         // A canonical Windows path is `\\?\C:\...`; git reports the top level as `C:/...`.
         #[cfg(windows)]
-        assert!(std::fs::canonicalize(&worker)
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(r"\\?\"));
+        assert!(
+            std::fs::canonicalize(&worker)
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(r"\\?\")
+        );
         let found = inspect(&InspectInput {
             path: worker.to_string_lossy().into_owned(),
             run: None,

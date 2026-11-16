@@ -1,6 +1,6 @@
 //! Native ChatGPT device OAuth HTTP adapter; credential storage belongs to the caller.
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt;
 use std::time::{Duration, SystemTime};
 

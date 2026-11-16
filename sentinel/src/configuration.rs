@@ -17,7 +17,7 @@ use std::time::Duration;
 use iii_config_client::{self as config_client, EntrySpec, Reload};
 use iii_sdk::IIIClient;
 use schemars::schema_for;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::{SentinelError, WorkerConfig};
@@ -35,8 +35,7 @@ pub const DEFAULT_CONFIG_ID: &str = "sentinel";
 /// supervisor names this instance's entry.
 pub const CONFIG_FORM_ID: &str = "sentinel";
 pub const CONFIG_CHANGE_ID: &str = "sentinel::on-config-change";
-pub const CONFIG_CHANGE_DESC: &str =
-    "Internal configuration doorbell: re-reads the authoritative sentinel entry and swaps the live settings.";
+pub const CONFIG_CHANGE_DESC: &str = "Internal configuration doorbell: re-reads the authoritative sentinel entry and swaps the live settings.";
 
 const RETRY_BACKOFF_MS: u64 = 250;
 
@@ -61,8 +60,7 @@ fn entry_spec() -> EntrySpec {
         id: config_id(),
         form_id: CONFIG_FORM_ID,
         name: "Sentinel",
-        description:
-            "Error monitoring: sources, value redaction, fingerprint identity numbers, evidence retention, mapped projects, and the model an investigation opens with.",
+        description: "Error monitoring: sources, value redaction, fingerprint identity numbers, evidence retention, mapped projects, and the model an investigation opens with.",
         schema: serde_json::to_value(schema_for!(WorkerConfig))
             .expect("the configuration schema must serialize"),
         default_value: serde_json::to_value(WorkerConfig::default())

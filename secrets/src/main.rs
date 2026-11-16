@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::EnvFilter;
 
 use secrets::access::CallerDirectory;
 use secrets::detect::Detector;
 use secrets::keys::EnvKey;
-use secrets::{configuration, Ctx, Store, StorePaths};
+use secrets::{Ctx, Store, StorePaths, configuration};
 
 #[derive(Parser)]
 #[command(
@@ -95,7 +95,7 @@ async fn run(cli: Cli, env_key: EnvKey) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("secrets ready");

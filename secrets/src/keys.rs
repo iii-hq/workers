@@ -18,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 use crate::crypto::MasterKey;
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 use crate::fsutil;
 use crate::secret::REDACTED;
 
@@ -44,7 +44,8 @@ impl EnvKey {
     /// thread reads the environment is unsound on some platforms.
     pub fn take_from_process() -> Self {
         let value = std::env::var(KEY_ENV).ok();
-        std::env::remove_var(KEY_ENV);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var(KEY_ENV) };
         Self::from_value(value)
     }
 
@@ -139,13 +140,13 @@ pub fn load_master_key(request: KeyRequest<'_>) -> Result<LoadedKey, SecretsErro
             "no location for the key file: set HOME or XDG_CONFIG_HOME, the `key_file` setting, or {KEY_ENV}"
         ))
     })?;
-    if let Some(project) = request.project_dir {
-        if is_within(file, project) {
-            return Err(SecretsError::key(format!(
-                "key file {} is inside the project directory; point `key_file` outside it or set {KEY_ENV}",
-                file.display()
-            )));
-        }
+    if let Some(project) = request.project_dir
+        && is_within(file, project)
+    {
+        return Err(SecretsError::key(format!(
+            "key file {} is inside the project directory; point `key_file` outside it or set {KEY_ENV}",
+            file.display()
+        )));
     }
     for _ in 0..2 {
         match std::fs::read_to_string(file) {
@@ -189,7 +190,7 @@ pub fn load_master_key(request: KeyRequest<'_>) -> Result<LoadedKey, SecretsErro
                             key,
                             source: KeySource::File(file.to_path_buf()),
                             created: true,
-                        })
+                        });
                     }
                     // Someone else created it first: read theirs.
                     Ok(false) => continue,
@@ -198,7 +199,7 @@ pub fn load_master_key(request: KeyRequest<'_>) -> Result<LoadedKey, SecretsErro
                             "key file {} could not be created: {}",
                             file.display(),
                             error.kind()
-                        )))
+                        )));
                     }
                 }
             }
@@ -207,7 +208,7 @@ pub fn load_master_key(request: KeyRequest<'_>) -> Result<LoadedKey, SecretsErro
                     "key file {} could not be read: {}",
                     file.display(),
                     error.kind()
-                )))
+                )));
             }
         }
     }

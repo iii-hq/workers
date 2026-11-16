@@ -5,10 +5,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::accounts::ClaudeLaunchInput;
-use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
+use super::{Ctx, FunctionSpec, KilledOutput, register_fn, spec};
 use crate::tmux_cli::{
-    find_window, format_literal, resolve_cwd, unescape_separators, validate_command, validate_name,
-    window_target, TmuxError, WindowArg, WindowRef, HOLD, SEP,
+    HOLD, SEP, TmuxError, WindowArg, WindowRef, find_window, format_literal, resolve_cwd,
+    unescape_separators, validate_command, validate_name, window_target,
 };
 
 pub const CREATE: &str = "tmux::windows::create";
@@ -357,10 +357,10 @@ pub async fn move_window(ctx: &Ctx, input: MoveWindowInput) -> Result<MovedWindo
     let window = WindowRef::parse(&input.window)?;
     let tmux = ctx.tmux().await?;
     let modern = tmux.at_least(3, 2);
-    if let Some((side, _)) = &next_to {
-        if !modern {
-            return Err(side.too_old(&tmux.version));
-        }
+    if let Some((side, _)) = &next_to
+        && !modern
+    {
+        return Err(side.too_old(&tmux.version));
     }
 
     let source_id = tmux.resolve_session(&input.session).await?;

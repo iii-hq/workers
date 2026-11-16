@@ -15,8 +15,7 @@ use crate::functions::family;
 use crate::store::Store;
 
 pub const ID: &str = "canvas::syntax";
-pub const DESC: &str =
-    "Look up how to write mermaid diagram syntax. Every supported family with a short \
+pub const DESC: &str = "Look up how to write mermaid diagram syntax. Every supported family with a short \
      summary and a working example, or, narrowed to one family, a compact primer. Call \
      this before writing mermaid source.";
 
@@ -206,7 +205,9 @@ fn example(family: &str) -> &'static str {
         "C4Context" => {
             "C4Context\n  title System context\n  Person(user, \"User\")\n  System(app, \"App\", \"Serves requests\")\n  System_Ext(mail, \"Mail service\")\n  Rel(user, app, \"Uses\")\n  Rel(app, mail, \"Sends mail via\")"
         }
-        "mindmap" => "mindmap\n  root((Product))\n    Research\n      Interviews\n    Build\n      MVP",
+        "mindmap" => {
+            "mindmap\n  root((Product))\n    Research\n      Interviews\n    Build\n      MVP"
+        }
         "timeline" => {
             "timeline\n  title Project history\n  2024 : Prototype\n  2025 : Launch : First customers\n  2026 : Scale"
         }
@@ -220,7 +221,9 @@ fn example(family: &str) -> &'static str {
             "architecture-beta\n  group api(cloud)[API]\n  service web(internet)[Web]\n  service app(server)[App] in api\n  service db(database)[DB] in api\n  web:R --> L:app\n  app:B -- T:db"
         }
         "block-beta" => "block-beta\n  columns 3\n  a b c\n  d[\"wide block\"]:3",
-        "sankey-beta" => "sankey-beta\n  Solar,Grid,30\n  Wind,Grid,50\n  Grid,Homes,60\n  Grid,Industry,20",
+        "sankey-beta" => {
+            "sankey-beta\n  Solar,Grid,30\n  Wind,Grid,50\n  Grid,Homes,60\n  Grid,Industry,20"
+        }
         "xychart-beta" => {
             "xychart-beta\n  title \"Revenue\"\n  x-axis [Q1, Q2, Q3, Q4]\n  y-axis \"USD (k)\" 0 --> 100\n  bar [20, 45, 60, 80]\n  line [20, 45, 60, 80]"
         }

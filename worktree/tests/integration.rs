@@ -16,8 +16,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use bus::{call, engine, git, register_state, registered, request, require, spawn_worker};
-use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
-use serde_json::{json, Value};
+use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 

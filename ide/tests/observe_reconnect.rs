@@ -16,10 +16,10 @@ use std::time::Duration;
 use ide::config::ShellConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle,
-    ObserverOptions, RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 

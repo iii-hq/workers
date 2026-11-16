@@ -1,25 +1,25 @@
 //! Atomic JEV calls with worker-wide concurrency and cancellation.
 use judge_contract::{
-    encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
-    CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
-    EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, RequestOptions, Stats, Usage,
+    Answer, CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
+    Evaluation, EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, RequestOptions, Stats,
+    Usage, encode_evaluation_with_limits, validate_answer, validate_request_with_limits,
 };
 use judge_provider::{
     cancellation::CancellationRegistry,
-    transport::{self, check_deadline, ExecutionLimits, Failure, RetryPolicy, DEFAULT_RETRY},
+    transport::{self, DEFAULT_RETRY, ExecutionLimits, Failure, RetryPolicy, check_deadline},
 };
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::{
     sync::Semaphore,
     task::JoinSet,
-    time::{timeout_at, Instant},
+    time::{Instant, timeout_at},
 };
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
@@ -194,7 +194,7 @@ impl JevClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let call = Arc::new(CallContext::new(deadline, request.options.clone()));
@@ -210,7 +210,7 @@ impl JevClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let mut outcome = Outcome::default();
@@ -382,7 +382,7 @@ impl JevClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let call = CallContext::new(deadline, request.options);
@@ -398,7 +398,7 @@ impl JevClient {
                     provider_error: None,
                     retry_after_ms: None,
                     stats: Stats::default(),
-                }
+                };
             }
         };
         let result = tokio::select! {
@@ -508,7 +508,7 @@ fn record_usage(outcome: &mut Outcome, response: &ProviderResponse) -> Result<()
 mod tests {
     use super::*;
     use futures_util::poll;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::time::Duration;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

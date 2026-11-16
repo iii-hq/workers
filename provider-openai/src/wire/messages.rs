@@ -5,7 +5,7 @@ use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
 use llm_router::types::router::PromptSection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 /// Body of the synthetic `role: "tool"` row injected for an orphan tool call
@@ -198,11 +198,11 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                 // Placeholders for orphans go directly after the assistant
                 // row — exactly where OpenAI expects the tool messages.
                 for block in &a.content {
-                    if let ContentBlock::FunctionCall { id, .. } = block {
-                        if !resolved_ids.contains(id) {
-                            out.push(tool_row(id, ORPHAN_TOOL_PLACEHOLDER.to_string()));
-                            resolved_ids.insert(id.clone());
-                        }
+                    if let ContentBlock::FunctionCall { id, .. } = block
+                        && !resolved_ids.contains(id)
+                    {
+                        out.push(tool_row(id, ORPHAN_TOOL_PLACEHOLDER.to_string()));
+                        resolved_ids.insert(id.clone());
                     }
                 }
             }

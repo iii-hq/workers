@@ -21,7 +21,7 @@ pub mod migrate;
 mod store;
 
 pub use store::{
-    AttachOutcome, BindingStore, ClaimOutcome, ReserveOutcome, MAX_BINDINGS_PER_SESSION,
+    AttachOutcome, BindingStore, ClaimOutcome, MAX_BINDINGS_PER_SESSION, ReserveOutcome,
 };
 
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ use iii_sdk::protocol::CallRequest;
 use iii_sdk::{ObserverHandle, ObserverOptions, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::types::turn::FunctionPolicy;

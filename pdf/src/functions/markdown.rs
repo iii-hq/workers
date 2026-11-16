@@ -18,8 +18,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
-use crate::functions::classify::{detection_config, DocumentType, PageOcrReason};
-use crate::source::{describe_error, to_parser_pages, Body, PdfSource};
+use crate::functions::classify::{DocumentType, PageOcrReason, detection_config};
+use crate::source::{Body, PdfSource, describe_error, to_parser_pages};
 
 pub const ID: &str = "pdf::to-markdown";
 pub const DESC: &str = "Convert a text-based PDF to markdown, preserving headings, lists, links \
@@ -171,7 +171,7 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
 
     let page_filter: Option<HashSet<u32>> = match &req.pages {
         Some(pages) if pages.is_empty() => {
-            return Err("`pages` was empty; omit it to convert the whole document".to_string())
+            return Err("`pages` was empty; omit it to convert the whole document".to_string());
         }
         // The whole-document options take 1-indexed pages, unlike the per-page
         // entry point below. Both are covered by tests.

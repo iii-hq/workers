@@ -18,10 +18,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use futures::future::{join_all, BoxFuture};
+use futures::future::{BoxFuture, join_all};
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::types::errors::is_function_not_found;
@@ -637,16 +637,20 @@ mod tests {
             "environment variable X is not set in the project's .env or the secrets worker's \
              environment; set it there or fix the reference"
         );
-        assert!(SecretError::Forbidden
-            .describe("env://X")
-            .starts_with("llm-router is not allowed to read environment variable X;"));
+        assert!(
+            SecretError::Forbidden
+                .describe("env://X")
+                .starts_with("llm-router is not allowed to read environment variable X;")
+        );
         assert_eq!(
             SecretError::Unavailable.describe("env://X"),
             "secrets worker is not running; start it to resolve env://X"
         );
-        assert!(!SecretError::InvalidReference
-            .describe("sk-pasted-key")
-            .contains("sk-pasted-key"));
+        assert!(
+            !SecretError::InvalidReference
+                .describe("sk-pasted-key")
+                .contains("sk-pasted-key")
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use judge_contract::{Content, Evaluation, Question};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::elements::{Element, ElementsOutput};
 use crate::judge::{self, JudgeError};
@@ -375,15 +375,15 @@ pub fn decide(
     let ops = operations(page);
     let keys: Vec<&str> = ops.keys().map(String::as_str).collect();
     let mut op = judge::choice(answers.get("operation"), &keys)?;
-    if op.choice == "DONE" && !complete(answers) {
-        if let Some((next, _)) = op
+    if op.choice == "DONE"
+        && !complete(answers)
+        && let Some((next, _)) = op
             .probabilities
             .iter()
             .filter(|(k, _)| k.as_str() != "DONE")
             .max_by(|a, b| a.1.total_cmp(b.1))
-        {
-            op.choice = next.clone();
-        }
+    {
+        op.choice = next.clone();
     }
     let probability = op.probabilities[&op.choice];
     let simple = |action| {

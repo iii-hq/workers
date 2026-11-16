@@ -1,4 +1,4 @@
-use xmloxide::html::{parse_html_with_options, HtmlParseOptions};
+use xmloxide::html::{HtmlParseOptions, parse_html_with_options};
 use xmloxide::serial::html::serialize_html_subtree;
 use xmloxide::tree::NodeKind;
 

@@ -132,6 +132,35 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
                 )
 
 
+RUST_EDITION = "2024"
+
+
+def edition_errors(label: str, manifest_path: pathlib.Path) -> list[str]:
+    """Return why a first-party Cargo.toml is not on the shared Rust edition, if it is not.
+
+    `[package]` must declare the edition (or inherit it with
+    `edition.workspace = true`), and `[workspace.package]`, when it sets one,
+    must set the same. Vendored crates follow their upstream and are not checked.
+    """
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"{label}: could not parse {manifest_path.name}: {error}"]
+    errors = []
+    package = manifest.get("package")
+    if isinstance(package, dict) and "edition" not in package:
+        errors.append(f'{label}: [package] must declare edition = "{RUST_EDITION}"')
+    tables = (("package", package), ("workspace.package", manifest.get("workspace", {}).get("package")))
+    for table_name, table in tables:
+        edition = table.get("edition") if isinstance(table, dict) else None
+        # `edition.workspace = true` inherits [workspace.package], checked there.
+        if edition is None or edition == {"workspace": True}:
+            continue
+        if edition != RUST_EDITION:
+            errors.append(f'{label}: [{table_name}] edition = {edition!r}, must be "{RUST_EDITION}"')
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True)
@@ -192,6 +221,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{worker}: artifact.binary={executable!r} must match the worker ID "
                     "because Registry extraction addresses the worker by ID"
                 )
+        # The Rust edition: every first-party crate is on the shared one.
+        cargo_manifest = spec.path / (spec.manifest or "")
+        if cargo_manifest.name == "Cargo.toml" and cargo_manifest.is_file():
+            for error in edition_errors(f"{worker}/{spec.manifest}", cargo_manifest):
+                hard(error)
+
         if spec.manifest:
             manifest_path = spec.path / spec.manifest
             if not manifest_path.is_file():

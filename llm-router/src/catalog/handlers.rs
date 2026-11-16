@@ -12,7 +12,7 @@ use crate::types::router::{
 };
 use crate::{
     chat::output_tokens::resolve_max_output_tokens,
-    config::state::{snapshot, ConfigCell},
+    config::state::{ConfigCell, snapshot},
     registry::store::RegistryStore,
 };
 
@@ -22,9 +22,9 @@ use super::store::CatalogStore;
 pub fn make_models_list(
     catalog: Arc<CatalogStore>,
 ) -> impl Fn(ModelsListRequest) -> BoxFuture<'static, Result<ModelsListResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ModelsListRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
@@ -43,9 +43,9 @@ pub fn make_models_list(
 pub fn make_models_get(
     catalog: Arc<CatalogStore>,
 ) -> impl Fn(ModelGetRequest) -> BoxFuture<'static, Result<Option<ModelGetResponse>, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ModelGetRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
@@ -64,9 +64,9 @@ pub fn make_models_budget(
     registry: Arc<RegistryStore>,
     config: ConfigCell,
 ) -> impl Fn(ModelBudgetRequest) -> BoxFuture<'static, Result<Option<ModelBudgetResponse>, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ModelBudgetRequest| {
         let (catalog, registry, config) = (catalog.clone(), registry.clone(), config.clone());
         Box::pin(async move {
@@ -108,9 +108,9 @@ pub fn make_models_budget(
 pub fn make_models_supports(
     catalog: Arc<CatalogStore>,
 ) -> impl Fn(ModelsSupportsRequest) -> BoxFuture<'static, Result<ModelsSupportsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ModelsSupportsRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {

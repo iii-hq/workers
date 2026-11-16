@@ -27,8 +27,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, register_worker};
+use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -625,12 +625,11 @@ async fn request(ws: &mut RawClient, frame: Value, pick: impl Fn(&Value) -> bool
         .expect("send frame");
     timeout(Duration::from_secs(5), async {
         while let Some(Ok(msg)) = ws.next().await {
-            if let Message::Text(t) = msg {
-                if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                    if pick(&v) {
-                        return v;
-                    }
-                }
+            if let Message::Text(t) = msg
+                && let Ok(v) = serde_json::from_str::<Value>(t.as_str())
+                && pick(&v)
+            {
+                return v;
             }
         }
         panic!("connection closed before the reply");

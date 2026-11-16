@@ -3,7 +3,7 @@
 [package]
 name = "workers-dev"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 publish = false
 description = "Local dev orchestrator for iii workers in this repo"
 

@@ -3,7 +3,7 @@
 [package]
 name = "iii-config-client"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Worker-side client for the builtin configuration worker — safe seeding, NOT_FOUND-aware reads, retrying RPCs, serialized hot-reload, and the knob-following observer slot"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

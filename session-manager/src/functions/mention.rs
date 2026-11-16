@@ -8,8 +8,8 @@
 //! its transcript through `session::messages-tail`.
 
 use mention_contract::{
-    color, tone, MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
-    MentionSearchRequest, MentionSearchResponse, MentionView,
+    MentionField, MentionGetRequest, MentionItem, MentionOpen, MentionProvider,
+    MentionSearchRequest, MentionSearchResponse, MentionView, color, tone,
 };
 use serde_json::Value;
 
@@ -380,10 +380,11 @@ mod tests {
                 session: "s_child".into()
             })
         );
-        assert!(view
-            .fields
-            .iter()
-            .any(|f| f.label == "Parent" && f.value == "s_new"));
+        assert!(
+            view.fields
+                .iter()
+                .any(|f| f.label == "Parent" && f.value == "s_new")
+        );
         assert_eq!(
             view.summary.as_deref(),
             Some(

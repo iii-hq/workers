@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use devin::agent_feed::{Feed, FeedPayload, Feeds};
 use devin::cli::{stdout_frame, terminal_frames};
 use devin::config::Config;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Emit one frame on `feed`, with only `observed` observed, capturing the
 /// call's envelope.
@@ -113,10 +113,12 @@ fn schema_manifest_and_seed_carry_no_stream_keys() {
     let defaults = manifest["default_config"].as_object().unwrap();
     assert!(!defaults.contains_key("events_stream"));
     assert!(!defaults.contains_key("raw_events_stream"));
-    assert!(!manifest["description"]
-        .as_str()
-        .unwrap()
-        .contains("agent::events"));
+    assert!(
+        !manifest["description"]
+            .as_str()
+            .unwrap()
+            .contains("agent::events")
+    );
     for file in ["config.yaml", "iii.worker.yaml"] {
         let path = format!("{}/{file}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();

@@ -441,7 +441,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn handled_rights_follow_the_abi() {
-        use landlock::{handled_write_access, ACCESS_FS_REFER, ACCESS_FS_TRUNCATE};
+        use landlock::{ACCESS_FS_REFER, ACCESS_FS_TRUNCATE, handled_write_access};
         assert_eq!(handled_write_access(1) & ACCESS_FS_REFER, 0);
         assert_eq!(handled_write_access(1) & ACCESS_FS_TRUNCATE, 0);
         assert_ne!(handled_write_access(2) & ACCESS_FS_REFER, 0);

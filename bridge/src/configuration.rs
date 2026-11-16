@@ -59,10 +59,10 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::boot::{self, BootHandle, RegisteredIds};

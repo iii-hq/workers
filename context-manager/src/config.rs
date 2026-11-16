@@ -412,10 +412,12 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("CTX_MGR_TEST_LEASE_DIR", "/tmp/expanded-leases");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("CTX_MGR_TEST_LEASE_DIR", "/tmp/expanded-leases") };
         let cfg = WorkerConfig::from_yaml("lease_dir: \"${CTX_MGR_TEST_LEASE_DIR}\"\n").unwrap();
         assert_eq!(cfg.lease_dir, "/tmp/expanded-leases");
-        std::env::remove_var("CTX_MGR_TEST_LEASE_DIR");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("CTX_MGR_TEST_LEASE_DIR") };
     }
 
     #[test]

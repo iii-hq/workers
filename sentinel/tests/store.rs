@@ -8,20 +8,20 @@
 #[path = "support/db.rs"]
 mod db;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use db::{SqliteDb, TestDb};
-use sentinel::store::schema::SCHEMA_VERSION;
 use sentinel::store::PendingLogWrite;
+use sentinel::store::schema::SCHEMA_VERSION;
 use sentinel::{
     Db, ErrorSourceV1, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1, NamedRow, OccurrenceWrite,
     RecordOutcome, SentinelError, Statement, StepResult, Store,
 };
-use serde_json::{json, Value};
-use tokio::sync::{oneshot, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, oneshot};
 use tokio::time::timeout;
 
 const NOW: i64 = 1_789_000_000_000;

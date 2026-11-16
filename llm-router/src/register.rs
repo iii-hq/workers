@@ -15,7 +15,7 @@ use std::time::Duration;
 use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::catalog::handlers::{
     make_models_budget, make_models_get, make_models_list, make_models_supports,
@@ -27,19 +27,19 @@ use crate::chat::abort::make_abort;
 use crate::chat::chat::{ChatFnInput, ChatPipeline};
 use crate::chat::complete::make_complete;
 use crate::chat::inflight::InflightMap;
-use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
+use crate::config::entry::{EntryWriteLock, read_entry_value, register_entry};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
-use crate::config::state::{new_config_cell, snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, new_config_cell, snapshot};
 use crate::events::RouterEvents;
 use crate::provider_scaffold::registration::typed_async_with_bad_request;
 use crate::registry::availability::make_provider_list;
-use crate::registry::refresh::{bus_fire, RefreshQueue};
+use crate::registry::refresh::{RefreshQueue, bus_fire};
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential, referenced_secrets};
 use crate::registry::store::RegistryStore;
 use crate::secrets::on_changed::{make_on_secret_changed, refresh_referencing_providers};
-use crate::secrets::{bus_fetch, spawn_unavailable_retry, SecretCache};
+use crate::secrets::{SecretCache, bus_fetch, spawn_unavailable_retry};
 use crate::surface;
 use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};

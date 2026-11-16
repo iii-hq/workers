@@ -302,7 +302,8 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_seed_yaml_only() {
-        std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test") };
         let cfg = WorkerConfig::from_yaml("data_dir: ${MEMORY_TEST_DIR}").unwrap();
         assert_eq!(cfg.data_dir, "/tmp/mem-test");
     }

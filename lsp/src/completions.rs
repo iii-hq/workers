@@ -1,5 +1,5 @@
 use crate::analyzer::CompletionContext;
-use crate::engine_client::{EngineClient, ENGINE_SOURCES};
+use crate::engine_client::{ENGINE_SOURCES, EngineClient};
 use crate::engine_introspection::FunctionInfo;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
@@ -116,19 +116,19 @@ pub fn get_completions(
         }
 
         CompletionContext::PayloadProperty { function_id } => {
-            if let Some(func) = engine.get_function(function_id) {
-                if let Some(schema) = &func.request_format {
-                    return extract_properties_from_schema(schema);
-                }
+            if let Some(func) = engine.get_function(function_id)
+                && let Some(schema) = &func.request_format
+            {
+                return extract_properties_from_schema(schema);
             }
             Vec::new()
         }
 
         CompletionContext::ArgsProperty { function_id } => {
-            if let Some(func) = engine.get_function(function_id) {
-                if let Some(schema) = &func.args_format {
-                    return extract_properties_from_schema(schema);
-                }
+            if let Some(func) = engine.get_function(function_id)
+                && let Some(schema) = &func.args_format
+            {
+                return extract_properties_from_schema(schema);
             }
             Vec::new()
         }

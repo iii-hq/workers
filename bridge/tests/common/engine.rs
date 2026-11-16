@@ -14,13 +14,13 @@
 //! Point the tests at an engine with `III_ENGINE_WS_URL` (default
 //! `ws://127.0.0.1:49134`).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
 use serde_json::json;
 use tokio::sync::OnceCell;
 

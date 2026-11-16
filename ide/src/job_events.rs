@@ -39,7 +39,7 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::jobs::{JobRecord, JobStatus};
 
@@ -580,8 +580,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_named_sandbox_job_runs_once_and_announces_once() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let _test_guard = TEST_GUARD.lock().await;
         let _gauge_guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
         struct Engine(AtomicUsize);

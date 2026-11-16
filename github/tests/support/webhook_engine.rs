@@ -24,13 +24,13 @@
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, Doc, Filter, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{Doc, Filter, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -40,8 +40,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 use tokio_tungstenite::tungstenite::{
-    handshake::server::{Request, Response},
     Message,
+    handshake::server::{Request, Response},
 };
 
 type Sender = mpsc::UnboundedSender<Value>;

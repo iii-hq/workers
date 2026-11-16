@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use crate::error::{codes, WError};
-use crate::git::porcelain::{parse_status_v2, parse_worktree_list, StatusV2, WorktreeListEntry};
+use crate::error::{WError, codes};
+use crate::git::porcelain::{StatusV2, WorktreeListEntry, parse_status_v2, parse_worktree_list};
 use crate::git::{run_git, run_git_ok};
 
 /// Resolve a ref to a commit sha. `W112` when it does not resolve.

@@ -14,8 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -55,8 +55,8 @@ use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageRespon
 use crate::pagination::{self, BlockKind};
 use crate::store::SessionStore;
 use crate::types::{
-    metadata_matches, AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry,
-    SessionMeta, SessionStatus,
+    AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry, SessionMeta,
+    SessionStatus, metadata_matches,
 };
 
 /// Id generation, injected for deterministic tests.
@@ -540,7 +540,7 @@ impl SessionService {
             _ => {
                 return Err(SessionError::InvalidRequest(
                     "exactly one of `message` / `custom` must be supplied".into(),
-                ))
+                ));
             }
         };
 
@@ -773,27 +773,27 @@ impl SessionService {
 
         // Optimistic concurrency: on mismatch nothing is written and the
         // current revision is returned.
-        if let Some(expected) = req.expected_revision {
-            if expected != revision {
-                return Ok((
-                    UpdateMessageResponse {
-                        updated: false,
-                        revision,
-                    },
-                    vec![],
-                ));
-            }
+        if let Some(expected) = req.expected_revision
+            && expected != revision
+        {
+            return Ok((
+                UpdateMessageResponse {
+                    updated: false,
+                    revision,
+                },
+                vec![],
+            ));
         }
 
         message.set_content(req.content);
-        if let Some(new_usage) = req.usage {
-            if !message.set_usage(new_usage) {
-                return Err(SessionError::InvalidEntryKind(format!(
-                    "entry {} has role {:?}; `usage` applies only to assistant messages",
-                    req.entry_id,
-                    message.role()
-                )));
-            }
+        if let Some(new_usage) = req.usage
+            && !message.set_usage(new_usage)
+        {
+            return Err(SessionError::InvalidEntryKind(format!(
+                "entry {} has role {:?}; `usage` applies only to assistant messages",
+                req.entry_id,
+                message.role()
+            )));
         }
         if let Some(new_details) = req.details {
             match message.as_mut() {
@@ -804,7 +804,7 @@ impl SessionService {
                         "entry {} has role {:?}; `details` applies to function_result and custom messages",
                         req.entry_id,
                         message.role()
-                    )))
+                    )));
                 }
             }
         }
@@ -1011,10 +1011,10 @@ impl SessionService {
         };
         // Same opt-out as `session::messages`, so a reader that pages the
         // transcript without image bytes can refresh one entry the same way.
-        if !req.include_image_data.unwrap_or(true) {
-            if let SessionEntry::Message { message, .. } = &mut entry {
-                ContentBlock::elide_image_data(message.content_mut());
-            }
+        if !req.include_image_data.unwrap_or(true)
+            && let SessionEntry::Message { message, .. } = &mut entry
+        {
+            ContentBlock::elide_image_data(message.content_mut());
         }
         Ok(Some(GetMessageResponse { entry }))
     }

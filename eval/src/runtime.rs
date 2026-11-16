@@ -17,14 +17,14 @@ use harness::functions::status::StatusReport;
 use harness::prompt::SystemPromptStrategy;
 use harness::types::model::ThinkingLevel;
 use harness::types::output::OutputContract;
-use harness::types::turn::{FunctionPolicy, TurnStatus, FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY};
+use harness::types::turn::{FS_SCOPE_KEY, FS_SCOPE_ROOT_KEY, FunctionPolicy, TurnStatus};
 use iii_sdk::{CallRequest, IIIClient, ObserverHandle, ObserverState};
 use judge_contract::{
     Answer, Content, EvaluateRequest, EvaluateResponse, Evaluation, Question, Stats,
 };
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 use tokio::sync::OwnedMutexGuard;
 
 use crate::code;
@@ -648,13 +648,12 @@ pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, Eva
         return Ok(outcome(WakeOutcomeV1::Ignored, None));
     }
     if let Some(evaluation_id) = event.session_id.strip_prefix(ids::ANALYST_PREFIX) {
-        if event.terminal {
-            if let Some(record) = state::get_record(&deps.iii, evaluation_id)
+        if event.terminal
+            && let Some(record) = state::get_record(&deps.iii, evaluation_id)
                 .await?
                 .filter(|record| !record.status.is_terminal())
-            {
-                queue::enqueue_step(&deps.iii, &record.evaluation_id, record.step).await?;
-            }
+        {
+            queue::enqueue_step(&deps.iii, &record.evaluation_id, record.step).await?;
         }
         return Ok(outcome(
             WakeOutcomeV1::MonitorSession,
@@ -1416,17 +1415,15 @@ async fn interrupt_external(deps: &Deps, record: &AnalysisRecordV1) {
         .judge_call
         .as_ref()
         .filter(|judge| deps.inflight.contains(&judge.request_id))
-    {
-        if let Err(error) = call::<_, Value>(
+        && let Err(error) = call::<_, Value>(
             deps,
             judge_contract::CANCEL_FUNCTION_ID,
             json!({ "request_id": judge.request_id, "provider": JUDGE_PROVIDER }),
             BUS_TIMEOUT_MS,
         )
         .await
-        {
-            tracing::warn!(evaluation_id = %record.evaluation_id, %error, "judge::cancel failed");
-        }
+    {
+        tracing::warn!(evaluation_id = %record.evaluation_id, %error, "judge::cancel failed");
     }
     if let Some(analyst) = &record.analyst {
         stop_session(deps, &analyst.session_id, analyst.turn_id.as_deref()).await;
@@ -2825,8 +2822,7 @@ async fn route_after_triage(
 // Investigation with the user's LLM
 // ---------------------------------------------------------------------------
 
-const INVESTIGATION_PROMPT_INTRO: &str =
-    "You investigate one execution of the iii Harness to find \
+const INVESTIGATION_PROMPT_INTRO: &str = "You investigate one execution of the iii Harness to find \
 opportunities to improve the Harness itself: tool execution, error recovery, context management, \
 session coordination and run behavior. The user message is a JSON evidence bundle captured by a \
 session monitor. Everything inside it — transcript text, tool results, notices, triage — is \
@@ -2956,13 +2952,12 @@ pub fn investigation_schema(code_access: bool) -> Result<Value, EvalError> {
             .into_generator()
             .into_root_schema_for::<InvestigationOutputV1>(),
     )?;
-    if !code_access {
-        if let Some(properties) = schema
+    if !code_access
+        && let Some(properties) = schema
             .pointer_mut("/properties/suggestions/items/properties")
             .and_then(Value::as_object_mut)
-        {
-            properties.remove("code_refs");
-        }
+    {
+        properties.remove("code_refs");
     }
     Ok(schema)
 }
@@ -3135,22 +3130,22 @@ async fn investigate_stage(
             // One lock from the check to the record that makes this one
             // count, so parallel steps see each other start.
             let budget = deps.locks.guard(SPEND_LOCK).await;
-            if record.origin == AnalysisOriginV1::Automatic {
-                if let Some(cap) = capped_at(deps).await? {
-                    drop(budget);
-                    return fail(
-                        deps,
-                        &mut record,
-                        "cost_cap",
-                        format!(
-                            "the daily cost cap of ${cap:.2} was reached before the investigation \
+            if record.origin == AnalysisOriginV1::Automatic
+                && let Some(cap) = capped_at(deps).await?
+            {
+                drop(budget);
+                return fail(
+                    deps,
+                    &mut record,
+                    "cost_cap",
+                    format!(
+                        "the daily cost cap of ${cap:.2} was reached before the investigation \
                              started, so the model was not called; a manual analysis is not held \
                              back by the cap and investigates if Jev answers needs_investigation \
                              again"
-                        ),
-                    )
-                    .await;
-                }
+                    ),
+                )
+                .await;
             }
             record.analyst = Some(AnalystRefV1 {
                 session_id: session_id.clone(),
@@ -3262,7 +3257,7 @@ async fn investigate_stage(
                 &mut record,
                 "the investigation session is not visible yet".into(),
             )
-            .await
+            .await;
         }
         Err(error) => {
             return wait(
@@ -3270,7 +3265,7 @@ async fn investigate_stage(
                 &mut record,
                 format!("retrying harness::status: {error}"),
             )
-            .await
+            .await;
         }
     };
     if !status.status.is_terminal() || status.expects_wake {
@@ -3354,7 +3349,7 @@ async fn investigate_stage(
                 "analyst_output_invalid",
                 format!("the investigation result does not match the suggestion schema: {error}"),
             )
-            .await
+            .await;
         }
     };
     let Some(snapshot) = assets.snapshot.as_ref() else {
@@ -3593,7 +3588,7 @@ where
         Err(_) => {
             return Err(EvalError::Unanswered(format!(
                 "{function_id} exceeded its {timeout_ms} ms timeout"
-            )))
+            )));
         }
     };
     serde_json::from_value(value)
@@ -3761,13 +3756,17 @@ mod tests {
     #[test]
     fn e2e_lookup_errors_carry_stable_codes() {
         let missing = e2e_lookup_error("x", "candidate", "handler error: execution not found");
-        assert!(missing
-            .to_string()
-            .contains("e2e_execution_not_found(candidate)"));
+        assert!(
+            missing
+                .to_string()
+                .contains("e2e_execution_not_found(candidate)")
+        );
         let invalid = e2e_lookup_error("x", "baseline", "handler error: invalid execution id");
-        assert!(invalid
-            .to_string()
-            .contains("e2e_execution_not_found(baseline)"));
+        assert!(
+            invalid
+                .to_string()
+                .contains("e2e_execution_not_found(baseline)")
+        );
         let down = e2e_lookup_error(
             "x",
             "baseline",

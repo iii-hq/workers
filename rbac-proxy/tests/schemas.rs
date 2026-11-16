@@ -15,7 +15,7 @@
 
 mod support;
 
-use rbac_proxy::functions::{catalog, FunctionSpec};
+use rbac_proxy::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(id: &str) -> String {
     format!("schemas/{}.json", id.replace("::", "."))

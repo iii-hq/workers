@@ -31,13 +31,12 @@ pub struct StopResponse {
 
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
-    if let Some(want) = &req.turn_id {
-        if crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+    if let Some(want) = &req.turn_id
+        && crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
             .await?
             .is_none_or(|r| &r.turn_id != want)
-        {
-            return Ok(StopResponse { stopping: false });
-        }
+    {
+        return Ok(StopResponse { stopping: false });
     }
     let tree = super::session_tree::collect(deps, &req.session_id).await?;
     if !tree.complete && !tree.sessions.is_empty() {
@@ -50,10 +49,9 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         if let Some(record) =
             crate::state::get_turn_unhydrated(&deps.iii, &node.session_id, cfg.session_timeout_ms)
                 .await?
+            && !record.status.is_terminal()
         {
-            if !record.status.is_terminal() {
-                deps.cancels.fire(&record.turn_id);
-            }
+            deps.cancels.fire(&record.turn_id);
         }
     }
     let session_ids: Vec<String> = tree.sessions.iter().map(|n| n.session_id.clone()).collect();
@@ -150,10 +148,10 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(StopOutcome::default());
     };
-    if let Some(tid) = &req.turn_id {
-        if &record.turn_id != tid {
-            return Ok(StopOutcome::default());
-        }
+    if let Some(tid) = &req.turn_id
+        && &record.turn_id != tid
+    {
+        return Ok(StopOutcome::default());
     }
     if record.status.is_terminal() {
         let turn_id = record.turn_id.clone();
@@ -189,8 +187,8 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // failure must never skip the durable abort write below. Deletion reads
     // the recorded failure and fails closed.
     let mut outcome = StopOutcome::default();
-    if let Some(request_id) = &record.stream_request_id {
-        if let Err(error) = deps
+    if let Some(request_id) = &record.stream_request_id
+        && let Err(error) = deps
             .iii
             .call(iii_sdk::protocol::CallRequest {
                 function_id: "router::abort".into(),
@@ -199,12 +197,11 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
                 timeout_ms: Some(cfg.session_timeout_ms),
             })
             .await
-        {
-            tracing::warn!(request_id, %error, "router::abort failed");
-            outcome
-                .unconfirmed
-                .push(format!("router::abort {request_id}: {error}"));
-        }
+    {
+        tracing::warn!(request_id, %error, "router::abort failed");
+        outcome
+            .unconfirmed
+            .push(format!("router::abort {request_id}: {error}"));
     }
 
     // Authoritative abort write UNDER the per-session lock (see locks.rs): the

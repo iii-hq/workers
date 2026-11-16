@@ -2,7 +2,7 @@
 //! --example bench -- <request.json>...` (each file holds an
 //! EvaluateRequest, or `{"request": EvaluateRequest}` as the probe saves it).
 use judge_contract::{EvaluateRequest, EvaluateResponse};
-use judge_semif::{download, engine, SemifClient};
+use judge_semif::{SemifClient, download, engine};
 use std::time::Instant;
 
 #[tokio::main]

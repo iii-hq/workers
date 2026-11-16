@@ -61,7 +61,8 @@ impl Default for WorkerConfig {
 
 impl WorkerConfig {
     pub fn json_schema() -> Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<WorkerConfig>();
+        let root =
+            schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<WorkerConfig>();
         serde_json::to_value(root).expect("config schema serializes")
     }
     pub fn to_json(&self) -> Value {

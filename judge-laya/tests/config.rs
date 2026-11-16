@@ -1,4 +1,4 @@
-use judge_laya::{configuration, LayaConfig};
+use judge_laya::{LayaConfig, configuration};
 use serde_json::json;
 
 #[test]

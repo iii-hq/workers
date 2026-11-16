@@ -5,9 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::accounts::ClaudeLaunchInput;
-use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
+use super::{Ctx, FunctionSpec, KilledOutput, register_fn, spec};
 use crate::tmux_cli::{
-    format_literal, resolve_cwd, unescape_separators, validate_command, validate_name, HOLD, SEP,
+    HOLD, SEP, format_literal, resolve_cwd, unescape_separators, validate_command, validate_name,
 };
 
 pub const CREATE: &str = "tmux::sessions::create";

@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 /// Staged by `build.rs` from the parser's own `external/bcmaps`.
 static CMAPS: Dir<'_> = include_dir!("$OUT_DIR/bcmaps");
@@ -43,7 +43,9 @@ pub fn materialize() {
     let dir = cache_dir();
     match write_all(&dir) {
         Ok(written) => {
-            std::env::set_var(CMAP_DIR_ENV, &dir);
+            // SAFETY: both main and the probe example call this before starting
+            // any threads or parsing documents.
+            unsafe { std::env::set_var(CMAP_DIR_ENV, &dir) };
             tracing::info!(
                 dir = %dir.display(),
                 files = written,

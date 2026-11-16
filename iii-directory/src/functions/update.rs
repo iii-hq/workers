@@ -46,12 +46,12 @@ use serde_json::json;
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::events;
 use crate::fs_source::{self, FsPrompt, FsSkill, SkillFrontmatter};
-use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
+use crate::functions::error::{NextAction, invalid_input_message, not_found_message};
 use crate::functions::prompts::validate_name;
 use crate::functions::skills::{
-    filter_to_registered, find_fs_skill_in, normalize_get_id, reject_function_id_shaped,
-    resolve_title, resolve_visible_skills, validate_id, RegisteredWorkersCache,
-    SKILL_BODY_MAX_BYTES,
+    RegisteredWorkersCache, SKILL_BODY_MAX_BYTES, filter_to_registered, find_fs_skill_in,
+    normalize_get_id, reject_function_id_shaped, resolve_title, resolve_visible_skills,
+    validate_id,
 };
 use crate::sources::{mark_self_write, write_file_atomic};
 
@@ -863,17 +863,17 @@ pub fn delete_system_prompt(
 /// would not find. Returns the description.
 fn validate_new_prompt_content(name: &str, content: &str) -> Result<String, String> {
     let (fm, description) = validate_prompt_frontmatter(content)?;
-    if let Some(declared) = fm.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        if declared != name {
-            return Err(invalid_input_message(
-                "D213",
-                &format!(
-                    "frontmatter `name` ({declared:?}) must match the requested system prompt name \
+    if let Some(declared) = fm.name.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        && declared != name
+    {
+        return Err(invalid_input_message(
+            "D213",
+            &format!(
+                "frontmatter `name` ({declared:?}) must match the requested system prompt name \
                      ({name:?})."
-                ),
-                &[],
-            ));
-        }
+            ),
+            &[],
+        ));
     }
     Ok(description)
 }
@@ -1257,9 +1257,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("Edited twice."));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Edited twice.")
+        );
     }
 
     // ── prompt create ────────────────────────────────────────────────
@@ -1363,14 +1365,16 @@ mod tests {
         }
 
         // Bad requested name never reaches the filesystem.
-        assert!(create_system_prompt(
-            &cfg,
-            &SystemPromptCreateInput {
-                name: "Bad Name".into(),
-                content: "---\ndescription: x\n---\nbody\n".into(),
-            },
-        )
-        .is_err());
+        assert!(
+            create_system_prompt(
+                &cfg,
+                &SystemPromptCreateInput {
+                    name: "Bad Name".into(),
+                    content: "---\ndescription: x\n---\nbody\n".into(),
+                },
+            )
+            .is_err()
+        );
         assert!(!tmp.path().join("system-prompts/pirate.md").exists());
     }
 
@@ -1593,16 +1597,18 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("FUNCTION id"), "got: {err}");
 
-        assert!(create_skill_in(
-            &cfg,
-            &[],
-            None,
-            &SkillCreateInput {
-                id: "Bad Name".into(),
-                content: "# X\n\nbody\n".into(),
-            },
-        )
-        .is_err());
+        assert!(
+            create_skill_in(
+                &cfg,
+                &[],
+                None,
+                &SkillCreateInput {
+                    id: "Bad Name".into(),
+                    content: "# X\n\nbody\n".into(),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

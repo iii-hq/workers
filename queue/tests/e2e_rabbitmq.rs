@@ -10,12 +10,12 @@ use iii_queue::adapter::{FunctionQueueConfig, QueueAdapter};
 use iii_queue::adapters::rabbitmq::RabbitMQAdapter;
 use iii_queue::subscriber_config::SubscriberQueueConfig;
 use iii_queue::subscribers::{Invoker, Subscriber};
-use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
+use iii_sdk::errors::Error;
 use lapin::options::{ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions};
 use lapin::types::{AMQPValue, FieldTable};
 use lapin::{Channel, Connection, ConnectionProperties, ExchangeKind};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -625,7 +625,8 @@ async fn amqps_connects_with_a_process_default_crypto_provider() {
     let Some(container) = docker::start_rabbitmq_tls().await else {
         return; // skip: docker or openssl not available
     };
-    std::env::set_var("SSL_CERT_DIR", container.ca_dir());
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var("SSL_CERT_DIR", container.ca_dir()) };
 
     let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
     let adapter = tokio::time::timeout(

@@ -344,17 +344,21 @@ mod tests {
             assert!(table.match_route_for_listener("GET", path, true).is_none());
             assert!(table.allowed_methods_for_listener(path, true).is_empty());
         }
-        assert!(table
-            .match_route_for_listener("POST", "/hook", true)
-            .is_some());
+        assert!(
+            table
+                .match_route_for_listener("POST", "/hook", true)
+                .is_some()
+        );
         assert_eq!(
             table.allowed_methods_for_listener("/hook", true),
             vec!["POST"]
         );
         for method in ["GET", "HEAD", "DELETE", "OPTIONS", "post"] {
-            assert!(table
-                .match_route_for_listener(method, "/hook", true)
-                .is_none());
+            assert!(
+                table
+                    .match_route_for_listener(method, "/hook", true)
+                    .is_none()
+            );
         }
         for path in ["/hook/", "//hook", "/%68ook", "/hook%2f"] {
             assert!(table.match_route_for_listener("POST", path, true).is_none());
@@ -364,9 +368,11 @@ mod tests {
         let mut revoked = route("public", "POST", "/hook");
         revoked.public_webhook = false;
         table.insert(revoked).unwrap();
-        assert!(table
-            .match_route_for_listener("POST", "/hook", true)
-            .is_none());
+        assert!(
+            table
+                .match_route_for_listener("POST", "/hook", true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -387,9 +393,11 @@ mod tests {
             table.match_route("POST", "/hooks/admin").unwrap().0.id(),
             "private"
         );
-        assert!(table
-            .match_route_for_listener("POST", "/hooks/", true)
-            .is_none());
+        assert!(
+            table
+                .match_route_for_listener("POST", "/hooks/", true)
+                .is_none()
+        );
     }
 
     #[test]
@@ -502,12 +510,14 @@ mod tests {
         let (matched, params) = table.match_route("GET", "/tasks/123").unwrap();
         assert_eq!(matched.http_path, "/tasks/:tid");
         assert_eq!(params.get("tid"), Some(&"123".to_string()));
-        assert!(table
-            .insert(route(
-                "t2",
-                "GET",
-                &crate::types::normalize_api_path("/tasks/{other}")
-            ))
-            .is_err());
+        assert!(
+            table
+                .insert(route(
+                    "t2",
+                    "GET",
+                    &crate::types::normalize_api_path("/tasks/{other}")
+                ))
+                .is_err()
+        );
     }
 }

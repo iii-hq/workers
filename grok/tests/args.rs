@@ -3,7 +3,7 @@
 
 use grok::config::Config;
 use grok::functions::types::RunRequest;
-use grok::grok::args::{build_args, resolve, ResolvedOptions};
+use grok::grok::args::{ResolvedOptions, build_args, resolve};
 
 fn opts() -> ResolvedOptions {
     ResolvedOptions {

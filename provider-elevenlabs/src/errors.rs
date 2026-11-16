@@ -47,11 +47,15 @@ mod tests {
         );
         assert!(auth.to_string().contains("provider/auth_expired"));
         assert!(auth.to_string().contains("bad key"));
-        assert!(upstream_status(429, "slow down")
-            .to_string()
-            .contains("provider/rate_limited"));
-        assert!(upstream_status(503, "")
-            .to_string()
-            .contains("provider/upstream_transient"));
+        assert!(
+            upstream_status(429, "slow down")
+                .to_string()
+                .contains("provider/rate_limited")
+        );
+        assert!(
+            upstream_status(503, "")
+                .to_string()
+                .contains("provider/upstream_transient")
+        );
     }
 }

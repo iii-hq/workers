@@ -1,8 +1,8 @@
 //! Bounded provider HTTP requests and retries.
 
 use judge_contract::{
-    ErrorCode, ProviderError, RequestOptions, DEFAULT_MAX_REQUEST_BYTES,
-    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS, ErrorCode,
+    ProviderError, RequestOptions,
 };
 use reqwest::header::HeaderMap;
 use serde_json::Value;
@@ -12,7 +12,7 @@ use std::{
 };
 use tokio::{
     sync::Semaphore,
-    time::{sleep, timeout_at, Instant},
+    time::{Instant, sleep, timeout_at},
 };
 
 const MAX_ERROR_BYTES: usize = 64 * 1024;
@@ -539,8 +539,8 @@ mod tests {
     use reqwest::header::HeaderValue;
     use serde_json::json;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     use std::time::Duration;
     use tokio::{
@@ -548,7 +548,7 @@ mod tests {
         net::TcpListener,
         sync::Semaphore,
         task::{JoinHandle, JoinSet},
-        time::{timeout, Instant},
+        time::{Instant, timeout},
     };
 
     struct Reply {

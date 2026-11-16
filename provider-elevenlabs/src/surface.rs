@@ -15,18 +15,15 @@ use llm_router::types::router::{
 use crate::speech::{SpeakRequest, SpeakResponse, TranscribeRequest, TranscribeResponse};
 
 pub const TRANSCRIBE_ID: &str = "provider::elevenlabs::transcribe";
-pub const TRANSCRIBE_DESC: &str =
-    "Speech to text on ElevenLabs Scribe behind router::transcribe: base64 audio in, text with \
+pub const TRANSCRIBE_DESC: &str = "Speech to text on ElevenLabs Scribe behind router::transcribe: base64 audio in, text with \
      timed segments and the detected language out.";
 
 pub const SPEAK_ID: &str = "provider::elevenlabs::speak";
-pub const SPEAK_DESC: &str =
-    "Text to speech on the ElevenLabs voices behind router::speak: text and a voice id or name \
+pub const SPEAK_DESC: &str = "Text to speech on the ElevenLabs voices behind router::speak: text and a voice id or name \
      in, base64 audio out (mp3, wav, pcm16, opus).";
 
 pub const REFRESH_MODELS_ID: &str = "provider::elevenlabs::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the ElevenLabs catalog slice from GET /v1/models (text-to-speech models with their \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the ElevenLabs catalog slice from GET /v1/models (text-to-speech models with their \
      languages) plus the Scribe speech-to-text models, through router::models::reconcile.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::elevenlabs::on_router_ready";

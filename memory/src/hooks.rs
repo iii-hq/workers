@@ -20,7 +20,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
@@ -29,27 +29,23 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::extract;
 use crate::store::{Bank, Evidence};
-use crate::types::{local_date, now_ms, Memory};
+use crate::types::{Memory, local_date, now_ms};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
 pub const EXTRACT_JOB_FN: &str = "memory::extract-job";
 pub const SESSION_DELETED_FN: &str = "memory::on-session-deleted";
 
-pub const PRE_GENERATE_DESC: &str =
-    "Internal: target of the harness::hook::on-pre-generate observer — injects the session \
+pub const PRE_GENERATE_DESC: &str = "Internal: target of the harness::hook::on-pre-generate observer — injects the session \
      bank's rules into the system prompt and recalled memories as one appended message. \
      Never denies.";
-pub const TURN_COMPLETED_DESC: &str =
-    "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
+pub const TURN_COMPLETED_DESC: &str = "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
      extraction job (a single router::complete call) for the finished turn; inline fallback \
      without a queue.";
-pub const EXTRACT_JOB_DESC: &str =
-    "Internal: target of the queue::on-message observer on the memory-extraction topic — \
+pub const EXTRACT_JOB_DESC: &str = "Internal: target of the queue::on-message observer on the memory-extraction topic — \
      runs one extraction job; errors propagate so the queue retries and dead-letters instead \
      of losing the pass.";
-pub const SESSION_DELETED_DESC: &str =
-    "Internal: target of the session::on-deleted observer — drops the session's extraction \
+pub const SESSION_DELETED_DESC: &str = "Internal: target of the session::on-deleted observer — drops the session's extraction \
      cursor and state.";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
@@ -1269,14 +1265,13 @@ fn tell_rules(
             t.system.clone()
         }
         None => {
-            if told.len() >= TOLD_RULES_CAP {
-                if let Some(oldest) = told
+            if told.len() >= TOLD_RULES_CAP
+                && let Some(oldest) = told
                     .iter()
                     .min_by_key(|(_, t)| t.used_ms)
                     .map(|(id, _)| id.clone())
-                {
-                    told.remove(&oldest);
-                }
+            {
+                told.remove(&oldest);
             }
             told.insert(
                 session_id.to_string(),
@@ -1715,11 +1710,7 @@ pub(crate) fn memory_line_text(memory: &Memory) -> String {
                 && rest
                     .get(..6)
                     .is_some_and(|w| w.eq_ignore_ascii_case("memory"));
-            if fence {
-                '‹'
-            } else {
-                c
-            }
+            if fence { '‹' } else { c }
         })
         .collect()
 }
@@ -4500,8 +4491,10 @@ Formal."
         );
         let reminder = rules_reminder(&[rule("learned", &learned)]).unwrap();
         assert!(reminder.starts_with(REMINDER_OPEN), "{reminder}");
-        assert!(reminder
-            .contains("- Never use emoji in replies.\n- Keep answers under five sentences."));
+        assert!(
+            reminder
+                .contains("- Never use emoji in replies.\n- Keep answers under five sentences.")
+        );
         assert!(!reminder.contains("Edit or delete lines freely"));
 
         let long = "x".repeat(REMINDER_MAX_CHARS + 1);
@@ -4687,9 +4680,11 @@ Formal."
         let w = window(&["q1", &to_b, "q2", &to_a, "q3"]);
         assert!(tell_rules(&mut told, "s1", Some(&w), a, 4).1.is_none());
         // With no update left in the window, A is the frozen section.
-        assert!(tell_rules(&mut told, "s1", Some(&window(&["q4"])), a, 5)
-            .1
-            .is_none());
+        assert!(
+            tell_rules(&mut told, "s1", Some(&window(&["q4"])), a, 5)
+                .1
+                .is_none()
+        );
     }
 
     #[test]
@@ -4862,7 +4857,7 @@ Formal."
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
-    use crate::observed::{delivered_event, envelope, Delivered};
+    use crate::observed::{Delivered, delivered_event, envelope};
 
     /// The turn-completed target is called with the `Observed` envelope:
     /// the finished turn is its output.

@@ -9,11 +9,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::WorkflowError;
-use crate::functions::{start, Deps};
+use crate::functions::{Deps, start};
 
 pub const WAKE_ID: &str = "workflow::wake";
-pub const WAKE_DESC: &str =
-    "Internal: on a harness::on-turn-completed event, wake the owning run with a tick. \
+pub const WAKE_DESC: &str = "Internal: on a harness::on-turn-completed event, wake the owning run with a tick. \
      Best-effort latency optimization; the cron sweep is the durable backstop. \
      Not called directly.";
 
@@ -77,7 +76,7 @@ mod tests {
 #[cfg(test)]
 mod envelope_tests {
     use super::*;
-    use crate::observed::{delivered_event, envelope, Delivered};
+    use crate::observed::{Delivered, delivered_event, envelope};
 
     /// The wake target is called with the `Observed` envelope: the finished
     /// turn is its output.

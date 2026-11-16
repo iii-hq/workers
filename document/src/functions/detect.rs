@@ -82,8 +82,8 @@ pub fn handle(req: Request, cfg: &WorkerConfig) -> Result<Response, String> {
 
 #[cfg(test)]
 mod tests {
-    use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
     use super::*;
 

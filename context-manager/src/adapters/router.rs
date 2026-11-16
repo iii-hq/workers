@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
 use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::configuration::ConfigCell;
 use crate::ports::{
@@ -360,13 +360,13 @@ fn text_of_message(message: Option<&Value>) -> String {
     };
     let mut out = String::new();
     for block in blocks {
-        if block.get("type").and_then(Value::as_str) == Some("text") {
-            if let Some(text) = block.get("text").and_then(Value::as_str) {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(text);
+        if block.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(text) = block.get("text").and_then(Value::as_str)
+        {
+            if !out.is_empty() {
+                out.push('\n');
             }
+            out.push_str(text);
         }
     }
     out

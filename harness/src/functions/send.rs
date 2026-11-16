@@ -341,21 +341,20 @@ async fn start_compaction(
     })?;
     let prev = super::compact::compactable_session(deps, &session_id).await?;
     let cfg = deps.cfg().await;
-    if let Some(key) = &req.idempotency_key {
-        if let Some(existing) =
+    if let Some(key) = &req.idempotency_key
+        && let Some(existing) =
             crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
-        {
-            return Ok(SendResponse {
-                session_id: existing.session_id,
-                turn_id: existing.turn_id,
-                accepted: true,
-                merged: None,
-                queued: None,
-                deduplicated: Some(true),
-                reasoning: None,
-                compaction: None,
-            });
-        }
+    {
+        return Ok(SendResponse {
+            session_id: existing.session_id,
+            turn_id: existing.turn_id,
+            accepted: true,
+            merged: None,
+            queued: None,
+            deduplicated: Some(true),
+            reasoning: None,
+            compaction: None,
+        });
     }
     let (model, provider) = resolve_model_route(
         None,
@@ -1100,10 +1099,9 @@ impl TurnLineage {
             && self.parent.is_none()
             && self.display_parent_session_id.is_none()
             && self.dispatch_only_functions.is_empty()
+            && let Some(prior) = prior
         {
-            if let Some(prior) = prior {
-                return Self::continuing(prior);
-            }
+            return Self::continuing(prior);
         }
         self.clone()
     }
@@ -1341,14 +1339,14 @@ fn resolve_model_route(
                  turn, but this session has none — name a `model` (or a `provider` \
                  that declares a default model)"
                     .into(),
-            ))
+            ));
         }
         (None, None, None) => {
             return Err(HarnessError::InvalidRequest(
                 "harness::send creating a NEW session requires `model`, or a `provider` \
                  that declares a default model (steering an existing session may omit both)"
                     .into(),
-            ))
+            ));
         }
     })
 }
@@ -1511,8 +1509,7 @@ fn send_functions<'a>(
 
 /// Refusal for a `skills` change on a session that has no skill context: a
 /// legacy session, or one started as a profile with `skills_index: false`.
-const NO_SKILL_CONTEXT: &str =
-    "cannot change `skills` on a legacy session or one whose agent profile \
+const NO_SKILL_CONTEXT: &str = "cannot change `skills` on a legacy session or one whose agent profile \
      sets `skills_index: false`; start a new session to use the names-only skill index";
 
 fn select_skill_context(
@@ -2072,10 +2069,10 @@ mod tests {
         assert_eq!(options.reasoning, Some(ReasoningPreset::Lowest));
         assert!(reasoning_fields_omitted(Some(&options)));
     }
+    use iii_helpers::observability::opentelemetry::Context;
     use iii_helpers::observability::opentelemetry::trace::{
         TraceContextExt, Tracer, TracerProvider,
     };
-    use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
 
@@ -2364,13 +2361,15 @@ mod tests {
         let _held = locks.guard("s_caller").await;
         let owns_target = caller_holds_target_session_lock("s_caller", Some("s_caller"), true);
         assert!(owns_target);
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            delivery_guard(&locks, "s_caller", owns_target),
-        )
-        .await
-        .expect("same-session delivery must not deadlock")
-        .is_none());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                delivery_guard(&locks, "s_caller", owns_target),
+            )
+            .await
+            .expect("same-session delivery must not deadlock")
+            .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2379,9 +2378,11 @@ mod tests {
         let _held = locks.guard("s_caller").await;
         let owns_target = caller_holds_target_session_lock("s_caller", Some("s_other"), true);
         assert!(!owns_target);
-        assert!(delivery_guard(&locks, "s_other", owns_target)
-            .await
-            .is_some());
+        assert!(
+            delivery_guard(&locks, "s_other", owns_target)
+                .await
+                .is_some()
+        );
         assert!(!caller_holds_target_session_lock(
             "s_caller",
             Some("s_caller"),

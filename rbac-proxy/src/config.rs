@@ -233,11 +233,13 @@ mod tests {
         }
         let cfg = WorkerConfig::from_json(&stored).unwrap();
         assert_eq!(cfg.rbac.auth_function_id.as_deref(), Some("p::auth"));
-        assert!(!cfg.to_json()["rbac"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .any(|k| rbac::REMOVED_KEYS.iter().any(|(removed, _)| removed == k)));
+        assert!(
+            !cfg.to_json()["rbac"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|k| rbac::REMOVED_KEYS.iter().any(|(removed, _)| removed == k))
+        );
 
         // The schema still accepts them, as deprecated.
         let schema = WorkerConfig::json_schema();

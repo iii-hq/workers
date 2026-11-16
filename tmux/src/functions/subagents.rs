@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::panes::pane_arg;
-use super::{register_fn, spec, Ctx, FunctionSpec};
+use super::{Ctx, FunctionSpec, register_fn, spec};
 use crate::activity::{self, Recorder};
 use crate::model::SubagentTranscript;
 use crate::transcript::MAX_ITEMS;

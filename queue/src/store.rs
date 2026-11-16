@@ -891,7 +891,7 @@ mod tests {
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     type StoreFuture = Pin<Box<dyn Future<Output = Arc<dyn QueueStore>> + Send>>;
 

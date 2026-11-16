@@ -16,8 +16,8 @@
 //! session with filters on `input.session_id`, and a sub-agent's parent with
 //! `input.parent.session_id` or `input.parent_session_id`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use iii_sdk::errors::Error;
 use iii_sdk::{
@@ -152,7 +152,7 @@ fn event_registration(description: &str, format: Value) -> RegisterFunction {
 /// stack boundary permits this unsafe mode. Their observers take no args.
 fn register_capture_events(iii: &IIIClient) {
     use crate::clients::router::generation_capture::{
-        GenerationEvent, MemoryReceipt, MEMORY_RECEIPT, REQUEST, RESPONSE,
+        GenerationEvent, MEMORY_RECEIPT, MemoryReceipt, REQUEST, RESPONSE,
     };
     let no_args = serde_json::json!({
         "type": "object", "additionalProperties": false, "maxProperties": 0

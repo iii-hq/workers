@@ -3,7 +3,7 @@
 //! (its worker id); the router persists only its sha256 hash.
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const TOKEN_KEY: &str = "registration_token";
 

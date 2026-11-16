@@ -1,6 +1,6 @@
 //! Delivery regressions over an isolated SDK transport, never a live engine.
 use super::*;
-use crate::hooks::recall::{resolve, SCOPE};
+use crate::hooks::recall::{SCOPE, resolve};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -41,12 +41,13 @@ impl Data {
                 self.state.remove(&(scope.into(), key.into()));
                 Ok(json!({}))
             }
-            "state::list" => Ok(json!(self
-                .state
-                .iter()
-                .filter(|((s, _), _)| s == scope)
-                .map(|(_, v)| v)
-                .collect::<Vec<_>>())),
+            "state::list" => Ok(json!(
+                self.state
+                    .iter()
+                    .filter(|((s, _), _)| s == scope)
+                    .map(|(_, v)| v)
+                    .collect::<Vec<_>>()
+            )),
             "harness::state::compare-and-set" => {
                 let old = self.get(scope, key);
                 let swapped = old == p["expected"];
@@ -287,10 +288,12 @@ async fn queued_delivery_drain_and_subsequent_send_keep_distinct_stable_ids() {
     .unwrap();
     let next = stack.context("queue").await;
     assert_ne!(next["source"]["entry_id"], row.entry_id);
-    assert!(!next["source"]["entry_id"]
-        .as_str()
-        .unwrap()
-        .starts_with("e_q_"));
+    assert!(
+        !next["source"]["entry_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("e_q_")
+    );
     assert_eq!(next["continuation"]["entry_id"], row.entry_id);
     assert_eq!(next["continuation"]["text"], "Parked neutral request");
 }
@@ -361,12 +364,14 @@ async fn idempotency_keys_keep_legacy_ids_and_cannot_rewrite_continuation_receip
             .unwrap()
             .state
             .remove(&(crate::state::IDEM_SCOPE.into(), key.clone()));
-        assert!(handle(
-            &stack.deps,
-            request(session, "Original keyed request", Some(&key), Some(&id))
-        )
-        .await
-        .is_err());
+        assert!(
+            handle(
+                &stack.deps,
+                request(session, "Original keyed request", Some(&key), Some(&id))
+            )
+            .await
+            .is_err()
+        );
         assert_eq!(stack.receipt(session, &id), receipt);
         assert_eq!(stack.data.lock().unwrap().messages[session].len(), 2);
         // Identical retry after mapping loss appends idempotently under the original ID.
@@ -424,12 +429,14 @@ async fn an_idempotency_key_over_the_receipt_bound_still_delivers_without_recall
         assert_eq!(context["source"]["entry_id"], id);
         assert_eq!(context["source"]["kind"], "unknown");
         // A continuation still needs a receipt, so the bound stays an error there.
-        assert!(handle(
-            &stack.deps,
-            request(session, "Continue", Some(&format!("{key}-next")), Some(&id))
-        )
-        .await
-        .is_err());
+        assert!(
+            handle(
+                &stack.deps,
+                request(session, "Continue", Some(&format!("{key}-next")), Some(&id))
+            )
+            .await
+            .is_err()
+        );
     }
 }
 
@@ -525,15 +532,17 @@ async fn a_refired_notice_with_new_text_delivers_after_its_first_append_failed()
             "[notification] binding sub_1 fired but was NOT delivered: {reason}."
         ))
     };
-    assert!(inject(
-        &stack.deps,
-        session,
-        notice("condition timed out"),
-        Some(id),
-        Some(&origin)
-    )
-    .await
-    .is_err());
+    assert!(
+        inject(
+            &stack.deps,
+            session,
+            notice("condition timed out"),
+            Some(id),
+            Some(&origin)
+        )
+        .await
+        .is_err()
+    );
     // The receipt landed before the failed append and certifies the old text.
     assert_eq!(stack.receipt(session, id)["channel"], "notification");
     inject(
@@ -547,9 +556,11 @@ async fn a_refired_notice_with_new_text_delivers_after_its_first_append_failed()
     .unwrap();
     let messages = stack.data.lock().unwrap().messages[session].clone();
     assert_eq!(messages.len(), 1);
-    assert!(messages[0]["message"]
-        .to_string()
-        .contains("condition function not found"));
+    assert!(
+        messages[0]["message"]
+            .to_string()
+            .contains("condition function not found")
+    );
     let context = stack.context(session).await;
     assert_eq!(context["source"]["entry_id"], id);
     assert_eq!(context["source"]["kind"], "unknown");
@@ -630,9 +641,11 @@ async fn a_keyed_resend_with_changed_text_lands_on_the_stored_entry_unless_it_co
         let messages = stack.data.lock().unwrap().messages[session].clone();
         assert_eq!(messages.len(), 2, "{kind}");
         assert_eq!(messages[1]["entry_id"], id);
-        assert!(messages[1]["message"]
-            .to_string()
-            .contains("Original keyed request"));
+        assert!(
+            messages[1]["message"]
+                .to_string()
+                .contains("Original keyed request")
+        );
         assert_eq!(stack.data.lock().unwrap().get(SCOPE, session), receipts);
         assert_eq!(stack.context(session).await["source"], source);
     }

@@ -20,7 +20,7 @@
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::vocabulary_count::{
-    resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
+    ESTIMATOR_TOKENIZER, VocabularyRef, resolve,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::{AgentFunction, ThinkingLevel};
@@ -32,7 +32,7 @@ use crate::reasoning::{
     accepts_effort, always_reasons, effective_level, is_reasoning_model, reasoning_effort_for,
     thinking_type,
 };
-use crate::request::{build_body, BodyArgs};
+use crate::request::{BodyArgs, build_body};
 
 /// The GLM chat family shares one vocabulary, so the reference is fixed
 /// rather than per-model: the id list turns over far faster than the

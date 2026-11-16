@@ -7,14 +7,14 @@ use crate::auth;
 use crate::catalog::upstream_id;
 use crate::config::build_config;
 use crate::errors::classify_bus_error;
-use crate::exchange::{fresh_bearer, BearerCache, ExchangeError, DEFAULT_TOKEN_URL};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::exchange::{BearerCache, DEFAULT_TOKEN_URL, ExchangeError, fresh_bearer};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
@@ -33,9 +33,9 @@ pub fn make_stream(
     aborts: StreamAborts,
     cache: BearerCache,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, aborts, cache) = (iii.clone(), http.clone(), aborts.clone(), cache.clone());
         Box::pin(async move {

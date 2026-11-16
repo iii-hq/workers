@@ -475,13 +475,15 @@ mod tests {
 
     #[test]
     fn env_expansion_supports_defaults() {
-        std::env::set_var("WT_TEST_ROOT", "/data/w");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var("WT_TEST_ROOT", "/data/w") };
         assert_eq!(expand_env("root: ${WT_TEST_ROOT}"), "root: /data/w");
         assert_eq!(
             expand_env("root: ${WT_TEST_MISSING:/fallback}"),
             "root: /fallback"
         );
-        std::env::remove_var("WT_TEST_ROOT");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var("WT_TEST_ROOT") };
     }
 
     #[test]

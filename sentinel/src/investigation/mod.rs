@@ -25,18 +25,18 @@ pub mod source;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ingest::CheckoutVersions;
 use crate::store::investigations::InvestigationWrite;
-use crate::store::{integer, number, Db, Store};
+use crate::store::{Db, Store, integer, number};
 use crate::{
-    ids, lifecycle, ConfigCell, DoorbellResponseV1, GroupStateResponseV1, GroupStatusV1,
-    InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
-    InvestigationChangedEventV1, InvestigationChangedOpV1, InvestigationGetRequestV1,
-    InvestigationGetResponseV1, InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
+    ConfigCell, DoorbellResponseV1, GroupStateResponseV1, GroupStatusV1, InvestigateRequestV1,
+    InvestigateResponseV1, InvestigationCancelRequestV1, InvestigationChangedEventV1,
+    InvestigationChangedOpV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
+    InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
     InvestigationsListRequestV1, InvestigationsListResponseV1, NamedRow, SentinelError, Statement,
-    TurnCompletedEventV1,
+    TurnCompletedEventV1, ids, lifecycle,
 };
 
 use message::{MessageContext, PreviousOccurrence};
@@ -461,14 +461,14 @@ impl<D: Db> Investigations<D> {
         if !investigation.status.is_running() {
             return Ok(Outcome::quiet(investigation));
         }
-        if let Some(turn_id) = &investigation.first_pass_turn_id {
-            if let Err(error) = self.harness.stop(&investigation.session_id, turn_id).await {
-                tracing::warn!(
-                    investigation_id = investigation.id,
-                    %error,
-                    "could not stop the investigation turn; closing the record anyway"
-                );
-            }
+        if let Some(turn_id) = &investigation.first_pass_turn_id
+            && let Err(error) = self.harness.stop(&investigation.session_id, turn_id).await
+        {
+            tracing::warn!(
+                investigation_id = investigation.id,
+                %error,
+                "could not stop the investigation turn; closing the record anyway"
+            );
         }
         let events = self
             .close(&investigation, InvestigationStatusV1::Cancelled, None)
@@ -1098,22 +1098,28 @@ mod tests {
     #[test]
     fn a_turn_in_flight_is_not_finished() {
         for status in ["running", "awaiting_functions"] {
-            assert!(TurnStatus {
-                status: status.into(),
+            assert!(
+                TurnStatus {
+                    status: status.into(),
+                    ..TurnStatus::default()
+                }
+                .in_flight()
+            );
+        }
+        assert!(
+            TurnStatus {
+                status: "completed".into(),
+                expects_wake: true,
                 ..TurnStatus::default()
             }
-            .in_flight());
-        }
-        assert!(TurnStatus {
-            status: "completed".into(),
-            expects_wake: true,
-            ..TurnStatus::default()
-        }
-        .in_flight());
-        assert!(!TurnStatus {
-            status: "completed".into(),
-            ..TurnStatus::default()
-        }
-        .in_flight());
+            .in_flight()
+        );
+        assert!(
+            !TurnStatus {
+                status: "completed".into(),
+                ..TurnStatus::default()
+            }
+            .in_flight()
+        );
     }
 }

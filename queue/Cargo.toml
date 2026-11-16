@@ -3,7 +3,7 @@
 [package]
 name = "iii-queue"
 version = "0.22.2"
-edition = "2021"
+edition = "2024"
 description = "Durable queue worker for iii - queue::on-message subscribers and queue service functions"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

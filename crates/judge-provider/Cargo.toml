@@ -3,7 +3,7 @@
 [package]
 name = "judge-provider"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Bounded HTTP transport, caller-scoped cancellation and secret:// keys shared by the judge-<provider> workers"

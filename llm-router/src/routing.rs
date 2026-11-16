@@ -11,7 +11,7 @@ use iii_sdk::errors::Error;
 
 use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::registry::store::RegistryStore;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{RouteRequest, RouteResponse};
@@ -127,7 +127,7 @@ pub fn decide(input: &DecideInput) -> Result<Vec<String>, RouterError> {
                     "Model \"{model}\" is available from multiple providers: {}. Choose a provider and try again.",
                     available_owners.join(", ")
                 ),
-            ))
+            ));
         }
         _ => {}
     }
