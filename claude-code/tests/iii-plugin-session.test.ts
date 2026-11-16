@@ -40,7 +40,9 @@ describe('the session-start hook loads default-mcp', () => {
       id: 'default-mcp',
       system_prompt: 'You are an iii agent.\n\nUse iii_call.',
     });
-    const [, fm, body] = md.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/) ?? [];
+    // First line: an HTML comment saying the file is generated.
+    expect(md.split('\n')[0]).toMatch(/^<!-- .*generated.*overwritten.*default-mcp.* -->$/i);
+    const [, fm, body] = md.replace(/^<!--.*-->\n/, '').match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/) ?? [];
     expect(fm).toContain('name: iii');
     expect(fm).toMatch(/description: .*default-mcp/);
     // A plain YAML scalar cannot hold `: `; the value is quoted.

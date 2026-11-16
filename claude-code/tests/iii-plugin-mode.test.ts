@@ -24,7 +24,7 @@ const file = (path: string) => {
 };
 
 function frontmatter(md: string): Record<string, string> {
-  const m = md.match(/^---\n([\s\S]*?)\n---\n/);
+  const m = md.replace(/^<!--.*-->\n/, '').match(/^---\n([\s\S]*?)\n---\n/);
   if (!m) throw new Error('no frontmatter');
   return Object.fromEntries(
     m[1].split('\n').map((line) => {
@@ -54,7 +54,8 @@ describe('the iii agent (iii mode)', () => {
   });
 
   it('ships only a stub that loads default-mcp until sync replaces it', () => {
-    const body = file('agents/iii.md').replace(/^---\n[\s\S]*?\n---\n/, '');
+    expect(file('agents/iii.md').split('\n')[0]).toMatch(/^<!-- .*generated.*overwritten.* -->$/i);
+    const body = file('agents/iii.md').replace(/^<!--.*-->\n/, '').replace(/^---\n[\s\S]*?\n---\n/, '');
     expect(body).toContain('default-mcp');
     expect(body).toContain('iii_get_agent');
     expect(body).toContain('activate: true');
