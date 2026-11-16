@@ -343,9 +343,10 @@ async fn cancel_continuation(
 ) -> Result<(), HarnessError> {
     record.continues = false;
     record.abort = true;
-    if !crate::turn_loop::end_stopped_exchange(deps, record).await? {
-        crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
-    }
+    // Written before the exchange ends: the orphan redrive would reseed a
+    // stored `continues` after the stop's terminal completion.
+    crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+    crate::turn_loop::end_stopped_exchange(deps, record).await?;
     Ok(())
 }
 

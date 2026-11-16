@@ -494,6 +494,13 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
+    /// Whether a `harness::turn` step must still run for this record: a
+    /// finished turn that still promises a reseed needs its step delivered
+    /// again, like a running one.
+    pub fn awaits_step(&self) -> bool {
+        self.status == TurnStatus::Running || (self.status.is_terminal() && self.continues)
+    }
+
     /// Function_call ids still awaiting a result (dispatched or pending).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
@@ -653,6 +660,20 @@ pub(crate) mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn a_step_is_awaited_while_running_or_while_a_finished_turn_promises_one() {
+        let with = |status, continues| TurnRecord {
+            status,
+            continues,
+            ..record()
+        };
+        assert!(with(TurnStatus::Running, false).awaits_step());
+        assert!(with(TurnStatus::Completed, true).awaits_step());
+        assert!(!with(TurnStatus::Completed, false).awaits_step());
+        assert!(!with(TurnStatus::Cancelled, false).awaits_step());
+        assert!(!with(TurnStatus::AwaitingFunctions, false).awaits_step());
     }
 
     #[test]
