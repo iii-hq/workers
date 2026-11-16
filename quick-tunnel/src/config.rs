@@ -198,15 +198,15 @@ mod tests {
     #[test]
     fn provider_defaults_to_cloudflared_and_stored_configs_without_it_load() {
         assert_eq!(Config::default().provider, ProviderKind::Cloudflared);
-        let stored: Config = serde_yaml::from_str(
+        let stored: Config = serde_yaml_ng::from_str(
             "targets:\n  webhooks: http://127.0.0.1:3112\ncloudflared: cloudflared\n",
         )
         .unwrap();
         assert_eq!(stored.provider, ProviderKind::Cloudflared);
         assert!(stored.validate().is_ok());
-        let chosen: Config = serde_yaml::from_str("provider: opentunnel\n").unwrap();
+        let chosen: Config = serde_yaml_ng::from_str("provider: opentunnel\n").unwrap();
         assert_eq!(chosen.provider, ProviderKind::Opentunnel);
-        assert!(serde_yaml::from_str::<Config>("provider: ngrok\n").is_err());
+        assert!(serde_yaml_ng::from_str::<Config>("provider: ngrok\n").is_err());
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn proxy_protocol_needs_opentunnel_listed_targets_and_one_mode_per_port() {
         assert!(Config::default().proxy_protocol.is_empty());
-        let stored: Config = serde_yaml::from_str(
+        let stored: Config = serde_yaml_ng::from_str(
             "provider: opentunnel\ntargets:\n  mesh: http://127.0.0.1:49180\n",
         )
         .unwrap();
