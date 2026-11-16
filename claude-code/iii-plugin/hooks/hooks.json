@@ -5,14 +5,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/server/index.mjs\" sync --quiet >/dev/null 2>&1 &"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/index.mjs\" session-start",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/index.mjs\" sync --quiet >/dev/null 2>&1 &"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "^mcp__plugin_iii_iii__(iii_status|iii_list_agents|iii_get_agent|iii_list_skills|iii_get_skill|iii_events|iii_observers|iii_unobserve)$",
+        "matcher": "^mcp__plugin_iii_iii__(iii_status|iii_list_agents|iii_get_agent|iii_list_skills|iii_get_skill|iii_observations_poll|iii_observations_sse|iii_observers|iii_unobserve)$",
         "hooks": [
           {
             "type": "command",

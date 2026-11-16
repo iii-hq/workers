@@ -45,6 +45,8 @@ export type PluginOptions = {
   context: string;
   /** Why the context is missing, when it is. */
   contextDetail?: string;
+  /** The mcp-server endpoint the session's `iii` MCP server is. */
+  mcpUrl: string;
 };
 
 /**
@@ -71,12 +73,27 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
   }
   // The iii mode's read-only approvals, after the activity report.
   hooks.PreToolUse.push(approveHookEntry());
+  // Every session starts on the default profile, read from mcp-server.
+  hooks.SessionStart.push({
+    hooks: [
+      {
+        type: 'command',
+        command: `node "\${CLAUDE_PLUGIN_ROOT}/cli/index.mjs" session-start --url ${quote(options.mcpUrl)}`,
+        timeout: 20,
+      },
+    ],
+  });
 
-  // The manifest, MCP server and commands are the committed `iii-plugin/`
-  // folder (see `iii-plugin/install.ts`); these are the parts only a worker
-  // can write: hooks that call this host's `iii` CLI, and the runtime skill.
+  // The manifest and commands are the committed `iii-plugin/` folder (see
+  // `iii-plugin/install.ts`); these are the parts only a worker can write:
+  // hooks that call this host's `iii` CLI, the mcp-server address, and the
+  // runtime skill.
+  const mcp = { mcpServers: { iii: { type: 'http', url: options.mcpUrl } } };
   const files: PluginFile[] = [
     { path: 'hooks/hooks.json', content: `${JSON.stringify({ hooks }, null, 2)}\n` },
+    // The committed `.mcp.json` reads the user's `mcp_url` option; a worker
+    // knows where mcp-server is, so it writes the address itself.
+    { path: '.mcp.json', content: `${JSON.stringify(mcp, null, 2)}\n` },
   ];
 
   const context = options.context.trim();

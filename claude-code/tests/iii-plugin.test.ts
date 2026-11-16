@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  Directory,
-  pluginWorkerName,
-  renderSkill,
-  renderSubagent,
-  slug,
-} from '../src/iii-plugin/directory.js';
-import { normalizeUrl, resolveEngine } from '../src/iii-plugin/engine.js';
-import { createHandler } from '../src/iii-plugin/server.js';
+import { renderSkill, renderSubagent, slug } from '../src/iii-plugin/directory.js';
 import { PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
-import { atomicWrite, buildId, installWith } from '../src/iii-plugin/install.js';
+import { atomicWrite, buildId, installWith, resolveWorkerMcp } from '../src/iii-plugin/install.js';
 import { skillDirectories } from '../src/iii-plugin/directory.js';
 import { mkdtemp, readdir, readFile as fsRead } from 'node:fs/promises';
 import { tmpdir as osTmp } from 'node:os';
@@ -20,162 +12,6 @@ import {
   profileCommands,
   writeProfileCommands,
 } from '../src/iii-plugin/commands.js';
-
-const none = async () => false;
-
-describe('resolveEngine', () => {
-  it('prefers the --url flag over every env var', async () => {
-    const r = await resolveEngine({
-      argv: ['serve', '--url', '49000'],
-      env: { III_URL: 'ws://x:1' },
-      probe: none,
-    });
-    expect(r).toEqual({ url: 'ws://127.0.0.1:49000', source: 'flag' });
-  });
-
-  it('walks plugin env, plugin option, III_URL, III_ENGINE_URL in order', async () => {
-    const env = {
-      CLAUDE_PLUGIN_OPTION_ENGINE_URL: 'h:2',
-      III_URL: 'ws://h:3',
-      III_ENGINE_URL: 'ws://h:4',
-    };
-    expect(
-      await resolveEngine({
-        argv: [],
-        env: { ...env, III_PLUGIN_URL: 'ws://h:1' },
-        probe: none,
-      }),
-    ).toEqual({
-      url: 'ws://h:1',
-      source: 'plugin-env',
-    });
-    expect(await resolveEngine({ argv: [], env, probe: none })).toEqual({
-      url: 'ws://h:2',
-      source: 'plugin-option',
-    });
-    expect(
-      await resolveEngine({ argv: [], env: { III_ENGINE_URL: 'ws://h:4' }, probe: none }),
-    ).toEqual({
-      url: 'ws://h:4',
-      source: 'III_ENGINE_URL',
-    });
-  });
-
-  it('ignores an unexpanded user_config placeholder', async () => {
-    const r = await resolveEngine({
-      argv: [],
-      env: { III_PLUGIN_URL: '${user_config.engine_url}', III_URL: 'ws://h:3' },
-      probe: none,
-    });
-    expect(r.source).toBe('III_URL');
-  });
-
-  it('auto-detects the first listening standard port', async () => {
-    const seen: string[] = [];
-    const probe = async (host: string, port: number) => {
-      seen.push(`${host}:${port}`);
-      return port === 49135 && host === 'localhost';
-    };
-    const r = await resolveEngine({ argv: [], env: {}, probe });
-    expect(r).toEqual({ url: 'ws://localhost:49135', source: 'auto-detect' });
-    expect(seen).toEqual([
-      '127.0.0.1:49134',
-      'localhost:49134',
-      '127.0.0.1:49135',
-      'localhost:49135',
-    ]);
-  });
-
-  it('honours custom probe ports and reports what it tried', async () => {
-    const r = await resolveEngine({
-      argv: [],
-      env: { III_PLUGIN_PORTS: '5000', III_PLUGIN_HOSTS: 'a' },
-      probe: none,
-    });
-    expect(r.source).toBe('none');
-    expect(r.source === 'none' && r.detail).toContain('a:5000');
-  });
-
-  it('normalizes shorthand addresses', () => {
-    expect(normalizeUrl(':9')).toBe('ws://127.0.0.1:9');
-    expect(normalizeUrl('host:9')).toBe('ws://host:9');
-    expect(normalizeUrl('wss://e.example')).toBe('wss://e.example');
-    expect(normalizeUrl('  ')).toBe('');
-  });
-});
-
-function fakeDirectory(): Directory {
-  const responses: Record<string, (p: Record<string, unknown>) => unknown> = {
-    'directory::agents::list': () => ({
-      agents: [
-        { id: 'writer', name: 'Writer', description: 'Writes.' },
-        { id: 'helper', hidden: true },
-      ],
-    }),
-    'directory::agents::get': (p) => ({
-      id: p.id,
-      description: 'Writes.',
-      system_prompt: 'You write.',
-      skills: ['kanban'],
-    }),
-    'directory::skills::list': () => ({
-      skills: [{ id: 'kanban', title: 'kanban', description: 'Boards.' }],
-    }),
-    'directory::skills::get': (p) => ({ id: p.id, body: '# kanban body' }),
-  };
-  const dir = new Directory(
-    async () => ({ url: 'ws://fake', source: 'flag' }),
-    () => ({}) as never,
-  );
-  // biome-ignore lint/suspicious/noExplicitAny: test seam over the bus call
-  (dir as any).call = async (id: string, payload: Record<string, unknown>) =>
-    responses[id](payload);
-  return dir;
-}
-
-describe('MCP handler', () => {
-  const handle = createHandler(fakeDirectory());
-
-  it('lists skills as resources', async () => {
-    const resources = (await handle({ jsonrpc: '2.0', id: 2, method: 'resources/list' })) as {
-      resources: { uri: string }[];
-    };
-    expect(resources.resources[0].uri).toBe('iii-skill://kanban');
-  });
-
-  it('serves a skill body through the tool and the resource', async () => {
-    const tool = (await handle({
-      jsonrpc: '2.0',
-      id: 3,
-      method: 'tools/call',
-      params: { name: 'iii_get_skill', arguments: { id: 'kanban' } },
-    })) as { content: { text: string }[] };
-    expect(tool.content[0].text).toBe('# kanban body');
-    const res = (await handle({
-      jsonrpc: '2.0',
-      id: 4,
-      method: 'resources/read',
-      params: { uri: 'iii-skill://kanban' },
-    })) as { contents: { text: string }[] };
-    expect(res.contents[0].text).toBe('# kanban body');
-  });
-
-  it('offers no MCP prompts: profiles are /iii:* commands instead', async () => {
-    const init = (await handle({ jsonrpc: '2.0', id: 5, method: 'initialize', params: {} })) as {
-      capabilities: Record<string, unknown>;
-    };
-    expect(init.capabilities).not.toHaveProperty('prompts');
-    await expect(handle({ jsonrpc: '2.0', id: 6, method: 'prompts/list' })).rejects.toMatchObject({
-      code: -32601,
-    });
-  });
-
-  it('rejects unknown methods with -32601', async () => {
-    await expect(handle({ jsonrpc: '2.0', id: 7, method: 'nope' })).rejects.toMatchObject({
-      code: -32601,
-    });
-  });
-});
 
 describe('renderers', () => {
   it('writes a Claude Code subagent with the preloaded skills named', () => {
@@ -275,14 +111,16 @@ describe('profile commands', () => {
 describe('installer', () => {
   const embedded = [
     { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
+    { path: '.mcp.json', content: '{}' },
     { path: 'hooks/hooks.json', content: 'standalone sync hook' },
     { path: 'commands/profile.md', content: 'p' },
-    { path: 'server/index.mjs', content: 'x' },
+    { path: 'cli/index.mjs', content: 'x' },
   ];
   const options = {
     cli: '/usr/bin/iii',
     context: { text: '# iii runtime', detail: '' },
     agents: [{ id: 'writer' }],
+    mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '' },
   };
 
   it('ships one plugin named iii inside the worker build', () => {
@@ -294,9 +132,11 @@ describe('installer', () => {
         'commands/profile.md',
         'commands/skills.md',
         'hooks/hooks.json',
-        'server/index.mjs',
+        'cli/index.mjs',
       ]),
     );
+    // No MCP server of its own: the plugin uses the mcp-server worker.
+    expect(paths.filter((p) => p.startsWith('server/'))).toEqual([]);
     const manifest = PLUGIN_STATIC_FILES.find((f) => f.path === '.claude-plugin/plugin.json');
     expect(JSON.parse(manifest?.content ?? '{}').name).toBe('iii');
     // A `commands/skill.md` silently disables every command in the plugin.
@@ -312,7 +152,11 @@ describe('installer', () => {
       dir: '/w/p',
       detail: '',
     });
-    expect(m.disk['/w/p/server/index.mjs']).toBe('x');
+    expect(m.disk['/w/p/cli/index.mjs']).toBe('x');
+    // The worker points the session at the mcp-server it found.
+    expect(JSON.parse(m.disk['/w/p/.mcp.json'])).toEqual({
+      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3111/mcp' } },
+    });
     expect(m.disk['/w/p/.build-id'].trim()).toBe(
       buildId(embedded.filter((f) => f.path !== 'hooks/hooks.json')),
     );
@@ -338,21 +182,12 @@ describe('installer', () => {
     expect(r.detail).toContain('down');
   });
 
-  it('reports a build without the embedded server instead of installing half a plugin', async () => {
+  it('reports a build without the embedded plugin instead of installing half a plugin', async () => {
     const m = memoryOps();
-    const r = await installWith('/w/p', m.ops, options, [embedded[0]]);
+    const r = await installWith('/w/p', m.ops, options, [embedded[2]]);
     expect(r.dir).toBe('');
     expect(r.detail).toContain('build:iii-plugin');
     expect(m.writes).toEqual([]);
-  });
-});
-
-describe('pluginWorkerName', () => {
-  it('is unique per process and ignores an inherited III_WORKER_NAME', () => {
-    const env: NodeJS.ProcessEnv = { III_WORKER_NAME: 'claude-code' };
-    const name = pluginWorkerName(env);
-    expect(name).toMatch(new RegExp(`^iii-plugin:.+:${process.pid}$`));
-    expect(env.III_WORKER_NAME).toBeUndefined();
   });
 });
 
@@ -374,9 +209,10 @@ describe('review fixes', () => {
     const m = memoryOps();
     const embedded = [
       { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
-      { path: 'server/index.mjs', content: 'x' },
+      { path: '.mcp.json', content: '{}' },
+      { path: 'cli/index.mjs', content: 'x' },
     ];
-    const base = { cli: 'iii', agents: [] };
+    const base = { cli: 'iii', agents: [], mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '' } };
     await installWith(
       '/w/p',
       m.ops,
@@ -395,7 +231,7 @@ describe('review fixes', () => {
 
   it('writes files atomically: a temp file renamed into place, none left behind', async () => {
     const dir = await mkdtemp(pjoin(osTmp(), 'iii-plugin-'));
-    const path = pjoin(dir, 'server', 'index.mjs');
+    const path = pjoin(dir, 'cli', 'index.mjs');
     await atomicWrite(path, 'old');
     // Two concurrent installers: the file is always one complete version.
     await Promise.all([
@@ -404,7 +240,7 @@ describe('review fixes', () => {
     ]);
     const content = await fsRead(path, 'utf8');
     expect(content === 'a'.repeat(100_000) || content === 'b'.repeat(100_000)).toBe(true);
-    expect(await readdir(pjoin(dir, 'server'))).toEqual(['index.mjs']);
+    expect(await readdir(pjoin(dir, 'cli'))).toEqual(['index.mjs']);
   });
 
   it('refuses a skill export whose ids land in one directory', () => {
@@ -417,5 +253,117 @@ describe('review fixes', () => {
     expect(() => skillDirectories(['foo/bar-baz', 'foo-bar/baz'])).toThrow(
       /foo\/bar-baz.*foo-bar\/baz|foo-bar\/baz.*foo\/bar-baz/,
     );
+  });
+});
+
+describe('the plugin talks to mcp-server', () => {
+  const file = (path: string) => PLUGIN_STATIC_FILES.find((f) => f.path === path)?.content ?? '';
+
+  it('declares mcp-server over HTTP at the mcp_url option', () => {
+    expect(JSON.parse(file('.mcp.json'))).toEqual({
+      mcpServers: { iii: { type: 'http', url: '${user_config.mcp_url}' } },
+    });
+    const manifest = JSON.parse(file('.claude-plugin/plugin.json'));
+    expect(manifest.userConfig.engine_url).toBeUndefined();
+    expect(manifest.userConfig.mcp_url).toMatchObject({
+      type: 'string',
+      default: 'http://127.0.0.1:3111/mcp',
+    });
+    expect(manifest.userConfig.mcp_url.description).toContain('mcp-server');
+  });
+
+  it('ships a small CLI without iii-sdk: every engine call goes through mcp-server', () => {
+    const cli = file('cli/index.mjs');
+    expect(cli.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(cli)).toBeLessThan(64 * 1024);
+    expect(cli).not.toContain('registerWorker');
+    expect(cli).not.toContain('iii-sdk');
+  });
+
+  it('syncs the profile commands with the CLI at session start', () => {
+    const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
+    expect(hooks.SessionStart[0].hooks[1].command).toContain('/cli/index.mjs" sync');
+  });
+});
+
+describe('resolveWorkerMcp', () => {
+  type Calls = Record<string, (payload: Record<string, unknown>) => unknown>;
+  const fakeIii = (calls: Calls) =>
+    ({
+      call: async ({
+        function_id,
+        payload,
+      }: {
+        function_id: string;
+        payload: Record<string, unknown>;
+      }) => {
+        const fn = calls[function_id];
+        if (!fn) throw new Error(`function_not_found: ${function_id}`);
+        return fn(payload);
+      },
+    }) as never;
+  const running = {
+    'http::status': () => ({ host: '127.0.0.1', port: 3211, url: 'http://127.0.0.1:3211' }),
+    'engine::functions::list': (p: Record<string, unknown>) =>
+      p.prefix === 'mcp-server::'
+        ? { functions: [{ function_id: 'mcp-server::handler' }] }
+        : { functions: [] },
+  };
+
+  it("uses the http worker's address plus /mcp when mcp-server is on the engine", async () => {
+    expect(await resolveWorkerMcp(fakeIii(running), {})).toEqual({
+      url: 'http://127.0.0.1:3211/mcp',
+      detail: '',
+    });
+  });
+
+  it('lets III_PLUGIN_MCP_URL override the address (a custom api_path)', async () => {
+    const r = await resolveWorkerMcp(fakeIii(running), {
+      III_PLUGIN_MCP_URL: 'http://127.0.0.1:3211/team/mcp',
+    });
+    expect(r.url).toBe('http://127.0.0.1:3211/team/mcp');
+  });
+
+  it('says clearly when mcp-server is not running, and how to add it', async () => {
+    const r = await resolveWorkerMcp(
+      fakeIii({ ...running, 'engine::functions::list': () => ({ functions: [] }) }),
+      {},
+    );
+    expect(r.url).toBe('http://127.0.0.1:3211/mcp');
+    expect(r.detail).toContain('mcp-server is not running on this engine');
+    expect(r.detail).toContain('rbac-proxy');
+    expect(r.detail).toContain('iii tools');
+  });
+
+  it('falls back to the default address when the http worker does not answer', async () => {
+    const r = await resolveWorkerMcp(
+      fakeIii({ 'engine::functions::list': running['engine::functions::list'] }),
+      {},
+    );
+    expect(r.url).toBe('http://127.0.0.1:3111/mcp');
+    expect(r.detail).toContain('http::status');
+  });
+
+  it('passes the detail on through the installer', async () => {
+    const m = memoryOps();
+    const r = await installWith(
+      '/w/p',
+      m.ops,
+      {
+        cli: 'iii',
+        context: { text: '# iii runtime', detail: '' },
+        agents: [],
+        mcp: {
+          url: 'http://127.0.0.1:3111/mcp',
+          detail: 'mcp-server is not running on this engine',
+        },
+      },
+      [
+        { path: '.claude-plugin/plugin.json', content: '{"name":"iii"}' },
+        { path: '.mcp.json', content: '{}' },
+      ],
+    );
+    expect(r.dir).toBe('/w/p');
+    expect(r.detail).toContain('mcp-server is not running on this engine');
   });
 });

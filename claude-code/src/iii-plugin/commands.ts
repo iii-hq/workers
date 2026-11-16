@@ -51,9 +51,18 @@ function shorten(text: string): string {
 export const ENGINE_NOTE = `
 While you work, act on the engine with \`iii_call\` (any function id, with a
 payload) instead of the \`iii\` CLI, and react to it with \`iii_observe\` (then
-\`iii_events\`, and \`iii_unobserve\` when done) instead of polling. Where a
-profile or skill says \`agent_call\` or \`harness::observe\`, use \`iii_call\` and
-\`iii_observe\`.
+\`iii_observations_poll\`, and \`iii_unobserve\` when done) instead of polling.
+Where a profile or skill says \`agent_call\` or \`harness::observe\`, use
+\`iii_call\` and \`iii_observe\`.
+`;
+
+/** And what to say when mcp-server does not answer. */
+export const UNREACHABLE_NOTE = `
+If the \`iii\` MCP tools are missing or cannot connect, stop and say so: the
+iii plugin reaches the engine through the \`mcp-server\` worker, and none
+answers at the plugin's \`mcp_url\` option (default
+\`http://127.0.0.1:3111/mcp\`). Run \`mcp-server\` on the engine, behind
+rbac-proxy (see its README), or set \`mcp_url\` to where it runs.
 `;
 
 export function profileCommand(row: AgentRow): PluginFile {
@@ -73,17 +82,18 @@ allowed-tools: ${tools}
 Task: \`$ARGUMENTS\`
 
 Load the iii agent profile \`${row.id}\` from the running engine, through the
-\`iii\` MCP server of the iii plugin. Never answer from memory.
+iii plugin's \`iii\` MCP server (the engine's \`mcp-server\` worker). Never
+answer from memory.
 
-1. Call \`iii_get_agent\` with id \`${row.id}\`. If the engine is unreachable,
-   call \`iii_status\` and report its \`error\` and the engine it tried.
+1. Call \`iii_get_agent\` with id \`${row.id}\` and \`activate: true\`, so it
+   becomes the session's active profile.
 2. Read every id in the profile's \`skills\` with \`iii_get_skill\`.
 3. From now on, for the rest of this conversation, follow the profile's
    \`system_prompt\` as your instructions, on top of these session rules.
    Confirm in one line which profile is active.
 4. If a task was given, start it as that profile now. Otherwise wait for the
    next message.
-${ENGINE_NOTE}`,
+${UNREACHABLE_NOTE}${ENGINE_NOTE}`,
   };
 }
 

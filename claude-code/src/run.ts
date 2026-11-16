@@ -312,10 +312,9 @@ async function runReserved(
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
   const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
-  // The same `iii` plugin the terminal half loads (hooks, runtime skill, MCP
-  // server for profiles and skills, /iii:* commands): the SDK turns a local
-  // plugin into the CLI's own `--plugin-dir`. Its MCP server finds the engine
-  // through the inherited III_URL.
+  // The same `iii` plugin the terminal half loads (hooks, runtime skill, the
+  // engine's mcp-server as its MCP server, /iii:* commands): the SDK turns a
+  // local plugin into the CLI's own `--plugin-dir`.
   const plugin = iiiContext ? await installLocal(iii) : { dir: '', detail: '' };
   if (plugin.detail) console.warn(`claude-code: ${plugin.detail}`);
   const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];

@@ -6,9 +6,10 @@
  *     with `--agent iii:iii` (the worker passes it; standalone users opt in);
  *   - a PreToolUse hook that pre-approves the plugin's read-only tools.
  *
- * `iii_call` and `iii_observe` are never pre-approved: they can do anything on
- * the bus, so they stay with the session's permission mode and, in a headless
- * turn, the worker's approval gate.
+ * `iii_call`, `iii_observe` and `iii_secret_store` are never pre-approved: they
+ * can do anything on the bus (or write the vault), so they stay with the
+ * session's permission mode and, in a headless turn, the worker's approval
+ * gate.
  */
 
 import { TOOL_PREFIX } from './commands.js';
@@ -22,12 +23,14 @@ export const APPROVED_TOOLS = [
   'iii_get_agent',
   'iii_list_skills',
   'iii_get_skill',
-  'iii_events',
+  'iii_observations_poll',
+  'iii_observations_sse',
   'iii_observers',
   'iii_unobserve',
 ];
 
-export const NEVER_APPROVED_TOOLS = ['iii_call', 'iii_observe'];
+/** Calling and observing can do anything on the bus; storing writes the vault. */
+export const NEVER_APPROVED_TOOLS = ['iii_call', 'iii_observe', 'iii_secret_store'];
 
 const DECISION = {
   hookSpecificOutput: {

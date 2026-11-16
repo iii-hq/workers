@@ -51,7 +51,7 @@ describe('the iii agent (iii mode)', () => {
 
   it('instructs the agent to use iii_call and iii_observe for the engine', () => {
     const body = file('agents/iii.md');
-    for (const t of ['iii_call', 'iii_observe', 'iii_events', 'iii_unobserve'])
+    for (const t of ['iii_call', 'iii_observe', 'iii_observations_poll', 'iii_unobserve'])
       expect(body).toContain(t);
     expect(body).toMatch(/instead of .*`iii call`/i);
     expect(body).toContain('/iii:profile');
@@ -67,7 +67,7 @@ describe('the read-only approval hook', () => {
   });
 
   it('never approves calling or observing: those stay with the permission mode', () => {
-    expect(NEVER_APPROVED_TOOLS).toEqual(['iii_call', 'iii_observe']);
+    expect(NEVER_APPROVED_TOOLS).toEqual(['iii_call', 'iii_observe', 'iii_secret_store']);
     for (const name of NEVER_APPROVED_TOOLS)
       expect(matches(entry.matcher, tool(name)), name).toBe(false);
   });
@@ -93,11 +93,11 @@ describe('the read-only approval hook', () => {
   it('is in the standalone hooks file, beside the SessionStart sync', () => {
     const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
     expect(hooks.PreToolUse).toEqual([entry]);
-    expect(hooks.SessionStart[0].hooks[0].command).toContain(' sync ');
+    expect(hooks.SessionStart[0].hooks[1].command).toContain(' sync ');
   });
 
   it('is in the worker hooks too, after the activity hook', () => {
-    const hooksFile = pluginFiles({ cli: 'iii', context: '' }).find(
+    const hooksFile = pluginFiles({ cli: 'iii', context: '', mcpUrl: 'http://x/mcp' }).find(
       (f) => f.path === 'hooks/hooks.json',
     );
     const hooks = JSON.parse(hooksFile?.content ?? '{}').hooks;
@@ -130,12 +130,84 @@ describe('plugin prompts point at iii_call and iii_observe', () => {
     for (const t of [
       'iii_call',
       'iii_observe',
-      'iii_events',
+      'iii_observations_poll',
       'iii_unobserve',
       'iii_observers',
       'iii:iii',
+      'mcp-server',
+      'mcp_url',
+      'active_profile',
     ]) {
       expect(md).toContain(t);
+    }
+  });
+});
+
+describe('the plugin uses mcp-server tool names', () => {
+  it("never names the old embedded server's tools", () => {
+    for (const f of PLUGIN_STATIC_FILES.filter((x) => !x.path.startsWith('cli/'))) {
+      expect(f.content, f.path).not.toContain('iii_events');
+    }
+    expect(profileCommand({ id: 'writer' }).content).not.toContain('iii_events');
+    expect(APPROVED_TOOLS).not.toContain('iii_events');
+  });
+
+  it('pre-approves reading observations and statuses, never storing a secret', () => {
+    expect(APPROVED_TOOLS).toEqual(
+      expect.arrayContaining([
+        'iii_observations_poll',
+        'iii_observations_sse',
+        'iii_observers',
+        'iii_status',
+      ]),
+    );
+    expect(APPROVED_TOOLS).not.toContain('iii_secret_store');
+  });
+
+  it('worker installs point the session at the mcp-server they found', () => {
+    const mcp = pluginFiles({ cli: 'iii', context: '', mcpUrl: 'http://127.0.0.1:3211/mcp' }).find(
+      (f) => f.path === '.mcp.json',
+    );
+    expect(JSON.parse(mcp?.content ?? '{}')).toEqual({
+      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3211/mcp' } },
+    });
+  });
+});
+
+describe('the active profile', () => {
+  it('/iii:profile with no arguments shows the active profile first, from iii_status', () => {
+    const md = file('commands/profile.md');
+    const noArgs = md.slice(md.indexOf('**No arguments:**'), md.indexOf('**Otherwise**'));
+    expect(noArgs).toContain('iii_status');
+    expect(noArgs).toContain('active_profile');
+    expect(noArgs).toContain('default-mcp');
+    expect(noArgs.indexOf('active_profile')).toBeLessThan(noArgs.indexOf('iii_list_agents'));
+    // mcp-server tracks it per MCP session: a renewed session starts at null
+    // while the conversation may still follow a profile.
+    expect(noArgs).toContain('renewed');
+    expect(noArgs).toContain('30 minutes');
+    expect(frontmatter(md)['allowed-tools']).toContain(tool('iii_status'));
+  });
+
+  it('loading a profile activates it', () => {
+    expect(file('commands/profile.md')).toContain('activate: true');
+    expect(profileCommand({ id: 'writer' }).content).toContain('activate: true');
+  });
+
+  it('the iii agent starts from default-mcp', () => {
+    const body = file('agents/iii.md');
+    expect(body).toContain('default-mcp');
+    expect(body).toContain('activate: true');
+  });
+
+  it('every command says what to do when mcp-server is not reachable', () => {
+    for (const md of [
+      file('commands/profile.md'),
+      file('commands/skills.md'),
+      profileCommand({ id: 'writer' }).content,
+    ]) {
+      expect(md).toContain('mcp-server');
+      expect(md).toContain('mcp_url');
     }
   });
 });

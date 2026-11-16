@@ -55,6 +55,10 @@ function fakeShell(
             ? Promise.reject(new Error('function_not_found'))
             : { body: '# Skills index\n\n## shell', workers_count: 1 };
         // Profiles become /iii:<profile> commands; hidden ones do not.
+        case 'http::status':
+          return { host: '127.0.0.1', port: 3111, url: 'http://127.0.0.1:3111' };
+        case 'engine::functions::list':
+          return { functions: [{ function_id: 'mcp-server::handler' }] };
         case 'directory::agents::list':
           return options.noDirectory
             ? Promise.reject(new Error('function_not_found'))
@@ -150,11 +154,16 @@ describe('preparing the terminal host', () => {
       'name: iii-runtime',
     );
 
-    // The same directory is the whole `iii` plugin: the committed MCP server
-    // and static commands ship inside the worker, and each visible profile
-    // gets its own /iii:<profile> command.
+    // The same directory is the whole `iii` plugin: the committed CLI and
+    // static commands ship inside the worker, the session's MCP server is the
+    // engine's mcp-server, and each visible profile gets its own
+    // /iii:<profile> command.
     const dir = '/hostroot/claude-code/.iii-plugin';
-    expect(files[`${dir}/server/index.mjs`]).toBeTruthy();
+    expect(files[`${dir}/cli/index.mjs`]).toBeTruthy();
+    expect(files[`${dir}/server/index.mjs`]).toBeUndefined();
+    expect(JSON.parse(files[`${dir}/.mcp.json`])).toEqual({
+      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3111/mcp' } },
+    });
     expect(files[`${dir}/.build-id`]).toBeTruthy();
     expect(files[`${dir}/commands/profile.md`]).toContain('<profile> [task]');
     expect(files[`${dir}/commands/skills.md`]).toContain('<skill> [task]');

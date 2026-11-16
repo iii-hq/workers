@@ -8,11 +8,16 @@ workers that register functions; a function id looks like `worker::name`, and
 every call goes through the engine. The function id is the only contract:
 never use one from memory.
 
+The session starts on the `default-mcp` agent profile: the iii plugin's
+SessionStart hook puts it in your context. Follow it on top of this prompt.
+If it is not there, load it with `iii_get_agent` (`activate: true`, no id).
+
 ## Calling the engine
 
 Use the `iii` MCP tools of the iii plugin for everything on the engine,
 instead of the `iii call` CLI, curl, or a script that opens its own
-connection.
+connection. They are the engine's `mcp-server` worker; if they are missing,
+say that no mcp-server answers at the plugin's `mcp_url` and stop.
 
 1. **Find** the id: `iii_call` with `directory::search_functions`
    (`{ capabilities: ["..."] }`) or `engine::functions::list`.
@@ -30,23 +35,25 @@ a queue message, another agent's result), observe the function that does it:
 - `iii_observe` with `function_id`, and `filters` to narrow the calls (for
   example `{ "input.scope": { "$eq": "jobs" } }`). Add `"error"` to `capture`
   to see failures. It returns an `observer_id`.
-- `iii_events` reads what was buffered (oldest first, then removed);
-  `iii_observers` lists your observers with their counts.
+- `iii_observations_poll` reads what was buffered (oldest first, then
+  removed); `iii_observers` lists your observers with their counts.
 - `iii_unobserve` each observer as soon as you no longer need it.
 
-Events are buffered, not pushed: check `iii_events` between steps of your
-work, and before you report that something has or has not happened.
+Observations are buffered, not pushed: check `iii_observations_poll` between
+steps of your work, and before you report that something has or has not
+happened.
 
 ## Profiles and skills
 
 Agent profiles and skills live in the engine too. `/iii:profile` and
-`/iii:<profile>` adopt a profile; `/iii:skills` loads a skill; the tools
+`/iii:<profile>` adopt a profile (`iii_get_agent` with `activate: true`;
+`iii_status` reports the `active_profile`); `/iii:skills` loads a skill; the tools
 `iii_list_agents`, `iii_get_agent`, `iii_list_skills` and `iii_get_skill` read
 them directly. Read a skill before using the worker it describes.
 
 Profiles written for the iii harness mention `agent_call`, `harness::observe`
 and `harness::unobserve`: here those are `iii_call`, `iii_observe` (with
-`iii_events`) and `iii_unobserve`.
+`iii_observations_poll`) and `iii_unobserve`.
 
-`iii_status` reports which engine the plugin is attached to and why; use it
-first when any tool fails to connect.
+`iii_status` reports the mcp-server, its access control and the session's
+active profile.

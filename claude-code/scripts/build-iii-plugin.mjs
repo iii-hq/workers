@@ -6,11 +6,11 @@
  *   node scripts/build-iii-plugin.mjs --check   verify the committed build
  *
  * Build:
- *   1. Bundle the MCP server into one minified file inside the plugin
- *      (`iii-plugin/server/index.mjs`). It is COMMITTED: a plugin installed
+ *   1. Bundle the plugin's command line (`sync`, `export`, `status`) into one
+ *      minified file inside the plugin (`iii-plugin/cli/index.mjs`). It is COMMITTED: a plugin installed
  *      from git (a Claude Code marketplace) is a copy of the folder, with no
  *      build step of its own.
- *   2. Write `iii-plugin/server/BUILD.json`: a hash of every input the
+ *   2. Write `iii-plugin/cli/BUILD.json`: a hash of every input the
  *      bundle was made from (each project source file esbuild read, the
  *      lockfile, this script) and of the output.
  *   3. Embed every plugin file into `src/iii-plugin/assets.generated.ts`
@@ -24,8 +24,8 @@
  * rebuilt bytes would also fail whenever an install resolved a dependency
  * differently from the lockfile, which is not what the check is about.
  *
- * Minified because the terminal half writes the server through
- * `shell::fs::write`, which hosts commonly cap at 1 MiB per file.
+ * The CLI has no dependencies: it reaches the engine through mcp-server over
+ * HTTP with `fetch`, so the bundle stays a few kilobytes.
  */
 
 import { createHash } from 'node:crypto';
@@ -35,8 +35,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const pluginRoot = join(root, 'iii-plugin');
-const OUTPUT = 'iii-plugin/server/index.mjs';
-const STAMP = 'iii-plugin/server/BUILD.json';
+const OUTPUT = 'iii-plugin/cli/index.mjs';
+const STAMP = 'iii-plugin/cli/BUILD.json';
 const REBUILD = 'run `pnpm run build:iii-plugin` in claude-code/ and commit the result';
 
 /** The files that make up the plugin, relative to its root. */
@@ -48,7 +48,7 @@ const FILES = [
   'commands/profile.md',
   'commands/skills.md',
   'hooks/hooks.json',
-  'server/index.mjs',
+  'cli/index.mjs',
 ];
 
 /** Inputs that shape the bundle besides the sources esbuild reports. */
@@ -100,25 +100,6 @@ async function check() {
 async function build() {
   const { build: esbuild } = await import('esbuild');
 
-  /** Same rewrite as build-bundle.mjs: iii-sdk reads ../package.json at init. */
-  const inlinePackageJson = {
-    name: 'iii-inline-sdk-package-json',
-    setup(b) {
-      b.onLoad({ filter: /iii-sdk[\\/]dist[\\/]index\.mjs$/ }, async (args) => {
-        const source = await readFile(args.path, 'utf8');
-        const pkg = await readFile(join(dirname(args.path), '..', 'package.json'), 'utf8');
-        const { version } = JSON.parse(pkg);
-        return {
-          contents: source.replace(
-            /createRequire\(\s*import\.meta\.url\s*\)\s*\(\s*"\.\.\/package\.json"\s*\)/g,
-            JSON.stringify({ version }),
-          ),
-          loader: 'js',
-        };
-      });
-    },
-  };
-
   const result = await esbuild({
     entryPoints: [join(root, 'src/iii-plugin/main.ts')],
     absWorkingDir: root,
@@ -130,12 +111,7 @@ async function build() {
     format: 'esm',
     outfile: join(root, OUTPUT),
     legalComments: 'none',
-    external: ['fsevents'],
-    banner: {
-      js: "import{createRequire as __iiiCR}from'module';const require=__iiiCR(import.meta.url);",
-    },
     define: { 'process.env.NODE_ENV': '"production"' },
-    plugins: [inlinePackageJson],
     logLevel: 'info',
   });
 

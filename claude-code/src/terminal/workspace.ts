@@ -61,8 +61,9 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
     try {
       const context = await fetchIiiContext(iii);
       await writeNotes(iii, workspace, context);
-      // The `iii` plugin: activity hooks, the runtime skill, the MCP server for
-      // profiles and skills, and the /iii:* commands (../iii-plugin/install.ts).
+      // The `iii` plugin: activity hooks, the runtime skill, the engine's
+      // mcp-server as its MCP server, and the /iii:* commands
+      // (../iii-plugin/install.ts).
       const written = await installOnHost(iii, workspace, context);
       bridge = written.bridge;
       plugin = written.dir;

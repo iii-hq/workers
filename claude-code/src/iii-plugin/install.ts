@@ -3,18 +3,20 @@
  *
  * One plugin, three sources:
  *   - the committed `iii-plugin/` folder, embedded in the worker bundle
- *     (`assets.generated.ts`): manifest, MCP server, `/iii:profile`,
- *     `/iii:skills`. Its standalone `hooks/hooks.json` (a SessionStart `sync`)
- *     is replaced, because the worker generates the commands itself;
+ *     (`assets.generated.ts`): manifest, `/iii:profile`, `/iii:skills`, the
+ *     `iii` agent and the CLI. Its standalone `hooks/hooks.json` (a
+ *     SessionStart `sync`) is replaced, because the worker generates the
+ *     commands itself;
  *   - what only a worker can write (`../plugin.ts`): hooks that report every
- *     turn through this host's `iii` CLI, and the `iii-runtime` skill;
+ *     turn through this host's `iii` CLI, the `.mcp.json` pointing at the
+ *     engine's mcp-server, and the `iii-runtime` skill;
  *   - one `/iii:<profile>` command per visible profile (`./commands.ts`),
  *     generated now, so a session sees the engine's current profiles.
  *
  * Headless turns get it under the OS temp dir (never the caller's repository);
  * terminal sessions get it in `<workspace>/.iii-plugin` on the shell worker's
  * host, through `shell::fs::*`. A `.build-id` hash of the static files makes an
- * unchanged install one small read rather than re-writing the 500 KB server.
+ * unchanged install one small read rather than re-writing every file.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -28,6 +30,7 @@ import { readFile as hostRead, writeFile as hostWrite, probe } from '../terminal
 import { PLUGIN_STATIC_FILES } from './assets.generated.js';
 import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
 import type { AgentRow } from './directory.js';
+import { DEFAULT_MCP_URL, normalizeMcpUrl } from './mcp.js';
 
 export const PLUGIN_NAME = 'iii';
 /** Where it lands inside a terminal workspace. */
@@ -47,7 +50,12 @@ export type InstallOptions = {
   /** All profiles (hidden included), or null when they could not be read. */
   agents: AgentRow[] | null;
   agentsDetail?: string;
+  /** The engine's mcp-server endpoint, and why it may not answer. */
+  mcp: { url: string; detail: string };
 };
+
+/** Files without which the plugin is not one. */
+const REQUIRED = ['.claude-plugin/plugin.json', '.mcp.json'];
 
 function staticFiles(files: PluginFile[] = PLUGIN_STATIC_FILES): PluginFile[] {
   return files.filter((f) => f.path !== STANDALONE_HOOKS);
@@ -70,7 +78,7 @@ export async function installWith(
   embedded: PluginFile[] = PLUGIN_STATIC_FILES,
 ): Promise<Installed> {
   const fixed = staticFiles(embedded);
-  if (!fixed.some((f) => f.path === 'server/index.mjs')) {
+  if (!REQUIRED.every((path) => fixed.some((f) => f.path === path))) {
     return {
       dir: '',
       detail:
@@ -88,6 +96,7 @@ export async function installWith(
     cli: options.cli,
     context: options.context.text,
     contextDetail: options.context.detail,
+    mcpUrl: options.mcp.url,
   };
   const generated = pluginFiles(worker);
   for (const f of generated) {
@@ -101,7 +110,7 @@ export async function installWith(
     if ((await ops.read(path)) !== null) await ops.remove(path);
   }
 
-  const details = [pluginDetail(worker)];
+  const details = [options.mcp.detail, pluginDetail(worker)];
   if (options.agents) {
     await writeProfileCommands(dir, options.agents, ops);
   } else {
@@ -110,6 +119,51 @@ export async function installWith(
     );
   }
   return { dir, detail: details.filter(Boolean).join('; ') };
+}
+
+const MCP_SETUP =
+  "the session's iii tools are unavailable until it runs; add the mcp-server worker behind rbac-proxy (see its README)";
+
+/**
+ * Where the engine's mcp-server answers: `III_PLUGIN_MCP_URL` (for a custom
+ * `api_path`), else the http worker's address plus `/mcp`. `detail` says why
+ * the session's iii tools may not work: no mcp-server on the engine, or no
+ * http worker to find it through.
+ */
+export async function resolveWorkerMcp(
+  iii: IIIClient,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ url: string; detail: string }> {
+  const details: string[] = [];
+  let url = DEFAULT_MCP_URL;
+  const override = env.III_PLUGIN_MCP_URL?.trim();
+  if (override) {
+    url = normalizeMcpUrl(override);
+  } else {
+    try {
+      const status = await iii.call<unknown, { url?: string }>({
+        function_id: 'http::status',
+        payload: {},
+        timeoutMs: 5_000,
+      });
+      if (status?.url) url = normalizeMcpUrl(status.url);
+    } catch (err) {
+      details.push(`http::status did not answer (${String(err)}), so the session uses ${url}`);
+    }
+  }
+  try {
+    const res = await iii.call<unknown, { functions?: { function_id: string }[] }>({
+      function_id: 'engine::functions::list',
+      payload: { prefix: 'mcp-server::' },
+      timeoutMs: 5_000,
+    });
+    if (!(res?.functions ?? []).some((f) => f.function_id === 'mcp-server::handler')) {
+      details.push(`mcp-server is not running on this engine: ${MCP_SETUP}`);
+    }
+  } catch (err) {
+    details.push(`could not check for mcp-server (${String(err)}); ${MCP_SETUP}`);
+  }
+  return { url, detail: details.join('; ') };
 }
 
 async function listAgents(iii: IIIClient): Promise<{ agents: AgentRow[] | null; detail: string }> {
@@ -151,12 +205,17 @@ const localOps: Ops = {
 /** The plugin on this worker's own disk, for headless turns. Best-effort. */
 export async function installLocal(iii: IIIClient): Promise<Installed> {
   try {
-    const [context, listed] = await Promise.all([fetchIiiContext(iii), listAgents(iii)]);
+    const [context, listed, mcp] = await Promise.all([
+      fetchIiiContext(iii),
+      listAgents(iii),
+      resolveWorkerMcp(iii),
+    ]);
     return await installWith(LOCAL_ROOT, localOps, {
       cli: process.env.III_CLI ?? 'iii',
       context,
       agents: listed.agents,
       agentsDetail: listed.detail,
+      mcp,
     });
   } catch (err) {
     const detail = `the iii plugin could not be written to ${LOCAL_ROOT}: ${String(err)}`;
@@ -191,12 +250,13 @@ export async function installOnHost(
 ): Promise<Installed & { bridge: string }> {
   const dir = `${workspace}/${PLUGIN_DIR_NAME}`;
   const bridge = await probe(iii, 'command -v iii');
-  const listed = await listAgents(iii);
+  const [listed, mcp] = await Promise.all([listAgents(iii), resolveWorkerMcp(iii)]);
   const installed = await installWith(dir, hostOps(iii), {
     cli: bridge || 'iii',
     context,
     agents: listed.agents,
     agentsDetail: listed.detail,
+    mcp,
   });
   return { ...installed, bridge };
 }
