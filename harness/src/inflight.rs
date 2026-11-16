@@ -1,13 +1,14 @@
 //! Orphaned-turn recovery.
 //!
 //! A turn record can await a step ([`TurnRecord::awaits_step`]: `Running`, or
-//! finished but still promising a reseed) with no `harness::turn` step on the
-//! queue: the enqueue that should carry its current step failed (queue worker
-//! down, namespace-unaware queue provider, engine restart) after the record
-//! was persisted, the worker holding the step went away, or a finished turn's
-//! reseed failed after its finalize. Nothing would ever run that step again,
-//! so the session stays "working" forever, and `harness::stop` cannot finish
-//! a running one — stop only sets the abort bit the next step observes.
+//! finished but still promising a reseed or owing its exchange's completion)
+//! with no `harness::turn` step on the queue: the enqueue that should carry its
+//! current step failed (queue worker down, namespace-unaware queue provider,
+//! engine restart) after the record was persisted, the worker holding the step
+//! went away, or a finished turn's reseed, settle or stop failed part way.
+//! Nothing would ever run that step again, so the session stays "working"
+//! forever, and `harness::stop` cannot finish a running one — stop only sets
+//! the abort bit the next step observes.
 //!
 //! [`InflightSteps`] tracks the sessions whose step is executing in this
 //! process right now. [`redrive_orphans`] re-enqueues the current step of
@@ -610,6 +611,11 @@ mod tests {
                 "{status}"
             );
         }
+        let owing = TurnRecord {
+            owes_completion: true,
+            ..record("completed", stale)
+        };
+        assert!(is_orphan_candidate(&owing, false, now));
     }
 
     fn continuing(status: &str, updated_at: i64) -> TurnRecord {
