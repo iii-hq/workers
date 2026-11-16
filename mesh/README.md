@@ -39,7 +39,9 @@ its supervisor gave it through `III_CONFIG_NAME` (Compose uses
 `<namespace>-<container>`, such as `default-rbac-proxy`). It finds that entry
 in `configuration::list` by its `ui_form: rbac-proxy` metadata, preferring the
 one named like its own entry (`default-mesh` picks `default-rbac-proxy`) and
-otherwise the lowest id. A hub named `<prefix>mesh` only takes an entry whose
+otherwise the only other one it may take. It never guesses: with several, the
+proxy stays inactive and `mesh::status` names them until you name the right one
+like the hub's entry or remove the others. A hub named `<prefix>mesh` only takes an entry whose
 name starts with `<prefix>`, so it never writes another namespace's proxy, and
 no hub takes an entry a node can write (`<node>__*`). It never creates the
 entry: until rbac-proxy registers it, the proxy and the gateway stay inactive.

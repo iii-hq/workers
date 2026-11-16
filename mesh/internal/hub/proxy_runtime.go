@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,10 @@ func (h *Hub) setProxyHealth(status string, active bool) {
 	}
 }
 
-var errNoProxyEntry = errors.New("rbac-proxy configuration is not registered")
+var (
+	errNoProxyEntry        = errors.New("rbac-proxy configuration is not registered")
+	errSeveralProxyEntries = errors.New("several rbac-proxy configurations")
+)
 
 // proxyCandidate keeps out entries a node can write (<node>__*) and, for a hub named <prefix>mesh, other namespaces' proxies.
 func proxyCandidate(meshID, id string) bool {
@@ -61,7 +65,7 @@ func proxyConfigID(ctx context.Context, client rpc, meshID string) (string, erro
 	if err = json.Unmarshal(raw, &list); err != nil {
 		return "", errors.New("malformed configuration list")
 	}
-	own, id := strings.TrimSuffix(meshID, "mesh")+"rbac-proxy", ""
+	own, ids := strings.TrimSuffix(meshID, "mesh")+"rbac-proxy", []string{}
 	for _, entry := range list.Configurations {
 		var form struct {
 			UIForm string `json:"ui_form"`
@@ -72,14 +76,17 @@ func proxyConfigID(ctx context.Context, client rpc, meshID string) (string, erro
 		if entry.ID == own {
 			return own, nil
 		}
-		if id == "" || entry.ID < id {
-			id = entry.ID
-		}
+		ids = append(ids, entry.ID)
 	}
-	if id == "" {
+	switch len(ids) {
+	case 0:
 		return "", errNoProxyEntry // its registration is an event this hub observes
+	case 1:
+		return ids[0], nil
 	}
-	return id, nil
+	// Guessing could write Mesh's hooks into an entry no running proxy reads; a removal or rename is an event too.
+	sort.Strings(ids)
+	return "", fmt.Errorf("%w (%s): name the one this hub uses %s, or remove the others", errSeveralProxyEntries, strings.Join(ids, ", "), own)
 }
 func fetchProxyConfig(ctx context.Context, client rpc, id string) (map[string]any, error) {
 	raw, err := configCall(ctx, client, "configuration::get", map[string]any{"id": id, "raw": true})

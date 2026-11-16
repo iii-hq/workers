@@ -472,6 +472,7 @@ func TestProxyRetriesOnlyWhatNoEventEnds(t *testing.T) {
 func TestProxyConfigIDFollowsTheRbacProxyForm(t *testing.T) {
 	form := func(id string) string { return `{"id":"` + id + `","metadata":{"ui_form":"rbac-proxy"}}` }
 	stray := `{"id":"rbac-proxy","metadata":null}` // an entry an older hub created: rbac-proxy never reads it
+	const several = "several"
 	for _, tc := range []struct {
 		name, mesh, list, want string
 	}{
@@ -480,8 +481,11 @@ func TestProxyConfigIDFollowsTheRbacProxyForm(t *testing.T) {
 		{"bare mesh skips the stray entry", "mesh", stray + "," + form("default-rbac-proxy"), "default-rbac-proxy"},
 		{"own namespace first", "team-mesh", form("default-rbac-proxy") + "," + form("team-rbac-proxy"), "team-rbac-proxy"},
 		{"bare mesh prefers rbac-proxy", "mesh", form("default-rbac-proxy") + "," + form("rbac-proxy"), "rbac-proxy"},
-		{"bare mesh otherwise takes the lowest id", "mesh", form("zeta-rbac-proxy") + "," + form("alpha-rbac-proxy"), "alpha-rbac-proxy"},
-		{"otherwise the lowest id of its namespace", "default-mesh", form("default-zeta") + "," + form("alpha-rbac-proxy") + "," + form("default-proxy"), "default-proxy"},
+		{"bare mesh takes the only candidate", "mesh", form("zeta-rbac-proxy"), "zeta-rbac-proxy"},
+		{"bare mesh never guesses between two", "mesh", form("zeta-rbac-proxy") + "," + form("alpha-rbac-proxy"), several},
+		{"the only candidate of its namespace", "default-mesh", form("alpha-rbac-proxy") + "," + form("default-proxy"), "default-proxy"},
+		{"never guesses inside its namespace", "default-mesh", form("default-zeta") + "," + form("default-proxy"), several},
+		{"its own name wins over others", "default-mesh", form("default-zeta") + "," + form("default-rbac-proxy"), "default-rbac-proxy"},
 		{"never another namespace's proxy", "beta-mesh", form("alpha-rbac-proxy"), ""},
 		{"never a node's entry", "mesh", form("alpha__proxy") + "," + form("e2e-rbac-proxy"), "e2e-rbac-proxy"},
 		{"never a node's entry inside its namespace", "default-mesh", form("default-x__rbac-proxy"), ""},
@@ -491,6 +495,12 @@ func TestProxyConfigIDFollowsTheRbacProxyForm(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := proxyConfigID(t.Context(), &resultRPC{out: json.RawMessage(`{"configurations":[` + tc.list + `]}`)}, tc.mesh)
+			if tc.want == several {
+				if !errors.Is(err, errSeveralProxyEntries) || id != "" {
+					t.Fatalf("id %q err %v, want a refusal naming the candidates", id, err)
+				}
+				return
+			}
 			if tc.want == "" {
 				if !errors.Is(err, errNoProxyEntry) {
 					t.Fatalf("id %q err %v, want no entry", id, err)
