@@ -20,17 +20,17 @@ use std::time::{Duration, Instant};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Capture, IIIClient, InitOptions, Observed, ObserverHandle,
-    ObserverOptions, RegisterFunction, Source,
+    Call, CallRequest, Capture, IIIClient, InitOptions, Observed, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 use workflow::events::{
-    emit_run_completed, EventDeliverer, RunCompletedEvent, ON_RUN_COMPLETED_FN,
+    EventDeliverer, ON_RUN_COMPLETED_FN, RunCompletedEvent, emit_run_completed,
 };
 use workflow::functions::{self, Deps, TickRequest};
 use workflow::types::{NodeCheckpoint, NodeState, RunStatus, WorkflowRunRecord};

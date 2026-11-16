@@ -609,10 +609,12 @@ mod tests {
         .expect("deserialize old checkpoint");
         assert_eq!(cp.state, NodeState::Running);
         assert_eq!(cp.retries, 1);
-        assert!(serde_json::to_value(&cp)
-            .unwrap()
-            .get("pending_timeout_ms")
-            .is_none());
+        assert!(
+            serde_json::to_value(&cp)
+                .unwrap()
+                .get("pending_timeout_ms")
+                .is_none()
+        );
     }
 
     #[test]

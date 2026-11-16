@@ -320,7 +320,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::listed_ids;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn listed_ids_reads_tree_sessions_and_observer_ids() {

@@ -17,21 +17,19 @@ use std::future::Future;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::functions::Deps;
-use crate::reconcile::{correction_reason, json_node_result, output_schema, NOT_SUBMITTED};
+use crate::reconcile::{NOT_SUBMITTED, correction_reason, json_node_result, output_schema};
 
 pub const VALIDATE_RESULT_ID: &str = "workflow::validate-result";
-pub const VALIDATE_RESULT_DESC: &str =
-    "Internal post_turn hook on workflow node sessions: a JSON node's turn that delivered no \
+pub const VALIDATE_RESULT_DESC: &str = "Internal post_turn hook on workflow node sessions: a JSON node's turn that delivered no \
      result with workflow-result::submit (and whose final message is not a valid result either) \
      is denied, so the harness re-prompts it; a turn that ends with a wake armed passes. Not \
      called directly.";
 
 /// The corrective prompt the harness sends on a deny (`{reason}` is the deny reason).
-pub const RETRY_PROMPT: &str =
-    "This workflow node is not settled: {reason}. Deliver the result by \
+pub const RETRY_PROMPT: &str = "This workflow node is not settled: {reason}. Deliver the result by \
      calling workflow-result::submit with {\"result\": <the JSON value the node's output schema \
      requires>}, then end the turn with one short line. If you are still waiting on work, arm a \
      wake with harness::observe before ending the turn.";
