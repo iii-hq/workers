@@ -797,10 +797,12 @@ impl QueueAdapter for BuiltinAdapter {
         if delivery.queue_name != queue_name {
             anyhow::bail!("delivery {delivery_id} does not belong to queue '{queue_name}'");
         }
-        self.store.ack(queue_name, &delivery.job.id).await?;
+        let acked = self.store.ack(queue_name, &delivery.job.id).await;
+        // Done with the delivery even when the store rejected the ACK: see
+        // `abandon_failed_settlement`.
         delivery.settled.store(true, Ordering::Release);
         self.function_deliveries.lock().await.remove(&delivery_id);
-        Ok(())
+        acked.map_err(abandon_failed_settlement)
     }
 
     async fn nack_function_queue(
@@ -830,18 +832,30 @@ impl QueueAdapter for BuiltinAdapter {
         // config counts retries after the initial delivery.
         let mut job = delivery.job.clone();
         job.attempts = job.attempts.max(attempt);
-        self.store
+        let nacked = self
+            .store
             .nack(
                 queue_name,
                 job,
                 max_retries.saturating_add(1),
                 delivery.backoff_ms,
             )
-            .await?;
+            .await;
+        // Done with the delivery even when the store rejected the NACK: see
+        // `abandon_failed_settlement`.
         delivery.settled.store(true, Ordering::Release);
         self.function_deliveries.lock().await.remove(&delivery_id);
-        Ok(())
+        nacked.map_err(abandon_failed_settlement)
     }
+}
+
+/// A function-queue ACK/NACK the store rejected is not retried by its caller,
+/// so the delivery is dropped anyway: holding it would keep its outstanding
+/// permit and, once every permit is held, stall the consumer. The store left
+/// the job in flight, exactly as its journal records it, so it is redelivered
+/// after a restart.
+fn abandon_failed_settlement(err: anyhow::Error) -> anyhow::Error {
+    err.context("queue store rejected the settlement; the job stays in flight until restart")
 }
 
 /// Pause before a consumer retries after its store rejected a dequeue (for
@@ -969,6 +983,9 @@ async fn requeue_function_deliveries(
         {
             tracing::error!(queue = %delivery.queue_name, error = %err, "failed to requeue unacknowledged function queue delivery");
             errors.push(err.to_string());
+            // The job is still in flight in the store: keep the delivery
+            // unsettled so a later ACK/NACK can still settle it there.
+            continue;
         }
         delivery.settled.store(true, Ordering::Release);
         active_deliveries.lock().await.remove(&delivery.delivery_id);
@@ -1254,6 +1271,114 @@ mod tests {
             .unwrap();
         assert_eq!(store.topic_stats("turns").await.delivered, 1);
         adapter.shutdown().await;
+    }
+
+    /// Makes every journal append of the file store in `dir` fail (EISDIR)
+    /// until the returned closure restores it.
+    #[cfg(unix)]
+    fn break_journal(dir: &std::path::Path) -> impl FnOnce() {
+        let journal = dir.join("queue_store.journal");
+        let saved = dir.join("journal.saved");
+        std::fs::rename(&journal, &saved).unwrap();
+        std::fs::create_dir(&journal).unwrap();
+        move || {
+            std::fs::remove_dir(&journal).unwrap();
+            std::fs::rename(&saved, &journal).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    async fn file_backed_function_queue(
+        dir: &std::path::Path,
+    ) -> (Arc<dyn QueueStore>, BuiltinAdapter) {
+        let store: Arc<dyn QueueStore> =
+            Arc::new(crate::store::FileStore::open(dir, 60_000).await.unwrap());
+        let adapter = BuiltinAdapter::new(store.clone(), Arc::new(FakeInvoker::default()));
+        adapter
+            .setup_function_queue("turns", &function_queue_config())
+            .await
+            .unwrap();
+        (store, adapter)
+    }
+
+    #[cfg(unix)]
+    async fn publish_turn(adapter: &BuiltinAdapter, receipt: &str) {
+        adapter
+            .publish_to_function_queue(
+                "turns",
+                "harness::turn",
+                json!({}),
+                receipt,
+                3,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A rejected ACK must not hold the delivery's permit: with one permit,
+    /// the consumer would otherwise never take another message.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_function_queue_ack_releases_the_consumer_permit() {
+        let dir = std::env::temp_dir().join(format!("queue-ack-permit-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+
+        publish_turn(&adapter, "first").await;
+        let first = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let restore = break_journal(&dir);
+        assert!(adapter
+            .ack_function_queue("turns", first.delivery_id)
+            .await
+            .is_err());
+        restore();
+        assert_eq!(store.topic_stats("turns").await.delivered, 0);
+
+        publish_turn(&adapter, "second").await;
+        let second = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("a failed ACK must not stall the consumer")
+            .unwrap();
+        assert_eq!(second.message_id.as_deref(), Some("second"));
+        adapter.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A delivery whose requeue the store rejected is still in flight there,
+    /// so a later ACK must still reach the store.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_requeue_keeps_the_delivery_ackable() {
+        let dir = std::env::temp_dir().join(format!("queue-requeue-ack-{}", uuid::Uuid::new_v4()));
+        let (store, adapter) = file_backed_function_queue(&dir).await;
+        let mut receiver = adapter.consume_function_queue("turns", 1).await.unwrap();
+
+        publish_turn(&adapter, "only").await;
+        let message = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let restore = break_journal(&dir);
+        assert!(adapter.stop_function_queue_consumer("turns").await.is_err());
+        restore();
+
+        adapter
+            .ack_function_queue("turns", message.delivery_id)
+            .await
+            .unwrap();
+        assert_eq!(store.topic_stats("turns").await.delivered, 1);
+        adapter.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
