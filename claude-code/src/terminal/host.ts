@@ -1,6 +1,6 @@
 /**
  * Everything this worker does to a filesystem or a process, it does through
- * the `shell` worker — the same worker that owns the terminal session. So the
+ * the `shell::*` functions of the `ide` worker, which owns the terminal session. So the
  * agent, its workspace, and its installer all live on ONE host, whether or
  * not that is the host this worker runs on, and none of it depends on a
  * shared directory.
@@ -139,7 +139,7 @@ export async function readFile(iii: IIIClient, path: string): Promise<string | n
   }
 }
 
-/** The terminal host's working directory — the shell worker's primary root. */
+/** The terminal host's working directory — the ide worker's primary root. */
 export async function hostRoot(iii: IIIClient): Promise<string> {
   const pwd = await probe(iii, 'pwd');
   return pwd || '.';

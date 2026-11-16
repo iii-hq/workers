@@ -44,7 +44,8 @@ instead of bolting anything onto this one.
   so the agent discovers and calls any registered function through the iii
   CLI (engine::functions::list, `iii call <fn> --help`) with the
   matching Bash allow rule pre-set; disable per turn with
-  `iii_context: false`.
+  `iii_context: false`. With mcp-server on the engine, turns get the
+  `default-mcp` profile and the `iii` MCP tools in place of that CLI context.
 - Plan before touching anything: `permission_mode: "plan"` runs Claude
   Code's native plan mode (read-only, returns the plan as the result);
   then send "implement the plan" on the same `session_id` with
@@ -91,7 +92,7 @@ instead of bolting anything onto this one.
 ## The terminal half
 
 The same worker also runs Claude Code as a terminal page on the console: it
-installs the CLI on the terminal host (the `shell` worker's), equips a
+installs the CLI on the terminal host (the `ide` worker's), equips a
 workspace with the iii plugin, and opens Claude in a
 `shell::pty` session. A person opens it; the session's turns are published on
 `claude::on-agent-event` with the same frames a `claude::run` turn produces, so both
@@ -105,9 +106,9 @@ Boundaries:
 - `claude::terminal::describe`, `claude::terminal::activity`, and
   `claude::ui-content` are console plumbing, flagged internal. Do not call
   them; a terminal is opened by a person, from the page.
-- The command is fixed to Claude Code. Use the `shell` worker for anything
+- The command is fixed to Claude Code. Use the `ide` worker's `shell::*` functions for anything
   else — including `shell::pty::sessions` to see what a terminal is doing.
-- The workspace must be reachable by the `shell` worker: it owns the session.
+- The workspace must be reachable by the `ide` worker: it owns the session.
 - `claude::auth::status` reports which plan a terminal session spends
   (subscription vs API key, and an API key silently outranks a subscription
   login). The page shows it in the status bar; agents are denied it.

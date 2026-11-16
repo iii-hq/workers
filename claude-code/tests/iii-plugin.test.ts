@@ -142,7 +142,7 @@ describe('installer', () => {
     expect(JSON.parse(manifest?.content ?? '{}').name).toBe('iii');
     // A `commands/skill.md` silently disables every command in the plugin.
     expect(paths).not.toContain('commands/skill.md');
-    // Under the shell worker's common 1 MiB per-file cap.
+    // Under the ide worker's common 1 MiB per-file cap.
     for (const f of PLUGIN_STATIC_FILES)
       expect(Buffer.byteLength(f.content)).toBeLessThan(1024 * 1024);
   });
@@ -166,7 +166,8 @@ describe('installer', () => {
     );
     // The worker's activity hooks replace the standalone sync hook.
     expect(m.disk['/w/p/hooks/hooks.json']).toContain('claude::terminal::activity');
-    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toContain('# iii runtime');
+    // With mcp-server, default-mcp guides the session, not the CLI-only text.
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
     expect(m.disk['/w/p/commands/writer.md']).toContain('`writer`');
 
     m.writes.length = 0;
@@ -219,7 +220,8 @@ describe('review fixes', () => {
     const base = {
       cli: 'iii',
       agents: [],
-      mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: true },
+      // The runtime skill is the session's guide only without mcp-server.
+      mcp: { url: 'http://127.0.0.1:3111/mcp', detail: '', available: false },
       defaultProfile: null,
     };
     await installWith(
@@ -422,6 +424,29 @@ describe('the iii agent and the mcp-server fallback', () => {
     );
     // Appended by the worker, so no hook adds it a second time.
     expect(m.disk['/w/p/hooks/hooks.json']).not.toContain('session-start');
+    // The CLI-only runtime skill would contradict it, and is not missed.
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
+    expect(r.detail).toBe('');
+  });
+
+  it('removes a runtime skill left from before mcp-server was running', async () => {
+    const m = memoryOps();
+    await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, mcp: mcp(false), defaultProfile: profile },
+      embedded,
+    );
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toContain('# iii runtime');
+
+    await installWith(
+      '/w/p',
+      m.ops,
+      { ...base, mcp: mcp(true), defaultProfile: profile },
+      embedded,
+    );
+
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toBeUndefined();
   });
 
   it('says so, and keeps the stub agent, when default-mcp cannot be read', async () => {
@@ -463,5 +488,7 @@ describe('the iii agent and the mcp-server fallback', () => {
     expect(m.disk['/w/p/default-mcp.md']).toBeUndefined();
     expect(m.disk['/w/p/agents/iii.md']).toBe(STUB);
     expect(r.detail).toContain('mcp-server is not running');
+    // The session's guide is then the CLI runtime skill.
+    expect(m.disk['/w/p/skills/iii-runtime/SKILL.md']).toContain('# iii runtime');
   });
 });

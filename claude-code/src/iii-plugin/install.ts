@@ -15,7 +15,7 @@
  *
  * Headless turns get it in a private directory of their own under the OS temp
  * dir, removed when the turn ends (never the caller's repository);
- * terminal sessions get it in `<workspace>/.iii-plugin` on the shell worker's
+ * terminal sessions get it in `<workspace>/.iii-plugin` on the ide worker's
  * host, through `shell::fs::*`. A `.build-id` hash of the static files makes an
  * unchanged install one small read rather than re-writing every file.
  */
@@ -121,8 +121,11 @@ export async function installWith(
   const stubAgent = embedded.find((f) => f.path === 'agents/iii.md')?.content ?? '';
   const worker = {
     cli: options.cli,
-    context: options.context.text,
-    contextDetail: options.context.detail,
+    // The runtime skill teaches the `iii` CLI as the only way in, which
+    // contradicts default-mcp: it is the session's guide only without
+    // mcp-server (and is then removed as a stale CONDITIONAL file).
+    context: available ? '' : options.context.text,
+    contextDetail: available ? '' : options.context.detail,
     mcpUrl: available ? options.mcp.url : '',
     mode,
     agent: mode && profile ? agentFile(profile) : '',
@@ -321,7 +324,7 @@ function hostOps(iii: IIIClient, dir: string, known: Set<string> | null): Ops {
 }
 
 /**
- * The plugin inside a terminal workspace on the shell worker's host. Returns
+ * The plugin inside a terminal workspace on the ide worker's host. Returns
  * the `iii` CLI it found there (`bridge`), or '' when the activity hooks have
  * no way to reach the bus.
  */

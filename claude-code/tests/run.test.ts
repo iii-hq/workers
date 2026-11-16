@@ -226,7 +226,10 @@ describe('executeRun', () => {
   it('with mcp-server on the engine, appends default-mcp and allows the iii tools', async () => {
     const { capture } = await runTurn({ prompt: 'x', session_id: 's1' }, fullTurn, {}, true);
     const sp = capture.options?.systemPrompt as { append?: string };
-    expect(sp.append).toContain('# iii runtime');
+    // default-mcp, not the CLI-only runtime text: that one says to act only
+    // through the `iii` CLI, which contradicts default-mcp's iii_call.
+    expect(sp.append).not.toContain('# iii runtime');
+    expect(capture.pluginFiles?.['skills/iii-runtime/SKILL.md']).toBeFalsy();
     expect(sp.append).toContain('You are an iii agent. Call the engine with iii_call.');
     expect(capture.pluginFiles?.['agents/iii.md']).toContain('You are an iii agent.');
     expect(capture.pluginFiles?.['hooks/hooks.json']).not.toContain('session-start');
@@ -237,6 +240,17 @@ describe('executeRun', () => {
     expect(JSON.parse(capture.pluginFiles?.['.mcp.json'] ?? '{}').mcpServers.iii.url).toBe(
       'http://127.0.0.1:3111/mcp',
     );
+  });
+
+  it('with mcp-server, stacks default-mcp with a user append and no runtime text', async () => {
+    const { capture } = await runTurn(
+      { prompt: 'x', session_id: 's1', append_system_prompt: 'house rules' },
+      fullTurn,
+      {},
+      true,
+    );
+    const sp = capture.options?.systemPrompt as { append?: string };
+    expect(sp.append).toBe('You are an iii agent. Call the engine with iii_call.\n\nhouse rules');
   });
 
   it('with the approval gate on, iii_call and iii_observe go through the gate', async () => {
@@ -257,6 +271,7 @@ describe('executeRun', () => {
     const sp = capture.options?.systemPrompt as { append?: string };
     expect(sp.append).toContain('# iii runtime');
     expect(sp.append).not.toContain('iii_call');
+    expect(capture.pluginFiles?.['skills/iii-runtime/SKILL.md']).toContain('name: iii-runtime');
     const allowed = capture.options?.allowedTools as string[];
     expect(allowed).toContain('Bash(iii *)');
     expect(allowed.filter((t) => t.startsWith('mcp__plugin_iii_iii__'))).toEqual([]);

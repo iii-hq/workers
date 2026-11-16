@@ -18,7 +18,7 @@ It works in two places:
   plugin without its MCP server and without default-mcp, so the session works
   through the `iii` CLI as before, and says so. It also adds what only it
   can: hooks that report every turn onto
-  `claude::on-agent-event`, the `iii-runtime` skill, and the `/iii:<profile>`
+  `claude::on-agent-event`, the `iii-runtime` skill (only without mcp-server), and the `/iii:<profile>`
   commands, generated fresh for each session.
 - **In a standalone `claude`** on your own machine:
 

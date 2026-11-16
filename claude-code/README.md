@@ -16,7 +16,7 @@ The terminal half adds three companions:
 
 | Worker | Why |
 |---|---|
-| [`shell`](https://github.com/iii-hq/workers/tree/main/ide) ≥ 0.12 | Owns the terminal. `shell::pty::open` runs the CLI, `shell::exec` installs it and equips the workspace, `coder::read-file` reads the files back. The workspace must be inside shell's jail (`fs.host_roots`). |
+| [`ide`](https://github.com/iii-hq/workers/tree/main/ide) | Owns the terminal through its `shell::*` functions: `shell::pty::open` runs the CLI, `shell::exec` installs it and equips the workspace, `coder::read-file` reads the files back. The workspace must be inside its jail (`fs.host_roots`). |
 | [`ade`](https://github.com/iii-hq/workers/tree/main/ade) | Renders the injected **claude** page. |
 | `configuration` (built in) | Holds the settings below. |
 
@@ -180,6 +180,8 @@ pubsub"). The acp worker observes `claude::on-agent-event` for the brain
 
 By default every turn's system prompt carries the iii runtime context: the same engine-grounded rules as the harness identity prompts, retargeted to the `iii` CLI the agent reaches through its shell. The agent discovers capabilities from the live engine instead of memory — `iii call engine::functions::list` to find function ids, `iii call <fn> --help` as the contract before every first call, the registry flow (`directory::registry::workers::list/info`, `compose::add`) when nothing registered fits — plus the calling rules and error-handling discipline that go with them. The matching `Bash(iii *)` allow rule is added automatically so those calls run headless. Local file edits stay on Claude Code's native tools; backend actions go through registered functions.
 
+When the engine runs [`mcp-server`](../mcp-server/README.md), a turn gets the `default-mcp` profile and the `iii` MCP tools instead, and this CLI text is left out: it says to act only through the `iii` CLI, which contradicts default-mcp's `iii_call`.
+
 ```bash
 # the agent answers this by querying the live engine itself
 iii call claude::run --timeout-ms 300000 \
@@ -242,7 +244,7 @@ pane.
 
 The status bar carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘
 + scroll does the same). The size is one value for every terminal in the
-console — shell's panes included — so it is set once, not per page. The
+console — the ide worker's panes included — so it is set once, not per page. The
 terminal itself stays dark whatever the console theme is: an agent CLI paints
 its own interface in colors chosen for a dark terminal and never learns the
 page went light.
@@ -257,7 +259,8 @@ On every boot, when `terminal.setup_workspace` is on:
   `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
   payload to `claude::terminal::activity` with the `iii` CLI, so it works
   whether or not the terminal host is this worker's host — and the
-  `iii-runtime` skill fetched from `iii-directory`.
+  `iii-runtime` skill fetched from `iii-directory` when the engine runs no
+  mcp-server (with mcp-server, default-mcp takes its place).
 
   The same plugin serves the headless half: the Agent SDK turns
   `plugins: [{ type: 'local', path }]` into that same `--plugin-dir` flag, so a
@@ -293,7 +296,7 @@ and takes precedence over your claude.ai login") and a bogus key 401s the turn.
 So the badge reads `apiKeySource`, not `authMethod`, and the tooltip spells out
 that the login is signed in but not billed.
 
-The key is read from the environment of the `shell` worker that runs the
+The key is read from the environment of the `ide` worker that runs the
 session, so that is where to set or unset it.
 
 **A subscription login needs `USER` in the session environment.** Claude Code
@@ -315,7 +318,7 @@ user-initiated call, which is not the agent path.
 The simplest flow is the terminal itself: open the page and run `/login` (or
 `claude auth login`; `--console` for API billing instead of the subscription).
 The credentials land in the home directory of whatever runs the session — the
-`shell` worker's — and every later session of this terminal reuses them.
+`ide` worker's — and every later session of this terminal reuses them.
 
 **Who else sees that login depends on how a worker is deployed, not on which
 machine it is.** Compose starts a container one of two ways
@@ -323,14 +326,14 @@ machine it is.** Compose starts a container one of two ways
 
 | Container | Start | Home directory |
 |---|---|---|
-| `path://…` (local checkout), or a registry worker whose payload is a **binary** (Rust `deploy: binary`, e.g. `shell`) | host process | the host's |
+| `path://…` (local checkout), or a registry worker whose payload is a **binary** (Rust `deploy: binary`, e.g. `ide`) | host process | the host's |
 | a registry worker whose payload is a **bundle** (Node `deploy: bundle`, e.g. this worker) | microVM, own rootfs | the guest's |
 
 Only the container's own config directory is shared into a VM (virtiofs), and
 compose v1 has no volume field, so a VM-booted worker cannot read the host's
 `~/.claude`. Consequences:
 
-- The terminal half is unaffected either way: the CLI runs inside the `shell`
+- The terminal half is unaffected either way: the CLI runs inside the `ide`
   worker, which is a host process, so the login is the host's and this
   worker's own rootfs never matters.
 - The headless half spawns `claude` in **this** worker's container. Run from a
@@ -344,7 +347,7 @@ compose v1 has no volume field, so a VM-booted worker cannot read the host's
 
 ### If the worker that owns the terminal is virtualized
 
-The terminal half holds because `shell` is a binary payload and therefore a
+The terminal half holds because `ide` is a binary payload and therefore a
 host process today. If binary workers get VM-booted too, the terminal keeps
 working — the CLI, the workspace, and the login simply move into that guest,
 and this worker still reaches them over the bus — but three things change:
@@ -361,7 +364,7 @@ and this worker still reaches them over the bus — but three things change:
 
 For a terminal host with no one at the keyboard, the same two options apply:
 `claude setup-token` once (needs a browser once, returns a long-lived
-subscription token) or `ANTHROPIC_API_KEY`, in the environment the `shell`
+subscription token) or `ANTHROPIC_API_KEY`, in the environment the `ide`
 worker starts with. Either way the badge says which one won.
 
 ## Configuration
@@ -378,10 +381,10 @@ defaults:
 approval_gate: false           # route tool permissions through policy::check_permissions
 claude_executable: ""          # path to the claude CLI; empty = SDK default resolution
 
-terminal:                      # the console terminal page — a DIFFERENT host: shell's
+terminal:                      # the console terminal page — a DIFFERENT host: the ide worker's
   executable: ""               # path to `claude` there; empty = resolve on PATH there
   args: []                     # extra argv for every terminal session
-  workspace_dir: ""            # empty = `claude-code` under shell's primary root
+  workspace_dir: ""            # empty = `claude-code` under the ide worker's primary root
   auto_install: true           # install Claude Code from https://claude.ai/install.sh when missing
   setup_workspace: true        # keep the iii plugin (skills, commands, activity hooks) in place
 ```
@@ -432,10 +435,10 @@ those keys rather than in one covering span; a headless turn gets both.
 | final result | `turn_end` + `agent_end` frames, function return value |
 | session resume | engine state scope `claude_sessions`, keyed by iii session_id |
 | permission prompt | `canUseTool` -> `policy::check_permissions` (optional) |
-| extra capability | another iii worker on the bus (`shell`, `database`, `storage`, ...) |
+| extra capability | another iii worker on the bus (`ide`, `database`, `storage`, ...) |
 | interactive CLI session | `shell::pty` session on the injected **claude** console page |
 | terminal hook event | `claude::terminal::activity` -> the same `claude::on-agent-event` frames |
 
 ## The iii Claude Code plugin
 
-`iii-plugin/` is the `iii` Claude Code plugin: `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by an MCP server that reads the engine's `iii-directory` live. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event` and the `iii-runtime` skill. It also works in a standalone `claude` on any machine that can reach an engine. `pnpm run build:iii-plugin` builds it (part of `build`, `build:bundle`, `typecheck` and `test`); the server build is committed for git installs, and CI fails when it is stale (`check:committed-build`). See [iii-plugin/README.md](iii-plugin/README.md).
+`iii-plugin/` is the `iii` Claude Code plugin: `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event`, and the `iii-runtime` skill when the engine runs no mcp-server. It also works in a standalone `claude` on any machine that can reach an engine. `pnpm run build:iii-plugin` builds it (part of `build`, `build:bundle`, `typecheck` and `test`); the server build is committed for git installs, and CI fails when it is stale (`check:committed-build`). See [iii-plugin/README.md](iii-plugin/README.md).

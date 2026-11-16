@@ -70,7 +70,7 @@ function quote(value: string): string {
 
 /**
  * Every file of the plugin, as paths relative to its root. The caller decides
- * how they land — through the `shell` worker on the terminal host, or on this
+ * how they land — through `shell::*` (the `ide` worker) on the terminal host, or on this
  * worker's own disk for a headless turn.
  */
 export function pluginFiles(options: PluginOptions): PluginFile[] {
@@ -126,7 +126,8 @@ ${context}
  * operator should see, not a silent gap in what the agent knows.
  */
 export function pluginDetail(options: PluginOptions): string {
-  if (options.context.trim()) return '';
+  // With mcp-server, the skill is left out on purpose (default-mcp guides).
+  if (options.context.trim() || options.mcpUrl) return '';
   return `the iii runtime skill is not in the plugin: ${
     options.contextDetail || 'iii-directory served nothing'
   }`;

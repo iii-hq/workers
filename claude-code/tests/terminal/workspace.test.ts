@@ -6,7 +6,7 @@ import { prepareWorkspace } from '../../src/terminal/workspace.js';
 type Call = { function_id: string; payload: Record<string, unknown> };
 
 /**
- * A shell worker that answers from a fake filesystem. Everything
+ * An ide worker (its `shell::*` functions) answering from a fake filesystem. Everything
  * `prepareWorkspace` does goes over the bus, so this is the whole boundary.
  */
 function fakeShell(
@@ -177,10 +177,9 @@ describe('preparing the terminal host', () => {
     expect(command).toContain(`'/usr/bin/iii' call claude::terminal::activity --json "$(cat)"`);
     expect(hooks.PreToolUse[0].matcher).toBe('*');
 
-    // The iii runtime text arrives as a SKILL, from iii-directory.
-    expect(files['/hostroot/claude-code/.iii-plugin/skills/iii-runtime/SKILL.md']).toContain(
-      'name: iii-runtime',
-    );
+    // With mcp-server, default-mcp guides the session: the CLI-only runtime
+    // skill would contradict it.
+    expect(files['/hostroot/claude-code/.iii-plugin/skills/iii-runtime/SKILL.md']).toBeUndefined();
 
     // The same directory is the whole `iii` plugin: the committed CLI and
     // static commands ship inside the worker, the session's MCP server is the
@@ -279,7 +278,7 @@ describe('preparing the terminal host', () => {
     expect(prepared.detail).toBe('');
     expect(missedReads).toEqual([]);
     const dir = '/hostroot/claude-code/.iii-plugin';
-    expect(files[`${dir}/skills/iii-runtime/SKILL.md`]).toContain('name: iii-runtime');
+    expect(files[`${dir}/hooks/hooks.json`]).toBeTruthy();
     expect(files['/hostroot/claude-code/CLAUDE.md']).toBeUndefined();
     const listings = calls.filter(
       (c) => c.function_id === 'shell::exec' && String(c.payload.command).includes('find'),
@@ -489,6 +488,8 @@ describe('preparing the terminal host', () => {
     expect(files[`${dir}/.mcp.json`]).toBeUndefined();
     expect(files[`${dir}/hooks/hooks.json`]).not.toContain('session-start');
     expect(prepared.detail).toContain('mcp-server is not running on this engine');
+    // The CLI runtime skill is then the session's guide.
+    expect(files[`${dir}/skills/iii-runtime/SKILL.md`]).toContain('name: iii-runtime');
   });
 
   it('uses the configured workspace as given', async () => {

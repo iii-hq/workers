@@ -68,7 +68,7 @@ try {
 // to it (or an empty value) re-runs the PATH lookup.
 const holder: ConfigHolder = { current: bootConfig };
 
-// What a terminal session runs. The prepare step talks to the `shell` worker
+// What a terminal session runs. The prepare step talks to the `ide` worker
 // (install the CLI, equip the workspace, write the hooks) and can take minutes
 // on a cold host, so it is chained off the config reload rather than awaited:
 // `claude::*` must register whether or not there is a terminal host to prepare.

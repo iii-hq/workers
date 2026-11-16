@@ -23,7 +23,8 @@ approval_gate: false
 # live discovery against the engine catalog through the iii CLI
 # (engine::functions::list, `iii call <fn> --help`). Per-turn override
 # via the iii_context payload field; a caller-supplied system_prompt
-# always wins and gets nothing appended.
+# always wins and gets nothing appended. With mcp-server on the engine,
+# default-mcp and the iii MCP tools take the place of this CLI context.
 iii_context: true
 
 # Path to the Claude Code CLI binary. Empty = Agent SDK default resolution;

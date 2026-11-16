@@ -322,7 +322,10 @@ async function runReserved(
   try {
     // default-mcp is appended to Claude Code's own system prompt: an agent
     // (`--agent`) would replace it, and with it Claude Code's operating rules.
-    const append = [context?.text ?? '', plugin.mode, userAppend].filter(Boolean).join('\n\n');
+    // The runtime text teaches the `iii` CLI as the only way in: with
+    // mcp-server, default-mcp and the iii tools take its place.
+    const runtime = plugin.mcp ? '' : (context?.text ?? '');
+    const append = [runtime, plugin.mode, userAppend].filter(Boolean).join('\n\n');
     const plugins = plugin.dir ? [{ type: 'local' as const, path: plugin.dir }] : [];
     const options: Options = {
       ...(plugins.length ? { plugins } : {}),
