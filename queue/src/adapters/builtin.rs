@@ -1386,10 +1386,12 @@ mod tests {
             .unwrap();
 
         let restore = break_journal(&dir);
-        assert!(adapter
-            .ack_function_queue("turns", first.delivery_id)
-            .await
-            .is_err());
+        assert!(
+            adapter
+                .ack_function_queue("turns", first.delivery_id)
+                .await
+                .is_err()
+        );
         restore();
         assert_eq!(store.topic_stats("turns").await.delivered, 0);
 
@@ -1489,11 +1491,13 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(adapter
-            .function_deliveries
-            .lock()
-            .await
-            .contains_key(&original.delivery_id));
+        assert!(
+            adapter
+                .function_deliveries
+                .lock()
+                .await
+                .contains_key(&original.delivery_id)
+        );
         restore();
         let message = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
             .await
