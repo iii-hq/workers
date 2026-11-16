@@ -100,7 +100,7 @@ anywhere else.
 
 ## 4. Merge and report
 
-Read every `<group>/report.md`. Before merging, look at each finding's
+Read every `<group>/report.md` (a tester whose file write was refused returns the report as text; save it there). Before merging, look at each finding's
 screenshot yourself and reproduce any P0 or P1 once with its steps. Drop a
 finding only if it does not reproduce, and say that you dropped it. Merge
 duplicates and give the findings new IDs. Write

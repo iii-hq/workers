@@ -116,4 +116,6 @@ Each finding:
 - Related change: <charter it came from, or "exploratory">
 ```
 
-Return the report path and the summary as your final message.
+Return the report path and the summary as your final message. If writing
+`report.md` is refused, return the whole report as your final message
+instead; the coordinator saves it.

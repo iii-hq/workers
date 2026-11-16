@@ -48,19 +48,24 @@ export async function launch({
   if (video) await context.addInitScript(OVERLAY_SCRIPT)
   const page = await context.newPage()
   const problems = watchProblems(page)
-  /** Close the context and keep the clip as `<name>.webm`; returns its path. */
+  // Every page the context opens (a second tab, a popup) records too.
+  const pages = [page]
+  context.on('page', (p) => pages.push(p))
+  /** Close the context and keep the clips: `<name>.webm` for the first page,
+   *  `<name>-tab<N>.webm` for any other; returns the first path. */
   const finish = async () => {
-    const recording = page.video()
+    const recordings = pages.map((p) => p.video())
     await context.close()
-    if (recording) {
-      const path = `${videoDir}${video}.webm`
-      await recording.saveAs(path)
+    let first = null
+    for (const [i, recording] of recordings.entries()) {
+      if (!recording) continue
+      const path = `${videoDir}${video}${i === 0 ? '' : `-tab${i + 1}`}.webm`
+      await recording.saveAs(path).catch(() => {})
       await recording.delete().catch(() => {})
-      await browser.close()
-      return path
+      first ??= path
     }
     await browser.close()
-    return null
+    return first
   }
   return { browser, context, page, problems, finish }
 }
