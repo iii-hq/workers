@@ -33,10 +33,6 @@ use crate::types::{
     SessionResumeParams, SessionSetConfigOptionParams, SessionSetModeParams, parse,
 };
 
-// Canonical iii brain function. Any worker exposing this id with the
-// turn-orchestrator wire shape (session_id, messages, model, ...) can
-// drive iii-acp without an adapter.
-pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
 const BRAIN_TIMEOUT_MS: u64 = 600_000;
 const BRAIN_CANCEL_GRACE_MS: u64 = 60_000;
 const PROMPT_RECOVERY_AFTER_MS: i64 = (BRAIN_TIMEOUT_MS + BRAIN_CANCEL_GRACE_MS) as i64;
@@ -1224,8 +1220,8 @@ impl AcpHandler {
         prompt: &[Value],
         cancel: &CancelHandle,
     ) -> BrainOutcome {
-        // Canonical iii brain shape: feed run::start_and_wait (or any
-        // function with the same input contract) a User message built
+        // Agent brain shape: feed the brain function (claude::run, pi::run,
+        // or any function with the same input contract) a User message built
         // from ACP prompt content blocks. The brain's worker emits
         // AgentEvent frames on its `<namespace>::on-agent-event`
         // function; the per-session observer (AcpHandler::own_session) feeds
@@ -1976,7 +1972,7 @@ fn stop_reports_terminal(result: &Value) -> bool {
         && result.get("reason").and_then(Value::as_str) == Some("no cancellable run id")
 }
 
-// Read run::start_and_wait return shape and pick a stop reason for ACP.
+// Read the brain's return shape and pick a stop reason for ACP.
 // Result envelope: { session_id, messages, turn_count }. The final
 // assistant message in `messages` carries iii's `stop_reason`; map to
 // ACP's vocabulary.

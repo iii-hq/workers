@@ -265,11 +265,6 @@ export class CursorWorker {
       response_format: jsonSchema(RunResponseSchema),
     };
     this.iii.registerFunction('cursor::run', runHandler, runRegistration);
-    this.iii.registerFunction('run::start_and_wait', runHandler, {
-      ...runRegistration,
-      description:
-        'Standard agent alias for cursor::run. Configure ACP with --brain-fn cursor::run when more than one agent worker is installed.',
-    });
 
     this.iii.registerFunction(
       'cursor::start',

@@ -64,8 +64,7 @@ you.
 
 ## When blocking IS right
 
-`run::start_and_wait` (and its per-worker aliases `claude::run` / `pi::run`)
-runs the turn and returns the result. Use it from a script, a shell, or a tool
+`claude::run` / `pi::run` run the turn and return the result. Use it from a script, a shell, or a tool
 that has nothing else to do. Inside an agent turn, prefer `::task`: a blocking
 call spends your turn budget waiting, and a restart loses the answer, while a
 state write survives both.

@@ -54,7 +54,7 @@ The response includes the durable `session_id`, Cursor session ID, worker run ID
 
 The login-backed catalog comes from a fresh ACP session and includes only model IDs ACP accepts. The public `auto` ID maps to ACP's `default` model. Do not copy parameterized IDs from `cursor-agent --list-models`; that command exposes additional CLI-only IDs that ACP rejects. Use `cursor::models::list` for worker requests.
 
-`run::start_and_wait` is the standard alias for `cursor::run`:
+The acp worker drives `cursor::run` directly:
 
 ```bash
 iii-acp --brain-fn cursor::run --brain-stop-fn cursor::stop --model auto --provider cursor

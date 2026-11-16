@@ -31,7 +31,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::collector::{Collector, ConsoleClients};
-use crate::tmux_cli::{Tmux, WindowRef, window_target};
+use crate::tmux_cli::{Tmux, WindowRef, iii_vars, window_target};
 
 mod output_buffer;
 pub mod protocol;
@@ -49,9 +49,10 @@ const OUTPUT_BUFFER_BYTES: usize = 1024 * 1024;
 const OUTPUT_FUNCTION_PREFIX: &str = "iii::tmux-ui::pty-output::console-";
 const REAP_EVERY: Duration = Duration::from_secs(5);
 const HUP_WAIT: Duration = Duration::from_millis(500);
-/// The worker's own identity must not leak into the client (and from there,
-/// through `update-environment`, into the session).
-const STRIPPED_ENV: [&str; 4] = ["TMUX", "TMUX_PANE", "III_WORKER_NAME", "III_NAMESPACE"];
+/// The worker's own tmux and `III_*` variables ([`iii_vars`]) must not leak
+/// into the client (and from there, through `update-environment`, into the
+/// session).
+const STRIPPED_ENV: [&str; 2] = ["TMUX", "TMUX_PANE"];
 
 struct Terminal {
     id: String,
@@ -202,6 +203,9 @@ fn spawn_client(tmux: &Tmux, session_id: &str, cols: u16, rows: u16) -> anyhow::
         command.cwd(home);
     }
     for key in STRIPPED_ENV {
+        command.env_remove(key);
+    }
+    for key in iii_vars(std::env::vars_os()) {
         command.env_remove(key);
     }
     command.env("TERM", "xterm-256color");

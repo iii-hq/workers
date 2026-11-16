@@ -165,13 +165,6 @@ def main() -> None:
         response_format=START_RESPONSE_FORMAT,
     )
     iii.register_function(
-        "run::start_and_wait",
-        handlers["run"],
-        description="Alias for hermes::run under the shared agent entrypoint.",
-        request_format=RUN_REQUEST_FORMAT,
-        response_format=RUN_RESPONSE_FORMAT,
-    )
-    iii.register_function(
         "hermes::send",
         handlers["send"],
         description="Send a message to a Hermes gateway platform: telegram, discord, slack, and 27+ others.",
