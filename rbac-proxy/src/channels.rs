@@ -37,16 +37,32 @@ pub async fn channel(
     relay(client, state, path, target, "engine channel dial failed").await
 }
 
-/// Resolves once a configuration reload stops exposing `path`.
+/// How long a relay waits to close both sockets once it ends. A client that
+/// stops reading can leave the Close send pending forever; past this the
+/// relay returns anyway, so its `active_connections` slot and sockets drop.
+const CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `cleanup` for at most `limit`; false when it did not finish in time.
+async fn within(
+    limit: std::time::Duration,
+    cleanup: impl std::future::Future<Output = ()>,
+) -> bool {
+    tokio::time::timeout(limit, cleanup).await.is_ok()
+}
+
+/// Resolves once the configuration stops exposing `path`: at once when it
+/// already does not (a reload landed while the engine dial was pending),
+/// otherwise on the reload that withdraws it. It subscribes before the first
+/// check, so a reload between the two still wakes it.
 async fn unexposed(state: &ProxyState, path: &str) {
     let mut changes = crate::configuration::config_changes();
     loop {
-        if changes.changed().await.is_err() {
-            return std::future::pending().await;
-        }
         let cfg = state.config.read().await.clone();
         if !endpoint_exposed(&cfg.rbac.endpoints(), path) {
             return;
+        }
+        if changes.changed().await.is_err() {
+            return std::future::pending().await;
         }
     }
 }
@@ -124,13 +140,86 @@ pub async fn relay(
     };
     if withdrawn {
         tracing::info!(path = %path, "endpoint no longer exposed; closing its relay");
-        let _ = client_tx
-            .send(AxumMessage::Close(Some(CloseFrame {
-                code: 1008,
-                reason: "endpoint no longer exposed".into(),
-            })))
-            .await;
     }
-    let _ = client_tx.close().await;
-    let _ = engine_tx.close().await;
+    let cleanup = async {
+        if withdrawn {
+            let _ = client_tx
+                .send(AxumMessage::Close(Some(CloseFrame {
+                    code: 1008,
+                    reason: "endpoint no longer exposed".into(),
+                })))
+                .await;
+        }
+        let _ = client_tx.close().await;
+        let _ = engine_tx.close().await;
+    };
+    if !within(CLEANUP_TIMEOUT, cleanup).await {
+        tracing::debug!(path = %path, "relay cleanup timed out; dropping the sockets");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::WorkerConfig;
+    use crate::endpoints::EndpointFilter;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::RwLock;
+
+    fn config(endpoints: &[&str]) -> WorkerConfig {
+        let mut cfg = WorkerConfig::default();
+        cfg.rbac.expose_endpoints = Some(
+            endpoints
+                .iter()
+                .map(|p| EndpointFilter::new(p).expect("a valid rule"))
+                .collect(),
+        );
+        cfg
+    }
+
+    fn state(endpoints: &[&str]) -> ProxyState {
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        ProxyState::new(Arc::new(RwLock::new(Arc::new(config(endpoints)))), iii)
+    }
+
+    #[tokio::test]
+    async fn a_path_withdrawn_before_the_relay_starts_closes_at_once() {
+        // The reload landed while the engine dial was pending: no later
+        // reload is coming, so waiting for one would relay a withdrawn path.
+        let state = state(&["/"]);
+        tokio::time::timeout(Duration::from_secs(2), unexposed(&state, "/ws/channels/c1"))
+            .await
+            .expect("an unexposed path resolves without another reload");
+    }
+
+    #[tokio::test]
+    async fn an_exposed_path_waits_for_the_reload_that_withdraws_it() {
+        let state = state(&["/", "/ws/channels/*"]);
+        let wait = unexposed(&state, "/ws/channels/c1");
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut wait)
+                .await
+                .is_err(),
+            "still exposed: the relay stays open"
+        );
+        crate::configuration::apply_config(&state.config, config(&["/"])).await;
+        tokio::time::timeout(Duration::from_secs(2), &mut wait)
+            .await
+            .expect("the withdrawing reload closes it");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_cleanup_gives_up_at_its_limit() {
+        // A client that stops reading never completes the Close send; the
+        // relay must still return so its guard and sockets drop.
+        let started = std::time::Instant::now();
+        assert!(!within(Duration::from_millis(50), std::future::pending::<()>()).await);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(within(Duration::from_millis(50), async {}).await);
+    }
 }

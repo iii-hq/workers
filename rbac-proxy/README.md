@@ -171,7 +171,8 @@ trusted worker uses, to credentials you trust to be that worker:
 ```js
 // my-project::auth-function
 if (headers.authorization === `Bearer ${process.env.MCP_TOKEN}`)
-  return { allowed_functions: ["*"], worker_names: ["mcp-server"] }
+  // allowed_functions matches exact ids; a pattern goes in namespaces.
+  return { namespaces: { default: ["*"] }, worker_names: ["mcp-server"] }
 ```
 
 The registration hooks are the engine's, with the engine's input and answer:
