@@ -107,11 +107,11 @@ const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
 
 /**
  * A navigation row at the top of the sidebar (New chat, Search): an icon
- * and a label on a rounded-xl wash that only paints on hover or focus.
+ * and a label on a rounded-sm wash that only paints on hover or focus.
  */
 const NAV_ROW = cn(
   navRowVariants(),
-  'h-auto gap-2.5 rounded-xl px-2.5 font-inter font-medium',
+  'h-auto gap-2.5 rounded-sm px-2.5 font-inter font-medium',
 )
 
 /**
@@ -136,7 +136,7 @@ function ShortcutHint({ id }: { id: KeybindingActionId }) {
 
 /** The quiet icon buttons beside the list title and along the bottom row. */
 const QUIET_ACTION =
-  'inline-flex shrink-0 items-center justify-center rounded-xl text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-surface-hover/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+  'inline-flex shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-surface-hover/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()

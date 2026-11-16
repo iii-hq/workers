@@ -1,5 +1,5 @@
 /* The conversation list on the sidebar's own rhythm rather than the tree
-   recipe's: 36px rows, a 10px inset on both edges, rounded-xl and 14px
+   recipe's: 36px rows, a 10px inset on both edges, rounded-sm and 14px
    titles — the same box as the New chat / Add project / Search rows above,
    so a selected chat and a hovered nav row paint one identical wash. These
    live here, not as Tailwind utilities on the container, because
