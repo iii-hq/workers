@@ -81,7 +81,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
       aria-label="Theme"
       onKeyDown={onKeyDown}
       className={cn(
-        'relative inline-flex h-8 shrink-0 items-center rounded-full bg-secondary/60 p-0.5',
+        'relative inline-flex h-8 shrink-0 items-center rounded-full bg-secondary p-0.5',
         className,
       )}
     >
