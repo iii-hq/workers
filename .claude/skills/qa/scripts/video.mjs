@@ -74,8 +74,16 @@ for (const [gi, g] of clipsByGroup.entries()) {
     parts.push(normalise(join(run, g.dir, 'videos', v), `${gi + 1}${String(vi + 1).padStart(3, '0')}-clip`))
   }
 }
+// The merged report (after re-checks, duplicates and drops) wins over the
+// testers' raw counts.
+const merged = join(run, 'report.md')
+if (existsSync(merged)) {
+  const text = readFileSync(merged, 'utf8')
+  for (const k of Object.keys(totals)) totals[k] = (text.match(new RegExp(`^\\| Q\\d+ \\| ${k.toUpperCase()} \\|`, 'gm')) ?? []).length
+}
 parts.push(await card('99-outro', 'Results', [
   `P0 ${totals.p0} · P1 ${totals.p1} · P2 ${totals.p2} · P3 ${totals.p3}`,
+  existsSync(merged) ? 'after re-checks; per-group counts above are the testers\' raw numbers' : 'testers\' raw counts',
   `Full report: ${join(run, 'report.md')}`,
 ]))
 await browser.close()
