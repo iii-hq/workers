@@ -141,7 +141,10 @@ routes on a rebind it would refuse, restoring them when the bind is
 acceptable again. No polling; a direct call of the target only re-checks.
 
 Several MCP servers share one http worker on different `api_path`s; one
-rbac-proxy per server gives each its own rules.
+rbac-proxy per server gives each its own rules. Each runs under its own
+worker name (its compose container name, through `III_WORKER_NAME`), granted
+in its auth function's `worker_names`: the engine keeps one live worker per
+name, so two servers under one name would replace each other.
 
 ### Running under compose
 

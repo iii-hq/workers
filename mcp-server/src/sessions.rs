@@ -149,6 +149,9 @@ struct Session {
     /// The profile this session follows: the last one loaded with
     /// `iii_get_agent { activate: true }`.
     active_profile: Option<String>,
+    /// Which stream owns the session's SSE: a new `GET` takes it over, and
+    /// the writer of the one it replaced stops before its next frame.
+    stream_gen: u64,
     /// The highest SSE event id a stream wrote.
     sent_through: u64,
     /// The highest SSE event id the cap dropped.
@@ -220,6 +223,7 @@ impl Sessions {
                 dropped: 0,
                 stream: None,
                 active_profile: None,
+                stream_gen: 0,
                 sent_through: 0,
                 sse_dropped_through: 0,
             },
@@ -316,7 +320,17 @@ impl Sessions {
             Delivery::Target(t) => Delivery::Target(t.trim().to_string()),
             other => other,
         };
-        {
+        let target = match &delivery {
+            Delivery::Target(t) => t.as_str(),
+            _ => sink,
+        };
+        // The SDK sends the observe request before it returns the handle, so
+        // the engine can deliver before the observer is recorded. The routing
+        // lock is held from before the handle exists until it is recorded: a
+        // delivery that races it waits, then finds its session. Creating the
+        // handle does not wait on anything, so this holds no lock across an
+        // await.
+        let (observer_id, handle) = {
             let mut inner = self.inner.lock().unwrap();
             let Some(session) = inner.sessions.get_mut(session_id) else {
                 return Err(format!("unknown session: {session_id}"));
@@ -328,49 +342,35 @@ impl Sessions {
                     self.limits.max_observers
                 ));
             }
-        }
-        let target = match &delivery {
-            Delivery::Target(t) => t.as_str(),
-            _ => sink,
+            let handle: Arc<dyn ObserverLike> = Arc::from(observe.observe(
+                &ObserveRequest {
+                    function_id: function_id.clone(),
+                    ..req.clone()
+                },
+                target,
+            ));
+            let observer_id = handle.id();
+            let session = inner
+                .sessions
+                .get_mut(session_id)
+                .expect("the session cannot end while the lock is held");
+            session.order.push(observer_id.clone());
+            session.observers.insert(
+                observer_id.clone(),
+                Entry {
+                    function_id: function_id.clone(),
+                    filters: req.filters.clone(),
+                    delivery: delivery.clone(),
+                    handle: handle.clone(),
+                    received: 0,
+                    dropped: 0,
+                },
+            );
+            inner
+                .owner
+                .insert(observer_id.clone(), session_id.to_string());
+            (observer_id, handle)
         };
-        let handle: Arc<dyn ObserverLike> = Arc::from(observe.observe(
-            &ObserveRequest {
-                function_id: function_id.clone(),
-                ..req.clone()
-            },
-            target,
-        ));
-        let observer_id = handle.id();
-        let recorded = {
-            // Recorded before activation, so an early delivery is routed.
-            let mut inner = self.inner.lock().unwrap();
-            match inner.sessions.get_mut(session_id) {
-                None => false,
-                Some(session) => {
-                    session.order.push(observer_id.clone());
-                    session.observers.insert(
-                        observer_id.clone(),
-                        Entry {
-                            function_id: function_id.clone(),
-                            filters: req.filters.clone(),
-                            delivery: delivery.clone(),
-                            handle: handle.clone(),
-                            received: 0,
-                            dropped: 0,
-                        },
-                    );
-                    inner
-                        .owner
-                        .insert(observer_id.clone(), session_id.to_string());
-                    true
-                }
-            }
-        };
-        if !recorded {
-            // The session ended while the engine was asked.
-            handle.dispose().await;
-            return Err(format!("unknown session: {session_id}"));
-        }
         if let Ok(Err(e)) = tokio::time::timeout(READY_WAIT, handle.ready()).await {
             // `disposed` is an observer that already ended: it fired its
             // max_observations (or expired) before activation was confirmed.
@@ -542,7 +542,7 @@ impl Sessions {
         &self,
         session_id: &str,
         last_event_id: Option<u64>,
-    ) -> Result<(Vec<StreamItem>, mpsc::Receiver<StreamItem>), String> {
+    ) -> Result<(Vec<StreamItem>, mpsc::Receiver<StreamItem>, u64), String> {
         let mut inner = self.inner.lock().unwrap();
         let session = inner
             .sessions
@@ -567,7 +567,19 @@ impl Sessions {
         }
         let (tx, rx) = mpsc::channel(self.limits.max_buffered.max(1));
         session.stream = Some(tx);
-        Ok((backlog, rx))
+        session.stream_gen += 1;
+        Ok((backlog, rx, session.stream_gen))
+    }
+
+    /// Whether the stream `generation` still owns the session's SSE; a
+    /// writer stops once it does not, so two streams never send one message.
+    pub fn is_current_stream(&self, session_id: &str, generation: u64) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .sessions
+            .get(session_id)
+            .is_some_and(|s| s.stream_gen == generation)
     }
 
     /// A stream wrote the observation with event id `id`.
@@ -1122,7 +1134,7 @@ mod tests {
         s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
             .await
             .unwrap();
-        let (backlog, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (backlog, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         assert!(backlog.is_empty());
         assert!(s.deliver(observation("obs-1", json!(1))));
         assert!(s.deliver(observation("obs-2", json!(2))));
@@ -1145,7 +1157,7 @@ mod tests {
         let sid = sse_session(&s, &o).await;
         s.deliver(observation("obs-1", json!(1)));
         s.deliver(observation("obs-1", json!(2)));
-        let (backlog, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (backlog, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         assert_eq!(inputs_of(&backlog), vec![json!(1), json!(2)]);
         let ids = ids_of(&backlog);
         assert!(ids[0] < ids[1]);
@@ -1159,7 +1171,7 @@ mod tests {
         let s = store();
         let o = FakeObserve::default();
         let sid = sse_session(&s, &o).await;
-        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         s.deliver(observation("obs-1", json!(1)));
         s.deliver(observation("obs-1", json!(2)));
         let written = drain(&mut rx);
@@ -1171,7 +1183,7 @@ mod tests {
         drop(rx);
         s.deliver(observation("obs-1", json!(3)));
         let first = ids_of(&written)[0];
-        let (backlog, _rx) = s.attach_stream(&sid, Some(first)).unwrap();
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(first)).unwrap();
         assert_eq!(inputs_of(&backlog), vec![json!(2), json!(3)]);
     }
 
@@ -1180,13 +1192,13 @@ mod tests {
         let s = store();
         let o = FakeObserve::default();
         let sid = sse_session(&s, &o).await;
-        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         s.deliver(observation("obs-1", json!(1)));
         let written = drain(&mut rx);
         s.mark_sent(&sid, ids_of(&written)[0]);
         s.deliver(observation("obs-1", json!(2))); // taken by no stream
         drop(rx);
-        let (backlog, _rx) = s.attach_stream(&sid, None).unwrap();
+        let (backlog, _rx, _) = s.attach_stream(&sid, None).unwrap();
         assert_eq!(inputs_of(&backlog), vec![json!(2)]);
     }
 
@@ -1198,7 +1210,7 @@ mod tests {
         for i in 1..=3 {
             s.deliver(observation("obs-1", json!(i)));
         }
-        let (backlog, _rx) = s.attach_stream(&sid, Some(0)).unwrap();
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(0)).unwrap();
         assert_eq!(inputs_of(&backlog), vec![json!("gap"), json!(2), json!(3)]);
         let StreamItem::Gap { after, through } = &backlog[0] else {
             panic!()
@@ -1207,7 +1219,7 @@ mod tests {
         assert!(*through < ids_of(&backlog)[0]);
         // Resuming inside what is retained has no gap.
         let from = ids_of(&backlog)[0];
-        let (again, _rx) = s.attach_stream(&sid, Some(from)).unwrap();
+        let (again, _rx, _) = s.attach_stream(&sid, Some(from)).unwrap();
         assert_eq!(inputs_of(&again), vec![json!(3)]);
     }
 
@@ -1216,8 +1228,8 @@ mod tests {
         let s = store();
         let o = FakeObserve::default();
         let sid = sse_session(&s, &o).await;
-        let (_, mut old) = s.attach_stream(&sid, None).unwrap();
-        let (_, mut new) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut old, _) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut new, _) = s.attach_stream(&sid, None).unwrap();
         s.deliver(observation("obs-1", json!(1)));
         // The old stream's task sees its channel closed and ends.
         assert!(matches!(
@@ -1236,7 +1248,7 @@ mod tests {
         let s = store();
         let o = FakeObserve::default();
         let sid = sse_session(&s, &o).await;
-        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         assert!(s.end(&sid).await);
         assert!(matches!(
             rx.try_recv(),
@@ -1350,7 +1362,7 @@ mod tests {
         s.observe(&o, &sid, req("state::set"), Delivery::Sse, SINK)
             .await
             .unwrap();
-        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         // Nobody reads: the queue is bounded, so the stream is let go.
         for i in 1..=5 {
             assert!(s.deliver(observation("obs-1", json!(i))));
@@ -1363,7 +1375,7 @@ mod tests {
         ));
         // The reconnect replays what the buffer still holds.
         let last = ids_of(&got).first().copied().unwrap_or(0);
-        let (backlog, _rx) = s.attach_stream(&sid, Some(last)).unwrap();
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(last)).unwrap();
         let replayed = inputs_of(&backlog);
         assert!(
             replayed.ends_with(&[json!(3), json!(4), json!(5)]),
@@ -1395,7 +1407,7 @@ mod tests {
         s.observe(&o, &sid, req("state::set"), Delivery::Sse, SINK)
             .await
             .unwrap();
-        let (_, mut rx) = s.attach_stream(&sid, None).unwrap();
+        let (_, mut rx, _) = s.attach_stream(&sid, None).unwrap();
         for i in 1..=3 {
             s.deliver(observation("obs-1", json!(i)));
             for id in ids_of(&drain(&mut rx)) {
@@ -1483,5 +1495,65 @@ mod tests {
         assert!(err.contains("max_sessions"), "{err}");
         assert!(err.contains("stream"), "{err}");
         assert!(s.touch(&only));
+    }
+
+    /// Delivers one observation from another thread while `observe` is still
+    /// creating the handle, as the engine can once the SDK sent the request.
+    struct EarlyDelivery {
+        sessions: Arc<Sessions>,
+    }
+
+    impl Observe for EarlyDelivery {
+        fn observe(&self, _req: &ObserveRequest, _target: &str) -> Box<dyn ObserverLike> {
+            let sessions = self.sessions.clone();
+            let early = std::thread::spawn(move || {
+                sessions.deliver(observation("obs-early", json!("first")))
+            });
+            // The handle is not back yet when the delivery arrives.
+            std::thread::sleep(Duration::from_millis(50));
+            Box::leak(Box::new(early));
+            Box::new(FakeObserver {
+                id: "obs-early".into(),
+                refused: None,
+                fired: false,
+                disposed: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delivery_that_races_the_observe_call_is_kept() {
+        let s = Arc::new(store());
+        let sid = s.create().unwrap();
+        let o = EarlyDelivery {
+            sessions: s.clone(),
+        };
+        s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        // The racing delivery waited for the observer to be routed.
+        let mut polled = json!([]);
+        for _ in 0..50 {
+            polled = s.poll(&sid, None, 50).unwrap()["observations"].clone();
+            if polled.as_array().is_some_and(|a| !a.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            inputs(&json!({ "observations": polled })),
+            vec![json!("first")]
+        );
+    }
+
+    #[test]
+    fn a_new_stream_replaces_the_old_ones_writer() {
+        let s = store();
+        let sid = s.create().unwrap();
+        let (_, _rx_a, a) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.is_current_stream(&sid, a));
+        let (_, _rx_b, b) = s.attach_stream(&sid, None).unwrap();
+        assert!(!s.is_current_stream(&sid, a), "the old writer must stop");
+        assert!(s.is_current_stream(&sid, b));
     }
 }

@@ -178,8 +178,17 @@ claude mcp add --transport http iii http://127.0.0.1:3111/mcp
 Ask the agent for `iii_status`: it reports `"access_control": "rbac-proxy"`
 and the rules in force.
 
-Several MCP servers can share one http worker: give each `mcp-server` its own
-`api_path` (and its own rbac-proxy and token, to give each different rules).
+Several MCP servers can share one http worker. Each needs:
+
+- its own **worker name**: the engine keeps one live worker per name, and a
+  second `mcp-server` under the same name replaces the first. Under compose,
+  each container's name is its worker name (compose sets `III_WORKER_NAME`),
+  so run them as separate containers, for example `mcp-server-team` and
+  `mcp-server-ops`;
+- that name in its auth function's `worker_names` grant, so compose sees it
+  start (rbac-proxy lets one live session at a time hold a granted name);
+- its own `api_path`, and its own rbac-proxy and token to give each
+  different rules.
 
 ### Local development without RBAC
 

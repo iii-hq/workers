@@ -124,6 +124,9 @@ pub struct Routes {
     iii: Arc<IIIClient>,
     api_path: String,
     handles: tokio::sync::Mutex<Option<Vec<ObserverHandle>>>,
+    /// Held across a whole [`recheck_bind`]: one reads `http::status` only
+    /// after the previous one acted, so a stale read cannot undo a newer one.
+    rechecking: tokio::sync::Mutex<()>,
 }
 
 impl Routes {
@@ -132,6 +135,7 @@ impl Routes {
             iii,
             api_path,
             handles: tokio::sync::Mutex::new(None),
+            rechecking: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -182,6 +186,7 @@ impl Routes {
 /// and each time it ran, `http::status` is read again and the routes are
 /// withdrawn or restored. Calling the target directly only re-checks.
 pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) -> ObserverHandle {
+    let (ready_ctx, ready_routes) = (ctx.clone(), routes.clone());
     let ctx = ctx.clone();
     iii.register_function(
         RELOAD_FUNCTION_ID,
@@ -195,10 +200,31 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         .metadata(json!({ "internal": true, "trace_hidden": true }))
         .description("Internal: re-checks the http worker's bind after it reloads, and withdraws or restores the MCP routes."),
     );
-    iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID)
+    let handle = iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID);
+    // The boot check ran before this observer was active, and a refused
+    // observer would leave the guard off without a word: wait for it, then
+    // check once more, so a rebind in between is caught.
+    let (watch, ctx, routes) = (handle.clone(), ready_ctx, ready_routes);
+    tokio::spawn(async move {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), watch.ready()).await {
+            Ok(Ok(())) => {
+                tracing::info!("watching {HTTP_RELOAD_FN}: the MCP routes follow the http worker's bind");
+                recheck_bind(&ctx, &routes).await;
+            }
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
+            ),
+            Err(_) => tracing::warn!(
+                "observing {HTTP_RELOAD_FN} is still pending after 30s; until it is active, a rebind of the http worker is not seen"
+            ),
+        }
+    });
+    handle
 }
 
 pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) {
+    let _one_at_a_time = routes.rechecking.lock().await;
     let status = Bus::call(&ctx.engine, "http::status", json!({}), Some(10_000))
         .await
         .map_err(|e| e.to_string());
@@ -339,7 +365,9 @@ fn open_stream(
     session_id: String,
     last_event_id: Option<u64>,
 ) -> Result<Value, Error> {
-    let Ok((backlog, mut live)) = ctx.sessions.attach_stream(&session_id, last_event_id) else {
+    let Ok((backlog, mut live, generation)) =
+        ctx.sessions.attach_stream(&session_id, last_event_id)
+    else {
         return Ok(Value::Null);
     };
     response.keep_open();
@@ -351,12 +379,12 @@ fn open_stream(
             return;
         }
         for item in backlog {
-            if !write_item(&response, &sessions, &session_id, item).await {
+            if !write_item(&response, &sessions, &session_id, generation, item).await {
                 return;
             }
         }
         while let Some(item) = live.recv().await {
-            if !write_item(&response, &sessions, &session_id, item).await {
+            if !write_item(&response, &sessions, &session_id, generation, item).await {
                 return;
             }
         }
@@ -365,13 +393,18 @@ fn open_stream(
     Ok(Value::Null)
 }
 
-/// Write one stream item; `false` once the client is gone.
+/// Write one stream item; `false` once the client is gone or another `GET`
+/// took the session's stream over (it sends the rest).
 async fn write_item(
     response: &OutputStream,
     sessions: &Sessions,
     session_id: &str,
+    generation: u64,
     item: StreamItem,
 ) -> bool {
+    if !sessions.is_current_stream(session_id, generation) {
+        return false;
+    }
     let (frame, id) = match item {
         StreamItem::Observation { id, observation } => {
             (encode_sse_observation(id, &observation), Some(id))
