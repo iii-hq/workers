@@ -622,6 +622,16 @@ try {
         assert(!calls.some((call) => call.id === 'compose::restart' && call.data.container === 'quick-tunnel'), 'nor is quick-tunnel restarted')
         await page.keyboard.press('Escape')
         await expect(dialog).toHaveCount(0)
+        // Settings that change while the confirmation is open are shown again, never written unconfirmed.
+        quickTunnelConfig = structuredClone(quickTunnelInstalled)
+        await button('Refresh').click()
+        await setupStep.getByRole('button', { name: 'Set up quick-tunnel', exact: true }).click()
+        quickTunnelConfig = { ...structuredClone(quickTunnelInstalled), targets: { ...quickTunnelInstalled.targets, api: 'http://127.0.0.1:5000' } }
+        await inDialog('Set up quick-tunnel').click()
+        await expect(dialog.getByRole('alert')).toContainText('quick-tunnel\'s settings changed since this opened. Review the changes, then confirm again.')
+        assert.equal(quickTunnelSaved.length, 0, 'a plan nobody confirmed is not written')
+        await page.keyboard.press('Escape')
+        await expect(dialog).toHaveCount(0)
         quickTunnelConfig = structuredClone(quickTunnelInstalled)
         await button('Refresh').click()
         // A failed restart stays in the dialog with its reason; the retry re-reads, finds the settings written and restarts.

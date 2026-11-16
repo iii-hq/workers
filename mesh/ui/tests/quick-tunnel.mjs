@@ -89,5 +89,15 @@ assert.equal(quickTunnelEntryId([form('default-quick-tunnel')], 'default-mesh'),
 assert.equal(quickTunnelEntryId([form('other-quick-tunnel'), form('default-quick-tunnel')], 'default-mesh'), 'default-quick-tunnel', 'this namespace wins')
 assert.equal(quickTunnelEntryId([form('tunnels'), { id: 'quick-tunnel', metadata: null }], 'mesh-lab'), 'tunnels', 'a renamed entry is found by its form')
 assert.equal(quickTunnelEntryId([form('quick-tunnel')], 'mesh'), 'quick-tunnel', 'a project from before namespaces')
+// OpenTunnel refuses an uppercase target name whatever its value, a templated one included.
+blocked({ ...installed, targets: { ...installed.targets, API: '${API_ORIGIN:http://127.0.0.1:5000}' } }, 'mesh', '0.0.0.0:49180', /OpenTunnel cannot carry quick-tunnel's API target/)
+// An inherited name is no target: constructor is added as the 33rd and refused.
+blocked({ ...setUp, targets: many }, 'constructor', '0.0.0.0:49180', /already carries 32 targets/)
+assert.deepEqual(quickTunnelPlan({ ...installed, targets: {} }, 'constructor', '0.0.0.0:49180').changes.filter((c) => c.includes('target')), ['add the target constructor: http://127.0.0.1:49180'])
+// A templated hub target is the operator's: kept, and the rest is still set up.
+const hubTemplate = quickTunnelPlan({ ...installed, targets: { ...installed.targets, mesh: '${MESH_ORIGIN:http://127.0.0.1:49180}' } }, 'mesh', '0.0.0.0:49180')
+assert.equal(hubTemplate.next.targets.mesh, '${MESH_ORIGIN:http://127.0.0.1:49180}')
+assert(!hubTemplate.changes.some((c) => c.includes('target mesh')), 'no change is announced for a kept template')
+assert.equal(hubTemplate.next.provider, 'opentunnel')
 console.log('PASS quickTunnelEntryId: by form, this namespace first')
 console.log('PASS quickTunnelPlan: fresh, cloudflared with webhooks, already set up, templates and numeric strings kept, custom id and port, proxy_protocol merged, blocked cases')

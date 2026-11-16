@@ -64,16 +64,18 @@ export function quickTunnelPlan(config: JsonValue | undefined, id: string, liste
   if (!isRecord(targets) || !Array.isArray(protocols)) return raw
   const switching = config.provider !== 'opentunnel'
   const others = Object.keys(targets).filter((key) => key !== id)
-  // OpenTunnel takes only http:// targets with lowercase names; a ${VAR} value is the operator's to check.
+  // OpenTunnel takes only lowercase target names and http:// values; a ${VAR} value is the operator's to check.
   const unfit = switching ? others.filter((key) => {
     const value = targets[key]
-    return typeof value === 'string' && !value.includes('${') && (!LABEL.test(key) || !value.startsWith('http://'))
+    return typeof value === 'string' && (!LABEL.test(key) || (!value.includes('${') && !value.startsWith('http://')))
   }) : []
   if (unfit.length) return no(`OpenTunnel cannot carry quick-tunnel's ${unfit.join(', ')} target: it takes only http:// targets with lowercase names. Change it in quick-tunnel's settings first.`)
   // quick-tunnel refuses a port shared by targets in and out of proxy_protocol.
   const clash = others.filter((key) => !protocols.includes(key) && portOf(targets[key]) === Number(port))
   if (clash.length) return no(`quick-tunnel's ${clash.join(', ')} target also uses port ${port}, and quick-tunnel needs every target on a port to take each visitor's address or none. Move it to another port in quick-tunnel's settings first.`)
-  if (!(id in targets) && others.length >= MAX_TARGETS) return no(`quick-tunnel already carries ${MAX_TARGETS} targets, its limit. Remove one in quick-tunnel's settings first.`)
+  // Own keys only: an id such as constructor is no target.
+  const current = Object.hasOwn(targets, id) ? targets[id] : undefined
+  if (current === undefined && others.length >= MAX_TARGETS) return no(`quick-tunnel already carries ${MAX_TARGETS} targets, its limit. Remove one in quick-tunnel's settings first.`)
   const origin = `http://127.0.0.1:${port}`
   // Only what must change is set: every other key and value, ${VAR} templates included, is written back as read.
   const next: JsonRecord = { ...config }
@@ -82,9 +84,10 @@ export function quickTunnelPlan(config: JsonValue | undefined, id: string, liste
     next.provider = 'opentunnel'
     changes.push(config.provider === undefined || config.provider === 'cloudflared' ? 'use OpenTunnel instead of cloudflared' : 'use OpenTunnel as the provider')
   }
-  if (String(targets[id]).replace(/\/$/, '') !== origin) {
+  // A ${VAR} target is kept: it is the operator's to point at the hub.
+  if (!(typeof current === 'string' && current.includes('${')) && String(current).replace(/\/$/, '') !== origin) {
     next.targets = { ...targets, [id]: origin }
-    changes.push(id in targets ? `point the target ${id} at ${origin}` : `add the target ${id}: ${origin}`)
+    changes.push(current === undefined ? `add the target ${id}: ${origin}` : `point the target ${id} at ${origin}`)
   }
   if (!protocols.includes(id)) {
     next.proxy_protocol = [...protocols, id]

@@ -635,6 +635,8 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       const current = await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true })
       const fresh = quickTunnelPlan(current?.value, tunnelId, listen)
       if (!fresh.next) throw new Error(fresh.blocked)
+      // Write only what the confirmation showed: settings changed meanwhile are shown again first.
+      if (!same(fresh.next, plan?.next)) throw new Error('quick-tunnel\'s settings changed since this opened. Review the changes, then confirm again.')
       if (!fresh.ok) await host.iii.call('configuration::set', { id, value: fresh.next })
       await restartQuickTunnel()
       announce('quick-tunnel is set up for the mesh and restarted.')
