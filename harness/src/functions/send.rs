@@ -1114,9 +1114,9 @@ impl TurnLineage {
     }
 }
 
-/// One message on its way into a session: what to append, how to mark it, and
-/// the lineage the seeded turn inherits. Bundled so every seeding path takes
-/// the same shape.
+/// How a message reached a session: `direct` from a person (or a client
+/// acting as one), `notification` from an observer or the system,
+/// `invoked-agent` as a sub-agent's opening task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeliveryChannel {
@@ -1125,6 +1125,9 @@ pub enum DeliveryChannel {
     Notification,
 }
 
+/// One message on its way into a session: what to append, how to mark it, and
+/// the lineage the seeded turn inherits. Bundled so every seeding path takes
+/// the same shape.
 pub(crate) struct Delivery<'a> {
     pub channel: DeliveryChannel,
     pub continuation_entry_id: Option<&'a str>,

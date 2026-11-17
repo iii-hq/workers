@@ -811,7 +811,9 @@
 }
 
 .wk-review > .wk-note {
-  max-width: 60ch;
+  /* Inter's zero is wide beside its letters: 60ch painted 88 characters a
+     line on CI. 52ch keeps a line under 80 in any font. */
+  max-width: 52ch;
   overflow-wrap: anywhere;
 }
 
