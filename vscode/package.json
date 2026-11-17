@@ -8,12 +8,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@10.18.2",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
+  "packageManager": "pnpm@11.13.1",
   "scripts": {
     "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",

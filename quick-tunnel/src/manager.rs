@@ -2,28 +2,23 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     io::Write,
-    path::{Path, PathBuf},
-    process::Stdio,
+    path::Path,
+    sync::Arc,
     time::Duration,
 };
 
 use chrono::Utc;
 use fs2::FileExt;
-use futures_util::StreamExt;
 use tokio::{
-    io::AsyncRead,
-    process::{Child, Command},
     sync::{broadcast, mpsc, oneshot},
-    task::JoinHandle,
     time::Instant,
 };
-use tokio_util::codec::{FramedRead, LinesCodec};
 use uuid::Uuid;
 
 use crate::{
     api::*,
     config::{valid_id, Config},
-    parser::{self, LogEvent},
+    provider::{self, Output, Provider, Session, Signal, Sink},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -52,8 +47,7 @@ enum Request {
 pub struct Manager {
     tx: mpsc::Sender<Request>,
     events: broadcast::Sender<Snapshot>,
-    cloudflared: std::sync::Arc<str>,
-    probe: std::sync::Arc<crate::prerequisites::ProbeCache>,
+    provider: Arc<dyn Provider>,
 }
 
 /// Take the single-instance state lock, retrying briefly on contention. flock
@@ -79,7 +73,13 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
 impl Manager {
     pub fn open(config: Config) -> Result<Self> {
         config.validate().map_err(Error::Invalid)?;
-        let cloudflared: std::sync::Arc<str> = config.cloudflared.as_str().into();
+        let provider = provider::build(&config).map_err(Error::Invalid)?;
+        Self::open_with(config, provider)
+    }
+
+    /// `open` with an explicit provider; tests inject a fake one.
+    pub fn open_with(config: Config, provider: Arc<dyn Provider>) -> Result<Self> {
+        config.validate().map_err(Error::Invalid)?;
         let parent = state_parent(&config.state_path);
         std::fs::create_dir_all(parent)?;
         let lock = OpenOptions::new()
@@ -111,7 +111,12 @@ impl Manager {
         }
         let leases: Vec<_> = leases
             .into_iter()
-            .filter(|l| l.expires_at > Utc::now())
+            // A lease is bound to the PROXY mode it was granted under: its holder may still parse
+            // headers this process no longer sends, so it must acquire again.
+            .filter(|l| {
+                l.expires_at > Utc::now()
+                    && l.proxy_protocol == config.proxy_protocol_of(&l.tunnel_id)
+            })
             .collect();
         persist(&config.state_path, &leases)?;
         let (tx, rx) = mpsc::channel(128);
@@ -123,6 +128,7 @@ impl Manager {
             .map(|id| (id.clone(), Tunnel::new(id)))
             .collect();
         let actor = Actor {
+            provider: provider.clone(),
             config,
             leases,
             tunnels,
@@ -136,8 +142,7 @@ impl Manager {
         Ok(Self {
             tx,
             events,
-            cloudflared,
-            probe: Default::default(),
+            provider,
         })
     }
 
@@ -168,13 +173,11 @@ impl Manager {
             .await
             .map_err(|_| Error::Stopped)?;
         let mut response = rx.await.map_err(|_| Error::Stopped)??;
-        // Probed outside the owning task: a slow `--version` never stalls leases.
-        response.prerequisites = Some(crate::prerequisites::Prerequisites {
-            cloudflared: self.probe.check(&self.cloudflared).await,
-        });
+        // Outside the owning task: a slow probe never stalls leases.
+        response.prerequisites = self.provider.prerequisites().await;
         Ok(response)
     }
-    /// Stop and reap children; keep unexpired leases for recovery on the next boot.
+    /// Stop and reap tunnels; keep unexpired leases for recovery on the next boot.
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Request::Shutdown(tx)).await.is_ok() {
@@ -183,7 +186,7 @@ impl Manager {
     }
 }
 
-fn state_parent(path: &Path) -> &Path {
+pub(crate) fn state_parent(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
@@ -200,39 +203,9 @@ fn persist(path: &Path, leases: &[Lease]) -> Result<()> {
     Ok(())
 }
 
-struct Process {
-    child: Child,
-    readers: Vec<JoinHandle<()>>,
-    _home: tempfile::TempDir,
-}
-impl Drop for Process {
-    fn drop(&mut self) {
-        // Child::kill_on_drop is the final safety net if the owning task is cancelled.
-        for reader in &self.readers {
-            reader.abort();
-        }
-    }
-}
-impl Process {
-    async fn stop(mut self) {
-        if let Err(e) = self.child.kill().await {
-            tracing::warn!(error = %e, "child kill failed; waiting for reap");
-        }
-        if let Err(e) = self.child.wait().await {
-            tracing::warn!(error = %e, "child reap failed");
-        }
-        for reader in &self.readers {
-            reader.abort();
-        }
-        for reader in self.readers.drain(..) {
-            let _ = reader.await;
-        }
-    }
-}
-
 struct Tunnel {
     snapshot: Snapshot,
-    process: Option<Process>,
+    session: Option<Box<dyn Session>>,
     candidate: Option<String>,
     connected: bool,
     deadline: Option<Instant>,
@@ -250,7 +223,7 @@ impl Tunnel {
                 generation: Uuid::new_v4().to_string(),
                 error: None,
             },
-            process: None,
+            session: None,
             candidate: None,
             connected: false,
             deadline: None,
@@ -276,13 +249,8 @@ impl Tunnel {
     }
 }
 
-struct Output {
-    id: String,
-    generation: String,
-    event: Option<LogEvent>,
-    broken: bool,
-}
 struct Actor {
+    provider: Arc<dyn Provider>,
     config: Config,
     leases: Vec<Lease>,
     tunnels: BTreeMap<String, Tunnel>,
@@ -320,6 +288,7 @@ impl Actor {
                             let result = self.tunnels.get(&req.tunnel_id).map(|t| StatusResponse {
                                 snapshot: t.snapshot.clone(),
                                 leases: self.leases.iter().filter(|l| l.tunnel_id == req.tunnel_id).cloned().collect(),
+                                provider: self.config.provider,
                                 prerequisites: None,
                             }).ok_or_else(|| Error::Invalid("unknown tunnel_id".into()));
                             let _ = reply.send(result);
@@ -332,8 +301,8 @@ impl Actor {
             }
         };
         for tunnel in self.tunnels.values_mut() {
-            if let Some(p) = tunnel.process.take() {
-                p.stop().await;
+            if let Some(s) = tunnel.session.take() {
+                s.stop().await;
             }
             tunnel.emit(&self.events, Status::Stopped, None);
         }
@@ -381,6 +350,7 @@ impl Actor {
                 consumer_id: request.consumer_id,
                 tunnel_id: request.tunnel_id.clone(),
                 expires_at: request.expires_at,
+                proxy_protocol: self.config.proxy_protocol_of(&request.tunnel_id),
             });
             lease_id
         };
@@ -408,8 +378,8 @@ impl Actor {
                 tracing::error!(%error, "expiry persistence failed; closing all tunnels");
                 self.persistence_failed = true;
                 for tunnel in self.tunnels.values_mut() {
-                    if let Some(p) = tunnel.process.take() {
-                        p.stop().await;
+                    if let Some(s) = tunnel.session.take() {
+                        s.stop().await;
                     }
                     tunnel.retry_at = None;
                     tunnel.emit(
@@ -429,8 +399,8 @@ impl Actor {
         for (id, tunnel) in &mut self.tunnels {
             let active = self.leases.iter().any(|l| &l.tunnel_id == id);
             if !active {
-                if let Some(p) = tunnel.process.take() {
-                    p.stop().await;
+                if let Some(s) = tunnel.session.take() {
+                    s.stop().await;
                 }
                 if tunnel.snapshot.status != Status::Stopped {
                     tunnel.emit(&self.events, Status::Stopped, None);
@@ -440,14 +410,14 @@ impl Actor {
                 tunnel.ready_since = None;
                 continue;
             }
-            let failure = if let Some(p) = &mut tunnel.process {
-                match p.child.try_wait() {
-                    Ok(Some(status)) => Some(format!("cloudflared exited ({status})")),
-                    Err(_) => Some("cloudflared wait failed".into()),
-                    Ok(None) if tunnel.deadline.is_some_and(|d| Instant::now() >= d) => {
-                        Some("cloudflared startup/reconnect timeout".into())
+            let name = self.provider.name();
+            let failure = if let Some(s) = &mut tunnel.session {
+                match s.exited() {
+                    Some(reason) => Some(reason),
+                    None if tunnel.deadline.is_some_and(|d| Instant::now() >= d) => {
+                        Some(format!("{name} startup/reconnect timeout"))
                     }
-                    _ => None,
+                    None => None,
                 }
             } else {
                 None
@@ -481,51 +451,32 @@ impl Actor {
                     Status::Reconnecting
                 };
                 tunnel.emit(&self.events, status, None);
-                // Only a binary that does not resolve is "not found"; any other
-                // spawn error (state dir gone, permissions) gets the generic one.
-                if crate::prerequisites::resolve(&self.config.cloudflared).is_none() {
-                    let error = crate::prerequisites::not_found_error(&self.config.cloudflared);
-                    fail(tunnel, &self.config, &self.events, error).await;
-                    continue;
-                }
-                match spawn(
-                    &self.config,
+                match self.provider.start(
                     id,
-                    &tunnel.snapshot.generation,
-                    self.log_tx.clone(),
+                    &self.config.targets[id],
+                    state_parent(&self.config.state_path),
+                    Sink::new(id, &tunnel.snapshot.generation, self.log_tx.clone()),
                 ) {
-                    Ok(process) => tunnel.process = Some(process),
-                    Err(e) => {
-                        let error = format!(
-                            "cloudflared spawn failed ({:?}); verify prerequisite executable",
-                            e.kind()
-                        );
-                        fail(tunnel, &self.config, &self.events, error).await
-                    }
+                    Ok(session) => tunnel.session = Some(session),
+                    Err(error) => fail(tunnel, &self.config, &self.events, error).await,
                 }
             }
         }
     }
 
     async fn output(&mut self, output: Output) {
-        let Some(tunnel) = self.tunnels.get_mut(&output.id) else {
+        let Some(tunnel) = self.tunnels.get_mut(&output.tunnel_id) else {
             return;
         };
-        if tunnel.snapshot.generation != output.generation || tunnel.process.is_none() {
+        if tunnel.snapshot.generation != output.generation || tunnel.session.is_none() {
             return;
         }
-        if output.broken {
-            fail(
-                tunnel,
-                &self.config,
-                &self.events,
-                "cloudflared log stream invalid or oversized".into(),
-            )
-            .await;
-            return;
-        }
-        match output.event {
-            Some(LogEvent::Url(url)) => {
+        match output.signal {
+            Signal::Fatal(error) => {
+                fail(tunnel, &self.config, &self.events, error).await;
+                return;
+            }
+            Signal::Url(url) => {
                 if tunnel.candidate.as_ref().is_some_and(|old| old != &url) {
                     fail(
                         tunnel,
@@ -538,8 +489,8 @@ impl Actor {
                 }
                 tunnel.candidate = Some(url);
             }
-            Some(LogEvent::Connected) => tunnel.connected = true,
-            Some(LogEvent::Disconnected) => {
+            Signal::Connected => tunnel.connected = true,
+            Signal::Disconnected => {
                 tunnel.connected = false;
                 // Do not extend this deadline on every repeated reconnect log.
                 tunnel.deadline.get_or_insert(
@@ -548,10 +499,12 @@ impl Actor {
                 tunnel.emit(
                     &self.events,
                     Status::Reconnecting,
-                    Some("cloudflared edge connection interrupted".into()),
+                    Some(format!(
+                        "{} edge connection interrupted",
+                        self.provider.name()
+                    )),
                 );
             }
-            None => {}
         }
         if tunnel.connected && tunnel.candidate.is_some() && tunnel.snapshot.status != Status::Ready
         {
@@ -568,8 +521,8 @@ async fn fail(
     events: &broadcast::Sender<Snapshot>,
     error: String,
 ) {
-    if let Some(p) = t.process.take() {
-        p.stop().await;
+    if let Some(s) = t.session.take() {
+        s.stop().await;
     }
     t.connected = false;
     t.deadline = None;
@@ -603,96 +556,4 @@ async fn fail(
         },
         Some(error),
     );
-}
-
-fn spawn(
-    config: &Config,
-    id: &str,
-    generation: &str,
-    tx: mpsc::Sender<Output>,
-) -> std::io::Result<Process> {
-    let home = tempfile::Builder::new()
-        .prefix("cloudflared-")
-        .tempdir_in(state_parent(&config.state_path))?;
-    let home_path: PathBuf = home.path().canonicalize()?;
-    let empty_config = home_path.join("config.yaml");
-    std::fs::write(&empty_config, "{}\n")?;
-    // No inherited TUNNEL_*, proxy variables, credentials, or home config.
-    // Resolve first: the child PATH is narrow and misses e.g. /opt/homebrew/bin.
-    let program = crate::prerequisites::resolve(&config.cloudflared)
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
-    let mut child = Command::new(program)
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("HOME", &home_path)
-        .current_dir(&home_path)
-        .args(["tunnel", "--config"])
-        .arg(empty_config)
-        .args([
-            "--no-autoupdate",
-            "--output",
-            "json",
-            "--loglevel",
-            "info",
-            "--metrics",
-            "127.0.0.1:0",
-            "--retries",
-            "0",
-            "--grace-period",
-            "0s",
-            "--url",
-        ])
-        .arg(&config.targets[id])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut readers = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        readers.push(read_output(stdout, id, generation, tx.clone()));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        readers.push(read_output(stderr, id, generation, tx));
-    }
-    Ok(Process {
-        child,
-        readers,
-        _home: home,
-    })
-}
-
-fn read_output<R: AsyncRead + Unpin + Send + 'static>(
-    reader: R,
-    id: &str,
-    generation: &str,
-    tx: mpsc::Sender<Output>,
-) -> JoinHandle<()> {
-    let id = id.to_owned();
-    let generation = generation.to_owned();
-    tokio::spawn(async move {
-        let mut lines = FramedRead::new(reader, LinesCodec::new_with_max_length(16_384));
-        while let Some(line) = lines.next().await {
-            let (event, broken) = match line {
-                Ok(line) => (parser::parse(&line), false),
-                Err(_) => (None, true),
-            };
-            if (event.is_some() || broken)
-                && tx
-                    .send(Output {
-                        id: id.clone(),
-                        generation: generation.clone(),
-                        event,
-                        broken,
-                    })
-                    .await
-                    .is_err()
-            {
-                break;
-            }
-            if broken {
-                break;
-            }
-        }
-    })
 }

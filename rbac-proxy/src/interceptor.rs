@@ -639,24 +639,13 @@ impl Interceptor {
                 .await;
         };
 
-        // The observer registration hook (bare ids), with the engine's input;
+        // The hook gets compatible bare IDs plus canonical identities resolved
+        // from this connection's actual registrations in each namespace;
         // an object answer may rewrite the registration, anything else denies.
         if let Some(hook_id) = &self.config.rbac.on_observer_registration_function_id {
-            let args = match v.pointer("/source/args") {
-                None | Some(Value::Null) => json!({}),
-                Some(args) => args.clone(),
-            };
-            let input = json!({
-                "observer_id": id,
-                "function_id": source_id,
-                "namespace": source_ns,
-                "args": args,
-                "filters": non_null(v.pointer("/source/filters")),
-                "target_function_id": target_id,
-                "target_namespace": target_ns,
-                "metadata": non_null(v.get("metadata")),
-                "context": self.session.context,
-            });
+            let input = self
+                .observer_hook_input(&v, &id, &source_id, &source_ns, &target_id, &target_ns)
+                .await;
             let Some(answer) = self.call_hook(hook_id, input).await else {
                 return self
                     .refuse_observe(
@@ -745,6 +734,34 @@ impl Interceptor {
                 unobserved: false,
             });
         DownstreamAction::Forward(v.to_string())
+    }
+
+    async fn observer_hook_input(
+        &self,
+        v: &Value,
+        id: &str,
+        source_id: &str,
+        source_ns: &str,
+        target_id: &str,
+        target_ns: &str,
+    ) -> Value {
+        let args = match v.pointer("/source/args") {
+            None | Some(Value::Null) => json!({}),
+            Some(args) => args.clone(),
+        };
+        json!({
+            "observer_id": id,
+            "function_id": source_id,
+            "resolved_function_id": self.resolve_target(source_ns, source_id).await,
+            "namespace": source_ns,
+            "args": args,
+            "filters": non_null(v.pointer("/source/filters")),
+            "target_function_id": target_id,
+            "resolved_target_function_id": self.resolve_target(target_ns, target_id).await,
+            "target_namespace": target_ns,
+            "metadata": non_null(v.get("metadata")),
+            "context": self.session.context,
+        })
     }
 
     /// The engine's answer to a refused `observe`, `observeresult { state:
@@ -1838,6 +1855,50 @@ mod tests {
     async fn register(i: &Interceptor, id: &str) {
         let frame = json!({ "type": "registerfunction", "id": id });
         forwarded(i.handle_downstream(&frame.to_string()).await);
+    }
+
+    #[tokio::test]
+    async fn observer_hook_resolves_only_actual_registrations_in_their_namespace() {
+        let i = interceptor(config_with(expose(&[]), None), session(Some("laptop")));
+        register(&i, "echo::event").await;
+        register(&i, "echo::received").await;
+        let v = json!({"source":{"args":{}}});
+        let own = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "echo::event",
+                "default",
+                "echo::received",
+                "default",
+            )
+            .await;
+        assert_eq!(own["function_id"], "echo::event");
+        assert_eq!(own["resolved_function_id"], "laptop::echo::event");
+        assert_eq!(own["resolved_target_function_id"], "laptop::echo::received");
+        let foreign = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "echo::event",
+                "foreign",
+                "echo::received",
+                "foreign",
+            )
+            .await;
+        assert_eq!(foreign["resolved_function_id"], "echo::event");
+        assert_eq!(foreign["resolved_target_function_id"], "echo::received");
+        let collision = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "hub::event",
+                "default",
+                "echo::received",
+                "default",
+            )
+            .await;
+        assert_eq!(collision["resolved_function_id"], "hub::event");
     }
 
     #[tokio::test]

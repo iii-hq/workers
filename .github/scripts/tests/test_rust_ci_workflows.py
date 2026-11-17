@@ -47,6 +47,10 @@ def test_all_external_actions_are_pinned_by_commit_sha() -> None:
             assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", reference), (
                 f"{path.name}:{line_number}: mutable action reference {reference}"
             )
+            # An all-zero placeholder resolves to no commit: the job cannot start.
+            assert not reference.endswith("@" + "0" * 40), (
+                f"{path.name}:{line_number}: placeholder action reference {reference}"
+            )
 
 
 def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
@@ -70,6 +74,36 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
         "'ubuntu-latest' }}"
     )
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
+
+
+def test_rust_job_shares_a_read_only_sccache_on_prs() -> None:
+    rust = workflow("ci.yml")["jobs"]["rust"]
+    env = rust["env"]
+    assert env["SCCACHE_GHA_ENABLED"] == "true"
+    # Only the trusted push after merge may publish compile cache entries.
+    assert env["SCCACHE_GHA_RW_MODE"] == (
+        "${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}"
+    )
+
+    steps = rust["steps"]
+    names = [step.get("name") for step in steps]
+    install = named_step(steps, "Install sccache")
+    assert install["continue-on-error"] == "true"
+    enable = named_step(steps, "Enable sccache")["run"]
+    assert "CARGO_INCREMENTAL=0" in enable
+    assert "sccache rustc -vV" in enable
+    assert "RUSTC_WRAPPER=sccache" in enable
+    rust_cache = next(
+        index for index, step in enumerate(steps) if step.get("uses") == RUST_CACHE_ACTION
+    )
+    # rust-cache hashes CARGO_* variables into its key: enable sccache after it.
+    assert rust_cache < names.index("Enable sccache")
+    assert names[-1] == "sccache stats"
+    assert "sccache --show-stats" in steps[-1]["run"]
+
+    # Release builds keep their own S3 cache and never read the CI one.
+    deploy = (WORKFLOWS / "_deploy-build.yml").read_text()
+    assert "SCCACHE_GHA" not in deploy
 
 
 def test_harness_integration_builds_once_then_fans_out_on_standard_runners() -> None:
@@ -242,6 +276,7 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
         "ci.yml", "build.yml", "_worker-e2e.yml",
         "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
         "storage-e2e.yml", "browser-scrapling-e2e.yml", "judge-e2e.yml",
+        "mesh-e2e.yml",
     }
 
 

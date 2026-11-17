@@ -57,6 +57,26 @@ static NODE_DURATION_MS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
         .build()
 });
 
+static RUNS_UNOBSERVED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .u64_counter("workflow.runs.ended_unobserved")
+        .with_description(
+            "Runs with an agent caller and no notify that ended with no observer of their \
+             outcome (includes runs whose observe landed later and got a replay)",
+        )
+        .build()
+});
+
+static RUNS_REPLAYED: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    global::meter(METER_NAME)
+        .u64_counter("workflow.runs.replayed")
+        .with_description(
+            "Run ends replayed to any observer added after the run ended (per observer: a \
+             second observer, or one re-listed at a restart, counts again)",
+        )
+        .build()
+});
+
 /// Backing value for the active-runs gauge; refreshed by the sweep each cycle.
 static ACTIVE_RUNS: AtomicU64 = AtomicU64::new(0);
 
@@ -110,6 +130,16 @@ pub fn record_run_terminal(status: RunStatus, duration_ms: f64) {
     let s = status_label(status);
     RUNS_TERMINAL.add(1, &[KeyValue::new("status", s)]);
     RUN_DURATION_MS.record(duration_ms, &[KeyValue::new("status", s)]);
+}
+
+/// An upper bound on stalled agent callers: it also counts a run whose observe
+/// landed after its end.
+pub fn record_run_unobserved() {
+    RUNS_UNOBSERVED.add(1, &[]);
+}
+
+pub fn record_run_replayed() {
+    RUNS_REPLAYED.add(1, &[]);
 }
 
 pub fn record_node_terminal(done: bool, duration_ms: f64) {

@@ -85,7 +85,7 @@ pub fn load_worker_templates(
     let path = root.join("template.yaml");
     let manifest: RootManifest = std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
-        .and_then(|raw| serde_yaml::from_str(&raw).map_err(|e| e.to_string()))
+        .and_then(|raw| serde_yaml_ng::from_str(&raw).map_err(|e| e.to_string()))
         .map_err(|e| {
             CoderError::InvalidTemplate(format!(
                 "{}: {e}. Point code.templates.dir at a templates checkout (its root or its iii/ dir).",
@@ -119,13 +119,13 @@ fn load_one(root: &Path, id: &str) -> Result<Option<WorkerTemplate>, CoderError>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(invalid(format!("template.yaml: {e}"))),
     };
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(&raw).map_err(|e| invalid(format!("template.yaml: {e}")))?;
+    let value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&raw).map_err(|e| invalid(format!("template.yaml: {e}")))?;
     if value.get("worker").is_none() {
         return Ok(None);
     }
     let m: TemplateManifest =
-        serde_yaml::from_value(value).map_err(|e| invalid(format!("template.yaml: {e}")))?;
+        serde_yaml_ng::from_value(value).map_err(|e| invalid(format!("template.yaml: {e}")))?;
 
     let language = m
         .requires
@@ -205,7 +205,7 @@ pub fn compose_entry(t: &WorkerTemplate) -> Result<serde_json::Value, CoderError
     let raw = std::fs::read_to_string(t.dir.join("worker-compose.yaml"))
         .map_err(|e| invalid(format!("worker-compose.yaml: {e}")))?;
     let doc: serde_json::Value =
-        serde_yaml::from_str(&raw).map_err(|e| invalid(format!("worker-compose.yaml: {e}")))?;
+        serde_yaml_ng::from_str(&raw).map_err(|e| invalid(format!("worker-compose.yaml: {e}")))?;
     doc.get("containers")
         .and_then(|containers| containers.get(&t.worker.compose))
         .filter(|entry| entry.is_object())

@@ -3,8 +3,9 @@
  * orchestrator).
  *
  * Wire source: `iii/workers/workflow/src/types.rs` + `src/functions/*.rs`
- *   - WorkflowDef / NodeDef / InputSpec (One | Many) / FanoutSpec / OutputRef
- *   - StartRequest / StartResponse              (start.rs)
+ *   - WorkflowDef / NodeDef / InputSpec (One | Many) / FanoutSpec / OutputRef:
+ *     the stored definition, used here as the view model
+ *   - StartRequest (flat, lifted to a WorkflowDef) / StartResponse (start.rs)
  *   - StatusResponse (run record + node map)    (status.rs)
  *   - NodeResultRequest / NodeResultResponse    (node_result.rs)
  *
@@ -39,7 +40,9 @@ export function isWorkflowFunction(id: string): id is WorkflowFunctionId {
   return WORKFLOW_FUNCTION_ID_SET.has(id)
 }
 
-/* ---------------- WorkflowDef (the DAG) ---------------- */
+/* ---------------- WorkflowDef (the DAG) ----------------
+ * The worker's stored definition, used as the view model: no request is
+ * parsed with it, a flat start request is lifted to it (below). */
 
 /** `input.from` is a single source OR an array of `node:<id>` refs (the join
  *  form). Kept as the raw union; helpers normalise to an array for display. */
@@ -50,17 +53,11 @@ export const nodeDefSchema = z
   .object({
     agent: z
       .object({
-        // Optional in the PARSER (not the worker): the worker requires a
-        // model, but rendering must never blank out on a malformed request —
-        // show what's there. The chip is guarded for an absent model.
         model: z.string().optional(),
         provider: z.string().nullable().optional(),
         system_prompt: z.string().nullable().optional(),
       })
       .passthrough(),
-    // Optional: a SOURCE node legitimately omits `input` — the worker injects
-    // `{ from: "run_input" }` for it. Requiring it here rejected the whole def
-    // and rendered nothing (the request fell back to raw JSON).
     input: z
       .object({
         from: inputFromSchema,
@@ -69,7 +66,15 @@ export const nodeDefSchema = z
       .passthrough()
       .optional(),
     depends_on: z.array(z.string()).optional().default([]),
-    fanout: z.object({ over: z.string() }).passthrough().nullable().optional(),
+    // `items` is an array written in the request; `over` points at a node's.
+    fanout: z
+      .object({
+        over: z.string().optional(),
+        items: z.array(z.unknown()).optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough()
 export type WorkflowNodeDef = z.infer<typeof nodeDefSchema>
@@ -78,19 +83,98 @@ export const workflowDefSchema = z
   .object({
     version: z.number().optional(),
     nodes: z.record(z.string(), nodeDefSchema),
-    // Optional in the PARSER so a partial/malformed def still renders its
-    // nodes instead of blanking; the worker still requires a valid output.
-    output: z.object({ from: z.string() }).passthrough().optional(),
+    output: z
+      .object({ from: z.union([z.string(), z.array(z.string())]) })
+      .passthrough()
+      .optional(),
   })
   .passthrough()
 export type WorkflowDef = z.infer<typeof workflowDefSchema>
 
 /* ---------------- workflow::start ---------------- */
 
+const nodeIdsSchema = z.union([z.string(), z.array(z.string())])
+
+/** A node of the flat request. Only the keys the lift reads are typed; the
+ *  rest (`loop`, `label`, `schema`, …) passes through onto the view node. */
+const startNodeSchema = z
+  .object({
+    task: z.string().nullish(),
+    reads: nodeIdsSchema.nullish(),
+    fanout: z.union([z.string(), z.array(z.unknown())]).nullish(),
+    model: z.string().nullish(),
+  })
+  .passthrough()
+
+const ref = (id: string) => `node:${id}`
+
+/** The worker's `lower()` for the fields the views read. parsers.test.ts checks
+ *  it against `workflow/tests/fixtures/flat_start_cases.json`; CI runs only the
+ *  worker's half, so run this suite when `lower()` changes. */
+function liftDefinition(
+  nodes: Record<string, z.infer<typeof startNodeSchema>>,
+  output: string | string[] | null | undefined,
+): WorkflowDef {
+  const lifted = Object.fromEntries(
+    Object.entries(nodes).map(
+      ([id, { task, reads, fanout, model, ...rest }]): [
+        string,
+        WorkflowNodeDef,
+      ] => {
+        const read = reads == null ? [] : [reads].flat()
+        const source = typeof fanout === 'string' ? [fanout.split('.')[0]] : []
+        return [
+          id,
+          {
+            ...rest,
+            // The worker reads a blank model as omitted (the node inherits the caller's).
+            agent: { model: model?.trim() ? model : undefined },
+            input: {
+              from:
+                reads == null
+                  ? fanout == null
+                    ? 'run_input'
+                    : 'fanout_item'
+                  : Array.isArray(reads)
+                    ? reads.map(ref)
+                    : ref(reads),
+              template: task,
+            },
+            depends_on: [...new Set([...read, ...source])],
+            fanout:
+              fanout == null
+                ? undefined
+                : typeof fanout === 'string'
+                  ? { over: ref(fanout) }
+                  : { items: fanout },
+          },
+        ]
+      },
+    ),
+  )
+  // Omitted `output` = every node no other node reads, in id order.
+  const readIds = new Set(
+    Object.entries(lifted).flatMap(([id, n]) =>
+      n.depends_on.filter((d) => d !== id),
+    ),
+  )
+  const unread = Object.keys(nodes)
+    .sort()
+    .filter((id) => !readIds.has(id))
+  const from = output ?? (unread.length === 1 ? unread[0] : unread)
+  return {
+    nodes: lifted,
+    output: { from: typeof from === 'string' ? ref(from) : from.map(ref) },
+  }
+}
+
+/** Only the flat request parses; an old-shape start (`definition`) does not,
+ *  and its card falls back to the plain request and response panes. */
 export const startRequestSchema = z
   .object({
-    definition: workflowDefSchema,
+    nodes: z.record(z.string(), startNodeSchema),
     input: z.unknown().optional(),
+    output: nodeIdsSchema.nullish(),
     idempotency_key: z.string().nullable().optional(),
     notify: z
       .object({
@@ -102,6 +186,10 @@ export const startRequestSchema = z
       .optional(),
   })
   .passthrough()
+  .transform(({ nodes, output, ...request }) => ({
+    ...request,
+    definition: liftDefinition(nodes, output),
+  }))
 export type StartRequest = z.infer<typeof startRequestSchema>
 
 export const startResponseSchema = z

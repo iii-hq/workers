@@ -2,7 +2,12 @@ import { SandboxErrorView } from '@/components/chat/sandbox/ErrorView'
 import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
 import { NodeResultView } from './NodeResultView'
-import { isWorkflowFunction, unwrapEnvelope } from './parsers'
+import {
+  isWorkflowFunction,
+  safeParseRequest,
+  startRequestSchema,
+  unwrapEnvelope,
+} from './parsers'
 import { StartView } from './StartView'
 import { StatusView } from './StatusView'
 import { StopView } from './StopView'
@@ -45,8 +50,14 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
   }
 
   switch (message.functionId) {
-    case 'workflow::start':
-      return <StartView input={input} output={output} running={running} />
+    case 'workflow::start': {
+      // A request that does not parse (an old-shape start) gets the card's
+      // own request and response panes instead of an empty custom view.
+      const req = safeParseRequest(startRequestSchema, input)
+      return req ? (
+        <StartView req={req} output={output} running={running} />
+      ) : null
+    }
     case 'workflow::status':
       return <StatusView input={input} output={output} running={running} />
     case 'workflow::node-result':

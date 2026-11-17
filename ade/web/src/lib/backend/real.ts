@@ -510,6 +510,7 @@ async function realListQueued(
       .join('\n'),
     queuedAt: row.queued_at,
     channel: row.channel,
+    origin: row.origin,
   }))
 }
 

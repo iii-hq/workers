@@ -15,4 +15,11 @@ describe('isPersonQueuedRow', () => {
     expect(isPersonQueuedRow({ channel: 'notification' })).toBe(false)
     expect(isPersonQueuedRow({ channel: 'invoked-agent' })).toBe(false)
   })
+
+  it('hides a notification an older harness marks without a channel', () => {
+    expect(isPersonQueuedRow({ origin: { notification: true } })).toBe(false)
+    expect(isPersonQueuedRow({ id: 'e_notify_abc' })).toBe(false)
+    expect(isPersonQueuedRow({ id: 'e_fire_abc' })).toBe(false)
+    expect(isPersonQueuedRow({ id: 'msg-1', origin: {} })).toBe(true)
+  })
 })

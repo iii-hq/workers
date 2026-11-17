@@ -295,3 +295,28 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
         json!({ "path": api_path, "method": http_method }),
     );
 }
+
+/// Register `test.fixed` serving a route; the function always returns
+/// `response` as is (status, headers and body).
+pub async fn register_fixed_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+    response: Value,
+) {
+    let function_id = format!("test.fixed {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |_req: HttpRequest| {
+            let response = response.clone();
+            async move { Ok::<Value, Error>(response) }
+        }),
+    );
+
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
+}

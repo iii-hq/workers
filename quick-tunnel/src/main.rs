@@ -13,7 +13,7 @@ use serde_json::json;
 #[derive(Parser)]
 #[command(
     name = "quick-tunnel",
-    about = "Lease-managed cloudflared Quick Tunnels on iii"
+    about = "Lease-managed public tunnels (cloudflared or OpenTunnel) on iii"
 )]
 struct Cli {
     /// Optional YAML seed; central configuration is authoritative after first boot.
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
                 "name": "quick-tunnel", "version": env!("CARGO_PKG_VERSION"),
                 "description": env!("CARGO_PKG_DESCRIPTION"),
                 "default_config": Config::default(),
-                "prerequisites": ["operator-provided cloudflared with --output json support"],
+                "prerequisites": ["operator-provided cloudflared with --output json support, only for provider cloudflared"],
                 "supported_targets": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu", "armv7-unknown-linux-gnueabihf"]
             }))?
         );
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         .config
         .map(|p| -> Result<Config> {
             let text = std::fs::read_to_string(p).context("reading config seed")?;
-            let config: Config = serde_yaml::from_str(&text).context("parsing config seed")?;
+            let config: Config = serde_yaml_ng::from_str(&text).context("parsing config seed")?;
             config.validate().map_err(anyhow::Error::msg)?;
             Ok(config)
         })
@@ -88,7 +88,8 @@ async fn run(
             id: config::config_id(),
             form_id: config::DEFAULT_CONFIG_ID,
             name: "Quick Tunnel",
-            description: "Authorized origins and cloudflared lifecycle limits (restart to apply)",
+            description:
+                "Tunnel provider, authorized origins and lifecycle limits (restart to apply)",
             schema: serde_json::to_value(schemars::schema_for!(Config))?,
             default_value: serde_json::to_value(Config::default())?,
         };

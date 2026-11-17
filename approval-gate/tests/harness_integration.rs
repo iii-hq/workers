@@ -4,10 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use approval_gate::testkit::{
-    boot, call, hook_input, log_push, log_snapshot, require_engine, stack_unavailable, state_get,
-    state_set, BootOpts, CallLog,
-};
+use approval_gate::testkit::{call, hook_input, state_get, state_set, with_stack, BootOpts};
 use harness::types::TurnRecord;
 use iii_sdk::RegisterFunction;
 use serde_json::{json, Value};
@@ -17,19 +14,7 @@ where
     F: FnOnce(approval_gate::testkit::TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    if let Some(reason) = stack_unavailable() {
-        eprintln!("skipping: {reason}");
-        return;
-    }
-    if std::env::var("CARGO_BIN_EXE_harness").is_err() {
-        eprintln!("skipping: harness binary not built for integration tests");
-        return;
-    }
-    let Some(engine) = require_engine().await else {
-        return;
-    };
-    let stack = boot(&engine, opts).await;
-    f(stack).await;
+    with_stack(opts, f).await;
 }
 
 /// A `harness_turn` record as the harness stores it, checked against the
@@ -65,6 +50,13 @@ async fn seed_held_turn(
     session_id: &str,
     call_id: &str,
 ) {
+    call(
+        &stack.iii,
+        "session::ensure",
+        json!({"session_id":session_id}),
+    )
+    .await
+    .expect("ensure session");
     let mut calls = BTreeMap::new();
     calls.insert(
         call_id.to_string(),
@@ -103,6 +95,9 @@ async fn harness_held_call_survives_sweep_pending() {
 async fn harness_pre_call_hold_then_resolve_allow() {
     with_harness_stack(BootOpts::needs_approval_with_harness(), |stack| async move {
         let iii = &stack.iii;
+        call(iii, "session::ensure", json!({"session_id":"s_1"}))
+            .await
+            .expect("ensure session");
 
         iii.register_function(
             "shell::run",
@@ -148,31 +143,16 @@ async fn harness_pre_call_hold_then_resolve_allow() {
     .await;
 }
 
-/// Record every `session::append` the harness makes (the stack runs no
-/// session-manager) and answer with the entry id it asked for.
-fn record_session_appends(iii: &iii_sdk::IIIClient) -> CallLog {
-    let log: CallLog = Default::default();
-    let appended = log.clone();
-    iii.register_function(
-        "session::append",
-        RegisterFunction::new_async(move |req: Value| {
-            let appended = appended.clone();
-            async move {
-                log_push(&appended, req.clone());
-                Ok::<_, iii_sdk::errors::Error>(json!({ "entry_id": req["entry_id"] }))
-            }
-        }),
-    );
-    log
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_deny_delivers_is_error_through_harness() {
     with_harness_stack(
         BootOpts::needs_approval_with_harness(),
         |stack| async move {
             let iii = &stack.iii;
-            let appended = record_session_appends(iii);
+            // The stack runs the real session-manager: the harness appends there.
+            call(iii, "session::ensure", json!({"session_id":"s_2"}))
+                .await
+                .expect("ensure session");
 
             // The turn waits on the call the gate holds and on one more held
             // call, so delivering the denial leaves it awaiting functions.
@@ -219,7 +199,10 @@ async fn resolve_deny_delivers_is_error_through_harness() {
             assert_eq!(res["turn_resumed"], json!(false));
 
             // The harness wrote the denial into the transcript as an error result.
-            let appended = log_snapshot(&appended);
+            let transcript = call(iii, "session::messages", json!({"session_id":"s_2"}))
+                .await
+                .expect("session messages");
+            let appended = transcript["messages"].as_array().expect("messages");
             assert_eq!(appended.len(), 1, "one appended result: {appended:?}");
             let message = &appended[0]["message"];
             assert_eq!(message["role"], json!("function_result"));

@@ -189,7 +189,7 @@ fn install_skipped_warning(manifest_path: &std::path::Path) -> String {
 /// callers thread the returned `Value` instead of re-reading.
 pub fn read_manifest_doc(
     manifest_path: &std::path::Path,
-) -> Result<Option<serde_yaml::Value>, String> {
+) -> Result<Option<serde_yaml_ng::Value>, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -236,7 +236,7 @@ pub fn read_manifest_doc(
     if content.len() as u64 > MAX_LOCAL_MANIFEST_BYTES {
         return Err(too_big(content.len() as u64));
     }
-    let doc = serde_yaml::from_str(&content)
+    let doc = serde_yaml_ng::from_str(&content)
         .map_err(|e| format!("invalid YAML in {}: {e}", manifest_path.display()))?;
     Ok(Some(doc))
 }
@@ -253,10 +253,10 @@ pub fn read_manifest_doc(
 /// keys to police; [`load_from_manifest`] then refuses it for its missing
 /// `name`. A non-mapping top level (a list, a bare scalar) is a shape error.
 pub fn validate_manifest_keys(
-    doc: &serde_yaml::Value,
+    doc: &serde_yaml_ng::Value,
     manifest_path: &std::path::Path,
 ) -> Result<(), String> {
-    if matches!(doc, serde_yaml::Value::Null) {
+    if matches!(doc, serde_yaml_ng::Value::Null) {
         return Ok(());
     }
     if doc.as_mapping().is_none() {
@@ -289,7 +289,7 @@ pub fn load_from_manifest(manifest_path: &std::path::Path) -> Option<ProjectInfo
 /// [`load_from_manifest`] on a doc already read, so a caller that validated
 /// the doc loads those same bytes instead of a second read of the file.
 pub(crate) fn project_from_doc(
-    doc: &serde_yaml::Value,
+    doc: &serde_yaml_ng::Value,
     manifest_path: &std::path::Path,
 ) -> Option<ProjectInfo> {
     // Typed view — the manifest schema's single source of truth. A shape
@@ -435,7 +435,7 @@ scripts:
     fn resolve_install_reports_omission() {
         use super::super::worker_manifest::ScriptsSection;
         fn scripts(yaml: &str) -> ScriptsSection {
-            serde_yaml::from_str(yaml).unwrap()
+            serde_yaml_ng::from_str(yaml).unwrap()
         }
 
         assert_eq!(
@@ -764,8 +764,8 @@ runtime:
 
     // ── validate_manifest_keys ──────────────────────────────────────────────
 
-    fn doc(s: &str) -> serde_yaml::Value {
-        serde_yaml::from_str(s).unwrap()
+    fn doc(s: &str) -> serde_yaml_ng::Value {
+        serde_yaml_ng::from_str(s).unwrap()
     }
 
     fn dummy_manifest_path() -> std::path::PathBuf {
@@ -921,16 +921,16 @@ resources:
         // A hostile third-party manifest must not inject terminal escapes
         // through an unknown key name. Build the key programmatically so the
         // ESC byte is exact regardless of YAML escaping rules.
-        let mut m = serde_yaml::Mapping::new();
+        let mut m = serde_yaml_ng::Mapping::new();
         m.insert(
-            serde_yaml::Value::from("name"),
-            serde_yaml::Value::from("w"),
+            serde_yaml_ng::Value::from("name"),
+            serde_yaml_ng::Value::from("w"),
         );
         m.insert(
-            serde_yaml::Value::from("ev\u{1b}\u{7}il"),
-            serde_yaml::Value::from(1),
+            serde_yaml_ng::Value::from("ev\u{1b}\u{7}il"),
+            serde_yaml_ng::Value::from(1),
         );
-        let d = serde_yaml::Value::Mapping(m);
+        let d = serde_yaml_ng::Value::Mapping(m);
         let err = validate_manifest_keys(&d, &dummy_manifest_path()).unwrap_err();
         assert!(
             !err.contains('\u{1b}') && !err.contains('\u{7}'),

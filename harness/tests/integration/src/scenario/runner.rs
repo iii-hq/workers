@@ -294,7 +294,7 @@ impl<'a> ScenarioRunner<'a> {
     ) -> Result<(), RunError> {
         let mut active = self.send(services, prepared).await?;
         self.intervene(services, &mut active).await?;
-        self.fault(stack, services, prepared, &active).await?;
+        self.fault(stack, services, prepared, &mut active).await?;
         self.r#await(services, &mut active).await?;
         self.collect(services, prepared, &mut active).await?;
         let evidence = self.build_evidence(services, &active, Some(active.send_response.clone()));

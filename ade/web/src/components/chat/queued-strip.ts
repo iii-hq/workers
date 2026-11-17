@@ -11,9 +11,18 @@
  */
 
 import type { QueuedMessagePreview } from '../../lib/backend/types'
+import { isNotificationEntryId } from '../../lib/sessions/entry-mapper'
 
+/** A row is the person's when the harness parked it as `direct` (or predates
+    the channel field), and it carries no notification mark: an
+    `origin.notification` or a notification entry id (`e_notify_`,
+    `e_fire_`, …), which older harnesses send without a channel. */
 export function isPersonQueuedRow(
-  row: Pick<QueuedMessagePreview, 'channel'>,
+  row: Pick<QueuedMessagePreview, 'channel'> &
+    Partial<Pick<QueuedMessagePreview, 'id' | 'origin'>>,
 ): boolean {
-  return row.channel === undefined || row.channel === 'direct'
+  if (row.channel !== undefined && row.channel !== 'direct') return false
+  if ((row.origin as { notification?: unknown } | undefined)?.notification === true)
+    return false
+  return !(row.id !== undefined && isNotificationEntryId(row.id))
 }

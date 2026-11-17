@@ -23,6 +23,8 @@ struct FakeRuntime {
     materialized: Mutex<Vec<String>>,
     cleaned: Mutex<Vec<String>>,
     enqueued: Mutex<Vec<ActionEnqueueRequestV1>>,
+    /// What `harness::status` reads back for the action's session.
+    completed: Mutex<Option<TurnCompletedEventV1>>,
 }
 
 fn analysis_config() -> AnalysisConfigV1 {
@@ -124,6 +126,7 @@ fn runtime(action: SecurityActionRecordV1, gate_live: bool) -> Arc<FakeRuntime> 
         materialized: Mutex::new(Vec::new()),
         cleaned: Mutex::new(Vec::new()),
         enqueued: Mutex::new(Vec::new()),
+        completed: Mutex::new(None),
     })
 }
 
@@ -290,7 +293,7 @@ impl ActionRuntime for FakeRuntime {
         &self,
         _action: &SecurityActionRecordV1,
     ) -> Result<Option<TurnCompletedEventV1>, SecurityScanError> {
-        Ok(None)
+        Ok(self.completed.lock().await.clone())
     }
 
     async fn get_action_by_session(
@@ -429,4 +432,38 @@ async fn fix_pr_materializes_an_exact_sha_checkout_then_starts_a_session() {
         .allowed_functions
         .iter()
         .any(|function| function == "github::pr::create"));
+}
+
+/// The action turn's finalize drained a message, so the session went on in a
+/// new turn: that turn's terminal completion finishes the action.
+#[tokio::test]
+async fn a_terminal_completion_of_a_later_turn_in_the_session_finishes_the_action() {
+    let mut action = queued_action(SecurityActionKindV1::Issue);
+    action.status = SecurityActionStatusV1::AwaitingApproval;
+    action.harness = Some(security_scan::HarnessRunV1 {
+        session_id: "session_action".into(),
+        turn_id: "turn_action".into(),
+    });
+    let runtime = runtime(action, true);
+    let doorbell = TurnCompletedEventV1 {
+        session_id: "session_action".into(),
+        turn_id: "turn_reseeded".into(),
+        status: "failed".into(),
+        terminal: true,
+        result: None,
+        result_error: Some("boom".into()),
+        reason: None,
+    };
+    *runtime.completed.lock().await = Some(TurnCompletedEventV1 {
+        turn_id: "turn_action".into(),
+        ..doorbell.clone()
+    });
+    let executor = SecurityActionExecutor::new(runtime.clone(), config());
+
+    let response = executor.on_turn_completed(doorbell).await.unwrap();
+
+    assert!(response.woke);
+    let stored = runtime.action.lock().await.clone();
+    assert_eq!(stored.status, SecurityActionStatusV1::Failed);
+    assert_eq!(stored.error.unwrap().message, "boom");
 }

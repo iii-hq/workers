@@ -155,16 +155,20 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
 
 
 def test_claude_code_release_builds_its_ui_from_the_root_workspace():
-    # A private claude-code workspace re-lists ../packages/console-ui, whose
-    # `catalog:` specifiers only the root workspace defines, and the frozen
-    # install then rejects the lockfile. The ui lives in the root workspace.
+    # A private claude-code workspace that re-lists ../packages/console-ui, whose
+    # `catalog:` specifiers only the root workspace defines, makes the frozen
+    # install reject the lockfile. The ui lives in the root workspace; the
+    # worker's own pnpm-workspace.yaml is config only (pnpm >=11 reads its
+    # allowBuilds there, never from package.json) and lists no packages.
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     artifact = document["workers"]["claude-code"]["artifact"]
     root_workspace = yaml.safe_load((ROOT / "pnpm-workspace.yaml").read_text(encoding="utf-8"))
+    own_workspace = yaml.safe_load((ROOT / "claude-code" / "pnpm-workspace.yaml").read_text(encoding="utf-8"))
 
     assert artifact["workspace_root"] == "claude-code"
-    assert artifact["install_command"] == ["pnpm", "install", "--ignore-workspace", "--frozen-lockfile"]
-    assert not (ROOT / "claude-code" / "pnpm-workspace.yaml").exists()
+    assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+    assert "packages" not in own_workspace
+    assert own_workspace["allowBuilds"] == {"esbuild": True}
     assert "claude-code/ui" in root_workspace["packages"]
 
 

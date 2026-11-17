@@ -308,10 +308,7 @@ impl Compose {
         // Source and target both resolve in this worker's namespace, which is
         // the project's: where compose hosts the progress function. The event
         // reaches the handler as the envelope's output.
-        let observer = client.observe(
-            progress_source(),
-            function_id.as_str(),
-        );
+        let observer = client.observe(progress_source(), function_id.as_str());
         // The feed is an extra, never a gate: without it the table still
         // reports what `compose::status` knows, just later. A refused observer
         // says so in the daemon log rather than silently, since a missing feed
@@ -419,11 +416,11 @@ impl Compose {
             .with_context(|| format!("create {}", self.config.local_dir.display()))?;
 
         let container = self.container_for(name, bin, &dir, declared)?;
-        let document = serde_yaml::to_string(&serde_yaml::Value::Mapping(
+        let document = serde_yaml_ng::to_string(&serde_yaml_ng::Value::Mapping(
             [(
-                serde_yaml::Value::from("containers"),
-                serde_yaml::Value::Mapping(
-                    [(serde_yaml::Value::from(name), container)]
+                serde_yaml_ng::Value::from("containers"),
+                serde_yaml_ng::Value::Mapping(
+                    [(serde_yaml_ng::Value::from(name), container)]
                         .into_iter()
                         .collect(),
                 ),
@@ -453,35 +450,35 @@ impl Compose {
         name: &str,
         bin: &str,
         dir: &Path,
-        declared: Option<serde_yaml::Value>,
-    ) -> Result<serde_yaml::Value> {
+        declared: Option<serde_yaml_ng::Value>,
+    ) -> Result<serde_yaml_ng::Value> {
         let mut container = match declared {
-            Some(serde_yaml::Value::Mapping(declared)) => declared,
-            _ => serde_yaml::from_str(&format!(
+            Some(serde_yaml_ng::Value::Mapping(declared)) => declared,
+            _ => serde_yaml_ng::from_str(&format!(
                 "scripts:\n  run: cargo run --bin {bin}\nenvironment:\n  RUST_LOG: info\n  CI: \"true\"\n"
             ))
             .with_context(|| format!("render a container for {name}"))?,
         };
         container.insert(
-            serde_yaml::Value::from("worker"),
+            serde_yaml_ng::Value::from("worker"),
             // Absolute: a worker offered by `--worker-dir` is not under the
             // repo root at all.
-            serde_yaml::Value::from(format!("path://{}", dir.display())),
+            serde_yaml_ng::Value::from(format!("path://{}", dir.display())),
         );
-        container.remove(serde_yaml::Value::from("start_after"));
+        container.remove(serde_yaml_ng::Value::from("start_after"));
 
-        let mut env_files = match container.remove(serde_yaml::Value::from("env_file")) {
-            Some(serde_yaml::Value::Sequence(existing)) => existing,
+        let mut env_files = match container.remove(serde_yaml_ng::Value::from("env_file")) {
+            Some(serde_yaml_ng::Value::Sequence(existing)) => existing,
             _ => Vec::new(),
         };
-        env_files.push(serde_yaml::Value::from(
+        env_files.push(serde_yaml_ng::Value::from(
             self.config.ui_watch_env_path.to_string_lossy().to_string(),
         ));
         container.insert(
-            serde_yaml::Value::from("env_file"),
-            serde_yaml::Value::Sequence(env_files),
+            serde_yaml_ng::Value::from("env_file"),
+            serde_yaml_ng::Value::Sequence(env_files),
         );
-        Ok(serde_yaml::Value::Mapping(container))
+        Ok(serde_yaml_ng::Value::Mapping(container))
     }
 
     /// Carry a pre-existing shared on-demand file over to one project per
@@ -496,7 +493,7 @@ impl Compose {
         let Ok(text) = std::fs::read_to_string(&legacy) else {
             return Ok(());
         };
-        let containers = serde_yaml::from_str::<serde_yaml::Value>(&text)
+        let containers = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text)
             .ok()
             .and_then(|file| file.get("containers")?.as_mapping().cloned())
             .unwrap_or_default();
@@ -1209,7 +1206,6 @@ mod tests {
         assert!(!event.terminal);
         assert!(progress_event(json!({ "status": "error", "operation_id": "op-1" })).is_none());
     }
-
 
     #[test]
     fn compose_payload_routes_by_namespace_and_absolute_file() {

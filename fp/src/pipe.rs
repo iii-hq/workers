@@ -21,7 +21,7 @@ use iii_sdk::IIIClient;
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, router::, provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -127,6 +127,13 @@ pub(crate) fn is_scoped_step(function_id: &str) -> bool {
         || function_id.starts_with("coder::")
 }
 
+pub(crate) fn remote_scoped_step(function_id: &str) -> bool {
+    !is_scoped_step(function_id)
+        && function_id
+            .match_indices("::")
+            .any(|(index, _)| is_scoped_step(&function_id[index + 2..]))
+}
+
 /// Step functions a pipe refuses. Steps run with THIS worker's authority, so
 /// every class the agent policy hard-denies (iii-permissions.yaml) must be
 /// refused here too — an allowlisted or approve-always `fp::pipe` would
@@ -139,6 +146,19 @@ pub(crate) fn is_scoped_step(function_id: &str) -> bool {
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
 pub(crate) fn forbidden_step(
+    function_id: &str,
+    approval_gate_running: bool,
+) -> Option<&'static str> {
+    std::iter::once(function_id)
+        .chain(
+            function_id
+                .match_indices("::")
+                .map(|(index, _)| &function_id[index + 2..]),
+        )
+        .find_map(|id| forbidden_unprefixed_step(id, approval_gate_running))
+}
+
+fn forbidden_unprefixed_step(
     function_id: &str,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
@@ -207,11 +227,41 @@ pub(crate) fn forbidden_step(
              worker authority, which would bypass the agent-level deny on them",
         );
     }
+    // The harness hook stamps the caller's session and folder onto a direct
+    // workflow::start; a step skips it, so a forged folder would be trusted.
+    if function_id == "workflow::start" {
+        return Some(
+            "workflow::start is not supported in a pipe — steps run with worker authority, \
+             which would skip the caller stamp the pre-call hook puts on it",
+        );
+    }
+    // The same stamp names the node a workflow-result::submit delivers for; a
+    // step could deliver another node's result.
+    if function_id == "workflow-result::submit" {
+        return Some(
+            "workflow-result::submit is not supported in a pipe — steps run with worker \
+             authority, which would skip the caller stamp that names the submitting node",
+        );
+    }
     // `stream::*` is the deprecated iii-stream surface. Engines still host it,
     // so keep refusing it here until the builtin is removed.
     if function_id.starts_with("stream::")
         || function_id.starts_with("hook-fanout::")
         || function_id.starts_with("iii::")
+        || function_id.starts_with("mesh-node::")
+        || matches!(
+            function_id,
+            "mesh::auth"
+                | "mesh::middleware"
+                | "mesh::on-observer-registration"
+                | "mesh::on-config-change"
+                | "mesh::on-functions-change"
+                | "mesh::on-node-changed"
+                | "mesh::on-status-changed"
+                | "mesh::on-tunnel-change"
+                | "mesh::ui-content"
+                | "mesh::configuration-id"
+        )
     {
         return Some("bus-internal functions are not supported in a pipe");
     }
@@ -421,12 +471,20 @@ fn inject(payload: Value, pointer: &str, value: Value) -> Result<Value, String> 
 /// `into` threading — so nothing authored or threaded survives at `/fs_scope`
 /// on a scoped step (full key replace: subkeys can't survive either).
 /// Non-scoped steps pass through untouched — the scope must not leak to
-/// arbitrary workers.
+/// arbitrary workers. Remote scoped steps lose any model-supplied scope;
+/// the remote worker applies its own filesystem boundary.
 pub(crate) fn bus_step_args(
     function_id: &str,
     args: Value,
     fs_scope: Option<&Value>,
 ) -> Result<Value, String> {
+    if remote_scoped_step(function_id) {
+        let Value::Object(mut map) = args else {
+            return Ok(args);
+        };
+        map.remove("fs_scope");
+        return Ok(Value::Object(map));
+    }
     if !is_scoped_step(function_id) {
         return Ok(args);
     }
@@ -722,6 +780,7 @@ mod tests {
             ("provider::anthropic::chat", "routing"),
             ("harness::send", "turn-control"),
             ("run::start", "turn-control"),
+            ("workflow::start", "caller stamp"),
             ("stream::set", "bus-internal"),
             ("iii::durable::publish", "bus-internal"),
             ("storage::on-config-change", "lifecycle"),
@@ -741,6 +800,14 @@ mod tests {
         ]}))
         .unwrap();
         assert!(validate(&ok).is_ok());
+
+        // Only workflow::start is refused: reading or stopping a run is harmless.
+        let wf = parse(json!({ "through": [
+            { "function": "workflow::status", "payload": { "run_id": "r" } },
+            { "function": "workflow::stop", "payload": { "run_id": "r" } },
+        ]}))
+        .unwrap();
+        assert!(validate(&wf).is_ok());
 
         // Session READS are needs_approval, not hard-denied, so they ride a
         // pipe: pull an attachment out of the own session and thread it on.
@@ -797,6 +864,134 @@ mod tests {
 
     fn scope() -> Value {
         json!({ "root": "/work/session-7", "grants": [], "boundary": "workspace" })
+    }
+
+    #[test]
+    fn remote_scoped_step_matches_harness_table() {
+        for (function_id, expected) in [
+            ("laptop::coder::read-file", true),
+            ("a::b::shell::exec", true),
+            ("coder::read-file", false),
+            ("laptop::shell::filesystem::read", false),
+        ] {
+            assert_eq!(remote_scoped_step(function_id), expected, "{function_id}");
+        }
+    }
+
+    #[test]
+    fn bus_step_args_strips_model_scope_on_node_prefixed_steps() {
+        for function in ["laptop::coder::read-file", "a::b::shell::exec"] {
+            for trusted in [Some(scope()), None] {
+                let out = bus_step_args(
+                    function,
+                    json!({ "path": "a", "fs_scope": { "root": "/evil" } }),
+                    trusted.as_ref(),
+                )
+                .unwrap();
+                assert_eq!(out, json!({ "path": "a" }), "{function}");
+                assert_eq!(
+                    bus_step_args(function, json!({ "path": "a" }), trusted.as_ref()).unwrap(),
+                    json!({ "path": "a" }),
+                    "{function}"
+                );
+                for args in [Value::Null, json!("a"), json!([1])] {
+                    assert_eq!(
+                        bus_step_args(function, args.clone(), trusted.as_ref()).unwrap(),
+                        args,
+                        "{function}"
+                    );
+                }
+            }
+            let req = parse(json!({ "through": [{ "function": function }] })).unwrap();
+            assert!(validate(&req).is_ok(), "{function}");
+        }
+        for function in ["laptop::browser::open", "laptop::shell::filesystem::read"] {
+            let args = json!({ "fs_scope": 1 });
+            assert_eq!(
+                bus_step_args(function, args.clone(), Some(&scope())).unwrap(),
+                args,
+                "{function}"
+            );
+        }
+    }
+
+    #[test]
+    fn forbidden_step_refuses_node_reserved_ids() {
+        for function in [
+            "shell::config-status",
+            "shell::kill-session-jobs",
+            "shell::workspace::reset",
+            "mesh-node::workers::apply",
+            "mesh::auth",
+            "mesh::middleware",
+            "mesh::on-observer-registration",
+            "mesh::on-config-change",
+            "mesh::on-functions-change",
+            "mesh::on-node-changed",
+            "mesh::on-status-changed",
+            "mesh::on-tunnel-change",
+            "mesh::ui-content",
+            "mesh::configuration-id",
+            "state::claim-namespace",
+            "provider-openai-codex::state::get",
+            "fp::pipe",
+            "fp::batch",
+            "engine::observers::dispose",
+            "session::append",
+            "session::store::get-attachment",
+            "approval::resolve",
+            "configuration::get",
+            "oauth::anthropic::login",
+            "router::chat",
+            "provider::anthropic::chat",
+            "harness::send",
+            "run::start",
+            "stream::set",
+            "hook-fanout::dispatch",
+            "iii::durable::publish",
+            "storage::on-config-change",
+        ] {
+            for prefix in ["", "laptop::", "a::b::"] {
+                let id = format!("{prefix}{function}");
+                for gate in [false, true] {
+                    assert!(forbidden_step(&id, gate).is_some(), "{id}, gate={gate}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prefixed_forbidden_rules_preserve_existing_exceptions() {
+        for prefix in ["", "laptop::", "a::b::"] {
+            for function in [
+                "shell::exec",
+                "shell::filesystem::read",
+                "state::get",
+                "state::set",
+                "state::claim-namespace-info",
+                "provider-openai-codex::state-info",
+                "mesh::status",
+                "session::get",
+                "session::list",
+                "session::messages",
+                "session::messages-range",
+                "session::messages-tail",
+                "session::get-message",
+                "session::get-attachment",
+                "session::list-attachments",
+            ] {
+                let id = format!("{prefix}{function}");
+                for gate in [false, true] {
+                    assert!(forbidden_step(&id, gate).is_none(), "{id}, gate={gate}");
+                }
+            }
+            let query = format!("{prefix}database::query");
+            assert!(forbidden_step(&query, true).is_none(), "{query}");
+            assert!(forbidden_step(&query, false).is_none(), "{query}");
+            let write = format!("{prefix}database::execute");
+            assert!(forbidden_step(&write, true).is_some(), "{write}");
+            assert!(forbidden_step(&write, false).is_none(), "{write}");
+        }
     }
 
     #[test]

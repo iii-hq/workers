@@ -418,9 +418,10 @@ impl SecurityRuntime for IiiRuntime {
         match self
             .call(
                 "harness::stop",
+                // The session's current turn: naming the first one stops nothing
+                // once the session went on in a reseeded turn.
                 json!({
                     "session_id": harness.session_id,
-                    "turn_id": harness.turn_id,
                     "quiet_deadlines": true,
                 }),
                 None,

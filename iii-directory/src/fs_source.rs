@@ -92,7 +92,7 @@ pub fn parse_prompt_frontmatter(content: &str) -> Result<PromptFrontmatter, Stri
     let Some(fm_text) = fm_text else {
         return Err("missing YAML frontmatter (expected --- ... --- block at file start)".into());
     };
-    serde_yaml::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))
+    serde_yaml_ng::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -582,7 +582,7 @@ pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String
         return Err("missing YAML frontmatter (expected --- ... --- block at file start)".into());
     };
     let fm: AgentFrontmatter =
-        serde_yaml::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))?;
+        serde_yaml_ng::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))?;
     if fm.name.as_deref().map(str::trim).unwrap_or("").is_empty() {
         return Err("frontmatter missing non-empty `name`".into());
     }
@@ -932,7 +932,7 @@ pub fn read_skill_with_frontmatter(abs_path: &Path) -> Result<(SkillFrontmatter,
         return Err(format!("file {} has empty body", abs_path.display()));
     }
     let fm = fm_text
-        .and_then(|t| serde_yaml::from_str::<SkillFrontmatter>(t).ok())
+        .and_then(|t| serde_yaml_ng::from_str::<SkillFrontmatter>(t).ok())
         .unwrap_or_default();
     Ok((fm, body.to_string()))
 }

@@ -143,3 +143,31 @@ async fn unmatched_route_returns_404_envelope() {
 
     boot.shutdown().await;
 }
+
+/// #1717: a 204 returned with `body: null` and no Content-Type went out with
+/// `content-length: 4`, which HTTP/2 clients reject as a protocol error.
+#[tokio::test]
+#[serial]
+async fn no_content_response_carries_no_content_length() {
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_fixed_backend(
+        &iii,
+        "/no-content",
+        "DELETE",
+        json!({ "status_code": 204, "headers": {}, "body": null }),
+    )
+    .await;
+    common::wait_for_route(&boot.routes, "DELETE", "/no-content").await;
+
+    let url = format!("http://{}/no-content", boot.local_addr);
+    let resp = reqwest::Client::new().delete(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(resp.headers().get("content-length").is_none());
+    assert!(resp.headers().get("content-type").is_none());
+    assert!(resp.bytes().await.unwrap().is_empty());
+
+    boot.shutdown().await;
+}

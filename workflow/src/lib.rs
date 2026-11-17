@@ -8,6 +8,7 @@ pub mod ids;
 pub mod locks;
 pub mod manifest;
 pub mod observed;
+pub mod queue;
 pub mod reconcile;
 pub mod state;
 pub mod telemetry;

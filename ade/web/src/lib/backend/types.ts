@@ -273,6 +273,8 @@ export interface QueuedMessagePreview {
    * harness predates the field, which the strip treats as a person's message.
    */
   channel?: QueuedMessageChannel
+  /** The row's origin as queued; `{notification: true}` marks a notification. */
+  origin?: unknown
 }
 
 export type QueuedMessageChannel = 'direct' | 'invoked-agent' | 'notification'

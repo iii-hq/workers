@@ -149,8 +149,8 @@ fn resources_clamped_memory_request_reported() {
 fn validate_bundle_manifest_rejects_oversize_yaml() {
     // Billion-laughs defense: any iii.worker.yaml larger than
     // MAX_BUNDLE_MANIFEST_BYTES (64 KiB) must be refused BEFORE the
-    // bytes reach serde_yaml::from_str — chained anchor/alias expansion
-    // in serde_yaml 0.9.x can balloon a small file to gigabytes.
+    // bytes reach serde_yaml_ng::from_str — chained anchor/alias expansion
+    // in serde_yaml_ng 0.10.x can balloon a small file to gigabytes.
     let tmp = tempfile::tempdir().unwrap();
     let big = "# pad\n".repeat(((MAX_BUNDLE_MANIFEST_BYTES as usize) / 6) + 1);
     let body = format!("name: regress\nscripts:\n  start: \"node x.js\"\n{}", big);
@@ -179,7 +179,7 @@ fn parse_bundle_resources_rejects_oversize_manifest() {
     // Same defense at the resource-parse seam (called by
     // bundle_vm_command on every boot). Even after install-time
     // validation, the manifest could be tampered with on disk before
-    // the next start; the size cap fires before serde_yaml runs.
+    // the next start; the size cap fires before serde_yaml_ng runs.
     let tmp = tempfile::tempdir().unwrap();
     let big = "# pad\n".repeat(((MAX_BUNDLE_MANIFEST_BYTES as usize) / 6) + 1);
     let body = format!("name: regress\nresources:\n  cpus: 2\n{}", big);
