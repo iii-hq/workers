@@ -383,19 +383,28 @@ interface ComposerProps {
   onOpenFileMention?: (ref: FileMentionRef) => void
   /**
    * Queued messages the composer can browse+edit with ↑/↓, oldest→newest.
-   * Non-destructive: browsing just loads a message; the change is committed on
-   * submit (see `onEditQueued`). When set alongside `onEditQueued`, ↑/↓ cycle.
+   * Browsing into one reserves it (`onReserveQueued`): the host takes it
+   * out of the queue so it cannot go to the agent mid-edit. When set
+   * alongside `onEditQueued`, ↑/↓ cycle.
    */
   queuedForEdit?: Array<{ id: string; text: string; attachments: Attachment[] }>
   /**
-   * Submit while browsing a queued message: save the edit in place (preserving
-   * its queue position) with the new text + attachments, or remove it when the
-   * payload is `null` (submitting an emptied composer). Given its id.
+   * Submit while browsing a queued message: send the edit with the new text
+   * + attachments, or remove the message when the payload is `null`
+   * (submitting an emptied composer). Given its id.
    */
   onEditQueued?: (
     id: string,
     payload: { text: string; attachments: Attachment[] } | null,
   ) => void
+  /**
+   * Browsing reached this queued message: take it out of the queue. Resolves
+   * `false` when it had already gone to the agent — the composer then drops
+   * its copy rather than send the message twice.
+   */
+  onReserveQueued?: (id: string) => Promise<boolean>
+  /** Browsing left this queued message unchanged: put it back in the queue. */
+  onReleaseQueued?: (id: string) => void
   /** Which queued message is being browsed (`null` = live draft), for highlight. */
   onBrowseChange?: (id: string | null) => void
 }
@@ -456,6 +465,8 @@ export function Composer({
   onOpenFileMention,
   queuedForEdit,
   onEditQueued,
+  onReserveQueued,
+  onReleaseQueued,
   onBrowseChange,
 }: ComposerProps) {
   const [attachments, setAttachmentsState] = useState<Attachment[]>(
@@ -517,11 +528,12 @@ export function Composer({
   }, [])
 
   // ↑/↓ browse the queued messages for editing. `browseId` is the message the
-  // editor currently holds (null = a live draft). Navigation is non-destructive
-  // — the message is removed from the queue only when the edit is submitted.
-  // The ref mirror gates `onTextChange` synchronously: `setBrowse` runs before
-  // the loaded text echoes back through the editor's change event, so browsed
-  // queue text is never reported as the live draft.
+  // editor currently holds (null = a live draft). Browsing into a message
+  // reserves it with the host (it leaves the queue while it is edited);
+  // browsing away unchanged releases it. The ref mirror gates `onTextChange`
+  // synchronously: `setBrowse` runs before the loaded text echoes back
+  // through the editor's change event, so browsed queue text is never
+  // reported as the live draft.
   const [browseId, setBrowseId] = useState<string | null>(null)
   const browseIdRef = useRef<string | null>(null)
   const setBrowse = useCallback(
@@ -552,7 +564,11 @@ export function Composer({
         direction,
       )
       if (result.kind === 'noop') return null
-      setBrowse(result.target.id)
+      const target = result.target.id
+      // Only a pristine message navigates (see queue-history), so leaving
+      // one means it is unchanged: it goes back to the queue.
+      if (browseId !== null && browseId !== target) onReleaseQueued?.(browseId)
+      setBrowse(target)
       setAttachments(result.target.attachments)
       textRef.current = result.target.text
       setHasText(result.target.text.trim().length > 0)
@@ -566,9 +582,28 @@ export function Composer({
           })
         })
       }
+      if (target !== null && onReserveQueued) {
+        void onReserveQueued(target).then((reserved) => {
+          if (reserved || browseIdRef.current !== target) return
+          // It already went to the agent: the copy here would only be sent
+          // a second time, so the editor goes back to a blank draft.
+          textRef.current = ''
+          setHasText(false)
+          setAttachments([])
+          setBrowse(null)
+          setClearToken((t) => t + 1)
+        })
+      }
       return result.target.text
     },
-    [queuedForEdit, browseId, setBrowse, setAttachments],
+    [
+      queuedForEdit,
+      browseId,
+      setBrowse,
+      setAttachments,
+      onReserveQueued,
+      onReleaseQueued,
+    ],
   )
 
   // Every gesture-driven change goes through here so the host hears about it
@@ -592,8 +627,9 @@ export function Composer({
     if (submitDisabled) return
     const text = textRef.current.trim()
     const empty = !text && attachments.length === 0
-    // Editing a queued message: save it in place (or remove it when emptied)
-    // instead of sending a new message. A blank live composer is a no-op.
+    // Editing a queued message: send the edit (or remove the message when
+    // emptied) through the host, not as a fresh send. A blank live composer
+    // is a no-op.
     if (browseId !== null) {
       onEditQueued?.(browseId, empty ? null : { text, attachments })
       setBrowse(null)
@@ -1095,7 +1131,6 @@ export function Composer({
                 <ComposerActionsSlot layout="narrow">
                   {agentPicker}
                 </ComposerActionsSlot>
-                {composerControls}
                 <ModelPicker
                   value={model}
                   options={modelOptions}
@@ -1138,8 +1173,8 @@ export function Composer({
           ) : null}
 
           {/* Desktop toolbar: what the message goes out as on the left —
- the model (with its provider), then the agent, memory and
- permission pickers; what you do with it on the right — injected
+ the model (with its provider), a worker's controls, then the
+ agent, memory and permission pickers; what you do with it on the right — injected
  actions, attach, and send, where the eye lands after typing. */}
           {/* One row at every pane width: in a narrow pane (a side panel, a
  split) the pickers shrink — the model name truncates, the agent
@@ -1159,10 +1194,13 @@ export function Composer({
                 triggerAppearance="subtle"
                 className="min-w-0 max-w-[24rem]"
               />
+              {/* A worker's per-session controls (the judge) sit between the
+ model and the agent: what the message goes out with, in the
+ order it is decided. */}
+              {composerControls}
               <ComposerActionsSlot layout="wide">
                 {agentPicker}
               </ComposerActionsSlot>
-              {composerControls}
               {showMemoryBank && onMemoryBankChange ? (
                 <BankPicker
                   value={memoryBank ?? null}
@@ -1263,6 +1301,7 @@ export function Composer({
         onThinkingLevelChange={onThinkingLevelChange}
         onPermissionModeChange={onPermissionModeChange}
         attachDisabled={inputDisabled}
+        controls={composerControls}
         onAttachFiles={
           mobileLayout
             ? () => {

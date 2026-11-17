@@ -676,16 +676,36 @@ export function ChatView({
     })
   }, [conversation.messages, queuedDrafts.length])
 
+  // Drafts this tab has handed to the harness but not heard back about: they
+  // are not browsable yet (an edit would race the enqueue), so they stay
+  // out of the composer's ↑ list until `queueMessage` answers.
+  const [pendingQueueIds, setPendingQueueIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  )
+  // The queued message the composer is editing (`null` = a live draft). It
+  // was taken back out of the harness's queue when browsing began, so the
+  // composer is the only copy; the strip hides its row meanwhile.
+  const [browsedQueuedId, setBrowsedQueuedId] = useState<string | null>(null)
+
   // Safety flush: the turn ended (the harness's finalize drain already
   // appended any leftovers server-side), so surviving drafts become
   // optimistic transcript rows that reconcile in place when events land.
+  // The one being edited was unqueued and never drained: it stays in the
+  // composer as a draft to send, not in the transcript.
   useEffect(() => {
     if (streamingIndicator || queuedDrafts.length === 0) return
     setQueuedDrafts([])
     for (const draft of queuedDrafts) {
+      if (draft.id === browsedQueuedId) continue
       onAppendMessage(conversation.id, draft)
     }
-  }, [streamingIndicator, queuedDrafts, conversation.id, onAppendMessage])
+  }, [
+    streamingIndicator,
+    queuedDrafts,
+    browsedQueuedId,
+    conversation.id,
+    onAppendMessage,
+  ])
 
   // Server-side queue: while a step streams, `harness::on-message-queued`
   // events signal that another tab or a subagent/observer notification parked
@@ -929,165 +949,16 @@ export function ChatView({
   // ↑/↓ browse this tab's queued messages for editing (oldest→newest). The
   // composer owns navigation; ChatView just supplies the list and the id of
   // whichever is being edited (for the strip highlight).
-  const [browsedQueuedId, setBrowsedQueuedId] = useState<string | null>(null)
   const queuedForEdit = useMemo(
     () =>
-      queuedDrafts.map((d) => ({
-        id: d.id,
-        text: d.content,
-        attachments: d.attachments ?? [],
-      })),
-    [queuedDrafts],
-  )
-
-  // Submitting a browsed queued message: edit it IN PLACE (`payload`), or
-  // remove it (`null` — the composer was emptied). Both keep the message where
-  // it is in the queue; an edit rebuilds content the same way a send does
-  // (re-expanding `#file(...)` line windows). Best-effort server call — a row that
-  // already drained is a no-op; a failure means the stale version may still
-  // deliver, so surface it.
-  const handleEditQueued = useCallback(
-    (
-      id: string,
-      payload: { text: string; attachments: Attachment[] } | null,
-    ) => {
-      if (submitBlockedRef.current) return
-      const conversationId = conversation.id
-      if (payload === null) {
-        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
-        void backend.removeQueued?.(conversationId, id).catch((err) => {
-          onAppendMessage(
-            conversationId,
-            makeSystemNotice(
-              `could not remove the queued message (${err instanceof Error ? err.message : String(err)}) — it may still be delivered when the turn ends`,
-              'warn',
-            ),
-          )
-        })
-        return
-      }
-      // Optimistic: reflect the new content in the strip immediately, in place.
-      setQueuedDrafts((current) =>
-        current.map((d) =>
-          d.id === id
-            ? {
-                ...d,
-                content: payload.text,
-                attachments:
-                  payload.attachments.length > 0
-                    ? payload.attachments
-                    : undefined,
-              }
-            : d,
-        ),
-      )
-      void withScreenWakeLock(async () => {
-        let attachedBlocks: string[] | undefined
-        const workingDir = conversation.workingDir
-        if (backend.id === 'real' && workingDir) {
-          const mentionPaths = parseFileMentions(payload.text)
-          if (mentionPaths.length > 0) {
-            attachedBlocks = (
-              await expandFileMentions(workingDir, mentionPaths)
-            ).blocks
-          }
-        }
-        // Same expansion as the live send path: an edited queued message
-        // keeps its `/skill:<id>` blocks instead of silently
-        // dropping them. Staying silent on a failed re-resolution would strip
-        // the body the queued message already carried with no explanation.
-        const slashExpansions =
-          backend.id === 'real'
-            ? await expandSlashInvocations(
-                payload.text.trim(),
-                loadedSkillIds(messagesRef.current),
-              )
-            : []
-        for (const expansion of slashExpansions) {
-          if (expansion.status === 'attached') {
-            attachedBlocks = [...(attachedBlocks ?? []), expansion.block]
-          } else {
-            onAppendMessage(
-              conversationId,
-              makeSystemNotice(
-                `could not attach ${expansion.command} — the edited message will be sent as typed`,
-                'warn',
-              ),
-            )
-          }
-        }
-        // Same expansion as the live send path: a queued message's documents
-        // and pictures have to reach the agent too, or editing a queued
-        // message would silently drop what it carried.
-        let attachedImages: HarnessImageBlock[] | undefined
-        let attachedFiles: FileBlock[] | undefined
-        if (
-          backend.id === 'real' &&
-          hasStorableAttachments(payload.attachments)
-        ) {
-          // The originals go to the store first, same as the live send: the
-          // edit replaces the queued content wholesale, so a message edited
-          // without re-storing would drain with no way back to its files.
-          const stored = await uploadAttachments(
-            conversationId,
-            payload.attachments,
-          )
-          if (stored.blocks.length > 0) attachedFiles = stored.blocks
-          for (const failure of stored.failures) {
-            onAppendMessage(
-              conversationId,
-              makeSystemNotice(
-                `could not store ${failure.name} — ${failure.reason}`,
-                'warn',
-              ),
-            )
-          }
-          // The stored ids go onto the chips first so each inline image block
-          // names its original, same as the live send path.
-          const expanded = await expandAttachments(
-            linkStoredAttachments(payload.attachments, stored.uploaded),
-            {
-              vision: visionRef.current.supports,
-              model: visionRef.current.model,
-            },
-          )
-          if (expanded.blocks.length > 0) {
-            attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
-          }
-          if (expanded.images.length > 0) attachedImages = expanded.images
-          // Same reporting as the live send path. Staying silent here would let
-          // an edited queued message lose its document with no explanation.
-          for (const failure of expanded.failures) {
-            onAppendMessage(
-              conversationId,
-              makeSystemNotice(
-                `could not read ${failure.name} — ${failure.reason}`,
-                'warn',
-              ),
-            )
-          }
-        }
-        try {
-          await backend.editQueued?.(
-            conversationId,
-            id,
-            payload.text,
-            attachedBlocks || attachedImages || attachedFiles
-              ? { attachedBlocks, attachedImages, attachedFiles }
-              : undefined,
-          )
-        } catch (err) {
-          onAppendMessage(
-            conversationId,
-            makeSystemNotice(
-              `could not save the edit (${err instanceof Error ? err.message : String(err)}) — the original may still be delivered when the turn ends`,
-              'warn',
-            ),
-          )
-        }
-      })()
-    },
-    [backend, conversation.id, conversation.workingDir, onAppendMessage],
+      queuedDrafts
+        .filter((d) => !pendingQueueIds.has(d.id))
+        .map((d) => ({
+          id: d.id,
+          text: d.content,
+          attachments: d.attachments ?? [],
+        })),
+    [queuedDrafts, pendingQueueIds],
   )
 
   // Discovered sessions (sub-agents especially) carry no client-side model
@@ -2151,6 +2022,7 @@ export function ChatView({
       // entry id) arrives via session events and pops it into the chat.
       if (willQueue && backend.queueMessage) {
         setQueuedDrafts((drafts) => [...drafts, userMsg])
+        setPendingQueueIds((ids) => new Set(ids).add(userMsg.id))
         try {
           await backend.queueMessage(
             payload.text || '(attachments only)',
@@ -2185,6 +2057,13 @@ export function ChatView({
               'error',
             ),
           )
+        } finally {
+          setPendingQueueIds((ids) => {
+            if (!ids.has(userMsg.id)) return ids
+            const next = new Set(ids)
+            next.delete(userMsg.id)
+            return next
+          })
         }
         return
       }
@@ -2587,6 +2466,93 @@ export function ChatView({
   const handleSubmit = useMemo(
     () => withScreenWakeLock(submitWithQuote),
     [submitWithQuote],
+  )
+
+  // Editing a queued message. Browsing into one (↑) takes it back out of
+  // the harness's queue — `harness::unqueue` — so a step boundary cannot
+  // deliver the original while the person is still typing the edit; the
+  // composer is the only copy from then on. Submitting sends the edit the
+  // same way as any message (queued again if the turn is still running,
+  // or as the next turn); leaving it unchanged (↓, or ↑ to another) sends
+  // the original back the same way. The one cost is its place in the
+  // queue: an edited message rejoins at the end.
+  const reservationsRef = useRef(new Map<string, Promise<boolean>>())
+  const queuedDraftsRef = useRef(queuedDrafts)
+  queuedDraftsRef.current = queuedDrafts
+  const handleReserveQueued = useCallback(
+    (id: string): Promise<boolean> => {
+      const conversationId = conversation.id
+      const removeQueued = backend.removeQueued
+      if (!removeQueued) return Promise.resolve(false)
+      const reservation = removeQueued(conversationId, id)
+        .then((removed) => {
+          if (!removed) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                'that message already reached the agent, so it cannot be edited',
+                'warn',
+              ),
+            )
+          }
+          return removed
+        })
+        .catch((err) => {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not take the queued message back for editing (${err instanceof Error ? err.message : String(err)}) — it will be delivered as queued`,
+              'warn',
+            ),
+          )
+          return false
+        })
+      reservationsRef.current.set(id, reservation)
+      return reservation
+    },
+    [backend.removeQueued, conversation.id, onAppendMessage],
+  )
+  const takeReservation = useCallback((id: string): Promise<boolean> => {
+    const reservation = reservationsRef.current.get(id)
+    reservationsRef.current.delete(id)
+    return reservation ?? Promise.resolve(false)
+  }, [])
+  // Browsing moved on without a change: the original goes back to the
+  // agent. A reservation that failed left the original where it was.
+  const handleReleaseQueued = useCallback(
+    (id: string) => {
+      void takeReservation(id).then((reserved) => {
+        if (!reserved) return
+        const draft = queuedDraftsRef.current.find((d) => d.id === id)
+        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
+        if (!draft) return
+        void handleSubmit({
+          text: draft.content,
+          attachments: draft.attachments ?? [],
+        })
+      })
+    },
+    [takeReservation, handleSubmit],
+  )
+  // Enter on a browsed message: send the edit (`payload`), or drop the
+  // message (`null` — the composer was emptied).
+  const handleEditQueued = useCallback(
+    (
+      id: string,
+      payload: { text: string; attachments: Attachment[] } | null,
+    ) => {
+      void takeReservation(id).then((reserved) => {
+        setQueuedDrafts((current) => current.filter((d) => d.id !== id))
+        if (!reserved) {
+          // The original is still parked (the unqueue failed) or already
+          // went out: take it back now, best effort, before the edit goes.
+          void backend.removeQueued?.(conversation.id, id).catch(() => {})
+        }
+        if (payload === null || submitBlockedRef.current) return
+        void handleSubmit(payload)
+      })
+    },
+    [takeReservation, backend.removeQueued, conversation.id, handleSubmit],
   )
   // The side panel's way to hand this chat's agent an instruction: sent now,
   // or put in this chat's draft (the composer remounts to pick it up). The
@@ -3256,9 +3222,6 @@ export function ChatView({
               conversation.started === true ||
               conversation.messages.length > 0))
         }
-        details={
-          composerControls?.footer?.length ? composerControls.footer : undefined
-        }
       />
     ) : undefined
 
@@ -3511,9 +3474,9 @@ export function ChatView({
                   className="mb-1 rounded-xl bg-surface"
                   aria-label="queued messages"
                 >
-                  {/* The message being edited is pulled out of the queue and lives
- only in the composer — hidden here until it's saved back (in
- place, so it reappears at its spot) or removed. */}
+                  {/* The message being edited was taken out of the queue and
+ lives only in the composer — hidden here until the edit is
+ sent (it rejoins at the end) or it is removed. */}
                   {queuedStrip
                     .filter((row) => row.id !== browsedQueuedId)
                     .map((row) => (
@@ -3531,12 +3494,12 @@ export function ChatView({
                     ))}
                   {/* No edit hint while draining — the rows are being delivered,
  so inviting an edit would be a race the user loses. */}
-                  {backend.editQueued &&
+                  {backend.removeQueued &&
                   queuedDrafts.length > 0 &&
                   !drainingQueue ? (
                     <div className="px-3 py-0.5 text-right text-meta text-ink-ghost max-sm:hidden">
                       {browsedQueuedId
-                        ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
+                        ? '↑ / ↓ cycle · Enter sends the edit · Empty + Enter removes'
                         : 'Press ↑ in the composer to edit queued messages'}
                     </div>
                   ) : null}
@@ -3638,15 +3601,21 @@ export function ChatView({
                 composerActions={composerActions}
                 agentPicker={agentPicker}
                 showSuggestions={welcome}
-                composerControls={
-                  agentPicker ? undefined : composerControls?.footer
-                }
+                composerControls={composerControls?.footer}
                 projectControls={composerControls?.project}
                 onSubmit={handleSubmit}
                 onStop={handleStop}
                 stopping={stopping}
-                queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
-                onEditQueued={backend.editQueued ? handleEditQueued : undefined}
+                queuedForEdit={backend.removeQueued ? queuedForEdit : undefined}
+                onEditQueued={
+                  backend.removeQueued ? handleEditQueued : undefined
+                }
+                onReserveQueued={
+                  backend.removeQueued ? handleReserveQueued : undefined
+                }
+                onReleaseQueued={
+                  backend.removeQueued ? handleReleaseQueued : undefined
+                }
                 onBrowseChange={setBrowsedQueuedId}
                 isStreaming={streamingIndicator}
                 queueWhileStreaming={!!backend.queueMessage}
