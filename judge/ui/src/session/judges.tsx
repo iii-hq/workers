@@ -124,6 +124,8 @@ export interface JudgesPanelProps {
   onChoose(value: string | undefined): void
   onConfigure(target: ConfigureTarget): void
   onAdd(): void
+  /** The one-time note on what a judge is, under the head. */
+  intro?: ReactNode
 }
 
 /**
@@ -131,7 +133,16 @@ export interface JudgesPanelProps {
  * judge settings; the rows; a filter once there are enough rows to need
  * one (arrows move, Enter picks); and the way to add a judge.
  */
-export function JudgesPanel({ providers, settings, stored, listError, onChoose, onConfigure, onAdd }: JudgesPanelProps) {
+export function JudgesPanel({
+  providers,
+  settings,
+  stored,
+  listError,
+  onChoose,
+  onConfigure,
+  onAdd,
+  intro,
+}: JudgesPanelProps) {
   const listId = useId()
   const [filter, setFilter] = useState('')
   // `null` follows the session's choice; typing or hovering pins a row.
@@ -201,6 +212,7 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
           </IconButton>
         ) : null}
       </div>
+      {intro}
       {showFilter ? (
         <div className="judge-ui-session-filter">
           <Search size={16} aria-hidden />
