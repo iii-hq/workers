@@ -37,8 +37,9 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   // selected tab and the toggled-on chrome control are the selection now.
   ['browser/ui/styles.css', '.br-ui-tab.is-active'],
   ['browser/ui/styles.css', '.br-ui-chrome-btn.is-on'],
+  // The browser settings rail became the shared line tabs, so its selected
+  // section is this recipe too.
   ['ade/web/src/styles/ui-recipes.css', '.iii-ui-tab[aria-selected="true"]'],
-  ['browser/ui/styles.css', '.br-cfg-nav-row.active'],
   ['github/ui/styles.css', '.gh-ui-node-selected'],
   ['github/ui/styles.css', '.gh-ui-graph-row.selected'],
   // The monitor rebuild (a8ed4889f) split eval/ui/styles.css into imports and
