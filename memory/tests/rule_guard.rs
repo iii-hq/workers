@@ -8,7 +8,7 @@ use iii_sdk::IIIClient;
 use memory::config::WorkerConfig;
 use memory::deps::Deps;
 use memory::error::MemoryError;
-use memory::functions::rules::{self, RuleSetResponse, RULE_CHANGED};
+use memory::functions::rules::{self, RULE_CHANGED, RuleSetResponse};
 use memory::store::Store;
 use serde_json::json;
 
