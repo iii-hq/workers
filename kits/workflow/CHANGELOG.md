@@ -1,8 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- **A refused interview card covers only open decisions.** Answers already given stay; only a card refused because no human can answer turns the open decisions into assumptions, and a card refused for its shape is fixed and asked again.
+- **Changing an existing interface stays consequential.** A new command, input form or output format can be assumed when nobody can answer; a change to an existing one is a compatibility decision and blocks.
+- **A Design card answer reaches the tickets.** The plan's cards are rewritten where the answer changed them, so no ticket describes the rejected choice.
+
 ## 0.1.1
 
-- **Reviews flag unneeded code.** The batch check, the critic and the design refuters treat code that should not exist or should be smaller as a defect: dead code, an option no caller sets, an abstraction with one implementation, a copy of an existing helper or of the standard library, a dependency for a few lines. Each one is proven with a read-only call and names the smaller form; what a card asks for, tests, input validation and error handling are never flagged.
+- **Reviews flag unneeded code.** The batch check, the critic and the design refuters treat code that should not exist or should be smaller as a defect: dead code, an option no caller sets, an abstraction with one implementation, a copy of an existing helper or of the standard library, a dependency for a few lines. Each one is proven with a read-only call and names the smaller form; what a card asks for, tests, input validation and error handling that prevents data loss are never flagged.
 - **Interview before the plan.** Before it creates anything, the Workflow agent asks the decisions only the user can make, in rounds of one `harness::ask` card (up to four questions, each with a recommended answer first, at most three rounds): a round asks every decision whose prerequisites are settled, and facts are looked up, never asked. The answers are kept under the run ticket's `## Goal`, so every node and a resume read them. A session nobody can answer takes the recommendations and ends `blocked` only on a consequential decision (scope, compatibility, security, data loss, external cost).
 
 ## 0.1.0
