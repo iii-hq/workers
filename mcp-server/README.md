@@ -246,7 +246,10 @@ read, it refuses to start and says how to bind it to `127.0.0.1`;
 warning. The check repeats after every reload of the http worker: `mcp-server`
 observes `http::on-config-change`, and a rebind to a public address withdraws
 the `/mcp` routes until it is back on loopback (rbac-proxy must expose
-`http::status` and `http::on-config-change`). When a check cannot read
+`http::status` and `http::on-config-change`). The routes are served only
+once that observer is active: if rbac-proxy refuses it, `/mcp` is not served
+and the log says what to expose, since a later rebind would go unseen.
+`III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true` serves without it. When a check cannot read
 `http::status` (it timed out during a reload, say), the routes stay withdrawn
 and the check runs again after 2, 5, 10, 30 and 60 seconds, stopping at the
 first that reads the bind; after that, the next reload checks again.

@@ -24,6 +24,13 @@ pub const RECOVERY_DELAYS: [Duration; 5] = [
     Duration::from_secs(60),
 ];
 
+/// Whether to serve `/mcp` while the http worker's reloads cannot be
+/// observed (the observer was refused, or is not active yet): a rebind to a
+/// public address would go unseen, so only with the public-http override.
+pub fn serve_unwatched(flag: Result<bool, String>) -> bool {
+    matches!(flag, Ok(true))
+}
+
 /// Whether `http::status` left the bind unknown (an error, or no host).
 /// A public bind is known: it is refused, not retried.
 pub fn status_unknown(status: &Result<Value, String>) -> bool {
@@ -162,6 +169,15 @@ mod tests {
     use std::time::Duration;
 
     const QUICK: [Duration; 5] = [Duration::from_millis(1); 5];
+
+    #[test]
+    fn without_the_reload_watch_only_the_override_serves() {
+        // A rebind would go unseen, so /mcp is not served unless the
+        // operator accepted a public endpoint.
+        assert!(serve_unwatched(Ok(true)));
+        assert!(!serve_unwatched(Ok(false)));
+        assert!(!serve_unwatched(Err("bad value".into())));
+    }
 
     #[test]
     fn recovery_waits_2_5_10_30_then_60_seconds() {

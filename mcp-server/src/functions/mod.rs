@@ -253,8 +253,9 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
     let handle = iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID);
     // The routes are first served here, once this observer is active, by
     // checking the bind again: a rebind since the boot check is caught, and
-    // none goes unseen while the routes are up. A slow or refused observer
-    // still gets the routes served (after a warning), not a dead endpoint.
+    // none goes unseen while the routes are up. While the observer is not
+    // active (slow, or refused), they are not served: a rebind to a public
+    // address would go unseen. The public-http override serves anyway.
     let (watch, ctx, routes) = (handle.clone(), ready_ctx, ready_routes);
     tokio::spawn(async move {
         // Warn if activation is slow, but keep waiting: the SDK keeps the
@@ -266,10 +267,17 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         {
             Ok(result) => result,
             Err(_) => {
-                tracing::warn!(
-                    "observing {HTTP_RELOAD_FN} is still pending after 30s; serving the MCP routes anyway, and until it is active, a rebind of the http worker is not seen"
-                );
-                recheck_and_recover(&ctx, &routes).await;
+                if unwatched_override() {
+                    tracing::warn!(
+                        "observing {HTTP_RELOAD_FN} is still pending after 30s; serving the MCP routes anyway ({}=true), and until it is active, a rebind of the http worker is not seen",
+                        http_guard::PUBLIC_HTTP_ENV
+                    );
+                    recheck_and_recover(&ctx, &routes).await;
+                } else {
+                    tracing::warn!(
+                        "observing {HTTP_RELOAD_FN} is still pending after 30s; the MCP routes are served once it is active, so that a rebind of the http worker is seen"
+                    );
+                }
                 ready.await
             }
         };
@@ -280,16 +288,33 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
                 );
                 recheck_and_recover(&ctx, &routes).await;
             }
-            Err(e) => {
+            Err(e) if unwatched_override() => {
                 tracing::warn!(
                     error = %e,
-                    "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
+                    "observing {HTTP_RELOAD_FN} was refused; serving the MCP routes anyway ({}=true), so a later rebind of the http worker to a public address will not withdraw them",
+                    http_guard::PUBLIC_HTTP_ENV
                 );
                 recheck_and_recover(&ctx, &routes).await;
+            }
+            Err(e) => {
+                let message = format!(
+                    "mcp-server: not serving {}: observing {HTTP_RELOAD_FN} was refused ({e}), so a later rebind of the http worker to a public address would go unseen.\n  Fix: expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions), then restart mcp-server.\n  To serve without it:\n    {}=true",
+                    ctx.cfg.api_path,
+                    http_guard::PUBLIC_HTTP_ENV
+                );
+                tracing::error!("{message}");
+                eprintln!("{message}");
             }
         }
     });
     handle
+}
+
+/// The public-http override, read the way the bind check reads it.
+fn unwatched_override() -> bool {
+    http_guard::serve_unwatched(http_guard::parse_flag(
+        std::env::var(http_guard::PUBLIC_HTTP_ENV).ok().as_deref(),
+    ))
 }
 
 /// Re-check the bind; when `http::status` cannot be read, the routes stay
