@@ -1,5 +1,5 @@
 import { type LucideIcon, Monitor, Moon, Sun } from 'lucide-react'
-import { type KeyboardEvent, useState } from 'react'
+import { type CSSProperties, type KeyboardEvent, useState } from 'react'
 import { Hint } from '@/components/ui/Hint'
 import type { ThemePreference } from '@/hooks/use-theme'
 import { cn } from '@/lib/utils'
@@ -81,7 +81,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
       aria-label="Theme"
       onKeyDown={onKeyDown}
       className={cn(
-        'relative inline-flex h-8 shrink-0 items-center rounded-sm bg-neutral-200 dark:bg-neutral-950 border border-neutral-100 dark:border-neutral-800 px-1 py-0.5',
+        'relative inline-flex h-8 shrink-0 items-center rounded-sm border border-muted bg-secondary px-1 py-0.5 dark:border-border dark:bg-card',
         className,
       )}
     >
@@ -89,8 +89,8 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
  rather than two segments swapping. */}
       <span
         aria-hidden
-        className="absolute top-1.2 left-1.5 size-6 rounded-full bg-neutral-50 dark:bg-neutral-700 shadow-sm transition-transform duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)]"
-        style={{ transform: `translateX(${index * SEGMENT}px)` }}
+        className="absolute top-0.75 left-1.5 size-6 translate-x-(--thumb-x) rounded-full bg-card shadow-sm transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) dark:bg-surface-hover"
+        style={{ '--thumb-x': `${index * SEGMENT}px` } as CSSProperties}
       />
       {OPTIONS.map(({ value: option, label, Icon, motion }) => {
         const checked = option === value
@@ -107,7 +107,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
               tabIndex={checked ? 0 : -1}
               onClick={() => choose(option)}
               className={cn(
-                'icon-host relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                'icon-host relative z-10 flex size-7 items-center justify-center rounded-full transition-colors duration-(--motion-duration-control) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
                 checked
                   ? 'text-foreground '
                   : 'text-muted-foreground hover:text-foreground  ',

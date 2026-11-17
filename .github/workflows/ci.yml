@@ -1111,6 +1111,14 @@ jobs:
         # ade/web imports ide/ui sources by path, so ide/ui needs its own deps.
         run: pnpm --filter 'chat-app...' --filter '@iii-workers/shell-ui...' --filter '@iii-workers/console-worker-ui...' install --frozen-lockfile
 
+      - name: ADE design system (@shadcn/lint)
+        # Raw palette colours, off-scale values, restyled components, inline
+        # styles and classes Tailwind cannot generate fail the build. Code
+        # older than the gate is counted in ade/web/eslint-suppressions.json;
+        # a file may not grow its count, and a fixed finding must be pruned
+        # (pnpm --filter chat-app lint:design:prune) so the count shrinks.
+        run: pnpm --filter chat-app lint:design
+
       - name: ADE console tests
         run: pnpm --filter chat-app test
 

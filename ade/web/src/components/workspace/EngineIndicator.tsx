@@ -9,6 +9,7 @@ import {
   PopoverTrigger,
 } from '@/components/shadcn/popover'
 import { Button } from '@/components/ui/Button'
+import { ToolbarPill } from '@/components/ui/ToolbarPill'
 import { getDefaultBackend } from '@/lib/backend'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
@@ -151,20 +152,17 @@ export function EngineIndicator({
       <PopoverTrigger
         aria-label={`Engine: ${label}, ${status}`}
         title={`Connected to ${label}`}
-        className={cn(
-          'icon-host inline-flex h-8 max-w-56 shrink-0 items-center gap-2 rounded-field bg-card px-3 font-inter text-body font-medium text-muted-foreground transition-[background-color,color] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none data-open:bg-surface-hover data-open:text-foreground',
-          className,
-        )}
+        render={<ToolbarPill className={cn('max-w-56', className)} />}
       >
         {dot}
         <span className="min-w-0 truncate">{label}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-80 gap-3 p-3">
+      <PopoverContent align="end" sideOffset={8} className="w-80">
         <PopoverHeader>
-          <PopoverTitle className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             {dot}
-            Engine
-          </PopoverTitle>
+            <PopoverTitle>Engine</PopoverTitle>
+          </div>
           <PopoverDescription>{status}</PopoverDescription>
         </PopoverHeader>
         <dl className="flex flex-col gap-2.5 font-inter">
