@@ -138,7 +138,7 @@ export function EngineIndicator({
       >
         <Server className="size-5 shrink-0" aria-hidden />
         <span className="min-w-0 flex-1 truncate">
-          <span className="font-mono text-sm text-ink">{label}</span>
+          <span className="text-sm font-medium text-ink">{label}</span>
           <span className="ml-2 text-sm">{status}</span>
         </span>
         {dot}
@@ -152,14 +152,14 @@ export function EngineIndicator({
         aria-label={`Engine: ${label}, ${status}`}
         title={`Connected to ${label}`}
         className={cn(
-          'icon-host inline-flex h-8 max-w-56 shrink-0 items-center gap-2 rounded-field bg-card px-2.5 font-mono text-xs text-muted-foreground transition-[background-color,color] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none data-open:bg-surface-hover data-open:text-foreground',
+          'icon-host inline-flex h-8 max-w-56 shrink-0 items-center gap-2 rounded-field bg-card px-3 font-inter text-body font-medium text-muted-foreground transition-[background-color,color] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none data-open:bg-surface-hover data-open:text-foreground',
           className,
         )}
       >
         {dot}
         <span className="min-w-0 truncate">{label}</span>
       </PopoverTrigger>
-      <PopoverContent align="end" sideOffset={8} className="w-80 gap-3">
+      <PopoverContent align="end" sideOffset={8} className="w-80 gap-3 p-3">
         <PopoverHeader>
           <PopoverTitle className="flex items-center gap-2">
             {dot}
@@ -167,26 +167,34 @@ export function EngineIndicator({
           </PopoverTitle>
           <PopoverDescription>{status}</PopoverDescription>
         </PopoverHeader>
-        <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
-          <dt className="text-muted-foreground">Engine</dt>
-          <dd className="min-w-0 break-all font-mono text-xs leading-5">
-            {info?.engineUrl ??
-              (info ? (
-                <span className="font-sans text-muted-foreground">
-                  Not reported by this ADE worker
-                </span>
-              ) : (
-                '…'
-              ))}
-          </dd>
-          <dt className="text-muted-foreground">Namespace</dt>
-          <dd className="min-w-0 break-all font-mono text-xs leading-5">
-            {info ? namespace : '…'}
-          </dd>
-          <dt className="text-muted-foreground">This page</dt>
-          <dd className="min-w-0 break-all font-mono text-xs leading-5">
-            {info?.wsUrl ?? '…'}
-          </dd>
+        <dl className="flex flex-col gap-2.5 font-inter">
+          <div className="flex flex-col gap-0.5">
+            <dt className="text-xs text-muted-foreground">Engine</dt>
+            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
+              {info?.engineUrl ??
+                (info ? (
+                  <span className="text-muted-foreground">
+                    Not reported by this ADE worker
+                  </span>
+                ) : (
+                  '…'
+                ))}
+            </dd>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <dt className="text-xs text-muted-foreground">Namespace</dt>
+            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
+              {info ? namespace : '…'}
+            </dd>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <dt className="text-xs text-muted-foreground">
+              This page connects through
+            </dt>
+            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
+              {info?.wsUrl ?? '…'}
+            </dd>
+          </div>
         </dl>
         {address ? (
           <Button

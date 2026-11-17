@@ -5,7 +5,6 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
   IconButton,
-  StatusBar,
   uiClasses,
   WorkerConfigurationDialog,
   type WorkerConfigurationPanelProps,
@@ -458,9 +457,6 @@ export function JudgeSessionPicker({
                 onConfigure={configure}
                 onAdd={openAdd}
               />
-              <StatusBar as="footer" className="judge-ui-session-footer">
-                Applies from this session’s next turn
-              </StatusBar>
             </PickerPage>
             <PickerPage page="add" active={page === 'add'}>
               <SubpageHeader
