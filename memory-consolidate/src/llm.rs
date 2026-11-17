@@ -9,12 +9,18 @@
 //!   `promote_corroboration_threshold` times) — the model decides whether
 //!   one is a standing instruction and phrases the one-line rule; accepted
 //!   lines append to the bank's auto-managed `learned` rule,
-//!   fingerprint-deduped, never touching hand-authored rules.
+//!   fingerprint-deduped, never touching hand-authored rules. The judge sees
+//!   the learned lines already in force, and ids promoted or covered by them
+//!   are remembered in state, so a candidate is not judged again once its
+//!   line is in the rule.
 //!
 //! Fail-soft: no router, a malformed reply, or `llm_assist_enabled: false`
 //! means this tier simply does not run — the deterministic pass already
 //! completed. The tier never deletes: merges supersede (pointer kept) and
-//! promotions only append.
+//! promotions only append, each write guarded by the rule as read right
+//! before it (`expected`).
+
+use std::collections::BTreeSet;
 
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
@@ -25,7 +31,8 @@ use crate::consolidate::{MemoryRow, PlannedGroup};
 
 const JUDGE_SYSTEM: &str = "You judge memory-bank hygiene candidates. Reply ONLY with a JSON \
 object (no prose, no code fences):\n\
-{\"merge_groups\": [int], \"promotions\": [{\"id\": string, \"rule\": string}]}\n\
+{\"merge_groups\": [int], \"promotions\": [{\"id\": string, \"rule\": string}], \
+\"covered\": [string]}\n\
 Rules:\n\
 - merge_groups: indices of REORDER groups whose texts state the SAME fact with the same \
 meaning. Word-order changes that swap roles (\"Alice manages Bob\" vs \"Bob manages Alice\") \
@@ -33,6 +40,8 @@ are NOT the same — when unsure, leave the group out.\n\
 - promotions: candidates that are standing instructions about how an assistant should behave \
 (style, format, workflow). Phrase `rule` as ONE imperative line under 200 characters. Facts \
 about people or the world are never promoted — omit them.\n\
+- learned_lines are the rules already in force. A candidate that one of them already states, \
+in the same or other words, is never promoted: list its id in covered instead.\n\
 - Empty lists are the normal answer.";
 
 const LLM_TIMEOUT_MS: u64 = 60_000;
@@ -49,6 +58,11 @@ pub struct JudgeReply {
     pub merge_groups: Vec<usize>,
     #[serde(default)]
     pub promotions: Vec<Promotion>,
+    /// Candidate ids a learned line already states (never promoted). Kept
+    /// as a `Value` so a null or misshapen list cannot void the whole reply;
+    /// the caller reads only its string items.
+    #[serde(default)]
+    pub covered: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,14 +73,21 @@ pub struct Promotion {
 
 /// Live, unpinned-or-pinned memories reinforced often enough to be worth a
 /// promotion judgment. Pinned records are eligible: promotion copies a
-/// line into the learned rule and never modifies the memory itself.
-pub fn promotion_candidates(rows: &[MemoryRow], threshold: u32) -> Vec<&MemoryRow> {
+/// line into the learned rule and never modifies the memory itself. Ids in
+/// `promoted` (the ledger) are dropped before the cap, so they never hold
+/// the top slots.
+// shortcut: the ledger holds promoted and covered ids only, a candidate the judge rejects is judged again each pass; record judged ids once a reply can be told from a malformed one.
+pub fn promotion_candidates<'a>(
+    rows: &'a [MemoryRow],
+    threshold: u32,
+    promoted: &BTreeSet<String>,
+) -> Vec<&'a MemoryRow> {
     if threshold == 0 {
         return Vec::new();
     }
     let mut out: Vec<&MemoryRow> = rows
         .iter()
-        .filter(|r| r.corroboration >= threshold)
+        .filter(|r| r.corroboration >= threshold && !promoted.contains(&r.id))
         .collect();
     out.sort_by(|a, b| b.corroboration.cmp(&a.corroboration).then(a.id.cmp(&b.id)));
     out.truncate(20);
@@ -74,8 +95,14 @@ pub fn promotion_candidates(rows: &[MemoryRow], threshold: u32) -> Vec<&MemoryRo
 }
 
 /// Render the judge prompt for one bank's candidates. `None` when there is
-/// nothing to judge (skip the call entirely).
-pub fn judge_prompt(reorder_groups: &[&PlannedGroup], promotions: &[&MemoryRow]) -> Option<String> {
+/// nothing to judge (skip the call entirely). The `learned` rule's lines go
+/// along only with promotion candidates, so a reorder-only prompt is
+/// unchanged.
+pub fn judge_prompt(
+    reorder_groups: &[&PlannedGroup],
+    promotions: &[&MemoryRow],
+    learned: &str,
+) -> Option<String> {
     if reorder_groups.is_empty() && promotions.is_empty() {
         return None;
     }
@@ -95,7 +122,15 @@ pub fn judge_prompt(reorder_groups: &[&PlannedGroup], promotions: &[&MemoryRow])
         .iter()
         .map(|m| json!({ "id": m.id, "text": m.text, "times_observed": m.corroboration + 1 }))
         .collect();
-    Some(json!({ "reorder_groups": groups, "promotion_candidates": candidates }).to_string())
+    let mut prompt = json!({ "reorder_groups": groups, "promotion_candidates": candidates });
+    if !promotions.is_empty() {
+        let lines: Vec<&str> = learned
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .collect();
+        prompt["learned_lines"] = json!(lines);
+    }
+    Some(prompt.to_string())
 }
 
 /// Tolerant reply parse: fences and prose stripped the same way the memory
@@ -113,8 +148,9 @@ pub fn parse_reply(raw: &str) -> JudgeReply {
 
 /// Append accepted rule lines to the learned rule, fingerprint-deduped
 /// against existing lines AND within the batch. Returns the merged
-/// content and how many lines were added; `None` content = nothing new.
-pub fn merge_promotions(existing: &str, rules: &[String]) -> (String, usize) {
+/// content, how many lines were added, and the ids whose line is now in the
+/// rule (added or already there; a line rejected for length is in neither).
+pub fn merge_promotions(existing: &str, promotions: &[Promotion]) -> (String, usize, Vec<String>) {
     let mut seen: std::collections::HashSet<String> = existing
         .lines()
         .filter_map(|l| l.strip_prefix("- "))
@@ -126,11 +162,13 @@ pub fn merge_promotions(existing: &str, rules: &[String]) -> (String, usize) {
         existing.trim_end().to_string() + "\n"
     };
     let mut added = 0usize;
-    for rule in rules {
-        let line = rule.trim();
+    let mut landed = Vec::new();
+    for promotion in promotions {
+        let line = promotion.rule.trim();
         if line.len() < 3 || line.len() > 300 {
             continue;
         }
+        landed.push(promotion.id.clone());
         if !seen.insert(crate::consolidate::normalize(line)) {
             continue;
         }
@@ -139,7 +177,7 @@ pub fn merge_promotions(existing: &str, rules: &[String]) -> (String, usize) {
         out.push('\n');
         added += 1;
     }
-    (out, added)
+    (out, added, landed)
 }
 
 /// The extraction model: the configured pin, else the first catalog entry.
@@ -252,19 +290,27 @@ mod tests {
             .map(|i| row(&format!("fp{i:02}"), &format!("text {i}"), i as u32))
             .collect();
         rows.reverse();
-        let out = promotion_candidates(&rows, 4);
+        let none = BTreeSet::new();
+        let out = promotion_candidates(&rows, 4, &none);
         assert_eq!(out.len(), 20, "capped");
         assert_eq!(out[0].corroboration, 29, "most corroborated first");
         assert!(out.iter().all(|r| r.corroboration >= 4));
         assert!(
-            promotion_candidates(&rows, 0).is_empty(),
+            promotion_candidates(&rows, 0, &none).is_empty(),
             "threshold 0 disables"
+        );
+        // 26 rows meet the threshold; ledger ids leave before the cap.
+        let ledger: BTreeSet<String> = (8..30).map(|i| format!("fp{i:02}")).collect();
+        let out = promotion_candidates(&rows, 4, &ledger);
+        assert_eq!(
+            out.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["fp07", "fp06", "fp05", "fp04"]
         );
     }
 
     #[test]
     fn judge_prompt_skips_empty_and_numbers_groups() {
-        assert!(judge_prompt(&[], &[]).is_none());
+        assert!(judge_prompt(&[], &[], "- Be brief.\n").is_none());
         let g = PlannedGroup {
             winner_id: "fpw".into(),
             winner_text: "alpha beta".into(),
@@ -274,11 +320,37 @@ mod tests {
             report_only: true,
         };
         let groups = [&g];
-        let prompt = judge_prompt(&groups, &[]).unwrap();
+        let learned = "# Learned\nIntro.\n- Be brief.\n- Cite sources.\n";
+        let prompt = judge_prompt(&groups, &[], learned).unwrap();
         let v: serde_json::Value = serde_json::from_str(&prompt).unwrap();
         assert_eq!(v["reorder_groups"][0]["index"], 0);
         assert_eq!(v["reorder_groups"][0]["texts"][0], "alpha beta");
         assert_eq!(v["reorder_groups"][0]["texts"][1], "beta alpha");
+        assert!(v.get("learned_lines").is_none(), "reorder-only: no rule");
+        let candidate = row("fp1", "User wants short replies", 5);
+        let prompt = judge_prompt(&groups, &[&candidate], learned).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+        assert_eq!(
+            v["learned_lines"],
+            serde_json::json!(["Be brief.", "Cite sources."])
+        );
+        assert_eq!(v["promotion_candidates"][0]["id"], "fp1");
+    }
+
+    #[test]
+    fn reply_parse_reads_covered_ids() {
+        let r = parse_reply("{\"covered\": [\"fp1\"]}");
+        assert_eq!(r.covered, serde_json::json!(["fp1"]));
+        assert!(r.promotions.is_empty());
+        assert!(parse_reply("{}").covered.is_null());
+        // A bad `covered` must not throw away the rest of the reply.
+        for bad in ["null", "[{\"id\": \"fp1\"}]", "\"fp1\""] {
+            let r = parse_reply(&format!(
+                "{{\"merge_groups\": [0], \"promotions\": [{{\"id\": \"a\", \"rule\": \"Be brief.\"}}], \"covered\": {bad}}}"
+            ));
+            assert_eq!(r.merge_groups, [0], "{bad}");
+            assert_eq!(r.promotions.len(), 1, "{bad}");
+        }
     }
 
     #[test]
@@ -292,18 +364,32 @@ mod tests {
         assert_eq!(r.promotions[0].id, "fp1");
     }
 
+    fn promotion(id: &str, rule: &str) -> Promotion {
+        Promotion {
+            id: id.into(),
+            rule: rule.into(),
+        }
+    }
+
     #[test]
     fn merge_promotions_dedups_against_existing_and_batch() {
-        let (first, added) = merge_promotions(
+        let (first, added, landed) = merge_promotions(
             "",
-            &["Never use em-dashes.".into(), "never USE em-dashes!".into()],
+            &[
+                promotion("fp1", "Never use em-dashes."),
+                promotion("fp2", "never USE em-dashes!"),
+            ],
         );
         assert_eq!(added, 1);
+        assert_eq!(landed, ["fp1", "fp2"], "a batch duplicate is in the rule");
         assert!(first.starts_with("# Learned\n"));
-        let (second, added) = merge_promotions(&first, &["Never use em-dashes.".into()]);
+        let (second, added, landed) =
+            merge_promotions(&first, &[promotion("fp3", "Never use em-dashes.")]);
         assert_eq!(added, 0);
+        assert_eq!(landed, ["fp3"], "already present counts as landed");
         assert_eq!(second.trim_end(), first.trim_end());
-        let (_, added) = merge_promotions(&first, &["x".into()]);
+        let (_, added, landed) = merge_promotions(&first, &[promotion("fp4", "x")]);
         assert_eq!(added, 0, "too-short lines dropped");
+        assert!(landed.is_empty(), "a rejected line is not landed");
     }
 }

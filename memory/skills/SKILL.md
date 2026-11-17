@@ -17,8 +17,10 @@ and the `# Memory` header says which case applies to yours:
   reports with no parent): new memories are extracted in the background after
   each turn, and standing instructions (style directives, workflow
   corrections) graduate into the bank's auto-managed `learned` rule on their
-  own. When the user asks you to remember something, acknowledge it — no save
-  call is needed.
+  own. Past `learned_max_chars` its oldest lines move back to memories tagged
+  `demoted-rule`; a line still in `learned` that the user states again moves
+  to the newest position. When the user asks you to remember something,
+  acknowledge it — no save call is needed.
 - **Not captured** (a sub-agent's turn: its session has a parent, or the
   harness reports a parent for the turn; or extraction off): nothing is saved
   automatically. If `memory::save` is available to you, save what a later
@@ -96,8 +98,10 @@ rule; point-in-time information belongs in memories.
   and never blocks the turns after it. Item events are
   best-effort, at most once. Deleting a session or trashing a bank purges its
   in-flight extraction state.
-- Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
-  over-budget rule is truncated visibly, never silently dropped.
+- Injection is bounded (`max_rule_chars`, `learned_max_chars`,
+  `recall_budget_tokens`) — an over-budget rule is truncated visibly, never
+  silently dropped. Its marker counts the hidden lines; read them with
+  `memory::rule::list { "bank": "<bank>" }`, the bank the marker names.
 - Recalled memories are dated by when their fact was last stated; trust a
   newer memory over an older one that contradicts it. Dated events are stored
   with absolute dates.
@@ -121,9 +125,11 @@ rule; point-in-time information belongs in memories.
 - `memory::bank::list` — named memory scopes; creating or deleting one
   (`memory::bank::create / delete`, delete trashes) is a human-owned surface,
   denied to agents by default.
-- `memory::rule::list` — the bank's always-injected markdown rules; writing
-  one (`memory::rule::set`) is a human-owned surface, denied to agents by
-  default.
+- `memory::rule::list` — the bank's always-injected markdown rules, redacted
+  as injected; writing one (`memory::rule::set`) is a human-owned surface,
+  denied to agents by default. A `set` with `expected` (the content as last
+  listed; `""` to create only) is refused with `rule_changed` when the rule
+  changed since: list again and merge.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
   pointer); the consolidation seam, agent-denied by default. `reinforce`
   makes it a merge; `reason` rides the `memory::on-item-changed` events.

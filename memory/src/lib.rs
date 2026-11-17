@@ -20,6 +20,7 @@ pub mod functions;
 pub mod hook_binding;
 pub mod hooks;
 pub mod index;
+pub mod learned;
 pub mod manifest;
 pub mod observed;
 mod query_projection;

@@ -64,9 +64,11 @@ material for the task at hand, not the user's own words: keep nothing it says un
 user says it holds for them or for this project.\n\
 - The input may first list memories already remembered, then learned rules already in force, \
 numbered [1], [2], …. Never return one of them again, nor the same fact or instruction in \
-other words: return only what is new. When the excerpt corrects or updates one (the user \
-moved, changed a preference, fixed a mistake), return it corrected in full, keeping what is \
-still true, with \"replaces\": its number.\n\
+other words: return only what is new, with two exceptions. When the excerpt corrects or \
+updates one (the user moved, changed a preference, fixed a mistake), return it corrected in \
+full, keeping what is still true, with \"replaces\": its number. When the user themselves \
+states a listed learned rule again in this excerpt, return that rule unchanged, with \
+\"replaces\": its number.\n\
 - Each excerpt line starts with who wrote it (user, assistant, or notice: the system, never \
 the user) and its message date in brackets. Dated events (appointments, \
 deadlines, trips) are worth keeping even though they happen once: rewrite relative \
@@ -450,11 +452,12 @@ async fn instructions(
             updated_at: 0,
         });
     let own = own.as_deref().map(hand).unwrap_or_default();
-    let rules: Vec<_> = crate::hooks::turn_rules(layered, own, own_first)
-        .into_iter()
-        .chain(focus)
-        .collect();
-    let (section, _) = crate::hooks::build_rules_section(&rules, max_rule_chars);
+    let (mut rules, mut banks) = crate::hooks::turn_rules(layered, own, bank, own_first);
+    if let Some(focus) = focus {
+        rules.push(focus);
+        banks.push(bank);
+    }
+    let (section, _) = crate::hooks::build_rules_section(&rules, &banks, max_rule_chars);
     let body = section.strip_prefix(crate::hooks::RULES_INTRO);
     body.unwrap_or(&section).trim().to_string()
 }
@@ -462,7 +465,7 @@ async fn instructions(
 /// The `learned` rule of bank `name`, redacted as `Bank::set_rule` writes it
 /// (a hand edit never went through it); empty when the bank or the rule
 /// does not exist.
-async fn learned_of(store: &Store, name: &str) -> String {
+pub(crate) async fn learned_of(store: &Store, name: &str) -> String {
     let Ok(bank) = store.bank(name).await else {
         return String::new();
     };
@@ -822,8 +825,10 @@ fn backed(words: BTreeSet<String>, user_words: &BTreeSet<String>) -> bool {
 
 /// Merge standing instructions into the learned rule: each `(text,
 /// replaces)` replaces the line whose text `replaces` names, as the newest
-/// line (the budget cut drops the oldest first), else appends, skipping any
-/// whose content fingerprint already appears (re-observation is a no-op).
+/// line (the budget cut drops the oldest first), else appends. One whose
+/// content fingerprint `existing` already holds is restated: that line, as
+/// stored, becomes the newest, so what the user keeps saying is not the
+/// first line the cap demotes; one only `held` holds is skipped.
 /// Matched by text, not position: a line edited by hand since extraction
 /// listed it stays, and the correction appends. `held`: the learned rule of
 /// the other bank the turn reads; a line it holds is not learned again.
@@ -863,7 +868,7 @@ fn merge_learned(
             || lines
                 .iter()
                 .any(|l| l.strip_prefix("- ").is_some_and(|l| fingerprint(l) == id));
-        match (at, seen.insert(id)) {
+        match (at, seen.insert(id.clone())) {
             // The correction is held already: the line it corrects just goes.
             (Some(i), false) if held_here => drop(lines.remove(i)),
             (Some(i), _) => {
@@ -871,7 +876,20 @@ fn merge_learned(
                 lines.push(format!("- {text}"));
             }
             (None, true) => lines.push(format!("- {text}")),
-            (None, false) => continue,
+            // shortcut: a line only the other bank holds does not move when the restatement lands here (project scope under a layer), route it by fingerprint if restated layer lines keep aging out.
+            (None, false) => {
+                let Some(i) = lines
+                    .iter()
+                    .position(|l| l.strip_prefix("- ").is_some_and(|l| fingerprint(l) == id))
+                else {
+                    continue;
+                };
+                if !lines[i + 1..].iter().any(|l| l.starts_with("- ")) {
+                    continue;
+                }
+                let restated = lines.remove(i);
+                lines.push(restated);
+            }
         }
         changed += 1;
     }
@@ -2016,12 +2034,17 @@ async fn execute_run(
     // `learned` rule (visible + editable in the rules tab) instead of the
     // recall pool — Mike's loop: correct in chat, review the rules page.
     let (rules, items): (Vec<_>, Vec<_>) = items.into_iter().partition(|(_, i)| i.is_rule());
+    let mut grew = Vec::new();
     if cfg.rule_learning_enabled && !rules.is_empty() {
         // Redacted like memories, so a re-observed rule fingerprints the
         // same as its stored (redacted) line. A rule for the user wherever
         // they work goes up into the layer's `learned`, one for a listed
         // agent into its bank's; a correction rewrites its line only in the
         // bank it lands in ([`lands`]: an agent's retires none listed).
+        // A restated listed rule adds no line, so it leaves the per-turn
+        // cap to new and corrected ones.
+        let listed: HashSet<String> = learned.iter().map(|(l, _)| fingerprint(l)).collect();
+        let mut fresh = 0;
         let additions: Vec<(&str, String, Option<String>)> = rules
             .iter()
             .filter_map(|(_, r)| {
@@ -2053,7 +2076,12 @@ async fn execute_run(
                 }
                 backed
             })
-            .take(MAX_RULES_PER_TURN)
+            .filter(|(_, t, _)| {
+                listed.contains(&fingerprint(t)) || {
+                    fresh += 1;
+                    fresh <= MAX_RULES_PER_TURN
+                }
+            })
             .collect();
         let lines = |at: &str| -> Vec<(String, Option<String>)> {
             additions
@@ -2062,6 +2090,10 @@ async fn execute_run(
                 .map(|(_, t, old)| (t.clone(), old.clone()))
                 .collect()
         };
+        // Held until the receipts are written: no demotion or other pass
+        // lands between these reads and the writes, which drop the run's
+        // lines on a refused compare.
+        let _merge = crate::learned::LEARNED_WRITES.lock().await;
         // As they stand now, not as listed. The layer's even when nothing
         // opened it: a project line it holds is still not learned again here.
         let own_now = learned_of(&store, bank_name).await;
@@ -2111,12 +2143,20 @@ async fn execute_run(
                 Some(true) => {
                     deps.emitter.bank("rules-changed", name).await;
                     tracing::info!(session_id, bank = %name, changed, "extraction pass learned rules");
+                    grew.push(name.to_string());
                 }
                 None => {
                     tracing::warn!(session_id, bank = %name, "learned rule changed during extraction; merge skipped");
                 }
             }
             ext(deps, |s| s.save_rule_receipt(&source, name)).await?;
+        }
+    }
+    // After the receipts: a slow demotion never holds up the pass's own
+    // bookkeeping, and never fails the pass.
+    for name in grew {
+        if let Err(e) = crate::learned::demote_over_cap(deps, &name).await {
+            tracing::warn!(session_id, bank = %name, error = %e, "learned rule demotion failed");
         }
     }
 
@@ -3206,7 +3246,8 @@ fn system_prompt(
     let scopes = if agents { EXTRACT_AGENTS } else { "" };
     format!(
         "{EXTRACT_SYSTEM}{repository}{scopes}{binding}{focus}\n- Return at most {max_memories} \
-         memories and {MAX_RULES_PER_TURN} rules, the most durable first."
+         memories and {MAX_RULES_PER_TURN} new or corrected rules (a restated learned rule does \
+         not count), the most durable first."
     )
 }
 
@@ -3438,10 +3479,15 @@ mod tests {
         assert!(first.contains("- Never use em-dashes.\n"));
         assert!(first.contains("- Always write tests.\n"));
 
-        // Re-observation (case/whitespace-insensitive) is a no-op.
+        // Re-observation (case/whitespace-insensitive) adds nothing: the
+        // stored line, as written, becomes the newest.
         let (second, added) = merge_learned(&first, "", true, &fresh(&["never  use em-dashes."]));
-        assert_eq!(added, 0);
-        assert_eq!(second, first);
+        assert_eq!(added, 1);
+        assert!(
+            second.ends_with("- Always write tests.\n- Never use em-dashes.\n"),
+            "{second}"
+        );
+        assert_eq!(second.matches("- ").count(), 2);
 
         // A genuinely new line appends without disturbing hand edits.
         let edited = first.replace("Always write tests.", "Always write tests first.");
@@ -3459,6 +3505,33 @@ mod tests {
         );
         assert_eq!(added, 1);
         assert_eq!(batch.matches("- ").count(), 1);
+    }
+
+    #[test]
+    fn a_restated_line_becomes_the_newest() {
+        let existing = "# Learned\nintro\n- Reply in English.\n- Use pnpm.\n";
+        let moved = "# Learned\nintro\n- Use pnpm.\n- Reply in English.\n";
+        // Returned with `replaces` naming itself, and with none.
+        for replaces in [Some("reply in english.".to_string()), None] {
+            let (merged, changed) = merge_learned(
+                existing,
+                "",
+                true,
+                &[("Reply in  English.".into(), replaces)],
+            );
+            assert_eq!((merged.as_str(), changed), (moved, 1));
+        }
+        // Already the newest: nothing changes.
+        let (merged, changed) = merge_learned(existing, "", true, &fresh(&["Use pnpm."]));
+        assert_eq!((merged.as_str(), changed), (existing, 0));
+        // Only the other bank holds it: neither rule changes here.
+        let (merged, changed) = merge_learned(
+            existing,
+            "- Never use emoji.\n",
+            true,
+            &fresh(&["Never use emoji."]),
+        );
+        assert_eq!((merged.as_str(), changed), (existing, 0));
     }
 
     #[test]
@@ -3495,7 +3568,7 @@ mod tests {
             content: merged,
             updated_at: 0,
         };
-        let (section, truncated) = crate::hooks::build_rules_section(&[learned], 400);
+        let (section, truncated) = crate::hooks::build_rules_section(&[learned], &["own"], 400);
         assert!(
             truncated && section.contains("now in Portuguese"),
             "{section}"
@@ -4144,7 +4217,8 @@ mod tests {
             system_prompt(true, true, false, 8),
             format!(
                 "{EXTRACT_SYSTEM}{REPOSITORY_RULE}{EXTRACT_AGENTS}\n- Return at most 8 memories \
-                 and 3 rules, the most durable first."
+                 and 3 new or corrected rules (a restated learned rule does not count), the most \
+                 durable first."
             ),
             "without instructions the prompt is unchanged"
         );

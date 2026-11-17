@@ -584,6 +584,7 @@ pub(crate) fn rules_section(
     bank_name: &str,
     capture: Capture,
     rules: &[crate::types::Rule],
+    banks: &[&str],
 ) -> (String, usize, bool) {
     if !cfg.inject_rules && !cfg.inject_memories {
         return (String::new(), 0, false);
@@ -592,7 +593,7 @@ pub(crate) fn rules_section(
     if !cfg.inject_rules || rules.is_empty() {
         return (section, 0, false);
     }
-    let (rules_part, truncated) = build_rules_section(rules, cfg.max_rule_chars);
+    let (rules_part, truncated) = build_rules_section(rules, banks, cfg.max_rule_chars);
     section.push_str(&rules_part);
     (section, rules.len(), truncated)
 }
@@ -633,15 +634,17 @@ pub(crate) async fn injection(
             Vec::new()
         }
     };
-    let rules = turn_rules(
+    let (rules, banks) = turn_rules(
         layers
             .iter()
             .map(|(name, b)| (*name, rules_of(b)))
             .collect(),
         bank.as_deref().map(rules_of).unwrap_or_default(),
+        bank_name,
         bank_name == cfg.default_bank,
     );
-    let (section, rules_count, rules_truncated) = rules_section(cfg, bank_name, capture, &rules);
+    let (section, rules_count, rules_truncated) =
+        rules_section(cfg, bank_name, capture, &rules, &banks);
     let mut out = Injection {
         section,
         rules: rules_count,
@@ -767,23 +770,30 @@ pub(crate) async fn injection(
 
 /// A turn's rules, under one `max_rule_chars` budget: each layer's in
 /// order, labelled with its bank's name so two `learned` rules never read as
-/// one, then the bank's own; the bank's own first when it is `default_bank`,
-/// whose rules come before every layer's.
-pub(crate) fn turn_rules(
-    layers: Vec<(&str, Vec<crate::types::Rule>)>,
+/// one, then `own_bank`'s own; the bank's own first when it is
+/// `default_bank`, whose rules come before every layer's. Returned with the
+/// bank each rule was read from, by position: a rule file's own name may
+/// hold " (", so the label cannot be parsed back.
+pub(crate) fn turn_rules<'a>(
+    layers: Vec<(&'a str, Vec<crate::types::Rule>)>,
     own: Vec<crate::types::Rule>,
+    own_bank: &'a str,
     own_first: bool,
-) -> Vec<crate::types::Rule> {
+) -> (Vec<crate::types::Rule>, Vec<&'a str>) {
     let layered = layers.into_iter().flat_map(|(name, rules)| {
-        rules.into_iter().map(move |r| crate::types::Rule {
-            name: format!("{} ({name})", r.name),
-            ..r
+        rules.into_iter().map(move |r| {
+            let r = crate::types::Rule {
+                name: format!("{} ({name})", r.name),
+                ..r
+            };
+            (r, name)
         })
     });
+    let own = own.into_iter().map(|r| (r, own_bank));
     if own_first {
-        own.into_iter().chain(layered).collect()
+        own.chain(layered).unzip()
     } else {
-        layered.chain(own).collect()
+        layered.chain(own).unzip()
     }
 }
 
@@ -1526,7 +1536,7 @@ pub(crate) fn ambient_header(bank_name: &str, capture: Capture) -> String {
 /// hand-edited or reloaded rules/*.md never went through Bank::set_rule.
 /// The learned rule's header speaks to the human editing the file, not to
 /// the model.
-fn rule_body(rule: &crate::types::Rule) -> String {
+pub(crate) fn rule_body(rule: &crate::types::Rule) -> String {
     let redacted = crate::redact::redact(rule.content.trim()).text;
     // Trimmed like the content: a learned rule with every line gone is the
     // header alone.
@@ -1596,51 +1606,69 @@ pub(crate) const RULES_INTRO: &str = "\nThe rules below are the user's standing 
 /// The rules part of the injected system-prompt section, hard-bounded by
 /// `max_rule_chars`. Over-budget content truncates on a char boundary
 /// with a visible marker when at least 200 chars of budget remain, and is
-/// omitted (named) otherwise. Returns `(section_part, truncated)`.
+/// omitted (named) otherwise. Either marker counts the hidden lines and
+/// names the `memory::rule::list` call that reads them, with the rule's
+/// bank: `banks` holds one per rule, by position ([`turn_rules`]).
+/// Returns `(section_part, truncated)`.
 pub(crate) fn build_rules_section(
     rules: &[crate::types::Rule],
+    banks: &[&str],
     max_rule_chars: usize,
 ) -> (String, bool) {
     if rules.is_empty() {
         return (String::new(), false);
     }
+    debug_assert_eq!(rules.len(), banks.len(), "one bank per rule");
+    let non_blank = |s: &str| s.lines().filter(|l| !l.trim().is_empty()).count();
     let mut out = RULES_INTRO.to_string();
     let mut budget = max_rule_chars;
     let mut truncated = false;
-    for rule in rules {
+    for (rule, rule_bank) in rules.iter().zip(banks) {
         let body = rule_body(rule);
         let content = body.as_str();
         if content.len() <= budget {
             budget -= content.len();
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
-        } else if budget > 200 {
+            continue;
+        }
+        let pointer = |hidden: usize| {
+            format!(
+                "hidden lines: {hidden}; read them with memory::rule::list {{\"bank\":\"{rule_bank}\"}}"
+            )
+        };
+        if budget > 200 {
             // Extraction appends: the learned rule loses its oldest lines,
             // never what the user said last.
-            let body = if rule.name.split(" (").next() == Some(crate::extract::LEARNED_RULE) {
+            let kept = if rule.name.split(" (").next() == Some(crate::extract::LEARNED_RULE) {
                 newest_lines(content, budget)
             } else {
-                body
+                body.clone()
             };
-            let content = body.as_str();
-            let mut cut = budget.min(content.len());
-            while cut > 0 && !content.is_char_boundary(cut) {
+            let mut cut = budget.min(kept.len());
+            while cut > 0 && !kept.is_char_boundary(cut) {
                 cut -= 1;
             }
+            let shown = &kept[..cut];
+            // A line the cut splits is hidden, not shown.
+            let split = cut < kept.len()
+                && !shown.ends_with('\n')
+                && !kept[cut..].starts_with('\n')
+                && shown.lines().last().is_some_and(|l| !l.trim().is_empty());
+            let hidden = non_blank(content) - (non_blank(shown) - usize::from(split));
             out.push_str(&format!(
-                "\n## {}\n{}\n[rule truncated: over the {} char injection budget — trim it in the memory page]\n",
+                "\n## {}\n{shown}\n[rule truncated: over the {max_rule_chars} char injection budget — {}]\n",
                 rule.name,
-                &content[..cut],
-                max_rule_chars,
+                pointer(hidden),
             ));
             budget = 0;
-            truncated = true;
         } else {
             out.push_str(&format!(
-                "\n## {} [omitted: over the injection budget]\n",
-                rule.name
+                "\n## {} [omitted: over the injection budget — {}]\n",
+                rule.name,
+                pointer(non_blank(content)),
             ));
-            truncated = true;
         }
+        truncated = true;
     }
     (out, truncated)
 }
@@ -2048,32 +2076,53 @@ mod tests {
     #[test]
     fn the_section_follows_the_injection_switches() {
         let rules = vec![rule("style", "No em-dashes.")];
-        let (section, n, _) =
-            rules_section(&config(true, true, true), "b", Capture::Extracted, &rules);
+        let (section, n, _) = rules_section(
+            &config(true, true, true),
+            "b",
+            Capture::Extracted,
+            &rules,
+            &["b"],
+        );
         assert!(
             section.starts_with(&ambient_header("b", Capture::Extracted))
                 && section.contains("No em-dashes.")
         );
         assert_eq!(n, 1);
-        let (section, n, _) =
-            rules_section(&config(false, true, true), "b", Capture::Extracted, &rules);
+        let (section, n, _) = rules_section(
+            &config(false, true, true),
+            "b",
+            Capture::Extracted,
+            &rules,
+            &["b"],
+        );
         assert_eq!(
             (section, n),
             (ambient_header("b", Capture::Extracted), 0),
             "rules off: header only"
         );
-        let (section, n, _) =
-            rules_section(&config(false, false, true), "b", Capture::Extracted, &rules);
+        let (section, n, _) = rules_section(
+            &config(false, false, true),
+            "b",
+            Capture::Extracted,
+            &rules,
+            &["b"],
+        );
         assert_eq!((section.as_str(), n), ("", 0), "memory off: nothing");
     }
 
     #[test]
     fn an_unknown_bank_gets_the_header_too() {
-        let (section, ..) =
-            rules_section(&config(true, true, true), "new", Capture::Extracted, &[]);
+        let (section, ..) = rules_section(
+            &config(true, true, true),
+            "new",
+            Capture::Extracted,
+            &[],
+            &[],
+        );
         assert_eq!(section, ambient_header("new", Capture::Extracted));
         // Extraction off: told to save, which creates the bank.
-        let (section, ..) = rules_section(&config(true, true, false), "new", Capture::Save, &[]);
+        let (section, ..) =
+            rules_section(&config(true, true, false), "new", Capture::Save, &[], &[]);
         assert_eq!(section, ambient_header("new", Capture::Save));
     }
 
@@ -2364,7 +2413,7 @@ mod tests {
     #[test]
     fn rules_within_budget_inject_whole_and_unmarked() {
         let rules = vec![rule("style", "No em-dashes."), rule("tone", "Formal.")];
-        let (section, truncated) = build_rules_section(&rules, 6_000);
+        let (section, truncated) = build_rules_section(&rules, &["own"; 2], 6_000);
         assert!(!truncated);
         assert!(section.contains(
             "## style
@@ -2380,7 +2429,7 @@ Formal."
     #[test]
     fn over_budget_rule_truncates_with_visible_marker() {
         let big = "x".repeat(1_000);
-        let (section, truncated) = build_rules_section(&[rule("big", &big)], 300);
+        let (section, truncated) = build_rules_section(&[rule("big", &big)], &["own"], 300);
         assert!(truncated);
         assert!(section.contains("[rule truncated: over the 300 char injection budget"));
         // The kept prefix respects the budget.
@@ -2399,7 +2448,7 @@ Formal."
             lines.join("\n")
         );
         for name in ["learned", "learned (main)"] {
-            let (section, truncated) = build_rules_section(&[rule(name, &learned)], 400);
+            let (section, truncated) = build_rules_section(&[rule(name, &learned)], &["own"], 400);
             assert!(truncated);
             assert!(section.contains("[rule truncated"), "{section}");
             assert!(section.contains("intro\n"), "{section}");
@@ -2413,7 +2462,7 @@ Formal."
             );
         }
         // Any other rule keeps its head, as before.
-        let (section, _) = build_rules_section(&[rule("style", &learned)], 400);
+        let (section, _) = build_rules_section(&[rule("style", &learned)], &["own"], 400);
         assert!(section.contains("number 01,") && !section.contains("number 20,"));
     }
 
@@ -2421,7 +2470,7 @@ Formal."
     fn truncation_cuts_on_a_char_boundary() {
         // é is two bytes; an odd budget must not split it.
         let content = "é".repeat(400);
-        let (section, truncated) = build_rules_section(&[rule("uni", &content)], 301);
+        let (section, truncated) = build_rules_section(&[rule("uni", &content)], &["own"], 301);
         assert!(truncated);
         assert!(section.contains("[rule truncated"));
     }
@@ -2433,10 +2482,60 @@ Formal."
             rule("second", &"b".repeat(500)),
         ];
         // First consumes 900 of 1000; 100 left is under the 200-char floor.
-        let (section, truncated) = build_rules_section(&rules, 1_000);
+        let (section, truncated) = build_rules_section(&rules, &["own"; 2], 1_000);
         assert!(truncated);
-        assert!(section.contains("## second [omitted: over the injection budget]"));
+        assert!(section.contains("## second [omitted: over the injection budget"));
         assert!(!section.contains("bbbb"));
+    }
+
+    #[test]
+    fn the_truncation_marker_counts_hidden_lines_and_names_rule_list() {
+        let lines: Vec<String> = (1..=20)
+            .map(|n| format!("- Learned line number {n:02}, kept short."))
+            .collect();
+        let learned = format!("{}{}\n", crate::extract::LEARNED_HEADER, lines.join("\n"));
+        // 37 chars a line plus its newline: 400 shows the newest 10 whole
+        // (10 * 38 - 1 = 379), so 10 are hidden.
+        for (name, bank) in [("learned", "own"), ("learned (main)", "main")] {
+            let (section, _) = build_rules_section(&[rule(name, &learned)], &[bank], 400);
+            assert!(
+                section.contains(&format!(
+                    "[rule truncated: over the 400 char injection budget — hidden lines: 10; \
+                     read them with memory::rule::list {{\"bank\":\"{bank}\"}}]"
+                )),
+                "{section}"
+            );
+        }
+        // Any other rule is cut mid-line: the split line counts as hidden.
+        let (section, _) = build_rules_section(&[rule("style", &lines.join("\n"))], &["own"], 400);
+        assert!(section.contains("hidden lines: 10;"), "{section}");
+        // An omitted rule hides every line.
+        let rules = vec![
+            rule("first", &"a".repeat(900)),
+            rule(
+                "second (main)",
+                &format!("- {}\n\n- two\n", "b".repeat(300)),
+            ),
+        ];
+        let (section, _) = build_rules_section(&rules, &["own", "main"], 1_000);
+        assert!(
+            section.contains(
+                "## second (main) [omitted: over the injection budget — hidden lines: 2; \
+                 read them with memory::rule::list {\"bank\":\"main\"}]"
+            ),
+            "{section}"
+        );
+        // A rule file's own name may hold " (": the bank is where the rule
+        // was read, never parsed from its label.
+        let notes = || vec![rule("notes (old)", &"n".repeat(500))];
+        for (layer, own, bank) in [(notes(), vec![], "main"), (vec![], notes(), "own")] {
+            let (rules, banks) = turn_rules(vec![("main", layer)], own, "own", false);
+            let (section, _) = build_rules_section(&rules, &banks, 300);
+            assert!(
+                section.contains(&format!("memory::rule::list {{\"bank\":\"{bank}\"}}]")),
+                "{section}"
+            );
+        }
     }
 
     #[test]
@@ -2447,15 +2546,17 @@ Formal."
                 &format!("{}- {line}\n", crate::extract::LEARNED_HEADER),
             )
         };
-        let rules = turn_rules(
+        let (rules, banks) = turn_rules(
             vec![
                 ("main", vec![learned("Never use emoji.")]),
                 ("agent-reviewer", vec![learned("Check the tests first.")]),
             ],
             vec![learned("Use pnpm."), rule("style", &"s".repeat(300))],
+            "own",
             false,
         );
-        let (section, truncated) = build_rules_section(&rules, 240);
+        assert_eq!(banks, ["main", "agent-reviewer", "own", "own"]);
+        let (section, truncated) = build_rules_section(&rules, &banks, 240);
         let theirs = section
             .find("## learned (main)\n- Never use emoji.")
             .unwrap();
@@ -2472,15 +2573,17 @@ Formal."
             "{reminder}"
         );
 
-        let alone = turn_rules(Vec::new(), vec![learned("Use pnpm.")], false);
+        let (alone, _) = turn_rules(Vec::new(), vec![learned("Use pnpm.")], "own", false);
         assert_eq!(alone[0].name, "learned");
 
         // In a default_bank session its own rules spend the budget first.
-        let main = turn_rules(
+        let (main, banks) = turn_rules(
             vec![("agent-reviewer", vec![learned("Check the tests first.")])],
             vec![learned("Never use emoji.")],
+            "main",
             true,
         );
+        assert_eq!(banks, ["main", "agent-reviewer"]);
         let names: Vec<&str> = main.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["learned", "learned (agent-reviewer)"]);
     }
@@ -4486,10 +4589,14 @@ Formal."
 
     #[test]
     fn injected_rules_are_framed_as_standing_instructions() {
-        let (section, _) = build_rules_section(&[rule("style", "No em-dashes.")], 6_000);
+        let (section, _) = build_rules_section(&[rule("style", "No em-dashes.")], &["own"], 6_000);
         assert!(section.starts_with(RULES_INTRO), "{section}");
         assert!(section.contains("## style\nNo em-dashes."));
-        assert_eq!(build_rules_section(&[], 6_000).0, "", "no rules, no intro");
+        assert_eq!(
+            build_rules_section(&[], &[], 6_000).0,
+            "",
+            "no rules, no intro"
+        );
     }
 
     #[test]
@@ -4536,7 +4643,8 @@ Formal."
         for header in [crate::extract::LEARNED_HEADER, OLD_LEARNED_HEADER] {
             for lines in ["- Never use emoji in replies.\n", ""] {
                 let learned = format!("{header}{lines}");
-                let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
+                let (section, _) =
+                    build_rules_section(&[rule("learned", &learned)], &["own"], 6_000);
                 assert!(
                     section.contains(&format!("## learned\n{}", lines.trim())),
                     "{section}"
