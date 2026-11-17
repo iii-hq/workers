@@ -10,6 +10,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuTrigger,
   EmptyState,
@@ -30,6 +31,7 @@ import { basename } from './paths'
 import { RepoSetup } from './RepoSetup'
 import { gitRemotes } from './repo-setup'
 import { RollbackDialog } from './RollbackDialog'
+import { sameFolder, scmCleanCopy } from './scm-clean'
 import { changeMenu } from './scm-menus'
 import { readScmShowUnversioned, readScmViewMode, writeScmShowUnversioned, writeScmViewMode } from './scm-view'
 import { TextDialog } from './TextDialog'
@@ -48,7 +50,7 @@ interface CommitViewProps {
   onOpenChange: (entry: GitComparisonEntry, pin: boolean) => void
   /** The working copy, in an editor tab. */
   onOpenFile: (path: string) => void
-  /** "Compare with…": the file beside a revision picked in the tab. */
+  /** "Compare with": the file beside a revision picked in the tab. */
   onCompare: (path: string) => void
   /** The Git window's log, narrowed to these root-relative paths. */
   onShowHistory: (paths: string[]) => void
@@ -56,6 +58,9 @@ interface CommitViewProps {
   onDeleteFile: (path: string) => Promise<void>
   /** Opens a terminal in the folder with `command` typed into it. */
   onRunInTerminal?: (command: string) => void
+  /** The worktree the folder sits in, as the branch chip reads it: its top
+      and whether anything in it is uncommitted. */
+  worktree?: { top: string; dirty: boolean } | null
 }
 
 const PUBLISH_DISMISSED_KEY = 'iii::ide::publish-dismissed'
@@ -107,6 +112,7 @@ export function CommitView({
   onShowHistory,
   onDeleteFile,
   onRunInTerminal,
+  worktree = null,
 }: CommitViewProps) {
   // Grouped by directory until told otherwise.
   const [byDirectory, setByDirectory] = useState(() => readScmViewMode(undefined, 'tree') === 'tree')
@@ -149,6 +155,13 @@ export function CommitView({
       : [...scm.changes, ...scm.unversioned].filter((entry) => entry.path === activePath)
 
   const total = scm.changes.length + scm.unversioned.length
+  // The branch chip's dot marks the whole worktree; this panel lists the
+  // opened folder. The empty state names its scope when the two differ.
+  const clean = scmCleanCopy({
+    branch: scm.branch,
+    inSubfolder: worktree !== null && root !== null && !sameFolder(root, worktree.top),
+    worktreeDirty: worktree?.dirty ?? null,
+  })
 
   // The repository setup, latched per folder: `git init` turns the folder
   // into a repository halfway through, and the steps after it stay up.
@@ -250,28 +263,32 @@ export function CommitView({
               </IconButton>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={byDirectory}
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={(checked) => {
-                  setByDirectory(checked)
-                  writeScmViewMode(checked ? 'tree' : 'list')
-                }}
-              >
-                Directory
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuLabel>Show</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={showUnversioned}
-                onSelect={(event) => event.preventDefault()}
-                onCheckedChange={(checked) => {
-                  setShowUnversioned(checked)
-                  writeScmShowUnversioned(checked)
-                }}
-              >
-                Unversioned files
-              </DropdownMenuCheckboxItem>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Group by</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem
+                  checked={byDirectory}
+                  onSelect={(event) => event.preventDefault()}
+                  onCheckedChange={(checked) => {
+                    setByDirectory(checked)
+                    writeScmViewMode(checked ? 'tree' : 'list')
+                  }}
+                >
+                  Directory
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>Show</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={showUnversioned}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={(checked) => {
+                      setShowUnversioned(checked)
+                      writeScmShowUnversioned(checked)
+                    }}
+                  >
+                    Unversioned files
+                  </DropdownMenuCheckboxItem>
+                </DropdownMenuGroup>
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
           <span className="spacer" />
@@ -318,15 +335,15 @@ export function CommitView({
               <span className="shui-commit-clean-mark" aria-hidden>
                 <Check />
               </span>
-              <span className="title">No changes</span>
+              <span className="title">{clean.title}</span>
               <span className="detail">
-                Everything is committed
-                {scm.branch ? (
+                {clean.detail}
+                {clean.branch ? (
                   <>
                     {' on '}
-                    <code className="shui-commit-clean-branch">{scm.branch}</code>
+                    <code className="shui-commit-clean-branch">{clean.branch}</code>
                   </>
-                ) : (
+                ) : clean.detail.endsWith('.') ? null : (
                   '.'
                 )}
               </span>

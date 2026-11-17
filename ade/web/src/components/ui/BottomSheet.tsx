@@ -1,6 +1,15 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { X } from 'lucide-react'
 import * as React from 'react'
+import {
+  Sheet,
+  SheetClose,
+  SheetDescription,
+  SheetOverlay,
+  SheetPortal,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/shadcn/sheet'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
@@ -8,9 +17,58 @@ import { cn } from '@/lib/utils'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-export const BottomSheet = DialogPrimitive.Root
-export const BottomSheetTrigger = DialogPrimitive.Trigger
-export const BottomSheetClose = DialogPrimitive.Close
+/** The sheet root (the shadcn sheet): the first API's one-argument `onOpenChange`. */
+export function BottomSheet({
+  onOpenChange,
+  ...props
+}: Omit<React.ComponentProps<typeof Sheet>, 'onOpenChange'> & {
+  onOpenChange?: (open: boolean) => void
+}) {
+  return <Sheet {...props} onOpenChange={(open) => onOpenChange?.(open)} />
+}
+/**
+ * The public API (`packages/console-ui/index.d.ts`) types the trigger and
+ * close with `DialogTriggerProps`, Radix-shaped: `asChild` makes the single
+ * child the control. Base UI spells that `render`; passing `asChild` through
+ * would wrap the child button in a second one and leak an unknown DOM prop.
+ */
+type BottomSheetControlProps<P> = P & {
+  /** Radix: the single child element is the control (Base UI `render`). */
+  asChild?: boolean
+  children?: React.ReactNode
+}
+
+export function BottomSheetTrigger({
+  asChild,
+  children,
+  ...props
+}: BottomSheetControlProps<React.ComponentProps<typeof SheetTrigger>>) {
+  if (asChild && React.isValidElement(children)) {
+    return (
+      <SheetTrigger
+        {...props}
+        render={children as React.ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <SheetTrigger {...props}>{children}</SheetTrigger>
+}
+
+export function BottomSheetClose({
+  asChild,
+  children,
+  ...props
+}: BottomSheetControlProps<React.ComponentProps<typeof SheetClose>>) {
+  if (asChild && React.isValidElement(children)) {
+    return (
+      <SheetClose
+        {...props}
+        render={children as React.ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return <SheetClose {...props}>{children}</SheetClose>
+}
 
 interface BottomSheetPageNavigationValue {
   activePageId: string | null
@@ -32,7 +90,7 @@ export function useBottomSheetPageNavigation() {
 }
 
 interface BottomSheetContentProps
-  extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
+  extends Omit<DialogPrimitive.Popup.Props, 'initialFocus' | 'finalFocus'> {
   /** Optional visible heading for simple, single-page sheets. */
   heading?: React.ReactNode
   description?: React.ReactNode
@@ -43,7 +101,7 @@ interface BottomSheetContentProps
 
 /** Viewport-bounded mobile dialog with in-sheet page navigation and focus recovery. */
 export const BottomSheetContent = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Content>,
+  HTMLDivElement,
   BottomSheetContentProps
 >(
   (
@@ -55,8 +113,6 @@ export const BottomSheetContent = React.forwardRef<
       closeLabel = 'Close',
       headerClassName,
       overlayClassName,
-      onOpenAutoFocus,
-      onCloseAutoFocus,
       'aria-labelledby': ariaLabelledBy,
       'aria-describedby': ariaDescribedBy,
       ...props
@@ -94,8 +150,8 @@ export const BottomSheetContent = React.forwardRef<
         setPageDescribedBy(describedBy ?? null)
 
         /* Page side-by-side needs the incoming page to reach its inactive
-           offset for one paint before data-active flips. Mounting and
-           activating in the same commit skips the transition entirely. */
+ offset for one paint before data-active flips. Mounting and
+ activating in the same commit skips the transition entirely. */
         setActivePageId(null)
         if (
           typeof window === 'undefined' ||
@@ -154,15 +210,15 @@ export const BottomSheetContent = React.forwardRef<
           }
 
     return (
-      <DialogPrimitive.Portal>
+      <SheetPortal>
         <PortalScope>
-          <DialogPrimitive.Overlay
+          <SheetOverlay
             className={cn(
-              'iii-ui-motion-sheet-overlay fixed inset-0 z-40 bg-black/55 md:hidden',
+              'iii-ui-motion-sheet-overlay z-40 bg-black/55 md:hidden',
               overlayClassName,
             )}
           />
-          <DialogPrimitive.Content
+          <DialogPrimitive.Popup
             ref={ref}
             className={cn(
               'iii-ui-motion-sheet fixed inset-x-3 bottom-3 z-50 flex max-h-[calc(100dvh-1.5rem)] flex-col overflow-hidden overscroll-contain md:hidden',
@@ -170,22 +226,16 @@ export const BottomSheetContent = React.forwardRef<
               'pb-[max(0.75rem,env(safe-area-inset-bottom))] focus:outline-none',
               className,
             )}
-            onOpenAutoFocus={(event) => {
+            // The close button takes the first focus (never a row deep in a
+            // long list), and whatever opened the sheet gets focus back.
+            initialFocus={() => {
               returnFocusRef.current =
                 document.activeElement instanceof HTMLElement
                   ? document.activeElement
                   : null
-              onOpenAutoFocus?.(event)
-              if (event.defaultPrevented) return
-              event.preventDefault()
-              closeButtonRef.current?.focus({ preventScroll: true })
+              return closeButtonRef.current
             }}
-            onCloseAutoFocus={(event) => {
-              onCloseAutoFocus?.(event)
-              if (event.defaultPrevented || !returnFocusRef.current) return
-              event.preventDefault()
-              returnFocusRef.current.focus({ preventScroll: true })
-            }}
+            finalFocus={() => returnFocusRef.current}
             {...pageAria}
             {...props}
           >
@@ -232,26 +282,26 @@ export const BottomSheetContent = React.forwardRef<
               </div>
             </BottomSheetPageNavigationContext.Provider>
 
-            <DialogPrimitive.Close
+            <SheetClose
               ref={closeButtonRef}
-              className="absolute right-2 top-2 flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              className="absolute right-2 top-2 flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <X className="size-5" aria-hidden />
               <span className="sr-only">{closeLabel}</span>
-            </DialogPrimitive.Close>
-          </DialogPrimitive.Content>
+            </SheetClose>
+          </DialogPrimitive.Popup>
         </PortalScope>
-      </DialogPrimitive.Portal>
+      </SheetPortal>
     )
   },
 )
 BottomSheetContent.displayName = 'BottomSheetContent'
 
 export const BottomSheetTitle = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Title>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
+  HTMLHeadingElement,
+  React.ComponentProps<typeof SheetTitle>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title
+  <SheetTitle
     ref={ref}
     className={cn('font-sans text-lg font-semibold text-ink', className)}
     {...props}
@@ -260,10 +310,10 @@ export const BottomSheetTitle = React.forwardRef<
 BottomSheetTitle.displayName = 'BottomSheetTitle'
 
 export const BottomSheetDescription = React.forwardRef<
-  React.ComponentRef<typeof DialogPrimitive.Description>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
+  HTMLParagraphElement,
+  React.ComponentProps<typeof SheetDescription>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description
+  <SheetDescription
     ref={ref}
     className={cn(
       'font-sans text-base leading-relaxed text-ink-faint',

@@ -141,7 +141,7 @@ export function ProjectsPage({
           <>
             <ShadcnButton disabled={!data} onClick={() => setConverting(true)} size="sm" type="button" variant="ghost">
               <Tag size={16} />
-              Create from a label…
+              Create from a label
             </ShadcnButton>
             <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
               <Plus size={16} />
@@ -175,7 +175,7 @@ export function ProjectsPage({
           <div className="kb-plan-empty-actions">
             <ShadcnButton onClick={() => setConverting(true)} size="sm" type="button" variant="outline">
               <Tag size={16} />
-              Create from a label…
+              Create from a label
             </ShadcnButton>
             <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
               <Plus size={16} />

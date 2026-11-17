@@ -37,7 +37,7 @@ export function StateView({
   const empty = !running && isEmptyValue(value)
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill label={op} variant={running ? 'default' : 'accent'} />
         {req?.scope ? <FilterChip label="scope" value={req.scope} /> : null}

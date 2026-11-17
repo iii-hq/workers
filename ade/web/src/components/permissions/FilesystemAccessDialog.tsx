@@ -63,7 +63,7 @@ export function FilesystemAccessDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
-        <DialogTitle className="text-[14px]">Filesystem access</DialogTitle>
+        <DialogTitle className="text-sm">Filesystem access</DialogTitle>
         <DialogDescription className="mt-1">
           {workspaceScoped
             ? 'folders the agent can read and write in this conversation.'
@@ -71,7 +71,7 @@ export function FilesystemAccessDialog({
         </DialogDescription>
 
         {!workspaceScoped ? (
-          <p className="mt-3 font-mono text-[11px] leading-5 text-ink-faint">
+          <p className="mt-3 font-mono text-meta leading-5 text-ink-faint">
             filesystem approvals are off. access uses the IDE defaults shown
             below.
           </p>
@@ -89,12 +89,12 @@ export function FilesystemAccessDialog({
                 <div className="min-w-0 flex-1">
                   <span
                     dir="rtl"
-                    className="block truncate text-left font-mono text-[12px] text-ink"
+                    className="block truncate text-left font-mono text-xs text-ink"
                     title={workingDir}
                   >
                     {workingDir}
                   </span>
-                  <span className="block font-mono text-[11px] text-ink-ghost">
+                  <span className="block font-mono text-meta text-ink-ghost">
                     {workspaceScoped
                       ? 'Workspace boundary; change it with the directory picker'
                       : 'Command starting folder, not an access boundary'}
@@ -102,7 +102,7 @@ export function FilesystemAccessDialog({
                 </div>
               </div>
             ) : (
-              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+              <div className="px-2 py-1.5 font-mono text-meta text-ink-ghost">
                 No working directory set.
               </div>
             )}
@@ -111,13 +111,13 @@ export function FilesystemAccessDialog({
           {workspaceScoped && grantsSupported ? (
             <FolderGroup title="allowed this session">
               {sessionBusy ? (
-                <p className="px-2 pb-1.5 font-mono text-[11px] text-ink-faint">
+                <p className="px-2 pb-1.5 font-mono text-meta text-ink-faint">
                   the agent is running — revoking a folder it's using will make
                   it ask again.
                 </p>
               ) : null}
               {grants.length === 0 ? (
-                <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+                <div className="px-2 py-1.5 font-mono text-meta text-ink-ghost">
                   Nothing granted beyond the workspace.
                 </div>
               ) : (
@@ -134,7 +134,7 @@ export function FilesystemAccessDialog({
                       />
                       <span
                         dir="rtl"
-                        className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-ink"
+                        className="min-w-0 flex-1 truncate text-left font-mono text-xs text-ink"
                         title={dir}
                       >
                         {dir}
@@ -158,11 +158,11 @@ export function FilesystemAccessDialog({
 
           <FolderGroup title="always allowed (all sessions)">
             {shellRoots === null ? (
-              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+              <div className="px-2 py-1.5 font-mono text-meta text-ink-ghost">
                 Loading…
               </div>
             ) : shellRoots.length === 0 ? (
-              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+              <div className="px-2 py-1.5 font-mono text-meta text-ink-ghost">
                 No permanent roots configured.
               </div>
             ) : (
@@ -179,7 +179,7 @@ export function FilesystemAccessDialog({
                     />
                     <span
                       dir="rtl"
-                      className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-ink"
+                      className="min-w-0 flex-1 truncate text-left font-mono text-xs text-ink"
                       title={dir}
                     >
                       {dir}
@@ -191,7 +191,7 @@ export function FilesystemAccessDialog({
             <a
               href={SHELL_HOST_ROOTS_HASH}
               onClick={() => onOpenChange(false)}
-              className="mt-1 inline-block px-2 font-mono text-[11px] text-accent hover:underline"
+              className="mt-1 inline-block px-2 font-mono text-meta text-accent hover:underline"
             >
               Edit in IDE configuration →
             </a>
@@ -212,7 +212,7 @@ function FolderGroup({
   return (
     <section>
       <h3 className="mb-1 iii-ui-eyebrow">{title}</h3>
-      <div className="border border-rule-2 bg-bg">{children}</div>
+      <div className="border border-border bg-bg">{children}</div>
     </section>
   )
 }

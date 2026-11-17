@@ -52,7 +52,7 @@ export function registerCronPalette(host: Host): void {
     },
     {
       id: 'new-schedule',
-      title: 'New schedule…',
+      title: 'New schedule',
       detail: 'Open the schedule composer',
       keywords: ['cron', 'create', 'add'],
       run: () =>

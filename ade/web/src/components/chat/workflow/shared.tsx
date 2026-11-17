@@ -63,8 +63,8 @@ export function NodeStateDot({ state }: { state: NodeState }) {
  *  `workflow::status`. Rendered as a labeled mono row, never buried. */
 export function RunIdRow({ runId }: { runId: string }) {
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="text-[11px] mr-1">Run</span>
+    <div className="px-3 py-1.5 border-b border-border bg-paper-2 font-mono text-meta text-ink-faint break-all">
+      <span className="text-meta mr-1">Run</span>
       <span className="text-ink select-all">{runId}</span>
     </div>
   )
@@ -89,19 +89,19 @@ export function DagSummary({ def, states }: DagSummaryProps) {
   )
 
   return (
-    <div className="border-b border-rule-2">
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2">
+    <div className="border-b border-border">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-border">
         <span className="iii-ui-eyebrow">dag</span>
-        <span className="font-mono text-[11px] text-ink-faint">
+        <span className="font-mono text-meta text-ink-faint">
           {entries.length} {entries.length === 1 ? 'node' : 'nodes'}
         </span>
         {outputIds.length > 0 ? (
-          <span className="font-mono text-[11px] text-ink-ghost">
+          <span className="font-mono text-meta text-ink-ghost">
             → output <span className="text-accent">{outputIds.join(', ')}</span>
           </span>
         ) : null}
       </div>
-      <ul className="divide-y divide-rule-2">
+      <ul className="divide-y divide-border">
         {entries.map(([id, node]) => {
           const deps = node.depends_on ?? []
           const join = isJoinNode(node)
@@ -154,7 +154,7 @@ function DagEdges({
 }) {
   if (deps.length === 0 && !fanoutOver) return null
   return (
-    <div className="mt-0.5 font-mono text-[11px] text-ink-faint break-all">
+    <div className="mt-0.5 font-mono text-meta text-ink-faint break-all">
       {deps.length > 0 ? <span>← {deps.join(', ')}</span> : null}
       {fanoutOver ? (
         <span className={cn(deps.length > 0 && 'ml-2')}>
@@ -215,11 +215,11 @@ export function ResultPane({
   const text = typeof value === 'string' ? value : safeStringify(value)
   const labelTone = tone === 'warn' ? 'text-warn' : 'text-ink-faint'
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-rule-2">
+    <div className="border-b border-border">
+      <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-border">
         <span className={cn(eyebrowClassName, labelTone)}>{label}</span>
       </div>
-      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-xs leading-[1.55] text-ink whitespace-pre-wrap break-words">
         {text}
       </pre>
     </div>

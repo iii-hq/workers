@@ -365,7 +365,9 @@ describe('explorer Open preview', () => {
     await act(async () =>
       root.render(<PreviewPage path="site/index.html" request={request} />),
     )
-    expect(container.querySelector('iframe[title="preview site/index.html"]')).not.toBeNull()
+    expect(
+      container.querySelector('iframe[title="preview site/index.html"]'),
+    ).not.toBeNull()
     // Plain markup renders whole: no note about what is missing.
     expect(container.querySelector('[role="note"]')).toBeNull()
     await act(async () =>
@@ -376,14 +378,22 @@ describe('explorer Open preview', () => {
     expect(container.querySelector('iframe')).toBeNull()
     // A remount (tab switch or refresh) does not replay the request.
     await act(async () =>
-      root.render(<PreviewPage path="site/index.html" request={request} bump={1} />),
+      root.render(
+        <PreviewPage path="site/index.html" request={request} bump={1} />,
+      ),
     )
     expect(container.querySelector('iframe')).toBeNull()
-    expect(container.querySelector('[aria-label="Show preview"]')).not.toBeNull()
+    expect(
+      container.querySelector('[aria-label="Show preview"]'),
+    ).not.toBeNull()
     // A new request on the same file shows it again.
     await act(async () =>
       root.render(
-        <PreviewPage path="site/index.html" request={{ ...request, seq: 2 }} bump={1} />,
+        <PreviewPage
+          path="site/index.html"
+          request={{ ...request, seq: 2 }}
+          bump={1}
+        />,
       ),
     )
     expect(container.querySelector('iframe')).not.toBeNull()
@@ -396,7 +406,12 @@ describe('explorer Open preview', () => {
       is_utf8: true,
     })
     await act(async () =>
-      root.render(<PreviewPage path="index.html" request={{ path: 'index.html', seq: 1 }} />),
+      root.render(
+        <PreviewPage
+          path="index.html"
+          request={{ path: 'index.html', seq: 1 }}
+        />,
+      ),
     )
     expect(container.querySelector('[role="note"]')?.textContent).toContain(
       "scripts don't run",
@@ -407,20 +422,26 @@ describe('explorer Open preview', () => {
     call.mockRejectedValueOnce(new Error('permission denied'))
     call.mockResolvedValueOnce({ content: '<p>ok</p>', is_utf8: true })
     await act(async () =>
-      root.render(<PreviewPage path="page.htm" request={{ path: 'page.htm', seq: 1 }} />),
+      root.render(
+        <PreviewPage path="page.htm" request={{ path: 'page.htm', seq: 1 }} />,
+      ),
     )
     expect(container.textContent).toContain('This file could not be opened')
     const retry = Array.from(container.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('Try again'),
     )
     await act(async () => retry?.click())
-    expect(container.querySelector('iframe[title="preview page.htm"]')).not.toBeNull()
+    expect(
+      container.querySelector('iframe[title="preview page.htm"]'),
+    ).not.toBeNull()
   })
 
   it('leaves a file with no rendered view as source', async () => {
     call.mockResolvedValue({ content: 'const a = 1', is_utf8: true })
     await act(async () =>
-      root.render(<PreviewPage path="main.ts" request={{ path: 'main.ts', seq: 1 }} />),
+      root.render(
+        <PreviewPage path="main.ts" request={{ path: 'main.ts', seq: 1 }} />,
+      ),
     )
     expect(container.querySelector('textarea')).not.toBeNull()
     expect(container.querySelector('iframe')).toBeNull()
@@ -429,7 +450,9 @@ describe('explorer Open preview', () => {
 
 describe('htmlPreviewLimits', () => {
   it('is null for markup that renders whole', () => {
-    expect(htmlPreviewLimits('<h1>Hi</h1><style>h1{color:red}</style>')).toBeNull()
+    expect(
+      htmlPreviewLimits('<h1>Hi</h1><style>h1{color:red}</style>'),
+    ).toBeNull()
     expect(
       htmlPreviewLimits(
         '<link rel="stylesheet" href="https://cdn.example/a.css"><img src="data:image/png;base64,AA">',
@@ -440,11 +463,15 @@ describe('htmlPreviewLimits', () => {
   })
 
   it('names scripts, local files, or both', () => {
-    expect(htmlPreviewLimits('<script>1</script>')).toContain("scripts don't run")
-    expect(htmlPreviewLimits('<link rel="stylesheet" href="style.css">')).toContain(
-      "linked local files",
+    expect(htmlPreviewLimits('<script>1</script>')).toContain(
+      "scripts don't run",
     )
-    expect(htmlPreviewLimits("<img src='/logo.png'>")).toContain('linked local files')
+    expect(
+      htmlPreviewLimits('<link rel="stylesheet" href="style.css">'),
+    ).toContain('linked local files')
+    expect(htmlPreviewLimits("<img src='/logo.png'>")).toContain(
+      'linked local files',
+    )
     expect(htmlPreviewLimits('<script src="./app.js"></script>')).toContain(
       "scripts don't run and linked local files don't load",
     )

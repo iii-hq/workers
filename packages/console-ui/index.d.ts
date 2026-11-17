@@ -119,8 +119,9 @@ export interface ScreenOpenRequest {
 
 /** What `host.chat.compose` did: handed the draft to a composer (or held it
     for the chat being opened), or, with `ifUnambiguous`, left it alone
-    because several chats are open. */
-export type ComposeResult = 'composed' | 'ambiguous'
+    because several chats are open, or, with `sessionId`, left it alone
+    because that chat's composer is not mounted. */
+export type ComposeResult = 'composed' | 'ambiguous' | 'unavailable'
 
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
@@ -804,6 +805,14 @@ export interface Host {
        * the text.
        */
       ifUnambiguous?: boolean
+      /**
+       * The chat session the draft belongs to (a card inside that chat
+       * answering for it). Only that chat's composer takes it; when it is
+       * not mounted nothing lands and `'unavailable'` comes back. Wins over
+       * `beside` and `ifUnambiguous`. Older consoles ignore it and hand the
+       * draft to the chat used last.
+       */
+      sessionId?: string
     }): ComposeResult | void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
@@ -847,7 +856,11 @@ export interface Host {
       agent?: string
       models?: { provider: string; model: string; effort?: string }[]
     }): Promise<string>
-    /** Live composer model for a conversation, including unsaved drafts. */
+    /**
+     * The model the chat would send with: the conversation's (or, with no id,
+     * the open chat's) live composer pick, including unsaved drafts, else the
+     * model a new chat starts on. `null` only when no model is known at all.
+     */
     composerModel?(conversationId?: string | null): string | null
   }
 }
@@ -1221,8 +1234,16 @@ export interface DialogTriggerProps extends React.ButtonHTMLAttributes<HTMLButto
 }
 export declare const DialogTrigger: React.ComponentType<DialogTriggerProps>
 export declare const DialogClose: React.ComponentType<DialogTriggerProps>
+export interface DialogContentProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
+  className?: string
+  /** The corner ✕ (default true). */
+  showCloseButton?: boolean
+  /** The element to focus as the dialog opens (Base UI); default: the first tabbable. */
+  initialFocus?: boolean | React.RefObject<HTMLElement | null> | (() => HTMLElement | null | undefined | boolean)
+  finalFocus?: boolean | React.RefObject<HTMLElement | null>
+}
 /** Portalled, centered, with overlay and close affordance built in. */
-export declare const DialogContent: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DialogContent: React.ComponentType<DialogContentProps>
 export declare const DialogTitle: React.ComponentType<React.HTMLAttributes<HTMLHeadingElement>>
 export declare const DialogDescription: React.ComponentType<React.HTMLAttributes<HTMLParagraphElement>>
 
@@ -1250,21 +1271,31 @@ export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivEl
   onCloseAutoFocus?(event: Event): void
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
-export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface DropdownMenuItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onClick' | 'onSelect'> {
   disabled?: boolean
-  onSelect?(event: Event): void
+  /** The row's activation (Base UI's `onClick`, kept under the first API's name). */
+  onSelect?(event: React.SyntheticEvent<HTMLDivElement>): void
+  onClick?: React.MouseEventHandler<HTMLElement>
+  /** `false` keeps the menu open after the row is activated (a multi-select toggle). */
+  closeOnClick?: boolean
 }
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
+/**
+ * A group heading. It must sit inside `DropdownMenuGroup` (or a radio group):
+ * outside one, Base UI throws "MenuGroupContext is missing" when the menu
+ * opens and the page crashes.
+ */
 export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export interface DropdownMenuCheckboxItemProps extends DropdownMenuItemProps {
-  checked?: boolean | 'indeterminate'
+  checked?: boolean
+  indeterminate?: boolean
   onCheckedChange?(checked: boolean): void
   /** Checked-state icon (a Lucide element); defaults to a checkmark. */
   indicator?: React.ReactNode
 }
-/** A toggle row, check in the left gutter. `onSelect={(e) => e.preventDefault()}` keeps the menu open across toggles. */
+/** A toggle row, the mark at the end of the row. `closeOnClick={false}` keeps the menu open across toggles. */
 export declare const DropdownMenuCheckboxItem: React.ComponentType<DropdownMenuCheckboxItemProps>
 export interface DropdownMenuRadioGroupProps extends React.HTMLAttributes<HTMLDivElement> {
   value?: string
@@ -2024,6 +2055,11 @@ export declare const ShadcnDropdownMenuGroup: React.ComponentType<React.HTMLAttr
 export interface ShadcnDropdownMenuLabelProps extends React.HTMLAttributes<HTMLDivElement> {
   inset?: boolean
 }
+/**
+ * A group heading. It must sit inside `ShadcnDropdownMenuGroup` (or a radio group):
+ * outside one, Base UI throws "MenuGroupContext is missing" when the menu
+ * opens and the page crashes.
+ */
 export declare const ShadcnDropdownMenuLabel: React.ComponentType<ShadcnDropdownMenuLabelProps>
 export interface ShadcnDropdownMenuItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onClick'> {
   inset?: boolean

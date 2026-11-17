@@ -6236,6 +6236,7 @@ mod tests {
             message,
             entry_id: "e".into(),
             origin: None,
+            channel: None,
             queued_at: 0,
         }
     }

@@ -22,7 +22,7 @@ export function StartView({ req, output, running }: StartViewProps) {
   const resp = !running ? safeParseResponse(startResponseSchema, output) : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={running ? 'launching…' : 'launched'}
@@ -38,7 +38,7 @@ export function StartView({ req, output, running }: StartViewProps) {
       {resp ? <RunIdRow runId={resp.run_id} /> : null}
       <DagSummary def={req.definition} />
       {running ? (
-        <div className="px-3 py-2 font-mono text-[12px] text-ink-ghost animate-pulse">
+        <div className="px-3 py-2 font-mono text-xs text-ink-ghost animate-pulse">
           · registering run…
         </div>
       ) : resp ? null : (

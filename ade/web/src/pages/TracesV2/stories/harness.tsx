@@ -4,17 +4,17 @@
  * Two concerns live here:
  *
  * 1. A FAKE iii-client, installed through the real `__setIiiClientDepsForTests`
- *    seam in `@/lib/iii-client`. The seam lets us swap the `registerWorker`
- *    dependency for one that returns a fake `ISdk`; `getIiiClient()` then hands
- *    every fetch (`engine::traces::list`, `engine::logs::list`, …) a canned
- *    response built from the fixtures — no WebSocket, no engine. Handlers and
- *    observers (`registerFunction` / `observe`) are accepted and ignored, so
- *    the live-append effects simply never fire (static playground).
+ *  seam in `@/lib/iii-client`. The seam lets us swap the `registerWorker`
+ *  dependency for one that returns a fake `ISdk`; `getIiiClient()` then hands
+ *  every fetch (`engine::traces::list`, `engine::logs::list`, …) a canned
+ *  response built from the fixtures — no WebSocket, no engine. Handlers and
+ *  observers (`registerFunction` / `observe`) are accepted and ignored, so
+ *  the live-append effects simply never fire (static playground).
  *
  * 2. `LabFrame` — a bounded, themed container. Several trace components
  *    (WaterfallChart's react-virtual list, the timeline lanes) render
- *    NOTHING at zero height, so every story that mounts one must give it a
- *    real height. Use `LabFrame` (or `fullscreen` + `h-screen`) to guarantee it.
+ *  NOTHING at zero height, so every story that mounts one must give it a
+ *  real height. Use `LabFrame` (or `fullscreen` + `h-screen`) to guarantee it.
  */
 
 import { createEngineTraceSource, TracesProvider } from '@iii-dev/traces-ui'
@@ -225,7 +225,7 @@ export function LabFrame({
 }) {
   return (
     <div
-      className={`flex flex-col overflow-hidden border border-rule bg-bg ${className}`}
+      className={`flex flex-col overflow-hidden border border-border bg-bg ${className}`}
     >
       {children}
     </div>

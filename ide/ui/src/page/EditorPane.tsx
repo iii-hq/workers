@@ -583,7 +583,7 @@ function EditorPaneView({
           ) : null
         ) : null}
         {!entry?.image ? (
-          <IconButton label="Compare with…" onClick={() => onCompare(relPath)}>
+          <IconButton label="Compare with" onClick={() => onCompare(relPath)}>
             <FileDiff aria-hidden />
           </IconButton>
         ) : null}

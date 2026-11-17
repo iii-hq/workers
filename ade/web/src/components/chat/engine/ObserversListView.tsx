@@ -30,7 +30,7 @@ export function ObserversListView({
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <ListHeader
           count={0}
           noun="observers"
@@ -48,7 +48,7 @@ export function ObserversListView({
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <ListHeader
         count={resp.observers.length}
         noun="observers"
@@ -59,7 +59,7 @@ export function ObserversListView({
           · no observers returned
         </div>
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="divide-y divide-border">
           {resp.observers.map((observer) => (
             <ObserverRow key={observer.id} observer={observer} />
           ))}
@@ -76,21 +76,21 @@ export function ObserverRow({ observer }: { observer: ObserverInfo }) {
     <li className="px-3 py-2 flex flex-col gap-1">
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
-          className="font-mono text-[11px] text-ink-faint break-all"
+          className="font-mono text-meta text-ink-faint break-all"
           title={observer.id}
         >
           {shortenId(observer.id)}
         </span>
-        <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+        <span className="iii-ui-eyebrow border border-border bg-paper-2 px-1.5 py-0.5">
           {observer.state}
         </span>
         {observer.worker?.worker_name ? (
-          <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+          <span className="iii-ui-eyebrow border border-border bg-paper-2 px-1.5 py-0.5">
             {observer.worker.worker_name}
           </span>
         ) : null}
         {typeof observer.fires === 'number' ? (
-          <span className="font-mono text-[11px] text-ink-ghost tabular-nums">
+          <span className="font-mono text-meta text-ink-ghost tabular-nums">
             {observer.fires} {observer.fires === 1 ? 'fire' : 'fires'}
           </span>
         ) : null}
@@ -99,7 +99,7 @@ export function ObserverRow({ observer }: { observer: ObserverInfo }) {
         <span className="font-mono text-[12.5px] text-ink break-all">
           {observer.function_id}
         </span>
-        <span className="font-mono text-[11px] text-ink-faint">→</span>
+        <span className="font-mono text-meta text-ink-faint">→</span>
         <span className="font-mono text-[12.5px] text-accent break-all">
           {observer.target.function_id}
         </span>

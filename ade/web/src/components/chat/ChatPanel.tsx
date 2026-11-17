@@ -1,5 +1,5 @@
 import { PanelLeft, PanelRight, SquarePen } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   NewChatDialog,
   type NewChatDraft,
@@ -37,20 +37,11 @@ import { errText } from '@/lib/errors'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useNewChatMode } from '@/lib/new-chat-mode'
 import {
-  closeChatTab,
-  loadOpenChatTabs,
-  type OpenChatTabs,
-  openChatTab,
-  pruneChatTabs,
-  saveOpenChatTabs,
-} from '@/lib/open-chat-tabs'
-import {
   getRemovalPreview,
   type RemovalPreview,
 } from '@/lib/sessions/removal-preview'
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
-import { ChatTabs } from './ChatTabs'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
 import { ConversationSkeleton } from './ConversationSkeleton'
@@ -363,46 +354,6 @@ export function ChatPanel({
     [select, showInPane],
   )
 
-  // The header's open-chat tabs (an unpinned, wide pane only): the chat on
-  // screen always has one; side chats live in the aside, not here.
-  const [chatTabs, setChatTabs] = useState<OpenChatTabs>(loadOpenChatTabs)
-  useEffect(() => saveOpenChatTabs(chatTabs), [chatTabs])
-  useEffect(() => {
-    if (pinned || !displayedId) return
-    const shown = conversations.find((c) => c.id === displayedId)
-    if (shown && isSideChat(shown)) return
-    setChatTabs((current) => openChatTab(current, displayedId))
-  }, [pinned, displayedId, conversations])
-  useEffect(() => {
-    if (!listed) return
-    const tabbable = new Set(
-      conversations.filter((c) => !isSideChat(c)).map((c) => c.id),
-    )
-    setChatTabs((current) => pruneChatTabs(current, (id) => tabbable.has(id)))
-  }, [listed, conversations])
-  const tabConversations = useMemo(
-    () =>
-      chatTabs.ids
-        .map((id) => conversations.find((c) => c.id === id))
-        .filter((c): c is (typeof conversations)[number] => c !== undefined),
-    [chatTabs.ids, conversations],
-  )
-  const recentConversations = useMemo(
-    () =>
-      conversations
-        .filter((c) => !isSideChat(c))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
-    [conversations],
-  )
-  const handleCloseTab = useCallback(
-    (id: string) => {
-      const { state, next } = closeChatTab(chatTabs, id)
-      setChatTabs(state)
-      if (id === displayedId && next) handleSelect(next)
-    },
-    [chatTabs, displayedId, handleSelect],
-  )
-
   // New chat opens what the person chose in Settings: a blank chat (the
   // welcome screen and its composer) or the quick dialog (project, first
   // message, model), where the chat is born with its first message on the
@@ -651,10 +602,10 @@ export function ChatPanel({
           <PageSidebar
             // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
-              'learn-iii-conversations bg-white dark:bg-black',
+              'learn-iii-conversations bg-card',
               /* An edge where the list meets the chat: neutral-200 in
-                 light, neutral-900 in dark. */
-              'border-neutral-200 dark:border-neutral-900',
+ light, neutral-900 in dark. */
+              'border-border',
               panelSide === 'right' ? 'border-l' : 'border-r',
             )}
             label="Chats"
@@ -667,10 +618,10 @@ export function ChatPanel({
             resizable
             narrow={narrow}
             /* The toggle leads the top row from the outer edge; New chat,
-               search and import are navigation rows inside the sidebar. */
+ search and import are navigation rows inside the sidebar. */
             togglePlacement="outer"
             /* The shadcn sidebar trigger: one panel glyph for both states,
-               on the edge the pane hugs, at the nav rows' 16px stroke. */
+ on the edge the pane hugs, at the nav rows' 16px stroke. */
             toggleIcons={
               panelSide === 'right'
                 ? { expanded: PanelRight, collapsed: PanelRight }
@@ -711,19 +662,9 @@ export function ChatPanel({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             density={density}
-            panelTitle={pinned ? displayedConversation.title : undefined}
-            headerTabs={
-              pinned || narrow ? undefined : (
-                <ChatTabs
-                  tabs={tabConversations}
-                  activeId={displayedId ?? null}
-                  recent={recentConversations}
-                  onSelect={handleSelect}
-                  onClose={handleCloseTab}
-                  onNew={openNewChat}
-                />
-              )
-            }
+            // The header is the chat's title: no tab row. Chats switch from
+            // the sidebar or the palette (⌘K), so the title gets the room.
+            panelTitle={displayedConversation.title || 'New chat'}
             onRequestClose={onRequestClose}
             commands={commands}
             onBack={narrow && !pinned ? handleBack : undefined}

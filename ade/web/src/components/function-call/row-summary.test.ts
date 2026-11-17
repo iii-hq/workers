@@ -9,6 +9,47 @@ describe('resultSummary', () => {
     expect(resultSummary({ entries: [{}, {}] })).toBe('2 entries')
   })
 
+  it('spells irregular plurals', () => {
+    expect(resultSummary({ children: [] })).toBe('0 children')
+    expect(resultSummary({ children: [{}] })).toBe('1 child')
+    expect(resultSummary({ children: [{}, {}] })).toBe('2 children')
+    expect(resultSummary({ people: [{}, {}] })).toBe('2 people')
+  })
+
+  it('says the state of a status report instead of counting its side list', () => {
+    // harness::status on a child session: its own `children` is empty,
+    // which read as "0 childrens" beside a sub-agent that exists.
+    expect(
+      resultSummary({
+        session_id: 's_child',
+        turn_id: 't1',
+        status: 'completed',
+        step: 3,
+        turn_count: 1,
+        children: [],
+        expects_wake: false,
+        result: 'pong',
+      }),
+    ).toBe('completed')
+    expect(resultSummary({ status: 'awaiting_approval' })).toBe(
+      'awaiting approval',
+    )
+  })
+
+  it('counts a question card by its questions, not the status it was asked with', () => {
+    // harness::ask returns `awaiting_answer`; after Send or Dismiss the row
+    // must not keep saying so beside a settled card.
+    expect(
+      resultSummary({
+        status: 'awaiting_answer',
+        question_id: 'q1',
+        session_id: 's1',
+        turn_id: 't1',
+        questions: [{ header: 'Pet' }],
+      }),
+    ).toBe('1 question')
+  })
+
   it('unwraps the iii result envelope', () => {
     expect(
       resultSummary({

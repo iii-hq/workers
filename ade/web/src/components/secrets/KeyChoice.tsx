@@ -244,7 +244,7 @@ export function KeyDestination({
   return (
     <p
       className={
-        className ?? 'font-sans text-[12px] leading-relaxed text-ink-faint'
+        className ?? 'font-sans text-xs leading-relaxed text-ink-faint'
       }
     >
       {keyStore(input) === 'env' ? (
@@ -293,7 +293,7 @@ function PasteInput({
           href={keysUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex w-fit items-center gap-1 rounded-sm font-sans text-[12px] text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          className="inline-flex w-fit items-center gap-1 rounded-sm font-sans text-xs text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           Create an API key
           <ExternalLink className="size-4" aria-hidden />
@@ -320,7 +320,7 @@ function KeyOption({
     // biome-ignore lint/a11y/noLabelWithoutControl: the Checkbox below renders the control (a role="checkbox" plus its hidden input)
     <label className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-sm px-2 hover:bg-surface-hover">
       {/* One choice, drawn as the console's one selection control (a
-          checkbox): ticking a key picks it; the others untick. */}
+ checkbox): ticking a key picks it; the others untick. */}
       <Checkbox
         name={name}
         checked={checked}
@@ -329,11 +329,11 @@ function KeyOption({
         }}
         className="shrink-0"
       />
-      <span className="min-w-0 flex-1 font-sans text-[13px] text-ink">
+      <span className="min-w-0 flex-1 font-sans text-body text-ink">
         {label}
       </span>
       {meta ? (
-        <span className="shrink-0 font-mono text-[12px] text-ink-faint">
+        <span className="shrink-0 font-mono text-xs text-ink-faint">
           {meta}
         </span>
       ) : null}

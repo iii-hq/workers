@@ -1,4 +1,4 @@
-import type { Conversation } from '@/types/chat'
+import type { Conversation, Message } from '@/types/chat'
 
 /**
  * Session status covers model wait/reasoning/answering, tools and approvals,
@@ -28,5 +28,62 @@ export function isAwaitingAnswer(
   return (
     conversation.status === 'done' &&
     conversation.statusReason === AWAITING_ANSWER_REASON
+  )
+}
+
+/** The function id of the agent's question card. */
+const ASK_FUNCTION_ID = 'harness::ask'
+/** `details.status` of an ask the harness accepted and showed. */
+const ASK_AWAITING_STATUS = 'awaiting_answer'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** An accepted `harness::ask` result: `{ content, details: { status } }`. */
+function isAcceptedAsk(message: Message): boolean {
+  if (message.role !== 'function-call') return false
+  if (message.functionId !== ASK_FUNCTION_ID || message.running) return false
+  const { output } = message
+  if (!isRecord(output) || 'error' in output) return false
+  const details = Array.isArray(output.content) ? output.details : output
+  return isRecord(details) && details.status === ASK_AWAITING_STATUS
+}
+
+/**
+ * Whether the transcript ends on the agent's question: the latest call is an
+ * accepted `harness::ask` and nothing the person (or an observer) said came
+ * after it. Only the model's closing words and reasoning may follow. The
+ * card is up from here on, while the turn may still be winding down (an
+ * agent such as claude-code finishes its own step after the ask), before
+ * the harness projects `awaiting answer`.
+ */
+export function endsOnQuestion(messages: readonly Message[]): boolean {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (message.role === 'assistant' || message.role === 'thought') continue
+    if (message.role === 'system' && message.kind !== 'observer-fired') continue
+    return isAcceptedAsk(message)
+  }
+  return false
+}
+
+/** What the chat says while it waits on the person's answer (the sidebar
+ *  row's words). */
+export const WAITING_ON_ANSWER_LABEL = 'waiting for your answer'
+
+/**
+ * Whether the chat waits on the person's answer to a question card: the
+ * harness says so (`isAwaitingAnswer`, as the sidebar shows it), or a
+ * working turn already ends on the question it asked. Either way the chat
+ * should say it waits for the person, not for a model.
+ */
+export function isWaitingOnAnswer(
+  conversation: Pick<Conversation, 'status' | 'statusReason' | 'messages'>,
+  working: boolean,
+): boolean {
+  return (
+    isAwaitingAnswer(conversation) ||
+    (working && endsOnQuestion(conversation.messages))
   )
 }

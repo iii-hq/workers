@@ -25,7 +25,7 @@ export function EditProvider({ children }: { children?: React.ReactNode }) {
 /** The body, monospaced and scrollable, with no tokenizer behind it. */
 function PlainFile({ contents }: { contents: string }) {
   return (
-    <pre className="max-h-[280px] overflow-auto whitespace-pre px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink">
+    <pre className="max-h-[280px] overflow-auto whitespace-pre px-3 py-2 font-mono text-xs leading-[1.55] text-ink">
       {contents}
     </pre>
   )

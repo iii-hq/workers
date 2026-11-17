@@ -57,6 +57,7 @@ export const tokenNames = Object.freeze([
   '--color-ring',
   '--radius-none',
   '--radius-xs',
+  '--radius-field',
   '--radius-sm',
   '--radius-md',
   '--radius-lg',

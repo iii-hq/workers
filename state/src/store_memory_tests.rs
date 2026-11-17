@@ -836,3 +836,36 @@ async fn delete_can_return_its_shared_pre_delete_value_with_unchanged_event_fiel
     };
     assert_eq!(serde_json::to_value(event).unwrap()["old_value"], expected);
 }
+
+/// The state page deletes a scope by deleting its keys; the scope must then
+/// leave `list_groups` right away, not only after a restart reloads disk.
+#[tokio::test]
+async fn deleting_the_last_key_drops_the_scope_from_list_groups() {
+    let store = in_memory_store();
+    store
+        .set("gone".into(), "a".into(), serde_json::json!(1))
+        .await;
+    store
+        .set("gone".into(), "b".into(), serde_json::json!(2))
+        .await;
+    store
+        .set("kept".into(), "x".into(), serde_json::json!(3))
+        .await;
+
+    drop(store.delete("gone".into(), "a".into()).await);
+    let mut groups = store.list_groups().await;
+    groups.sort();
+    assert_eq!(groups, vec!["gone".to_string(), "kept".to_string()]);
+
+    drop(store.delete("gone".into(), "b".into()).await);
+    assert_eq!(store.list_groups().await, vec!["kept".to_string()]);
+    assert!(store.list_keys("gone".into()).await.is_empty());
+
+    // Writing again recreates it.
+    store
+        .set("gone".into(), "c".into(), serde_json::json!(4))
+        .await;
+    let mut groups = store.list_groups().await;
+    groups.sort();
+    assert_eq!(groups, vec!["gone".to_string(), "kept".to_string()]);
+}

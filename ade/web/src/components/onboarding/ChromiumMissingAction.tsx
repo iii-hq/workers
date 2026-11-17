@@ -25,9 +25,9 @@ export function ChromiumMissingAction() {
   return (
     <div
       data-chromium-missing=""
-      className="flex flex-wrap items-center gap-2 border-t border-rule-2 px-3 py-2"
+      className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2"
     >
-      <p className="min-w-0 flex-1 font-sans text-[13px] text-ink">
+      <p className="min-w-0 flex-1 font-sans text-body text-ink">
         The browser worker has no Chromium to open pages with.
       </p>
       <Button size="sm" onClick={() => requestOnboardingWizard('browser')}>

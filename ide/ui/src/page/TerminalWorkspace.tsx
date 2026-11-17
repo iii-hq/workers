@@ -748,7 +748,6 @@ export const TerminalWorkspace = forwardRef<
                   }
                 }}
               >
-                <DropdownMenuLabel>Terminals</DropdownMenuLabel>
                 <DropdownMenuRadioGroup
                   value={state.activeTabId ?? ''}
                   onValueChange={(id) => {
@@ -756,6 +755,7 @@ export const TerminalWorkspace = forwardRef<
                     if (tab) selectTab(tab)
                   }}
                 >
+                  <DropdownMenuLabel>Terminals</DropdownMenuLabel>
                   {state.tabs.map((tab) => (
                     <DropdownMenuRadioItem key={tab.id} value={tab.id}>
                       <SquareTerminal aria-hidden />

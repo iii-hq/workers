@@ -266,7 +266,7 @@ export function ModelsStep({
       {snapshot.toolsError ? (
         <p
           role="alert"
-          className="rounded-xl border border-alert/30 bg-alert-muted px-3 py-2 font-sans text-[13px] text-ink"
+          className="rounded-xl border border-alert/30 bg-alert-muted px-3 py-2 font-sans text-body text-ink"
         >
           Unable to scan this machine: {snapshot.toolsError}
         </p>
@@ -341,16 +341,16 @@ export function ModelsStep({
             {needsKey.map(({ choice, key }) => (
               <div
                 key={choice.providerId}
-                className="flex flex-col rounded-xl border border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+                className="flex flex-col rounded-xl border border-border bg-card"
               >
-                <span className="flex h-9 items-center gap-2 border-b border-neutral-100 px-3.5 font-sans text-[13px] font-medium text-ink dark:border-neutral-800">
+                <span className="flex h-9 items-center gap-2 border-b border-border px-3.5 font-sans text-body font-medium text-ink">
                   <ProviderMark
                     id={choice.providerId}
                     label={choice.title}
                     className="size-4 text-ink"
                   />
                   {choice.title} key
-                  <span className="ml-auto font-mono text-[12px] font-normal text-neutral-500 dark:text-neutral-400">
+                  <span className="ml-auto font-mono text-xs font-normal text-muted-foreground">
                     {choice.provider.envVar}
                   </span>
                 </span>
@@ -448,7 +448,7 @@ function DeviceRow({
     <div
       className={cn(
         'flex flex-col gap-1 px-3.5 py-2.5 transition-colors duration-150 ease-[var(--motion-ease-standard)]',
-        selected && 'bg-neutral-100 dark:bg-neutral-900',
+        selected && 'bg-muted ',
       )}
     >
       <div className="flex items-start gap-3">
@@ -464,10 +464,10 @@ function DeviceRow({
             !disabled && 'cursor-pointer',
           )}
         >
-          <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+          <span className="font-sans text-body font-medium leading-5 text-ink">
             {choice.title}
           </span>
-          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          <span className="text-pretty font-sans text-body leading-5 text-muted-foreground">
             {choice.reason}
           </span>
         </label>
@@ -569,12 +569,8 @@ function ProviderTile({
       onChange={(event) => onToggle(event.currentTarget.checked)}
       className={cn(
         'flex h-10 flex-row-reverse rounded-lg border px-3 transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
-        selected
-          ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
-          : 'border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950',
-        !disabled &&
-          !selected &&
-          'hover:bg-neutral-50 dark:hover:bg-neutral-900',
+        selected ? 'border-input bg-muted  ' : 'border-border bg-card  ',
+        !disabled && !selected && 'hover:bg-muted',
       )}
       label={
         <span className="flex min-w-0 items-center gap-2.5">
@@ -583,7 +579,7 @@ function ProviderTile({
             label={choice.title}
             className="size-4 shrink-0 text-ink"
           />
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+          <span className="min-w-0 flex-1 truncate text-body font-medium text-ink">
             {choice.title}
           </span>
           <ChoiceStatus choice={choice} selected={selected} />
@@ -628,7 +624,7 @@ function SubscriptionRow({
     <div
       className={cn(
         'flex flex-col gap-1 px-3.5 py-2.5 transition-colors duration-150 ease-[var(--motion-ease-standard)]',
-        selected && 'bg-neutral-100 dark:bg-neutral-900',
+        selected && 'bg-muted ',
       )}
     >
       <div className="flex items-start gap-3">
@@ -644,10 +640,10 @@ function SubscriptionRow({
             !disabled && 'cursor-pointer',
           )}
         >
-          <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+          <span className="font-sans text-body font-medium leading-5 text-ink">
             {choice.title}
           </span>
-          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          <span className="text-pretty font-sans text-body leading-5 text-muted-foreground">
             {subscriptionLine(choice, rejected)}
           </span>
           {tool?.signed_in && tool.credentials_path ? (
@@ -690,7 +686,7 @@ function SubscriptionRow({
             <CommandLine command={provider.signIn} note={provider.signInNote} />
           </Terminal>
           <span className="flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-1">
-            <span className="font-sans text-[13px] text-neutral-500 dark:text-neutral-400">
+            <span className="font-sans text-body text-muted-foreground">
               {deviceLogin
                 ? 'Or run this in a terminal, then scan again.'
                 : `Run ${tool?.installed ? 'this' : 'these'} in a terminal, then scan again. ${choice.title} connects once it is signed in.`}

@@ -5,11 +5,11 @@
  * CPU, layout, heap and DOM figures off the Chrome DevTools protocol.
  *
  * URL params:
- *   ?spans=2000      span count (default 2000)
- *   ?seed=7          generator seed
- *   ?stream=1        start mid-flight and let the test advance the stream
- *   ?theme=dark      light by default
- *   ?payload=600     bytes per captured payload
+ *   ?spans=2000  span count (default 2000)
+ *   ?seed=7  generator seed
+ *   ?stream=1  start mid-flight and let the test advance the stream
+ *   ?theme=dark  light by default
+ *   ?payload=600  bytes per captured payload
  *
  * The page exposes `window.__stress` for the driver: `ready` resolves once
  * the client is installed, `advance(fraction)` moves the stream and fires

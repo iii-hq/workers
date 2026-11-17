@@ -87,7 +87,7 @@ function CliSignIn({ providerId }: { providerId: string }) {
           : 'This provider signs in on its own; there is no API key to set here.'}
       </p>
       {tool?.credentials_path ? (
-        <span data-keep-mono className="font-mono text-[13px] text-ink-faint">
+        <span data-keep-mono className="font-mono text-body text-ink-faint">
           {tool.credentials_path}
         </span>
       ) : null}

@@ -43,17 +43,17 @@ test('an error-only observer from an observe.capture engine fires on error', asy
   assert.deepEqual(info.outcomes, ['error'])
   assert.equal(info.fires, 3, 'numeric fires stays the activation count')
   const facts = observerDeliveryFacts(info)
-  assert.equal(fact(facts, 'fires on'), 'error')
-  assert.equal(fact(facts, 'on'), undefined, 'the legacy `on: success` row is gone')
-  assert.equal(fact(facts, 'deliver'), undefined, 'no deliver row for an envelope observer')
-  assert.equal(fact(facts, 'capture'), 'input, error')
+  assert.equal(fact(facts, 'Fires on'), 'error')
+  assert.equal(fact(facts, 'On'), undefined, 'the legacy `on: success` row is gone')
+  assert.equal(fact(facts, 'Deliver'), undefined, 'no deliver row for an envelope observer')
+  assert.equal(fact(facts, 'Capture'), 'input, error')
 })
 
 test('fires_on lists every outcome in order', async () => {
   const { observerInfo, observerDeliveryFacts } = await loadObserverInfo()
   const info = observerInfo({ ...base, capture: ['input'], fires_on: ['error', 'success'] })
   assert.deepEqual(info.outcomes, ['success', 'error'])
-  assert.equal(fact(observerDeliveryFacts(info), 'fires on'), 'success, error')
+  assert.equal(fact(observerDeliveryFacts(info), 'Fires on'), 'success, error')
 })
 
 test('firing is never derived from capture', async () => {
@@ -93,8 +93,8 @@ test('a legacy engine row: on error, deliver output, numeric fires count', async
   assert.equal(info.fires, 7)
   assert.equal(info.deliver, 'output')
   const facts = observerDeliveryFacts(info)
-  assert.equal(fact(facts, 'fires on'), 'error')
-  assert.equal(fact(facts, 'deliver'), 'output', 'a legacy raw delivery is still shown')
+  assert.equal(fact(facts, 'Fires on'), 'error')
+  assert.equal(fact(facts, 'Deliver'), 'output', 'a legacy raw delivery is still shown')
 })
 
 test('legacy on: absent means success, complete means both', async () => {
@@ -108,4 +108,28 @@ test('the activation count sits beside fires_on', async () => {
   const info = observerInfo({ ...base, fires_on: ['success'], fires: 12 })
   assert.equal(info.fires, 12)
   assert.deepEqual(info.outcomes, ['success'])
+})
+
+// QA 2026-11-16 (F11): the Observers page read "refresh", "copy id",
+// "dispose", "reset", "run now" and "copy iii command" next to "Run Now" and
+// the rest of the console's sentence case. Every label a person reads on the
+// catalog pages starts with a capital; ids, values and code stay as they are.
+test('catalog labels are sentence case', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const dir = new URL('./src/catalog/', import.meta.url)
+  const offenders = []
+  for (const name of readdirSync(dir).filter((file) => file.endsWith('.tsx'))) {
+    const lines = readFileSync(new URL(name, dir), 'utf8').split('\n')
+    lines.forEach((line, index) => {
+      const at = `${name}:${index + 1}: ${line.trim()}`
+      // Props a person reads.
+      if (/\b(?<![-\w])(label|runningLabel|title|placeholder|headline|eyebrow|body)=["'][a-z]/.test(line)) offenders.push(at)
+      if (/(?<![-\w])(label|runningLabel|title|placeholder)=\{[^}]*\? '[a-z][^']*' : '[a-z]/.test(line)) offenders.push(at)
+      // A control's words chosen by state: {busy ? 'loading…' : 'refresh'}.
+      if (/^\s+\{[\w.]+ \? '[a-z][^']*' : '[a-z][^']*'\}$/.test(line)) offenders.push(at)
+      // A button's or tab's own words on a line of their own.
+      if (/^\s+[a-z][a-z ]+$/.test(line) && /<(Button|TabsTrigger)\b[^>]*>?\s*$|^\s+>\s*$|^\s+onClick=|disabled=/.test(lines[index - 1] ?? '')) offenders.push(at)
+    })
+  }
+  assert.deepEqual(offenders, [])
 })

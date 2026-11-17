@@ -274,12 +274,12 @@ export function SecretKeyField({
               ? 'Starting the secrets worker…'
               : 'Start the secrets worker'}
           </Button>
-          <span className="font-mono text-[11px] text-ink-ghost">
+          <span className="font-mono text-meta text-ink-ghost">
             compose::add {SECRETS_WORKER}
           </span>
         </div>
         {note ? (
-          <p role="status" className="text-[13px] text-ink-faint">
+          <p role="status" className="text-body text-ink-faint">
             {note}
           </p>
         ) : null}
@@ -290,7 +290,7 @@ export function SecretKeyField({
     body = (
       <div className="flex flex-col gap-2">
         {!value?.trim() && status?.source === 'env' ? (
-          <p className="text-[13px] leading-relaxed text-ink-faint">
+          <p className="text-body leading-relaxed text-ink-faint">
             In use now: <span className="font-mono">{name}</span> from the
             worker's environment. Choose where to keep it to manage it here.
           </p>
@@ -338,13 +338,10 @@ export function SecretKeyField({
     body = (
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <span className="flex min-w-0 flex-col gap-0.5">
-          <span
-            data-keep-mono
-            className="truncate font-mono text-[14px] text-ink"
-          >
+          <span data-keep-mono className="truncate font-mono text-sm text-ink">
             {value?.trim()}
           </span>
-          <span className="text-[13px] text-ink-faint">
+          <span className="text-body text-ink-faint">
             {meta === undefined
               ? 'Reading the secrets store…'
               : meta
@@ -365,13 +362,10 @@ export function SecretKeyField({
     body = (
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <span className="flex min-w-0 flex-col gap-0.5">
-          <span
-            data-keep-mono
-            className="truncate font-mono text-[14px] text-ink"
-          >
+          <span data-keep-mono className="truncate font-mono text-sm text-ink">
             {value?.trim()}
           </span>
-          <span className="text-[13px] text-ink-faint">
+          <span className="text-body text-ink-faint">
             {meta === undefined
               ? 'Reading the secrets worker…'
               : meta === null
@@ -388,7 +382,7 @@ export function SecretKeyField({
     // A plain-text key or an engine variable: what it is, and the move.
     body = (
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-        <span className="min-w-0 text-[13px] leading-relaxed text-ink-faint">
+        <span className="min-w-0 text-body leading-relaxed text-ink-faint">
           {literal ? (
             <>
               Saved as plain text in configuration, which is meant to be
@@ -438,16 +432,13 @@ export function SecretKeyField({
       </header>
       {body}
       {status?.error && !status.checking ? (
-        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-warn-strong">
+        <p className="flex items-start gap-2 text-body leading-relaxed text-warn-strong">
           <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>{status.error}</span>
         </p>
       ) : null}
       {error ? (
-        <p
-          role="alert"
-          className="text-[13px] leading-relaxed text-alert-strong"
-        >
+        <p role="alert" className="text-body leading-relaxed text-alert-strong">
           {error}
         </p>
       ) : null}

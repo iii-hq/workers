@@ -127,11 +127,11 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
   }, [])
 
   /* ~8s into the replay the composer types out an invitation to run the
-     harness yourself — the type-out is the attention cue, and the typed text
-     is a live link. Hidden whenever the player owns the composer (the loop
-     retyping the scenario prompt). Keyed on the run, so a replay types it out
-     again instead of revealing the finished line the moment the composer
-     frees up. */
+ harness yourself — the type-out is the attention cue, and the typed text
+ is a live link. Hidden whenever the player owns the composer (the loop
+ retyping the scenario prompt). Keyed on the run, so a replay types it out
+ again instead of revealing the finished line the moment the composer
+ frees up. */
   const started = player.phase !== 'idle'
   const [ctaChars, setCtaChars] = useState(0)
   // biome-ignore lint/correctness/useExhaustiveDependencies: runKey is the restart trigger, not a value read here.
@@ -181,10 +181,10 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
       />
 
       {/*
-        Sidebar, transcript, traces — the console's own three columns, once
-        there is room for them. Narrower than that only the chat survives:
-        the sidebar and the traces pane hide, and the transcript takes the
-        whole frame.
+ Sidebar, transcript, traces — the console's own three columns, once
+ there is room for them. Narrower than that only the chat survives:
+ the sidebar and the traces pane hide, and the transcript takes the
+ whole frame.
       */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="hidden lg:flex">
@@ -219,8 +219,8 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
           <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col items-center">
             <MobileNotice />
           </div>
-          <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-rule px-5 py-3 lg:px-9">
-            <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          <header className="flex items-center justify-between gap-3 whitespace-nowrap border-b border-border px-5 py-3 lg:px-9">
+            <div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-meta uppercase tracking-[0.06em] text-ink-faint">
               <span className="flex-shrink-0 text-accent" aria-hidden>
                 $
               </span>
@@ -242,11 +242,11 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
               <span className="hidden flex-shrink-0 text-ink-ghost md:inline">
                 ·
               </span>
-              <span className="hidden min-w-0 truncate font-mono text-[11px] normal-case tracking-normal tabular-nums text-ink-faint md:inline">
+              <span className="hidden min-w-0 truncate font-mono text-meta normal-case tracking-normal tabular-nums text-ink-faint md:inline">
                 {player.activeChild ? player.activeChild.id : SESSION_ID}
               </span>
             </div>
-            <div className="flex flex-shrink-0 items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em]">
+            <div className="flex flex-shrink-0 items-center gap-3 font-mono text-meta uppercase tracking-[0.06em]">
               <span className="hidden sm:inline-flex">
                 <ContextUsage
                   messages={player.messages}
@@ -305,26 +305,26 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
         </section>
 
         {/* ── traces ─────────────────────────────────────────────────── */}
-        <aside className="relative hidden min-h-0 flex-1 flex-col border-l border-rule bg-panel lg:flex">
-          <header className="flex items-center justify-between gap-3 border-b border-rule px-5 py-3">
-            <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em]">
+        <aside className="relative hidden min-h-0 flex-1 flex-col border-l border-border bg-panel lg:flex">
+          <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+            <div className="flex min-w-0 items-center gap-2 font-mono text-meta uppercase tracking-[0.06em]">
               <span className="text-ink">traces</span>
               <span className="text-ink-ghost">·</span>
               <span className="min-w-0 truncate normal-case tracking-normal text-ink-faint">
                 {TRACE_ID}
               </span>
             </div>
-            <div className="flex flex-shrink-0 items-center gap-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            <div className="flex flex-shrink-0 items-center gap-2 font-mono text-meta uppercase tracking-[0.06em] text-ink-faint">
               <StatusDot tone={working ? 'accent' : 'ink'} pulse={working} />
               <span className="tabular-nums">{player.spanCount} spans</span>
             </div>
           </header>
 
           {/* The masthead and filter bar the real page carries above its
-              trace list; the strip runs live off the same span feed the
-              detail below is built from. */}
+ trace list; the strip runs live off the same span feed the
+ detail below is built from. */}
           <TimelineStrip spans={player.spans} isPaused={!active} />
-          <div className="border-b border-rule px-4 py-2.5">
+          <div className="border-b border-border px-4 py-2.5">
             <TraceFilters
               filters={traceFilters.filters}
               onFilterChange={traceFilters.updateFilter}
@@ -343,7 +343,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
             />
           </div>
 
-          <div className="border-b border-rule px-4 py-2.5">
+          <div className="border-b border-border px-4 py-2.5">
             <ViewSwitcher currentView={view} onViewChange={setView} />
           </div>
 
@@ -371,14 +371,14 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
                 </div>
               )
             ) : (
-              <div className="flex h-full items-center justify-center px-6 text-center font-mono text-[12px] text-ink-ghost">
+              <div className="flex h-full items-center justify-center px-6 text-center font-mono text-xs text-ink-ghost">
                 waiting for the first span…
               </div>
             )}
           </div>
 
           {player.waterfall ? (
-            <div className="shrink-0 border-t border-rule">
+            <div className="shrink-0 border-t border-border">
               <WorkerBreakdown data={player.waterfall} />
             </div>
           ) : null}
@@ -410,15 +410,15 @@ function DemoChrome({
   onReplay: () => void
 }) {
   const controlClass =
-    'flex items-center gap-1.5 border border-rule px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint transition-colors hover:text-ink'
+    'flex items-center gap-1.5 border border-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint transition-colors hover:text-ink'
   return (
-    <div className="relative flex items-center gap-3 border-b border-rule bg-panel px-5 py-2">
-      <span className="font-mono text-[12px] lowercase tracking-[0.06em] text-ink">
+    <div className="relative flex items-center gap-3 border-b border-border bg-panel px-5 py-2">
+      <span className="font-mono text-xs lowercase tracking-[0.06em] text-ink">
         iii ADE
       </span>
       <TryItCta />
       <span className="text-ink-ghost">·</span>
-      <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">
+      <span className="min-w-0 truncate font-mono text-xs text-ink-faint">
         payments ledger
       </span>
       <span className="ml-auto flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-ghost">
@@ -435,9 +435,9 @@ function DemoChrome({
         replay
       </button>
       {/* Embedded only: the host page listens for iii-demo-close and scrolls
-          the console away. Red, the loudest thing in the frame, because a
-          reader who wants out should not have to look for it. The exact red
-          and its text color are in demo.css. */}
+ the console away. Red, the loudest thing in the frame, because a
+ reader who wants out should not have to look for it. The exact red
+ and its text color are in demo.css. */}
       {window.self !== window.top && (
         <button
           type="button"
@@ -476,7 +476,7 @@ function TryItCta() {
         )}
       >
         try it for yourself
-        <span aria-hidden className="text-[11px]">
+        <span aria-hidden className="text-meta">
           👩‍💻
         </span>
       </a>
@@ -494,7 +494,7 @@ function MobileNotice() {
   return (
     <div
       className={cn(
-        'border-x border-b border-rule bg-panel px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint transition-all duration-500 lg:hidden',
+        'border-x border-b border-border bg-panel px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-faint transition-all duration-500 lg:hidden',
         shown ? 'translate-y-0 opacity-100' : '-translate-y-3 opacity-0',
       )}
     >
@@ -505,8 +505,8 @@ function MobileNotice() {
 
 /** Composer lookalike: same frame as `Composer`, types instead of editing.
     `cta` types out an invitation in the editor when the player isn't using
-    it; the typed text is a live link and the frame glows accent while it
-    has something to say. */
+ it; the typed text is a live link and the frame glows accent while it
+ has something to say. */
 function FakeComposer({
   typed,
   streaming,
@@ -520,11 +520,11 @@ function FakeComposer({
     <div
       className={cn(
         'border bg-panel transition-colors duration-700',
-        cta ? 'border-accent' : 'border-rule',
+        cta ? 'border-accent' : 'border-border',
       )}
     >
       <div className="px-1 pt-1">
-        <div className="composer-editor min-h-[2.5rem] px-3 py-2 text-[14px] leading-[1.5]">
+        <div className="composer-editor min-h-[2.5rem] px-3 py-2 text-sm leading-[1.5]">
           {typed.length > 0 ? (
             <span className="whitespace-pre-wrap break-words">
               {typed}
@@ -548,15 +548,15 @@ function FakeComposer({
         </div>
       </div>
 
-      <div className="flex min-w-0 items-center gap-2 border-t border-rule-2 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2 border-t border-border px-3 py-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <span className="inline-flex h-9 items-center gap-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink">
+          <span className="inline-flex h-9 items-center gap-2 border border-border bg-bg px-3 font-mono text-body lowercase text-ink">
             agent
           </span>
-          <span className="inline-flex h-9 min-w-0 items-center gap-2 border border-rule bg-bg px-3 font-mono text-[13px] lowercase text-ink">
+          <span className="inline-flex h-9 min-w-0 items-center gap-2 border border-border bg-bg px-3 font-mono text-body lowercase text-ink">
             <span className="truncate">{MODEL_LABEL}</span>
           </span>
-          <span className="hidden font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost sm:inline">
+          <span className="hidden font-mono text-meta uppercase tracking-[0.06em] text-ink-ghost sm:inline">
             {MODEL_ID.split('::')[0]}
           </span>
         </div>
@@ -600,7 +600,7 @@ function CalloutStrip({
           <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-accent">
             {callout.title}
           </div>
-          <p className="mt-1.5 text-[13px] leading-[1.5] text-ink">
+          <p className="mt-1.5 text-body leading-[1.5] text-ink">
             {callout.text}
           </p>
         </div>

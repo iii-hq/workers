@@ -1643,6 +1643,11 @@ async fn approval_verdict(
     session_id: &str,
     arguments: &Value,
 ) -> Result<Verdict, String> {
+    // No approval gate on this stack: the same verdict as its absence below,
+    // without an engine error per observe.
+    if deps.function_known_absent(APPROVAL_EVALUATE_ID).await {
+        return Ok(Verdict::Allow);
+    }
     let resp = deps
         .iii
         .call(CallRequest {

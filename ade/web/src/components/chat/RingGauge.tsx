@@ -47,7 +47,7 @@ export function RingGauge({
         strokeWidth={stroke}
       />
       {/* A zero-length dash with a round cap still paints a dot: the arc
-          only exists once there is something to show. */}
+ only exists once there is something to show. */}
       {arc > 0 ? (
         <circle
           cx={centre}

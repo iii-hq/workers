@@ -280,7 +280,7 @@ describe('ChatContextPanel', () => {
     expect(view.textContent).toContain('Show less')
   })
 
-  it('lists sub-agents of every depth, running ones first', async () => {
+  it('lists sub-agents of every depth in tree order, whatever their status', async () => {
     const main = chat('main')
     const done = chat('d', {
       title: 'done-child',
@@ -295,9 +295,29 @@ describe('ChatContextPanel', () => {
     const view = await render(main, { conversations: [main, done, running] })
     const text = view.textContent ?? ''
     expect(text).toContain('running-grandchild')
-    expect(text.indexOf('running-grandchild')).toBeLessThan(
-      text.indexOf('done-child'),
+    // The parent before its child: a row never jumps when its status
+    // changes, which is what opening it does.
+    expect(text.indexOf('done-child')).toBeLessThan(
+      text.indexOf('running-grandchild'),
     )
+  })
+
+  it('marks an ended sub-agent with a quiet dot, never the live green', async () => {
+    // The chat's sub-agent card says "Ended" with no green; the panel row
+    // showed a green dot beside it that read as "active" (QA 2026-11-16).
+    const main = chat('main')
+    const ended = chat('e', {
+      title: 'ended-child',
+      parentId: 'main',
+      status: 'done',
+    })
+    const view = await render(main, { conversations: [main, ended] })
+    const row = view.querySelector('[aria-label$="(completed)"]')
+    expect(row).not.toBeNull()
+    expect(row?.querySelector('.bg-ok')).toBeNull()
+    expect(row?.querySelector('.bg-accent')).toBeNull()
+    expect(row?.querySelector('.bg-ink-ghost')).not.toBeNull()
+    expect(view.textContent).not.toContain('1 active')
   })
 
   it('survives a link with a malformed escape', async () => {
@@ -598,9 +618,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       return view
     }
@@ -673,9 +693,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       expect(item('Auto-fix')?.getAttribute('data-disabled')).toBeNull()
       await act(async () => item('Auto-fix')?.click())
@@ -713,9 +733,9 @@ describe('ChatContextPanel', () => {
         'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
+        // A Base UI menu trigger opens on the click (jsdom has no pointer
+        // type for the mousedown path).
+        trigger.click()
       })
       expect(item('Auto-fix')?.getAttribute('aria-checked')).toBe('true')
       await act(async () => item('Auto-fix')?.click())

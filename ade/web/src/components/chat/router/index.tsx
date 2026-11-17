@@ -5,7 +5,7 @@ import { ModelsListView } from './ModelsListView'
 import { isRouterFunction, unwrapEnvelope } from './parsers'
 
 /* The known router::* set lives in parsers.ts (ROUTER_FUNCTION_IDS) so the
-   dispatcher and schemas share one source of truth. */
+ dispatcher and schemas share one source of truth. */
 export { isRouterFunction, ROUTER_FUNCTION_IDS } from './parsers'
 
 /** Branded function-id label, mirroring the other namespace modules. */

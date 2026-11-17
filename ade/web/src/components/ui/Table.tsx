@@ -1,26 +1,42 @@
-import uiClasses from '@iii-dev/console-ui/ui-classes'
 import * as React from 'react'
+import {
+  TableBody as BaseTableBody,
+  TableCaption as BaseTableCaption,
+  TableCell as BaseTableCell,
+  TableFooter as BaseTableFooter,
+  TableHead as BaseTableHead,
+  TableHeader as BaseTableHeader,
+  TableRow as BaseTableRow,
+} from '@/components/shadcn/table'
 import { cn } from '@/lib/utils'
 
 export type TableDensity = 'comfortable' | 'compact'
 
+/** The scrolling box around a table: horizontal overflow, nothing else. */
 export const TableViewport = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn(uiClasses.tableViewport, className)}
+    data-slot="table-container"
+    className={cn('relative w-full overflow-x-auto', className)}
     {...props}
   />
 ))
 TableViewport.displayName = 'TableViewport'
 
+/** A table in a card: the `border` ring and the card's corners. */
 export const TableFrame = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn(uiClasses.tableFrame, className)} {...props} />
+  <div
+    ref={ref}
+    data-slot="table-frame"
+    className={cn('overflow-hidden rounded-lg border border-border', className)}
+    {...props}
+  />
 ))
 TableFrame.displayName = 'TableFrame'
 
@@ -31,50 +47,42 @@ export interface TableProps
   inset?: boolean
 }
 
+/**
+ * The shadcn table under the first console API. `density` sets the row
+ * height (40px, or 32px compact) on every cell below; the table is put in
+ * a `TableViewport` or `TableFrame` by the caller, so it never scrolls on
+ * its own.
+ */
 export const Table = React.forwardRef<HTMLTableElement, TableProps>(
   ({ className, density = 'comfortable', inset, ...props }, ref) => (
     <table
       ref={ref}
+      data-slot="table"
       data-density={density}
       data-inset={inset || undefined}
-      className={cn(uiClasses.table, className)}
+      className={cn(
+        'w-full caption-bottom text-sm',
+        density === 'compact' && '[&_td]:py-1 [&_th]:h-8',
+        // Flush with the page text when the table stands alone; inside a
+        // `TableFrame` the first and last cells keep a 12px gutter from the
+        // card's edge, so "Status" never touches the ring.
+        !inset &&
+          'not-in-data-[slot=table-frame]:[&_td:first-child]:pl-0 not-in-data-[slot=table-frame]:[&_th:first-child]:pl-0',
+        'in-data-[slot=table-frame]:[&_td:first-child]:pl-3 in-data-[slot=table-frame]:[&_th:first-child]:pl-3 in-data-[slot=table-frame]:[&_td:last-child]:pr-3 in-data-[slot=table-frame]:[&_th:last-child]:pr-3',
+        className,
+      )}
       {...props}
     />
   ),
 )
 Table.displayName = 'Table'
 
-export const TableHeader = React.forwardRef<
-  HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <thead
-    ref={ref}
-    className={cn(uiClasses.tableHeader, className)}
-    {...props}
-  />
-))
-TableHeader.displayName = 'TableHeader'
-
-export const TableBody = React.forwardRef<
-  HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <tbody ref={ref} className={cn(uiClasses.tableBody, className)} {...props} />
-))
-TableBody.displayName = 'TableBody'
-
-export const TableFooter = React.forwardRef<
-  HTMLTableSectionElement,
-  React.HTMLAttributes<HTMLTableSectionElement>
->(({ className, ...props }, ref) => (
-  <tfoot
-    ref={ref}
-    className={cn(uiClasses.tableFooter, className)}
-    {...props}
-  />
-))
-TableFooter.displayName = 'TableFooter'
+export const TableHeader = BaseTableHeader
+export const TableBody = BaseTableBody
+export const TableFooter = BaseTableFooter
+export const TableHead = BaseTableHead
+export const TableCell = BaseTableCell
+export const TableCaption = BaseTableCaption
 
 export interface TableRowProps
   extends React.HTMLAttributes<HTMLTableRowElement> {
@@ -107,12 +115,14 @@ function onInteractiveRowKeyDown(
   next.focus()
 }
 
+/** A row; `interactive` rows join the tab order and answer the keyboard. */
 export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
   ({ className, interactive, selected, onKeyDown, ...props }, ref) => (
-    <tr
+    <BaseTableRow
       ref={ref}
       data-interactive={interactive || undefined}
       data-selected={selected || undefined}
+      data-state={selected ? 'selected' : undefined}
       // A row that answers a click answers the keyboard too: it joins the
       // tab order once, and the arrows move between rows from there.
       tabIndex={props.tabIndex ?? (interactive ? 0 : undefined)}
@@ -122,9 +132,8 @@ export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
           onInteractiveRowKeyDown(event)
       }}
       className={cn(
-        uiClasses.tableRow,
         interactive &&
-          'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+          'cursor-pointer focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset focus-visible:outline-none',
         className,
       )}
       {...props}
@@ -132,31 +141,3 @@ export const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
   ),
 )
 TableRow.displayName = 'TableRow'
-
-export const TableHead = React.forwardRef<
-  HTMLTableCellElement,
-  React.ThHTMLAttributes<HTMLTableCellElement>
->(({ className, ...props }, ref) => (
-  <th ref={ref} className={cn(uiClasses.tableHead, className)} {...props} />
-))
-TableHead.displayName = 'TableHead'
-
-export const TableCell = React.forwardRef<
-  HTMLTableCellElement,
-  React.TdHTMLAttributes<HTMLTableCellElement>
->(({ className, ...props }, ref) => (
-  <td ref={ref} className={cn(uiClasses.tableCell, className)} {...props} />
-))
-TableCell.displayName = 'TableCell'
-
-export const TableCaption = React.forwardRef<
-  HTMLTableCaptionElement,
-  React.HTMLAttributes<HTMLTableCaptionElement>
->(({ className, ...props }, ref) => (
-  <caption
-    ref={ref}
-    className={cn(uiClasses.tableCaption, className)}
-    {...props}
-  />
-))
-TableCaption.displayName = 'TableCaption'

@@ -520,6 +520,42 @@ describe('host.chat.compose', () => {
     vi.unstubAllGlobals()
   })
 
+  it('sends a card answer into its own chat, not the one used last', async () => {
+    const { host, harness } = await loadHost('#/')
+    const offA = registerComposer('a', 'session-a')
+    const offB = registerComposer('b', 'session-b')
+    const seen: string[] = []
+    const offInsertA = onComposerInsert(
+      (insert) => seen.push(`a:${insert.text}:${insert.submit}`),
+      'a',
+    )
+    const offInsertB = onComposerInsert(
+      (insert) => seen.push(`b:${insert.text}:${insert.submit}`),
+      'b',
+    )
+
+    // The person last typed in chat B; the card in chat A answers.
+    markComposerUsed('b')
+    expect(
+      host.chat.compose({ text: 'Q: yes', submit: true, sessionId: 'session-a' }),
+    ).toBe('composed')
+    expect(seen).toEqual(['a:Q: yes:true'])
+
+    // A chat whose composer is not mounted takes nothing, and no other
+    // chat does either.
+    expect(
+      host.chat.compose({ text: 'Q: no', submit: true, sessionId: 'session-c' }),
+    ).toBe('unavailable')
+    expect(seen).toEqual(['a:Q: yes:true'])
+
+    offInsertA()
+    offInsertB()
+    offA()
+    offB()
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
   it('opens the chat beside the caller when the workspace shows none', async () => {
     resetPanelContextForTests()
     const opened = vi.fn()

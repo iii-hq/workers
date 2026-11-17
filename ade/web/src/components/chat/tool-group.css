@@ -509,15 +509,15 @@
    body split off by the same line; the leading icons ring in black so they
    still cut out of the card. */
 [data-theme="dark"] .chat-tool-group {
-  background: var(--color-black);
-  box-shadow: inset 0 0 0 1px var(--color-neutral-900);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 [data-theme="dark"] .chat-tool-group__icon {
-  box-shadow: 0 0 0 2px var(--color-black);
+  box-shadow: 0 0 0 2px var(--card);
 }
 
 [data-theme="dark"] .chat-tool-group__list,
 [data-theme="dark"] .chat-tool-row__body {
-  border-top-color: var(--color-neutral-900);
+  border-top-color: var(--border);
 }

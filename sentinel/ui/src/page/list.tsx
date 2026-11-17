@@ -24,7 +24,7 @@ import {
   TableViewport,
 } from '@iii-dev/console-ui'
 import { ChevronRight, Inbox } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { InvestigateMany } from './InvestigateMany'
 import type { Client, GroupSummary, StatusResponse, InvestigationManyResult } from '../api'
 import type { Filters } from './index'
@@ -39,10 +39,13 @@ import {
   ago,
   bulkActions,
   scopeOf,
+  serviceOf,
   spaced,
   splitTitle,
+  stableOrder,
   statusLook,
   versionRange,
+  workerFilter,
 } from './present.js'
 
 interface Props {
@@ -79,7 +82,7 @@ export function GroupsListView({
   onBulk,
   status,
   filters,
-  groups,
+  groups: served,
   loading,
   narrow,
   now,
@@ -95,11 +98,26 @@ export function GroupsListView({
   const relevance = filters.relevance ?? 'relevant'
   const counts = status?.groups
   const [picked, setPicked] = useState<string[]>([])
+  /** The pointer is over the rows: the person is aiming at one. */
+  const [aiming, setAiming] = useState(false)
 
   // A row that left the filter is no longer selectable: keeping it would
   // apply an action to something the person cannot see.
-  const visible = new Set(groups.map((group) => group.id))
+  const visible = new Set(served.map((group) => group.id))
   const selection = picked.filter((id) => visible.has(id))
+
+  // While the person aims at a row or holds a selection, rows keep the order
+  // they were seen in; a refresh's re-sort waits until they are done. A new
+  // filter is a new list, in the server's order.
+  const filtersKey = JSON.stringify(filters)
+  const shown = useRef<{ key: string; ids: string[] }>({ key: filtersKey, ids: [] })
+  const held = (aiming || selection.length > 0) && shown.current.key === filtersKey
+  const groups = held ? stableOrder(shown.current.ids, served) : served
+  shown.current = { key: filtersKey, ids: groups.map((group) => group.id) }
+  const aim = {
+    onPointerEnter: () => setAiming(true),
+    onPointerLeave: () => setAiming(false),
+  }
   const actions = bulkActions(
     selection.map((id) => groups.find((group) => group.id === id)?.status ?? 'new'),
   )
@@ -126,13 +144,8 @@ export function GroupsListView({
   // "All workers" is the Select's own empty option: an option whose value is
   // an empty string is not allowed.
   const worker = {
-    value: filters.service || undefined,
-    placeholder: 'All workers',
-    allowEmpty: true,
-    emptyLabel: 'All workers',
-    onClear: () => setWorker(''),
-    onChange: setWorker,
-    options: workers.map((name) => ({ value: name, label: name })),
+    ...workerFilter(filters.service, workers),
+    onChange: (value: string) => setWorker(serviceOf(value)),
   }
   const search = (
     <SearchField
@@ -237,50 +250,6 @@ export function GroupsListView({
         </div>
       </div>
 
-      {selection.length > 0 ? (
-        <div className="sentinel-ui-bulk" role="region" aria-label="Selected groups">
-          <span>{selection.length} selected</span>
-          <Button size="sm" disabled={busy || selection.length < 2 || selection.length > 5} onClick={() => setReviewing(groups.filter(group => selection.includes(group.id)))}>Investigate in group</Button>
-          <span className="sentinel-ui-quiet">2–5 issues per investigation</span>
-          {actions.length === 0 ? (
-            <span className="sentinel-ui-quiet">nothing applies to all of them — narrow the selection</span>
-          ) : null}
-          {actions.includes('resolve') ? (
-            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('resolve')}>
-              Resolve
-            </Button>
-          ) : null}
-          {actions.includes('ignore') ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="pill" disabled={busy}>
-                  Ignore
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onSelect={() => apply('ignore')}>Forever</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => apply('ignore-version')}>
-                  Until the worker version changes
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-          {actions.includes('unignore') ? (
-            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('unignore')}>
-              Unignore
-            </Button>
-          ) : null}
-          {actions.includes('reopen') ? (
-            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('reopen')}>
-              Reopen
-            </Button>
-          ) : null}
-          <Button size="sm" variant="ghost" onClick={() => setPicked([])}>
-            Clear
-          </Button>
-        </div>
-      ) : null}
-
       {!loading && groups.length === 0 ? (
         relevance === 'relevant' && noiseTotal > 0 && !filters.search && !filters.service ? (
           <EmptyState
@@ -298,7 +267,7 @@ export function GroupsListView({
           />
         )
       ) : narrow ? (
-        <List aria-label="Error groups">
+        <List aria-label="Error groups" {...aim}>
           {loading && groups.length === 0
             ? Array.from({ length: 5 }, (_, index) => (
                 <ListItem key={index} as="div" label={<Skeleton />} description={<Skeleton />} />
@@ -308,7 +277,7 @@ export function GroupsListView({
               ))}
         </List>
       ) : (
-        <TableViewport>
+        <TableViewport {...aim}>
           <TableFrame>
             <Table className="sentinel-ui-groups">
               <TableHeader>
@@ -362,6 +331,52 @@ export function GroupsListView({
           </TableFrame>
         </TableViewport>
       )}
+
+      {/* Floats at the foot of the list instead of opening above it, so
+          selecting a row never pushes the rows down. */}
+      {selection.length > 0 ? (
+        <div className="sentinel-ui-bulk" role="region" aria-label="Selected groups" {...aim}>
+          <span>{selection.length} selected</span>
+          <Button size="sm" disabled={busy || selection.length < 2 || selection.length > 5} onClick={() => setReviewing(groups.filter(group => selection.includes(group.id)))}>Investigate in group</Button>
+          <span className="sentinel-ui-quiet">2–5 issues per investigation</span>
+          {actions.length === 0 ? (
+            <span className="sentinel-ui-quiet">nothing applies to all of them — narrow the selection</span>
+          ) : null}
+          {actions.includes('resolve') ? (
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('resolve')}>
+              Resolve
+            </Button>
+          ) : null}
+          {actions.includes('ignore') ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="pill" disabled={busy}>
+                  Ignore
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onSelect={() => apply('ignore')}>Forever</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => apply('ignore-version')}>
+                  Until the worker version changes
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {actions.includes('unignore') ? (
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('unignore')}>
+              Unignore
+            </Button>
+          ) : null}
+          {actions.includes('reopen') ? (
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('reopen')}>
+              Reopen
+            </Button>
+          ) : null}
+          <Button size="sm" variant="ghost" onClick={() => setPicked([])}>
+            Clear
+          </Button>
+        </div>
+      ) : null}
 
       {reviewing ? <InvestigateMany api={api} groups={reviewing} onCancel={() => setReviewing(null)} onStarted={result => { setReviewing(null); setPicked([]); onInvestigationStarted(result) }} /> : null}
       {total > groups.length ? (

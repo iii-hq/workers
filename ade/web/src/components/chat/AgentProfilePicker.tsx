@@ -245,7 +245,7 @@ export function AgentProfilePicker({
       <PopoverTrigger
         aria-label={`Agent profile: ${label}`}
         title={label}
-        className="composer-agent-trigger inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-2 font-inter text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus"
+        className="composer-agent-trigger inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-2 font-inter text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
       >
         <Bot aria-hidden className="size-4 shrink-0" />
         <span className="composer-agent-label max-w-32 truncate">{label}</span>
@@ -299,7 +299,7 @@ export function AgentProfilePicker({
             <button
               type="button"
               onClick={() => setAttempt((value) => value + 1)}
-              className="rounded-md px-2 py-1 text-ink hover:bg-surface-hover/60 focus-visible:outline-2 focus-visible:outline-rule-focus"
+              className="rounded-md px-2 py-1 text-ink hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
             >
               Retry
             </button>
@@ -322,7 +322,7 @@ export function AgentProfilePicker({
                 aria-describedby={update ? markerId : undefined}
                 disabled={selectionLocked}
                 className={cn(
-                  'group/agent flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-rule-focus disabled:cursor-default',
+                  'group/agent flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring disabled:cursor-default',
                   active
                     ? 'bg-surface-hover/60'
                     : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
@@ -377,7 +377,7 @@ export function AgentProfilePicker({
           <button
             type="button"
             title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
-            className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:outline-2 focus-visible:outline-rule-focus"
+            className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
@@ -412,7 +412,7 @@ export function AgentProfilePicker({
         <button
           type="button"
           title="Choose instructions, a model, and skills."
-          className="group/configure flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:outline-2 focus-visible:outline-rule-focus"
+          className="group/configure flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
           onClick={() => {
             setOpen(false)
             requestPanelOpen({
@@ -422,7 +422,7 @@ export function AgentProfilePicker({
           }}
         >
           <Settings2 aria-hidden className="size-4 shrink-0 text-ink-faint" />
-          <span className="min-w-0 flex-1 truncate">Configure an agent…</span>
+          <span className="min-w-0 flex-1 truncate">Configure an agent</span>
           <ArrowUpRight
             aria-hidden
             className="size-4 shrink-0 text-ink-faint opacity-0 transition-opacity duration-100 group-hover/configure:opacity-100 group-focus-visible/configure:opacity-100"
@@ -430,7 +430,7 @@ export function AgentProfilePicker({
         </button>
         {details ? (
           <details className="group/details shrink-0">
-            <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:outline-2 focus-visible:outline-rule-focus [&::-webkit-details-marker]:hidden">
+            <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
               <SlidersHorizontal
                 aria-hidden
                 className="size-4 shrink-0 text-ink-faint"

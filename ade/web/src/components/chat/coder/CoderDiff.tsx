@@ -27,7 +27,7 @@ export function CoderNewFilePreview({
   const newFile: FileContents = { name: path, contents: content }
 
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
+    <div className="border-b border-border last:border-b-0">
       <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
     </div>
   )
@@ -45,8 +45,8 @@ export function CoderOverwritePreview({
   const file: FileContents = { name: path, contents: content }
 
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-b border-border last:border-b-0">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="path">{path}</Chip>
         <Chip label="overwrite" className="bg-warn-muted text-warn">
           true

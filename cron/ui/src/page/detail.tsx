@@ -64,7 +64,11 @@ export function TaskDetail({
         <DetailRow label="Target" mono>
           {task.target ?? 'wake'}
         </DetailRow>
-        <DetailRow label="Wakes">{task.sessionTitle ?? 'its own session'}</DetailRow>
+        {task.target ? (
+          <DetailRow label="Chat">{task.sessionTitle ?? (task.fromChat ? 'a chat' : 'its own session')}</DetailRow>
+        ) : (
+          <DetailRow label="Wakes">{task.sessionTitle ?? 'its own session'}</DetailRow>
+        )}
         <DetailRow label="Session" mono>
           {task.sessionId}
         </DetailRow>
@@ -97,7 +101,7 @@ export function TaskDetail({
           Copy id
         </Button>
         <Button variant="ghost" onClick={onReplace}>
-          Replace…
+          Replace
         </Button>
         <Button variant="primary" onClick={() => setConfirming(true)}>
           Remove

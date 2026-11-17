@@ -748,6 +748,7 @@ async fn a_finalize_that_drains_a_wake_reports_the_turn_as_continuing() {
                 message: AgentMessage::user_text("[notification] woke"),
                 entry_id: "e_fire_sub_1".into(),
                 origin: None,
+                channel: None,
                 queued_at: 1,
             };
             crate::state::enqueue_message(&deps.iii, &wake, cfg.session_timeout_ms)
@@ -891,6 +892,7 @@ async fn queue_wake_then_message(deps: &Deps) {
             message: AgentMessage::user_text(entry_id),
             entry_id: entry_id.into(),
             origin,
+            channel: None,
             queued_at,
         };
         crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms)
@@ -1682,6 +1684,7 @@ async fn finalize_t1_with_a_queued_wake(deps: &Deps, failed: bool) {
         entry_id: "e_fire_sub_1".into(),
         origin: Some(json!({ "notification": true, "binding": "sub" })),
         queued_at: 1,
+        channel: None,
     };
     crate::state::enqueue_message(&deps.iii, &wake, cfg.session_timeout_ms)
         .await

@@ -204,8 +204,9 @@ export function useTour(host: Host): TourController {
   // step (or a reload) sends to that chat: shown again when the operator
   // closed its pane, selected again when they moved to another one.
   const chatSession = useRef<string | null>(null)
-  const tourChat = useCallback(async (): Promise<string | null> => {
-    if (chatSession.current) return chatSession.current
+  /** The stored tour chat, read now: a reset (which forgets it) must not
+   * leave a cached id that an old chat's turn could complete a fresh step with. */
+  const readTourChat = useCallback(async (): Promise<string | null> => {
     try {
       const stored = await host.iii.call<unknown>('state::get', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY })
       chatSession.current = typeof stored === 'string' && stored ? stored : null
@@ -214,16 +215,25 @@ export function useTour(host: Host): TourController {
     }
     return chatSession.current
   }, [host])
+  const tourChat = useCallback(
+    async (): Promise<string | null> => chatSession.current ?? readTourChat(),
+    [readTourChat],
+  )
 
   const ask = useCallback(
     (step: Step) => {
       if (!step.ask) return
       const { text, agent } = step.ask
       if (agent && host.chat?.startChat) {
+        const { selectConversation } = host.chat
         void host.chat
           .startChat({ text, agent })
           .then((id) => {
             chatSession.current = id
+            // The pane in front follows the active chat on its own; a pane
+            // that was not leading (the operator last touched another one)
+            // is brought to the new chat here, so the message is seen going.
+            selectConversation?.(id)
             return host.iii.call('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })
           })
           .catch((cause: unknown) => setError(errorMessage(cause)))
@@ -282,7 +292,7 @@ export function useTour(host: Host): TourController {
         // A turn counts only in the tour's own chat: an example built from
         // setup, or any other chat, finishing a turn says nothing about it.
         const session = (fired.payload as { session_id?: unknown } | null)?.session_id
-        void tourChat().then((id) => {
+        void readTourChat().then((id) => {
           if (id && session === id) complete(step.id, fired)
         })
       }),
@@ -300,7 +310,7 @@ export function useTour(host: Host): TourController {
       live = false
       for (const unbind of unbinds) unbind()
     }
-  }, [host, tour, waiting, complete, tourChat])
+  }, [host, tour, waiting, complete, readTourChat])
 
   const openStep = useMemo(() => tour?.steps.find((step) => step.id === open) ?? null, [tour, open])
   const active = tour ? firstIncomplete(tour, records) : undefined

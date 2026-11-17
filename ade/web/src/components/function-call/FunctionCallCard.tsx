@@ -795,8 +795,8 @@ export function FunctionCallCard({
       data-function-status={status}
     >
       {/* The row is one labeled toggle carrying the title, the settled
-          facts and the status glyph; the trailing chevron is a pointer-only
-          duplicate target so clicking anywhere on the line still toggles. */}
+ facts and the status glyph; the trailing chevron is a pointer-only
+ duplicate target so clicking anywhere on the line still toggles. */}
       <div className="chat-tool-row__head group/fchdr">
         <button
           type="button"
@@ -827,7 +827,7 @@ export function FunctionCallCard({
           {loadFailed ? (
             <div
               role="alert"
-              className="flex items-center gap-2 px-3 py-3 font-inter text-[13px] text-warn"
+              className="flex items-center gap-2 px-3 py-3 font-inter text-body text-warn"
               data-function-call-load-failed=""
             >
               <span>Could not load call details.</span>
@@ -835,7 +835,7 @@ export function FunctionCallCard({
                 type="button"
                 data-message-action="retry-load"
                 onClick={loadDetails}
-                className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
               >
                 Retry
               </button>
@@ -910,8 +910,8 @@ export function FunctionCallCard({
         </div>
       ) : null}
       {/* A worker's display card is the row's content; the identity strip
-          and raw payload follow it rather than sitting between the header
-          and the card. */}
+ and raw payload follow it rather than sitting between the header
+ and the card. */}
       {open && displayCustomTerminal && showFooter ? (
         <div className="chat-tool-row__body">
           <FunctionCallRowFooter
@@ -935,7 +935,7 @@ export function FunctionCallCard({
         />
       ) : pending ? (
         <div className="flex flex-col gap-2 border-t border-edge px-3 py-2.5">
-          <p className="font-inter text-[13px] text-ink-faint">
+          <p className="font-inter text-body text-ink-faint">
             Execution is paused until you approve or deny this call.
           </p>
           <div className="flex items-center gap-2" data-approval-actions="">
@@ -966,15 +966,13 @@ export function FunctionCallCard({
               />
             ) : null}
             {submitting ? (
-              <span className="font-inter text-[13px] text-ink-faint">
+              <span className="font-inter text-body text-ink-faint">
                 waiting for the agent to resume…
               </span>
             ) : null}
           </div>
           {submitError ? (
-            <div className="font-inter text-[13px] text-warn">
-              {submitError}
-            </div>
+            <div className="font-inter text-body text-warn">{submitError}</div>
           ) : null}
         </div>
       ) : null}
@@ -987,17 +985,17 @@ interface ValuePaneProps {
   label: string
   value: unknown
   /** A pane that follows another in the same column: no top margin, so the
-      two sit one pane-gap apart instead of two. */
+ two sit one pane-gap apart instead of two. */
   stacked?: boolean
 }
 
 /* Pane chrome — the same recipe as the traces page's payload panes: Inter
-   labels on a hairline-framed card, the body on the editor code theme
+ labels on a hairline-framed card, the body on the editor code theme
    (`.code-theme-editor`, index.css: Geist Mono at 13px, loose leading, the
-   Vesper / min-light token palette). Machine values (line counts, ids) stay
-   in Geist Mono. */
+ Vesper / min-light token palette). Machine values (line counts, ids) stay
+ in Geist Mono. */
 const PANE_LABEL_CLS = 'font-inter text-xs font-medium text-ink'
-const PANE_HINT_CLS = 'font-inter text-[11px] font-normal text-ink-faint'
+const PANE_HINT_CLS = 'font-inter text-meta font-normal text-ink-faint'
 const PANE_FRAME_CLS =
   'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-edge bg-(--code-surface) mx-2.5 mb-2.5'
 const PANE_FRAME_TOP_CLS = 'mt-2.5'
@@ -1011,8 +1009,8 @@ function titleCase(label: string): string {
 }
 
 /* Copy → copied is an infrequent state swap: both icons stay in one grid
-   cell and cross-fade (scale 0.25→1, blur 4→0, 300ms on the standard
-   curve); reduced motion leaves only the opacity fade. */
+ cell and cross-fade (scale 0.25→1, blur 4→0, 300ms on the standard
+ curve); reduced motion leaves only the opacity fade. */
 const COPY_ICON_LAYER_CLS =
   '[grid-area:1/1] transition-[opacity,filter,scale] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:scale-100 motion-reduce:blur-[0px]'
 const COPY_ICON_SHOWN_CLS = 'scale-100 opacity-100 blur-[0px]'
@@ -1032,7 +1030,7 @@ function PaneCopyButton({ label, text }: { label: string; text: string }) {
       <button
         type="button"
         onClick={copy}
-        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
         aria-label={copied ? 'copied' : `copy ${label}`}
       >
         <span className="grid place-items-center">
@@ -1066,7 +1064,7 @@ const TEXT_PRE_CLS = cn(
 /** Rendered lines above which a pane collapses behind a "show all" footer. */
 const CLAMP_LINES = 24
 /** Collapsed body height — ~12 code lines at the editor theme's leading,
-    enough to identify the payload. */
+ enough to identify the payload. */
 const CLAMP_MAX_H = 'max-h-[21rem]'
 
 function countLines(s: string): number {
@@ -1113,7 +1111,7 @@ function PaneShell({
             </span>
           ))}
         </span>
-        <span className="shrink-0 font-geist-mono text-[11px] text-ink-faint tabular-nums">
+        <span className="shrink-0 font-geist-mono text-meta text-ink-faint tabular-nums">
           {lineCount.toLocaleString('en-US')}{' '}
           {lineCount === 1 ? 'line' : 'lines'}
         </span>

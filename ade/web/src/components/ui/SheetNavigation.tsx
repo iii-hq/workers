@@ -82,7 +82,7 @@ export function SheetPage({
             type="button"
             onClick={onBack}
             aria-label={backLabel}
-            className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             <span
               className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -177,7 +177,7 @@ export function SheetMenuRow({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
+        'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40',
         className,
       )}
     >
@@ -233,7 +233,7 @@ export function SheetOptionList<Value extends string>({
           <label
             key={option.value}
             className={cn(
-              'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
+              'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-ring/50',
               (disabled || option.disabled) &&
                 'pointer-events-none cursor-default opacity-40',
             )}

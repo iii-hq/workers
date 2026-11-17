@@ -60,21 +60,21 @@ import {
  * observer fire. Three presentations, chosen by `kind`:
  *
  * - `working-dir` — a session scope change, in the same activity-row grammar
- *   as function calls and observer fires (status icon, kind trail, one line,
- *   disclosure), with the folder mark in `workdir`.
+ *  as function calls and observer fires (status icon, kind trail, one line,
+ *  disclosure), with the folder mark in `workdir`.
  * - `skills` — the harness re-sent the model its skill index. Same grammar:
- *   one line saying the index moved and how many skills it holds, the list
- *   itself behind the disclosure. The model needs the whole block; a reader
- *   does not.
+ *  one line saying the index moved and how many skills it holds, the list
+ *  itself behind the disclosure. The model needs the whole block; a reader
+ *  does not.
  * - `turn-failure` — a turn the provider or iii could not finish: the
- *   diagnosis card, which leads with WHO has to act (a chip and one plain
- *   sentence) before what happened and what to do.
+ *  diagnosis card, which leads with WHO has to act (a chip and one plain
+ *  sentence) before what happened and what to do.
  * - `model-note` — text the harness or a hook showed the model: the
- *   quietest activity row, what it said behind the disclosure (see
+ *  quietest activity row, what it said behind the disclosure (see
  *   `ModelNoteMarker`).
  * - everything else — a one-line operational status on the StatusPanel
- *   recipe (tinted fill, small icon, headline + detail). No stripe, no
- *   outline, no caps transform.
+ *  recipe (tinted fill, small icon, headline + detail). No stripe, no
+ *  outline, no caps transform.
  */
 export function SystemNotice({ message }: { message: SystemMessage }) {
   if (message.kind === 'working-dir' && message.scope) {
@@ -331,7 +331,7 @@ function FailureSteps({ actions, note }: { actions: string[]; note?: string }) {
           <li
             key={action}
             data-step
-            className="relative pl-7 [counter-increment:step] before:absolute before:top-0.5 before:left-0 before:flex before:size-5 before:items-center before:justify-center before:rounded-full before:bg-panel-raised before:font-mono before:text-[11px] before:text-ink-faint before:ring-1 before:ring-edge before:content-[counter(step)]"
+            className="relative pl-7 [counter-increment:step] before:absolute before:top-0.5 before:left-0 before:flex before:size-5 before:items-center before:justify-center before:rounded-full before:bg-panel-raised before:font-mono before:text-meta before:text-ink-faint before:ring-1 before:ring-edge before:content-[counter(step)]"
           >
             {action}
           </li>
@@ -350,7 +350,7 @@ function FailureSteps({ actions, note }: { actions: string[]; note?: string }) {
 }
 
 /** The card's footer band: the raw error behind a disclosure, with a copy
-    button that stays reachable while it is closed. */
+ button that stays reachable while it is closed. */
 function FailureDetails({ rows }: { rows: TechnicalRow[] }) {
   const copyText = () => rows.map(([k, v]) => `${k}: ${v}`).join('\n')
   return (
@@ -358,7 +358,7 @@ function FailureDetails({ rows }: { rows: TechnicalRow[] }) {
       data-message-technical-details
       className="group border-t border-edge bg-surface/40"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 font-inter text-sm text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-rule-focus sm:px-3.5 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 font-inter text-sm text-ink-faint select-none hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-inset focus-visible:outline-ring sm:px-3.5 [&::-webkit-details-marker]:hidden">
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"
@@ -448,7 +448,7 @@ function WorkingDirMarker({
               title={message.content}
             >
               {/* The noun rides only where it fits: on a phone the folder
-                  glyph says "working directory" and the line keeps the path. */}
+ glyph says "working directory" and the line keeps the path. */}
               <span className="shrink-0 truncate">
                 <span className="@lg:hidden">Folder </span>
                 <span className="hidden @lg:inline">Working directory </span>
@@ -528,9 +528,9 @@ function PathTail({ path, muted = false }: { path: string; muted?: boolean }) {
       data-working-dir-path={path}
     >
       {/* Only the parent path gives way (down to its ellipsis); the folder
-          name never shrinks. Flex would otherwise hand the name a sub-pixel
-          share of the shortfall and clip it to `/worke…` while the parent
-          still has room. A name too long for a phone clips at the row edge. */}
+ name never shrinks. Flex would otherwise hand the name a sub-pixel
+ share of the shortfall and clip it to `/worke…` while the parent
+ still has room. A name too long for a phone clips at the row edge. */}
       {head ? (
         <span className="min-w-4 truncate text-ink-faint">{head}</span>
       ) : null}
@@ -679,7 +679,7 @@ function SkillsMarker({
                     >
                       <span
                         data-skill-id
-                        className="min-w-0 truncate font-mono text-[12px] leading-5 text-ink"
+                        className="min-w-0 truncate font-mono text-xs leading-5 text-ink"
                         title={entry.id}
                       >
                         {entry.id}
@@ -781,7 +781,7 @@ function TechnicalDetails({
   const copyText = () => rows.map(([k, v]) => `${k}: ${v}`).join('\n')
   return (
     <details data-message-technical-details className={cn('group', className)}>
-      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-sm [&::-webkit-details-marker]:hidden">
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 sm:text-sm [&::-webkit-details-marker]:hidden">
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 stroke-ink-ghost transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"

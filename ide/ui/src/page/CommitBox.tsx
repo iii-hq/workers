@@ -10,6 +10,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -176,18 +177,20 @@ export function CommitBox({ host, root, conversationId, memoryKey, scm, messageR
             </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="shui-commit-menu">
-            <DropdownMenuLabel>Recent messages</DropdownMenuLabel>
-            {recent === null ? (
-              <DropdownMenuItem disabled>Reading history…</DropdownMenuItem>
-            ) : recent.length === 0 ? (
-              <DropdownMenuItem disabled>No commits of yours yet</DropdownMenuItem>
-            ) : (
-              recent.map((text) => (
-                <DropdownMenuItem key={text} title={text} onSelect={() => setMessage(text)}>
-                  <span className="shui-commit-menu-text">{text.split('\n')[0]}</span>
-                </DropdownMenuItem>
-              ))
-            )}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Recent messages</DropdownMenuLabel>
+              {recent === null ? (
+                <DropdownMenuItem disabled>Reading history…</DropdownMenuItem>
+              ) : recent.length === 0 ? (
+                <DropdownMenuItem disabled>No commits of yours yet</DropdownMenuItem>
+              ) : (
+                recent.map((text) => (
+                  <DropdownMenuItem key={text} title={text} onSelect={() => setMessage(text)}>
+                    <span className="shui-commit-menu-text">{text.split('\n')[0]}</span>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
         <span className="spacer" />
@@ -332,25 +335,27 @@ export function CommitBox({ host, root, conversationId, memoryKey, scm, messageR
             </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" side="top" className="shui-commit-menu">
-            <DropdownMenuLabel>Commit options</DropdownMenuLabel>
-            <DropdownMenuCheckboxItem
-              checked={signOff}
-              onCheckedChange={setSignOff}
-              onSelect={(event) => event.preventDefault()}
-            >
-              Sign-off
-            </DropdownMenuCheckboxItem>
-            <DropdownMenuCheckboxItem
-              checked={runHooks}
-              onCheckedChange={setRunHooks}
-              onSelect={(event) => event.preventDefault()}
-            >
-              Run Git hooks
-            </DropdownMenuCheckboxItem>
-            <DropdownMenuItem onSelect={() => setAuthorOpen(true)}>
-              <span className="shui-commit-menu-text">Author…</span>
-              <span className="shui-commit-menu-meta">{author.trim() || 'from git config'}</span>
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Commit options</DropdownMenuLabel>
+              <DropdownMenuCheckboxItem
+                checked={signOff}
+                onCheckedChange={setSignOff}
+                onSelect={(event) => event.preventDefault()}
+              >
+                Sign-off
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={runHooks}
+                onCheckedChange={setRunHooks}
+                onSelect={(event) => event.preventDefault()}
+              >
+                Run Git hooks
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuItem onSelect={() => setAuthorOpen(true)}>
+                <span className="shui-commit-menu-text">Author…</span>
+                <span className="shui-commit-menu-meta">{author.trim() || 'from git config'}</span>
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             {customOptions ? (
               <>
                 <DropdownMenuSeparator />

@@ -27,6 +27,7 @@ import {
   Button,
   EmptyState,
   type Host,
+  IconButton,
   JsonHighlight,
   type PageCommandsApi,
   PageHeader,
@@ -37,7 +38,7 @@ import {
   TabsTrigger,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Radio } from 'lucide-react'
+import { Radio, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
 import {
@@ -353,15 +354,14 @@ export function ObserversPage({
           actions={
             <>
               <LiveDot />
-              <Button
-                variant="pill"
-                size="sm"
+              <IconButton
                 type="button"
+                label={catalog.loading ? 'Refreshing…' : 'Refresh catalog'}
                 onClick={catalog.reload}
                 disabled={catalog.loading}
               >
-                {catalog.loading ? 'loading…' : 'refresh'}
-              </Button>
+                <RefreshCw />
+              </IconButton>
             </>
           }
         />
@@ -375,8 +375,8 @@ export function ObserversPage({
               className="console-catalog-search"
               value={search}
               onChange={setSearch}
-              placeholder="search observers…"
-              aria-label="search observers"
+              placeholder="Search observers"
+              aria-label="Search observers"
             />
             <Button
               variant="pill"
@@ -385,9 +385,9 @@ export function ObserversPage({
               className="console-catalog-header-toggle"
               onClick={() => setShowInternal((v) => !v)}
               aria-pressed={showInternal}
-              title="include the engine's own sources nobody observes"
+              title="Include the engine's own sources nobody observes"
             >
-              internal
+              Internal
             </Button>
           </div>
           <FilterChips
@@ -400,36 +400,36 @@ export function ObserversPage({
       sideFooter={
         <SideCount>
           {catalog.data === null
-            ? 'loading observers…'
+            ? 'Loading observers…'
             : search.trim() || family
-              ? `showing ${groups.length} of ${allGroups.length} functions · ${shownObservers} observers`
+              ? `Showing ${groups.length} of ${allGroups.length} functions · ${shownObservers} observers`
               : `${allGroups.length} functions · ${totalObservers} observers`}
         </SideCount>
       }
       list={
         catalog.error ? (
           <ErrorNote
-            title="couldn't load observers"
+            title="Couldn't load observers"
             call="engine::observers::list"
             message={catalog.error}
             onRetry={catalog.reload}
           />
         ) : catalog.data === null ? (
-          <CatalogListSkeleton label="loading observers" />
+          <CatalogListSkeleton label="Loading observers" />
         ) : groups.length === 0 ? (
           <EmptyState
             title={
-              search.trim() || family ? 'nothing matches' : 'no observers'
+              search.trim() || family ? 'Nothing matches' : 'No observers'
             }
             description={
               search.trim() || family
-                ? 'no function, target, path, topic, or schedule contains that.'
-                : 'workers observe functions on connect, and event sources list when their worker registers them — start one and it lists here.'
+                ? 'No function, target, path, topic, or schedule contains that.'
+                : 'Workers observe functions on connect, and event sources list when their worker registers them — start one and it lists here.'
             }
             action={
               search.trim() || family
                 ? {
-                    label: 'clear filters',
+                    label: 'Clear filters',
                     onClick: () => {
                       setSearch('')
                       setFamily(null)
@@ -486,7 +486,7 @@ export function ObserversPage({
             {partitioned.plumbing.length > 0 && !search.trim() && !family ? (
               <div className="console-catalog-section console-catalog-plumbing">
                 <GroupHeader
-                  label="plumbing"
+                  label="Plumbing"
                   meta="ADE + configuration internals"
                   count={partitioned.plumbing.length}
                   countLabel="observer"
@@ -522,21 +522,21 @@ export function ObserversPage({
         selected === null ? (
           <Hero
             glyph={<FamilyGlyph family="other" size="hero" />}
-            eyebrow="observers"
-            title="understand what starts work"
-            body="select a function to read the event it is called with and the args its observers pass, or select an observer nested beneath it to see the route, schedule, subscription or filter that connects it to a target."
+            eyebrow="Observers"
+            title="Understand what starts work"
+            body="Select a function to read the event it is called with and the args its observers pass, or select an observer nested beneath it to see the route, schedule, subscription or filter that connects it to a target."
             items={[
               {
-                label: 'source',
-                value: 'a function its worker calls with each event',
+                label: 'Source',
+                value: 'A function its worker calls with each event',
               },
               {
-                label: 'observer',
-                value: 'its args, filters, delivery and policy',
+                label: 'Observer',
+                value: 'Its args, filters, delivery and policy',
               },
               {
-                label: 'target',
-                value: 'the function each matching call runs',
+                label: 'Target',
+                value: 'The function each matching call runs',
               },
             ]}
           />
@@ -631,12 +631,12 @@ function SourceDocument({
           title={functionId}
           status={
             detail.data && isEventSource(detail.data)
-              ? 'event source'
-              : 'observed function'
+              ? 'Event source'
+              : 'Observed function'
           }
           description={
             detail.data
-              ? detail.data.description || 'no description provided.'
+              ? detail.data.description || 'No description provided.'
               : undefined
           }
           chips={
@@ -649,11 +649,11 @@ function SourceDocument({
               </>
             ) : null
           }
-          actions={<CopyButton value={functionId} label="copy id" />}
+          actions={<CopyButton value={functionId} label="Copy id" />}
         />
         {detail.error ? (
           <ErrorNote
-            title="couldn't load the function"
+            title="Couldn't load the function"
             call="engine::functions::info"
             message={detail.error}
             onRetry={detail.reload}
@@ -695,29 +695,29 @@ function SourceContext({
   const spec = familyOf(detail.function_id)
   return (
     <>
-      <ContextPanel title="function details">
+      <ContextPanel title="Function details">
         <Facts
           items={[
-            { label: 'function id', value: <code>{detail.function_id}</code> },
-            { label: 'family', value: spec.label },
-            { label: 'worker', value: detail.worker_name },
-            { label: 'observers', value: String(observerCount) },
-            { label: 'private', value: detail.private ? 'yes' : 'no' },
+            { label: 'Function id', value: <code>{detail.function_id}</code> },
+            { label: 'Family', value: spec.label },
+            { label: 'Worker', value: detail.worker_name },
+            { label: 'Observers', value: String(observerCount) },
+            { label: 'Private', value: detail.private ? 'yes' : 'no' },
           ]}
         />
       </ContextPanel>
       <ContextPanel
-        title="contracts"
+        title="Contracts"
         description="Schemas published with this function."
       >
         <Facts
           items={[
             {
-              label: 'args',
+              label: 'Args',
               value: detail.args_format !== undefined ? 'defined' : 'none',
             },
             {
-              label: 'event',
+              label: 'Event',
               value: detail.response_schema !== undefined ? 'defined' : 'none',
             },
           ]}
@@ -816,7 +816,7 @@ function ObserverDocument({
           }
           actions={
             <>
-              <CopyButton value={observer.id} label="copy id" />
+              <CopyButton value={observer.id} label="Copy id" />
               <Button
                 variant="pill"
                 size="sm"
@@ -824,14 +824,14 @@ function ObserverDocument({
                 onClick={dispose}
                 disabled={disposing || observer.state === 'disposed'}
               >
-                {disposing ? 'disposing…' : 'dispose'}
+                {disposing ? 'Disposing…' : 'Dispose'}
               </Button>
             </>
           }
         />
         {disposeError ? (
           <ErrorNote
-            title="couldn't dispose the observer"
+            title="Couldn't dispose the observer"
             call="engine::observers::dispose"
             message={disposeError}
           />
@@ -847,12 +847,12 @@ function ObserverDocument({
             <TabsList>
               <TabsTrigger value="fire">
                 {spec.family === 'http'
-                  ? 'Send Request'
+                  ? 'Send request'
                   : spec.family === 'queue'
                     ? 'Publish'
                     : spec.family === 'cron'
-                      ? 'Run Now'
-                      : 'Call Target'}
+                      ? 'Run now'
+                      : 'Call target'}
               </TabsTrigger>
               <TabsTrigger value="args">Args</TabsTrigger>
               <TabsTrigger value="filters">Filters</TabsTrigger>
@@ -869,8 +869,8 @@ function ObserverDocument({
                   host={host}
                   functionId={target}
                   requestSchema={targetSchema}
-                  label={spec.family === 'cron' ? 'run now' : 'call target'}
-                  runningLabel={spec.family === 'cron' ? 'running…' : 'calling…'}
+                  label={spec.family === 'cron' ? 'Run now' : 'Call target'}
+                  runningLabel={spec.family === 'cron' ? 'Running…' : 'Calling…'}
                   hint={
                     spec.family === 'cron'
                       ? `Calls ${target} with a tick-shaped payload. The schedule is untouched, and the next scheduled tick still runs it.`
@@ -879,7 +879,7 @@ function ObserverDocument({
                 />
               ) : (
                 <Note>
-                  this observer carries no target function — nothing to call.
+                  This observer carries no target function, so there is nothing to call.
                 </Note>
               )}
             </TabsContent>
@@ -930,7 +930,7 @@ function ObserverContext({
   return (
     <>
       <ContextPanel
-        title="target function"
+        title="Target function"
         description="Each matching call runs this function."
         wide
       >
@@ -948,23 +948,23 @@ function ObserverContext({
         )}
       </ContextPanel>
 
-      <ContextPanel title="observer details">
+      <ContextPanel title="Observer details">
         <Facts
           items={[
-            { label: 'observer id', value: <code>{observer.id}</code> },
+            { label: 'Observer id', value: <code>{observer.id}</code> },
             {
-              label: 'observes',
+              label: 'Observes',
               value: <code>{observer.function_id}</code>,
             },
-            { label: 'family', value: spec.label },
-            { label: 'namespace', value: observer.namespace },
+            { label: 'Family', value: spec.label },
+            { label: 'Namespace', value: observer.namespace },
             {
-              label: 'observing worker',
+              label: 'Observing worker',
               value:
                 observer.worker.worker_name ?? observer.worker.worker_id ?? '—',
             },
             {
-              label: 'created',
+              label: 'Created',
               value: observer.created_at_ms
                 ? new Date(observer.created_at_ms).toLocaleString()
                 : '—',
@@ -973,18 +973,18 @@ function ObserverContext({
         />
       </ContextPanel>
 
-      <ContextPanel title="counters">
+      <ContextPanel title="Counters">
         <Facts
           items={[
-            { label: 'fires', value: String(observer.fires) },
+            { label: 'Fires', value: String(observer.fires) },
             {
-              label: 'dropped',
+              label: 'Dropped',
               value: dropped.length
                 ? dropped.map(([reason, n]) => `${n} ${reason}`).join(', ')
                 : String(totalOf(observer.dropped)),
             },
             {
-              label: 'activation failures',
+              label: 'Activation failures',
               value: failures.length
                 ? failures.map(([code, n]) => `${n} ${code}`).join(', ')
                 : '0',
@@ -994,7 +994,7 @@ function ObserverContext({
       </ContextPanel>
 
       {hasDeliveryFacts ? (
-        <ContextPanel title="schedule, route or topic">
+        <ContextPanel title="Schedule, route or topic">
           <FamilyFacts observer={observer} />
         </ContextPanel>
       ) : null}
@@ -1012,13 +1012,13 @@ function FamilyFacts({ observer }: { observer: ObserverInfo }) {
       <>
         <div className="console-catalog-schedule">
           <span className="readable">
-            {describeCron(expression) ?? 'custom schedule'}
+            {describeCron(expression) ?? 'Custom schedule'}
           </span>
           <code>{expression}</code>
         </div>
         <div className="console-catalog-tiles">
           <StatTile
-            label="next run"
+            label="Next run"
             value={next ? untilLabel(next, now) : 'not derivable'}
             hint={
               next
@@ -1027,7 +1027,7 @@ function FamilyFacts({ observer }: { observer: ObserverInfo }) {
             }
           />
           <StatTile
-            label="status"
+            label="Status"
             value={observer.state === 'active' ? 'scheduled' : observer.state}
             tone={observer.state === 'active' ? 'ok' : 'warn'}
           />
@@ -1040,9 +1040,9 @@ function FamilyFacts({ observer }: { observer: ObserverInfo }) {
   if (http) {
     return (
       <div className="console-catalog-tiles">
-        <StatTile label="method" value={http.method} />
+        <StatTile label="Method" value={http.method} />
         <StatTile
-          label="path parameters"
+          label="Path parameters"
           value={http.params.length ? http.params.join(', ') : 'none'}
         />
       </div>
@@ -1053,9 +1053,9 @@ function FamilyFacts({ observer }: { observer: ObserverInfo }) {
   if (topic) {
     return (
       <div className="console-catalog-tiles">
-        <StatTile label="topic" value={topic} />
+        <StatTile label="Topic" value={topic} />
         <StatTile
-          label="status"
+          label="Status"
           value={observer.state === 'active' ? 'consuming' : observer.state}
           tone={observer.state === 'active' ? 'ok' : 'warn'}
         />

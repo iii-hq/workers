@@ -1,5 +1,5 @@
 import { $createCodeNode, $isCodeNode } from '@lexical/code-core'
-import { $isListItemNode } from '@lexical/list'
+import { $isListItemNode, $isListNode, type ListItemNode } from '@lexical/list'
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
@@ -31,6 +31,7 @@ import {
   isSelectionCapturedInDecoratorInput,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
+  KEY_BACKSPACE_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_TAB_COMMAND,
   type LexicalEditor,
@@ -45,6 +46,7 @@ import {
   useRef,
 } from 'react'
 import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
+import { WORKSPACE_KEYS_WHILE_SEARCHING } from '@/lib/workspace-keys'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
@@ -84,7 +86,7 @@ interface LexicalShellProps {
   lexicalEditorRef?: RefObject<LexicalEditor | null>
   onChange: (text: string) => void
   /** Called on the chosen send key (see `lib/send-key`); the send button is
-      the other way in. */
+ the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -97,7 +99,7 @@ interface LexicalShellProps {
    */
   externalInput?: boolean
   /** The composer's address on the insert bus: only inserts and focus
-      requests sent to it land here. */
+ requests sent to it land here. */
   composerId?: string
 }
 
@@ -231,6 +233,17 @@ function ComposerEnterPlugin({
           $insertCodeLine(container, selection)
           return true
         }
+        // A blank item ending a list: out of the list in one go, from any
+        // depth (ListPlugin would lift it one level per press).
+        if (
+          collapsed &&
+          $isListItemNode(container) &&
+          $isBlankItem(container) &&
+          $endsList(container)
+        ) {
+          event.preventDefault()
+          return $leaveList(container)
+        }
         // A list item or prose: the paragraph command. ListPlugin starts the
         // next item or leaves the list; prose gets a paragraph of its own
         // (RichTextPlugin's line break would stay in the same one, where no
@@ -245,6 +258,80 @@ function ComposerEnterPlugin({
       offNewLine()
     }
   }, [editor, onSubmit, menuOpenRef, sendKey])
+  return null
+}
+
+/** An item with nothing in it but the caret. */
+function $isBlankItem(item: ListItemNode): boolean {
+  return (
+    item.getTextContent().trim().length === 0 &&
+    !$isListNode(item.getFirstChild())
+  )
+}
+
+/** The item ends the whole list: nothing follows it at any level. */
+function $endsList(item: ListItemNode): boolean {
+  let node: ElementNode | null = item
+  while (node && !$isListNode(node.getParent()?.getParent() ?? null)) {
+    if (node.getNextSibling() !== null) return false
+    node = node.getParent()
+    if (!node || !$isListNode(node)) return node === null
+    node = node.getParent()
+    if (!$isListItemNode(node)) return true
+  }
+  return node?.getNextSibling() === null
+}
+
+/**
+ * Leave the list: the blank item at its end goes (with any nested wrapper it
+ * emptied), and the caret lands on a fresh paragraph after the list. One
+ * key, from any depth; Lexical's own exit climbs one level per press.
+ */
+function $leaveList(item: ListItemNode): boolean {
+  const top = item.getTopLevelElement()
+  if (!$isListNode(top)) return false
+  const paragraph = $createParagraphNode()
+  top.insertAfter(paragraph)
+  let node: ElementNode = item
+  for (;;) {
+    const list = node.getParent()
+    node.remove()
+    if (!$isListNode(list) || list.getChildrenSize() > 0) break
+    const wrapper = list.getParent()
+    list.remove()
+    if (!$isListItemNode(wrapper) || wrapper.getChildrenSize() > 0) break
+    node = wrapper
+  }
+  if (top.isAttached() && top.getChildrenSize() === 0) top.remove()
+  paragraph.select()
+  return true
+}
+
+/**
+ * A newline or Backspace on a blank item at the end of a list leaves the
+ * list, however deep the item sat. Backspace at the start of a blank item
+ * elsewhere lifts it one level, as Shift+Tab does.
+ */
+function ComposerListExitPlugin() {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return editor.registerCommand(
+      KEY_BACKSPACE_COMMAND,
+      (event) => {
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection) || !selection.isCollapsed())
+          return false
+        if (selection.anchor.offset !== 0) return false
+        const container = $getComposerContainer(selection.anchor.getNode())
+        if (!$isListItemNode(container) || !$isBlankItem(container))
+          return false
+        event.preventDefault()
+        if ($endsList(container)) return $leaveList(container)
+        return editor.dispatchCommand(OUTDENT_CONTENT_COMMAND, undefined)
+      },
+      COMMAND_PRIORITY_LOW,
+    )
+  }, [editor])
   return null
 }
 
@@ -453,9 +540,12 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
 function ExternalInsertPlugin({ composerId }: { composerId?: string }) {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
-    return onComposerInsert(({ text, inline }) => {
+    return onComposerInsert(({ text, inline, submit }) => {
       editor.update(() => {
         const root = $getRoot()
+        // A send (an ask card's answer, say) never joins what the person is
+        // still writing: with a draft here, the composer sends it on its own.
+        if (submit && root.getTextContent().trim().length > 0) return
         if (inline) {
           // A list or a code block is not a sentence to join: the reference
           // starts a paragraph of its own after it.
@@ -722,7 +812,7 @@ export function LexicalShell({
   mentionContext,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
-     so the initializer callback identity doesn't trigger a remount on re-render. */
+ so the initializer callback identity doesn't trigger a remount on re-render. */
   // biome-ignore lint/correctness/useExhaustiveDependencies: initialContent is a one-shot mount initializer; capturing later changes would force a remount and lose editor state.
   const initialConfig = useMemo(
     () => ({
@@ -742,7 +832,7 @@ export function LexicalShell({
   return (
     <LexicalComposer initialConfig={initialConfig}>
       {/* The pills render through a portal from inside the editor, so the
-          provider has to sit inside the composer for them to see it. */}
+ provider has to sit inside the composer for them to see it. */}
       <ComposerMentionContext.Provider value={mentionActions}>
         <div ref={frameRef} className="relative">
           <RichTextPlugin
@@ -751,6 +841,9 @@ export function LexicalShell({
                 ref={editorRef}
                 aria-label="message composer"
                 aria-placeholder={placeholder}
+                // The workspace's chords pass through the caret (a tab or
+                // pane switch from the composer, as from the page search).
+                data-keybindings-allow={WORKSPACE_KEYS_WHILE_SEARCHING}
                 placeholder={
                   <div className="composer-placeholder px-3 py-2">
                     {placeholder}
@@ -770,10 +863,11 @@ export function LexicalShell({
         <ClearOnDemandPlugin token={clearToken} />
         <ChangePlugin onChange={onChange} />
         {/* The WYSIWYG blocks: `- ` / `1. ` start a list, "``` " a code
-            block, `` `x` `` inline code (see lexical/composer-markdown). */}
+ block, `` `x` `` inline code (see lexical/composer-markdown). */}
         <ListPlugin />
         <MarkdownShortcutPlugin transformers={COMPOSER_SHORTCUT_TRANSFORMERS} />
         <ComposerTabPlugin />
+        <ComposerListExitPlugin />
         <ComposerPastePlugin />
         <ComposerEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
         <PillArrowNavPlugin />
@@ -784,9 +878,9 @@ export function LexicalShell({
           <ExternalInsertPlugin composerId={composerId} />
         ) : null}
         {/* Opening a session is a request to write in it, so the first
-          keystroke should land in the message rather than be spent aiming.
-          Lexical's own plugin waits for the editable node, which a bare
-          focus() call on mount does not. */}
+ keystroke should land in the message rather than be spent aiming.
+ Lexical's own plugin waits for the editable node, which a bare
+ focus() call on mount does not. */}
         {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
         <FocusOnRequestPlugin
           enabled={disabled !== true && externalInput}

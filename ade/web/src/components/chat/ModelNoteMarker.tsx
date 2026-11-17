@@ -55,8 +55,8 @@ export function ModelNoteMarker({
         >
           <div className="flex w-full min-w-0 items-center gap-2">
             {/* The kind glyph sits in the status slot, drawn like the Check
-                a settled call shows: same box, size and stroke, so the
-                row lines up with the activity rows around it. */}
+ a settled call shows: same box, size and stroke, so the
+ row lines up with the activity rows around it. */}
             <span
               aria-hidden="true"
               className="activity-status-icon"
@@ -106,7 +106,7 @@ export function ModelNoteMarker({
               <CardHighlight className="p-3">
                 <pre
                   data-model-note-text
-                  className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-ink-faint"
+                  className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-faint"
                 >
                   {note.text.trim()}
                 </pre>
@@ -167,9 +167,7 @@ function MentionsDetail({ mentions }: { mentions: ModelNoteMention[] }) {
                   openOnClick
                 />
                 {problem ? (
-                  <span className="font-sans text-[12px] text-warn">
-                    {problem}
-                  </span>
+                  <span className="font-sans text-xs text-warn">{problem}</span>
                 ) : null}
               </div>
               {mention.status === 'resolved' && mention.summary ? (
@@ -179,7 +177,7 @@ function MentionsDetail({ mentions }: { mentions: ModelNoteMention[] }) {
               ) : null}
               {mention.details ? (
                 <p
-                  className="min-w-0 truncate font-mono text-[11px] leading-4 text-ink-ghost"
+                  className="min-w-0 truncate font-mono text-meta leading-4 text-ink-ghost"
                   title={mention.details}
                 >
                   details call · {mention.details}

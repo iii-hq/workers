@@ -713,8 +713,17 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     crate::filesystem_grants::purge(&deps.iii, id, timeout).await?;
     crate::budget::purge(deps, id, timeout).await?;
     crate::context_snapshot::delete(&deps.iii, id, timeout).await?;
+    crate::ask_settlement::purge(deps, id, timeout).await?;
     // Approval owns its data. Its existing purge is best effort; explicitly
     // read the inbox afterwards so a failed purge cannot be reported completed.
+    // No approval gate on this stack: nothing of it to purge (as the
+    // `function_not_found` arm below), and no engine error for the call.
+    if deps
+        .function_known_absent("approval::on-session-deleted")
+        .await
+    {
+        return Ok(());
+    }
     let purge = deps
         .iii
         .call(CallRequest {
@@ -814,6 +823,7 @@ async fn notify_parent(deps: &Deps, parent: &str, op: &Operation) -> Result<(), 
         entry_id: entry_id.clone(),
         message: AgentMessage::user_text(notification(op)),
         origin: Some(json!({"deletion_operation_id": op.snapshot.operation_id})),
+        channel: Some(crate::functions::send::DeliveryChannel::Notification),
         queued_at: AgentMessage::now_ms(),
     };
     state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;

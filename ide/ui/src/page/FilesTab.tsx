@@ -520,7 +520,7 @@ function FilesTabView({
         ...(isRichPreviewPath(rel)
           ? [{ id: 'preview', label: 'Open preview', icon: <Eye />, onSelect: () => onOpenPreview(rel) } satisfies ContextMenuItem]
           : []),
-        { id: 'compare', label: 'Compare with…', icon: <FileDiff />, onSelect: () => actionsRef.current.compare(rel) },
+        { id: 'compare', label: 'Compare with', icon: <FileDiff />, onSelect: () => actionsRef.current.compare(rel) },
         ...(changed
           ? [
               {
@@ -541,7 +541,7 @@ function FilesTabView({
           onSelect: () => actionsRef.current.copyPath(rel, false),
         },
         { type: 'separator', id: 's2' },
-        { id: 'rename', label: 'Rename…', icon: <Pencil />, shortcut: 'F2', onSelect: () => beginRename(rel) },
+        { id: 'rename', label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: () => beginRename(rel) },
         {
           id: 'duplicate',
           label: 'Duplicate',
@@ -553,7 +553,7 @@ function FilesTabView({
         },
         {
           id: 'delete',
-          label: 'Delete…',
+          label: 'Delete',
           icon: <Trash2 />,
           shortcut: '⌫',
           danger: true,
@@ -566,20 +566,20 @@ function FilesTabView({
 
   const itemsForDir = useCallback(
     (dir: string): ContextMenuItem[] => [
-      { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', dir) },
-      { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', dir) },
-      { id: 'new-worker', label: 'New worker…', icon: <PackagePlus />, onSelect: () => actionsRef.current.newWorker(dir) },
+      { id: 'new-file', label: 'New file', icon: <FilePlus />, onSelect: () => beginCreate('file', dir) },
+      { id: 'new-folder', label: 'New folder', icon: <FolderPlus />, onSelect: () => beginCreate('folder', dir) },
+      { id: 'new-worker', label: 'New worker', icon: <PackagePlus />, onSelect: () => actionsRef.current.newWorker(dir) },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal(dir) },
-      { id: 'find', label: 'Find in folder…', icon: <Search />, onSelect: () => actionsRef.current.findInFolder(dir) },
+      { id: 'find', label: 'Find in folder', icon: <Search />, onSelect: () => actionsRef.current.findInFolder(dir) },
       { type: 'separator', id: 's2' },
       { id: 'copy-path', label: 'Copy path', icon: <ClipboardCopy />, onSelect: () => actionsRef.current.copyPath(dir, true) },
       { id: 'copy-rel', label: 'Copy relative path', icon: <ClipboardCopy />, onSelect: () => actionsRef.current.copyPath(dir, false) },
       { type: 'separator', id: 's3' },
-      { id: 'rename', label: 'Rename…', icon: <Pencil />, shortcut: 'F2', onSelect: () => beginRename(dir) },
+      { id: 'rename', label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: () => beginRename(dir) },
       {
         id: 'delete',
-        label: 'Delete…',
+        label: 'Delete',
         icon: <Trash2 />,
         shortcut: '⌫',
         danger: true,
@@ -591,12 +591,12 @@ function FilesTabView({
 
   const itemsForRoot = useCallback(
     (): ContextMenuItem[] => [
-      { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', '') },
-      { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', '') },
+      { id: 'new-file', label: 'New file', icon: <FilePlus />, onSelect: () => beginCreate('file', '') },
+      { id: 'new-folder', label: 'New folder', icon: <FolderPlus />, onSelect: () => beginCreate('folder', '') },
       // The empty space means the project: workers go where the templates put them.
       {
         id: 'new-worker',
-        label: 'New worker…',
+        label: 'New worker',
         icon: <PackagePlus />,
         onSelect: () => actionsRef.current.newWorker('workers'),
       },

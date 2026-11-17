@@ -24,7 +24,7 @@ export function StopView({ input, output, running }: StopViewProps) {
   const resp = !running ? safeParseResponse(stopResponseSchema, output) : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         {running ? (
           <StatusPill label="stopping…" variant="default" />

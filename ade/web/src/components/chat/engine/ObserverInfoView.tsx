@@ -36,7 +36,7 @@ export function ObserverInfoView({
 
   if (running || !observer) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
           {req ? (
@@ -56,7 +56,7 @@ export function ObserverInfoView({
   const policy = observerPolicy(observer)
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={observer.state}
@@ -70,7 +70,7 @@ export function ObserverInfoView({
         ) : null}
       </MetaRow>
       <ActionLine icon={<Radio />} tone="accent">
-        <span className="font-mono text-[13px] text-accent break-all">
+        <span className="font-mono text-body text-accent break-all">
           {observer.function_id}
         </span>
       </ActionLine>
@@ -78,8 +78,8 @@ export function ObserverInfoView({
         <ObserverRow observer={observer} />
       </ul>
       {Object.keys(policy).length > 0 ? (
-        <div className="border-t border-rule-2">
-          <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
+        <div className="border-t border-border">
+          <div className="border-b border-border bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
             delivery and policy
           </div>
           <JsonHighlight code={JSON.stringify(policy, null, 2)} wrap />

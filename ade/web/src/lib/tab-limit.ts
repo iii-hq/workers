@@ -44,3 +44,37 @@ export function canCreateTab(tabCount: number, limit: number): boolean {
 export function tabLimitReachedTitle(limit: number): string {
   return `Tab limit reached (${limit}). Close a tab to open another, or raise the limit in the ADE configuration.`
 }
+
+type TabLimitListener = () => void
+const tabLimitListeners = new Set<TabLimitListener>()
+
+/**
+ * Say the limit out loud: a refused ⌃T has no disabled `+` under the
+ * pointer to explain itself, so without this it did nothing, silently.
+ */
+export function requestTabLimitNotice(): void {
+  for (const listener of tabLimitListeners) listener()
+}
+
+export function onTabLimitNotice(listener: TabLimitListener): () => void {
+  tabLimitListeners.add(listener)
+  return () => {
+    tabLimitListeners.delete(listener)
+  }
+}
+
+/**
+ * Open a workspace, or — at the limit — say why it cannot. Returns whether
+ * one opened.
+ */
+export function createTabOrNotice(workspace: {
+  canCreateTab: boolean
+  createTab: (opts: { columns: 1 }) => void
+}): boolean {
+  if (!workspace.canCreateTab) {
+    requestTabLimitNotice()
+    return false
+  }
+  workspace.createTab({ columns: 1 })
+  return true
+}

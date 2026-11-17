@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 export const factLabelClassName = 'font-inter text-sm text-ink-faint'
 export const factValueClassName = 'font-inter text-sm text-ink'
 export const factMonoValueClassName =
-  'font-mono text-[13px] text-ink tabular-nums'
+  'font-mono text-body text-ink tabular-nums'
 
 type AccentStyle = CSSProperties & { '--fact-accent'?: string }
 
@@ -101,7 +101,7 @@ export function FactCardHeader({
         <div
           className={cn(
             'min-w-0 leading-snug font-medium text-ink',
-            mono ? 'font-mono text-[13px] break-all' : 'text-sm break-words',
+            mono ? 'font-mono text-body break-all' : 'text-sm break-words',
           )}
         >
           {title}

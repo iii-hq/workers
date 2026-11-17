@@ -13,13 +13,17 @@ export interface StepperStep {
 /**
  * Setup's progress: a numbered dot per step joined by a hairline that fills
  * as steps complete. Finished steps carry a check and, while setup is still
- * in progress, go back to that step on click; the current one is marked
- * `aria-current="step"`; the ones ahead are plain text, so the tab order
+ * in progress, go back to that step on click; the current one — the last
+ * included — is marked current (`aria-current="step"`, its number in a
+ * ringed dot), never done; the ones ahead are plain text, so the tab order
  * only ever stops on something that does something.
  *
  * `vertical` is the dialog's left rail, with a line under each title.
- * `horizontal` is the narrow fallback, one row, where labels collapse to the
- * current step's alone below the `@md` container width.
+ * `horizontal` is the narrow fallback, one row of dots. Below the `@md`
+ * container width the inline titles fold away and the current step is named
+ * on a line under the dots ("Step 2 of 5 · Models"): an inline title that
+ * came and went with the step moved every dot along the row, and on a phone
+ * cut "Judge" to "J…".
  */
 export function Stepper({
   steps,
@@ -39,33 +43,34 @@ export function Stepper({
 }) {
   const vertical = orientation === 'vertical'
   const index = steps.findIndex((step) => step.id === current)
-  return (
+  const list = (
     <ol
       aria-label="Setup steps"
       className={cn(
         'flex',
         vertical ? 'flex-col' : 'flex-row items-center',
-        className,
+        vertical && className,
       )}
     >
       {steps.map((step, position) => {
         const isCurrent = position === index
         const last = position === steps.length - 1
-        // The last step is the finish line: arriving there completes it.
-        const done = position < index || (isCurrent && last)
+        // Done means behind the current step; the current one, the last
+        // included, is current until setup moves past it.
+        const done = position < index
         const clickable = reachable.has(step.id) && !isCurrent
         const content = (
           <>
             <span
               aria-hidden
               className={cn(
-                'relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full border text-[12px] font-semibold tabular-nums transition-[background-color,border-color,color,box-shadow] duration-200 ease-[var(--motion-ease-standard)]',
+                'relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full border text-xs font-semibold tabular-nums transition-[background-color,border-color,color,box-shadow] duration-200 ease-[var(--motion-ease-standard)]',
                 done
-                  ? 'border-ink bg-ink text-bg'
+                  ? 'border-input bg-ink text-bg'
                   : isCurrent
-                    ? 'border-ink bg-white text-ink ring-[3px] ring-ink/10 dark:bg-neutral-950'
-                    : 'border-neutral-300 bg-white text-neutral-500 dark:border-neutral-700 dark:bg-neutral-950',
-                clickable && 'group-hover:border-ink',
+                    ? 'border-input bg-card text-ink ring-[3px] ring-ink/10 '
+                    : 'border-input bg-card text-muted-foreground  ',
+                clickable && 'group-hover:border-input',
               )}
             >
               <span
@@ -95,8 +100,9 @@ export function Stepper({
                   ? 'mt-0.5 flex gap-px'
                   : cn(
                       'whitespace-nowrap',
-                      // Only visually hidden: the label names the step's button.
-                      isCurrent ? 'flex' : 'sr-only @md:not-sr-only @md:flex',
+                      // Only visually hidden: the label names the step's
+                      // button. Every step's alike, so no dot moves.
+                      'sr-only @md:not-sr-only @md:flex',
                     ),
               )}
             >
@@ -104,9 +110,7 @@ export function Stepper({
                 className={cn(
                   'text-sm font-medium leading-5',
                   !vertical && 'truncate',
-                  done || isCurrent
-                    ? 'text-ink'
-                    : 'text-neutral-500 dark:text-neutral-500',
+                  done || isCurrent ? 'text-ink' : 'text-muted-foreground ',
                   clickable && 'group-hover:text-ink',
                 )}
               >
@@ -114,7 +118,7 @@ export function Stepper({
                 {step.optional ? (
                   <span
                     className={cn(
-                      'ml-1 text-xs font-normal text-neutral-500',
+                      'ml-1 text-xs font-normal text-muted-foreground',
                       !vertical && 'hidden @md:inline',
                     )}
                   >
@@ -128,10 +132,10 @@ export function Stepper({
               {vertical && step.description ? (
                 <span
                   className={cn(
-                    'truncate text-[13px] leading-4',
+                    'truncate text-body leading-4',
                     isCurrent
-                      ? 'text-neutral-600 dark:text-neutral-400'
-                      : 'text-neutral-500 dark:text-neutral-500',
+                      ? 'text-muted-foreground '
+                      : 'text-muted-foreground ',
                   )}
                 >
                   {step.description}
@@ -162,7 +166,7 @@ export function Stepper({
                 onClick={() => onSelect(step.id)}
                 className={cn(
                   itemClass,
-                  'group -mx-2 -my-1 rounded-lg px-2 py-1 text-left font-sans transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-neutral-950',
+                  'group -mx-2 -my-1 rounded-lg px-2 py-1 text-left font-sans transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
                   vertical ? 'w-[calc(100%+16px)]' : 'h-8',
                 )}
               >
@@ -180,7 +184,7 @@ export function Stepper({
               <span
                 aria-hidden
                 className={cn(
-                  'overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800',
+                  'overflow-hidden rounded-full bg-surface-selected',
                   vertical
                     ? 'absolute top-6 bottom-0 left-[11.5px] w-px'
                     : 'relative h-px min-w-3 flex-1',
@@ -203,5 +207,23 @@ export function Stepper({
         )
       })}
     </ol>
+  )
+  if (vertical) return list
+  const here = steps[index]
+  return (
+    <div className={cn('flex flex-col gap-1', className)}>
+      {list}
+      {here ? (
+        // The steps are named in the list for screen readers already.
+        <p
+          aria-hidden
+          data-stepper-caption
+          className="truncate text-sm leading-5 text-muted-foreground @md:hidden"
+        >
+          Step {index + 1} of {steps.length} ·{' '}
+          <span className="font-medium text-ink">{here.title}</span>
+        </p>
+      ) : null}
+    </div>
   )
 }

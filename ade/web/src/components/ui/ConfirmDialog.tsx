@@ -1,6 +1,12 @@
 import * as React from 'react'
 import { Button } from '@/components/shadcn/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from './Dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogTitle,
+} from '@/components/shadcn/dialog'
 
 // viewport: phone chrome — shared modal margins, stacked actions and touch targets.
 
@@ -13,7 +19,7 @@ export interface ConfirmDialogProps {
   description?: React.ReactNode
   confirmLabel?: string
   cancelLabel?: string
-  /** `danger` paints the confirm control in `alert` for destructive actions. */
+  /** `danger` paints the confirm control in `destructive` for destructive actions. */
   tone?: 'default' | 'danger'
   /**
    * The confirmed action. A promise keeps the dialog open while it runs
@@ -26,15 +32,16 @@ export interface ConfirmDialogProps {
   /** The confirm control's label while an async `onConfirm` runs. */
   busyLabel?: string
   /** Why the action failed, from outside the dialog (it opens on the failure,
-      the confirm control then tries again). A rejected `onConfirm` sets its
-      own. While one shows, the controls read `Retry …` and `Close`. */
+ the confirm control then tries again). A rejected `onConfirm` sets its
+ own. While one shows, the controls read `Retry …` and `Close`. */
   error?: string | null
 }
 
 /**
- * The console's one alert dialog, in place of `window.confirm`: a title, a
- * short description, and the actions on their own band. Nothing else goes in
- * it. Cancel owns initial focus; Escape and the close control cancel.
+ * The console's one confirmation, in place of `window.confirm`: the shadcn
+ * dialog as an alert dialog, with a title, a short description, and the
+ * actions on their own band. Nothing else goes in it. Cancel owns initial
+ * focus; Escape, the close control, Cancel and a click outside all cancel.
  */
 export function ConfirmDialog({
   open,
@@ -50,7 +57,6 @@ export function ConfirmDialog({
   error: outsideError = null,
 }: ConfirmDialogProps) {
   const cancelRef = React.useRef<HTMLButtonElement>(null)
-  const titleId = React.useId()
   const [busy, setBusy] = React.useState(false)
   const [ownError, setError] = React.useState<string | null>(null)
   const error = ownError ?? outsideError
@@ -98,48 +104,42 @@ export function ConfirmDialog({
       <DialogContent
         role="alertdialog"
         aria-busy={busy || undefined}
-        className="flex w-[calc(100%-24px)] max-w-[440px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
-        onOpenAutoFocus={(event) => {
-          event.preventDefault()
-          cancelRef.current?.focus()
-        }}
+        className="flex max-h-[85vh] w-[calc(100%-24px)] max-w-[440px] flex-col gap-0 overflow-hidden p-0 font-inter sm:max-w-[440px]"
+        // Cancel takes the first focus: Enter never confirms by accident.
+        initialFocus={() => cancelRef.current}
       >
         {/* The text scrolls when it is taller than the dialog (at most 85vh), so
-            the actions below always stay on screen. Its tab stop lets a
-            keyboard scroll it (Safari focuses no scroll container itself). */}
+ the actions below always stay on screen. Its tab stop lets a
+ keyboard scroll it (Safari focuses no scroll container itself). */}
         <section
-          aria-labelledby={titleId}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
           tabIndex={0}
-          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+          className="min-h-0 overflow-y-auto overscroll-contain px-6 pt-6 pb-5 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset focus-visible:outline-none"
         >
-          <DialogTitle
-            id={titleId}
-            className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words"
-          >
+          <DialogTitle className="break-words pr-8 text-base leading-6 font-semibold">
             {title}
           </DialogTitle>
           {description ? (
-            <DialogDescription className="mt-1.5 font-inter text-[14px] leading-[22px] break-words">
+            <DialogDescription className="mt-1.5 break-words text-sm leading-[22px]">
               {description}
             </DialogDescription>
           ) : null}
         </section>
         {/* Why the action failed stays in sight, above the actions, however
-            far the text above is scrolled; on a very short screen it shrinks
-            and scrolls before the actions do. */}
+ far the text above is scrolled; on a very short screen it shrinks
+ and scrolls before the actions do. */}
         {error ? (
           <p
             role="alert"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: the error scrolls when long and must be reachable by keyboard
             tabIndex={0}
-            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 text-sm leading-[22px] break-words text-destructive focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset focus-visible:outline-none"
           >
             {error}
           </p>
         ) : null}
         {/* The actions sit on their own band, one surface step down. */}
-        <div className="flex shrink-0 flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
+        <DialogFooter className="m-0 shrink-0 px-6 py-4">
           <Button
             ref={cancelRef}
             type="button"
@@ -165,7 +165,7 @@ export function ConfirmDialog({
                 ? `Retry ${confirmLabel.charAt(0).toLowerCase()}${confirmLabel.slice(1)}`
                 : confirmLabel}
           </Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )
@@ -180,8 +180,8 @@ export interface ConfirmOptions
 /**
  * `window.confirm` shaped around `ConfirmDialog`: render `dialog` once in the
  * component, then `await confirm({ title, … })` where the native box used to
- * be. Escape, the close control and Cancel resolve `false`; a second call
- * while one is open cancels the first; unmounting cancels whatever is open.
+ * be. Escape and Cancel resolve `false`; a second call while one is open
+ * cancels the first; unmounting cancels whatever is open.
  */
 export function useConfirm(): {
   confirm: (options: ConfirmOptions) => Promise<boolean>

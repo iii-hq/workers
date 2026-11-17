@@ -50,15 +50,18 @@ interface SourceControlTabProps {
   onOpenDiff: (path: string, source: DiffSource, pin: boolean) => void
   /** An image has no text diff: its row opens the file. */
   onOpenFile: (path: string) => void
-  /** "Compare with…" from a change's menu. */
+  /** "Compare with" from a change's menu. */
   onCompare: (path: string) => void
   /** "Show history" from a change's menu: the Git log narrowed to these paths. */
   onShowHistory: (paths: string[]) => void
-  /** "Delete…" from a change's menu: the Explorer's delete, so tabs on the file close. */
+  /** "Delete" from a change's menu: the Explorer's delete, so tabs on the file close. */
   onDeleteFile: (path: string) => Promise<void>
   /** The repository setup's terminal steps (`gh auth login`, installing gh). */
   onRunInTerminal?: (command: string) => void
   onChanged: () => void
+  /** The worktree the folder sits in (the branch chip's read), so an empty
+      Commit list can say whether changes sit elsewhere in it. */
+  worktree?: { top: string; dirty: boolean } | null
 }
 
 export function SourceControlTab({
@@ -76,6 +79,7 @@ export function SourceControlTab({
   onDeleteFile,
   onRunInTerminal,
   onChanged,
+  worktree = null,
 }: SourceControlTabProps) {
   const [tab, setTab] = useState<ScmTab>(readTab)
   const activeSource = activeDiff?.source ?? null
@@ -130,6 +134,7 @@ export function SourceControlTab({
           onShowHistory={onShowHistory}
           onDeleteFile={onDeleteFile}
           onRunInTerminal={onRunInTerminal}
+          worktree={worktree}
         />
       </TabsContent>
       <TabsContent value="stash" className="shui-scm-panel">

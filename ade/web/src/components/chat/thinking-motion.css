@@ -108,6 +108,19 @@
   animation-play-state: paused;
 }
 
+/* Waiting on the person (an open question card): nothing is in flight, so
+   the mark and the label hold still. */
+.chat-model-waiting[data-calm="true"] .model-waiting-wordmark-segment {
+  animation: none;
+  opacity: 0.42;
+}
+
+.chat-model-waiting[data-calm="true"] .thinking-shimmer {
+  background-image: none;
+  color: var(--color-ink-faint);
+  animation: none;
+}
+
 .chat-model-waiting__label-stack {
   display: grid;
   min-width: 0;

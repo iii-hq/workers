@@ -32,21 +32,74 @@ function onListKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
   next.focus()
 }
 
+/**
+ * One Tab stop per list (a roving tabindex): the row last focused, else the
+ * selected one, else the first, is the list's stop; every other row is
+ * reached with the arrows. A list of fifteen scopes was fifteen Tab presses
+ * to leave. Rows that set their own `tabIndex` are the caller's to manage
+ * and are left alone, as are rows of a list nested inside this one.
+ */
+function applyRovingStop(
+  root: HTMLElement | null,
+  current: HTMLElement | null,
+): void {
+  if (!root) return
+  const items = Array.from(
+    root.querySelectorAll<HTMLElement>('[data-list-roving]'),
+  ).filter(
+    (item) =>
+      item.closest('[data-list-root]') === root &&
+      !item.matches(':disabled, [aria-disabled="true"]'),
+  )
+  if (items.length === 0) return
+  const stop =
+    (current && items.includes(current) ? current : undefined) ??
+    items.find((item) => item.hasAttribute('data-selected')) ??
+    items[0]
+  for (const item of items) item.tabIndex = item === stop ? 0 : -1
+}
+
 export const List = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
->(({ className, onKeyDown, ...props }, ref) => (
-  // biome-ignore lint/a11y/noStaticElementInteractions: the handler only moves focus between the list's own buttons
-  <div
-    ref={ref}
-    className={cn(uiClasses.list, className)}
-    onKeyDown={(event) => {
-      onKeyDown?.(event)
-      if (!event.defaultPrevented) onListKeyDown(event)
-    }}
-    {...props}
-  />
-))
+>(({ className, onKeyDown, onFocus, ...props }, ref) => {
+  const root = React.useRef<HTMLDivElement | null>(null)
+  const focused = React.useRef<HTMLElement | null>(null)
+  const setRef = React.useCallback(
+    (element: HTMLDivElement | null) => {
+      root.current = element
+      if (typeof ref === 'function') ref(element)
+      else if (ref) ref.current = element
+    },
+    [ref],
+  )
+  // Rows come and go with every render (a filter, a live update): the stop
+  // is re-chosen each time, so the list never ends up with none or many.
+  React.useLayoutEffect(() => {
+    applyRovingStop(root.current, focused.current)
+  })
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the handler only moves focus between the list's own buttons
+    <div
+      ref={setRef}
+      data-list-root=""
+      className={cn(uiClasses.list, className)}
+      onKeyDown={(event) => {
+        onKeyDown?.(event)
+        if (!event.defaultPrevented) onListKeyDown(event)
+      }}
+      onFocus={(event) => {
+        onFocus?.(event)
+        const target = event.target as HTMLElement
+        if (!target.matches('[data-list-roving]')) return
+        if (target.closest('[data-list-root]') !== root.current) return
+        focused.current = target
+        applyRovingStop(root.current, target)
+      }}
+      {...props}
+    />
+  )
+})
 List.displayName = 'List'
 
 export const ListGroup = React.forwardRef<
@@ -109,6 +162,11 @@ export const ListItem = React.forwardRef<HTMLButtonElement, ListItemProps>(
       ref={ref as unknown as React.Ref<HTMLElement>}
       type={as === 'button' ? type : undefined}
       data-list-item=""
+      // The list's roving Tab stop moves this row's tabindex, unless the
+      // caller set one or the row is a `div` (then the caller manages it).
+      data-list-roving={
+        as === 'button' && props.tabIndex === undefined ? '' : undefined
+      }
       data-selected={selected || undefined}
       aria-pressed={
         as === 'button' ? (props['aria-pressed'] ?? selected) : undefined

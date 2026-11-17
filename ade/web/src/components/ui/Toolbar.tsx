@@ -59,7 +59,7 @@ export function StatusBar({
   return (
     <Tag
       className={cn(
-        'flex h-7 shrink-0 items-center gap-2 px-2 font-sans text-[11px] text-ink-faint tabular-nums',
+        'flex h-7 shrink-0 items-center gap-2 px-2 font-sans text-meta text-ink-faint tabular-nums',
         className,
       )}
       {...props}

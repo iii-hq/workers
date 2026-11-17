@@ -266,9 +266,18 @@ export interface QueuedMessagePreview {
   id: string
   text: string
   queuedAt: number
+  /**
+   * Who parked the row: `direct` is a person's message (this tab or another);
+   * anything else is the harness talking to the agent (an observer or system
+   * `notification`, a sub-agent's `invoked-agent` task). Absent when the
+   * harness predates the field, which the strip treats as a person's message.
+   */
+  channel?: QueuedMessageChannel
   /** The row's origin as queued; `{notification: true}` marks a notification. */
   origin?: unknown
 }
+
+export type QueuedMessageChannel = 'direct' | 'invoked-agent' | 'notification'
 
 /**
  * The harness's own context accounting for a session's last generate step
@@ -342,9 +351,10 @@ export interface ChatBackend {
    * Remove a still-parked message from the server-side queue by its entry id
    * (`harness::unqueue`). Lets the composer pull a queued message back for
    * editing without the old version also draining into the transcript. A row
-   * that already drained is a harmless no-op.
+   * that already drained is a harmless no-op, and resolves `false` (the
+   * message went to the agent).
    */
-  removeQueued?(sessionId: string, entryId: string): Promise<void>
+  removeQueued?(sessionId: string, entryId: string): Promise<boolean>
   /**
    * Edit a still-parked queued message in place (`harness::edit_queued`),
    * preserving its delivery position — unlike remove + re-queue, which moves

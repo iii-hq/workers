@@ -44,7 +44,7 @@ class FileMentionOption extends MenuOption {
 }
 
 /* `#` needs at least one character so markdown headings (`# foo` — the
-   space ends the match) never flash the menu; the rest mirrors `@`. */
+ space ends the match) never flash the menu; the rest mirrors `@`. */
 const HASH_PATTERN = /(^|\s|\()(#([^\s#()]{1,200}))$/
 
 export function hashTriggerFn(text: string, _editor: LexicalEditor) {
@@ -59,7 +59,7 @@ export function hashTriggerFn(text: string, _editor: LexicalEditor) {
 
 interface FileMentionsPluginProps {
   /** When set, true while the menu shows options, so the composer's Enter
-      and arrow handlers yield those keys to the typeahead. */
+ and arrow handlers yield those keys to the typeahead. */
   menuOpenRef?: React.MutableRefObject<boolean>
   /** Files under the conversation's working directory. */
   searchFiles: FileSearchFn
@@ -99,11 +99,11 @@ export function FileMentionsPlugin({
   }, [files, query, page])
 
   /* The trigger fires on any `#query`, so the typeahead counts as open on
-     text that matches nothing ("issue #123"). Only a menu that shows
-     options may claim Enter, or the message could not be sent; a list that
-     fills in after the file search lands claims it without a keystroke.
-     Written only while this menu is open, so it never clears another
-     menu's claim. */
+ text that matches nothing ("issue #123"). Only a menu that shows
+ options may claim Enter, or the message could not be sent; a list that
+ fills in after the file search lands claims it without a keystroke.
+ Written only while this menu is open, so it never clears another
+ menu's claim. */
   const openRef = useRef(false)
   useEffect(() => {
     if (menuOpenRef && openRef.current) {
@@ -148,8 +148,8 @@ export function FileMentionsPlugin({
       }}
       triggerFn={hashTriggerFn}
       /* Run the typeahead's KEY_ENTER_COMMAND (and arrows/tab/escape) at NORMAL
-         so it consumes Enter before the composer's send, which listens at
-         the front of LOW. */
+ so it consumes Enter before the composer's send, which listens at
+ the front of LOW. */
       commandPriority={COMMAND_PRIORITY_NORMAL}
       menuRenderFn={(anchorElementRef, props) => {
         if (!anchorElementRef.current || options.length === 0) return null

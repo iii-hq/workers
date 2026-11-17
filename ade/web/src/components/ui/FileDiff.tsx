@@ -333,38 +333,38 @@ export function FileDiff({
           --diffs-deletion-color-override: var(--color-alert-strong);
           --diffs-modified-color-override: var(--color-accent);
         }
-        [data-gutter] [data-line-number-content] {
-          color: var(--diffs-fg-number);
+ [data-gutter] [data-line-number-content] {
+ color: var(--diffs-fg-number);
         }
-        button[data-expand-button] {
-          appearance: none;
-          border-block: 0;
-          border-left: 0;
-          padding: 0;
+ button[data-expand-button] {
+ appearance: none;
+ border-block: 0;
+ border-left: 0;
+ padding: 0;
         }
-        button[data-expand-button]:focus-visible {
-          outline: 2px solid var(--color-rule-focus);
-          outline-offset: -2px;
+ button[data-expand-button]:focus-visible {
+ outline: 2px solid var(--color-rule-focus);
+ outline-offset: -2px;
         }
-        [data-separator-wrapper]:has([data-expand-all-button]) {
-          display: flex;
+ [data-separator-wrapper]:has([data-expand-all-button]) {
+ display: flex;
         }
-        [data-expand-button][data-expand-all-button] {
-          display: flex;
-          min-width: max-content;
-          padding-inline: 12px;
+ [data-expand-button][data-expand-all-button] {
+ display: flex;
+ min-width: max-content;
+ padding-inline: 12px;
         }
         @media (max-width: 639px) {
-          [data-separator="line-info"], [data-separator="line-info-basic"] {
-            height: 48px;
+ [data-separator="line-info"], [data-separator="line-info-basic"] {
+ height: 48px;
           }
-          [data-expand-index] [data-separator-wrapper] {
-            display: flex;
+ [data-expand-index] [data-separator-wrapper] {
+ display: flex;
           }
-          [data-expand-button] {
-            box-sizing: border-box;
-            min-width: 48px;
-            min-height: 48px;
+ [data-expand-button] {
+ box-sizing: border-box;
+ min-width: 48px;
+ min-height: 48px;
           }
         }
       `,

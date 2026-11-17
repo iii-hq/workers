@@ -831,13 +831,12 @@
   font-weight: 500;
 }
 
-/* The message keeps to its first five lines; the rest scrolls inside the
-   card, so the body above it is never pushed out of view. */
+/* The message is shown whole: it is what the button sends, so the operator
+   reads all of it before pressing. A five-line cap scrolled the rest inside
+   the card with no sign of more, which read as the last words cut off; a
+   long step scrolls with the card body (.learn-overlay-scroll) instead. */
 [data-iii-ui='learn-iii'] .learn-prompt-text {
   margin: 0;
-  max-height: calc(5 * 1.25rem + 1.25rem);
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 0.625rem 0.75rem;
   color: var(--color-ink-faint);
   font-size: 0.8125rem;

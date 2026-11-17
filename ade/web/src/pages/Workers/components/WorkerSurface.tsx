@@ -47,7 +47,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
 
   if (query.isError || !query.data) {
     return (
-      <div className="flex items-start gap-3 rounded-xl border border-alert/25 bg-alert-muted px-4 py-3.5 font-inter text-[13px] leading-5 text-alert-strong">
+      <div className="flex items-start gap-3 rounded-xl border border-alert/25 bg-alert-muted px-4 py-3.5 font-inter text-body leading-5 text-alert-strong">
         <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span>
           <span className="wk-machine">engine::workers::info</span> returned
@@ -124,22 +124,20 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="wk-card min-w-0 overflow-hidden rounded-xl border border-neutral-100 font-inter dark:border-neutral-800">
-      <h3 className="flex items-center gap-2 border-b border-neutral-100 px-4 py-3 text-[13px] font-medium leading-5 text-neutral-900 dark:border-neutral-800 dark:text-neutral-50">
-        <span className="text-neutral-500 dark:text-neutral-400">{icon}</span>
+    <section className="wk-card min-w-0 overflow-hidden rounded-xl border border-border font-inter">
+      <h3 className="flex items-center gap-2 border-b border-border px-4 py-3 text-body font-medium leading-5 text-foreground">
+        <span className="text-muted-foreground">{icon}</span>
         {title}
-        <span className="ml-auto rounded-lg border border-neutral-100 px-2 py-0.5 text-[12px] font-medium tabular-nums text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <span className="ml-auto rounded-lg border border-border px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
           {count}
         </span>
       </h3>
       {count === 0 ? (
-        <p className="px-4 py-4 text-[13px] leading-5 text-neutral-500 dark:text-neutral-400">
+        <p className="px-4 py-4 text-body leading-5 text-muted-foreground">
           {empty}
         </p>
       ) : (
-        <div className="flex flex-col divide-y divide-neutral-100 dark:divide-neutral-800">
-          {children}
-        </div>
+        <div className="flex flex-col divide-y divide-border">{children}</div>
       )}
     </section>
   )
@@ -157,20 +155,15 @@ function Row({
   return (
     <div className="flex flex-col gap-1 px-4 py-3">
       <div className="flex flex-wrap items-baseline gap-x-2">
-        <span className="wk-machine break-words text-neutral-900 dark:text-neutral-100">
-          {id}
-        </span>
+        <span className="wk-machine break-words text-foreground">{id}</span>
         {facts.map((fact) => (
-          <span
-            key={fact}
-            className="text-[12px] text-neutral-500 dark:text-neutral-400"
-          >
+          <span key={fact} className="text-xs text-muted-foreground">
             {fact}
           </span>
         ))}
       </div>
       {description ? (
-        <p className="text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+        <p className="text-body leading-5 text-muted-foreground">
           {description}
         </p>
       ) : null}

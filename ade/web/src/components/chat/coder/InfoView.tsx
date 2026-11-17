@@ -31,7 +31,7 @@ interface InfoViewProps {
 }
 
 /** Row in a key→value config grid; labels are the exact wire field
-    names so humans can correlate with C213 budget errors verbatim. */
+ names so humans can correlate with C213 budget errors verbatim. */
 interface ConfigRow {
   label: string
   value: string
@@ -39,7 +39,7 @@ interface ConfigRow {
 }
 
 /** `"1.0 MiB (1,048,576 B)"` — humanized plus the exact wire value,
-    since errors compare against exact byte counts. */
+ since errors compare against exact byte counts. */
 function formatBytesWithRaw(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '—'
   if (bytes < 1024) return `${bytes} B`
@@ -116,18 +116,16 @@ function limitRows(info: InfoResponse): ConfigRow[] {
 /** Allowed roots in config order; index 0 is where relative paths resolve. */
 function RootsList({ basePaths }: { basePaths: string[] }) {
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
+    <div className="border-b border-border last:border-b-0">
       <div className="px-3 pt-2 pb-1 iii-ui-eyebrow">allowed roots</div>
       {basePaths.length === 0 ? (
-        <div className="px-3 pb-2 font-mono text-[12px] text-ink-ghost">
-          · none
-        </div>
+        <div className="px-3 pb-2 font-mono text-xs text-ink-ghost">· none</div>
       ) : (
         <div className="px-3 pb-2 flex flex-col gap-1">
           {basePaths.map((root, i) => (
             <div
               key={root}
-              className="font-mono text-[12px] text-ink flex flex-wrap items-center gap-1.5"
+              className="font-mono text-xs text-ink flex flex-wrap items-center gap-1.5"
             >
               <span className="break-all">{root}</span>
               {i === 0 ? <FooterPill tone="accent">Primary</FooterPill> : null}
@@ -141,8 +139,8 @@ function RootsList({ basePaths }: { basePaths: string[] }) {
 
 function ConfigSection({ title, rows }: { title: string; rows: ConfigRow[] }) {
   return (
-    <div className="border-b border-rule-2 last:border-b-0">
-      <div className="px-3 pt-2 pb-1 font-sans text-[12px] font-semibold text-ink-faint">
+    <div className="border-b border-border last:border-b-0">
+      <div className="px-3 pt-2 pb-1 font-sans text-xs font-semibold text-ink-faint">
         {title}
       </div>
       <TableViewport className="mb-1">
@@ -174,7 +172,7 @@ function ConfigSection({ title, rows }: { title: string; rows: ConfigRow[] }) {
 }
 
 /** Glob list with its semantic note — the two lists mean different
-    things (access protection vs noise filter), never conflate them. */
+ things (access protection vs noise filter), never conflate them. */
 function GlobList({
   title,
   note,
@@ -187,13 +185,13 @@ function GlobList({
   warn?: boolean
 }) {
   return (
-    <div className="border-b border-rule-2 last:border-b-0 px-3 py-2 flex flex-col gap-1.5">
-      <div className="font-mono text-[11px] text-ink-faint">
+    <div className="border-b border-border last:border-b-0 px-3 py-2 flex flex-col gap-1.5">
+      <div className="font-mono text-meta text-ink-faint">
         <Eyebrow>{title}</Eyebrow>
         <span className="text-ink-ghost"> · {note}</span>
       </div>
       {globs.length === 0 ? (
-        <span className="font-mono text-[12px] text-ink-ghost">· none</span>
+        <span className="font-mono text-xs text-ink-ghost">· none</span>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {globs.map((glob) => (
@@ -220,8 +218,8 @@ export function InfoView({ input, output, running, preview }: InfoViewProps) {
       : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <span className="font-mono text-[12.5px] text-ink">
           <span className="text-ink-faint">Coder </span>
           <span>info</span>
@@ -229,7 +227,7 @@ export function InfoView({ input, output, running, preview }: InfoViewProps) {
         {resp ? <Chip label="version">{resp.version}</Chip> : null}
         {resp ? <Chip label="roots">{resp.base_paths.length}</Chip> : null}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · querying…
           </span>
         ) : null}
@@ -253,7 +251,7 @@ export function InfoView({ input, output, running, preview }: InfoViewProps) {
           />
         </>
       ) : running ? null : (
-        <div className="px-3 py-2 font-mono text-[12px] text-ink-ghost">
+        <div className="px-3 py-2 font-mono text-xs text-ink-ghost">
           · no config reported
         </div>
       )}

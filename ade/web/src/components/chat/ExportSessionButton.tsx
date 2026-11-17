@@ -68,7 +68,7 @@ export function ExportSessionButton({
             // `self-stretch`: the hit box is the full height of the header
             // group, not the 11px glyph box (WCAG 2.2 SC 2.5.8).
             'group relative flex self-stretch items-center gap-1 text-ink-faint hover:text-ink',
-            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            'focus-visible:outline focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50',
             disabled && 'opacity-50 cursor-not-allowed hover:text-ink-faint',
             className,
           )}

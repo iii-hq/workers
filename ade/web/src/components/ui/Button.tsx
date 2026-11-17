@@ -1,13 +1,16 @@
-import { Slot } from '@radix-ui/react-slot'
+import { mergeProps } from '@base-ui/react/merge-props'
+import { useRender } from '@base-ui/react/use-render'
 import * as React from 'react'
 import { buttonVariants as shadcnButtonVariants } from '@/components/shadcn/button'
 import { cn } from '@/lib/utils'
 
 /*
- * The legacy Radix-Slot button, kept for its public props (`asChild`,
- * `variant`, `size`) because console-ui hands it to the worker UIs. It owns
- * no look of its own: every variant paints with the shadcn `buttonVariants`,
- * so a console-ui `Button` and a shadcn `Button` are the same button.
+ * The first button API, kept for its public props (`asChild`, `variant`,
+ * `size`) because console-ui hands it to the worker UIs. It owns no look of
+ * its own: every variant paints with the shadcn `buttonVariants`, so a
+ * console-ui `Button` and a shadcn `Button` are the same button. `asChild`
+ * renders the single child element through Base UI's `useRender`, the way
+ * the shadcn parts take a `render` element.
  */
 
 type LegacyVariant =
@@ -77,17 +80,23 @@ export interface ButtonProps
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild, children, ...props }, ref) => {
-    const Comp: React.ElementType = asChild ? Slot : 'button'
-    return (
-      <Comp
-        ref={ref}
-        data-slot="button"
-        className={cn(buttonVariants({ variant, size }), className)}
-        {...props}
-      >
-        {children}
-      </Comp>
-    )
+    const render =
+      asChild && React.isValidElement(children)
+        ? (children as React.ReactElement<Record<string, unknown>>)
+        : undefined
+    return useRender({
+      defaultTagName: 'button',
+      ref,
+      render,
+      props: mergeProps<'button'>(
+        { className: cn(buttonVariants({ variant, size }), className) },
+        props,
+        {
+          ...(render ? {} : { children }),
+          'data-slot': 'button',
+        } as React.ComponentProps<'button'>,
+      ),
+    })
   },
 )
 Button.displayName = 'Button'

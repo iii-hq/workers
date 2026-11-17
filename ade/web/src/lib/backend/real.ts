@@ -509,6 +509,7 @@ async function realListQueued(
       .map((b) => b.text)
       .join('\n'),
     queuedAt: row.queued_at,
+    channel: row.channel,
     origin: row.origin,
   }))
 }
@@ -533,16 +534,18 @@ async function realContextUsage(
     : null
 }
 
-/** `harness::unqueue` — pull a still-parked message back out of the queue. */
+/** `harness::unqueue` — pull a still-parked message back out of the queue.
+ *  `false` when it was no longer parked (it already went to the agent). */
 async function realRemoveQueued(
   sessionId: string,
   entryId: string,
-): Promise<void> {
+): Promise<boolean> {
   const client = await getIiiClient()
-  await client.call('harness::unqueue', {
-    session_id: sessionId,
-    entry_id: entryId,
-  })
+  const res = await client.call<{ removed?: boolean } | null>(
+    'harness::unqueue',
+    { session_id: sessionId, entry_id: entryId },
+  )
+  return res?.removed !== false
 }
 
 /**

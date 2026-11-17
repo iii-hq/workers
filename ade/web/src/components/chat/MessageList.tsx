@@ -123,21 +123,24 @@ interface MessageListProps {
    */
   transcriptHydrated?: boolean
   /** Show the model-waiting indicator at the bottom while the agent is
-      between visible outputs (after submit, or between fcall-end and the
-      next turn's first token). */
+ between visible outputs (after submit, or between fcall-end and the
+ next turn's first token). */
   isThinking?: boolean
   /** Under-the-hood context shown in the waiting indicator (e.g. "dispatching
-      zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
-      when absent. */
+ zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
+ when absent. */
   thinkingDetail?: string
+  /** The chat waits on the person (an open question card), not a model:
+   the indicator holds still and shows no elapsed clock. */
+  waitingOnPerson?: boolean
   /** Current protocol-derived phase; presence animations never own this. */
   turnVisualPhase?: TurnVisualPhase
   /** User message that began the active turn; keeps elapsed time across gaps. */
   turnKey?: string
   density?: 'route' | 'dock'
   /** Rendered at the top of the transcript scroller, above the messages, so
-      it scrolls away with them instead of unmounting. When set it replaces
-      the `EmptyState` on an empty transcript (landing demo). */
+ it scrolls away with them instead of unmounting. When set it replaces
+ the `EmptyState` on an empty transcript (landing demo). */
   header?: ReactNode
   onResolveApproval?: (
     sessionId: string,
@@ -226,7 +229,7 @@ const OPEN_SETTLE_MAX_MS = 800
 /** A fast open shows nothing rather than a flash of the loading line. */
 const OPEN_INDICATOR_DELAY_MS = 150
 const HISTORY_EDGE_BUTTON_CLASS =
-  'cursor-pointer underline decoration-dotted underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+  'cursor-pointer underline decoration-dotted underline-offset-2 hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50'
 
 /**
  * Transcript entry ids a placeholder row needs fetched: its own entry and,
@@ -586,6 +589,7 @@ export function MessageList({
   transcriptHydrated = true,
   isThinking,
   thinkingDetail,
+  waitingOnPerson = false,
   turnVisualPhase = 'idle',
   turnKey,
   density = 'route',
@@ -710,14 +714,14 @@ export function MessageList({
   const ctx = useConversationsCtxOptional()
 
   /* Windowing. Only the rows around the viewport are mounted, in normal flow,
-     with a spacer standing in for each run of the others, so tail following
-     and prepend restoration keep reading real DOM geometry. A row that leaves
-     the window loses its local state, so a row the reader has clicked or
-     focused stays mounted for good: that keeps every card's own state,
-     including worker UI the host cannot lift, without the card knowing. Live
-     rows, a landing target and the selected rows stay while they last. No
-     ResizeObserver means no layout to window against (SSR, jsdom), so every
-     row renders. */
+ with a spacer standing in for each run of the others, so tail following
+ and prepend restoration keep reading real DOM geometry. A row that leaves
+ the window loses its local state, so a row the reader has clicked or
+ focused stays mounted for good: that keeps every card's own state,
+ including worker UI the host cannot lift, without the card knowing. Live
+ rows, a landing target and the selected rows stay while they last. No
+ ResizeObserver means no layout to window against (SSR, jsdom), so every
+ row renders. */
   const windowed = typeof ResizeObserver !== 'undefined'
   const knownRowKeysRef = useRef<ReadonlySet<string>>(new Set())
   const flatRows = useMemo(
@@ -1038,14 +1042,14 @@ export function MessageList({
   }, [cancelTailAnimation, writeScrollTop])
 
   /* Opening veil. From mount until the first page has landed AND its layout
-     has gone quiet, the list is laid out and scrolled to the tail behind a
+ has gone quiet, the list is laid out and scrolled to the tail behind a
      `visibility: hidden` veil with a loading line in front. The loaded state
-     a reader first sees must be final: no rows popping in, no glide chasing
-     late layout (images, rich cards, fonts, lazy chips). Quiet means no
-     content resize for OPEN_SETTLE_QUIET_MS; OPEN_SETTLE_MAX_MS caps the
-     wait so a page that keeps growing (a live turn, slow images) still
-     reveals. ChatView is keyed by conversation id, so every open starts
-     veiled, including a cached transcript re-opened. */
+ a reader first sees must be final: no rows popping in, no glide chasing
+ late layout (images, rich cards, fonts, lazy chips). Quiet means no
+ content resize for OPEN_SETTLE_QUIET_MS; OPEN_SETTLE_MAX_MS caps the
+ wait so a page that keeps growing (a live turn, slow images) still
+ reveals. ChatView is keyed by conversation id, so every open starts
+ veiled, including a cached transcript re-opened. */
   const [opening, setOpening] = useState(true)
   const openingRef = useRef(true)
   const [openingIndicator, setOpeningIndicator] = useState(false)
@@ -1062,7 +1066,7 @@ export function MessageList({
     setOpening(false)
   }, [])
   /* Every layout change while opening re-arms the quiet timer; the open ends
-     when it fires. Before hydration there is nothing to settle yet. */
+ when it fires. Before hydration there is nothing to settle yet. */
   const noteOpeningLayout = useCallback(() => {
     if (!openingRef.current || !transcriptHydratedRef.current) return
     if (openQuietTimerRef.current !== null) {
@@ -1097,8 +1101,8 @@ export function MessageList({
     messages.length > 0 || Boolean(header) || waitingMounted
 
   /* Opening a session lands on the latest exchange before paint. ChatView is
-     keyed by conversation id, so every open gets a fresh initializing state;
-     the first hydrated content is always an instant jump, never a glide. */
+ keyed by conversation id, so every open gets a fresh initializing state;
+ the first hydrated content is always an instant jump, never a glide. */
   // biome-ignore lint/correctness/useExhaustiveDependencies: message identity and thinking are deliberate pre-paint layout triggers while a transcript hydrates.
   useLayoutEffect(() => {
     if (didInitialScrollRef.current || !hasScrollableContent) return
@@ -1121,9 +1125,9 @@ export function MessageList({
   ])
 
   /* Content height can change without a messages identity change: markdown
-     wraps, images load, results expand, the waiting indicator mounts, or the pane
-     resizes. Observe both the content and viewport, coalescing all of it into
-     the single follow loop. A paused reader is never moved. */
+ wraps, images load, results expand, the waiting indicator mounts, or the pane
+ resizes. Observe both the content and viewport, coalescing all of it into
+ the single follow loop. A paused reader is never moved. */
   useEffect(() => {
     if (!hasScrollableContent || typeof ResizeObserver === 'undefined') return
     const container = containerRef.current
@@ -1175,17 +1179,17 @@ export function MessageList({
   }, [reducedMotion, scheduleTailFollow])
 
   /* Upward infinite scroll. The sentinel sits above the first message; while
-     older history exists and none is loading, its entering the (margin-
-     extended) viewport asks for the page above. Armed ONLY for a reader who
-     has scrolled away from the tail (`paused`): opening a session lands at
-     the bottom in `following`, and a short first page has the sentinel in
-     view right there, so arming in that state pulled in page after page the
-     reader never asked for. A page that is too short to scroll cannot be
-     scrolled up either; the edge row offers the load as a button instead.
-     Observed once per arming: the effect re-arms when `loadingOlder` clears,
-     so a reader still heading up keeps getting pages ahead of them. A failed
-     page does NOT re-arm (the row offers the retry) or a dead connection
-     would loop request after request. */
+ older history exists and none is loading, its entering the (margin-
+ extended) viewport asks for the page above. Armed ONLY for a reader who
+ has scrolled away from the tail (`paused`): opening a session lands at
+ the bottom in `following`, and a short first page has the sentinel in
+ view right there, so arming in that state pulled in page after page the
+ reader never asked for. A page that is too short to scroll cannot be
+ scrolled up either; the edge row offers the load as a button instead.
+ Observed once per arming: the effect re-arms when `loadingOlder` clears,
+ so a reader still heading up keeps getting pages ahead of them. A failed
+ page does NOT re-arm (the row offers the retry) or a dead connection
+ would loop request after request. */
   const hasOlderHistory = history?.hasMore === true
   const loadingOlder = history?.loadingOlder === true
   const olderHistoryError = history?.error
@@ -1227,24 +1231,24 @@ export function MessageList({
   ])
 
   /* Prepend scroll restoration. A page landing above the fold pushes
-     everything down by its height; the reader must not notice. The height
-     recorded at the last commit (and refreshed by the resize observer, since
-     images and cards grow without a re-render) is what the container
-     measured before this commit; the difference in scrollHeight is exactly
-     how far the content moved. The BASE is the container's live scrollTop,
-     not the recorded one: a paused reader keeps scrolling while the page is
-     in flight and no re-render records that, and with scroll anchoring off
-     the live value is still where the reader is at this instant. Written
-     through `writeScrollTop` so the resulting scroll event is not mistaken
-     for a manual gesture. Applied in EVERY tail state, not just `paused`:
-     for a reader at the bottom the shifted offset IS the new bottom (the
-     browser clamps it there), so the follow loop finds nothing to glide. It
-     cannot be left to the follow loop: the observer re-arms in this same
-     commit, and with the offset still at its old value the viewport sits on
-     the TOP of the page that just landed, sentinel in view, so the next page
-     is requested before the glide has moved a pixel, and the whole history
-     cascades in on a short first page. `didInitialScrollRef` is left alone,
-     this is not the open. */
+ everything down by its height; the reader must not notice. The height
+ recorded at the last commit (and refreshed by the resize observer, since
+ images and cards grow without a re-render) is what the container
+ measured before this commit; the difference in scrollHeight is exactly
+ how far the content moved. The BASE is the container's live scrollTop,
+ not the recorded one: a paused reader keeps scrolling while the page is
+ in flight and no re-render records that, and with scroll anchoring off
+ the live value is still where the reader is at this instant. Written
+ through `writeScrollTop` so the resulting scroll event is not mistaken
+ for a manual gesture. Applied in EVERY tail state, not just `paused`:
+ for a reader at the bottom the shifted offset IS the new bottom (the
+ browser clamps it there), so the follow loop finds nothing to glide. It
+ cannot be left to the follow loop: the observer re-arms in this same
+ commit, and with the offset still at its old value the viewport sits on
+ the TOP of the page that just landed, sentinel in view, so the next page
+ is requested before the glide has moved a pixel, and the whole history
+ cascades in on a short first page. `didInitialScrollRef` is left alone,
+ this is not the open. */
   const prevMetricsRef = useRef<PrependScrollMetrics | null>(null)
   const recordScrollMetrics = useCallback((container: HTMLElement) => {
     prevMetricsRef.current = {
@@ -1407,10 +1411,10 @@ export function MessageList({
   ])
 
   /* External landing (trace → "go to message"): center the requested row
-     once it exists, then hand the request back to the owner. Tail following
-     is paused first so a live tail can't yank the view back down; the flash
-     gives the jump a visible landmark. Gated on hydration so it never
-     centers against a partial history. */
+ once it exists, then hand the request back to the owner. Tail following
+ is paused first so a live tail can't yank the view back down; the flash
+ gives the jump a visible landmark. Gated on hydration so it never
+ centers against a partial history. */
   const focusAppliedRef = useRef<string | null>(null)
   // biome-ignore lint/correctness/useExhaustiveDependencies: message arrival is the retry trigger while the target row hasn't rendered yet.
   useEffect(() => {
@@ -1647,7 +1651,7 @@ export function MessageList({
         className={cn(
           // Scroll anchoring is off: the prepend restoration above is the one
           // adjustment, and it must not add to the browser's own.
-          'conversation-transcript min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          'conversation-transcript min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-inset focus-visible:ring-ring/50',
           // Opacity, not display or visibility: the veiled list keeps its
           // layout so the tail jump and the settle happen for real behind it,
           // and opacity composites the whole subtree, whereas `visibility:
@@ -1720,6 +1724,7 @@ export function MessageList({
                 <ModelWaitingIndicator
                   label={thinkingDetail}
                   active={Boolean(isThinking)}
+                  calm={waitingOnPerson}
                   turnKey={turnKey}
                 />
               </div>
@@ -1747,7 +1752,7 @@ export function MessageList({
           variant="pill"
           size="sm"
           className={cn(
-            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md sm:h-8 sm:text-[0.8125rem] dark:bg-black/80 dark:ring-1 dark:ring-neutral-900',
+            'iii-ui-motion-overlay absolute bottom-3 left-1/2 z-10 h-9 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-base shadow-raised backdrop-blur-md ring-1 ring-border sm:h-8 sm:text-[0.8125rem]',
             hasPendingApproval && 'text-warn',
           )}
           onClick={hasPendingApproval ? handleJumpToAction : handleJumpToLatest}
@@ -1805,7 +1810,7 @@ const HistoryEdgeRow = forwardRef<
     <div
       ref={ref}
       data-history-edge={state}
-      className="flex h-6 items-center justify-center font-mono text-[11px] text-ink-ghost"
+      className="flex h-6 items-center justify-center font-mono text-meta text-ink-ghost"
       aria-live="polite"
     >
       {state === 'loading' ? (
@@ -2146,7 +2151,7 @@ function FunctionCallGroup({
             type="button"
             onClick={onShowObservers}
             aria-label={`${label}${sources ? ` from ${sources}` : ''} · show in Observers`}
-            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="-ml-2 inline-flex h-8 max-w-full items-center gap-2 rounded-md px-2 font-sans text-sm text-ink-faint transition-colors hover:bg-surface hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
           >
             <ObserverIcon aria-hidden className="size-4 shrink-0 fill-warn" />
             <span className="font-medium text-ink tabular-nums">

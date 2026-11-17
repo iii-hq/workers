@@ -1,40 +1,57 @@
+/**
+ * The console's content-navigation tabs: the shadcn (Base UI) tabs with the
+ * `line` look by default, a semantic 16px icon per trigger (`TabIconSlot`)
+ * and the active tab kept in view when the list overflows. Worker UIs get
+ * the same parts through `@iii-dev/console-ui`.
+ */
+
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import * as TabsPrimitive from '@radix-ui/react-tabs'
 import * as React from 'react'
+import {
+  Tabs as BaseTabs,
+  TabsContent as BaseTabsContent,
+  TabsList as BaseTabsList,
+  TabsTrigger as BaseTabsTrigger,
+} from '@/components/shadcn/tabs'
 import { cn } from '@/lib/utils'
 import { TabIconSlot } from './TabIcon'
 
-export const Tabs = TabsPrimitive.Root
+export const Tabs = BaseTabs
 
 export interface TabsListProps
-  extends React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> {
+  extends React.ComponentProps<typeof BaseTabsList> {
   /** `line` is the Console content-navigation default. */
-  variant?: 'line'
+  variant?: 'line' | 'default'
 }
 
-export const TabsList = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.List>,
-  TabsListProps
->(({ className, variant = 'line', ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    data-variant={variant}
-    className={cn(uiClasses.tabsList, className)}
-    {...props}
-  />
-))
-TabsList.displayName = 'TabsList'
+export function TabsList({
+  className,
+  variant = 'line',
+  ...props
+}: TabsListProps) {
+  return (
+    <BaseTabsList
+      variant={variant}
+      className={cn(variant === 'line' && uiClasses.tabsList, className)}
+      {...props}
+    />
+  )
+}
 
 export interface TabsTriggerProps
-  extends React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger> {
+  extends React.ComponentProps<typeof BaseTabsTrigger> {
   /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
   icon?: React.ReactNode | false
 }
 
-export const TabsTrigger = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Trigger>,
-  TabsTriggerProps
->(({ className, icon, value, children, ...props }, ref) => {
+export function TabsTrigger({
+  className,
+  icon,
+  value,
+  children,
+  ref,
+  ...props
+}: TabsTriggerProps) {
   const innerRef = React.useRef<HTMLButtonElement | null>(null)
   const setRefs = React.useCallback(
     (node: HTMLButtonElement | null) => {
@@ -53,17 +70,20 @@ export const TabsTrigger = React.forwardRef<
     const list = node.parentElement
     if (!list || list.scrollWidth <= list.clientWidth) return
     const sync = () => {
-      if (node.getAttribute('data-state') !== 'active') return
+      if (!node.hasAttribute('data-active')) return
       node.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     }
     sync()
     const observer = new MutationObserver(sync)
-    observer.observe(node, { attributes: true, attributeFilter: ['data-state'] })
+    observer.observe(node, {
+      attributes: true,
+      attributeFilter: ['data-active'],
+    })
     return () => observer.disconnect()
   }, [])
 
   return (
-    <TabsPrimitive.Trigger
+    <BaseTabsTrigger
       ref={setRefs}
       value={value}
       className={cn(uiClasses.tab, className)}
@@ -71,19 +91,8 @@ export const TabsTrigger = React.forwardRef<
     >
       <TabIconSlot icon={icon} value={value} />
       <span className="min-w-0 truncate">{children}</span>
-    </TabsPrimitive.Trigger>
+    </BaseTabsTrigger>
   )
-})
-TabsTrigger.displayName = 'TabsTrigger'
+}
 
-export const TabsContent = React.forwardRef<
-  React.ElementRef<typeof TabsPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content
-    ref={ref}
-    className={cn('focus-visible:outline-none', className)}
-    {...props}
-  />
-))
-TabsContent.displayName = 'TabsContent'
+export const TabsContent = BaseTabsContent

@@ -50,8 +50,8 @@ function PanelMenuItems({ dock, onDockChange, onClose }: Pick<TerminalPanelShare
   return (
     <>
       <DropdownMenuSeparator />
-      <DropdownMenuLabel>Position</DropdownMenuLabel>
       <DropdownMenuRadioGroup value={dock} onValueChange={(next) => onDockChange(next as TerminalDock)}>
+        <DropdownMenuLabel>Position</DropdownMenuLabel>
         <DropdownMenuRadioItem value="bottom">
           <PanelBottom aria-hidden />
           Bottom

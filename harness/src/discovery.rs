@@ -89,6 +89,17 @@ impl FunctionsSnapshot {
     }
 }
 
+/// `function_id` is certainly not registered: the snapshot has been seeded
+/// (generation > 0) and lists it neither as callable nor as internal.
+pub fn known_absent(snapshot: &FunctionsSnapshot, function_id: &str) -> bool {
+    snapshot.generation > 0
+        && !snapshot.internal_ids.contains(function_id)
+        && !snapshot
+            .functions
+            .iter()
+            .any(|f| f.function_id == function_id)
+}
+
 /// Hot-swappable function-registry snapshot shared with the turn loop.
 pub type FunctionsCell = Arc<RwLock<Arc<FunctionsSnapshot>>>;
 
@@ -453,6 +464,24 @@ mod tests {
             description: None,
             parameters,
         }
+    }
+
+    #[tokio::test]
+    async fn known_absent_only_once_seeded_and_missing() {
+        let cell = new_cell();
+        // Unseeded: unknown, so callers still call.
+        let unseeded = cell.read().await.clone();
+        assert!(!known_absent(&unseeded, "approval::evaluate"));
+        apply(&cell, vec![desc("state::get", None)]).await;
+        let snapshot = cell.read().await.clone();
+        assert!(known_absent(&snapshot, "approval::evaluate"));
+        assert!(!known_absent(&snapshot, "state::get"));
+        let mut with_internal = snapshot_of(vec![desc("state::get", None)]);
+        with_internal.generation = 1;
+        with_internal
+            .internal_ids
+            .insert("approval::evaluate".into());
+        assert!(!known_absent(&with_internal, "approval::evaluate"));
     }
 
     #[tokio::test]

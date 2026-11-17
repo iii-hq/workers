@@ -19,6 +19,7 @@ import {
 } from '@/hooks/use-approval-gate-status'
 import {
   type ConversationsApi,
+  startingModel,
   useConversations,
 } from '@/hooks/use-conversations'
 import {
@@ -44,6 +45,7 @@ import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
 import { requestChatShown } from '@/lib/chat-requests'
 import { requestComposerFocus } from '@/lib/composer-insert'
+import { composerModelFor } from '@/lib/composer-model'
 import type { IiiClient } from '@/lib/iii-client'
 import { setMentionSessionOpener } from '@/lib/mentions/open-session'
 import {
@@ -52,6 +54,7 @@ import {
   refreshProviderModels,
   retryXaiModels,
 } from '@/lib/models-catalog'
+import { loadLastModel } from '@/lib/storage'
 import { type ConversationAdapter, startUiLoader } from '@/lib/ui-loader'
 import type { ModelOption } from '@/types/chat'
 import type { ConsoleApi } from '@/types/injectable-ui'
@@ -136,7 +139,7 @@ interface ConversationsProviderProps {
   children: ReactNode
   injectableUiRuntime?: Promise<InjectableUiRuntime>
   /** Called when an injected page asks for a conversation, so the host can
-      place the chat pane when none is open. */
+ place the chat pane when none is open. */
   onConversationRequested?: (sessionId: string) => void
   /** Called when chat UI requests a dedicated, session-pinned panel. */
   onConversationPanelRequested?: (sessionId: string) => void
@@ -248,6 +251,15 @@ export function ConversationsProvider({
   conversationsRef.current = api.conversations
   const activeIdRef = useRef(api.activeId)
   activeIdRef.current = api.activeId
+  /** The model a new chat starts on right now, read at call time. */
+  const startingModelRef = useRef<() => string | null>(() => null)
+  startingModelRef.current = () =>
+    startingModel(
+      loadLastModel(),
+      catalogKeys.length > 0 ? new Set(catalogKeys) : null,
+      preferredModel,
+      catalogKeys[0] ?? null,
+    )
   const conversationRequestedRef = useRef(onConversationRequested)
   conversationRequestedRef.current = onConversationRequested
   const conversationPanelRequestedRef = useRef(onConversationPanelRequested)
@@ -285,12 +297,11 @@ export function ConversationsProvider({
       },
       composerModel(conversationId) {
         const requested = conversationId?.trim()
-        const id = requested || activeIdRef.current
-        if (!id) return null
-        const model = conversationsRef.current.find(
-          (conversation) => conversation.id === id,
-        )?.model
-        return typeof model === 'string' && model.trim() ? model.trim() : null
+        return composerModelFor(
+          conversationsRef.current,
+          requested || activeIdRef.current,
+          startingModelRef.current(),
+        )
       },
       startChat(request) {
         const text = request.text.trim()

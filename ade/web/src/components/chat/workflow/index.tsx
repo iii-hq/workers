@@ -13,7 +13,7 @@ import { StatusView } from './StatusView'
 import { StopView } from './StopView'
 
 /* The known workflow::* set lives in parsers.ts (WORKFLOW_FUNCTION_IDS) so the
-   dispatcher and schemas share one source of truth. */
+ dispatcher and schemas share one source of truth. */
 export { isWorkflowFunction, WORKFLOW_FUNCTION_IDS } from './parsers'
 
 /** Branded function-id label, mirroring the other namespace modules. */

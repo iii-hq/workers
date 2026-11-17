@@ -37,6 +37,20 @@ import {
   useRef,
   useState,
 } from 'react'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+  InputGroupText,
+} from '@/components/shadcn/input-group'
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemMedia,
+} from '@/components/shadcn/item'
+import { toggleVariants } from '@/components/shadcn/toggle'
 import { Kbd } from '@/components/ui/Kbd'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -72,6 +86,7 @@ import {
   readEngine,
 } from '@/lib/palette/sources'
 import { trackCommand } from '@/lib/telemetry'
+import { cn } from '@/lib/utils'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -119,25 +134,21 @@ const KIND_ACTION: Record<PaletteKind, string> = {
 /** Flat key caps: a hairline box, no fill and no shadow, so a row's
  *  shortcut reads as a label, not a button. */
 const CAP =
-  'h-5 min-w-5 rounded-[5px] border border-neutral-100 bg-transparent px-1 font-inter text-[11px] font-medium text-neutral-500 shadow-none dark:border-neutral-700/80 dark:text-neutral-400'
+  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
 
 /** The filter row's chips: a quiet label that fills when chosen. Tab
  *  cycles them from the keyboard; the pointer picks one outright. */
-const CHIP =
-  'inline-flex h-6 shrink-0 items-center rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:focus-visible:ring-neutral-400'
-const CHIP_IDLE =
-  'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
-const CHIP_ON =
-  'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+const CHIP = cn(
+  toggleVariants({ size: 'sm' }),
+  'h-6 shrink-0 px-2 text-xs text-muted-foreground',
+)
 
 /** The glyph's tile: a hairline square, so rows read as a column of
  *  objects rather than a ragged edge of bare icons. */
 const TILE =
   'relative flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors duration-[var(--motion-duration-control)]'
-const TILE_IDLE =
-  'border-neutral-100 bg-white text-neutral-500 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-neutral-400'
-const TILE_ON =
-  'border-neutral-300/80 bg-white text-neutral-900 dark:border-white/[0.14] dark:bg-white/[0.08] dark:text-neutral-100'
+const TILE_IDLE = 'border-border bg-card text-muted-foreground'
+const TILE_ON = 'border-input/80 bg-card text-foreground'
 
 /** One glyph per kind, for rows that bring none of their own. They echo
  *  the rest of the app: a workspace is the tab strip's window, a command
@@ -264,17 +275,17 @@ function FunctionId({
   const marker = id.indexOf('::')
   if (marker <= 0)
     return (
-      <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-[13px] font-medium tracking-[-0.02em]">
+      <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-body font-medium tracking-[-0.02em]">
         <Highlighted text={id} ranges={ranges} />
       </span>
     )
   const owner = id.slice(0, marker + 2)
   return (
-    <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-[13px] font-medium tracking-[-0.02em]">
-      <span className="text-neutral-400 dark:text-neutral-500">
+    <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-body font-medium tracking-[-0.02em]">
+      <span className="text-ink-ghost">
         <Highlighted text={owner} ranges={ranges} />
       </span>
-      <span className="text-neutral-900 dark:text-neutral-100">
+      <span className="text-foreground">
         <Highlighted
           text={id.slice(marker + 2)}
           ranges={ranges}
@@ -668,12 +679,12 @@ export function CommandPalette({
   return (
     <div
       style={viewportStyle}
-      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-neutral-950/15 supports-backdrop-filter:backdrop-blur-[2px] sm:pt-[12vh] dark:bg-black/50"
+      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-foreground/15 supports-backdrop-filter:backdrop-blur-[2px] sm:pt-[12vh]"
     >
       {/* The scrim is a real button so dismissing by click is reachable
-          without a mouse; the dialog below owns every other key. On a phone
-          the dialog covers it, which is why that layout carries its own
-          close affordance. */}
+ without a mouse; the dialog below owns every other key. On a phone
+ the dialog covers it, which is why that layout carries its own
+ close affordance. */}
       <button
         type="button"
         aria-label="Close command palette"
@@ -689,24 +700,21 @@ export function CommandPalette({
         onKeyDown={onKeyDown}
       >
         {/* The field: a magnifier, the mode chip when a prefix is typed, the
-            query, and on a phone the close button. */}
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-neutral-100 pr-1 pl-4 sm:pr-4 dark:border-neutral-800">
-          <Search
-            aria-hidden
-            className="size-4 shrink-0 text-neutral-400 dark:text-neutral-500"
-          />
-          {scope ? (
-            <span className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md bg-neutral-100 px-1.5 text-xs font-medium text-neutral-700 dark:bg-white/[0.08] dark:text-neutral-200">
-              {scope.glyph ? (
-                <span className="text-neutral-400 dark:text-neutral-500">
-                  {scope.glyph}
-                </span>
-              ) : null}
-              {scope.label}
-            </span>
-          ) : null}
+ query, and on a phone the close button. */}
+        <InputGroup className="h-14 shrink-0 rounded-none border-0 bg-transparent pr-1 pl-4 shadow-none! has-[input:focus-visible]:ring-0 sm:pr-4 dark:bg-transparent">
+          <InputGroupAddon className="pl-0">
+            <Search aria-hidden className="text-ink-ghost" />
+            {scope ? (
+              <InputGroupText className="h-6 rounded-md bg-muted px-1.5 text-xs font-medium">
+                {scope.glyph ? (
+                  <span className="text-ink-ghost">{scope.glyph}</span>
+                ) : null}
+                {scope.label}
+              </InputGroupText>
+            ) : null}
+          </InputGroupAddon>
           <div className="relative min-w-0 flex-1">
-            <input
+            <InputGroupInput
               ref={inputRef}
               value={typed}
               onChange={(event) => {
@@ -723,7 +731,7 @@ export function CommandPalette({
               // Under 16px iOS Safari zooms the page on focus, which strands a
               // fixed overlay off screen. Worker and function ids are not prose,
               // so autocorrect and the automatic leading capital both mangle them.
-              className="h-14 w-full bg-transparent text-base text-neutral-900 caret-neutral-900 outline-none dark:text-neutral-100 dark:caret-neutral-100"
+              className="h-14 pr-0 pl-2.5 text-base text-foreground caret-foreground md:text-base"
               inputMode="search"
               enterKeyHint="go"
               autoCapitalize="none"
@@ -732,42 +740,44 @@ export function CommandPalette({
               spellCheck={false}
             />
             {/* The placeholder is drawn, not native, so it can type itself;
-                screen readers get it once, through the description. */}
+ screen readers get it once, through the description. */}
             {typed === '' ? (
               <span
                 id="command-palette-prompt"
-                className="pointer-events-none absolute inset-y-0 left-0 flex max-w-full items-center truncate text-base text-neutral-400 dark:text-neutral-500"
+                className="pointer-events-none absolute inset-y-0 left-2.5 flex max-w-full items-center truncate text-base text-ink-ghost"
               >
                 {scoped ? placeholderFor(mode, filter) : prompt || '\u00a0'}
               </span>
             ) : null}
           </div>
           {/* Escape, spelled where a pointer can see it; a phone has no Escape
-              and gets a real close button instead. */}
-          <Kbd
-            aria-hidden
-            className={`${CAP} hidden shrink-0 pointer-fine:inline-flex`}
-          >
-            esc
-          </Kbd>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close search"
-            className="flex size-12 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:hidden dark:hover:text-neutral-100"
-          >
-            <X className="size-5" aria-hidden />
-          </button>
-        </div>
+ and gets a real close button instead. */}
+          <InputGroupAddon align="inline-end" className="pr-0">
+            <Kbd
+              aria-hidden
+              className={`${CAP} hidden shrink-0 pointer-fine:inline-flex`}
+            >
+              esc
+            </Kbd>
+            <InputGroupButton
+              size="icon-sm"
+              onClick={onClose}
+              aria-label="Close search"
+              className="size-12 text-muted-foreground hover:text-foreground sm:hidden"
+            >
+              <X className="size-5" aria-hidden />
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
 
         {/* The filter row: every kind the palette can narrow to, so the
-            scopes are discoverable before Tab is pressed. A typed prefix is
-            a scope of its own and takes the row away. */}
+ scopes are discoverable before Tab is pressed. A typed prefix is
+ a scope of its own and takes the row away. */}
         {!mode ? (
           <div
             role="radiogroup"
             aria-label="Filter results"
-            className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-100 px-3 py-2 [scrollbar-width:none] dark:border-neutral-800 [&::-webkit-scrollbar]:hidden"
+            className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {FILTERS.map((option) => {
               const on = option.id === filter
@@ -784,17 +794,14 @@ export function CommandPalette({
                   aria-checked={on}
                   tabIndex={-1}
                   onClick={() => pickFilter(option.id)}
-                  className={`${CHIP} ${on ? CHIP_ON : CHIP_IDLE} ${
-                    count === 0 && !on ? 'opacity-50' : ''
-                  }`}
+                  data-state={on ? 'on' : 'off'}
+                  className={cn(CHIP, count === 0 && !on && 'opacity-50')}
                 >
                   {option.label}
                   {count ? (
                     <span
-                      className={`ml-1.5 font-geist-mono text-[11px] tabular-nums ${
-                        on
-                          ? 'text-white/60 dark:text-neutral-900/60'
-                          : 'text-neutral-400 dark:text-neutral-500'
+                      className={`ml-1.5 font-geist-mono text-meta tabular-nums ${
+                        on ? 'text-foreground' : 'text-ink-ghost'
                       }`}
                     >
                       {count > 99 ? '99+' : count}
@@ -817,7 +824,7 @@ export function CommandPalette({
           ) : null}
           {flat.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center px-4 pb-6 text-center">
-              <p className="text-sm text-neutral-600 dark:text-neutral-300">
+              <p className="text-sm text-muted-foreground">
                 {emptyText(
                   searching,
                   parsed.prefix,
@@ -835,7 +842,7 @@ export function CommandPalette({
                       type="button"
                       tabIndex={-1}
                       onClick={() => pickFilter(kind)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-100 px-3 text-sm text-neutral-700 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-sm text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                     >
                       Show {count}{' '}
                       {FILTERS.find(
@@ -845,7 +852,7 @@ export function CommandPalette({
                   ))}
                 </div>
               ) : !searching && !mode ? (
-                <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
                   Try
                   <Kbd className={`${CAP} font-mono`}>&gt;</Kbd>
                   for commands or
@@ -857,7 +864,7 @@ export function CommandPalette({
           ) : (
             groups.map(([kind, entries]) => (
               <div key={kind} className="pb-1">
-                <p className="px-2.5 pt-2.5 pb-1 text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                <p className="px-2.5 pt-2.5 pb-1 text-xs font-medium text-muted-foreground">
                   {KIND_LABEL[kind]}
                 </p>
                 {entries.map((entry) => {
@@ -874,9 +881,9 @@ export function CommandPalette({
                     entry.kind,
                   )
                   return (
-                    <button
+                    <Item
                       key={entry.id}
-                      type="button"
+                      render={<button type="button" />}
                       tabIndex={-1}
                       data-palette-index={index}
                       data-selected={selected || undefined}
@@ -884,37 +891,34 @@ export function CommandPalette({
                         if (!selected) select(index)
                       }}
                       onClick={() => choose(entry)}
-                      className={`flex min-h-12 w-full scroll-my-1.5 items-center gap-3 rounded-lg px-2.5 text-left transition-colors duration-[var(--motion-duration-control)] sm:min-h-10 ${
-                        selected
-                          ? 'bg-neutral-100 dark:bg-white/[0.06]'
-                          : 'hover:bg-neutral-50 dark:hover:bg-white/[0.03]'
-                      }`}
+                      className={cn(
+                        'min-h-12 scroll-my-1.5 gap-3 px-2.5 py-0 text-left sm:min-h-10',
+                        selected ? 'bg-muted' : 'hover:bg-muted',
+                      )}
                     >
-                      <span
+                      <ItemMedia
                         aria-hidden
                         className={`${TILE} ${selected ? TILE_ON : TILE_IDLE}`}
                       >
                         <Icon className="size-4" />
                         {/* A worker's status rides its tile, so the name
-                            reads uninterrupted. */}
+ reads uninterrupted. */}
                         {entry.kind === 'worker' && entry.keywords?.[0] ? (
                           <span
                             className={`absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ${
-                              selected
-                                ? 'ring-neutral-100 dark:ring-neutral-800'
-                                : 'ring-white dark:ring-neutral-900'
+                              selected ? 'ring-border ' : 'ring-white '
                             } ${statusTone(entry.keywords[0])}`}
                           />
                         ) : null}
-                      </span>
-                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                      </ItemMedia>
+                      <ItemContent className="min-w-0 flex-1 flex-row items-baseline gap-2">
                         {entry.kind === 'function' ? (
                           <FunctionId id={entry.title} ranges={titleRanges} />
                         ) : (
                           <span
-                            className={`max-w-[70%] shrink-0 truncate text-base text-neutral-900 sm:text-sm dark:text-neutral-100 ${
+                            className={`max-w-[70%] shrink-0 truncate text-base text-foreground sm:text-sm ${
                               entry.kind === 'worker'
-                                ? 'font-geist-mono font-medium tracking-[-0.02em] sm:text-[13px]'
+                                ? 'font-geist-mono font-medium tracking-[-0.02em] sm:text-body'
                                 : ''
                             }`}
                           >
@@ -925,42 +929,48 @@ export function CommandPalette({
                           </span>
                         )}
                         {entry.detail ? (
-                          <span className="min-w-0 truncate text-sm text-neutral-400 dark:text-neutral-500">
+                          <span className="min-w-0 truncate text-sm text-ink-ghost">
                             <Highlighted
                               text={entry.detail}
                               ranges={matchRanges(entry.detail, parsed.text)}
                             />
                           </span>
                         ) : null}
-                      </span>
+                      </ItemContent>
                       {/* The right-hand tag is the first thing to give up when
-                          the row has to fit a phone. Holding the pick key swaps it for
-                          the row's number. */}
-                      {digit !== null ? (
-                        <Kbd
-                          className={`${CAP} hidden shrink-0 text-neutral-900 sm:inline-flex dark:text-neutral-100`}
-                        >
-                          {digit}
-                        </Kbd>
-                      ) : entry.shortcut ? (
-                        <KeyCombo
-                          binding={entry.shortcut}
-                          platform={platform}
-                          className="hidden shrink-0 sm:inline-flex"
-                          capClassName={CAP}
-                        />
-                      ) : entry.meta ? (
-                        <span
-                          className={`hidden max-w-[40%] shrink-0 truncate text-neutral-400 tabular-nums sm:block dark:text-neutral-500 ${
-                            entry.metaMono
-                              ? 'font-geist-mono text-[12px] tracking-[-0.01em]'
-                              : 'text-xs'
-                          }`}
-                        >
-                          {entry.meta}
-                        </span>
-                      ) : null}
-                    </button>
+ the row has to fit a phone. Holding the pick key swaps it for
+ the row's number. */}
+                      {/* Capped at 40% of the row (a percentage of the row,
+ not of this slot's own content width, which made the label's own
+ 40% cap circular and cut "Chat" to "C…"). A chord never shrinks;
+ a long label truncates. */}
+                      <ItemActions className="min-w-0 max-w-[40%] shrink-0">
+                        {digit !== null ? (
+                          <Kbd
+                            className={`${CAP} hidden shrink-0 text-foreground sm:inline-flex `}
+                          >
+                            {digit}
+                          </Kbd>
+                        ) : entry.shortcut ? (
+                          <KeyCombo
+                            binding={entry.shortcut}
+                            platform={platform}
+                            className="hidden shrink-0 sm:inline-flex"
+                            capClassName={CAP}
+                          />
+                        ) : entry.meta ? (
+                          <span
+                            className={`hidden min-w-0 truncate text-ink-ghost tabular-nums sm:block ${
+                              entry.metaMono
+                                ? 'font-geist-mono text-xs tracking-[-0.01em]'
+                                : 'text-xs'
+                            }`}
+                          >
+                            {entry.meta}
+                          </span>
+                        ) : null}
+                      </ItemActions>
+                    </Item>
                   )
                 })}
               </div>
@@ -968,7 +978,7 @@ export function CommandPalette({
           )}
         </div>
         {/* Key hints are noise on a surface with no keys to press. */}
-        <div className="hidden h-10 shrink-0 items-center gap-4 border-t border-neutral-100 bg-neutral-50/80 px-4 text-xs text-neutral-500 sm:flex dark:border-neutral-800 dark:bg-white/[0.02] dark:text-neutral-400">
+        <div className="hidden h-10 shrink-0 items-center gap-4 border-t border-border bg-muted/80 px-4 text-xs text-muted-foreground sm:flex">
           {HINTS.map((hint) => (
             <span key={hint.label} className="flex items-center gap-1.5">
               <span className="flex items-center gap-0.5">
@@ -986,9 +996,9 @@ export function CommandPalette({
             </span>
           ))}
           {/* Raycast's corner: what Enter does to the lit row, by name. */}
-          <span className="ml-auto flex items-center gap-2 font-medium text-neutral-900 dark:text-neutral-100">
+          <span className="ml-auto flex items-center gap-2 font-medium text-foreground">
             {searching ? (
-              <span className="font-normal text-neutral-400">Searching…</span>
+              <span className="font-normal text-ink-ghost">Searching…</span>
             ) : null}
             {lit ? KIND_ACTION[lit.kind] : null}
             {lit ? (

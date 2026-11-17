@@ -38,7 +38,7 @@ export function UnobserveView({
         ? 'observer not found'
         : 'observer removal failed'
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={status}
@@ -59,7 +59,7 @@ export function UnobserveView({
           </span>
         </Chip>
       </MetaRow>
-      <div className="bg-warn-muted px-3 py-2 font-mono text-[11px] text-ink-faint">
+      <div className="bg-warn-muted px-3 py-2 font-mono text-meta text-ink-faint">
         {removed === true
           ? 'This observer was explicitly removed and will not fire again.'
           : removed === false
@@ -82,8 +82,8 @@ function removedOf(output: unknown): boolean | undefined {
 function RawValue({ label, value }: { label: string; value: unknown }) {
   const json = JSON.stringify(value, null, 2) ?? String(value)
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
+    <div className="border-t border-border bg-bg">
+      <div className="border-b border-border bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
         {label}
       </div>
       <JsonHighlight code={json} wrap />

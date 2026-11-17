@@ -65,7 +65,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         onClick={() => void toggle()}
         title="what the memory worker fed this reply — click for the exact memories"
         className={cn(
-          'font-mono text-[11px] rounded-sm px-1.5 py-0.5 transition-colors',
+          'font-mono text-meta rounded-sm px-1.5 py-0.5 transition-colors',
           open
             ? 'bg-surface-selected text-ink'
             : 'bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink',
@@ -76,20 +76,20 @@ export function MemoryChip({ memory }: MemoryChipProps) {
         {memory.truncated ? ' · truncated' : ''}
       </button>
       {open ? (
-        <span className="mt-1 flex flex-col gap-1 border border-rule-2 bg-panel px-2 py-1.5 max-w-md">
+        <span className="mt-1 flex flex-col gap-1 border border-border bg-panel px-2 py-1.5 max-w-md">
           {loading ? (
-            <span className="font-mono text-[11px] text-ink-ghost">
+            <span className="font-mono text-meta text-ink-ghost">
               Loading memories…
             </span>
           ) : loadError ? (
-            <span className="font-mono text-[11px] text-alert">
+            <span className="font-mono text-meta text-alert">
               Could not load memories — click to retry
             </span>
           ) : memories && memories.length > 0 ? (
             memories.map((memory) => (
               <span
                 key={memory.id}
-                className="font-mono text-[11px] text-ink leading-snug"
+                className="font-mono text-meta text-ink leading-snug"
               >
                 - {memory.text}
                 {memory.pinned ? (
@@ -98,7 +98,7 @@ export function MemoryChip({ memory }: MemoryChipProps) {
               </span>
             ))
           ) : (
-            <span className="font-mono text-[11px] text-ink-ghost">
+            <span className="font-mono text-meta text-ink-ghost">
               {memory.memoryIds.length === 0
                 ? 'Only rules fed this turn (always-injected markdown)'
                 : 'Memories no longer available (superseded or bank changed)'}

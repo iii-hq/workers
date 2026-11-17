@@ -629,17 +629,30 @@ are **not** consulted. An approval gate could only hold the ask, and a held
 call's release goes to the registered handler, which cannot show the card.
 
 **Answering.** The answer is simply the user's next message, so any client
-that can send one can answer. The console renders the call as a card: radio
-buttons or checkboxes, each option's description, an "Other" field and Send.
-Send submits the answer through the composer, one line per question:
+that can send one can answer. The console renders the call as a card:
+checkboxes (a single-select ticks one), each option's description, an "Other"
+field, a Skip toggle per question, and Dismiss and Send for the card. Send
+submits the answer through the composer, one line per question:
 
 - a single choice sends `Approach: End the turn`;
 - a multi-select sends `Channels: Console, Slack`;
-- "Other" sends the typed text.
+- "Other" sends the typed text;
+- a skipped question sends `Approach: (skipped)`: the model decides that
+  one itself.
 
-The card stays open while `harness::status` reports the same `turn_id`. Once
-the session has moved to a later turn, it becomes read-only and is marked
-answered. Typing a reply in the composer instead works the same way.
+Dismiss sends a notice instead of answers (`I dismissed your questions
+without answering them. Go on with your best judgement; …`). The ask result
+tells the model both may happen.
+
+**Settling.** Only the card's own Send or Dismiss closes it. Once the send
+landed (the text parked in the queue, or the session moved on a turn or a
+step), the console records the outcome with `harness::ask::settle
+{ session_id, question_id, outcome: answered | dismissed }` and every card
+reads `harness::ask::settlements { session_id }` (the session's newest 32
+settlements) on mount and on focus, so a card settled in another tab closes
+too. The session moving to a later turn does not settle a card: a reply
+typed in the composer may have been about something else, so the card says
+the chat moved on and still takes an answer, or a dismissal.
 
 ## Observable functions
 
