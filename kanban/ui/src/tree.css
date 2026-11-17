@@ -1,6 +1,6 @@
-/* The Tree view (src/tree/tree-view.tsx): tickets, subtasks and agent sessions as cards hung off one another by
- * rounded elbow connectors. Cards are the board card's surface (Tailwind on the element); this file draws the
- * connectors, the state badges and the agent tiles. */
+/* The Tree view (src/tree/tree-view.tsx): an org chart of a project's work. The root and any single line under it
+ * run down the middle; the first fan-out spreads into a row of columns hung off one rounded bus; below that each
+ * column stacks its descendants with elbows. Cards are fixed-width so every connector lands on a known x. */
 
 [data-iii-ui="kanban"] .kb-tree-view {
   display: flex;
@@ -11,209 +11,386 @@
   overflow: hidden;
 }
 
-[data-iii-ui="kanban"] .kb-tree-scroll {
+[data-iii-ui="kanban"] .kb-chart-scroll {
+  /* Flex so the chart's auto margins centre it while it fits and let it scroll from its edge once it does not. */
+  display: flex;
+  align-items: flex-start;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--kb-space-4) var(--kb-gutter) var(--kb-space-6);
   overscroll-behavior: contain;
+  cursor: grab;
 }
 
-[data-iii-ui="kanban"] .kb-tree,
-[data-iii-ui="kanban"] .kb-tree__group {
+[data-iii-ui="kanban"] .kb-chart-scroll[data-panning="true"] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+[data-iii-ui="kanban"] .kb-chart {
+  /* The card and the connector geometry: the stack spine runs under the card's tile. */
+  --kb-node-w: 248px;
+  --kb-node-mid: calc(var(--kb-node-w) / 2);
+  --kb-line: color-mix(in srgb, var(--color-glyph-blue) 55%, transparent);
+  --kb-drop: 16px;
+  --kb-stack-x: 25px;
+  --kb-stack-indent: 36px;
+  --kb-stack-elbow: 25px;
+  --kb-col-gap: 24px;
+  display: flex;
+  flex: none;
+  justify-content: center;
+  width: max-content;
+  margin: 0 auto;
+  padding: var(--kb-space-6) var(--kb-space-6) 48px;
+  outline: none;
+  cursor: auto;
+}
+
+[data-iii-ui="kanban"] .kb-chart__item {
+  position: relative;
+  outline: none;
+}
+
+[data-iii-ui="kanban"] .kb-chart__card {
+  position: relative;
+  width: var(--kb-node-w);
+}
+
+/* --- down the middle: the root and a single line under it -------------- */
+
+[data-iii-ui="kanban"] .kb-chart__item[data-spine="true"] {
   display: flex;
   flex-direction: column;
-  gap: var(--kb-space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  align-items: center;
 }
 
-/* The connector: a line runs down from the parent card (at --kb-tree-x) and turns into each child at the
-   middle of its first line (--kb-tree-elbow). Light lines on the light ground, neutral-800 in dark. */
-[data-iii-ui="kanban"] .kb-tree {
-  --kb-tree-line: color-mix(in srgb, var(--color-ink) 14%, transparent);
-  --kb-tree-live: color-mix(in srgb, var(--color-glyph-blue) 70%, transparent);
-  --kb-tree-indent: 32px;
-  --kb-tree-x: 18px;
-  --kb-tree-elbow: 22px;
-  max-width: 960px;
-  outline: none;
-}
-
-[data-iii-ui="kanban"] .kb-tree__group {
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="single"] {
   position: relative;
-  padding-top: var(--kb-space-2);
-  padding-left: var(--kb-tree-indent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: calc(var(--kb-drop) * 2);
 }
 
-[data-iii-ui="kanban"] .kb-tree__item {
-  position: relative;
-  outline: none;
-}
-
-[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item::before,
-[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item:not(:last-child)::after {
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="single"]::before {
   position: absolute;
-  left: calc(var(--kb-tree-x) - var(--kb-tree-indent));
+  top: 0;
+  left: 50%;
+  height: calc(var(--kb-drop) * 2);
+  border-left: 1px solid var(--kb-line);
+  content: "";
+}
+
+/* --- across: the first fan-out, one column per child on a rounded bus ---- */
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  padding-top: var(--kb-drop);
+}
+
+/* The stem from the parent card down to the bus. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"]::before {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: var(--kb-drop);
+  border-left: 1px solid var(--kb-line);
+  content: "";
+}
+
+/* Each column: its card at the left, the gap to the next column inside it so the bus runs on through. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item {
+  padding-top: var(--kb-drop);
+  padding-right: var(--kb-col-gap);
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:last-child {
+  padding-right: 0;
+}
+
+/* The bus over a middle column, and its drop into the card's middle. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  border-top: 1px solid var(--kb-line);
+  content: "";
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item::after {
+  position: absolute;
+  top: 0;
+  left: var(--kb-node-mid);
+  height: var(--kb-drop);
+  border-left: 1px solid var(--kb-line);
+  content: "";
+}
+
+/* The ends turn down into their cards with a rounded corner. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:first-child::before {
+  left: var(--kb-node-mid);
+  height: var(--kb-drop);
+  border-left: 1px solid var(--kb-line);
+  border-top-left-radius: var(--radius-md);
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:last-child::before {
+  right: auto;
+  width: var(--kb-node-mid);
+  height: var(--kb-drop);
+  border-right: 1px solid var(--kb-line);
+  border-top-right-radius: var(--radius-md);
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:is(:first-child, :last-child)::after {
+  display: none;
+}
+
+/* --- stacked: everything below a column, indented with elbows ---------- */
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 0 var(--kb-stack-indent);
+}
+
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item::before,
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item:not(:last-child)::after {
+  position: absolute;
+  left: calc(var(--kb-stack-x) - var(--kb-stack-indent));
   content: "";
   pointer-events: none;
 }
 
-/* The elbow into this child, from the gap above it. */
-[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item::before {
-  top: calc(-1 * var(--kb-space-2));
-  width: calc(var(--kb-tree-indent) - var(--kb-tree-x) - 1px);
-  height: calc(var(--kb-tree-elbow) + var(--kb-space-2));
-  border-bottom: 1px solid var(--kb-tree-line);
-  border-left: 1px solid var(--kb-tree-line);
+/* The elbow into this card, from the gap above it. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item::before {
+  top: -10px;
+  width: calc(var(--kb-stack-indent) - var(--kb-stack-x) - 1px);
+  height: calc(var(--kb-stack-elbow) + 10px);
+  border-bottom: 1px solid var(--kb-line);
+  border-left: 1px solid var(--kb-line);
   border-bottom-left-radius: var(--radius-md);
 }
 
-/* The spine past this child, down to the next sibling. */
-[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item:not(:last-child)::after {
-  top: calc(-1 * var(--kb-space-2));
+/* The spine on past it to the next sibling. */
+[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item:not(:last-child)::after {
+  top: -10px;
   bottom: 0;
-  border-left: 1px solid var(--kb-tree-line);
+  border-left: 1px solid var(--kb-line);
 }
 
-/* Work in flight: its elbow is drawn in the running hue, so the live path reads from the top. */
-[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item[data-state="active"]::before {
-  border-color: var(--kb-tree-live);
-}
+/* --- where a line leaves a card: a small ring ------------------------------ */
 
-[data-iii-ui="kanban"] .kb-tree__row {
-  position: relative;
-}
-
-/* A node with its children shown: a small ring where the line leaves the card. */
-[data-iii-ui="kanban"] .kb-tree__item[aria-expanded="true"] > .kb-tree__row::after {
+[data-iii-ui="kanban"] .kb-chart__item[data-kids] > .kb-chart__card::after {
   position: absolute;
   bottom: -4px;
-  left: calc(var(--kb-tree-x) - 3.5px);
+  left: calc(var(--kb-node-mid) - 4px);
   z-index: 1;
   width: 8px;
   height: 8px;
-  border: 1px solid var(--kb-tree-line);
+  border: 1.5px solid var(--kb-line);
   border-radius: 50%;
   background: var(--kb-ground);
   content: "";
 }
 
-[data-iii-ui="kanban"] .kb-tree__item[aria-expanded="true"][data-state="active"] > .kb-tree__row::after {
-  border-color: var(--kb-tree-live);
+[data-iii-ui="kanban"] .kb-chart__item[data-kids="stack"] > .kb-chart__card::after {
+  left: calc(var(--kb-stack-x) - 4px);
 }
 
-[data-iii-ui="kanban"] .kb-tree__card {
+/* --- the card ------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--color-card-edge);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
   cursor: pointer;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
-[data-iii-ui="kanban"] .kb-tree__item:focus-visible > .kb-tree__row > .kb-tree__card {
+[data-iii-ui="kanban"] .kb-node:is([data-theme="dark"] *) {
+  border-color: color-mix(in srgb, var(--color-ink) 12%, transparent);
+  background: color-mix(in srgb, var(--color-ink) 5%, black);
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-node:hover {
+    border-color: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card > .kb-node {
   outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
-
-/* A project heading: no card, a row on the ground. */
-[data-iii-ui="kanban"] .kb-tree__project {
+[data-iii-ui="kanban"] .kb-node__head {
   display: flex;
-  align-items: center;
-  gap: var(--kb-space-2);
-  min-height: 32px;
-  max-width: 560px;
-  padding: 0 var(--kb-space-1) 0 var(--kb-space-2);
-  border-radius: var(--radius-md);
-  cursor: pointer;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
 }
 
-[data-iii-ui="kanban"] .kb-tree__project > .kb-tree__toggle {
-  margin-left: auto;
-}
-
-@media (hover: hover) {
-  [data-iii-ui="kanban"] .kb-tree__project:hover {
-    background: var(--color-surface-hover);
-  }
-}
-
-[data-iii-ui="kanban"] .kb-tree__item[data-kind="project"] {
-  --kb-tree-elbow: 16px;
-}
-
-[data-iii-ui="kanban"] .kb-tree__item[data-kind="project"] > .kb-tree__group {
-  --kb-tree-x: 14px;
-}
-
-/* --- the fold toggle ("3 ⌄") --------------------------------------------- */
-
-[data-iii-ui="kanban"] .kb-tree__chevron {
-  width: 14px;
-  height: 14px;
-  transform: rotate(-90deg);
-  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
-}
-
-[data-iii-ui="kanban"] .kb-tree__toggle[data-open="true"] .kb-tree__chevron {
-  transform: none;
-}
-
-/* --- the agent tile ------------------------------------------------------- */
-
-[data-iii-ui="kanban"] .kb-tree__icon {
+[data-iii-ui="kanban"] .kb-node__tile {
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border: 1px solid var(--color-card-edge);
   border-radius: var(--radius-md);
   color: var(--kb-tone, var(--color-ink-faint));
   background: color-mix(in srgb, var(--kb-tone, var(--color-ink)) 8%, transparent);
 }
 
-[data-iii-ui="kanban"] .kb-tree__icon svg {
-  width: 16px;
-  height: 16px;
+[data-iii-ui="kanban"] .kb-node__tile svg {
+  width: 15px;
+  height: 15px;
 }
 
-/* --- the state badge: Running / Pending / Done / Failed ------------------ */
+[data-iii-ui="kanban"] .kb-node__names {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
 
-[data-iii-ui="kanban"] .kb-tree__badge {
+[data-iii-ui="kanban"] .kb-node__name {
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__sub {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kb-node__desc,
+[data-iii-ui="kanban"] .kb-node__note {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: var(--kb-text);
+  line-height: 18px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+[data-iii-ui="kanban"] .kb-node__desc:is([data-theme="dark"] *) {
+  color: color-mix(in srgb, var(--color-ink) 82%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-node__note {
+  color: var(--color-alert);
+  -webkit-line-clamp: 1;
+}
+
+[data-iii-ui="kanban"] .kb-node__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 22px;
+}
+
+[data-iii-ui="kanban"] .kb-node__facts {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle {
+  height: 22px;
+  gap: 2px;
+  margin-right: -6px;
+  padding: 0 6px;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle svg {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui="kanban"] .kb-node__toggle[data-open="true"] svg {
+  transform: none;
+}
+
+/* --- the state badge: Running / Pending / Done / Failed, or a column ------- */
+
+[data-iii-ui="kanban"] .kb-node__badge {
   --kb-badge: var(--color-ink-faint);
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: 5px;
   height: 22px;
-  padding: 0 8px;
-  border-radius: var(--radius-full);
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
   color: var(--kb-badge);
-  background: color-mix(in srgb, var(--kb-badge) 10%, transparent);
+  background: color-mix(in srgb, var(--kb-badge) 12%, transparent);
   font-size: var(--kb-text-sm);
   font-weight: 500;
   white-space: nowrap;
 }
 
-[data-iii-ui="kanban"] .kb-tree__badge svg {
+[data-iii-ui="kanban"] .kb-node__badge svg {
   width: 12px;
   height: 12px;
 }
 
-[data-iii-ui="kanban"] .kb-tree__badge[data-state="active"] {
+[data-iii-ui="kanban"] .kb-node__badge[data-state="active"] {
   --kb-badge: var(--color-glyph-blue);
 }
 
-[data-iii-ui="kanban"] .kb-tree__badge[data-state="done"] {
+[data-iii-ui="kanban"] .kb-node__badge[data-state="done"] {
   --kb-badge: var(--color-ok);
 }
 
-[data-iii-ui="kanban"] .kb-tree__badge[data-state="failed"] {
+[data-iii-ui="kanban"] .kb-node__badge[data-state="failed"] {
   --kb-badge: var(--color-alert);
 }
 
+/* A ticket's column is quiet text: the tile's glyph already carries the hue. Done keeps its green. */
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="column"]:not([data-state="done"]) {
+  --kb-badge: var(--color-ink-faint);
+}
+
 /* The running mark: a ring with one bright quarter, turned by the shared spin recipe. */
-[data-iii-ui="kanban"] .kb-tree__spinner {
+[data-iii-ui="kanban"] .kb-node__spinner {
   width: 10px;
   height: 10px;
   border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
@@ -221,7 +398,62 @@
   border-radius: 50%;
 }
 
-/* A ticket's column: quiet text, the card's glyph already carries the hue; Done keeps its green. */
-[data-iii-ui="kanban"] .kb-tree__badge[data-kind="column"]:not([data-state="done"]) {
-  --kb-badge: var(--color-ink-faint);
+/* --- loading ------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-chart--skeleton {
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+[data-iii-ui="kanban"] .kb-chart__sk {
+  width: var(--kb-node-w);
+  height: 112px;
+  border-radius: var(--radius-lg);
+}
+
+[data-iii-ui="kanban"] .kb-chart__sk-row {
+  display: flex;
+  gap: var(--kb-col-gap);
+}
+
+/* --- zoom ----------------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-chart {
+  zoom: var(--kb-zoom, 1);
+}
+
+[data-iii-ui="kanban"] .kb-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: var(--kb-space-2);
+  margin-right: var(--kb-space-1);
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="kanban"] .kb-zoom__value {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--color-ink-faint);
+  background: transparent;
+  font: inherit;
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-zoom__value:hover {
+    color: var(--color-ink);
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-zoom__value:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
 }

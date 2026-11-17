@@ -13,8 +13,8 @@ import {
   ShadcnTabsList,
   ShadcnTabsTrigger,
 } from '@iii-dev/console-ui'
-import { useState } from 'react'
 import { ChevronsUpDown, Columns3, LayoutGrid, Milestone, Network, Plus, SquareKanban } from 'lucide-react'
+import { useState } from 'react'
 import { FolderGlyph } from './plan/parts'
 import type { ProjectView } from './shared'
 
