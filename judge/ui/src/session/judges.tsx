@@ -235,6 +235,18 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
               {row.configure ? (
                 <IconButton
                   label={`Configure ${row.id === 'default' ? 'judge settings' : row.id}`}
+                  // The whole reason rides on the settings button's tooltip, so
+                  // the keyboard reaches it too, not only a pointer on the row.
+                  tooltip={
+                    row.reason ? (
+                      <span className="judge-ui-session-row-tip">
+                        <span>{row.reason}</span>
+                        <span className="judge-ui-session-row-tip-action">
+                          Configure {row.id === 'default' ? 'judge settings' : row.id}
+                        </span>
+                      </span>
+                    ) : undefined
+                  }
                   tooltipSide="left"
                   variant="ghost"
                   className="judge-ui-session-row-configure"
