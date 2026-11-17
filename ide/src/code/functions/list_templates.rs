@@ -8,9 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError};
+use crate::code::error::{CoderError, err_to_string};
 use crate::code::templates::{
-    load_worker_templates, resolve_source, Language, ResolvedSource, TemplateSourceInfo,
+    Language, ResolvedSource, TemplateSourceInfo, load_worker_templates, resolve_source,
 };
 
 // examples are wire-contract; goldens pin them.

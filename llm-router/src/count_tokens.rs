@@ -14,14 +14,14 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::registry::store::RegistryStore;
-use crate::routing::{decide, DecideInput};
-use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
+use crate::routing::{DecideInput, decide};
+use crate::types::errors::{RouterCode, RouterError, is_function_not_found};
 use crate::types::messages::AgentMessage;
 use crate::types::model::{AgentFunction, ThinkingLevel};
 use crate::types::router::ResponseFormat;

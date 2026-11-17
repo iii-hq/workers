@@ -24,7 +24,7 @@ use notify::{RecursiveMode, Watcher};
 use rusqlite::Connection;
 use serde_json::{Map, Value};
 
-use super::bus::{now_ms, RowChangedEvent, KEY_CAP};
+use super::bus::{KEY_CAP, RowChangedEvent, now_ms};
 use super::native::quote_table;
 use super::sql::Op;
 use crate::value::RowValue;
@@ -205,10 +205,10 @@ pub(crate) fn coalesce(rows: Vec<RawChange>) -> Vec<Run> {
         }
         let run = out.last_mut().expect("a run was just pushed");
         run.n += 1;
-        if let Some(key) = key {
-            if run.keys.len() < KEY_CAP {
-                run.keys.push(key);
-            }
+        if let Some(key) = key
+            && run.keys.len() < KEY_CAP
+        {
+            run.keys.push(key);
         }
     }
     for run in &mut out {

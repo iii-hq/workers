@@ -16,7 +16,7 @@
 //! The final state is the deterministic signature: marker ABSENT + exactly
 //! one nudge + turn completed = refusal, gating, and teardown all worked.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 

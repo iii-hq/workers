@@ -24,7 +24,7 @@ use common::{backend, engine, worker};
 use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 
 use iii_http::types::HttpRequest;

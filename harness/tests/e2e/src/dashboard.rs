@@ -8,9 +8,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

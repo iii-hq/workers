@@ -29,8 +29,8 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::deps::Deps;
@@ -40,7 +40,7 @@ use crate::deps::Deps;
 /// would otherwise publish the permissive AnyValue schema) via
 /// `RegisterFunction::request_format`/`response_format`.
 pub(crate) fn schema_value<T: JsonSchema>() -> serde_json::Value {
-    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(root).expect("schema serializes");
     if let Some(obj) = v.as_object_mut() {
         obj.remove("$schema");

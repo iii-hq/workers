@@ -165,8 +165,6 @@ def test_a_traces_ui_change_rebuilds_ade(
         "packages/traces-ui/src/host.tsx",
         "packages/console-ui/format.mjs",
         "biome.json",
-        "ade/web/src/lib/icon-size-conformance.test.ts",
-        "ade/web/vite.config.ts",
         "pnpm-lock.yaml",
     ],
 )
@@ -180,11 +178,68 @@ def test_traces_ui_runs_for_its_inputs(path: str) -> None:
         "packages/native-ui/src/list.ts",
         "ade/web/src/App.tsx",
         "ade/web/src/lib/iii-client.ts",
+        "ade/web/src/lib/icon-size-conformance.test.ts",
+        "ade/web/vite.config.ts",
         "harness/src/main.rs",
     ],
 )
 def test_traces_ui_skips_other_changes(path: str) -> None:
     assert discover.traces_ui_changed([path]) is False, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "ade/web/src/App.tsx",
+        "ade/web/src/lib/icon-size-conformance.test.ts",
+        "ade/web/vite.config.ts",
+        "ade/ui/src/catalog/index.ts",
+        "iii-directory/ui/styles.css",
+        "ide/ui/src/page/EditorPane.tsx",
+        "packages/traces-ui/src/host.tsx",
+        "packages/console-ui/format.mjs",
+        "packages/editor-prefs/index.ts",
+        "packages/terminal-font/src/index.ts",
+        "workflow/tests/fixtures/flat_start_cases.json",
+        "crates/mention-contract/fixtures/tokens.json",
+        "cursor/src/provider-icon.ts",
+        "provider-openai/assets/icon.svg",
+        "pnpm-lock.yaml",
+        "package.json",
+    ],
+)
+def test_ade_web_runs_for_its_inputs(path: str) -> None:
+    assert discover.ade_web_changed([path]) is True, path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "ade/src/main.rs",
+        "workflow/src/lib.rs",
+        "harness/src/main.rs",
+        "browser/native-ui/src/app.tsx",
+        "README.md",
+    ],
+)
+def test_ade_web_skips_other_changes(path: str) -> None:
+    assert discover.ade_web_changed([path]) is False, path
+
+
+def test_a_worker_ui_change_runs_the_ade_web_suite(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], github_output: Path
+) -> None:
+    # The ADE selection scan reads worker UI stylesheets (iii-directory's among them).
+    monkeypatch.chdir(SCRIPTS.parents[1])
+    monkeypatch.setattr(discover, "changed_files", lambda base, head: ["iii-directory/ui/styles.css"])
+    assert discover.main(["--base", "main"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ade_web"] is True
+    assert "ade_web=true" in github_output.read_text().splitlines()
+    # A key typo on either side would skip the job on every run, silently.
+    ci = Path(".github/workflows/ci.yml").read_text()
+    assert "${{ steps.bucket.outputs.ade_web }}" in ci
+    assert "needs.discover.outputs.ade_web == 'true'" in ci
 
 
 def test_sdk_docs_alone_rebuild_no_worker(

@@ -5,12 +5,11 @@
 //! (htmd recurses over an rcdom tree; a stack overflow ABORTS the process
 //! and is not catchable by `catch_unwind`).
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::schemas::PageFormat;
 
-pub const BROWSER_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+pub const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 pub const ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 pub const MAX_NESTING_DEPTH: usize = 200;
 

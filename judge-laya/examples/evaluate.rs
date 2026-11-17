@@ -1,7 +1,7 @@
 //! End to end: fetch the checkpoint from the Hub, then answer a judge
 //! `EvaluateRequest` (JSON on stdin, or a built-in ticket) in-process.
 use anyhow::Result;
-use judge_laya::{download, LayaClient};
+use judge_laya::{LayaClient, download};
 use serde_json::json;
 use std::io::Read;
 use std::time::Instant;

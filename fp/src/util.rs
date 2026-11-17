@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub const GET_ID: &str = "fp::get";
-pub const GET_DESC: &str =
-    "Extract the single value at a JSON pointer (lodash _.get). A miss names the keys that \
+pub const GET_DESC: &str = "Extract the single value at a JSON pointer (lodash _.get). A miss names the keys that \
      were available.";
 
 pub const PICK_ID: &str = "fp::pick";
@@ -20,24 +19,20 @@ pub const OMIT_ID: &str = "fp::omit";
 pub const OMIT_DESC: &str = "Drop top-level keys from an object (lodash _.omit).";
 
 pub const TAKE_ID: &str = "fp::take";
-pub const TAKE_DESC: &str =
-    "Keep the first n elements of an array or the first n characters of a string (lodash \
+pub const TAKE_DESC: &str = "Keep the first n elements of an array or the first n characters of a string (lodash \
      _.take).";
 
 pub const DROP_ID: &str = "fp::drop";
-pub const DROP_DESC: &str =
-    "Skip the first n elements of an array or the first n characters of a string (lodash \
+pub const DROP_DESC: &str = "Skip the first n elements of an array or the first n characters of a string (lodash \
      _.drop).";
 
 pub const MAP_ID: &str = "fp::map";
-pub const MAP_DESC: &str =
-    "Pluck the value at a JSON pointer from each array element (lodash _.map with a \
+pub const MAP_DESC: &str = "Pluck the value at a JSON pointer from each array element (lodash _.map with a \
      property iteratee). Sporadic misses become null (fp::compact drops them); a path \
      matching NO element errors.";
 
 pub const FILTER_ID: &str = "fp::filter";
-pub const FILTER_DESC: &str =
-    "Keep array elements whose properties equal a partial object (lodash _.filter with a \
+pub const FILTER_DESC: &str = "Keep array elements whose properties equal a partial object (lodash _.filter with a \
      matches iteratee). `matches` is a partial OBJECT, never a bare string/number; only \
      object elements can match.";
 
@@ -52,31 +47,26 @@ pub const UNIQ_ID: &str = "fp::uniq";
 pub const UNIQ_DESC: &str = "Deduplicate an array, keeping first occurrences (lodash _.uniq).";
 
 pub const SIZE_ID: &str = "fp::size";
-pub const SIZE_DESC: &str =
-    "Count a collection (lodash _.size): array length, string chars, or object key count. \
+pub const SIZE_DESC: &str = "Count a collection (lodash _.size): array length, string chars, or object key count. \
      Non-collections error instead of returning 0.";
 
 pub const COMPACT_ID: &str = "fp::compact";
-pub const COMPACT_DESC: &str =
-    "Remove null elements from an array (lodash _.compact, null-only: 0, false and \"\" are \
+pub const COMPACT_DESC: &str = "Remove null elements from an array (lodash _.compact, null-only: 0, false and \"\" are \
      KEPT). Pairs with fp::map, whose sporadic misses become null.";
 
 pub const NTH_ID: &str = "fp::nth";
-pub const NTH_DESC: &str =
-    "Return array element n (negative counts from the end, lodash _.nth). Out of bounds \
+pub const NTH_DESC: &str = "Return array element n (negative counts from the end, lodash _.nth). Out of bounds \
      errors naming the length.";
 
 pub const GET_OR_ID: &str = "fp::getOr";
-pub const GET_OR_DESC: &str =
-    "Extract the value at a JSON pointer, or `default` when the path misses (lodash \
+pub const GET_OR_DESC: &str = "Extract the value at a JSON pointer, or `default` when the path misses (lodash \
      fp.getOr). A stored null is a hit, not a miss.";
 
 pub const FLATTEN_ID: &str = "fp::flatten";
 pub const FLATTEN_DESC: &str = "Flatten an array one level (lodash _.flatten).";
 
 pub const SORT_BY_ID: &str = "fp::sortBy";
-pub const SORT_BY_DESC: &str =
-    "Sort array elements ascending by the value at a JSON pointer (lodash _.sortBy, \
+pub const SORT_BY_DESC: &str = "Sort array elements ascending by the value at a JSON pointer (lodash _.sortBy, \
      stable); path \"\" sorts the elements themselves. Keys must all be numbers, strings, \
      or booleans. Pair with fp::reverse for descending.";
 
@@ -84,41 +74,34 @@ pub const REVERSE_ID: &str = "fp::reverse";
 pub const REVERSE_DESC: &str = "Reverse an array (lodash _.reverse, immutable like lodash/fp).";
 
 pub const SUM_ID: &str = "fp::sum";
-pub const SUM_DESC: &str =
-    "Total an array of numbers (lodash _.sum/_.sumBy); `path` plucks the addend from each \
+pub const SUM_DESC: &str = "Total an array of numbers (lodash _.sum/_.sumBy); `path` plucks the addend from each \
      element first. An empty array totals 0; a non-numeric element errors rather than being \
      skipped.";
 
 pub const MEAN_ID: &str = "fp::mean";
-pub const MEAN_DESC: &str =
-    "Average an array of numbers (lodash _.mean/_.meanBy); `path` plucks from each \
+pub const MEAN_DESC: &str = "Average an array of numbers (lodash _.mean/_.meanBy); `path` plucks from each \
      element first. Deviates from lodash: an EMPTY array errors instead of yielding \
      NaN.";
 
 pub const MIN_ID: &str = "fp::min";
-pub const MIN_DESC: &str =
-    "Find the smallest number in an array (lodash _.min/_.minBy); `path` plucks from \
+pub const MIN_DESC: &str = "Find the smallest number in an array (lodash _.min/_.minBy); `path` plucks from \
      each element first. Returns the NUMBER, not the element. An empty array errors.";
 
 pub const MAX_ID: &str = "fp::max";
-pub const MAX_DESC: &str =
-    "Find the largest number in an array (lodash _.max/_.maxBy); `path` plucks from \
+pub const MAX_DESC: &str = "Find the largest number in an array (lodash _.max/_.maxBy); `path` plucks from \
      each element first. Returns the NUMBER, not the element. An empty array errors.";
 
 pub const GROUP_BY_ID: &str = "fp::groupBy";
-pub const GROUP_BY_DESC: &str =
-    "Bucket array elements by a plucked key (lodash _.groupBy) into { \"<key>\": [element, \
+pub const GROUP_BY_DESC: &str = "Bucket array elements by a plucked key (lodash _.groupBy) into { \"<key>\": [element, \
      ...] }; path \"\" groups by the element itself. Keys must be a string, number, or \
      boolean; null or container keys error.";
 
 pub const COUNT_BY_ID: &str = "fp::countBy";
-pub const COUNT_BY_DESC: &str =
-    "Count array elements per plucked key (lodash _.countBy) into { \"<key>\": <count> }; \
+pub const COUNT_BY_DESC: &str = "Count array elements per plucked key (lodash _.countBy) into { \"<key>\": <count> }; \
      path \"\" counts by the element itself. Same key rules as fp::groupBy.";
 
 pub const WHEN_ID: &str = "fp::when";
-pub const WHEN_DESC: &str =
-    "Guard: test the value at a JSON pointer (`path` defaults to the whole value; a pointer \
+pub const WHEN_DESC: &str = "Guard: test the value at a JSON pointer (`path` defaults to the whole value; a pointer \
      miss FAILS, never errors) and return { passed, value }. As a fp::pipe step a passing \
      guard threads the ORIGINAL value onward and a failing one STOPS the pipe \
      (`short_circuited: true`).";
@@ -335,7 +318,7 @@ pub fn when(
                 return Err(format!(
                     "not_empty needs an array/string/object value (got {})",
                     kind_of(other)
-                ))
+                ));
             }
         },
         WhenOp::Eq => Some(target) == to,
@@ -741,7 +724,7 @@ fn group_keys(name: &str, value: Value, path: &str) -> Result<Vec<(String, Value
                     "{name} needs a string, number, or boolean key at {path:?} but element {i} \
                      has {} — group by a scalar field, not a container",
                     kind_of(&other)
-                ))
+                ));
             }
         };
         keyed.push((key, el));
@@ -866,7 +849,7 @@ pub fn sort_by(value: Value, path: &str) -> Result<Value, String> {
         other => {
             return Err(format!(
                 "sortBy keys must be numbers, strings, or booleans (got {other})"
-            ))
+            ));
         }
     }
     Ok(Value::Array(keyed.into_iter().map(|(_, el)| el).collect()))
@@ -1030,12 +1013,16 @@ mod tests {
             omit(v, &["b".into(), "missing".into()]).unwrap(),
             json!({ "a": 1, "c": 3 })
         );
-        assert!(pick(json!("s"), &["a".into()])
-            .unwrap_err()
-            .contains("object"));
-        assert!(omit(json!([1]), &["a".into()])
-            .unwrap_err()
-            .contains("object"));
+        assert!(
+            pick(json!("s"), &["a".into()])
+                .unwrap_err()
+                .contains("object")
+        );
+        assert!(
+            omit(json!([1]), &["a".into()])
+                .unwrap_err()
+                .contains("object")
+        );
     }
 
     #[test]
@@ -1161,9 +1148,11 @@ mod tests {
     fn large_integer_reductions_stay_exact() {
         let large = 9_007_199_254_740_993_u64;
         assert_eq!(sum(json!([large, 2]), None).unwrap(), json!(large + 2));
-        assert!(mean(json!([large, 2]), None)
-            .unwrap_err()
-            .contains("not exactly representable"));
+        assert!(
+            mean(json!([large, 2]), None)
+                .unwrap_err()
+                .contains("not exactly representable")
+        );
         assert_eq!(
             mean(json!([large, large + 2]), None).unwrap(),
             json!(large + 1)
@@ -1221,18 +1210,24 @@ mod tests {
         assert!(err.contains("`path`"), "points at the fix: {err}");
 
         // Objects: the hint is the path form, since that is the real fix.
-        assert!(sum(json!([{"amount": 1}]), None)
-            .unwrap_err()
-            .contains("`path`"));
+        assert!(
+            sum(json!([{"amount": 1}]), None)
+                .unwrap_err()
+                .contains("`path`")
+        );
         // With a path, a plucked null (a sporadic miss) still errors.
-        assert!(sum(json!([{"a": 1}, {"a": null}]), Some("/a"))
-            .unwrap_err()
-            .contains("number"));
+        assert!(
+            sum(json!([{"a": 1}, {"a": null}]), Some("/a"))
+                .unwrap_err()
+                .contains("number")
+        );
         // Non-arrays are refused like every other collection op.
         assert!(sum(json!(5), None).unwrap_err().contains("array"));
-        assert!(sum(json!(5), Some("/amount"))
-            .unwrap_err()
-            .starts_with("sum needs an array"));
+        assert!(
+            sum(json!(5), Some("/amount"))
+                .unwrap_err()
+                .starts_with("sum needs an array")
+        );
     }
 
     #[test]
@@ -1306,9 +1301,11 @@ mod tests {
         assert!(err.contains("element 1"), "{err}");
         assert!(err.contains("would drop rows"), "{err}");
         // The "." mis-guess gets the same hint sortBy gives.
-        assert!(group_by(json!(["a"]), ".")
-            .unwrap_err()
-            .contains("the element itself is \"\""));
+        assert!(
+            group_by(json!(["a"]), ".")
+                .unwrap_err()
+                .contains("the element itself is \"\"")
+        );
         assert!(group_by(json!(5), "/k").unwrap_err().contains("array"));
     }
 
@@ -1394,9 +1391,11 @@ mod tests {
 
         // path "" sorts primitives by themselves; "." gets the redirect hint
         assert_eq!(sort_by(json!([3, 1, 2]), "").unwrap(), json!([1, 2, 3]));
-        assert!(sort_by(json!([2, 1]), ".")
-            .unwrap_err()
-            .contains("element itself"));
+        assert!(
+            sort_by(json!([2, 1]), ".")
+                .unwrap_err()
+                .contains("element itself")
+        );
 
         // holes and mixed types would scramble the order — loud, not coerced
         let err = sort_by(json!([{ "s": 1 }, {}]), "/s").unwrap_err();
@@ -1433,9 +1432,11 @@ mod tests {
         );
         // empty matches keeps everything (vacuous truth, lodash-compatible)
         assert_eq!(filter(v.clone(), &Map::new()).unwrap(), v);
-        assert!(filter(json!({}), &Map::new())
-            .unwrap_err()
-            .contains("array"));
+        assert!(
+            filter(json!({}), &Map::new())
+                .unwrap_err()
+                .contains("array")
+        );
     }
 
     #[test]
@@ -1485,18 +1486,26 @@ mod tests {
         // Default path tests the whole value.
         assert_eq!(w(None, WhenOp::Exists, None), Ok(true));
         // Teachable errors: missing/extra `to`, non-number ordering.
-        assert!(w(Some("/name"), WhenOp::Ge, None)
-            .unwrap_err()
-            .contains("needs `to`"));
-        assert!(w(Some("/name"), WhenOp::Exists, Some(json!(1)))
-            .unwrap_err()
-            .contains("meaningless"));
-        assert!(w(Some("/name"), WhenOp::Ge, Some(json!(1)))
-            .unwrap_err()
-            .contains("numbers"));
-        assert!(w(Some("/rows/0/n"), WhenOp::NotEmpty, None)
-            .unwrap_err()
-            .contains("array/string/object"));
+        assert!(
+            w(Some("/name"), WhenOp::Ge, None)
+                .unwrap_err()
+                .contains("needs `to`")
+        );
+        assert!(
+            w(Some("/name"), WhenOp::Exists, Some(json!(1)))
+                .unwrap_err()
+                .contains("meaningless")
+        );
+        assert!(
+            w(Some("/name"), WhenOp::Ge, Some(json!(1)))
+                .unwrap_err()
+                .contains("numbers")
+        );
+        assert!(
+            w(Some("/rows/0/n"), WhenOp::NotEmpty, None)
+                .unwrap_err()
+                .contains("array/string/object")
+        );
     }
 
     #[test]
@@ -1505,9 +1514,11 @@ mod tests {
         assert_eq!(eval_when(&args), Ok((true, json!({ "n": 5 }))));
         let args = json!({ "value": { "n": 1 }, "path": "/n", "op": ">=", "to": 3 });
         assert_eq!(eval_when(&args), Ok((false, json!({ "n": 1 }))));
-        assert!(eval_when(&json!({ "op": ">=" }))
-            .unwrap_err()
-            .contains("invalid arguments"));
+        assert!(
+            eval_when(&json!({ "op": ">=" }))
+                .unwrap_err()
+                .contains("invalid arguments")
+        );
     }
 
     #[test]
@@ -1535,9 +1546,11 @@ mod tests {
             Some(Ok(json!([{"s": 2}])))
         );
         // bad shape is a step error, not a panic
-        assert!(apply(TAKE_ID, &json!({ "value": "x" }))
-            .unwrap()
-            .unwrap_err()
-            .contains("invalid arguments"));
+        assert!(
+            apply(TAKE_ID, &json!({ "value": "x" }))
+                .unwrap()
+                .unwrap_err()
+                .contains("invalid arguments")
+        );
     }
 }

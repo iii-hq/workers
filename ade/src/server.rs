@@ -12,12 +12,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use axum::extract::{FromRef, Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -387,13 +387,15 @@ mod tests {
             response.headers().get(header::ETAG).unwrap(),
             &format!("\"{hash}\"")
         );
-        assert!(response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("text/javascript"));
+        assert!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/javascript")
+        );
 
         let etag = format!("\"{hash}\"");
         let response = get_response(
@@ -444,13 +446,15 @@ mod tests {
 
         let service_worker = get_response(router(state.clone()), "/sw.js", &[]).await;
         assert_eq!(service_worker.status(), StatusCode::OK);
-        assert!(service_worker
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("text/javascript"));
+        assert!(
+            service_worker
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/javascript")
+        );
         assert_eq!(
             service_worker.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-cache, must-revalidate"
@@ -469,13 +473,14 @@ mod tests {
             icon.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/png"
         );
-        assert!(icon
-            .headers()
-            .get(header::CACHE_CONTROL)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("immutable"));
+        assert!(
+            icon.headers()
+                .get(header::CACHE_CONTROL)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("immutable")
+        );
     }
 
     #[tokio::test]

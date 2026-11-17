@@ -21,7 +21,7 @@ use std::time::Duration;
 use common::engine;
 use iii_bridge::configuration;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 
 const FORWARD_ID: &str = "e2e::reload-fwd";

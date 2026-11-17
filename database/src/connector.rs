@@ -25,8 +25,8 @@ use serde::Serialize;
 use tokio_postgres::config::SslMode;
 
 use crate::config::{DatabaseConfig, DriverKind, TlsMode};
-use crate::pool::tls::{make_mysql_ssl_opts, make_pg_connector, ResolvedTls};
-use crate::secrets::{parse_ref, SecretError, SecretValue};
+use crate::pool::tls::{ResolvedTls, make_mysql_ssl_opts, make_pg_connector};
+use crate::secrets::{SecretError, SecretValue, parse_ref};
 use crate::ssh::{SshSettings, SshTunnel, TunnelErrorKind};
 
 /// Where an attempt to reach a database failed.
@@ -125,7 +125,7 @@ impl Material {
                     return Err(ConnectError::new(
                         Stage::Secrets,
                         format!("`{field}` {}", e.describe_malformed()),
-                    ))
+                    ));
                 }
                 Some(Ok(reference)) => {
                     let key = reference.key();
@@ -138,7 +138,7 @@ impl Material {
                             return Err(ConnectError::new(
                                 Stage::Secrets,
                                 format!("`{field}`: {}", e.describe(&key)),
-                            ))
+                            ));
                         }
                     }
                 }

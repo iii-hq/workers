@@ -3,13 +3,13 @@
 use crate::credential_store::{SecretsSessionStore, SessionRecord, SessionStore};
 use crate::oauth::{Credential, DeviceCode, OAuthClient, OAuthError, PollOutcome};
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::{IIIClient, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 
 fn now_seconds() -> i64 {
     crate::now_ms() / 1000
@@ -164,7 +164,7 @@ pub struct Ack {
 pub trait OAuthTransport: Send + Sync {
     fn start(&self) -> BoxFuture<'_, Result<DeviceCode, OAuthError>>;
     fn poll<'a>(&'a self, device: &'a DeviceCode)
-        -> BoxFuture<'a, Result<PollOutcome, OAuthError>>;
+    -> BoxFuture<'a, Result<PollOutcome, OAuthError>>;
     fn refresh<'a>(
         &'a self,
         credential: &'a Credential,

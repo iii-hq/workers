@@ -5,14 +5,14 @@
 //! markers. It runs on llama-runtime's `Runtime`: one
 //! thread owns the model and a context sized for a full pass (embeddings, no
 //! pooling, no KV cache) and runs the passes in arrival order.
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use iii_llama_native::{Batch, Context, ContextParams, Pooling};
 use iii_llama_runtime::Runtime;
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };

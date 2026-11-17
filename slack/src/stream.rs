@@ -8,7 +8,7 @@
 //! (mirrors telegram-bot's per-entry lock + revision monotonicity).
 
 use iii_sdk::errors::Error;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::clients::slack;
 use crate::deps::{Deps, StreamState};

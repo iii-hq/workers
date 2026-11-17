@@ -229,8 +229,6 @@ export function failureHeadline(failure: Failure, steps?: number): string {
       return "Harness didn't accept the investigation"
     case 'analyst_failed':
       return 'The analyst ended without a result'
-    case 'analyst_turn_changed':
-      return 'The investigation session changed'
     case 'analyst_step_cap':
       return steps === undefined
         ? 'The analyst used all its steps'
@@ -362,11 +360,6 @@ function failureCopy(result: AnalysisResult, limits: MonitorLimits | undefined):
         analyst,
       )
     }
-    case 'analyst_turn_changed':
-      return copy(
-        "Another turn started in the investigation session, so its result can't be trusted. Triage and signals are kept.",
-        analyst,
-      )
     case 'analyst_step_cap': {
       const steps = stepsOf(record, failure, limits)
       const caps = limits ? investigationCaps(limits, Boolean(record.code_root)) : undefined

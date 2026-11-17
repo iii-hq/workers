@@ -241,13 +241,17 @@ mod tests {
 
     #[test]
     fn opentunnel_needs_http_origins_and_profile_ids() {
-        assert!(opentunnel("webhooks", "http://127.0.0.1:3112")
-            .validate()
-            .is_ok());
+        assert!(
+            opentunnel("webhooks", "http://127.0.0.1:3112")
+                .validate()
+                .is_ok()
+        );
         assert!(opentunnel("mesh", "http://[::1]:49180").validate().is_ok());
-        assert!(opentunnel("webhooks", "https://127.0.0.1:3112")
-            .validate()
-            .is_err());
+        assert!(
+            opentunnel("webhooks", "https://127.0.0.1:3112")
+                .validate()
+                .is_err()
+        );
         for id in [
             "Webhooks",
             "web_hooks",

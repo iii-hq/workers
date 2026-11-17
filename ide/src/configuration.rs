@@ -8,14 +8,14 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::code::path::PathResolver;
 use crate::code::state::CodeCells;
 use crate::config::ShellConfig;
-use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 use crate::fs::FsBackend;
+use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 
 pub const DEFAULT_CONFIG_ID: &str = "ide";
 

@@ -3,7 +3,7 @@ use memory::{
     store::Store,
     types::{Confidence, Memory},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn record(id: &str) -> Memory {
     Memory {
@@ -72,10 +72,11 @@ async fn atomic_revision_only_projection_rejects_interleaved_edit_and_allows_cur
     let path = dir.path().join("offline/memories.jsonl");
     let before = std::fs::read(&path).unwrap();
     let stale = json!({"revision":0});
-    assert!(bank
-        .supersede("b", "a", true, (Some(&stale), None))
-        .await
-        .is_err());
+    assert!(
+        bank.supersede("b", "a", true, (Some(&stale), None))
+            .await
+            .is_err()
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let current: Value = json!({"revision":1});
     let winner = json!({"revision":0});

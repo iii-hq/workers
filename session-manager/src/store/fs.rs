@@ -278,7 +278,7 @@ impl FsStore {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LoadedSession::default())
+                return Ok(LoadedSession::default());
             }
             Err(e) => return Err(StoreError(format!("read {}: {e}", path.display()))),
         };
@@ -594,26 +594,26 @@ impl SessionStore for FsStore {
             .clone()
             .ok_or_else(|| StoreError(format!("session {session_id} does not exist")))?;
 
-        if let Some(existing) = session.entries.get(entry.id()).cloned() {
-            if session.committed.contains(existing.id()) {
-                return Ok(CommitAppendResult {
-                    entry: existing,
-                    meta,
-                    committed: false,
-                });
-            }
+        if let Some(existing) = session.entries.get(entry.id()).cloned()
+            && session.committed.contains(existing.id())
+        {
+            return Ok(CommitAppendResult {
+                entry: existing,
+                meta,
+                committed: false,
+            });
         }
 
         let entry = match session.entries.get(entry.id()).cloned() {
             // Preserve an entry left by the legacy multi-write append.
             Some(existing) => existing,
             None if parent_explicit => {
-                if let Some(parent_id) = entry.parent_id() {
-                    if !session.entries.contains_key(parent_id) {
-                        return Err(StoreError(format!(
-                            "parent entry {parent_id} does not exist in session {session_id}"
-                        )));
-                    }
+                if let Some(parent_id) = entry.parent_id()
+                    && !session.entries.contains_key(parent_id)
+                {
+                    return Err(StoreError(format!(
+                        "parent entry {parent_id} does not exist in session {session_id}"
+                    )));
                 }
                 entry.clone()
             }
@@ -695,7 +695,7 @@ impl SessionStore for FsStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(StoreError(format!(
                     "attachment {attachment_id} of session {session_id} has metadata but no bytes"
-                )))
+                )));
             }
             Err(e) => return Err(StoreError(format!("read {}: {e}", bin_path.display()))),
         };
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn commit_cannot_overtake_a_metadata_write_in_cache() {
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
 
         let dir = tempfile::tempdir().unwrap();
         let mut store = FsStore::new(dir.path()).unwrap();
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn commit_cannot_overtake_an_active_leaf_write_in_cache() {
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
 
         let dir = tempfile::tempdir().unwrap();
         let mut store = FsStore::new(dir.path()).unwrap();
@@ -1168,7 +1168,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn commit_cannot_overtake_a_metadata_snapshot_delete() {
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
 
         let dir = tempfile::tempdir().unwrap();
         let mut store = FsStore::new(dir.path()).unwrap();
@@ -1212,12 +1212,14 @@ mod tests {
         assert!(commit.await.unwrap().is_err());
 
         assert!(store.get_meta("s_1").await.unwrap().is_none());
-        assert!(FsStore::new(dir.path())
-            .unwrap()
-            .get_meta("s_1")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            FsStore::new(dir.path())
+                .unwrap()
+                .get_meta("s_1")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1385,10 +1387,12 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
 
         assert!(store.put_meta(&meta("s_1", "after")).await.is_err());
-        assert!(store
-            .put_entry("s_1", &entry("e_1", None, "one", 0))
-            .await
-            .is_err());
+        assert!(
+            store
+                .put_entry("s_1", &entry("e_1", None, "one", 0))
+                .await
+                .is_err()
+        );
         assert!(store.set_active_leaf("s_1", "e_1").await.is_err());
 
         // The cache still reflects the last durable state — a failed
@@ -1441,7 +1445,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replay_that_loses_the_race_does_not_clobber_the_winner() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
 
         let dir = tempfile::tempdir().unwrap();
         seed_session_file(dir.path(), "s_1", "busy", 10);
@@ -1501,7 +1505,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delete_that_overlaps_a_cold_replay_is_not_undone() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::{mpsc, Arc};
+        use std::sync::{Arc, mpsc};
 
         let dir = tempfile::tempdir().unwrap();
         seed_session_file(dir.path(), "s_1", "doomed", 3);
@@ -1579,9 +1583,11 @@ mod tests {
         let path = dir
             .path()
             .join(format!("{}.jsonl", encode_session_id("s_1")));
-        assert!(!std::fs::read_to_string(path)
-            .unwrap()
-            .contains("\"commit\""));
+        assert!(
+            !std::fs::read_to_string(path)
+                .unwrap()
+                .contains("\"commit\"")
+        );
 
         let again = store
             .commit_append("s_1", &entry("e_1", None, "again", 0), false)

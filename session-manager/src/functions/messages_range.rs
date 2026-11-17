@@ -9,8 +9,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::messages_tail::TailItem;
 use super::Deps;
+use super::messages_tail::TailItem;
 use crate::error::SessionError;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

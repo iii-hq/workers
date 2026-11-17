@@ -92,23 +92,22 @@ impl Service {
             .watches
             .get(&spec.watch_id)
             .is_some_and(Watch::live)
+            && let Err(e) = self.prepare_watch(&spec.watch_id).await
         {
-            if let Err(e) = self.prepare_watch(&spec.watch_id).await {
-                // Even an unavailable tunnel must not disguise an already-merged PR.
-                let reconciliation = self
-                    .reconcile_watch(&spec.watch_id, "initial-fallback")
-                    .await;
-                // Run both even when publication fails; retain the original
-                // preparation error in health, never disguise a failed setup.
-                let publication = self.publish_pending().await;
-                let cleanup = self.cleanup().await;
-                self.watch_error(&spec.watch_id, &e)?;
-                self.record_failure(&e)?;
-                reconciliation?;
-                publication?;
-                cleanup?;
-                return Err(e);
-            }
+            // Even an unavailable tunnel must not disguise an already-merged PR.
+            let reconciliation = self
+                .reconcile_watch(&spec.watch_id, "initial-fallback")
+                .await;
+            // Run both even when publication fails; retain the original
+            // preparation error in health, never disguise a failed setup.
+            let publication = self.publish_pending().await;
+            let cleanup = self.cleanup().await;
+            self.watch_error(&spec.watch_id, &e)?;
+            self.record_failure(&e)?;
+            reconciliation?;
+            publication?;
+            cleanup?;
+            return Err(e);
         }
         self.status(&spec.watch_id)
     }
@@ -598,20 +597,19 @@ impl Service {
             {
                 continue;
             }
-            if let Some(lease_id) = &w.lease_id {
-                if let Err(e) = self
+            if let Some(lease_id) = &w.lease_id
+                && let Err(e) = self
                     .invoke("quick-tunnel::release", json!({"lease_id":lease_id}))
                     .await
-                {
-                    self.store()?.change(|d| {
-                        let w = d.watches.get_mut(id).ok_or(Failure::NotFound)?;
-                        w.status = WatchState::CleanupPending;
-                        w.error = Some(e.to_string());
-                        Ok(())
-                    })?;
-                    first_error.get_or_insert(e);
-                    continue;
-                }
+            {
+                self.store()?.change(|d| {
+                    let w = d.watches.get_mut(id).ok_or(Failure::NotFound)?;
+                    w.status = WatchState::CleanupPending;
+                    w.error = Some(e.to_string());
+                    Ok(())
+                })?;
+                first_error.get_or_insert(e);
+                continue;
             }
             self.store()?.change(|d| {
                 let w = d.watches.get_mut(id).ok_or(Failure::NotFound)?;
@@ -875,16 +873,15 @@ impl Service {
             }
             // Ingress can durably accept deliveries while the history is being
             // fetched (or a prior POST runs). Never reuse the initial snapshot.
-            if let Some(guid) = guid {
-                if self
+            if let Some(guid) = guid
+                && self
                     .store()?
                     .read()?
                     .deliveries
                     .contains(&format!("{id}:{guid}"))
-                {
-                    guids.insert(guid.to_owned());
-                    continue;
-                }
+            {
+                guids.insert(guid.to_owned());
+                continue;
             }
             self.api(
                 "POST",

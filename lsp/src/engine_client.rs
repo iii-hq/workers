@@ -1,6 +1,6 @@
 use dashmap::{DashMap, DashSet};
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -265,10 +265,10 @@ impl EngineClient {
     }
 
     pub async fn shutdown(&self) {
-        if let Ok(mut guard) = self.poll_task.lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
+        if let Ok(mut guard) = self.poll_task.lock()
+            && let Some(handle) = guard.take()
+        {
+            handle.abort();
         }
         self.iii.shutdown_async().await;
     }

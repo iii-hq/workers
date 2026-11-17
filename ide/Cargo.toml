@@ -2,8 +2,8 @@
 
 [package]
 name = "ide"
-version = "0.13.5"
-edition = "2021"
+version = "0.13.6"
+edition = "2024"
 publish = false
 
 [[bin]]

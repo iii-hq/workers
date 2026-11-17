@@ -240,10 +240,10 @@ fn two_free_ports() -> (u16, u16) {
 async fn wait_until_serves(url: &str) -> bool {
     for _ in 0..100 {
         let client = reqwest::Client::new();
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status() == 200 {
-                return true;
-            }
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status() == 200
+        {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

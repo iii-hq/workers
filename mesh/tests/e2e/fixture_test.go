@@ -174,7 +174,8 @@ func newFixture(t *testing.T, ns string) *fixture {
 	mustCall(t, f.admin, "default", "configuration::ensure", map[string]any{"id": "mesh", "name": "Mesh", "description": "mesh", "schema": map[string]any{}, "initial_value": f.config})
 	seed := filepath.Join(f.dir, "proxy.json")
 	writeJSON(t, seed, map[string]any{"host": "127.0.0.1", "port": proxyPort, "engine_url": f.engineURL})
-	f.proxy = startProcess(t, f.dir, "proxy", binary(t, "MESH_TEST_PROXY_BIN"), nil, "--url", f.engineURL, "--config", seed)
+	// A supervisor names rbac-proxy's entry, as Compose does: the hub must find it, never assume "rbac-proxy".
+	f.proxy = startProcess(t, f.dir, "proxy", binary(t, "MESH_TEST_PROXY_BIN"), []string{"III_CONFIG_NAME=e2e-rbac-proxy"}, "--url", f.engineURL, "--config", seed)
 	eventually(t, 20*time.Second, "proxy ready", func() error { _, err := call(ctx, f.admin, ns, "rbac-proxy::status", map[string]any{}); return err })
 	hubDir := filepath.Join(f.dir, "hub")
 	done := make(chan error, 1)
@@ -217,6 +218,10 @@ func newFixture(t *testing.T, ns string) *fixture {
 		f.hubAddress = net.JoinHostPort(status.HubAddress, "49135")
 		return nil
 	})
+	var missing *iii.InvocationError
+	if _, err := call(ctx, f.admin, "default", "configuration::get", map[string]any{"id": "rbac-proxy"}); !errors.As(err, &missing) || missing.Code != "NOT_FOUND" {
+		t.Fatalf("the hub created an rbac-proxy entry that rbac-proxy never reads: %v", err)
+	}
 	b, err := os.ReadFile(filepath.Join(hubDir, "state.json"))
 	if err != nil {
 		t.Fatal(err)

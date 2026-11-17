@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, register_worker};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DEFAULT_URL: &str = "ws://127.0.0.1:49134";
 /// A capture goes through a coalesced tick, a queue hop and a transaction.
@@ -78,7 +78,9 @@ fn live_e2e_requires_explicit_positive_opt_in() {
 
 async fn connect(name: &str) -> Option<Arc<IIIClient>> {
     if !live_e2e_opted_in() {
-        eprintln!("[skip] live E2E not authorized: set III_E2E_REQUIRE=1 or SENTINEL_RUN_LIVE_E2E=1 explicitly");
+        eprintln!(
+            "[skip] live E2E not authorized: set III_E2E_REQUIRE=1 or SENTINEL_RUN_LIVE_E2E=1 explicitly"
+        );
         return None;
     }
     let iii = Arc::new(register_worker(
@@ -275,13 +277,11 @@ async fn wait_for_group(iii: &IIIClient, marker: &str) -> Option<Value> {
             json!({ "search": marker, "status": [], "limit": 10 }),
         )
         .await
-        {
-            if let Some(group) = response["groups"]
+            && let Some(group) = response["groups"]
                 .as_array()
                 .and_then(|groups| groups.first())
-            {
-                return Some(group.clone());
-            }
+        {
+            return Some(group.clone());
         }
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }

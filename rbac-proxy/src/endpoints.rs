@@ -21,7 +21,7 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 
-use crate::rbac::{parse_match_pattern, WildcardPattern};
+use crate::rbac::{WildcardPattern, parse_match_pattern};
 
 /// The prefix of a channel endpoint; the id is the one segment after it.
 const CHANNEL_PREFIX: &str = "/ws/channels/";

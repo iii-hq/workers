@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::ValueEnum;
 use harness::functions::metrics::SessionMetricsResponseV1;
 use serde::{Deserialize, Serialize};
@@ -139,7 +139,8 @@ impl ScenarioSpec {
             if let Some(first_index) = ids.insert(criterion.id, index) {
                 bail!(
                     "scenario '{}': criterion id '{}' is duplicated at indexes {first_index} and {index}; criterion ids must be unique",
-                    self.id, criterion.id
+                    self.id,
+                    criterion.id
                 );
             }
         }

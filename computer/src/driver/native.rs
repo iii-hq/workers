@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use image::{DynamicImage, RgbaImage};
 use tokio::task::spawn_blocking;
 
-use super::{encode_jpeg, target_dims, Driver, Screen, Shot};
+use super::{Driver, Screen, Shot, encode_jpeg, target_dims};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop;
@@ -41,7 +41,7 @@ mod x11;
 #[cfg(target_os = "linux")]
 use x11 as sys;
 #[cfg(target_os = "linux")]
-pub use x11::{detect, Desktop, NO_DISPLAY, WAYLAND};
+pub use x11::{Desktop, NO_DISPLAY, WAYLAND, detect};
 
 pub use sys::list_displays;
 
@@ -54,7 +54,7 @@ pub fn pin_process_dpi() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         #[link(name = "user32")]
-        extern "system" {
+        unsafe extern "system" {
             fn SetProcessDpiAwarenessContext(value: isize) -> i32;
             fn GetThreadDpiAwarenessContext() -> isize;
             fn AreDpiAwarenessContextsEqual(a: isize, b: isize) -> i32;

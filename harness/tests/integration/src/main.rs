@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use harness_integration::fixtures::{scenario_fixtures, ScenarioFixture};
+use harness_integration::fixtures::{ScenarioFixture, scenario_fixtures};
 use harness_integration::scenario::{playground_scenario, run_scenario};
 use harness_integration::scenarios::ScenarioDriver;
 use harness_integration::stack::StackBins;

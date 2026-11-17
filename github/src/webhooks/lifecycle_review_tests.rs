@@ -84,10 +84,11 @@ async fn interrupted_rotation(s: &Service, dir: &Path, applied: bool) {
         })
         .unwrap();
     configure_gh(dir, json!({"fail_patch":true,"patch_applied":applied}));
-    assert!(s
-        .ensure_hook("owner/repo", "https://two.example", "two")
-        .await
-        .is_err());
+    assert!(
+        s.ensure_hook("owner/repo", "https://two.example", "two")
+            .await
+            .is_err()
+    );
     let data = s.store().unwrap().read().unwrap();
     let hook = &data.repos["owner/repo"];
     assert_eq!(
@@ -182,10 +183,11 @@ async fn pending_patch_does_not_authorize_unknown_urls_ids_or_failed_reads() {
             _ => state["fail_get_hook"] = json!(true),
         }
         std::fs::write(dir.path().join("mock.json"), state.to_string()).unwrap();
-        assert!(s
-            .ensure_hook("owner/repo", "https://three.example", "three")
-            .await
-            .is_err());
+        assert!(
+            s.ensure_hook("owner/repo", "https://three.example", "three")
+                .await
+                .is_err()
+        );
         stop_watches(&s);
         assert!(s.cleanup().await.is_err());
         let data = s.store().unwrap().read().unwrap();
@@ -210,10 +212,12 @@ fn legacy_hook_without_update_intent_remains_readable() {
     }))
     .unwrap();
     assert!(hook.pending_url.is_none());
-    assert!(serde_json::to_value(hook)
-        .unwrap()
-        .get("pending_url")
-        .is_none());
+    assert!(
+        serde_json::to_value(hook)
+            .unwrap()
+            .get("pending_url")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -222,10 +226,11 @@ async fn rejected_post_without_hook_clears_intent_and_releases_lease() {
     let s = service(dir.path()).await;
     tests::seed(&s);
     configure_gh(dir.path(), json!({"fail_create":true}));
-    assert!(s
-        .ensure_hook("owner/repo", "https://one.example", "one")
-        .await
-        .is_err());
+    assert!(
+        s.ensure_hook("owner/repo", "https://one.example", "one")
+            .await
+            .is_err()
+    );
     let data = s.store().unwrap().read().unwrap();
     assert!(!data.repos["owner/repo"].create_started);
     assert!(data.repos["owner/repo"].hook_id.is_none());
@@ -283,10 +288,11 @@ async fn failed_listing_keeps_durable_url_and_recover_finds_applied_post_without
         dir.path(),
         json!({"fail_create":true,"create_applied":true,"fail_list":true}),
     );
-    assert!(s
-        .ensure_hook("owner/repo", "https://old.example", "old")
-        .await
-        .is_err());
+    assert!(
+        s.ensure_hook("owner/repo", "https://old.example", "old")
+            .await
+            .is_err()
+    );
     let data = s.store().unwrap().read().unwrap();
     assert!(data.repos["owner/repo"].create_started);
     assert_eq!(
@@ -366,10 +372,11 @@ async fn incomplete_unsafe_and_duplicate_hook_listings_never_clear_or_mutate_int
         tests::seed(&s);
         crash_intent(&s);
         configure_gh(dir.path(), fields);
-        assert!(s
-            .ensure_hook("owner/repo", "https://new.example", "new")
-            .await
-            .is_err());
+        assert!(
+            s.ensure_hook("owner/repo", "https://new.example", "new")
+                .await
+                .is_err()
+        );
         let data = s.store().unwrap().read().unwrap();
         assert!(data.repos["owner/repo"].create_started);
         assert!(data.repos["owner/repo"].hook_id.is_none());
@@ -389,10 +396,11 @@ async fn patch_failure_keeps_owned_id_for_cleanup_but_not_hook_readiness() {
         dir.path(),
         json!({"fail_create":true,"create_applied":true,"fail_patch":true}),
     );
-    assert!(s
-        .ensure_hook("owner/repo", "https://one.example", "one")
-        .await
-        .is_err());
+    assert!(
+        s.ensure_hook("owner/repo", "https://one.example", "one")
+            .await
+            .is_err()
+    );
     let data = s.store().unwrap().read().unwrap();
     assert_eq!(data.repos["owner/repo"].hook_id, Some(42));
     assert!(data.repos["owner/repo"].error.is_some());
@@ -438,9 +446,11 @@ async fn failed_or_malformed_acquire_preserves_old_lease_and_continues_other_wat
         assert_eq!(data.watches["w1"].lease_id.as_deref(), Some("old-w1"));
         assert_eq!(data.watches["w2"].lease_id.as_deref(), Some("new-w2"));
         assert!(data.last_error.is_some());
-        assert!(gh_calls(dir.path(), "POST")
-            .iter()
-            .any(|c| c["endpoint"] == "repos/owner/repo/hooks/42/deliveries/7/attempts"));
+        assert!(
+            gh_calls(dir.path(), "POST")
+                .iter()
+                .any(|c| c["endpoint"] == "repos/owner/repo/hooks/42/deliveries/7/attempts")
+        );
         stop_watches(&s);
         bus.reply("quick-tunnel::release", Ok(Value::Null));
         bus.reply("quick-tunnel::release", Ok(Value::Null));

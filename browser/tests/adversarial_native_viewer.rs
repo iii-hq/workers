@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use iii_sdk::CallRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 #[path = "support/private_home.rs"]
@@ -305,12 +305,12 @@ async fn frame_sized(client: &IIIClient, session_id: &str, after: u64, want: (u3
             json!({ "session_id": session_id }),
         )
         .await;
-        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64()) {
-            if seq > after {
-                last = image_size(data);
-                if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
-                    return frame;
-                }
+        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64())
+            && seq > after
+        {
+            last = image_size(data);
+            if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
+                return frame;
             }
         }
         assert!(
@@ -352,16 +352,16 @@ async fn await_frame(
     let mut payload = (0u64, 0u64);
     loop {
         let frame = frame_now(client, session_id, None).await;
-        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64()) {
-            if seq > after {
-                last = image_size(data);
-                payload = (
-                    frame["width"].as_u64().unwrap_or(0),
-                    frame["height"].as_u64().unwrap_or(0),
-                );
-                if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
-                    return Ok(frame);
-                }
+        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64())
+            && seq > after
+        {
+            last = image_size(data);
+            payload = (
+                frame["width"].as_u64().unwrap_or(0),
+                frame["height"].as_u64().unwrap_or(0),
+            );
+            if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
+                return Ok(frame);
             }
         }
         if Instant::now() >= deadline {

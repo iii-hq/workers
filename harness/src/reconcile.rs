@@ -37,11 +37,11 @@
 
 use std::collections::BTreeMap;
 
-use jsonschema::error::ValidationErrorKind;
 use jsonschema::JSONSchema;
+use jsonschema::error::ValidationErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::call::ResultData;
 use crate::config::{CallReconciliation, WorkerConfig};
@@ -161,17 +161,17 @@ async fn repair(
     }
     let coerced = coerce_compiled(compiled, arguments);
     let current = coerced.as_ref().map_or(arguments, |r| &r.arguments);
-    if cfg.call_reconciliation == CallReconciliation::Judge && !compiled.is_valid(current) {
-        if let Some(judged) =
+    if cfg.call_reconciliation == CallReconciliation::Judge
+        && !compiled.is_valid(current)
+        && let Some(judged) =
             judge_layer(deps, compiled, schema, function_id, current, description).await
-        {
-            let mut changes = coerced.map(|r| r.changes).unwrap_or_default();
-            changes.extend(judged.changes);
-            return Some(Reconciled {
-                arguments: judged.arguments,
-                changes,
-            });
-        }
+    {
+        let mut changes = coerced.map(|r| r.changes).unwrap_or_default();
+        changes.extend(judged.changes);
+        return Some(Reconciled {
+            arguments: judged.arguments,
+            changes,
+        });
     }
     coerced
 }
@@ -500,19 +500,20 @@ fn questions(schema: &JSONSchema, raw_schema: &Value, value: &Value) -> Vec<Ques
     // key, so a misnamed argument shows up only as a missing one. At the top
     // level, keys outside `properties` are the rename candidates.
     // ponytail: top level only; nested objects need schema resolution by path.
-    if missing.contains_key("") && !unexpected.contains_key("") {
-        if let (Some(properties), Some(given)) = (
+    if missing.contains_key("")
+        && !unexpected.contains_key("")
+        && let (Some(properties), Some(given)) = (
             raw_schema.get("properties").and_then(Value::as_object),
             value.as_object(),
-        ) {
-            let strays: Vec<String> = given
-                .keys()
-                .filter(|key| !properties.contains_key(*key))
-                .cloned()
-                .collect();
-            if !strays.is_empty() {
-                unexpected.insert(String::new(), strays);
-            }
+        )
+    {
+        let strays: Vec<String> = given
+            .keys()
+            .filter(|key| !properties.contains_key(*key))
+            .cloned()
+            .collect();
+        if !strays.is_empty() {
+            unexpected.insert(String::new(), strays);
         }
     }
     let mut out = Vec::new();
@@ -1583,16 +1584,20 @@ mod tests {
     #[test]
     fn a_stray_key_on_a_closed_schema_without_properties_never_replaces_the_payload() {
         // The validator reports the stray VALUE at the object's own path.
-        assert!(coerce(
-            &json!({ "type": "object", "additionalProperties": false }),
-            &json!({ "foo": "{}", "bar": 1 })
-        )
-        .is_none());
-        assert!(coerce(
-            &json!({ "additionalProperties": false }),
-            &json!({ "foo": "7" })
-        )
-        .is_none());
+        assert!(
+            coerce(
+                &json!({ "type": "object", "additionalProperties": false }),
+                &json!({ "foo": "{}", "bar": 1 })
+            )
+            .is_none()
+        );
+        assert!(
+            coerce(
+                &json!({ "additionalProperties": false }),
+                &json!({ "foo": "7" })
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1736,13 +1741,15 @@ mod tests {
         assert!(text.contains("`files/0`"), "{text}");
 
         // An error that names no field is diagnosed as before.
-        assert!(diagnosis(
-            &schema,
-            "coder::update-file",
-            &flat,
-            "serialization error: invalid type: string \"x\", expected a sequence"
-        )
-        .is_some());
+        assert!(
+            diagnosis(
+                &schema,
+                "coder::update-file",
+                &flat,
+                "serialization error: invalid type: string \"x\", expected a sequence"
+            )
+            .is_some()
+        );
     }
 
     #[test]

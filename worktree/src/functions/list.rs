@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WError;
-use crate::functions::status::{build_status, TargetCache};
 use crate::functions::Deps;
+use crate::functions::status::{TargetCache, build_status};
 use crate::git::{ops, validate_abs_path};
 use crate::state;
 use crate::types::{Lifecycle, WorktreeInfo};
@@ -59,15 +59,15 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let mut worktrees = Vec::new();
     let mut targets = TargetCache::new();
     for record in state::list_records(deps.state.as_ref()).await? {
-        if let Some((_, repo_key)) = &repo_filter {
-            if &record.repo_key != repo_key {
-                continue;
-            }
+        if let Some((_, repo_key)) = &repo_filter
+            && &record.repo_key != repo_key
+        {
+            continue;
         }
-        if let Some(session_id) = &req.session_id {
-            if record.session_id.as_ref() != Some(session_id) {
-                continue;
-            }
+        if let Some(session_id) = &req.session_id
+            && record.session_id.as_ref() != Some(session_id)
+        {
+            continue;
         }
         let dir_exists = Path::new(&record.path).is_dir();
         let lifecycle = if dir_exists {

@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{SecretMeta, StoreKind};
-use crate::crypto::{self, Sealed, NONCE_LEN};
+use crate::crypto::{self, NONCE_LEN, Sealed};
 use crate::envstore::EnvValue;
 use crate::error::SecretsError;
 use crate::fsutil;
@@ -107,7 +107,7 @@ impl Vault {
                     "vault {} could not be read: {}",
                     path.display(),
                     error.kind()
-                )))
+                )));
             }
         };
         let vault: Self = serde_json::from_slice(&raw).map_err(|error| {

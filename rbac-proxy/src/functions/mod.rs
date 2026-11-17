@@ -8,15 +8,15 @@
 
 pub mod status;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
 use crate::redact_url;
 use crate::server::ProxyState;
-use status::{StatusInput, StatusOutput, STATUS_DESC, STATUS_ID};
+use status::{STATUS_DESC, STATUS_ID, StatusInput, StatusOutput};
 
 /// Register every public `rbac-proxy::*` function. Called once from `main`
 /// after the control connection and the proxy state are built.

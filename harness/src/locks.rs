@@ -85,8 +85,8 @@ impl TurnCancels {
 mod tests {
     use super::{SessionLocks, TurnCancels};
     use crate::types::turn::SkillContext;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     /// The property the abort-write fix relies on: two holders of the SAME
     /// session lock never overlap, so a read-modify-write under the guard can't

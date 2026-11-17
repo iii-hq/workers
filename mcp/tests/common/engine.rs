@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{errors::Error, register_worker, CallRequest, IIIClient, InitOptions};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, errors::Error, register_worker};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::OnceCell;

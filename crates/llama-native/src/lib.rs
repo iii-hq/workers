@@ -6,16 +6,16 @@
 //! freed after it. [`Model::new_context`] keeps a [`Context`] for the callers
 //! that drive llama.cpp themselves: batches of tokens over sequences
 //! ([`Batch`]), logits or embeddings per output row, sequence state snapshots.
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{Result, anyhow, bail, ensure};
 use std::{
     collections::HashMap,
-    ffi::{c_char, CStr, CString},
+    ffi::{CStr, CString, c_char},
     path::Path,
     ptr::{self, NonNull},
     slice,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Once,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -46,7 +46,7 @@ struct RawMemory {
     _private: [u8; 0],
 }
 
-extern "C" {
+unsafe extern "C" {
     // native/shim.cpp
     fn ln_backend_init(dir: *const c_char, fallback: *const c_char, vk_max_nodes_per_submit: u32);
     fn ln_gpu_device(out: *mut c_char, len: usize) -> bool;

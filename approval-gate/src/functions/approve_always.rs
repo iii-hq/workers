@@ -32,7 +32,7 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{with_stack, BootOpts};
+    use crate::testkit::{BootOpts, with_stack};
     use crate::types::GrantedBy;
 
     #[tokio::test(flavor = "multi_thread")]

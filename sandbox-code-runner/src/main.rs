@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
-use sandbox_code_runner::engine::{probe_sandbox, IIIEngine, SandboxProbe};
+use iii_sdk::{InitOptions, register_worker};
+use sandbox_code_runner::engine::{IIIEngine, SandboxProbe, probe_sandbox};
 use sandbox_code_runner::manager::RuntimeManager;
 use sandbox_code_runner::{config, configuration, events, functions, manifest};
 

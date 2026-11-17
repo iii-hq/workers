@@ -24,7 +24,7 @@ use crate::decision;
 use crate::error::ApprovalError;
 use crate::permissions::Decision;
 use crate::settings;
-use crate::types::{validate_id, EvaluateRequest, EvaluateResponse, EvaluateVerdict};
+use crate::types::{EvaluateRequest, EvaluateResponse, EvaluateVerdict, validate_id};
 
 pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateResponse, ApprovalError> {
     validate_id("session_id", &req.session_id)?;
@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use crate::functions::{add_always_allow, approve_always, set_mode};
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{state_get, with_stack, BootOpts};
+    use crate::testkit::{BootOpts, state_get, with_stack};
     use crate::types::{
         AlwaysAllowMutationRequest, ApproveAlwaysRequest, PermissionMode, SetModeRequest,
     };

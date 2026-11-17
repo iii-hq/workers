@@ -7,7 +7,7 @@
 //! `to_json` flattens back to `serde_json::Value` for transport.
 
 use crate::error::DbError;
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 

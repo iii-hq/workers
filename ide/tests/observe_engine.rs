@@ -18,10 +18,10 @@ use ide::code::state::ResolverCell;
 use ide::config::ShellConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, Error, IIIClient, InitOptions, Observed, ObserverHandle,
+    RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 

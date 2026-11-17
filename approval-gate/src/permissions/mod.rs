@@ -6,7 +6,7 @@ mod default_rules;
 mod types;
 
 pub use compile::{
-    compile_rule, match_constraints, match_function_id, CompiledRule, ConstraintMatch,
+    CompiledRule, ConstraintMatch, compile_rule, match_constraints, match_function_id,
 };
 pub use types::{Action, ConstraintSpec, Decision, RuleSpec};
 

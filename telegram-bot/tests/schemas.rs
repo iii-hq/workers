@@ -1,6 +1,6 @@
 mod support;
 
-use telegram_bot::surface::{catalog, FunctionSpec};
+use telegram_bot::surface::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

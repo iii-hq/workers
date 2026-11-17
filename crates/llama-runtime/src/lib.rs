@@ -11,13 +11,13 @@ pub use iii_llama_native;
 pub mod lifecycle;
 pub mod scorer;
 
-pub use lifecycle::{ModelSlot, Unloaded, IDLE_RELEASE};
+pub use lifecycle::{IDLE_RELEASE, ModelSlot, Unloaded};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use iii_llama_native::{Context, ContextParams, Model};
 use std::{
     path::Path,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 use tokio::sync::oneshot;
 

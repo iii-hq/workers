@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&JevConfig>) -> Resul
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge TypeSafe",
-        description:
-            "TypeSafe JEV provider for judge: API key, default model and execution limits.",
+        description: "TypeSafe JEV provider for judge: API key, default model and execution limits.",
         schema: JevConfig::json_schema(),
         default_value: JevConfig::default().to_json(),
     };

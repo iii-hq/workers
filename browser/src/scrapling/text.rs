@@ -1,6 +1,6 @@
 //! Python-string semantics: scrapling's TextHandler.clean()/.re() ports.
 
-use rustpython_sre_engine::{compiler, Request, SearchIter, State, StrDrive};
+use rustpython_sre_engine::{Request, SearchIter, State, StrDrive, compiler};
 
 pub fn clean(s: &str) -> String {
     let translated: String = s

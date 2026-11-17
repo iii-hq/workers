@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import {
   Badge, Button, Checkbox, ConfirmDialog, EmptyState, Input, LiveRegion, PageHeader, PageMain, PageShell,
-  RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsSection, StatusPanel, Switch,
+  RawValueInput, SegmentedControl, SettingsField, SettingsList, SettingsRow, SettingsSection, StatusPanel, Switch,
   type ConfigFormProps, type Host, type JsonValue, type PageRenderProps, type SecretKeyFieldProps, type StatusPanelProps,
 } from '@iii-dev/console-ui'
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
-import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { errorCode, errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useCopyFlash, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Network, RefreshCw } from 'lucide-react'
+import { quickTunnelEntryId, quickTunnelPlan, type QuickTunnelPlan } from './quick-tunnel'
 
 // functions: the worker's hub function ids (<machine>::<local id>), sorted.
 type ComponentState = { name: string; state: string; functions?: string[] }
@@ -190,17 +191,37 @@ function JoinField({ value, onChange, secretInput: SecretKeyField }: { value: st
 const TUNNEL_RESTING = new Set(['ready', 'overridden', 'unavailable', 'failed'])
 // Longer than quick-tunnel's 10-minute bound on creating an OpenTunnel identity.
 const SETTLE_MS = 12 * 60_000
-
-function TunnelLine({ tunnel, stalled }: { tunnel?: Tunnel; stalled: boolean }) {
-  const line = stalled ? <p className="mesh-ui-muted">The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.</p>
-    : tunnel?.state === 'ready' && tunnel.url ? <CopyValue label="Tunnel URL" value={tunnel.url} />
-    : tunnel?.state === 'starting' || tunnel?.state === 'reconnecting' ? <p className="mesh-ui-muted">Starting the tunnel…</p>
-    : tunnel?.state === 'overridden' ? <p className="mesh-ui-muted">Not used while a Public URL is set</p>
-    : tunnel?.state === 'unavailable' || tunnel?.state === 'failed' ? <StatusPanel variant="warn"
-      headline={tunnel.state === 'failed' ? 'The tunnel failed' : 'The tunnel is unavailable'} detail={tunnel.error} />
-    : null
-  // An item of the settings list, and announced when the hub reports a change.
-  return line ? <div role="listitem" aria-live="polite" className="mesh-ui-tunnel">{line}</div> : null
+type Reach = 'tunnel' | 'manual'
+const REACH_OPTIONS: { value: Reach; label: string; icon: false }[] = [
+  { value: 'tunnel', label: 'Public tunnel', icon: false }, { value: 'manual', label: 'Manual URL', icon: false },
+]
+const REACH_HELP: Record<Reach, string> = {
+  tunnel: 'The quick-tunnel worker gives this hub a public HTTPS address. Complete the steps below.',
+  manual: 'The address of your own HTTPS front door to this hub, such as a reverse proxy.',
+}
+const QUICK_TUNNEL = 'quick-tunnel'
+// The hub's error while it cannot call quick-tunnel (tunnelNotResponding in internal/hub/tunnel.go).
+const QUICK_TUNNEL_DOWN = 'quick-tunnel is not installed or not responding'
+const DEFAULT_LISTEN = '0.0.0.0:49180'
+const STALLED = 'The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.'
+// A step's state in words beside its color.
+const STEP_BADGE = { ok: ['ok', 'Done'], missing: ['warn', 'Action needed'], working: ['default', 'In progress'], waiting: ['default', 'Waiting'] } as const
+type Step = { title: string; state: keyof typeof STEP_BADGE; detail: ReactNode; action?: ReactNode }
+// compose answers some failures in its result instead of rejecting.
+function composeOk(action: string, reply: unknown) {
+  const r = (reply ?? {}) as { error?: unknown; status?: unknown; containers?: { error?: unknown }[] }
+  const why = [r.error, ['failed', 'error', 'cancelled'].includes(String(r.status)) ? `status ${r.status}` : '', ...(r.containers ?? []).map((c) => c.error)]
+  const errors = why.filter((e): e is string => typeof e === 'string' && e !== '')
+  if (errors.length) throw new Error(`${action} failed: ${errors.join('; ')}`)
+}
+const plural = (names: string[], one: string, many: string) => names.length === 1 ? one : many
+function setupText(plan: QuickTunnelPlan | null) {
+  if (!plan || plan.blocked) return plan?.blocked ?? ''
+  // A retry after the settings were written but the restart failed.
+  if (plan.ok) return 'quick-tunnel already has these settings. The Mesh page restarts it so it reads them.'
+  const { changes, others } = plan
+  const moved = others.length ? ` The ${others.join(', ')} ${plural(others, 'target moves', 'targets move')} to OpenTunnel too, so ${plural(others, 'its public URL changes', 'their public URLs change')}. A worker that only accepts trycloudflare.com URLs stops receiving traffic until it is updated.` : ''
+  return `The Mesh page changes quick-tunnel's settings and restarts it: ${changes.join('; ')}.${moved}`
 }
 
 // The share list of either mode: a switch per local worker, its functions picked under it.
@@ -418,15 +439,22 @@ function ClientSetup({ basics, saved, edit, status, local, listError, onRetry, f
 
 function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty }: PageRenderProps & { host: Host; configurationId: string; secretInput?: SecretInput }) {
   const fetch = useCallback(async () => {
-    const [nodes, join, status, config, functions] = await Promise.allSettled([
+    const [nodes, join, status, config, functions, tunnelConfig] = await Promise.allSettled([
       host.iii.call<Node[]>('mesh::nodes::list', {}),
       host.iii.call<Join>('mesh::join::code', {}),
       host.iii.call<Partial<ClientStatus> & HubStatus>('mesh::status', {}),
       // Raw keeps ${VAR} templates intact when the entry is written back.
       host.iii.call<{ value: JsonValue }>('configuration::get', { id: configurationId, raw: true }),
       host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', { include_internal: true }),
+      // Compose names the entry after its namespace, so it is found by the form quick-tunnel registers.
+      host.iii.call<{ configurations?: { id?: string; metadata?: { ui_form?: string } | null }[] }>('configuration::list', {}).then(async (listed) => {
+        const id = quickTunnelEntryId(listed?.configurations ?? [], configurationId)
+        return id ? { id, value: (await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true }))?.value ?? null } : null
+      }),
     ])
     const engineFunctions = functions.status === 'fulfilled' ? functions.value.functions ?? [] : []
+    // quick-tunnel creates its entry when it first starts.
+    const tunnelAbsent = tunnelConfig.status === 'fulfilled' ? tunnelConfig.value === null : errorCode(tunnelConfig.reason) === 'NOT_FOUND'
     return {
       client: status.status === 'fulfilled' && status.value?.mode === 'client' ? status.value as ClientStatus : null,
       hub: status.status === 'fulfilled' && status.value?.mode !== 'client' ? status.value as HubStatus : null,
@@ -444,6 +472,10 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // shortcut: a worker name or public id ValidateShare refuses as an entry is not listed; list it without a control if such names appear.
       local: engineFunctions.filter((fn) => /^[a-z0-9-]+$/.test(fn.worker_name ?? '') && !NEVER_SHARED.has(fn.worker_name ?? '') && canShareId(fn.function_id)),
       functionsError: functions.status === 'rejected' ? errorMessage(functions.reason) : null,
+      quickTunnelId: tunnelConfig.status === 'fulfilled' ? tunnelConfig.value?.id ?? null : null,
+      quickTunnel: tunnelConfig.status === 'fulfilled' && tunnelConfig.value ? tunnelConfig.value.value : undefined,
+      quickTunnelAbsent: tunnelAbsent,
+      quickTunnelError: tunnelConfig.status === 'rejected' && !tunnelAbsent ? errorMessage(tunnelConfig.reason) : null,
     }
   }, [host, configurationId])
   const { data, loading, error, refresh } = useWorkerLive({
@@ -540,7 +572,19 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const needsRestart = !dirty && data !== undefined && config !== null && saved.mode !== running
   // A tunnel settles seconds to minutes after a save; the hub pushes each step.
   const tunnel = data?.hub?.tunnel
-  const settling = Boolean(data?.hub) && (saved.tunnel !== Boolean(tunnel) || (tunnel !== undefined && !TUNNEL_RESTING.has(tunnel.state)))
+  // quick-tunnel is missing until it has an entry and the hub can call it.
+  const tunnelWorkerDown = Boolean(data?.quickTunnelAbsent) || (tunnel?.state === 'unavailable' && tunnel.error === QUICK_TUNNEL_DOWN)
+  // The install's operation id once Compose accepts it; the read that finds quick-tunnel clears it.
+  const [installing, setInstalling] = useState<string | null>(null)
+  useEffect(() => { if (!tunnelWorkerDown) setInstalling(null) }, [tunnelWorkerDown])
+  // quick-tunnel stores its entry before it registers functions, and the hub pushes nothing while its tunnel is off.
+  useEffect(() => {
+    if (!installing) return
+    try {
+      return host.iii.observe('engine::on-functions-changed', `iii::mesh-ui::events::${host.iii.browserId}`)
+    } catch { return undefined }
+  }, [host, installing])
+  const settling = installing !== null || (Boolean(data?.hub) && (saved.tunnel !== Boolean(tunnel) || (tunnel !== undefined && !TUNNEL_RESTING.has(tunnel.state))))
   const [stalled, setStalled] = useState(false)
   useEffect(() => {
     setStalled(false)
@@ -548,13 +592,89 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
     // A deadline, not a poll: it only says the hub went quiet.
     const timer = setTimeout(() => setStalled(true), SETTLE_MS)
     return () => clearTimeout(timer)
-    // `written` changes on every save, so each save gets a full window.
-  }, [settling, written])
+    // `written` changes on every save and `installing` on every install, so each gets a full window.
+  }, [settling, written, installing])
   // A template can expand to nothing; then the hub's own address decides.
   const hasAddress = saved.public_url.includes('${') && data?.hub ? Boolean(data.hub.public_url) : Boolean(saved.public_url)
   // The hub reports no address: no machine can join yet, and no join code exists.
   const noAddress = Boolean(data?.hub && !data.hub.public_url)
   const focusHeading = (id: string) => document.getElementById(id)?.focus()
+  // A Public URL beside the tunnel is what the hub uses, unless it is a template the hub expanded to nothing.
+  const tunnelInUse = saved.tunnel && (!saved.public_url || (saved.public_url.includes('${') && tunnel !== undefined && tunnel.state !== 'overridden'))
+  // One choice, read from the stored entry until touched, so emptying the Public URL never flips it.
+  const reach: Reach = (edits.tunnel ?? tunnelInUse) ? 'tunnel' : 'manual'
+  // Manual shows the saved Public URL again; only a touched choice writes tunnel.enabled.
+  const choose = (next: Reach) => setEdits((prev) => ({ ...prev, tunnel: next === 'tunnel', public_url: next === 'tunnel' ? '' : saved.public_url }))
+  const configuredId = config === null ? undefined : at(config, ['tunnel', 'tunnel_id'])
+  const tunnelId = tunnel?.tunnel_id || (typeof configuredId === 'string' && configuredId) || 'mesh'
+  const configuredListen = config === null ? undefined : at(config, ['listen'])
+  const listen = typeof configuredListen === 'string' ? configuredListen : DEFAULT_LISTEN
+  const plan = data?.quickTunnel !== undefined ? quickTunnelPlan(data.quickTunnel, tunnelId, listen) : null
+  const [confirming, setConfirming] = useState<'install' | 'setup' | 'restart' | null>(null)
+  const install = async () => {
+    try {
+      const operationId = `mesh-install-quick-tunnel-${crypto.randomUUID().slice(0, 8)}`
+      composeOk('Installing quick-tunnel', await host.iii.call('compose::add', { workers: [QUICK_TUNNEL], operation_id: operationId }, { timeoutMs: 60_000 }))
+      setInstalling(operationId)
+      announce('Installing quick-tunnel. The steps update when it starts.')
+    } catch (err) { throw failed(err) } finally { refresh() }
+  }
+  // quick-tunnel reads its settings only when it starts.
+  const restartQuickTunnel = async () => composeOk('Restarting quick-tunnel', await host.iii.call('compose::restart', { container: QUICK_TUNNEL }, { timeoutMs: 180_000 }))
+  const restartTunnel = async () => {
+    try {
+      await restartQuickTunnel()
+      announce('quick-tunnel restarted.')
+    } catch (err) { throw failed(err) } finally { refresh() }
+  }
+  const setUp = async () => {
+    try {
+      // Re-read: quick-tunnel's settings may have changed since the page read them.
+      const id = data?.quickTunnelId
+      if (!id) throw new Error('quick-tunnel has no settings entry yet. Refresh, then try again.')
+      const current = await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true })
+      const fresh = quickTunnelPlan(current?.value, tunnelId, listen)
+      if (!fresh.next) throw new Error(fresh.blocked)
+      // Write only what the confirmation showed: settings changed meanwhile are shown again first.
+      if (!same(fresh.next, plan?.next)) throw new Error('quick-tunnel\'s settings changed since this opened. Review the changes, then confirm again.')
+      if (!fresh.ok) await host.iii.call('configuration::set', { id, value: fresh.next })
+      await restartQuickTunnel()
+      announce('quick-tunnel is set up for the mesh and restarted.')
+    } catch (err) { throw failed(err) } finally { refresh() }
+  }
+  const installed = !tunnelWorkerDown
+  const step = (title: string, state: Step['state'], detail: ReactNode, action?: ReactNode): Step => ({ title, state, detail, action })
+  const worker = 'quick-tunnel worker'
+  const setupStep = 'quick-tunnel set up for mesh'
+  const offer = (kind: 'install' | 'setup' | 'restart', label: string) => <Button size="sm" disabled={busy !== null} onClick={() => setConfirming(kind)}>{label}</Button>
+  const steps: Step[] = reach === 'tunnel' ? [
+    installed ? step(worker, 'ok', 'Installed.')
+      : installing ? stalled ? step(worker, 'missing', 'quick-tunnel has not started yet. Check its install in Compose, or install it again.', offer('install', 'Install quick-tunnel'))
+        : step(worker, 'working', 'Installing… this list updates when quick-tunnel starts.')
+      : data?.quickTunnelAbsent ? step(worker, 'missing', 'Not installed in this project. It runs the tunnel.', offer('install', 'Install quick-tunnel'))
+      : step(worker, 'missing', 'The hub cannot reach quick-tunnel.', offer('restart', 'Restart quick-tunnel')),
+    // Setting it up needs only its entry, not a running quick-tunnel.
+    data?.quickTunnelAbsent ? step(setupStep, 'waiting', 'Install quick-tunnel first.')
+      : data?.quickTunnelError ? step(setupStep, 'missing', said(`Could not read quick-tunnel's settings: ${data.quickTunnelError}`, 'Refresh to try again.'))
+      : !plan ? step(setupStep, 'working', 'Reading quick-tunnel\'s settings…')
+      : plan.blocked ? step(setupStep, 'missing', plan.blocked)
+      : plan.ok ? step(setupStep, 'ok', `OpenTunnel carries the target ${tunnelId} to this hub with each visitor's address.`)
+      // The row stays short; the confirmation lists each change.
+      : step(setupStep, 'missing', 'quick-tunnel needs a few settings for the mesh.', offer('setup', 'Set up quick-tunnel')),
+    // The hub's own report, once the entry asks for this tunnel.
+    !tunnelInUse ? step('Tunnel', 'missing', 'Save to start the tunnel.')
+      : stalled && settling ? step('Tunnel', 'missing', STALLED)
+      : tunnel?.state === 'ready' && tunnel.url ? step('Tunnel', 'ok', <CopyValue label="Tunnel URL" value={tunnel.url} />)
+      // While a step above offers the fix, the hub's error would only repeat it as a hand edit.
+      : tunnel?.state === 'unavailable' && (!installed || (plan?.ok === false && !plan.blocked)) ? step('Tunnel', 'waiting', 'Starts once the steps above are done.')
+      // The settings are written but quick-tunnel still runs on the old ones, for example after a failed restart.
+      : tunnel?.state === 'unavailable' && plan?.ok && tunnel.error?.startsWith('quick-tunnel has no target') ? step('Tunnel', 'missing',
+        `quick-tunnel has these settings but still runs without the target ${tunnelId}. Restart it to apply them.`, offer('restart', 'Restart quick-tunnel'))
+      : tunnel?.state === 'unavailable' || tunnel?.state === 'failed' ? step('Tunnel', 'missing',
+        `${tunnel.state === 'failed' ? 'The tunnel failed' : 'The tunnel is unavailable'}${tunnel.error ? `: ${tunnel.error}` : '.'}`)
+      : !tunnel || tunnel.state === 'starting' || tunnel.state === 'reconnecting' ? step('Tunnel', 'working', 'Starting the tunnel… the first start can take up to two minutes.')
+      : step('Tunnel', 'missing', `The tunnel is ${tunnel.state}.`),
+  ] : []
   return <PageShell className="mesh-ui-shell">
     <PageHeader icon={<Network />} title="Mesh" description={running === 'client' ? 'Sharing workers with a hub' : 'Your machines'} onClose={onRequestClose}
       actions={<Button variant="ghost" size="sm" disabled={loading} onClick={refresh}>
@@ -614,12 +734,16 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
             {hasAddress || saved.tunnel ? null : <Badge variant="warn">needed before machines can join</Badge>}
           </div>
           <SettingsList>
-            <SettingsField label="Expose through a tunnel" field="tunnel.enabled" description="Gives this hub a public address through the quick-tunnel worker."
-              renderControl={(props) => <Switch {...props} checked={basics.tunnel} onChange={(e) => edit('tunnel', e.currentTarget.checked)} />} />
-            <TunnelLine tunnel={tunnel} stalled={stalled && settling} />
-            <SettingsField label="Public URL" field="public_url" description="A manual address. Overrides the tunnel."
-              renderControl={(props) => <Input {...props} value={basics.public_url} onChange={(next) => edit('public_url', next)} />} />
+            <SettingsRow label="How machines reach this hub" description={REACH_HELP[reach]}
+              control={<SegmentedControl aria-label="How machines reach this hub" variant="radio" value={reach} options={REACH_OPTIONS} onChange={choose} />} />
+            {reach === 'manual' ? <SettingsField label="Public URL" field="public_url" description="For example https://mesh.example.com."
+              renderControl={(props) => <Input {...props} value={basics.public_url} onChange={(next) => edit('public_url', next)} />} /> : null}
           </SettingsList>
+          {/* Announced: the hub and quick-tunnel move these steps along while nobody clicks. */}
+          {steps.length ? <SettingsList aria-label="Public tunnel setup" aria-live="polite">
+            {steps.map(({ title, state, detail, action }) => <SettingsRow key={title} label={title} description={detail} control={action}
+              meta={<Badge variant={STEP_BADGE[state][0]}>{STEP_BADGE[state][1]}</Badge>} />)}
+          </SettingsList> : null}
         </section></>}
       {dirty || failure ? <section className="mesh-ui-section mesh-ui-save" aria-live="polite">
         {failure ? <StatusPanel variant="alert" headline="Could not save" detail={failure} /> : null}
@@ -632,7 +756,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       {hubView ? <section className="mesh-ui-section" aria-labelledby="mesh-join-title">
         <div className="mesh-ui-section-head"><h2 id="mesh-join-title" tabIndex={-1}>Connect another engine</h2></div>
         {/* Without an address the hub has no code to give: say what is missing instead of its refusal. */}
-        {noAddress ? <p className="mesh-ui-muted">This hub has no address yet. Turn on the tunnel or set a Public URL under Hub address. The hub URL and join code appear here once it has one.</p> : <>
+        {noAddress ? <p className="mesh-ui-muted">This hub has no address yet. Choose Public tunnel or set a Manual URL under Hub address. The hub URL and join code appear here once it has one.</p> : <>
           <ol className="mesh-ui-steps">
             <li>On the other machine, open Mesh in that project's Console and choose Client.</li>
             <li>Paste the hub URL below into Hub URL.</li>
@@ -660,6 +784,14 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
           ? 'The hub already removed this machine. Leaving deletes the saved join here, so this engine can join again with a new join code.'
           : 'This engine stops sharing its workers and loses access to everything shared. The hub drops this machine and the saved join is deleted. It joins again only with a different join code or token, as a new machine.'}
         onConfirm={leave} />
+      <ConfirmDialog open={confirming === 'install'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Install quick-tunnel?"
+        confirmLabel="Install quick-tunnel" busyLabel="Installing…" onConfirm={install}
+        description="Compose adds the quick-tunnel worker to this project and starts it. It runs the tunnel that gives this hub a public address." />
+      <ConfirmDialog open={confirming === 'setup'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Set up quick-tunnel for the mesh?"
+        tone={plan?.others.length ? 'danger' : 'default'} confirmLabel="Set up quick-tunnel" busyLabel="Setting up…" onConfirm={setUp} description={setupText(plan)} />
+      <ConfirmDialog open={confirming === 'restart'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Restart quick-tunnel?"
+        confirmLabel="Restart quick-tunnel" busyLabel="Restarting…" onConfirm={restartTunnel}
+        description="quick-tunnel stops and starts again with its current settings. The tunnels it carries pause for a moment." />
     </PageMain>
   </PageShell>
 }

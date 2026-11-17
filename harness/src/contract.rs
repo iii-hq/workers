@@ -4,7 +4,7 @@
 //! the model supports it, else the synthetic `submit_result` fallback.
 
 use jsonschema::JSONSchema;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::policy;
@@ -154,9 +154,11 @@ mod tests {
             Some(json!({ "type": "json", "schema": { "type": "object" } }))
         );
         assert!(OutputStrategy::Text.response_format().is_none());
-        assert!(OutputStrategy::SubmitResultJson { schema: None }
-            .response_format()
-            .is_none());
+        assert!(
+            OutputStrategy::SubmitResultJson { schema: None }
+                .response_format()
+                .is_none()
+        );
     }
 
     #[test]
@@ -164,8 +166,10 @@ mod tests {
         let fallback = OutputStrategy::SubmitResultJson { schema: None };
         assert!(fallback.submit_result_tool().is_some());
         assert!(OutputStrategy::Text.submit_result_tool().is_none());
-        assert!(OutputStrategy::ProviderNativeJson { schema: None }
-            .submit_result_tool()
-            .is_none());
+        assert!(
+            OutputStrategy::ProviderNativeJson { schema: None }
+                .submit_result_tool()
+                .is_none()
+        );
     }
 }

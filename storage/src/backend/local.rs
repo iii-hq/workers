@@ -11,12 +11,12 @@ use crate::events::dispatcher::EventDispatcher;
 use crate::events::normalize::{EventKind, ObjectEventNormalized};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
 use hmac::{Hmac, Mac};
@@ -31,7 +31,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
@@ -723,10 +723,10 @@ impl LocalBackend {
                     pending.metadata_path.display()
                 ))
             })?;
-        if let Some(previous) = previous {
-            if previous.data_file != stored.data_file {
-                let _ = tokio::fs::remove_file(self.store.data_path(&previous.data_file)).await;
-            }
+        if let Some(previous) = previous
+            && previous.data_file != stored.data_file
+        {
+            let _ = tokio::fs::remove_file(self.store.data_path(&previous.data_file)).await;
         }
         self.emit_created(&stored);
         Ok(stored)
@@ -944,14 +944,14 @@ impl Backend for LocalBackend {
                 continue;
             }
             let remainder = &metadata.key[req.prefix.len()..];
-            if let Some(delimiter) = delimiter {
-                if let Some(index) = remainder.find(delimiter) {
-                    let prefix = format!("{}{}", req.prefix, &remainder[..index + delimiter.len()]);
-                    entries
-                        .entry((prefix.clone(), 0))
-                        .or_insert(ListEntry::Prefix(prefix));
-                    continue;
-                }
+            if let Some(delimiter) = delimiter
+                && let Some(index) = remainder.find(delimiter)
+            {
+                let prefix = format!("{}{}", req.prefix, &remainder[..index + delimiter.len()]);
+                entries
+                    .entry((prefix.clone(), 0))
+                    .or_insert(ListEntry::Prefix(prefix));
+                continue;
             }
             let key = metadata.key.clone();
             entries.insert((key, 1), ListEntry::Object(metadata));

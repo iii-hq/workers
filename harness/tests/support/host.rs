@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The engine's `workerregistered`, advertising the observe features.
 pub fn hello() -> Value {

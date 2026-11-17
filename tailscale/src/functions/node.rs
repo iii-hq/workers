@@ -14,10 +14,10 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::peers::{parse_prefs, up_args};
-use super::share::{normalize_routes, serve_status, Route};
+use super::share::{Route, normalize_routes, serve_status};
 use super::{
-    bool_at, register_fn, run, run_json, run_text, spec, string_at, strings_at, EmptyInput,
-    FunctionSpec,
+    EmptyInput, FunctionSpec, bool_at, register_fn, run, run_json, run_text, spec, string_at,
+    strings_at,
 };
 use crate::config::{SharedConfig, WorkerConfig};
 
@@ -431,7 +431,7 @@ async fn status(config: &WorkerConfig, _: EmptyInput) -> Result<StatusOutput, St
                 exit_node: None,
                 routes: vec![],
                 error: Some(error),
-            })
+            });
         }
     };
     let routes = serve_status(config)

@@ -20,8 +20,7 @@ use crate::reconcile::{correction_reason, output_schema, oversized_result, valid
 use crate::types::{WorkflowDef, WorkflowRunRecord};
 
 pub const SUBMIT_ID: &str = "workflow-result::submit";
-pub const SUBMIT_DESC: &str =
-    "Deliver this workflow node's result: call it once with {\"result\": <the JSON value your \
+pub const SUBMIT_DESC: &str = "Deliver this workflow node's result: call it once with {\"result\": <the JSON value your \
      node's output schema requires>}. An error names what to fix: call it again. Once it is \
      accepted, end your turn with one short line, not the JSON. Only a workflow node's own \
      session can call it.";
@@ -187,15 +186,19 @@ mod tests {
     fn text_nodes_strangers_and_finished_runs_are_refused() {
         let d = def();
         let r = record(&[("t", NodeState::Running, "wf_r_1_t@r0")]);
-        assert!(submitting_node(&r, &d, "wf_r_1_t@r0")
-            .unwrap_err()
-            .contains("answers in text"));
+        assert!(
+            submitting_node(&r, &d, "wf_r_1_t@r0")
+                .unwrap_err()
+                .contains("answers in text")
+        );
         assert!(submitting_node(&r, &d, "wf_r_1_x@r0").is_err());
         let mut done = record(&[("j", NodeState::Running, "wf_r_1_j@r0")]);
         done.status = RunStatus::Completed;
-        assert!(submitting_node(&done, &d, "wf_r_1_j@r0")
-            .unwrap_err()
-            .contains("finished"));
+        assert!(
+            submitting_node(&done, &d, "wf_r_1_j@r0")
+                .unwrap_err()
+                .contains("finished")
+        );
     }
 
     #[test]
@@ -208,8 +211,10 @@ mod tests {
         // A submitted string is a string, not JSON text to parse.
         assert!(check_result(&output, &json!("{\"n\": 7}")).is_err());
         assert!(check_result(&json!({"type": "json", "schema": null}), &json!("any")).is_ok());
-        assert!(check_result(&json!({"type": "json"}), &Value::Null)
-            .unwrap_err()
-            .contains("null"));
+        assert!(
+            check_result(&json!({"type": "json"}), &Value::Null)
+                .unwrap_err()
+                .contains("null")
+        );
     }
 }

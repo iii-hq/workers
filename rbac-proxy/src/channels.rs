@@ -21,7 +21,7 @@ use futures_util::stream::StreamExt;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 
 use crate::endpoints::{endpoint_exposed, upstream_url};
-use crate::proxy::{axum_to_tungstenite, tungstenite_to_axum, ActiveGuard};
+use crate::proxy::{ActiveGuard, axum_to_tungstenite, tungstenite_to_axum};
 use crate::server::ProxyState;
 
 /// Relay a channel socket to the engine's `/ws/channels/{channel_id}` with
@@ -106,10 +106,10 @@ pub async fn relay(
     let client_to_engine = async {
         while let Some(Ok(msg)) = client_rx.next().await {
             let is_close = matches!(msg, AxumMessage::Close(_));
-            if let Some(out) = axum_to_tungstenite(msg) {
-                if engine_tx.send(out).await.is_err() {
-                    break;
-                }
+            if let Some(out) = axum_to_tungstenite(msg)
+                && engine_tx.send(out).await.is_err()
+            {
+                break;
             }
             if is_close {
                 break;
@@ -121,10 +121,10 @@ pub async fn relay(
     let engine_to_client = async {
         while let Some(Ok(msg)) = engine_rx.next().await {
             let is_close = matches!(msg, TungMessage::Close(_));
-            if let Some(out) = tungstenite_to_axum(msg) {
-                if client_tx.send(out).await.is_err() {
-                    break;
-                }
+            if let Some(out) = tungstenite_to_axum(msg)
+                && client_tx.send(out).await.is_err()
+            {
+                break;
             }
             if is_close {
                 break;

@@ -7,12 +7,12 @@
 use crate::auth;
 use crate::catalog::model_from_row;
 use crate::errors::upstream_unavailable;
-use crate::exchange::{fresh_bearer, BearerCache, ExchangeError, DEFAULT_TOKEN_URL};
+use crate::exchange::{BearerCache, DEFAULT_TOKEN_URL, ExchangeError, fresh_bearer};
 use crate::request::client_headers;
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
@@ -244,10 +244,10 @@ fn dedupe_snapshots(models: Vec<Model>) -> Vec<Model> {
     kept.into_iter()
         .map(|mut m| {
             let n = name(&m);
-            if counts[&n] > 1 {
-                if let Some(sfx) = suffix(&m) {
-                    m.display_name = Some(format!("{n} ({sfx})"));
-                }
+            if counts[&n] > 1
+                && let Some(sfx) = suffix(&m)
+            {
+                m.display_name = Some(format!("{n} ({sfx})"));
             }
             m
         })
@@ -350,9 +350,9 @@ pub fn make_refresh_models(
     http: reqwest::Client,
     cache: BearerCache,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let (iii, http, cache) = (iii.clone(), http.clone(), cache.clone());
         Box::pin(async move {

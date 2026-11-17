@@ -23,9 +23,9 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::consolidate::{call, BankReport, ConsolidationTransport, MemoryRow};
+use crate::consolidate::{BankReport, ConsolidationTransport, MemoryRow, call};
 
 /// Static system prompt (identical for every bank and batch, so providers
 /// can cache it).
@@ -75,7 +75,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    fn of(row: &MemoryRow) -> Self {
+    pub(crate) fn of(row: &MemoryRow) -> Self {
         Cursor {
             updated_at: row.updated_at,
             id: row.id.clone(),
@@ -107,10 +107,11 @@ pub fn interleave<'a>(
     let mut seen: HashSet<&str> = HashSet::from([self_id]);
     for i in 0..lexical.len().max(semantic.len()) {
         for arm in [lexical, semantic] {
-            if let Some(r) = arm.get(i) {
-                if out.len() < cap && seen.insert(r.id.as_str()) {
-                    out.push(r);
-                }
+            if let Some(r) = arm.get(i)
+                && out.len() < cap
+                && seen.insert(r.id.as_str())
+            {
+                out.push(r);
             }
         }
     }
@@ -271,16 +272,19 @@ pub fn parse_actions(text: &str) -> Result<Vec<RawAction>, String> {
     struct Reply {
         actions: Vec<RawAction>,
     }
-    let trimmed = text.trim();
-    let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) else {
-        return Err("judge reply has no JSON object".into());
-    };
-    if end < start {
-        return Err("judge reply has no JSON object".into());
-    }
-    serde_json::from_str::<Reply>(&trimmed[start..=end])
+    serde_json::from_str::<Reply>(json_object(text)?)
         .map(|r| r.actions)
         .map_err(|e| format!("unparseable judge reply: {e}"))
+}
+
+/// The reply from its first `{` to its last `}` (models wrap JSON in prose
+/// or fences).
+pub(crate) fn json_object(text: &str) -> Result<&str, String> {
+    let trimmed = text.trim();
+    match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(start), Some(end)) if start <= end => Ok(&trimmed[start..=end]),
+        _ => Err("judge reply has no JSON object".into()),
+    }
 }
 
 /// How one `router::complete` attempt ended.
@@ -976,17 +980,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok[0].id, "x");
-        assert!(read_arm(
-            &json!({"retrieval": "semantic-unavailable", "memories": []}),
-            "semantic"
-        )
-        .is_err());
+        assert!(
+            read_arm(
+                &json!({"retrieval": "semantic-unavailable", "memories": []}),
+                "semantic"
+            )
+            .is_err()
+        );
         // An older memory worker ignores `mode` and answers hybrid.
-        assert!(read_arm(
-            &json!({"retrieval": "bm25-entity", "memories": []}),
-            "lexical"
-        )
-        .is_err());
+        assert!(
+            read_arm(
+                &json!({"retrieval": "bm25-entity", "memories": []}),
+                "lexical"
+            )
+            .is_err()
+        );
     }
 
     #[test]

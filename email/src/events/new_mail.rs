@@ -3,7 +3,7 @@
 //! `(account, folder)` calls it once per new message; observers select
 //! messages with filters on `input.account` and `input.folder`.
 
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, RegisterFunction, errors::Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -12,8 +12,7 @@ use super::Event;
 /// Id of the function observers observe for new mail.
 pub const ON_NEW_MAIL_FN: &str = "email::on-new-mail";
 
-pub const ON_NEW_MAIL_DESCRIPTION: &str =
-    "Called once per message IMAP IDLE pushes to a configured (account, folder); returns \
+pub const ON_NEW_MAIL_DESCRIPTION: &str = "Called once per message IMAP IDLE pushes to a configured (account, folder); returns \
      the event: { account, folder, uid, message_id, from, subject, snippet, ts }. Observe it \
      with filters on input.account and input.folder. Only the email worker calls it. If the \
      IMAP server lacks the IDLE capability, the account fails at startup (E610).";

@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{WorkerConfig, DEFAULT_TENANT};
-use crate::simctl::{is_udid, DeviceSet};
+use crate::config::{DEFAULT_TENANT, WorkerConfig};
+use crate::simctl::{DeviceSet, is_udid};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tenant {
@@ -39,7 +39,7 @@ pub fn resolve(
     let name = match requested.map(str::trim).filter(|s| !s.is_empty()) {
         Some(name) => name,
         None if cfg.require_tenant => {
-            return Err("tenant is required (the worker is configured with require_tenant)".into())
+            return Err("tenant is required (the worker is configured with require_tenant)".into());
         }
         None => DEFAULT_TENANT,
     };

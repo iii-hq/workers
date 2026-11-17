@@ -7,12 +7,12 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallAction, CallRequest, IIIClient, InvocationCtx, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::PUBLISH_FUNCTION_ID;
 use crate::adapters::{self, Relay};
 use crate::config::PubSubConfig;
 use crate::hub::Hub;
-use crate::PUBLISH_FUNCTION_ID;
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_PUBSUB_WORKER_ID: &str = "iii-pubsub";
@@ -218,9 +218,11 @@ mod tests {
 
     #[test]
     fn publish_response_schema_is_typed_null() {
-        assert!(serde_json::to_value(PubSubPublishResponse)
-            .unwrap()
-            .is_null());
+        assert!(
+            serde_json::to_value(PubSubPublishResponse)
+                .unwrap()
+                .is_null()
+        );
 
         let schema = serde_json::to_value(schemars::schema_for!(PubSubPublishResponse)).unwrap();
         assert_eq!(schema.get("type"), Some(&serde_json::json!("null")));
@@ -261,9 +263,11 @@ mod tests {
             serde_json::to_value(&parsed).unwrap(),
             serde_json::json!({"topic": "orders", "data": {"id": 1}})
         );
-        assert!(input(serde_json::json!({"topic": "t", "data": null}))
-            .caller_worker_id
-            .is_none());
+        assert!(
+            input(serde_json::json!({"topic": "t", "data": null}))
+                .caller_worker_id
+                .is_none()
+        );
 
         // Advertised request format unchanged: only `topic` and `data`.
         let schema = serde_json::to_value(schemars::schema_for!(PubSubInput)).unwrap();
@@ -330,13 +334,15 @@ mod tests {
         .unwrap();
         assert!(serde_json::to_value(out).unwrap().is_null());
         assert!(adapter.published.lock().unwrap().is_empty());
-        assert!(handle_publish(
-            &hub,
-            input(serde_json::json!({"topic": "", "data": 1})),
-            true
-        )
-        .await
-        .is_err());
+        assert!(
+            handle_publish(
+                &hub,
+                input(serde_json::json!({"topic": "", "data": 1})),
+                true
+            )
+            .await
+            .is_err()
+        );
     }
 
     fn ctx(metadata: Option<Value>) -> InvocationCtx {

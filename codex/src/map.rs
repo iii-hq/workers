@@ -2,7 +2,7 @@
 //! `codex::on-agent-event`. Command/patch/mcp/web items become function_execution
 //! frames; agent_message/reasoning become message_complete.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::codex::events_types::{CommandExecutionItem, McpToolCallItem, ThreadItemDetails};
 use crate::wire::Usage as WireUsage;

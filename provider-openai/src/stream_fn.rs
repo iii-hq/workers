@@ -1,25 +1,25 @@
 //! The `provider::openai::stream` iii function (spec § Provider stream
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
-use crate::config::{config_from_resolve, ApiMode};
+use crate::config::{ApiMode, config_from_resolve};
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
 use crate::request::{
-    build_body, build_headers, cache_retention, supports_explicit_cache_breakpoints,
-    supports_extended_cache_retention, BodyArgs,
+    BodyArgs, build_body, build_headers, cache_retention, supports_explicit_cache_breakpoints,
+    supports_extended_cache_retention,
 };
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
-use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
+use llm_router::provider_scaffold::pump::{PING_INTERVAL, pump, pump_abortable, send_event};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{PromptCacheIntent, ProviderStreamInput, ProviderStreamOutput};
 
@@ -63,9 +63,9 @@ pub fn make_stream(
     cache: ScaffoldCache,
     aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {

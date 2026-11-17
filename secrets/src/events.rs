@@ -14,8 +14,8 @@ use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::ids::ON_CHANGED;
 use crate::api::StoreKind;
+use crate::api::ids::ON_CHANGED;
 use crate::names::{reference_for, split_reference};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,10 +125,12 @@ mod tests {
             json!({"name":"A","ref":"secret://A","action":"access_changed","fingerprint":"00ff","updated_at":"t"})
         );
         let deleted = ChangedEvent::new("A", ChangeAction::Deleted, None, "t");
-        assert!(serde_json::to_value(deleted)
-            .unwrap()
-            .get("fingerprint")
-            .is_none());
+        assert!(
+            serde_json::to_value(deleted)
+                .unwrap()
+                .get("fingerprint")
+                .is_none()
+        );
         let env = ChangedEvent::env("A", ChangeAction::Rotated, "t");
         assert_eq!(env.store(), StoreKind::Env);
         assert_eq!(

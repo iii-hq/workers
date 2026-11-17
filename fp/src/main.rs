@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
 
 use fp::{batch, condition, configuration, guidance, pipe, util};
 

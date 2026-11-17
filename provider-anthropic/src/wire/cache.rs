@@ -3,7 +3,7 @@
 //! (one whose tool_uses all have downstream tool_results — an unstable
 //! anchor would be invalidated next turn).
 use llm_router::types::router::PromptSection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Below this many chars a prefix isn't worth a cache write.
 pub const CACHE_MIN_CHARS: usize = 4096;
@@ -147,11 +147,10 @@ pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool, ttl: Optio
                 .rev()
                 .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         })
+        && let Some(obj) = block.as_object_mut()
     {
-        if let Some(obj) = block.as_object_mut() {
-            obj.insert("cache_control".into(), ephemeral_ttl(ttl));
-            return;
-        }
+        obj.insert("cache_control".into(), ephemeral_ttl(ttl));
+        return;
     }
     let Some(last_stable) = (0..wire.len())
         .rev()

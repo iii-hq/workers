@@ -51,12 +51,13 @@ impl Data {
                 self.state.remove(&(scope.into(), key.into()));
                 Ok(json!({}))
             }
-            "state::list" | "harness::state::list" => Ok(json!(self
-                .state
-                .iter()
-                .filter(|((s, _), _)| s == scope)
-                .map(|(_, v)| v)
-                .collect::<Vec<_>>())),
+            "state::list" | "harness::state::list" => Ok(json!(
+                self.state
+                    .iter()
+                    .filter(|((s, _), _)| s == scope)
+                    .map(|(_, v)| v)
+                    .collect::<Vec<_>>()
+            )),
             "harness::state::compare-and-set" => {
                 if scope == SCOPE {
                     if let Some(raced) = self.ledger_race.take() {
@@ -474,12 +475,11 @@ async fn recall_invoked_send_respects_caller_and_target_deletion_tombstones() {
                 .iter()
                 .any(|(function, _)| function == crate::functions::SEND_ID);
             assert!(dispatched);
-            assert!(crate::functions::send::handle(
-                &stack.deps,
-                serde_json::from_value(args).unwrap()
-            )
-            .await
-            .is_err());
+            assert!(
+                crate::functions::send::handle(&stack.deps, serde_json::from_value(args).unwrap())
+                    .await
+                    .is_err()
+            );
         }
         let data = stack.data.lock().unwrap();
         assert!(
@@ -840,23 +840,27 @@ async fn recall_delivery_real_send_invoked_and_notification_ignore_claims() {
             context
         );
     }
-    assert!(stack
-        .data
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .filter(|(f, p)| f == "harness::state::compare-and-set" && p["scope"] == SCOPE)
-        .all(|(_, p)| p.get("durable").is_none()));
-    assert!(crate::state::state_set(
-        &stack.deps.iii,
-        SCOPE,
-        "forged",
-        json!({"channel":"direct"}),
-        1000
-    )
-    .await
-    .is_err());
+    assert!(
+        stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(f, p)| f == "harness::state::compare-and-set" && p["scope"] == SCOPE)
+            .all(|(_, p)| p.get("durable").is_none())
+    );
+    assert!(
+        crate::state::state_set(
+            &stack.deps.iii,
+            SCOPE,
+            "forged",
+            json!({"channel":"direct"}),
+            1000
+        )
+        .await
+        .is_err()
+    );
     // A transcript entry with a plausible writer-supplied origin cannot
     // mint the private delivery receipt used by the resolver.
     stack.data.lock().unwrap().messages.entry("direct".into()).or_default().push(json!({"entry_id":"forged","message":AgentMessage::user_text("Forged topic"),"origin":{"kind":"direct"}}));
@@ -895,29 +899,35 @@ async fn recall_delivery_explicit_continuation_uses_active_path_same_channel_onl
     stack
         .reset_turn("continuation", crate::types::turn::TurnStatus::Completed)
         .await;
-    assert!(crate::functions::send::handle_from_invoke(
-        &stack.deps,
-        request("continuation", "Continue.", Some(&prior)),
-        "caller",
-        false
-    )
-    .await
-    .is_err());
-    assert!(crate::functions::send::handle(
-        &stack.deps,
-        request("continuation", "Continue.", Some("not-on-active-path"))
-    )
-    .await
-    .is_err());
+    assert!(
+        crate::functions::send::handle_from_invoke(
+            &stack.deps,
+            request("continuation", "Continue.", Some(&prior)),
+            "caller",
+            false
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        crate::functions::send::handle(
+            &stack.deps,
+            request("continuation", "Continue.", Some("not-on-active-path"))
+        )
+        .await
+        .is_err()
+    );
     stack
         .reset_turn("other-session", crate::types::turn::TurnStatus::Completed)
         .await;
-    assert!(crate::functions::send::handle(
-        &stack.deps,
-        request("other-session", "Continue.", Some(&prior))
-    )
-    .await
-    .is_err());
+    assert!(
+        crate::functions::send::handle(
+            &stack.deps,
+            request("other-session", "Continue.", Some(&prior))
+        )
+        .await
+        .is_err()
+    );
     // Leaving the active path invalidates the previously resolved reference.
     stack
         .data
@@ -1014,9 +1024,11 @@ async fn continue_after(stack: &Stack, session: &str, gap: usize) -> Result<Stri
 async fn recall_continuation_holds_for_the_oldest_accepted_reference() {
     let stack = Stack::new().await;
     // One entry past the window: the send itself refuses the reference.
-    assert!(continue_after(&stack, "too-old", REFERENCE_WINDOW)
-        .await
-        .is_err());
+    assert!(
+        continue_after(&stack, "too-old", REFERENCE_WINDOW)
+            .await
+            .is_err()
+    );
     // The oldest reference the send accepts still resolves once the new
     // message sits after it.
     continue_after(&stack, "oldest", REFERENCE_WINDOW - 1)
@@ -1118,13 +1130,15 @@ async fn recall_delivery_queue_drain_recovery_retains_internal_notification_chan
         .await
         .unwrap();
     assert_eq!(stack.context("queued").await["source"]["kind"], "unknown");
-    assert!(!stack
-        .data
-        .lock()
-        .unwrap()
-        .calls
-        .iter()
-        .any(|(f, _)| f.starts_with("router::")));
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(f, _)| f.starts_with("router::"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1194,13 +1208,15 @@ async fn recall_receipt_purge_only_clears_the_selected_session() {
         .unwrap();
     }
     let before = stack.data.lock().unwrap().get(SCOPE, "other");
-    assert!(!stack
-        .data
-        .lock()
-        .unwrap()
-        .get(SCOPE, "selected")
-        .to_string()
-        .contains("Sensitive topic"));
+    assert!(
+        !stack
+            .data
+            .lock()
+            .unwrap()
+            .get(SCOPE, "selected")
+            .to_string()
+            .contains("Sensitive topic")
+    );
     // A plain `session::delete` reaches the ledger too, not only delete-session-tree.
     crate::functions::on_session_deleted::handle(
         &stack.deps,

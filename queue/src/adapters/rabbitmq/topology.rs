@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use lapin::{
+    Channel,
     options::*,
     types::{AMQPValue, FieldTable},
-    Channel,
 };
 
 use super::naming::{FnQueueNames, RabbitNames};

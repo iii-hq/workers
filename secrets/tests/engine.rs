@@ -17,8 +17,8 @@ use secrets::crypto::MasterKey;
 use secrets::detect::Detector;
 use secrets::keys::EnvKey;
 use secrets::{Ctx, Store, StorePaths};
-use serde_json::{json, Value};
-use support::{connect, invoke, wait_for, Engine};
+use serde_json::{Value, json};
+use support::{Engine, connect, invoke, wait_for};
 use tokio::sync::mpsc;
 
 const VALUE: &str = "sk-ant-api03-engine-test-value-0000";

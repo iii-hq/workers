@@ -14,10 +14,10 @@
 
 use super::normalize::EventKind;
 use super::object_created::{
-    ObjectCreatedEvent, ON_OBJECT_CREATED_DESCRIPTION, ON_OBJECT_CREATED_FN,
+    ON_OBJECT_CREATED_DESCRIPTION, ON_OBJECT_CREATED_FN, ObjectCreatedEvent,
 };
 use super::object_deleted::{
-    ObjectDeletedEvent, ON_OBJECT_DELETED_DESCRIPTION, ON_OBJECT_DELETED_FN,
+    ON_OBJECT_DELETED_DESCRIPTION, ON_OBJECT_DELETED_FN, ObjectDeletedEvent,
 };
 use iii_sdk::errors::Error;
 use iii_sdk::{Call, CallRequest, IIIClient, Match, ObserveRejection, Observer, RegisterFunction};
@@ -257,10 +257,12 @@ mod tests {
             serde_json::from_value(json!({ "bucket": "uploads", "handler_timeout_ms": 5000 }))
                 .unwrap();
         assert_eq!(args.handler_timeout_ms(), 5_000);
-        assert!(serde_json::from_value::<ObjectArgs>(
-            json!({ "bucket": "uploads", "bucket_name": "x" })
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<ObjectArgs>(
+                json!({ "bucket": "uploads", "bucket_name": "x" })
+            )
+            .is_err()
+        );
         assert!(serde_json::from_value::<ObjectArgs>(json!({})).is_err());
     }
 

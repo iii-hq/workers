@@ -47,13 +47,13 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
 use crate::engine_overrides::{self, CatalogCache, OverrideOutcome};
-use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
+use crate::rbac::{self, DEFAULT_NAMESPACE, ProxySession};
 
 /// Worker → engine frame types the proxy forwards (after gating the ones it
 /// rewrites). Any other type is dropped.
@@ -946,7 +946,7 @@ impl Interceptor {
             Some(Some(observer_id)) => {
                 return self
                     .on_observer_call(v, &observer_id, &function_id, inv_id)
-                    .await
+                    .await;
             }
             Some(None) => {
                 // Malformed: the engine reads it as absent. It is removed, so
@@ -1468,10 +1468,10 @@ impl Interceptor {
                 }
             }
             "observerstatechanged" => {
-                if v.get("state").and_then(Value::as_str) == Some("disposed") {
-                    if let Some(id) = v.get("id").and_then(Value::as_str) {
-                        self.observers.lock().await.created.remove(id);
-                    }
+                if v.get("state").and_then(Value::as_str) == Some("disposed")
+                    && let Some(id) = v.get("id").and_then(Value::as_str)
+                {
+                    self.observers.lock().await.created.remove(id);
                 }
                 UpstreamAction::Forward(v.to_string())
             }
@@ -1516,10 +1516,11 @@ impl Interceptor {
                 .get(observer_id)
                 .copied()
                 .unwrap_or(false);
-            if envelope && carries_its_envelope(&v) {
-                if let Some(data) = v.get_mut("data") {
-                    self.strip_field(data, "function_id");
-                }
+            if envelope
+                && carries_its_envelope(&v)
+                && let Some(data) = v.get_mut("data")
+            {
+                self.strip_field(data, "function_id");
             }
         }
 
@@ -2262,19 +2263,21 @@ mod tests {
         assert_eq!(o["id"], "tenant1::cron::on-tick");
         assert_eq!(o["private"], true);
         assert_eq!(o["args_format"], frame["args_format"]);
-        assert!(i
-            .private_ids
-            .lock()
-            .await
-            .contains("tenant1::cron::on-tick"));
+        assert!(
+            i.private_ids
+                .lock()
+                .await
+                .contains("tenant1::cron::on-tick")
+        );
 
         // Registered again without `private`: no longer one of them.
         register(&i, "cron::on-tick").await;
-        assert!(!i
-            .private_ids
-            .lock()
-            .await
-            .contains("tenant1::cron::on-tick"));
+        assert!(
+            !i.private_ids
+                .lock()
+                .await
+                .contains("tenant1::cron::on-tick")
+        );
 
         let not_observable =
             json!({ "type": "registerfunction", "id": "vault::read", "observable": false });
@@ -2627,10 +2630,12 @@ mod tests {
             assert_eq!(r["id"], OBSERVER_ID);
             assert_eq!(r["state"], "error");
             assert_eq!(r["error"]["code"], "FORBIDDEN");
-            assert!(r["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("add to rbac.expose_functions"));
+            assert!(
+                r["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("add to rbac.expose_functions")
+            );
         }
     }
 
@@ -3644,9 +3649,11 @@ mod tests {
         assert_eq!(res["proxied"], true);
         // No version: a client has no use for it, a scanner does.
         assert!(res.get("proxy_version").is_none(), "{res}");
-        assert!(res["session_id"]
-            .as_str()
-            .is_some_and(|s| Uuid::parse_str(s).is_ok()));
+        assert!(
+            res["session_id"]
+                .as_str()
+                .is_some_and(|s| Uuid::parse_str(s).is_ok())
+        );
         assert_eq!(res["function_registration_prefix"], Value::Null);
         assert_eq!(res["policy"]["auth_function"], false);
         // The globs themselves, for a client to judge; no verdict of the
@@ -3729,9 +3736,11 @@ mod tests {
         frame["action"] = json!({ "type": "void" });
         let r = reply(i.handle_downstream(&frame.to_string()).await);
         assert_eq!(r["result"]["proxied"], true);
-        assert!(r["invocation_id"]
-            .as_str()
-            .is_some_and(|s| Uuid::parse_str(s).is_ok()));
+        assert!(
+            r["invocation_id"]
+                .as_str()
+                .is_some_and(|s| Uuid::parse_str(s).is_ok())
+        );
     }
 
     #[tokio::test]

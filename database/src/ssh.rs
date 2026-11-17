@@ -156,14 +156,14 @@ impl Drop for Inner {
     fn drop(&mut self) {
         // Close the session politely when the last user goes away; dropping
         // the handle alone also ends it.
-        if let Some(handle) = self.session.get_mut().take() {
-            if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                rt.spawn(async move {
-                    let _ = handle
-                        .disconnect(russh::Disconnect::ByApplication, "", "en")
-                        .await;
-                });
-            }
+        if let Some(handle) = self.session.get_mut().take()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(async move {
+                let _ = handle
+                    .disconnect(russh::Disconnect::ByApplication, "", "en")
+                    .await;
+            });
         }
     }
 }
@@ -272,10 +272,10 @@ impl SshTunnel {
 /// The live session, opening one when there is none or the last one closed.
 async fn session(inner: &Arc<Inner>) -> Result<Arc<Handle<Checker>>, TunnelError> {
     let mut guard = inner.session.lock().await;
-    if let Some(handle) = guard.as_ref() {
-        if !handle.is_closed() {
-            return Ok(handle.clone());
-        }
+    if let Some(handle) = guard.as_ref()
+        && !handle.is_closed()
+    {
+        return Ok(handle.clone());
     }
     *guard = None;
     let handle = match tokio::time::timeout(CONNECT_TIMEOUT, connect(inner)).await {
@@ -341,7 +341,7 @@ async fn connect(inner: &Arc<Inner>) -> Result<Handle<Checker>, TunnelError> {
             return Err(TunnelError::new(
                 TunnelErrorKind::Connect,
                 format!("cannot reach the SSH server {}:{}: {e}", s.host, s.port),
-            ))
+            ));
         }
     };
 
@@ -368,15 +368,13 @@ async fn connect(inner: &Arc<Inner>) -> Result<Handle<Checker>, TunnelError> {
             .map_err(|e| auth_transport_error(s, e))?;
         authenticated = result.success();
     }
-    if !authenticated {
-        if let Some(password) = &s.password {
-            tried.push("password");
-            let result = handle
-                .authenticate_password(s.user.clone(), password.expose())
-                .await
-                .map_err(|e| auth_transport_error(s, e))?;
-            authenticated = result.success();
-        }
+    if !authenticated && let Some(password) = &s.password {
+        tried.push("password");
+        let result = handle
+            .authenticate_password(s.user.clone(), password.expose())
+            .await
+            .map_err(|e| auth_transport_error(s, e))?;
+        authenticated = result.success();
     }
     if !authenticated {
         return Err(TunnelError::new(
@@ -456,7 +454,7 @@ async fn open_channel(
                         s.target_port,
                         channel_failure_reason(&reason)
                     ),
-                ))
+                ));
             }
             Err(e) if attempt == 0 => {
                 // A dead session that has not noticed yet: drop it and
@@ -471,7 +469,7 @@ async fn open_channel(
                 return Err(TunnelError::new(
                     TunnelErrorKind::Connect,
                     format!("SSH session to {}:{} failed: {e}", s.host, s.port),
-                ))
+                ));
             }
         }
     }
@@ -492,7 +490,7 @@ fn channel_failure_reason(reason: &russh::ChannelOpenFailure) -> String {
 
 /// Decode an OpenSSH or PEM private key. The error never quotes the key.
 pub fn decode_private_key(pem: &str, passphrase: Option<&str>) -> Result<PrivateKey, String> {
-    use russh::keys::{ssh_encoding, ssh_key, Error};
+    use russh::keys::{Error, ssh_encoding, ssh_key};
     let decoded = match russh::keys::decode_secret_key(pem, passphrase) {
         Err(e @ Error::SshKey(ssh_key::Error::Encoding(ssh_encoding::Error::Length))) => {
             decode_short_ecdsa_scalar(pem, passphrase).ok_or(e)
@@ -530,7 +528,7 @@ pub fn decode_private_key(pem: &str, passphrase: Option<&str>) -> Result<Private
 fn decode_short_ecdsa_scalar(pem: &str, passphrase: Option<&str>) -> Option<PrivateKey> {
     use base64::Engine as _;
     use russh::keys::ssh_encoding::{Decode, Encode, Reader};
-    use russh::keys::ssh_key::{cipher::Tag, Cipher, Kdf};
+    use russh::keys::ssh_key::{Cipher, Kdf, cipher::Tag};
 
     const MAGIC: &[u8] = b"openssh-key-v1\0";
     // The base64 lines between the markers, picked the way russh picks them.

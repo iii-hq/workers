@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::terminal::{self, TerminalManager};

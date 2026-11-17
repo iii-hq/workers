@@ -96,7 +96,7 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use crate::core::estimate::{estimate_messages, Estimator, HeuristicEstimator};
+    use crate::core::estimate::{Estimator, HeuristicEstimator, estimate_messages};
     use crate::types::{AgentFunction, AgentMessage};
     use serde_json::json;
 
@@ -120,12 +120,14 @@ mod tests {
             }))
             .unwrap(),
         ];
-        let tools: Vec<AgentFunction> = vec![serde_json::from_value(json!({
-            "name": "agent_call",
-            "description": "Run an agent function",
-            "parameters": { "type": "object" }
-        }))
-        .unwrap()];
+        let tools: Vec<AgentFunction> = vec![
+            serde_json::from_value(json!({
+                "name": "agent_call",
+                "description": "Run an agent function",
+                "parameters": { "type": "object" }
+            }))
+            .unwrap(),
+        ];
         let prompt = "system prompt";
         let overhead = 37u64;
         let estimator = HeuristicEstimator;

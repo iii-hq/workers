@@ -27,7 +27,7 @@ pub mod store;
 pub mod vault;
 
 pub use error::SecretsError;
-pub use functions::{register, Ctx};
+pub use functions::{Ctx, register};
 pub use secret::SecretString;
 pub use store::{Store, StorePaths};
 
@@ -35,7 +35,11 @@ pub use store::{Store, StorePaths};
 /// (`iii.invocation.input` / `iii.invocation.output`), redacting only keys
 /// such as `api_key` or `secret`, not `value`. `secrets::set` receives a
 /// value and `secrets::resolve` returns one, so this worker always turns
-/// payload capture off. Call before any thread is spawned.
-pub fn disable_trace_payloads() {
-    std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1");
+/// payload capture off.
+///
+/// # Safety
+/// The entire process must be single-threaded.
+pub unsafe fn disable_trace_payloads() {
+    // SAFETY: the caller guarantees the process is single-threaded.
+    unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
 }

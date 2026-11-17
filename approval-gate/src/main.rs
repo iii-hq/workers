@@ -29,7 +29,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Capture, InitOptions, Source};
+use iii_sdk::{Capture, InitOptions, Source, register_worker};
 use tokio::sync::RwLock;
 
 use approval_gate::configuration::{self, ConfigCell};

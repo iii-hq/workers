@@ -12,7 +12,7 @@ pub use iii_llama_runtime::scorer::{Options, Outcome, Stop};
 use iii_llama_runtime::scorer::{Render, Scorer, Vocab};
 use std::{
     cell::OnceCell,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     time::Instant,
 };
 use tokio::sync::oneshot;

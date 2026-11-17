@@ -17,13 +17,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapters::{log as log_adapter, trace as trace_adapter, ErrorEvent};
+use crate::adapters::{ErrorEvent, log as log_adapter, trace as trace_adapter};
 use crate::evidence::EvidenceBundleV1;
 use crate::registry::{EngineRegistry, Registry};
 use crate::store::{Db, OccurrenceWrite, PendingLogWrite, RecordOutcome, Store};
 use crate::{
-    fingerprint, ids, normalize, Counters, ErrorSourceV1, GroupChangeReasonV1, GroupStatusV1,
-    Normalizer, Redactor, SentinelError, TraceStoreStateV1, WorkerConfig,
+    Counters, ErrorSourceV1, GroupChangeReasonV1, GroupStatusV1, Normalizer, Redactor,
+    SentinelError, TraceStoreStateV1, WorkerConfig, fingerprint, ids, normalize,
 };
 
 /// One span-coalesce window of the engine, which broadcasts a span before it
@@ -63,10 +63,10 @@ impl TickBacklog {
     fn push(&mut self, trace_ids: impl IntoIterator<Item = String>) -> u64 {
         let now = tokio::time::Instant::now();
         for trace_id in trace_ids {
-            if !self.waiting.insert(trace_id.clone()) {
-                if let Some(at) = self.ids.iter().position(|(id, _)| id == &trace_id) {
-                    self.ids.remove(at);
-                }
+            if !self.waiting.insert(trace_id.clone())
+                && let Some(at) = self.ids.iter().position(|(id, _)| id == &trace_id)
+            {
+                self.ids.remove(at);
             }
             self.ids.push_back((trace_id, now));
         }
@@ -431,14 +431,13 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
 
         // The span that explains this log may already be recorded: then the
         // log is evidence on that occurrence, not a group of its own.
-        if let Some(trace_id) = log.trace_id.as_deref() {
-            if let Some((occurrence_id, _, evidence)) =
+        if let Some(trace_id) = log.trace_id.as_deref()
+            && let Some((occurrence_id, _, evidence)) =
                 self.store.trace_occurrence(trace_id).await?
-            {
-                self.fold_into(&occurrence_id, evidence, &log, config, &redactor)
-                    .await?;
-                return Ok(report);
-            }
+        {
+            self.fold_into(&occurrence_id, evidence, &log, config, &redactor)
+                .await?;
+            return Ok(report);
         }
 
         let event = log_adapter::event_for(&log, session_id.clone(), &redactor, &mut redactions);
@@ -636,18 +635,18 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             &mut redactions,
         );
         self.counters.add_redactions(redactions);
-        if let Some(entry) = addition.logs.pop() {
-            if !bundle.logs.iter().any(|existing| {
+        if let Some(entry) = addition.logs.pop()
+            && !bundle.logs.iter().any(|existing| {
                 existing.timestamp_unix_nano == entry.timestamp_unix_nano
                     && existing.body == entry.body
-            }) {
-                bundle.logs.push(entry);
-                bundle.fit_within(config.evidence.max_bytes as usize);
-                if let Ok(json) = serde_json::to_string(&bundle) {
-                    self.store
-                        .replace_evidence(occurrence_id, &json, bundle.settled)
-                        .await?;
-                }
+            })
+        {
+            bundle.logs.push(entry);
+            bundle.fit_within(config.evidence.max_bytes as usize);
+            if let Ok(json) = serde_json::to_string(&bundle) {
+                self.store
+                    .replace_evidence(occurrence_id, &json, bundle.settled)
+                    .await?;
             }
         }
         Ok(())

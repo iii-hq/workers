@@ -1,6 +1,6 @@
 //! Port of laya's `render_options` + `build_sequence`:
 //! `[CLS] "<type> question: <ins>" [SEP] [MASK] opt0 [MASK] opt1 … [SEP] <state> [SEP]`.
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
@@ -47,11 +47,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
     fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
         w.write_all(b": ")
@@ -67,11 +63,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
 }
 

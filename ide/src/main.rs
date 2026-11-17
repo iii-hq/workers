@@ -3,7 +3,7 @@ use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use serde_json::Value;
 
 mod calls;
@@ -125,7 +125,7 @@ fn worker_metadata() -> WorkerMetadata {
 /// handler via `request_format`/`response_format` so the engine publishes the
 /// full contract while the handler keeps its legacy `S210` deserialization.
 fn schema_value<T: schemars::JsonSchema>() -> Value {
-    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<T>();
     serde_json::to_value(root).expect("schema serializes")
 }
 
@@ -766,14 +766,24 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
          common: S210 bad path, S211 not found or not accessible, S212 not a directory, \
          S215 jail escape. For recursive listings prefer coder::tree."
     );
-    fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
+    fs_fn!(
+        "shell::fs::stat",
+        fs_stat,
+        fs::StatRequest,
+        fs::StatResponse,
         "Stat one file or directory: its type, size, mode, and mtime (paths jail-relative \
          when fs.host_roots are set). Errors return { code, message }; common: S211 not found or not accessible, \
-         S215 jail escape. coder::read-file with stat: true additionally reports total_lines.");
-    fs_fn!("shell::fs::mkdir", fs_mkdir, fs::MkdirRequest, fs::MkdirResponse,
+         S215 jail escape. coder::read-file with stat: true additionally reports total_lines."
+    );
+    fs_fn!(
+        "shell::fs::mkdir",
+        fs_mkdir,
+        fs::MkdirRequest,
+        fs::MkdirResponse,
         "Create a directory. `mode` is an octal string like \"0755\". `parents: true` creates missing \
          parents and is idempotent. Returns { created, path, already_existed }. Errors return \
-         { code, message }; common: S210 bad mode, S213 exists, S215 jail escape.");
+         { code, message }; common: S210 bad mode, S213 exists, S215 jail escape."
+    );
     fs_fn!(
         "shell::fs::rm",
         fs_rm,
@@ -855,7 +865,7 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = tokio::signal::ctrl_c() => r,
@@ -870,7 +880,7 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ws_host_port, Cli};
+    use super::{Cli, ws_host_port};
     use clap::Parser;
 
     #[cfg(unix)]

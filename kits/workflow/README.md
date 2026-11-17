@@ -2,7 +2,7 @@
 
 Give the **Workflow** agent a goal and a team of agents works it, with the kanban board as the task list and the `workflow` worker running the agents:
 
-1. Unless the goal already names its change, the Workflow agent explores before it plans: one workflow run of explorers, three competing designs, a refuter for each and a planner that writes the plan and the tickets.
+1. The Workflow agent first asks you the decisions only you can make: rounds of one card, up to four questions, each with a recommended answer. Facts it looks up itself, and a goal that leaves nothing open gets no card. Then, unless the goal already names its change, it explores before it plans: one workflow run of explorers, three competing designs, a refuter for each and a planner that writes the plan and the tickets.
 2. The tickets become subtasks of one run ticket. Each wave of ready tickets is one workflow run. Every ticket phase is a node of that run, with its own agent profile and model.
 3. A check node verifies each result. On a `fail` the run loops the work back with the check's reasons, up to `attempts` passes.
 4. Rounds repeat until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
@@ -94,3 +94,4 @@ Watch the run on the board, or open the run ticket's waves with `workflow::statu
 - A node timeout kills that node only; the run reads it as a failed attempt.
 - A run's end reaches the Workflow agent as a `workflow::on-run-completed` notification: a policy that narrows that session's `options.functions` must allow `harness::observe` and `workflow::on-run-completed`.
 - The dev flow keeps the branch unless `approve=on` and the Finish answer says otherwise. The kit never pushes.
+- A Workflow agent started by another session has nobody to ask: the interview takes its recommendations, and a goal that leaves a consequential decision open (scope, compatibility, security, data loss, external cost) ends `blocked` with its questions. State those decisions in the goal.

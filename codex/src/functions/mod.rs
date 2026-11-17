@@ -6,7 +6,7 @@ pub mod types;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::codex;
 use crate::configuration::ConfigCell;
@@ -14,7 +14,7 @@ use crate::state::{list_sessions, load_session, mark_error};
 use types::{RunRequest, SessionIdRequest};
 
 fn schema_value<T: schemars::JsonSchema>() -> Value {
-    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(root).expect("schema serializes");
     // The registry publish validator has no meta-schema registered, so the
     // `$schema` key schemars stamps at the root fails publish. Strip it; the

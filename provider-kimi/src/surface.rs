@@ -14,8 +14,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::kimi::stream";
-pub const STREAM_DESC: &str =
-    "Stream a Kimi (Moonshot) chat completion: resolve credentials, call \
+pub const STREAM_DESC: &str = "Stream a Kimi (Moonshot) chat completion: resolve credentials, call \
      the upstream Chat Completions API, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::kimi::abort";
@@ -27,12 +26,10 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the Kimi catalog slice from GET /
      reconcile it through the router; returns the model count written.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::kimi::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.";
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages} through Moonshot's own estimator endpoint; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::kimi::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

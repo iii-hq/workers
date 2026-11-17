@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use iii_sdk::{CallAction, CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::contract::StepRequestV1;
 use crate::error::EvalError;

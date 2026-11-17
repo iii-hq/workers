@@ -42,14 +42,18 @@ mod tests {
 
         assert_eq!(parsed["name"], env!("CARGO_PKG_NAME"));
         assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
-        assert!(parsed["description"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty()));
+        assert!(
+            parsed["description"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        );
         assert!(parsed["default_config"].is_object());
-        assert!(!parsed["supported_targets"]
-            .as_array()
-            .expect("supported_targets array")
-            .is_empty());
+        assert!(
+            !parsed["supported_targets"]
+                .as_array()
+                .expect("supported_targets array")
+                .is_empty()
+        );
     }
 
     #[test]

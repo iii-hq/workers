@@ -11,7 +11,7 @@ use crate::error::DbError;
 use crate::handle::PinnedConn;
 use crate::handlers::query::err_to_str;
 use crate::pool::Pool;
-use crate::transaction::{driver_system, TxHandleResponse};
+use crate::transaction::{TxHandleResponse, driver_system};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -127,7 +127,7 @@ pub(crate) mod tests {
     use crate::pool::{Pool, SqlitePool};
     use crate::transaction::TxRegistry;
     use iii_helpers::observability::Logger;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;

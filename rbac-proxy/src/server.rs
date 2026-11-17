@@ -10,8 +10,8 @@
 //! (the source of truth `rbac-proxy::status` reports).
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -26,7 +26,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::configuration::ConfigCell;
 use crate::endpoints::{self, Endpoint};
@@ -182,7 +182,11 @@ impl ServerHandle {
                             *cur = Some(spawn_server(listener, self.state.clone()));
                             *self.state.bound.write().await = previous;
                         }
-                        Err(rollback) => return Err(format!("replacement failed: {error:#}; restoring previous listener failed: {rollback:#}")),
+                        Err(rollback) => {
+                            return Err(format!(
+                                "replacement failed: {error:#}; restoring previous listener failed: {rollback:#}"
+                            ));
+                        }
                     }
                 }
                 return Err(format!("binding {host}:{port}: {error:#}"));
@@ -390,10 +394,12 @@ mod tests {
     async fn serve_exposing(patterns: Option<&[&str]>) -> (RunningServer, SocketAddr) {
         let mut cfg = WorkerConfig::default();
         cfg.rbac.expose_endpoints = patterns.map(|patterns| {
-            serde_json::from_value(serde_json::json!(patterns
-                .iter()
-                .map(|p| format!("match(\"{p}\")"))
-                .collect::<Vec<_>>()))
+            serde_json::from_value(serde_json::json!(
+                patterns
+                    .iter()
+                    .map(|p| format!("match(\"{p}\")"))
+                    .collect::<Vec<_>>()
+            ))
             .unwrap()
         });
         let iii = Arc::new(iii_sdk::register_worker(
@@ -465,9 +471,11 @@ mod tests {
         let (tx, addr) = serve_exposing(None).await;
         assert!(get(addr, "/", true).await.starts_with("HTTP/1.1 101"));
         assert!(get(addr, "/otel", true).await.starts_with("HTTP/1.1 404"));
-        assert!(get(addr, "/ws/channels/abc", true)
-            .await
-            .starts_with("HTTP/1.1 404"));
+        assert!(
+            get(addr, "/ws/channels/abc", true)
+                .await
+                .starts_with("HTTP/1.1 404")
+        );
         tx.stop().await;
     }
 

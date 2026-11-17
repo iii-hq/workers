@@ -1,9 +1,9 @@
 //! Boot wiring: function surface, the router::on-ready observer, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::discovery::{make_refresh_models, refresh_models, static_models};
-use crate::speech::{Voices, DEFAULT_API_URL};
+use crate::speech::{DEFAULT_API_URL, Voices};
 use crate::surface;
-use crate::{router_client, state, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client, state};
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
@@ -11,7 +11,7 @@ use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -55,10 +55,10 @@ pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
         payload["token"] = json!(t);
     }
     let resp = router_client::register(iii, payload).await?;
-    if let Some(t) = resp.get("registration_token").and_then(Value::as_str) {
-        if token.as_deref() != Some(t) {
-            persist_registration_token(iii, t).await?;
-        }
+    if let Some(t) = resp.get("registration_token").and_then(Value::as_str)
+        && token.as_deref() != Some(t)
+    {
+        persist_registration_token(iii, t).await?;
     }
     Ok(())
 }

@@ -32,14 +32,13 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::error::{codes, WError};
-use crate::functions::{get, list, status, validate, Deps};
+use crate::error::{WError, codes};
+use crate::functions::{Deps, get, list, status, validate};
 
 pub const REST_ID: &str = "worktree::rest";
-pub const REST_DESC: &str =
-    "Internal: target of the worktree REST routes, the http::on-request observers with args \
+pub const REST_DESC: &str = "Internal: target of the worktree REST routes, the http::on-request observers with args \
      { method: POST, path: /worktree/list | /worktree/get | /worktree/status | \
      /worktree/validate }. Receives the HttpRequest, runs the worktree::* function the \
      route's path names with the request's JSON body (an empty body is {}), and returns \

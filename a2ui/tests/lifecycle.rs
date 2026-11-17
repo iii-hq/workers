@@ -1,7 +1,7 @@
 use a2ui::config::WorkerConfig;
 use a2ui::protocol::{
-    apply_messages, validate_renderable, ServerMessage, SessionState, SurfaceStatus, CATALOG_ID,
-    PROTOCOL_VERSION,
+    CATALOG_ID, PROTOCOL_VERSION, ServerMessage, SessionState, SurfaceStatus, apply_messages,
+    validate_renderable,
 };
 use a2ui::store::Store;
 use serde_json::json;

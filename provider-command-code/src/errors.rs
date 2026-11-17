@@ -3,10 +3,10 @@ use llm_router::types::events::ErrorKind;
 use serde_json::Value;
 
 pub fn classify(status: Option<u16>, body: &str) -> ErrorKind {
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if let Some(kind) = classify_envelope(&value) {
-            return kind;
-        }
+    if let Ok(value) = serde_json::from_str::<Value>(body)
+        && let Some(kind) = classify_envelope(&value)
+    {
+        return kind;
     }
     match status {
         Some(401) => ErrorKind::AuthExpired,
