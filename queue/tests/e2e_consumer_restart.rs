@@ -24,16 +24,16 @@ use std::time::Duration;
 
 use iii_queue::boot::BootHandle;
 use iii_queue::config::QueueConfig;
-use iii_queue::functions::{list_topics, PUBLISH_FN_ID};
+use iii_queue::functions::{PUBLISH_FN_ID, list_topics};
 use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_queue::subscribers::Subscribers;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, IIIClient, InitOptions, ObserverOptions, RegisterFunction,
-    Source, WorkerIdentityMode,
+    CallRequest, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+    WorkerIdentityMode, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -214,10 +214,10 @@ impl Consumer {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 // The harness's own `test consumer_process ... ` has no line
                 // break, so an event can follow it on the same line.
-                if let Some((_, event)) = line.split_once(EVENT_PREFIX) {
-                    if let Ok(event) = serde_json::from_str::<Value>(event) {
-                        recorded.lock().unwrap().push(event);
-                    }
+                if let Some((_, event)) = line.split_once(EVENT_PREFIX)
+                    && let Ok(event) = serde_json::from_str::<Value>(event)
+                {
+                    recorded.lock().unwrap().push(event);
                 }
             }
         });

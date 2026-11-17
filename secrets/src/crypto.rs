@@ -2,15 +2,15 @@
 //! secret name) and the HMAC-SHA256 fingerprint.
 use std::fmt;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 use crate::secret::REDACTED;
 
 pub const KEY_LEN: usize = 32;

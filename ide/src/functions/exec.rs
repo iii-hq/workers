@@ -124,7 +124,7 @@ mod tests {
             assert!(note.contains("shell::exec_bg"), "{note}");
         }
     }
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn target_defaults_to_host_when_absent() {

@@ -17,4 +17,4 @@ mod tests;
 pub use crate::process::EarlyExit;
 pub use bins::StackBins;
 pub use layout::RunLayout;
-pub use supervisor::{free_loopback_port, Stack, StackBootFailure};
+pub use supervisor::{Stack, StackBootFailure, free_loopback_port};

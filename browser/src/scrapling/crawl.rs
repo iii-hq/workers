@@ -10,13 +10,13 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
-use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
-use serde_json::{json, Value};
+use futures::stream::{FuturesUnordered, StreamExt};
+use serde_json::{Value, json};
 
 use crate::config::SecurityMode;
 use crate::scrapling::dom;
-use crate::scrapling::page::{serialize_page, PageData};
+use crate::scrapling::page::{PageData, serialize_page};
 
 /// The RPC response carries only a sample; the full set is retained by
 /// `crawl_feed` for `browser::crawl::items`.
@@ -53,16 +53,16 @@ impl CrawlOpts {
         mode: SecurityMode,
     ) -> Result<Self, String> {
         let mut start_urls = crawl_strings(payload.get("start_urls"), "decode")?;
-        if start_urls.is_empty() {
-            if let Some(value) = payload.get("url").filter(|value| json_truthy(value)) {
-                if let Some(url) = value.as_str() {
-                    start_urls.push(url.to_string());
-                } else {
-                    return Err(format!(
-                        "'{}' object has no attribute 'decode'",
-                        python_type(value)
-                    ));
-                }
+        if start_urls.is_empty()
+            && let Some(value) = payload.get("url").filter(|value| json_truthy(value))
+        {
+            if let Some(url) = value.as_str() {
+                start_urls.push(url.to_string());
+            } else {
+                return Err(format!(
+                    "'{}' object has no attribute 'decode'",
+                    python_type(value)
+                ));
             }
         }
         if start_urls.is_empty() {
@@ -75,7 +75,7 @@ impl CrawlOpts {
                 return Err(format!(
                     "unknown fetcher: {} (use http|stealthy|dynamic)",
                     python_repr(value)
-                ))
+                ));
             }
         };
         if !matches!(fetcher.as_str(), "http" | "stealthy" | "dynamic") {
@@ -210,10 +210,10 @@ fn crawl_delay(value: Option<&Value>, mode: SecurityMode) -> Result<Duration, St
         Some(Value::Array(value)) if value.is_empty() => 0.0,
         Some(Value::Object(value)) if value.is_empty() => 0.0,
         Some(Value::Array(_)) => {
-            return Err("float() argument must be a string or a real number, not 'list'".into())
+            return Err("float() argument must be a string or a real number, not 'list'".into());
         }
         Some(Value::Object(_)) => {
-            return Err("float() argument must be a string or a real number, not 'dict'".into())
+            return Err("float() argument must be a string or a real number, not 'dict'".into());
         }
     };
     let value = if value <= 0.0 {
@@ -510,7 +510,8 @@ mod tests {
     /// A canned site: url -> html. Anything not in the map is a fetch error.
     async fn run_on(o: &CrawlOpts, site: &[(&str, &str)], payload: &Value) -> CrawlOutcome {
         let order = RefCell::new(Vec::new());
-        let out = run(
+
+        run(
             o,
             payload,
             None,
@@ -524,8 +525,7 @@ mod tests {
             },
             |_| Box::pin(async {}),
         )
-        .await;
-        out
+        .await
     }
 
     #[test]

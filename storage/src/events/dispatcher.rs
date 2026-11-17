@@ -8,7 +8,7 @@ use crate::events::object_created::ObjectCreatedEvent;
 use crate::events::object_deleted::ObjectDeletedEvent;
 use crate::events::source::{self, Delivery};
 use iii_sdk::{Call, CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[async_trait::async_trait]
 pub trait EventDispatcher: Send + Sync {

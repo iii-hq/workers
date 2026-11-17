@@ -12,18 +12,18 @@ mod tests;
 pub mod types;
 mod wiring;
 pub use types::*;
-pub use wiring::{queue_observer_id, register, WEBHOOK_CONSUMER_GROUP};
+pub use wiring::{WEBHOOK_CONSUMER_GROUP, queue_observer_id, register};
 
 use crate::configuration::ConfigCell;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use iii_sdk::{
-    channel::{ChannelReader, StreamChannelRef},
     CallRequest, CallRequestWithMetadata, IIIClient,
+    channel::{ChannelReader, StreamChannelRef},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::{collections::HashMap, path::Path, sync::Arc};
 use store::Store;
@@ -45,7 +45,9 @@ static SELF_ATTEMPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 pub enum Failure {
     #[error("invalid request: {0}")]
     Invalid(String),
-    #[error("webhooks disabled or storage unavailable; enable and restart after configuring dependencies")]
+    #[error(
+        "webhooks disabled or storage unavailable; enable and restart after configuring dependencies"
+    )]
     Disabled,
     #[error("watch not found")]
     NotFound,
@@ -391,15 +393,15 @@ impl Service {
                     }
                     self.store()?.change(|data| {
                         for (watch_id, snapshot) in updates {
-                            if let Some(w) = data.watches.get_mut(&watch_id) {
-                                if let Some(event) = normalize::normalize(w, inbox, snapshot) {
-                                    normalize::persist_event_with_policy(
-                                        data,
-                                        event,
-                                        &inbox.delivery,
-                                        &policy,
-                                    );
-                                }
+                            if let Some(w) = data.watches.get_mut(&watch_id)
+                                && let Some(event) = normalize::normalize(w, inbox, snapshot)
+                            {
+                                normalize::persist_event_with_policy(
+                                    data,
+                                    event,
+                                    &inbox.delivery,
+                                    &policy,
+                                );
                             }
                         }
                         data.jobs.remove(id);

@@ -13,7 +13,7 @@
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use xcap::Monitor;
 
-use super::{pin_process_dpi, Btn, Grab};
+use super::{Btn, Grab, pin_process_dpi};
 use crate::driver::DisplayInfo;
 
 /// macOS permission gates. Two things macOS silently degrades instead of
@@ -33,11 +33,11 @@ use crate::driver::DisplayInfo;
 #[cfg(target_os = "macos")]
 mod perms {
     #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn AXIsProcessTrusted() -> u8;
     }
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGRequestScreenCaptureAccess() -> u8;
     }
     pub fn accessibility_granted() -> bool {
@@ -93,12 +93,12 @@ fn cursor_point() -> Option<(i32, i32)> {
         y: f64,
     }
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGEventCreate(source: *const core::ffi::c_void) -> *mut core::ffi::c_void;
         fn CGEventGetLocation(event: *mut core::ffi::c_void) -> CGPoint;
     }
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CFRelease(cf: *const core::ffi::c_void);
     }
     unsafe {
@@ -159,10 +159,10 @@ fn resolve_monitor(pinned_id: Option<u32>, override_idx: Option<u32>) -> Result<
             .nth(i as usize)
             .ok_or_else(|| format!("display index {i} is out of range"));
     }
-    if let Some((cx, cy)) = cursor_point() {
-        if let Ok(m) = Monitor::from_point(cx, cy) {
-            return Ok(m);
-        }
+    if let Some((cx, cy)) = cursor_point()
+        && let Ok(m) = Monitor::from_point(cx, cy)
+    {
+        return Ok(m);
     }
     let mut first: Option<Monitor> = None;
     for m in monitors {
@@ -260,7 +260,7 @@ mod pointer {
     use std::ffi::c_void;
     use std::time::Duration;
 
-    use super::{preflight, Btn};
+    use super::{Btn, preflight};
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -279,7 +279,7 @@ mod pointer {
     }
 
     #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CGEventCreateMouseEvent(
             source: *const c_void,
             kind: u32,
@@ -299,7 +299,7 @@ mod pointer {
         fn CGEventPost(tap: u32, event: *mut c_void);
     }
     #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         fn CFRelease(cf: *const c_void);
     }
 
@@ -448,7 +448,7 @@ mod pointer {
 mod pointer {
     use enigo::{Axis, Button, Coordinate, Direction, Mouse};
 
-    use super::{input_err, with_enigo, Btn};
+    use super::{Btn, input_err, with_enigo};
 
     fn button(b: Btn) -> Button {
         match b {
@@ -570,7 +570,7 @@ fn key_for(name: &str) -> Result<Key, String> {
                         "unknown key '{other}' (a single character, or one of enter, tab, escape, \
                          backspace, delete, space, up, down, left, right, home, end, pageup, \
                          pagedown, f1-f12, cmd, ctrl, alt, shift)"
-                    ))
+                    ));
                 }
             }
         }
@@ -595,8 +595,8 @@ mod tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod pointer_tests {
-    use super::pointer::{click_events, drag_events, Ev, Point};
     use super::Btn;
+    use super::pointer::{Ev, Point, click_events, drag_events};
 
     fn at(x: f64, y: f64) -> Point {
         Point { x, y }

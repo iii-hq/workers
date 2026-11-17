@@ -1,5 +1,5 @@
 {
-  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a reason), applied strictly through memory::supersede; pinned memories are untouchable. dry_run plans without writing.",
+  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic merge/supersede of new memories, each with a reason; verify of notes against their source transcript, replacing a contradicted one), applied strictly through memory::supersede and memory::correct; pinned memories are untouchable. dry_run plans without writing.",
   "function_id": "memory-consolidate::run",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -45,6 +45,12 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "corrected": {
+            "description": "Notes the verify tier replaced through `memory::correct` (each one also spends the per-run supersede cap; not counted in `superseded`).",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "errors": {
             "description": "Real failures (reads, writes). Any error keeps the pass due.",
             "items": {
@@ -59,7 +65,7 @@
             "type": "array"
           },
           "llm_calls": {
-            "description": "Model call attempts by the judge and semantic tiers, failed ones included.",
+            "description": "Model call attempts by the judge, semantic and verify tiers, failed ones included.",
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"
@@ -137,6 +143,24 @@
           },
           "superseded": {
             "description": "Supersedes actually applied (0 on dry runs).",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "verified": {
+            "description": "Notes the verify tier found supported by their source transcript.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "verify_rejected": {
+            "description": "Verify-tier judge replies refused: a correction that failed a guard (quote, numbers, length), or a reply cut short or never parsed.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "verify_skipped": {
+            "description": "Notes the verify tier passed without a verdict or a write (no span, reinforced, session gone, record changed, ...); a note lists why.",
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"

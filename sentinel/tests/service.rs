@@ -14,7 +14,7 @@ use sentinel::{
     IgnoreRequestV1, IgnoreRuleV1, OccurrenceWrite, OccurrencesListRequestV1, RecordOutcome,
     ResolveRequestV1, Service, Store,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const NOW: i64 = 1_789_000_000_000;
 

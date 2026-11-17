@@ -17,7 +17,7 @@ mod linux;
 mod macos;
 mod parse;
 
-pub use parse::{parse_lsof, parse_proc_net_tcp, procargs2_env, NetEntry};
+pub use parse::{NetEntry, parse_lsof, parse_proc_net_tcp, procargs2_env};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcInfo {

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::config::{ENV_ALLOWLIST, WORKER_START_ORDER};
 use super::{RunLayout, StackBins};

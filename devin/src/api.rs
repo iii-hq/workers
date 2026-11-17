@@ -12,9 +12,9 @@
 
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use reqwest::{Client, Method};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::Config;
 

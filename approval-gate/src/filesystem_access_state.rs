@@ -9,8 +9,8 @@
 //! the same tradeoff the codebase already makes elsewhere. See
 //! `pure` helpers below for the mutation logic in isolation.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

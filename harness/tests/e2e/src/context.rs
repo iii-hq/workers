@@ -1,15 +1,15 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use harness::functions::metrics::SessionMetricsResponseV1;
 use harness::functions::status::StatusReport;
 use harness::types::turn::TurnStatus;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde::de::DeserializeOwned;
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);

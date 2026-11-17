@@ -200,7 +200,7 @@ mod tests {
         .await
         .unwrap();
         pump(rx, &ch.writer, Duration::from_secs(30)).await; // returns immediately
-                                                             // the receiver was consumed and dropped by pump → upstream send fails
+        // the receiver was consumed and dropped by pump → upstream send fails
         assert!(tx.send(done_event()).await.is_err());
     }
 }

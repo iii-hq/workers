@@ -8,15 +8,15 @@
 //! run once, snapshots the sequence on the device (`state_seq_get`; Qwen3.5's
 //! hybrid memory cannot copy sequences), restores it into up to `parallel`
 //! sequences and decodes their suffixes together in one batch.
-pub use crate::{softmax, Stop};
 use crate::{Runtime, Session};
-use anyhow::{anyhow, bail, Result};
+pub use crate::{Stop, softmax};
+use anyhow::{Result, anyhow, bail};
 use iii_llama_native::{Batch, Context, ContextParams, Model};
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };

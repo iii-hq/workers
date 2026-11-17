@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use github::webhooks::{normalize, Category, Inbox, Watch, WatchRequest, WatchState};
+use github::webhooks::{Category, Inbox, Watch, WatchRequest, WatchState, normalize};
 use serde_json::json;
 
 fn watch() -> Watch {

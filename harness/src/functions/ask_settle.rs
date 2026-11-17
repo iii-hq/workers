@@ -11,13 +11,11 @@ use crate::error::HarnessError;
 use crate::types::message::AgentMessage;
 
 pub const SETTLE_ID: &str = "harness::ask::settle";
-pub const SETTLE_DESC: &str =
-    "Internal control-plane: record that a harness::ask card was answered through the card or \
+pub const SETTLE_DESC: &str = "Internal control-plane: record that a harness::ask card was answered through the card or \
      dismissed, so every client shows it settled.";
 
 pub const SETTLEMENTS_ID: &str = "harness::ask::settlements";
-pub const SETTLEMENTS_DESC: &str =
-    "Internal control-plane: list which harness::ask cards in a session were answered or \
+pub const SETTLEMENTS_DESC: &str = "Internal control-plane: list which harness::ask cards in a session were answered or \
      dismissed (the console's ask card reads this).";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

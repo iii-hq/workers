@@ -515,10 +515,10 @@ fn effective_roots(
     } else {
         host_roots_canon.to_vec()
     };
-    if let Some(base) = scope_root_canon {
-        if !roots.iter().any(|r| r == base) {
-            roots.push(base.to_path_buf());
-        }
+    if let Some(base) = scope_root_canon
+        && !roots.iter().any(|r| r == base)
+    {
+        roots.push(base.to_path_buf());
     }
     for extra in scope_grants_canon {
         if !roots.iter().any(|r| r == extra) {
@@ -692,24 +692,24 @@ pub(crate) fn confine_path_with_scope_root(
             // root, just not this session's. Detect that case and emit a
             // session-scoped S220 naming scope_root so the agent corrects to a
             // path under the session directory rather than guessing roots.
-            if e.code == "S215" && Path::new(path).is_absolute() {
-                if let Ok(canon) = canonicalize_with_fallback(Path::new(path)) {
-                    let inside_jail_root = host_roots_canon.iter().any(|hr| canon.starts_with(hr));
-                    let inside_extra_root = scope_grants_canon.iter().any(|r| canon.starts_with(r));
-                    let denied = denylist_canon.iter().any(|d| canon.starts_with(d));
-                    if inside_jail_root && !canon.starts_with(base) && !inside_extra_root && !denied
-                    {
-                        let hint = crate::filesystem_access::request_suffix("S220", path, &canon);
-                        return Err(FsError::new(
-                            "S220",
-                            format!(
-                                "this session is scoped to {}; {path} is inside an allowed \
+            if e.code == "S215"
+                && Path::new(path).is_absolute()
+                && let Ok(canon) = canonicalize_with_fallback(Path::new(path))
+            {
+                let inside_jail_root = host_roots_canon.iter().any(|hr| canon.starts_with(hr));
+                let inside_extra_root = scope_grants_canon.iter().any(|r| canon.starts_with(r));
+                let denied = denylist_canon.iter().any(|d| canon.starts_with(d));
+                if inside_jail_root && !canon.starts_with(base) && !inside_extra_root && !denied {
+                    let hint = crate::filesystem_access::request_suffix("S220", path, &canon);
+                    return Err(FsError::new(
+                        "S220",
+                        format!(
+                            "this session is scoped to {}; {path} is inside an allowed \
                                  root but outside the session directory — use a path under {}",
-                                base.display(),
-                                base.display()
-                            ) + &hint,
-                        ));
-                    }
+                            base.display(),
+                            base.display()
+                        ) + &hint,
+                    ));
                 }
             }
             Err(e)
@@ -1766,20 +1766,20 @@ impl FsBackend for HostFsBackend {
                 // target. Refuse rather than corrupt. (symlink_metadata does
                 // not follow, so this detects the link itself. Mirrors the
                 // chmod recursive walk's skip-symlinks policy.)
-                if let Ok(lmd) = std::fs::symlink_metadata(p) {
-                    if lmd.file_type().is_symlink() {
-                        results.push(crate::fs::wire::FsSedFileResult {
-                            path: file.clone(),
-                            replacements: 0,
-                            success: false,
-                            error: Some(
-                                "operand is a symlink; skipped (sed would replace the link \
+                if let Ok(lmd) = std::fs::symlink_metadata(p)
+                    && lmd.file_type().is_symlink()
+                {
+                    results.push(crate::fs::wire::FsSedFileResult {
+                        path: file.clone(),
+                        replacements: 0,
+                        success: false,
+                        error: Some(
+                            "operand is a symlink; skipped (sed would replace the link \
                                  with a regular file). Pass the resolved target path instead."
-                                    .to_string(),
-                            ),
-                        });
-                        continue;
-                    }
+                                .to_string(),
+                        ),
+                    });
+                    continue;
                 }
                 // Size cap BEFORE reading: stat the file and skip (per-file
                 // error, nothing written) if it exceeds the read cap. Mirrors
@@ -1928,30 +1928,30 @@ impl FsBackend for HostFsBackend {
         // else ALL host roots — so parents can never climb out of the session
         // directory (or, unscoped, out of every allowed root).
         let parent_ceilings = effective_roots(&self.host_roots_canon, base.as_deref(), &extra);
-        if req.parents {
-            if let Some(parent) = p.parent() {
-                if !parent_ceilings.is_empty()
-                    && !parent_ceilings
-                        .iter()
-                        .any(|c| parent.starts_with(c.as_path()))
-                {
-                    let ceil_display = parent_ceilings
-                        .iter()
-                        .map(|c| c.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(FsError::new(
-                        "S215",
-                        format!(
-                            "parent escapes the allowed roots [{ceil_display}]: {}",
-                            req.path
-                        ),
-                    ));
-                }
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| FsError::from_io(&req.path, e))?;
+        if req.parents
+            && let Some(parent) = p.parent()
+        {
+            if !parent_ceilings.is_empty()
+                && !parent_ceilings
+                    .iter()
+                    .any(|c| parent.starts_with(c.as_path()))
+            {
+                let ceil_display = parent_ceilings
+                    .iter()
+                    .map(|c| c.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(FsError::new(
+                    "S215",
+                    format!(
+                        "parent escapes the allowed roots [{ceil_display}]: {}",
+                        req.path
+                    ),
+                ));
             }
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| FsError::from_io(&req.path, e))?;
         }
 
         let suffix = format!(".tmp.{}", uuid::Uuid::new_v4().simple());
@@ -4550,10 +4550,12 @@ mod tests {
                 .await;
             assert!(mv.is_err(), "mv {src} -> {dst} is refused: {mv:?}");
         }
-        assert!(fs::symlink_metadata(o.join("back"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            fs::symlink_metadata(o.join("back"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert!(r.join("y").exists() && !r.join("z").exists());
     }
 

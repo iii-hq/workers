@@ -9,19 +9,20 @@ use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::composer::{ComposeInput, Composer};
-use crate::configuration::{ConfigCell, OnConfigChangeEvent, OnConfigChangeResponse, CONFIG_FN_ID};
-use crate::hook::{StampSessionEvent, StampSessionResponse, STAMP_SESSION_ID};
+use crate::configuration::{CONFIG_FN_ID, ConfigCell, OnConfigChangeEvent, OnConfigChangeResponse};
+use crate::hook::{STAMP_SESSION_ID, StampSessionEvent, StampSessionResponse};
 use crate::protocol::{
-    apply_messages, enforce_state_limits, export_surface, now_ms, push_history, set_data_path,
-    snapshot, stored_event_function_id, stored_worker_type, translate_stored_binding,
-    validate_identifier, validate_live_binding, validate_renderable, ActionRecord, BindingKind,
-    DeleteSurface, DeleteSurfaceMessage, LiveBinding, RetiredBinding, ServerMessage, SessionState,
-    SurfaceExport, SurfaceRecord, SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate,
-    CATALOG_ID, MAX_BINDINGS_PER_SURFACE, PAGE_ID, PROTOCOL_VERSION, STREAM_BINDING_DEPRECATION,
+    ActionRecord, BindingKind, CATALOG_ID, DeleteSurface, DeleteSurfaceMessage, LiveBinding,
+    MAX_BINDINGS_PER_SURFACE, PAGE_ID, PROTOCOL_VERSION, RetiredBinding,
+    STREAM_BINDING_DEPRECATION, ServerMessage, SessionState, SurfaceExport, SurfaceRecord,
+    SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate, apply_messages,
+    enforce_state_limits, export_surface, now_ms, push_history, set_data_path, snapshot,
+    stored_event_function_id, stored_worker_type, translate_stored_binding, validate_identifier,
+    validate_live_binding, validate_renderable,
 };
 use crate::schema_check;
 use crate::store::Store;
@@ -622,11 +623,11 @@ pub async fn apply(deps: &Deps, req: ApplyRequest) -> Result<SurfaceReceipt, Str
         .and_then(|message| state.get(message.surface_id()))
         .cloned();
     let outcome = apply_messages(&mut state, &req.messages, req.title.as_deref(), &cfg)?;
-    if let (Some(previous), SurfaceStatus::Active) = (before, &outcome.status) {
-        if let Some(surface) = state.get_mut(&outcome.surface_id) {
-            let entry = snapshot(&previous, "protocol apply");
-            push_history(surface, entry, cfg.max_history_per_surface);
-        }
+    if let (Some(previous), SurfaceStatus::Active) = (before, &outcome.status)
+        && let Some(surface) = state.get_mut(&outcome.surface_id)
+    {
+        let entry = snapshot(&previous, "protocol apply");
+        push_history(surface, entry, cfg.max_history_per_surface);
     }
     let result = match outcome.status {
         SurfaceStatus::Active => {
@@ -722,13 +723,13 @@ pub async fn patch(deps: &Deps, req: PatchRequest) -> Result<SurfaceReceipt, Str
         .get(&req.surface_id)
         .cloned()
         .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?;
-    if let Some(expected) = req.expected_revision {
-        if original.revision != expected {
-            return Err(format!(
-                "surface `{}` is at revision {}, not expected revision {expected}",
-                req.surface_id, original.revision
-            ));
-        }
+    if let Some(expected) = req.expected_revision
+        && original.revision != expected
+    {
+        return Err(format!(
+            "surface `{}` is at revision {}, not expected revision {expected}",
+            req.surface_id, original.revision
+        ));
     }
     let messages = deps
         .composer
@@ -1349,7 +1350,7 @@ pub fn check_owned_binding(
             return Err(format!(
                 "function `{}` takes no args; select its calls with filters on `input.<field>`",
                 binding.function_id
-            ))
+            ));
         }
         (None, None) => {}
     }
@@ -2479,11 +2480,13 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.session_id.as_deref(), Some("session-1"));
-        assert!(serde_json::from_value::<ListRequest>(json!({
-            "session_id": "session-1",
-            "caller_worker_id": "console"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<ListRequest>(json!({
+                "session_id": "session-1",
+                "caller_worker_id": "console"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -2667,10 +2670,12 @@ mod tests {
             );
             let wire = serde_json::to_value(&receipt).unwrap();
             assert_eq!(wire["surface_id"], "live");
-            assert!(wire["deprecation"]
-                .as_str()
-                .unwrap()
-                .contains("deprecated (iii-stream)"));
+            assert!(
+                wire["deprecation"]
+                    .as_str()
+                    .unwrap()
+                    .contains("deprecated (iii-stream)")
+            );
             assert_eq!(
                 stored(&deps).await.bindings[0].function_id,
                 "stream::on-changed"
@@ -2688,10 +2693,12 @@ mod tests {
             .await
             .unwrap();
             assert!(builtin.deprecation.is_none());
-            assert!(serde_json::to_value(&builtin)
-                .unwrap()
-                .get("deprecation")
-                .is_none());
+            assert!(
+                serde_json::to_value(&builtin)
+                    .unwrap()
+                    .get("deprecation")
+                    .is_none()
+            );
         }
 
         #[tokio::test]
@@ -2850,9 +2857,11 @@ mod tests {
             assert_eq!(select_query_value(result.clone(), None).unwrap(), result);
             assert!(select_query_value(result, Some("/missing")).is_err());
             let huge = json!({"blob": "x".repeat(MAX_LIVE_VALUE_BYTES)});
-            assert!(select_query_value(huge, None)
-                .unwrap_err()
-                .contains("maximum"));
+            assert!(
+                select_query_value(huge, None)
+                    .unwrap_err()
+                    .contains("maximum")
+            );
         }
 
         #[tokio::test]
@@ -3015,12 +3024,16 @@ mod tests {
                     ("notes", "notes::on-saved")
                 ]
             );
-            assert!(surface.retired_bindings[0]
-                .reason
-                .contains("is not registered with the engine"));
-            assert!(surface.retired_bindings[1]
-                .reason
-                .contains("is not an event source"));
+            assert!(
+                surface.retired_bindings[0]
+                    .reason
+                    .contains("is not registered with the engine")
+            );
+            assert!(
+                surface.retired_bindings[1]
+                    .reason
+                    .contains("is not an event source")
+            );
             // One lookup per function, the query's included.
             assert_eq!(lookups.len(), 5, "{lookups:?}");
         }
@@ -3085,9 +3098,11 @@ mod tests {
                     }
                 ])
             );
-            assert!(surface.retired_bindings[1]
-                .reason
-                .contains("is not registered with the engine"));
+            assert!(
+                surface.retired_bindings[1]
+                    .reason
+                    .contains("is not registered with the engine")
+            );
 
             let delete: BindingDeleteRequest = serde_json::from_value(json!({
                 "session_id": "s1", "surface_id": "live", "binding_id": "notes"

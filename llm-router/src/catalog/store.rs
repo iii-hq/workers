@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use crate::state::{state_get, state_set};
 use crate::types::errors::is_function_not_found;
 use crate::types::model::Model;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::{IIIClient, errors::Error};
 use tokio::sync::{Mutex, MutexGuard};
 
 const CATALOG_KEY: &str = "catalog";

@@ -3,7 +3,7 @@
 [package]
 name = "iii-llama-runtime"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "llama.cpp runtime shared by the in-process judge providers: model loading, device selection and the thread that owns the context"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

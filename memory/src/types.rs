@@ -24,10 +24,20 @@ pub struct Provenance {
     /// The turn an explicit save was called from (`memory::save` inside a turn).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// The last entry of the run the memory was extracted from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_id: Option<String>,
+    /// The first entry of that run: with `entry_id` it bounds the span of
+    /// transcript the memory came from. Absent on records written before
+    /// spans were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_entry_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// Set on a record written by `memory::correct`: why the old text was
+    /// replaced, quoting the source conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction_reason: Option<String>,
 }
 
 /// One memory item. Serialized whole as a `memories.jsonl` line; replay is
@@ -222,9 +232,7 @@ mod tests {
             pinned: true,
             source: Some(Provenance {
                 session_id: Some("s_1".into()),
-                turn_id: None,
-                entry_id: None,
-                agent: None,
+                ..Provenance::default()
             }),
             created_at: 1,
             updated_at: 2,

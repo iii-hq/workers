@@ -262,17 +262,21 @@ mod tests {
     #[test]
     fn is_content_covers_exactly_the_ten_content_variants() {
         assert!(AssistantMessageEvent::Start { partial: partial() }.is_content());
-        assert!(AssistantMessageEvent::TextDelta {
-            partial: None,
-            delta: "x".into()
-        }
-        .is_content());
+        assert!(
+            AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: "x".into()
+            }
+            .is_content()
+        );
         assert!(AssistantMessageEvent::FunctioncallEnd { partial: partial() }.is_content());
         assert!(!AssistantMessageEvent::Ping.is_content());
-        assert!(!AssistantMessageEvent::Usage {
-            usage: Usage::default()
-        }
-        .is_content());
+        assert!(
+            !AssistantMessageEvent::Usage {
+                usage: Usage::default()
+            }
+            .is_content()
+        );
         assert!(!AssistantMessageEvent::Done { message: partial() }.is_content());
     }
 
@@ -281,9 +285,11 @@ mod tests {
         assert!(AssistantMessageEvent::Done { message: partial() }.is_terminal());
         assert!(AssistantMessageEvent::Error { error: partial() }.is_terminal());
         assert!(!AssistantMessageEvent::Ping.is_terminal());
-        assert!(!AssistantMessageEvent::Usage {
-            usage: Usage::default()
-        }
-        .is_terminal());
+        assert!(
+            !AssistantMessageEvent::Usage {
+                usage: Usage::default()
+            }
+            .is_terminal()
+        );
     }
 }

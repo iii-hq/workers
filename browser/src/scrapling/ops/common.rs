@@ -1,6 +1,6 @@
 //! Shared response-shaping helpers (core.py `_bounded`, `serialize_element`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::{dom, dom::ElementRef, selgen};
 

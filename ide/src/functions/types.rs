@@ -22,8 +22,7 @@ use crate::target::Target;
 /// mistake. Surfaced both from `deserialize_command` (typed-request path)
 /// and from any remaining `Value` parsing sites so the LLM gets the same
 /// recovery hint regardless of how the request was deserialized.
-const COMMAND_ARRAY_HINT: &str =
-    "'command' must be a string (got array). Pass the program name in \
+const COMMAND_ARRAY_HINT: &str = "'command' must be a string (got array). Pass the program name in \
      'command' and arguments in 'args', e.g. \
      {\"command\": \"sh\", \"args\": [\"-lc\", \"ls -la\"]}";
 

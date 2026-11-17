@@ -6,7 +6,7 @@
 
 use image::ImageFormat;
 use image_resize::config::ResizeStrategy;
-use image_resize::processing::{process_image, ProcessingParams};
+use image_resize::processing::{ProcessingParams, process_image};
 use std::path::Path;
 
 fn fixture(name: &str) -> Vec<u8> {

@@ -16,7 +16,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Scheduled hygiene for the memory worker: deterministic dedup of near-duplicate memories, supersede-only through the public memory functions, pinned untouchable, catch-up-on-boot scheduling."
+            "Scheduled hygiene for the memory worker: deterministic dedup of near-duplicate memories and an opt-in verify tier that checks notes against their source transcript; every write goes through memory's supersede and correct seams, pinned untouchable."
                 .to_string(),
         // Mirrors config::WorkerConfig::default() field-for-field.
         default_config: serde_json::json!({
@@ -33,6 +33,8 @@ pub fn build_manifest() -> ModuleManifest {
             "semantic_batch": 8,
             "semantic_candidates": 4,
             "semantic_max_per_run": 48,
+            "verify_enabled": false,
+            "verify_max_per_run": 20,
         }),
         supported_targets: vec![env!("TARGET").to_string()],
     }

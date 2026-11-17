@@ -133,13 +133,13 @@ impl RestApiConfig {
         // Nested types (CorsConfig, MiddlewareConfig) are emitted as `$ref`s into
         // `#/definitions`; without carrying the definitions the schema has
         // dangling refs and `configuration::register` rejects it as invalid.
-        if let Some(obj) = schema.as_object_mut() {
-            if !root.definitions.is_empty() {
-                obj.insert(
-                    "definitions".into(),
-                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
-                );
-            }
+        if let Some(obj) = schema.as_object_mut()
+            && !root.definitions.is_empty()
+        {
+            obj.insert(
+                "definitions".into(),
+                serde_json::to_value(&root.definitions).expect("definitions serialize"),
+            );
         }
         schema
     }
@@ -211,14 +211,14 @@ mod tests {
             enabled.webhook_listener,
             Some(WebhookListenerConfig::default())
         );
-        assert!(RestApiConfig::from_json(
-            &serde_json::json!({"webhook_listener": {"port": 65536}})
-        )
-        .is_err());
-        assert!(RestApiConfig::from_json(
-            &serde_json::json!({"webhook_listener": {"hots": "bad"}})
-        )
-        .is_err());
+        assert!(
+            RestApiConfig::from_json(&serde_json::json!({"webhook_listener": {"port": 65536}}))
+                .is_err()
+        );
+        assert!(
+            RestApiConfig::from_json(&serde_json::json!({"webhook_listener": {"hots": "bad"}}))
+                .is_err()
+        );
         let schema = RestApiConfig::json_schema();
         assert_eq!(
             schema["properties"]["webhook_listener"]["default"],

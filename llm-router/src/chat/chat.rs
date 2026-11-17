@@ -5,8 +5,8 @@
 //!
 //! Engine-backed coverage: tests/integration.rs (happy path, cancellation,
 //! abort, retry).
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
@@ -18,23 +18,23 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::catalog::queries::{effective_model_ref, model_supports, models_get};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::events::RouterEvents;
 use crate::registry::resolve::unresolved_reference;
 use crate::registry::store::RegistryStore;
-use crate::routing::{decide, DecideInput};
+use crate::routing::{DecideInput, decide};
 use crate::secrets::SecretCache;
 use crate::settings::RouterSettings;
 
 use super::inflight::InflightMap;
 use super::output_tokens::resolve_max_output_tokens;
-use super::relay::{relay_frames, FrameSink, NoTerminalReason, RelayOpts, RelayResult};
+use super::relay::{FrameSink, NoTerminalReason, RelayOpts, RelayResult, relay_frames};
 use super::retry::backoff_ms;
 use super::synthesize::{synthesize_aborted, synthesize_error};
 
@@ -490,7 +490,7 @@ impl ChatPipeline {
                     format!(
                         "Provider \"{provider}\" is not registered. Choose a configured provider and try again."
                     ),
-                ))
+                ));
             }
         };
 
@@ -510,19 +510,18 @@ impl ChatPipeline {
         // Structured-output gate: known model without the flag throws; unknown
         // model fails open — the provider is the final arbiter.
         let model_meta = self.catalog.get(&provider, &call.model).await;
-        if call.response_format.is_some() {
-            if let Some(meta) = &model_meta {
-                if !model_supports(meta, "structured_output") {
-                    return Err(fail_pre_stream(
-                        &provider,
-                        RouterCode::StructuredOutputUnsupported,
-                        format!(
-                            "Model \"{}\" does not support structured output. Choose a compatible model or disable structured output.",
-                            call.model
-                        ),
-                    ));
-                }
-            }
+        if call.response_format.is_some()
+            && let Some(meta) = &model_meta
+            && !model_supports(meta, "structured_output")
+        {
+            return Err(fail_pre_stream(
+                &provider,
+                RouterCode::StructuredOutputUnsupported,
+                format!(
+                    "Model \"{}\" does not support structured output. Choose a compatible model or disable structured output.",
+                    call.model
+                ),
+            ));
         }
 
         let max_output_tokens = resolve_max_output_tokens(
@@ -855,50 +854,46 @@ impl ChatPipeline {
                 } => {
                     last_partial = partial;
                     last_usage = usage.clone();
-                    if let Some(Err(err)) = call_outcome {
-                        if !forwarded {
-                            if let Some((message, kind)) = terminal_dispatch_error(&err) {
-                                send_error_terminal(
-                                    sink.as_ref(),
-                                    last_partial.as_ref(),
-                                    &call.model,
-                                    provider,
-                                    message,
-                                    kind,
-                                    usage,
-                                );
-                                return Err(err);
+                    if let Some(Err(err)) = call_outcome
+                        && !forwarded
+                    {
+                        if let Some((message, kind)) = terminal_dispatch_error(&err) {
+                            send_error_terminal(
+                                sink.as_ref(),
+                                last_partial.as_ref(),
+                                &call.model,
+                                provider,
+                                message,
+                                kind,
+                                usage,
+                            );
+                            return Err(err);
+                        }
+                        if is_function_not_found(&err) {
+                            let message = format!(
+                                "Provider \"{provider}\" is temporarily unavailable. Try again or choose another provider."
+                            );
+                            let terminal_error = fail_with_terminal(
+                                sink.as_ref(),
+                                last_partial.as_ref(),
+                                &call.model,
+                                provider,
+                                RouterCode::ProviderUnavailable,
+                                message,
+                                ErrorKind::Transient,
+                                usage,
+                            );
+                            // Emit before availability persistence/event
+                            // fan-out: neither side effect may hold the
+                            // consumer's terminal frame hostage.
+                            if self
+                                .registry
+                                .set_availability_if_current(provider, provider_generation, false)
+                                .await
+                            {
+                                self.events.provider_changed(provider, "unavailable").await;
                             }
-                            if is_function_not_found(&err) {
-                                let message = format!(
-                                    "Provider \"{provider}\" is temporarily unavailable. Try again or choose another provider."
-                                );
-                                let terminal_error = fail_with_terminal(
-                                    sink.as_ref(),
-                                    last_partial.as_ref(),
-                                    &call.model,
-                                    provider,
-                                    RouterCode::ProviderUnavailable,
-                                    message,
-                                    ErrorKind::Transient,
-                                    usage,
-                                );
-                                // Emit before availability persistence/event
-                                // fan-out: neither side effect may hold the
-                                // consumer's terminal frame hostage.
-                                if self
-                                    .registry
-                                    .set_availability_if_current(
-                                        provider,
-                                        provider_generation,
-                                        false,
-                                    )
-                                    .await
-                                {
-                                    self.events.provider_changed(provider, "unavailable").await;
-                                }
-                                return Err(terminal_error);
-                            }
+                            return Err(terminal_error);
                         }
                     }
                     let is_idle = matches!(reason, NoTerminalReason::Idle);
@@ -932,9 +927,7 @@ impl ChatPipeline {
                             format!(
                                 "Provider \"{provider}\" disconnected before completing the response. Try again."
                             ),
-                            format!(
-                                "provider {provider} stream ended without a terminal frame"
-                            ),
+                            format!("provider {provider} stream ended without a terminal frame"),
                         )
                     };
                     let terminal = synthesize_error(
@@ -1091,10 +1084,10 @@ fn build_stream_input(
 }
 
 fn insert_present(map: &mut serde_json::Map<String, Value>, key: &str, value: Option<Value>) {
-    if let Some(v) = value {
-        if !v.is_null() {
-            map.insert(key.to_string(), v);
-        }
+    if let Some(v) = value
+        && !v.is_null()
+    {
+        map.insert(key.to_string(), v);
     }
 }
 
@@ -1594,9 +1587,11 @@ mod tests {
             "model": "m", "messages": [], "system_prompt": "a\n\nc",
             "system_sections": [{ "text": "a" }, { "text": "b" }],
         }));
-        assert!(normalize_prompt_sections(&mut lying)
-            .unwrap_err()
-            .contains("system_sections"));
+        assert!(
+            normalize_prompt_sections(&mut lying)
+                .unwrap_err()
+                .contains("system_sections")
+        );
 
         let mut legacy = call(json!({ "model": "m", "messages": [], "system_prompt": "a" }));
         assert!(normalize_prompt_sections(&mut legacy).is_ok());

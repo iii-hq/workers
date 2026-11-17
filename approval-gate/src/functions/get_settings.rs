@@ -4,7 +4,7 @@
 use super::Deps;
 use crate::error::ApprovalError;
 use crate::settings;
-use crate::types::{validate_id, GetSettingsRequest, GetSettingsResponse};
+use crate::types::{GetSettingsRequest, GetSettingsResponse, validate_id};
 
 pub async fn handle(
     deps: &Deps,
@@ -22,7 +22,7 @@ mod tests {
     use super::*;
     use crate::functions::set_mode;
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{state_get, with_stack, BootOpts};
+    use crate::testkit::{BootOpts, state_get, with_stack};
     use crate::types::{PermissionMode, SetModeRequest, SettingsSource};
 
     #[tokio::test(flavor = "multi_thread")]

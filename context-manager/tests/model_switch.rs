@@ -10,9 +10,9 @@ use context_manager::config::WorkerConfig;
 use context_manager::core::estimate::{Estimator, HeuristicEstimator};
 use context_manager::core::summary::{render_user_prompt, strip_media};
 use context_manager::functions::{assemble, compact};
-use context_manager::ports::{lease_cell, Deps, SummarizeError, SummarizeRequest, Summarizer};
+use context_manager::ports::{Deps, SummarizeError, SummarizeRequest, Summarizer, lease_cell};
 use context_manager::types::{AgentMessage, ContentBlock};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 struct CapacityLimitedSummarizer {
@@ -170,9 +170,11 @@ async fn explicit_compaction_uses_the_same_bounded_path_and_preserves_steering()
     let calls = summarizer.calls.lock().unwrap();
     assert!(calls.len() > 1);
     assert!(calls[0].system_prompt.contains("PRIOR ANCHOR"));
-    assert!(calls
-        .iter()
-        .all(|r| r.system_prompt.contains("Keep exact paths")));
+    assert!(
+        calls
+            .iter()
+            .all(|r| r.system_prompt.contains("Keep exact paths"))
+    );
     assert!(leases.keys().is_empty());
 }
 
@@ -309,9 +311,11 @@ async fn a_long_initial_anchor_can_shrink_without_preflight_false_positive() {
         panic!("long initial anchor should remain viable");
     };
     assert!(summary.len() < 100);
-    assert!(summarizer.calls.lock().unwrap()[0]
-        .system_prompt
-        .contains("prior anchor"));
+    assert!(
+        summarizer.calls.lock().unwrap()[0]
+            .system_prompt
+            .contains("prior anchor")
+    );
     assert!(leases.keys().is_empty());
 }
 

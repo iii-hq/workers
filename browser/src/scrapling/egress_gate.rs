@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::ssrf::{check_target, parse_target, SsrfPolicy};
+use crate::ssrf::{SsrfPolicy, check_target, parse_target};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 

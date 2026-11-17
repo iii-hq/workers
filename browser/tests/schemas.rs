@@ -14,7 +14,7 @@
 
 mod support;
 
-use browser::functions::{catalog, FunctionSpec};
+use browser::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

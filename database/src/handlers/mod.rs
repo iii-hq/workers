@@ -16,8 +16,8 @@ pub(crate) fn lenient_params<'de, D>(de: D) -> Result<Vec<serde_json::Value>, D:
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error as _;
     use serde::Deserialize as _;
+    use serde::de::Error as _;
 
     match serde_json::Value::deserialize(de)? {
         serde_json::Value::Array(items) => Ok(items),
@@ -177,10 +177,10 @@ impl AppState {
         affected_rows: u64,
         returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
     ) {
-        if let Some(bus) = &self.row_changes {
-            if self.classifies_own_writes(db).await {
-                bus.emit(db, sql, affected_rows, returning).await;
-            }
+        if let Some(bus) = &self.row_changes
+            && self.classifies_own_writes(db).await
+        {
+            bus.emit(db, sql, affected_rows, returning).await;
         }
     }
 
@@ -193,10 +193,10 @@ impl AppState {
         affected_rows: u64,
         returning: Option<&[serde_json::Map<String, serde_json::Value>]>,
     ) {
-        if let Some(bus) = &self.row_changes {
-            if self.classifies_own_writes(db).await {
-                bus.stage(transaction_id, db, sql, affected_rows, returning);
-            }
+        if let Some(bus) = &self.row_changes
+            && self.classifies_own_writes(db).await
+        {
+            bus.stage(transaction_id, db, sql, affected_rows, returning);
         }
     }
 

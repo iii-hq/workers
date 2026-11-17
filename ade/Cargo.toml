@@ -2,8 +2,8 @@
 
 [package]
 name = "ade"
-version = "1.10.7"
-edition = "2021"
+version = "1.10.8"
+edition = "2024"
 publish = false
 
 [[bin]]

@@ -23,10 +23,10 @@ use std::path::PathBuf;
 use iii_sdk::protocol::CallRequest;
 use memory_consolidate::consolidate::MemoryRow;
 use memory_consolidate::semantic::{
-    build_batch, classify, parse_actions, validate, ActionKind, Outcome, SEMANTIC_SYSTEM,
+    ActionKind, Outcome, SEMANTIC_SYSTEM, build_batch, classify, parse_actions, validate,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DAY_MS: u64 = 86_400_000;
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";

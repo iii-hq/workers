@@ -17,10 +17,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::{err_to_str, AppState};
+use super::{AppState, err_to_str};
 use crate::backend::BackendError;
 use crate::config::{
-    entry_keys, parse_bucket, unknown_entry_keys, validate_bucket_name, BucketConfig,
+    BucketConfig, entry_keys, parse_bucket, unknown_entry_keys, validate_bucket_name,
 };
 use crate::configuration::{ConfigStore, StorageRuntime};
 use crate::error::StorageError;
@@ -401,10 +401,10 @@ pub(crate) fn plan_save(raw: Value, req: &SaveBucketReq) -> Result<SavePlan, Str
         );
     }
 
-    if let Some(previous) = &req.previous_name {
-        if previous != &req.name {
-            buckets.remove(previous);
-        }
+    if let Some(previous) = &req.previous_name
+        && previous != &req.name
+    {
+        buckets.remove(previous);
     }
     buckets.insert(req.name.clone(), entry);
     raw["buckets"] = Value::Object(buckets);
@@ -575,7 +575,9 @@ pub(crate) async fn write_with_retry<P: Planned>(
             .map_err(|e| config_error(format!("configuration::set refused the value: {e}")))?;
         match replaced {
             Some(other) if other != expected && attempt < 2 => {
-                tracing::warn!("the storage configuration changed during a bucket edit; re-applying the edit on top of it");
+                tracing::warn!(
+                    "the storage configuration changed during a bucket edit; re-applying the edit on top of it"
+                );
                 expected = plan.value().clone();
                 plan = match replan(other.clone()) {
                     Ok(plan) => plan,
@@ -640,10 +642,8 @@ pub(crate) mod tests {
     #[async_trait]
     impl ConfigStore for MemoryStore {
         async fn get(&self, raw: bool) -> Result<Value, String> {
-            if !raw {
-                if let Some(expanded) = self.expanded.lock().unwrap().clone() {
-                    return Ok(expanded);
-                }
+            if !raw && let Some(expanded) = self.expanded.lock().unwrap().clone() {
+                return Ok(expanded);
             }
             Ok(self.value.lock().unwrap().clone())
         }
@@ -833,11 +833,13 @@ pub(crate) mod tests {
             "{err}"
         );
         // A bad name, a bad color, a missing required field, create on gcs.
-        assert!(plan_save(
-            raw.clone(),
-            &save_req(json!({ "name": "Bad", "bucket": { "provider": "local" } }))
-        )
-        .is_err());
+        assert!(
+            plan_save(
+                raw.clone(),
+                &save_req(json!({ "name": "Bad", "bucket": { "provider": "local" } }))
+            )
+            .is_err()
+        );
         let err = plan_save(
             raw.clone(),
             &save_req(json!({ "name": "a", "bucket": { "provider": "local", "display": { "color": "blue" } } })),
@@ -1188,11 +1190,12 @@ pub(crate) mod tests {
         .unwrap();
         assert!(resp.saved);
         assert_eq!(resp.error_stage, Some(Stage::Secrets));
-        assert!(resp
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("secret://STORAGE_CLOUD_SECRET_ACCESS_KEY"));
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap()
+                .contains("secret://STORAGE_CLOUD_SECRET_ACCESS_KEY")
+        );
         let err = f
             .state
             .backend("cloud")

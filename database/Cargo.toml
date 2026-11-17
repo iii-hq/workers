@@ -2,8 +2,8 @@
 
 [package]
 name = "database"
-version = "0.6.3"
-edition = "2021"
+version = "0.6.4"
+edition = "2024"
 publish = false
 
 [[bin]]

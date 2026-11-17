@@ -21,8 +21,10 @@ fn manifest_subcommand_emits_valid_json() {
     assert_eq!(parsed["name"], "computer");
     assert!(parsed["version"].is_string());
     assert!(parsed["default_config"].is_object());
-    assert!(!parsed["supported_targets"]
-        .as_array()
-        .expect("supported_targets is an array")
-        .is_empty());
+    assert!(
+        !parsed["supported_targets"]
+            .as_array()
+            .expect("supported_targets is an array")
+            .is_empty()
+    );
 }

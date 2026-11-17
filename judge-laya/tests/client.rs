@@ -2,7 +2,7 @@
 mod support;
 
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use support::{tiny_client, tiny_client_named};
 
 fn request(extra: Value) -> EvaluateRequest {
@@ -235,7 +235,7 @@ async fn a_wide_choice_plays_groups_then_a_final_over_their_winners() {
         assert!((probabilities.values().sum::<f64>() - 1.0).abs() < 1e-9);
         let finalists: Map<String, Value> = probabilities
             .iter()
-            .filter(|(_, &p)| p > 0.0)
+            .filter(|&(_, &p)| p > 0.0)
             .map(|(key, _)| (key.clone(), criteria[key].clone()))
             .collect();
         assert_eq!(finalists.len(), parts, "{probabilities:?}");

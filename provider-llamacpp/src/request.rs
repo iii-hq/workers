@@ -6,7 +6,7 @@ use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct BodyArgs {
     pub model: String,

@@ -1,6 +1,6 @@
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

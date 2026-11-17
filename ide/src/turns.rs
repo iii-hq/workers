@@ -30,15 +30,15 @@ use iii_sdk::errors::Error;
 use iii_sdk::{Capture, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 use tokio::sync::Mutex;
 
 use crate::code::functions::create_file::content_revision;
 use crate::config::TurnsConfig;
-use crate::turn_snapshot::{ref_name, rel_under, Body, Side, SnapshotRepo};
+use crate::turn_snapshot::{Body, Side, SnapshotRepo, ref_name, rel_under};
 
 const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-call";
 const POST_HOOK_FN_ID: &str = "shell::turns::on-post-call";
@@ -2124,7 +2124,9 @@ pub fn register(
             ),
         );
     }
-    tracing::info!("registered shell::turns::list, shell::turns::get, shell::turns::revert, shell::turns::adopt-root and the turn-history hooks");
+    tracing::info!(
+        "registered shell::turns::list, shell::turns::get, shell::turns::revert, shell::turns::adopt-root and the turn-history hooks"
+    );
     log
 }
 
@@ -2604,11 +2606,13 @@ mod tests {
             ]
         );
         assert!(touches(&call("shell::fs::read", json!({ "path": "a" })), None).is_empty());
-        assert!(touches(
-            &call("shell::fs::chmod", json!({ "path": "a", "mode": "0644" })),
-            None
-        )
-        .is_empty());
+        assert!(
+            touches(
+                &call("shell::fs::chmod", json!({ "path": "a", "mode": "0644" })),
+                None
+            )
+            .is_empty()
+        );
         assert!(touches(&call("shell::exec", json!({ "command": "sed" })), None).is_empty());
         assert!(touches(&call("shell::fs::write", json!({})), None).is_empty());
     }
@@ -2882,12 +2886,14 @@ mod tests {
         let a = root.join("a.txt");
         std::fs::write(&a, "v1\n").unwrap();
         assert!(git_in(&root, &["add", "-A"]).await.is_some());
-        assert!(git_in(
-            &root,
-            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]
-        )
-        .await
-        .is_some());
+        assert!(
+            git_in(
+                &root,
+                &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]
+            )
+            .await
+            .is_some()
+        );
         let log = log_in(dir.path());
 
         log.on_turn_started("s1", "t1").await.unwrap();
@@ -3177,12 +3183,16 @@ mod tests {
         let files = &record.turns[0].files;
         assert_eq!(files.len(), 3);
         assert!(files.iter().all(|file| file.kind == "created"));
-        assert!(files
-            .iter()
-            .all(|file| file.before.as_ref().is_some_and(|before| before.missing)));
-        assert!(files
-            .iter()
-            .all(|file| file.cause == "ade::working-directory::propose"));
+        assert!(
+            files
+                .iter()
+                .all(|file| file.before.as_ref().is_some_and(|before| before.missing))
+        );
+        assert!(
+            files
+                .iter()
+                .all(|file| file.cause == "ade::working-directory::propose")
+        );
         assert!(!files.iter().any(|file| file.path.contains("node_modules")));
     }
 
@@ -3461,13 +3471,17 @@ mod tests {
 
         // Closing the child closes nothing; closing the parent does.
         log.on_turn_closed("child", "ct1").await.unwrap();
-        assert!(log.load("parent").await.unwrap().turns[0]
-            .ended_at
-            .is_none());
+        assert!(
+            log.load("parent").await.unwrap().turns[0]
+                .ended_at
+                .is_none()
+        );
         log.on_turn_closed("parent", "pt1").await.unwrap();
-        assert!(log.load("parent").await.unwrap().turns[0]
-            .ended_at
-            .is_some());
+        assert!(
+            log.load("parent").await.unwrap().turns[0]
+                .ended_at
+                .is_some()
+        );
     }
 
     #[test]

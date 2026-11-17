@@ -1,6 +1,6 @@
 //! Registration-token persistence, scoped to this provider's worker id.
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::state as scaffold;
 
 pub const STATE_SCOPE: &str = "provider-opencode-go";

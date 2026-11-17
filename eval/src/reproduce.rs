@@ -13,16 +13,16 @@ use std::time::Instant;
 
 use harness::clients::context::CountTokensParams;
 use harness::clients::{AssembleParams, ContextClient, LoadedEntry};
-use harness::policy::{is_agent_call_name, AGENT_CALL_NAME};
+use harness::policy::{AGENT_CALL_NAME, is_agent_call_name};
 use harness::types::model::{AgentFunction, ThinkingLevel};
 use harness::types::turn::{ExposeMode, ResponseLanguage};
 use judge_contract::{Answer, Content, EvaluateRequest, EvaluateResponse, Evaluation, Question};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
 use crate::contract::*;
 use crate::error::EvalError;
-use crate::runtime::{add_spend, call, send_judge, suggestion_at, Deps, Spend};
+use crate::runtime::{Deps, Spend, add_spend, call, send_judge, suggestion_at};
 use crate::{diagnostics, ids, review, state};
 
 const DEFAULT_SAMPLES: u32 = 20;
@@ -81,11 +81,11 @@ pub async fn reproduce(
             return Err(invalid(
                 "the suggestion proposes no change that can be written as an edit of what the \
                  model saw",
-            ))
+            ));
         }
         ReproduceChangeV1::Proposed => (ReproductionChangeKindV1::Proposed, check.change.clone()),
         ReproduceChangeV1::Custom { edits } if edits.is_empty() => {
-            return Err(invalid("a custom change needs at least one edit"))
+            return Err(invalid("a custom change needs at least one edit"));
         }
         ReproduceChangeV1::Custom { edits } => (ReproductionChangeKindV1::Custom, edits.clone()),
     };
@@ -294,18 +294,18 @@ pub(crate) fn validate_check(check: &SuggestionCheckV1) -> Result<(), EvalError>
     match (&check.signal.rule, &check.signal.question) {
         (Some(_), None) => {}
         (None, Some(question)) if question.trim().is_empty() => {
-            return Err(invalid("check.signal.question is empty"))
+            return Err(invalid("check.signal.question is empty"));
         }
         (None, Some(question)) if question.chars().count() > MAX_QUESTION_CHARS => {
             return Err(invalid(format!(
                 "check.signal.question is longer than {MAX_QUESTION_CHARS} characters"
-            )))
+            )));
         }
         (None, Some(_)) => {}
         _ => {
             return Err(invalid(
                 "check.signal needs exactly one of rule or question",
-            ))
+            ));
         }
     }
     for edit in &check.change {
@@ -601,7 +601,7 @@ async fn read_session(deps: &Deps, session_id: &str) -> Result<Vec<Value>, EvalE
             Some(_) => {
                 return Err(EvalError::Dependency(format!(
                     "session::messages repeated a cursor for {session_id}"
-                )))
+                )));
             }
             None => break,
         }
@@ -675,15 +675,15 @@ async fn plan(
     }
     // The cache seam the Harness uses: the stable prefix, then the runtime
     // context. Only when the assembled prompt is exactly those two parts.
-    if let Some(aid) = aid.as_deref() {
-        if assembled.system_prompt == format!("{}\n\n{}", stable.trim_end_matches('\n'), aid) {
-            request["system_sections"] = json!([
-                { "text": stable.trim_end_matches('\n'), "cache_boundary": true },
-                { "text": aid, "cache_boundary": false },
-            ]);
-            if let Some(digest) = rebuilt.surface_digest.as_ref().filter(|_| edits.is_empty()) {
-                request["cache_intent"] = json!({ "surface_digest": digest });
-            }
+    if let Some(aid) = aid.as_deref()
+        && assembled.system_prompt == format!("{}\n\n{}", stable.trim_end_matches('\n'), aid)
+    {
+        request["system_sections"] = json!([
+            { "text": stable.trim_end_matches('\n'), "cache_boundary": true },
+            { "text": aid, "cache_boundary": false },
+        ]);
+        if let Some(digest) = rebuilt.surface_digest.as_ref().filter(|_| edits.is_empty()) {
+            request["cache_intent"] = json!({ "surface_digest": digest });
         }
     }
     for (key, value) in [
@@ -759,11 +759,11 @@ fn replace_text(value: &mut Value, find: &str, replace: &str, found: &mut bool) 
     match value {
         Value::Object(map) => {
             if map.get("type").and_then(Value::as_str) == Some("text") {
-                if let Some(Value::String(text)) = map.get_mut("text") {
-                    if text.contains(find) {
-                        *found = true;
-                        *text = text.replace(find, replace);
-                    }
+                if let Some(Value::String(text)) = map.get_mut("text")
+                    && text.contains(find)
+                {
+                    *found = true;
+                    *text = text.replace(find, replace);
                 }
                 return;
             }
@@ -808,12 +808,11 @@ async fn count(
     }
     let counted: Result<Value, EvalError> =
         call(deps, "router::count_tokens", payload, BUS_TIMEOUT_MS).await;
-    if let Ok(reply) = &counted {
-        if let (Some(tokens), Some("provider")) =
+    if let Ok(reply) = &counted
+        && let (Some(tokens), Some("provider")) =
             (reply["tokens"].as_u64(), reply["estimator"].as_str())
-        {
-            return Ok((tokens, "provider".into()));
-        }
+    {
+        return Ok((tokens, "provider".into()));
     }
     let estimated = ContextClient::new(deps.iii.clone(), BUS_TIMEOUT_MS)
         .count_tokens(CountTokensParams {
@@ -952,14 +951,14 @@ async fn run(
         .as_ref()
         .map(|rebuilt| rebuilt.messages.clone())
         .unwrap_or_default();
-    if current.fidelity.is_none() {
-        if let Some(rebuilt) = &rebuilt {
-            let fidelity = fidelity(deps, rebuilt).await;
-            update(deps, evaluation_id, index, id, |reproduction| {
-                reproduction.fidelity = Some(fidelity)
-            })
-            .await?;
-        }
+    if current.fidelity.is_none()
+        && let Some(rebuilt) = &rebuilt
+    {
+        let fidelity = fidelity(deps, rebuilt).await;
+        update(deps, evaluation_id, index, id, |reproduction| {
+            reproduction.fidelity = Some(fidelity)
+        })
+        .await?;
     }
 
     // Indices still missing: a retry fills the gaps a failure left.
@@ -1586,13 +1585,15 @@ mod tests {
             }],
         );
         assert!(missing.is_err());
-        assert!(validate_edit(&ChangeEditV1 {
-            target: SYSTEM_PROMPT_TARGET.into(),
-            find: None,
-            replace: None,
-            remove: true
-        })
-        .is_err());
+        assert!(
+            validate_edit(&ChangeEditV1 {
+                target: SYSTEM_PROMPT_TARGET.into(),
+                find: None,
+                replace: None,
+                remove: true
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -1667,14 +1668,16 @@ mod tests {
         );
         assert_eq!(first_step_of("e_t_4c79_0_assistant"), None);
         assert_eq!(compose(&[Some("base\n"), None, Some("aid")]), "base\n\naid");
-        assert!(validate_check(&SuggestionCheckV1 {
-            decision_point: "e_t_1_4_assistant".into(),
-            signal: SignalV1 {
-                rule: Some(SignalRuleV1::ContractRediscovery),
-                question: Some("q".into())
-            },
-            change: vec![],
-        })
-        .is_err());
+        assert!(
+            validate_check(&SuggestionCheckV1 {
+                decision_point: "e_t_1_4_assistant".into(),
+                signal: SignalV1 {
+                    rule: Some(SignalRuleV1::ContractRediscovery),
+                    question: Some("q".into())
+                },
+                change: vec![],
+            })
+            .is_err()
+        );
     }
 }

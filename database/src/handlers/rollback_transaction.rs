@@ -89,7 +89,7 @@ pub async fn handle(state: &AppState, req: RollbackTxReq) -> Result<RollbackTxRe
 mod tests {
     use super::*;
     use crate::handlers::begin_transaction::tests::state;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::sync::Arc;
     use std::time::Duration;
 

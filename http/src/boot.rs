@@ -5,8 +5,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use iii_sdk::runtime::FunctionRef;
 use iii_sdk::IIIClient;
+use iii_sdk::runtime::FunctionRef;
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;

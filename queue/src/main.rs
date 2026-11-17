@@ -8,7 +8,7 @@ use clap::Parser;
 use iii_queue::config::QueueConfig;
 use iii_queue::configuration;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, WorkerIdentityMode};
+use iii_sdk::{InitOptions, WorkerIdentityMode, register_worker};
 
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -96,14 +96,14 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("loading queue configuration")?;
-    if let Some(seed) = seed.as_ref() {
-        if seed.adapter != config.adapter {
-            tracing::warn!(
-                seed_adapter = ?seed.adapter,
-                stored_adapter = ?config.adapter,
-                "--config seed adapter ignored; the stored configuration is authoritative"
-            );
-        }
+    if let Some(seed) = seed.as_ref()
+        && seed.adapter != config.adapter
+    {
+        tracing::warn!(
+            seed_adapter = ?seed.adapter,
+            stored_adapter = ?config.adapter,
+            "--config seed adapter ignored; the stored configuration is authoritative"
+        );
     }
 
     let boot = iii_queue::boot::start(project_iii.clone(), config).await?;

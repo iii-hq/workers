@@ -19,10 +19,10 @@ use globset::{Glob, GlobSetBuilder};
 use iii_sdk::{Call, CallRequest, IIIClient, Observer};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
-use super::{ordered, HookBinding, HookPoint, HookRegistry};
-use crate::clients::router::generation_capture::{capture_mode, AppendSource, CaptureMode};
+use super::{HookBinding, HookPoint, HookRegistry, ordered};
+use crate::clients::router::generation_capture::{AppendSource, CaptureMode, capture_mode};
 use crate::clients::session::LoadedEntry;
 use crate::types::content::ContentBlock;
 use crate::types::turn::TurnRecord;
@@ -1084,7 +1084,7 @@ async fn chain_post_turn(
                 return HookChainOutcome {
                     prompt: render_retry_prompt(binding, &reason, None),
                     ..HookChainOutcome::deny(reason)
-                }
+                };
             }
             HookOutcome::Hold(_) => {} // hold is not a post_turn verb
         }

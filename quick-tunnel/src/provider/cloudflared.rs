@@ -172,10 +172,10 @@ fn read_output<R: AsyncRead + Unpin + Send + 'static>(reader: R, sink: Sink) -> 
                     true,
                 ),
             };
-            if let Some(signal) = signal {
-                if !sink.send(signal).await {
-                    break;
-                }
+            if let Some(signal) = signal
+                && !sink.send(signal).await
+            {
+                break;
             }
             if broken {
                 break;

@@ -475,13 +475,33 @@ mod tests {
 
     #[test]
     fn env_expansion_supports_defaults() {
-        std::env::set_var("WT_TEST_ROOT", "/data/w");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_expansion_supports_defaults");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("WT_TEST_ROOT", "/data/w")
+                .output()
+                .expect("start isolated test process");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test was not executed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         assert_eq!(expand_env("root: ${WT_TEST_ROOT}"), "root: /data/w");
         assert_eq!(
             expand_env("root: ${WT_TEST_MISSING:/fallback}"),
             "root: /fallback"
         );
-        std::env::remove_var("WT_TEST_ROOT");
     }
 
     #[test]

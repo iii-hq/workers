@@ -3,7 +3,7 @@
 //! the rendered pieces, then spans and truncation with UTF-8 bytes as token
 //! ids. The release tokenizer is `#[ignore]`d: it needs `tokenizer.json` in
 //! `$CLEF_CHECKPOINT_DIR`.
-use judge_clef::encode::{encode, options, pieces, Encoded, PREFIX};
+use judge_clef::encode::{Encoded, PREFIX, encode, options, pieces};
 use judge_contract::{ErrorCode, Evaluation};
 use serde::Deserialize;
 use std::{ops::Range, path::PathBuf};

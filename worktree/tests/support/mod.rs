@@ -19,11 +19,11 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use worktree::config::WorkerConfig;
-use worktree::error::{codes, WError};
+use worktree::error::{WError, codes};
 use worktree::events::{Emitter, EventDeliverer};
-use worktree::functions::{create, Deps};
-use worktree::land::test_gate::{TestOutcome, TestRunner};
+use worktree::functions::{Deps, create};
 use worktree::land::Enqueuer;
+use worktree::land::test_gate::{TestOutcome, TestRunner};
 use worktree::locks::RepoLocks;
 use worktree::state::{InMemoryStateStore, StateStore};
 

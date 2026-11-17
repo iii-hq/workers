@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::AppState;
-use crate::config::{validate_connection_name, DatabaseConfig, WorkerConfig};
+use crate::config::{DatabaseConfig, WorkerConfig, validate_connection_name};
 use crate::connector::Stage;
 use crate::error::DbError;
 use crate::handlers::query::err_to_str;
@@ -299,10 +299,10 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
     redaction::restore_entry(&mut entry, stored.as_ref()).map_err(config_error)?;
     parse_entry(&req.name, &entry).map_err(config_error)?;
 
-    if let Some(previous) = &req.previous_name {
-        if previous != &req.name {
-            databases.remove(previous);
-        }
+    if let Some(previous) = &req.previous_name
+        && previous != &req.name
+    {
+        databases.remove(previous);
     }
     let databases_entry = entry.clone();
     databases.insert(req.name.clone(), entry);
@@ -446,11 +446,13 @@ mod tests {
 
     #[test]
     fn parse_entry_validates_the_structured_form() {
-        assert!(parse_entry(
-            "shop",
-            &json!({ "driver": "postgres", "host": "db", "user": "app" })
-        )
-        .is_ok());
+        assert!(
+            parse_entry(
+                "shop",
+                &json!({ "driver": "postgres", "host": "db", "user": "app" })
+            )
+            .is_ok()
+        );
         let err = parse_entry("shop", &json!({ "driver": "postgres", "user": "app" })).unwrap_err();
         assert!(err.contains("`host` is required"), "{err}");
         let err = parse_entry(

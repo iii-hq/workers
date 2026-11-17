@@ -4,7 +4,7 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct Message {

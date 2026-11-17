@@ -4,9 +4,9 @@
 #[allow(dead_code)]
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
-use iii_sdk::{register_worker, InitOptions};
-use judge_openai::{configuration, OpenAiConfig};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use judge_openai::{OpenAiConfig, configuration};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
 
@@ -175,8 +175,10 @@ async fn other_ensure_errors_are_redacted_even_when_the_message_mentions_missing
             "OpenAI configuration registration failed"
         );
         assert!(!calls.is_empty());
-        assert!(calls
-            .iter()
-            .all(|call| call["function_id"] == "configuration::ensure"));
+        assert!(
+            calls
+                .iter()
+                .all(|call| call["function_id"] == "configuration::ensure")
+        );
     }
 }

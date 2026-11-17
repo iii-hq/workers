@@ -11,9 +11,9 @@
 //! anything that does not parse as a read — the console's own check is a
 //! convenience, this one is the authority.
 
-use super::query::{self, err_to_str, QueryReq};
-use super::tx_sql_guard;
 use super::AppState;
+use super::query::{self, QueryReq, err_to_str};
+use super::tx_sql_guard;
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::Pool;

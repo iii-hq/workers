@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use iii_sdk::protocol::CallRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::types::message::AgentMessage;

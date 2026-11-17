@@ -107,6 +107,16 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_rule_chars")]
     pub max_rule_chars: usize,
 
+    /// Size the bank's `learned` rule may reach, in characters as injected.
+    /// A write that takes it past this moves its oldest lines back to memories
+    /// tagged `demoted-rule` (saved before the rule is rewritten), so one
+    /// bank's `learned` rule cannot grow without bound. A turn on a repository
+    /// bank also reads `default_bank`'s, and an agent's bank's if any, so
+    /// their learned rules together can still fill `max_rule_chars`. `0`
+    /// turns the cap off.
+    #[serde(default = "default_learned_max_chars")]
+    pub learned_max_chars: usize,
+
     /// Recency half-life in days for recall ranking: the age at which a
     /// memory's recency is neutral. Recency is a mild factor — a fresh memory
     /// gains up to 20% rank weight, a very old one loses up to 20% — so
@@ -155,6 +165,9 @@ fn default_max_memories_per_turn() -> usize {
 }
 fn default_max_rule_chars() -> usize {
     6_000
+}
+fn default_learned_max_chars() -> usize {
+    3_000
 }
 fn default_decay_half_life_days() -> u64 {
     60
@@ -302,7 +315,28 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_seed_yaml_only() {
-        std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_expansion_applies_to_seed_yaml_only");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("MEMORY_TEST_DIR", "/tmp/mem-test")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("data_dir: ${MEMORY_TEST_DIR}").unwrap();
         assert_eq!(cfg.data_dir, "/tmp/mem-test");
     }

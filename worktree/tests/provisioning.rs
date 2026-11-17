@@ -12,7 +12,7 @@ use std::time::Duration;
 use support::{create_request, git, init_repo, make_env, test_config};
 use worktree::config::ProvisionConfig;
 use worktree::functions::create;
-use worktree::provision::{copy_entry_with, copy_ignored, filter_entries, CopyMode};
+use worktree::provision::{CopyMode, copy_entry_with, copy_ignored, filter_entries};
 
 fn pcfg(mutate: impl FnOnce(&mut ProvisionConfig)) -> ProvisionConfig {
     let mut cfg = ProvisionConfig {

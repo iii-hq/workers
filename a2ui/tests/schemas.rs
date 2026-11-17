@@ -1,6 +1,6 @@
 mod support;
 
-use a2ui::functions::{catalog, FunctionSpec};
+use a2ui::functions::{FunctionSpec, catalog};
 
 fn file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

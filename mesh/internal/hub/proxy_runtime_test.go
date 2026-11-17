@@ -18,8 +18,10 @@ import (
 type proxyRPC struct {
 	mu         sync.Mutex // the hub's loop calls while a test changes the answers
 	callErr    error      // fails the rbac-proxy call itself
-	writeErr   error      // fails configuration::ensure and configuration::set
-	gets       int        // configuration::get calls: one for each pass that writes nothing
+	writeErr   error      // fails configuration::set
+	gets       int        // configuration::list calls: one for each pass
+	id         string     // the entry rbac-proxy registered, "rbac-proxy" when empty
+	missing    bool       // rbac-proxy has registered no entry yet
 	applyErr   error
 	applied    map[string]any
 	applyCalls int
@@ -32,6 +34,12 @@ type proxyRPC struct {
 
 func (f *proxyRPC) set(change func()) { f.mu.Lock(); defer f.mu.Unlock(); change() }
 func (f *proxyRPC) passes() int       { f.mu.Lock(); defer f.mu.Unlock(); return f.gets }
+func (f *proxyRPC) entry() string {
+	if f.id == "" {
+		return "rbac-proxy"
+	}
+	return f.id
+}
 
 func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage, error) {
 	f.t.Helper()
@@ -42,8 +50,8 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 		f.t.Fatal(err)
 	}
 	if req.FunctionID == "rbac-proxy::on-config-change" {
-		if req.Namespace != "proj" {
-			f.t.Fatalf("proxy refresh namespace: %s", req.Namespace)
+		if req.Namespace != "proj" || p["id"] != f.entry() {
+			f.t.Fatalf("proxy refresh routing: %s %s", req.Namespace, req.Payload)
 		}
 		f.applyCalls++
 		if f.callErr != nil {
@@ -62,11 +70,19 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 		}
 		return json.Marshal(result)
 	}
-	if req.Namespace != "default" || p["id"] != "rbac-proxy" {
-		f.t.Fatalf("proxy config routing: %+v %s", req, p)
-	}
-	if req.FunctionID == "configuration::get" {
+	if req.FunctionID == "configuration::list" && req.Namespace == "default" {
 		f.gets++
+		if f.err != nil {
+			return nil, f.err
+		}
+		entries := []any{map[string]any{"id": "mesh", "metadata": map[string]any{"ui_form": "mesh"}}}
+		if !f.missing {
+			entries = append(entries, map[string]any{"id": f.entry(), "metadata": map[string]any{"ui_form": "rbac-proxy"}})
+		}
+		return json.Marshal(map[string]any{"configurations": entries})
+	}
+	if req.Namespace != "default" || p["id"] != f.entry() {
+		f.t.Fatalf("proxy config routing: %+v %s", req, p)
 	}
 	if f.err != nil {
 		return nil, f.err
@@ -78,11 +94,6 @@ func (f *proxyRPC) Call(_ context.Context, req iii.CallRequest) (json.RawMessage
 	case "configuration::get":
 		if p["raw"] != true {
 			f.t.Fatal("proxy fetch expands environment")
-		}
-	case "configuration::ensure":
-		f.writes++
-		if f.value == nil {
-			f.value = p["initial_value"].(map[string]any)
 		}
 	case "configuration::set":
 		f.writes++
@@ -112,7 +123,7 @@ func TestProxyOwnershipLossAndRecovery(t *testing.T) {
 	key := h.Sessions.Open("laptop")
 	f.value = map[string]any{"rbac": map[string]any{"auth_function_id": "other::auth"}}
 	foreign := f.value
-	if _, err := h.onConfigChange(t.Context(), f, ConfigChangeEvent{ID: "rbac-proxy"}); err == nil {
+	if _, err := h.onConfigChange(t.Context(), f, proxyEvent(t, "rbac-proxy")); err == nil {
 		t.Fatal("foreign ownership accepted")
 	}
 	if h.MeshGateway.Status() == "ok" || h.proxyHealth() != "owned by other::auth" || !reflect.DeepEqual(f.value, foreign) || f.writes != 1 {
@@ -120,7 +131,7 @@ func TestProxyOwnershipLossAndRecovery(t *testing.T) {
 	}
 	waitInvalid(t, h.Sessions, key)
 	f.value = nil
-	if _, err := h.onConfigChange(t.Context(), f, ConfigChangeEvent{ID: "rbac-proxy"}); err != nil {
+	if _, err := h.onConfigChange(t.Context(), f, proxyEvent(t, "rbac-proxy")); err != nil {
 		t.Fatal(err)
 	}
 	if h.MeshGateway.Status() != "ok" {
@@ -456,4 +467,89 @@ func TestProxyRetriesOnlyWhatNoEventEnds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProxyConfigIDFollowsTheRbacProxyForm(t *testing.T) {
+	form := func(id string) string { return `{"id":"` + id + `","metadata":{"ui_form":"rbac-proxy"}}` }
+	stray := `{"id":"rbac-proxy","metadata":null}` // an entry an older hub created: rbac-proxy never reads it
+	const several = "several"
+	for _, tc := range []struct {
+		name, mesh, list, want string
+	}{
+		{"sole entry", "mesh", form("rbac-proxy"), "rbac-proxy"},
+		{"namespaced entry", "default-mesh", form("default-rbac-proxy") + "," + stray, "default-rbac-proxy"},
+		{"bare mesh skips the stray entry", "mesh", stray + "," + form("default-rbac-proxy"), "default-rbac-proxy"},
+		{"own namespace first", "team-mesh", form("default-rbac-proxy") + "," + form("team-rbac-proxy"), "team-rbac-proxy"},
+		{"bare mesh prefers rbac-proxy", "mesh", form("default-rbac-proxy") + "," + form("rbac-proxy"), "rbac-proxy"},
+		{"bare mesh takes the only candidate", "mesh", form("zeta-rbac-proxy"), "zeta-rbac-proxy"},
+		{"bare mesh never guesses between two", "mesh", form("zeta-rbac-proxy") + "," + form("alpha-rbac-proxy"), several},
+		{"the only candidate of its namespace", "default-mesh", form("alpha-rbac-proxy") + "," + form("default-proxy"), "default-proxy"},
+		{"never guesses inside its namespace", "default-mesh", form("default-zeta") + "," + form("default-proxy"), several},
+		{"its own name wins over others", "default-mesh", form("default-zeta") + "," + form("default-rbac-proxy"), "default-rbac-proxy"},
+		{"never another namespace's proxy", "beta-mesh", form("alpha-rbac-proxy"), ""},
+		{"never a node's entry", "mesh", form("alpha__proxy") + "," + form("e2e-rbac-proxy"), "e2e-rbac-proxy"},
+		{"never a node's entry inside its namespace", "default-mesh", form("default-x__rbac-proxy"), ""},
+		{"foreign metadata shapes", "mesh", `{"id":"a","metadata":"text"},{"id":"b","metadata":{"ui_form":7}},{"id":"c"},` + form("default-rbac-proxy"), "default-rbac-proxy"},
+		{"none", "mesh", `{"id":"mesh","metadata":{"ui_form":"mesh"}}`, ""},
+		{"only the stray entry", "mesh", stray, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := proxyConfigID(t.Context(), &resultRPC{out: json.RawMessage(`{"configurations":[` + tc.list + `]}`)}, tc.mesh)
+			if tc.want == several {
+				if !errors.Is(err, errSeveralProxyEntries) || id != "" {
+					t.Fatalf("id %q err %v, want a refusal naming the candidates", id, err)
+				}
+				return
+			}
+			if tc.want == "" {
+				if !errors.Is(err, errNoProxyEntry) {
+					t.Fatalf("id %q err %v, want no entry", id, err)
+				}
+				return
+			}
+			if err != nil || id != tc.want {
+				t.Fatalf("id %q err %v, want %q", id, err, tc.want)
+			}
+		})
+	}
+}
+
+// Compose names rbac-proxy's entry <namespace>-<container>: the hub waits for it, then writes, reads and applies that entry.
+func TestProxyEventForTheResolvedEntry(t *testing.T) {
+	h := authHub()
+	h.ConfigID = "default-mesh"
+	h.MeshGateway = gateway.New(func(netip.Addr) (string, bool) { return "laptop", true }, h.config.ProxyURL, h.Tickets)
+	defer h.MeshGateway.Close()
+	f := &proxyRPC{t: t, id: "default-rbac-proxy", missing: true}
+	h.proxyClient, h.proxyReady = f, true
+	defer h.proxyRetry.reset()
+	if err := h.reconcileProxy(t.Context()); !errors.Is(err, errNoProxyEntry) || h.MeshGateway.Status() == "ok" || f.writes != 0 || f.applyCalls != 0 || h.proxyRetry.wait != 0 {
+		t.Fatalf("before rbac-proxy registers: err=%v writes=%d applies=%d wait=%s", err, f.writes, f.applyCalls, h.proxyRetry.wait)
+	}
+	f.missing = false
+	if _, err := h.onConfigChange(t.Context(), f, proxyEvent(t, "default-rbac-proxy")); err != nil {
+		t.Fatal(err)
+	}
+	if h.MeshGateway.Status() != "ok" || h.proxyHealth() != "ok" || f.writes != 1 || f.applyCalls != 1 || f.value["middleware_function_id"] != "mesh::middleware" {
+		t.Fatalf("registration did not claim the entry: %s %s writes=%d applies=%d", h.MeshGateway.Status(), h.proxyHealth(), f.writes, f.applyCalls)
+	}
+	// A node's entry or another namespace's proxy never starts a pass: neither can be this hub's.
+	for _, id := range []string{"alpha__proxy", "default-x__proxy", "other-rbac-proxy"} {
+		if r, err := h.onConfigChange(t.Context(), f, proxyEvent(t, id)); err != nil || !r.OK || f.passes() != 2 {
+			t.Fatalf("event for %s: ok=%v err=%v passes=%d", id, r.OK, err, f.passes())
+		}
+	}
+	f.value["middleware_function_id"] = "other::middleware"
+	if _, err := h.onConfigChange(t.Context(), f, proxyEvent(t, "default-rbac-proxy")); err == nil || h.MeshGateway.Status() == "ok" {
+		t.Fatal("a change to the resolved entry was not routed to the proxy pass")
+	}
+}
+
+// proxyEvent is the configuration event the engine sends for an rbac-proxy entry.
+func proxyEvent(t *testing.T, id string) (e ConfigChangeEvent) {
+	t.Helper()
+	if err := json.Unmarshal([]byte(`{"type":"configuration","event_type":"configuration:updated","id":"`+id+`","metadata":{"ui_form":"rbac-proxy"}}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	return e
 }

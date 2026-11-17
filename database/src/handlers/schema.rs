@@ -14,8 +14,8 @@
 //! runs each query once across all tables and regroups in Rust. A 200-table
 //! schema therefore costs three or four queries, not six hundred.
 
-use super::catalog::{self, ColumnDesc, IndexDesc, TableFilter, TableKey, TableKind, TableRef};
 use super::AppState;
+use super::catalog::{self, ColumnDesc, IndexDesc, TableFilter, TableKey, TableKind, TableRef};
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::handlers::query::err_to_str;

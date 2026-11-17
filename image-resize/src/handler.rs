@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::ResizeConfig;
-use crate::processing::{process_image, resolve_params, ImageMetadata, ThumbnailMetadata};
+use crate::processing::{ImageMetadata, ThumbnailMetadata, process_image, resolve_params};
 
 // ---------------------------------------------------------------------------
 // ResizeRequest

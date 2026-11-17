@@ -403,12 +403,12 @@ impl Sessions {
         let handle = self.get(id).await?;
         let samples = audio::decode_pcm16_base64(pcm16_base64, MAX_PUSH_BYTES)?;
         let mut session = handle.lock().await;
-        if let Some(last) = session.last_push_seq {
-            if seq <= last {
-                return Err(format!(
-                    "chunk seq {seq} is not after the last accepted seq {last}"
-                ));
-            }
+        if let Some(last) = session.last_push_seq
+            && seq <= last
+        {
+            return Err(format!(
+                "chunk seq {seq} is not after the last accepted seq {last}"
+            ));
         }
         session.last_push_seq = Some(seq);
         session.last_audio = Instant::now();

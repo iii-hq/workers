@@ -405,6 +405,11 @@ pub struct TurnRecord {
     /// reseeded turn replaces this record.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub continues: bool,
+    /// A finished turn that dropped its promised reseed and has not yet sent the
+    /// completion that ends its exchange: stored by the write that drops
+    /// `continues`, cleared once that completion is sent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owes_completion: bool,
     /// Wake bindings whose fire this turn's own queue drain delivered: their
     /// claimed record can outlive the delivery, and must not park this turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -494,6 +499,14 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
+    /// Whether a `harness::turn` step must still run for this record: a
+    /// finished turn that still promises a reseed, or still owes its exchange's
+    /// completion, needs its step delivered again, like a running one.
+    pub fn awaits_step(&self) -> bool {
+        self.status == TurnStatus::Running
+            || (self.status.is_terminal() && (self.continues || self.owes_completion))
+    }
+
     /// Function_call ids still awaiting a result (dispatched or pending).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
@@ -605,6 +618,7 @@ pub(crate) mod tests {
             abort: false,
             exchange_finished: false,
             continues: false,
+            owes_completion: false,
             took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,
@@ -653,6 +667,27 @@ pub(crate) mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn a_step_is_awaited_while_running_or_while_a_finished_turn_promises_one() {
+        let with = |status, continues| TurnRecord {
+            status,
+            continues,
+            ..record()
+        };
+        assert!(with(TurnStatus::Running, false).awaits_step());
+        assert!(with(TurnStatus::Completed, true).awaits_step());
+        assert!(!with(TurnStatus::Completed, false).awaits_step());
+        assert!(!with(TurnStatus::Cancelled, false).awaits_step());
+        assert!(!with(TurnStatus::AwaitingFunctions, false).awaits_step());
+        let owing = |status| TurnRecord {
+            status,
+            owes_completion: true,
+            ..record()
+        };
+        assert!(owing(TurnStatus::Completed).awaits_step());
+        assert!(!owing(TurnStatus::AwaitingFunctions).awaits_step());
     }
 
     #[test]
@@ -783,7 +818,7 @@ pub(crate) mod tests {
             .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         r.calls
             .insert("b".into(), cp(CallState::Pending, None, false)); // hook hold, no child
-                                                                      // Fire-and-forget spawn: Done instantly, still counts.
+        // Fire-and-forget spawn: Done instantly, still counts.
         r.calls
             .insert("c".into(), cp(CallState::Done, Some("s_done"), true));
         let children = r.spawned_children();
@@ -906,11 +941,13 @@ pub(crate) mod tests {
     #[test]
     fn agent_identity_round_trips_and_stays_off_the_wire_when_absent() {
         let mut r = record();
-        assert!(!serde_json::to_value(&r.options)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .contains_key("agent"));
+        assert!(
+            !serde_json::to_value(&r.options)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("agent")
+        );
         r.options.agent = Some(AgentIdentity {
             id: "tech-leader".into(),
             name: Some("Tech Leader".into()),
@@ -953,10 +990,12 @@ pub(crate) mod tests {
             name: "English".into(),
         };
         let mut r = record();
-        assert!(serde_json::to_value(&r.options)
-            .unwrap()
-            .get("response_language")
-            .is_none());
+        assert!(
+            serde_json::to_value(&r.options)
+                .unwrap()
+                .get("response_language")
+                .is_none()
+        );
         r.options.response_language = Some(english.clone());
         let value = serde_json::to_value(&r).unwrap();
         assert_eq!(

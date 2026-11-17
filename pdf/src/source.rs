@@ -11,8 +11,8 @@
 //! this worker's wire is 1-indexed, and the conversions live here so a caller
 //! never has to know which side of the boundary a number came from.
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

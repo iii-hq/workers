@@ -208,7 +208,7 @@ fn cell(row: &Row, index: usize) -> Result<Value, SentinelError> {
             return Err(SentinelError::dependency(format!(
                 "column {} has type {other}, which these tests do not decode",
                 row.columns()[index].name()
-            )))
+            )));
         }
     };
     Ok(value.map_err(failed)?.unwrap_or(Value::Null))

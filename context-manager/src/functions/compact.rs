@@ -12,9 +12,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::summarize::{summarize_head, PromptSteering};
+use super::summarize::{PromptSteering, summarize_head};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{estimator_for_model, Estimator};
+use crate::core::estimate::{Estimator, estimator_for_model};
 use crate::core::lease;
 use crate::core::selection::{fit_tail, select};
 use crate::error::ContextError;

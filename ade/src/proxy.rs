@@ -33,12 +33,12 @@ use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::http::{header, uri::Authority, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header, uri::Authority};
 use axum::response::{IntoResponse, Response};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
-use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message as TungMessage;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 
 /// Connection settings required by the `/ws` proxy.
 #[derive(Clone)]
@@ -176,11 +176,11 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
                 }
                 other => other,
             };
-            if let Some(out) = axum_to_tungstenite(msg) {
-                if let Err(e) = engine_tx.send(out).await {
-                    tracing::debug!(error = %e, "browser -> engine: engine send error");
-                    break;
-                }
+            if let Some(out) = axum_to_tungstenite(msg)
+                && let Err(e) = engine_tx.send(out).await
+            {
+                tracing::debug!(error = %e, "browser -> engine: engine send error");
+                break;
             }
             if is_close {
                 break;
@@ -199,11 +199,11 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
                 }
             };
             let is_close = matches!(msg, TungMessage::Close(_));
-            if let Some(out) = tungstenite_to_axum(msg) {
-                if let Err(e) = client_tx.send(out).await {
-                    tracing::debug!(error = %e, "engine -> browser: client send error");
-                    break;
-                }
+            if let Some(out) = tungstenite_to_axum(msg)
+                && let Err(e) = client_tx.send(out).await
+            {
+                tracing::debug!(error = %e, "engine -> browser: client send error");
+                break;
             }
             if is_close {
                 break;
@@ -519,17 +519,21 @@ mod tests {
     #[test]
     fn stamp_ignores_other_messages_and_bad_input() {
         // Different message type — even one that mentions registerfunction in a payload.
-        assert!(stamp_internal_registration(
-            r#"{"type":"invokefunction","payload":"\"registerfunction\""}"#
-        )
-        .is_none());
+        assert!(
+            stamp_internal_registration(
+                r#"{"type":"invokefunction","payload":"\"registerfunction\""}"#
+            )
+            .is_none()
+        );
         // Not JSON.
         assert!(stamp_internal_registration("registerfunction{").is_none());
         // Metadata of an unexpected shape is left alone.
-        assert!(stamp_internal_registration(
-            r#"{"type":"registerfunction","id":"x","metadata":"weird"}"#
-        )
-        .is_none());
+        assert!(
+            stamp_internal_registration(
+                r#"{"type":"registerfunction","id":"x","metadata":"weird"}"#
+            )
+            .is_none()
+        );
     }
 
     #[test]

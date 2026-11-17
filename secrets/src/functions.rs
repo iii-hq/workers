@@ -9,22 +9,22 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::access::CallerDirectory;
 use crate::api::{
-    ids, AccessRequest, CompareAndSetRequest, CompareAndSetResponse, DeleteResponse, DetectRequest,
+    AccessRequest, CompareAndSetRequest, CompareAndSetResponse, DeleteResponse, DetectRequest,
     DetectResponse, EmptyRequest, ImportRequest, ListResponse, NameRequest, ResolveRequest,
-    ResolveResponse, SecretMeta, SetRequest, StatusResponse, StoreKind,
+    ResolveResponse, SecretMeta, SetRequest, StatusResponse, StoreKind, ids,
 };
 use crate::detect::{Detector, SourceKind};
 use crate::envwatch::EnvWatch;
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 use crate::events::{self, ChangedEvent};
 use crate::names::{parse_reference, validate_name};
-use crate::store::{validate_detect_names, Store};
+use crate::store::{Store, validate_detect_names};
 
 /// Everything a handler needs.
 pub struct Ctx {

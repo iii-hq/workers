@@ -3,7 +3,7 @@
 [package]
 name = "quick-tunnel"
 version = "0.2.4"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Lease-managed public tunnels (cloudflared Quick Tunnels or OpenTunnel) on the iii worker mesh"

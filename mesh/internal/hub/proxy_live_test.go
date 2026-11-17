@@ -80,7 +80,7 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	if err := h.reconcileProxy(ctx); err != nil {
 		t.Fatalf("claim running default proxy: %v", err)
 	}
-	claimed, err := fetchProxyConfig(ctx, h.Client)
+	claimed, err := fetchProxyConfig(ctx, h.Client, "rbac-proxy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	if err := h.reconcileProxy(ctx); err != nil {
 		t.Fatalf("upgrade persisted legacy Mesh hook: %v", err)
 	}
-	claimed, err = fetchProxyConfig(ctx, h.Client)
+	claimed, err = fetchProxyConfig(ctx, h.Client, "rbac-proxy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,12 +156,12 @@ func TestRunningProxyMeshClaim(t *testing.T) {
 	if retained["port"] != float64(proxyPort) || retained["host"] != "127.0.0.1" || retained["rbac_enabled"] != true {
 		t.Fatalf("failed apply lost last-good config/listener: %s", raw)
 	}
-	before, _ := fetchProxyConfig(ctx, h.Client)
+	before, _ := fetchProxyConfig(ctx, h.Client, "rbac-proxy")
 	blocker.Close()
 	if err := h.reconcileProxy(ctx); err != nil {
 		t.Fatalf("retry unchanged desired config: %v", err)
 	}
-	after, _ := fetchProxyConfig(ctx, h.Client)
+	after, _ := fetchProxyConfig(ctx, h.Client, "rbac-proxy")
 	beforeJSON, _ := json.Marshal(before)
 	afterJSON, _ := json.Marshal(after)
 	if string(beforeJSON) != string(afterJSON) {

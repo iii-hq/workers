@@ -17,7 +17,7 @@ pub struct FunctionSpec {
 }
 
 fn schema<T: schemars::JsonSchema>() -> serde_json::Value {
-    let root = schemars::gen::SchemaSettings::draft07()
+    let root = schemars::r#gen::SchemaSettings::draft07()
         .into_generator()
         .into_root_schema_for::<T>();
     serde_json::to_value(root).expect("function schema serializes")

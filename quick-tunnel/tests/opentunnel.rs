@@ -4,8 +4,8 @@
 //! ~16 s before giving up, so these tests are slow by design.
 use std::{
     os::unix::fs::PermissionsExt,
-    path::Path,
-    sync::{Arc, OnceLock},
+    path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -15,42 +15,47 @@ use quick_tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
-    provider::{opentunnel::OpenTunnel, Provider, Signal, Sink},
+    provider::{Provider, Signal, Sink, opentunnel::OpenTunnel},
 };
 use tokio::sync::{broadcast, mpsc};
 
 const HOST: &str = "abc234.opentunnel.xyz";
 
-/// HOME and the XDG directories point at one empty directory for this whole
-/// test binary: the provider may write only under the state path. Proxy and
-/// CA variables are cleared so nothing leaves loopback.
-fn isolated_home() -> &'static Path {
-    static HOME: OnceLock<tempfile::TempDir> = OnceLock::new();
-    HOME.get_or_init(|| {
-        let home = tempfile::tempdir().unwrap();
-        for key in [
-            "HOME",
-            "XDG_DATA_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_STATE_HOME",
-            "XDG_RUNTIME_DIR",
-        ] {
-            std::env::set_var(key, home.path());
-        }
-        for key in [
-            "HTTPS_PROXY",
-            "https_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-            "OPENTUNNEL_CA_CERT",
-        ] {
-            std::env::remove_var(key);
-        }
-        home
-    })
-    .path()
+/// Isolate the process before Tokio or the test harness can read its environment.
+/// `Command::env` configures only the child; the parent never mutates HOME.
+fn isolated_home(test: &str) -> Option<PathBuf> {
+    const CHILD_HOME: &str = "QUICK_TUNNEL_TEST_HOME";
+    if let Some(home) = std::env::var_os(CHILD_HOME) {
+        return Some(PathBuf::from(home));
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD_HOME, home.path());
+    for key in [
+        "HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+    ] {
+        command.env(key, home.path());
+    }
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "OPENTUNNEL_CA_CERT",
+    ] {
+        command.env_remove(key);
+    }
+    let status = command.status().unwrap();
+    assert!(status.success(), "isolated {test} failed: {status}");
+    None
 }
 
 fn assert_untouched(home: &Path) {
@@ -130,7 +135,11 @@ async fn event(
 
 #[tokio::test]
 async fn state_directory_is_private_and_a_group_readable_one_is_refused() {
-    let home = isolated_home();
+    let Some(home) =
+        isolated_home("state_directory_is_private_and_a_group_readable_one_is_refused")
+    else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let config = config(&dir.path().join("state"));
     let manager = Manager::open(config.clone()).unwrap();
@@ -150,12 +159,15 @@ async fn state_directory_is_private_and_a_group_readable_one_is_refused() {
         panic!("a group-readable state directory was accepted");
     };
     assert!(error.to_string().contains("chmod 700"), "{error}");
-    assert_untouched(home);
+    assert_untouched(&home);
 }
 
 #[tokio::test]
 async fn empty_storage_and_a_closed_api_port_give_relay_unreachable() {
-    let home = isolated_home();
+    let Some(home) = isolated_home("empty_storage_and_a_closed_api_port_give_relay_unreachable")
+    else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let mut config = config(dir.path());
     config.startup_timeout_ms = 60_000;
@@ -169,12 +181,16 @@ async fn empty_storage_and_a_closed_api_port_give_relay_unreachable() {
         Some("opentunnel relay unreachable")
     );
     manager.shutdown().await;
-    assert_untouched(home);
+    assert_untouched(&home);
 }
 
 #[tokio::test]
 async fn seeded_identity_emits_the_url_never_connects_and_stops_within_the_bound() {
-    let home = isolated_home();
+    let Some(home) =
+        isolated_home("seeded_identity_emits_the_url_never_connects_and_stops_within_the_bound")
+    else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("opentunnel");
     seed(&storage);
@@ -224,12 +240,16 @@ async fn seeded_identity_emits_the_url_never_connects_and_stops_within_the_bound
         "{:?}",
         started.elapsed()
     );
-    assert_untouched(home);
+    assert_untouched(&home);
 }
 
 #[tokio::test]
 async fn seeded_identity_with_a_closed_api_port_ends_in_the_startup_timeout() {
-    let home = isolated_home();
+    let Some(home) =
+        isolated_home("seeded_identity_with_a_closed_api_port_ends_in_the_startup_timeout")
+    else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let storage = dir.path().join("opentunnel");
     seed(&storage);
@@ -243,14 +263,17 @@ async fn seeded_identity_with_a_closed_api_port_ends_in_the_startup_timeout() {
         Some("opentunnel startup/reconnect timeout")
     );
     manager.shutdown().await;
-    assert_untouched(home);
+    assert_untouched(&home);
 }
 
 /// A relay that accepts and never answers: create hangs after reaching it.
 /// A stop then must not drop the create, nor let a retry create a second tunnel.
 #[tokio::test]
 async fn a_stop_during_first_create_never_creates_a_second_tunnel() {
-    let home = isolated_home();
+    let Some(home) = isolated_home("a_stop_during_first_create_never_creates_a_second_tunnel")
+    else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api = url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
@@ -286,5 +309,5 @@ async fn a_stop_during_first_create_never_creates_a_second_tunnel() {
     let again = tokio::time::timeout(Duration::from_secs(1), connections.recv()).await;
     assert!(again.is_err(), "a second create reached the relay");
     second.stop().await;
-    assert_untouched(home);
+    assert_untouched(&home);
 }

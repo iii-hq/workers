@@ -93,7 +93,10 @@ func fetchConfig(ctx context.Context, client rpc, id string) (Config, error) {
 }
 
 type ConfigChangeEvent struct {
-	ID string `json:"id"`
+	ID       string `json:"id"`
+	Metadata struct {
+		UIForm string `json:"ui_form"`
+	} `json:"metadata"`
 }
 type ConfigChangeResult struct {
 	OK bool `json:"ok"`
@@ -103,12 +106,13 @@ type ConfigurationIdentity struct {
 }
 
 func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChangeEvent) (ConfigChangeResult, error) {
-	if event.ID != "" && event.ID != h.ConfigID && event.ID != "rbac-proxy" {
+	proxy := event.ID != "" && event.ID != h.ConfigID
+	if proxy && (event.Metadata.UIForm != "rbac-proxy" || !proxyCandidate(h.ConfigID, event.ID)) {
 		return ConfigChangeResult{OK: true}, nil
 	}
 	h.reload.Lock()
 	defer h.reload.Unlock()
-	if event.ID == "rbac-proxy" {
+	if proxy { // any rbac-proxy entry may change which one is this hub's: the pass resolves it
 		err := h.reconcileProxy(ctx)
 		return ConfigChangeResult{OK: err == nil}, err
 	}
@@ -188,11 +192,15 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 		return err
 	}
 	for _, id := range []string{h.ConfigID, "rbac-proxy"} {
-		if id == "rbac-proxy" && !h.proxyReady {
-			continue
+		path := "input.id"
+		if id == "rbac-proxy" {
+			if !h.proxyReady {
+				continue
+			}
+			path = "input.metadata.ui_form" // its supervisor names the entry; the form is always rbac-proxy
 		}
 		if err := meshclient.Observe(ctx, client, iii.Source{FunctionID: "configuration::on-updated", Namespace: "default", Capture: []iii.Capture{iii.CaptureOutput}, Filters: iii.Filters{
-			"input.id":         iii.Op{"$eq": id},
+			path:               iii.Op{"$eq": id},
 			"input.event_type": iii.Op{"$in": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}},
 		}}, "mesh::on-config-change", iii.ObserverOptions{ID: "mesh-config-" + id, TargetNamespace: h.Namespace}, resumed); err != nil {
 			return err

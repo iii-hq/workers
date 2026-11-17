@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
-use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -273,15 +273,21 @@ mod tests {
 
         assert!(!runtime.active_turns.contains_key("old-session"));
         assert!(!runtime.fifo_queues.contains_key(&42));
-        assert!(!runtime
-            .stream_sessions
-            .contains_key(&("old-session".into(), "entry-1".into())));
-        assert!(runtime
-            .stream_sessions
-            .contains_key(&("other-session".into(), "entry-2".into())));
-        assert!(!runtime
-            .pending_entries
-            .contains_key(&("old-session".into(), "entry-1".into())));
+        assert!(
+            !runtime
+                .stream_sessions
+                .contains_key(&("old-session".into(), "entry-1".into()))
+        );
+        assert!(
+            runtime
+                .stream_sessions
+                .contains_key(&("other-session".into(), "entry-2".into()))
+        );
+        assert!(
+            !runtime
+                .pending_entries
+                .contains_key(&("old-session".into(), "entry-1".into()))
+        );
     }
 
     #[test]

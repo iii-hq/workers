@@ -502,6 +502,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         fields: [
           toggle('rule_learning_enabled', 'Learn standing rules', undefined, { defaultValue: true }),
           number('max_rule_chars', 'Rule character budget', undefined, { min: 1 }),
+          number('learned_max_chars', 'Learned rule size cap', '0 turns the cap off.', { min: 0 }),
           toggle('embeddings_enabled', 'Use embeddings', undefined, { defaultValue: true }),
           text('embedding_model', 'Embedding model', 'Empty uses the provider default.'),
         ],
@@ -521,6 +522,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'max_memories_per_turn',
       'rule_learning_enabled',
       'max_rule_chars',
+      'learned_max_chars',
       'decay_half_life_days',
       'embeddings_enabled',
       'embedding_model',

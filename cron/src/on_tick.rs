@@ -33,8 +33,7 @@ use crate::scheduler::{Scheduler, Ticker};
 
 pub const ON_TICK_FN: &str = "cron::on-tick";
 
-pub const ON_TICK_DESCRIPTION: &str =
-    "One call per fire of a cron expression. Observe it with args { expression } (UTC; 6 \
+pub const ON_TICK_DESCRIPTION: &str = "One call per fire of a cron expression. Observe it with args { expression } (UTC; 6 \
      fields: sec min hour day month weekday, a 7th year field is accepted); every observer of \
      that expression receives { expression, scheduled_time, actual_time } once per fire. Only \
      the cron worker calls it.";

@@ -3,7 +3,7 @@
 [package]
 name = "judge-decider"
 version = "0.3.2"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "decider provider for the judge hub: option-label logits from decider-4b (GGUF) run in-process through llama.cpp."

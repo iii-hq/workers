@@ -8,7 +8,7 @@
 pub mod log;
 pub mod trace;
 
-use crate::{evidence::EvidenceBundleV1, ErrorSourceV1};
+use crate::{ErrorSourceV1, evidence::EvidenceBundleV1};
 
 /// A failure, normalized and source-agnostic: who failed, what failed, where,
 /// when, in which version, in whose session.

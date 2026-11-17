@@ -71,11 +71,11 @@ pub fn element_line(r: Option<&str>, el: &ElementData) -> String {
     s.push_str(&label(el));
     // An unnamed control is often labelled only by its tooltip (macOS AXHelp,
     // wxWidgets apps such as BambuStudio).
-    if el.name.as_deref().is_none_or(str::is_empty) {
-        if let Some(d) = el.description.as_deref().filter(|d| !d.trim().is_empty()) {
-            s.push_str(" description=");
-            s.push_str(&quote(first_sentence(d), MAX_DESCRIPTION_CHARS));
-        }
+    if el.name.as_deref().is_none_or(str::is_empty)
+        && let Some(d) = el.description.as_deref().filter(|d| !d.trim().is_empty())
+    {
+        s.push_str(" description=");
+        s.push_str(&quote(first_sentence(d), MAX_DESCRIPTION_CHARS));
     }
     // An image's value is no text: macOS hands out the NSImage description
     // (hundreds of characters of pixel format per icon). A value that repeats

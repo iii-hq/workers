@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use iii_sdk::CallRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 #[path = "support/private_home.rs"]
@@ -309,12 +309,12 @@ async fn frame_sized(client: &IIIClient, session_id: &str, after: u64, want: (u3
             json!({ "session_id": session_id }),
         )
         .await;
-        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64()) {
-            if seq > after {
-                last = image_size(data);
-                if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
-                    return frame;
-                }
+        if let (Some(data), Some(seq)) = (frame["frame"].as_str(), frame["frame_seq"].as_u64())
+            && seq > after
+        {
+            last = image_size(data);
+            if last.0.abs_diff(want.0) <= 1 && last.1.abs_diff(want.1) <= 1 {
+                return frame;
             }
         }
         assert!(
@@ -1303,10 +1303,10 @@ async fn measure_scroll_to_frame() {
     let mut acted = Vec::new();
     for round in 0..20 {
         while rx.try_recv().is_ok() {}
-        let before = call(&client, "browser::frame", json!({ "session_id": id })).await
-            ["frame_seq"]
-            .as_u64()
-            .unwrap_or(0);
+        let before =
+            call(&client, "browser::frame", json!({ "session_id": id })).await["frame_seq"]
+                .as_u64()
+                .unwrap_or(0);
         let t0 = Instant::now();
         call(
             &client,
@@ -1336,8 +1336,13 @@ async fn measure_scroll_to_frame() {
     };
     eprintln!(
         "scroll -> on-frame-event ms: P50 {} P90 {} min {} max {} | act returns P50 {} P90 {} | all {:?}",
-        pct(&mut shown.clone(), 0.5), pct(&mut shown.clone(), 0.9), shown.iter().min().unwrap(),
-        shown.iter().max().unwrap(), pct(&mut acted.clone(), 0.5), pct(&mut acted.clone(), 0.9), shown
+        pct(&mut shown.clone(), 0.5),
+        pct(&mut shown.clone(), 0.9),
+        shown.iter().min().unwrap(),
+        shown.iter().max().unwrap(),
+        pct(&mut acted.clone(), 0.5),
+        pct(&mut acted.clone(), 0.9),
+        shown
     );
     client.shutdown_async().await;
 }

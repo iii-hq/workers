@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     error::WorkflowError,
@@ -652,10 +652,12 @@ mod tests {
         )]);
         let resp = build_status(rec.clone(), Some(&def()), &live, false);
         assert!(resp.node_details.is_empty());
-        assert!(serde_json::to_value(&resp)
-            .unwrap()
-            .get("node_details")
-            .is_none());
+        assert!(
+            serde_json::to_value(&resp)
+                .unwrap()
+                .get("node_details")
+                .is_none()
+        );
 
         let resp = build_status(rec, Some(&def()), &live, true);
         assert_eq!(

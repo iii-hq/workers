@@ -193,7 +193,7 @@ pub fn fused_score(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{fingerprint, now_ms, Confidence};
+    use crate::types::{Confidence, fingerprint, now_ms};
 
     fn memory(text: &str, entities: &[&str]) -> Memory {
         Memory {
@@ -285,7 +285,7 @@ mod tests {
 #[cfg(test)]
 mod scoring_tests {
     use super::*;
-    use crate::types::{fingerprint, Confidence, Memory};
+    use crate::types::{Confidence, Memory, fingerprint};
 
     fn memory(text: &str, entities: &[&str]) -> Memory {
         Memory {

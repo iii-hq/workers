@@ -8,7 +8,7 @@ use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -166,16 +166,14 @@ impl FunctionQueueRuntime {
                 .is_some_and(ConsumerHandle::is_finished)
         };
         let adapter = self.adapter.current().await;
-        if finished {
-            if let Some(handle) = self.consumers.lock().await.remove(&queue) {
-                self.stop_consumer(adapter.clone(), &queue, handle)
-                    .await
-                    .map_err(|error| {
-                        Error::Handler(format!(
-                            "cannot restart finished queue '{queue}' consumer: {error}"
-                        ))
-                    })?;
-            }
+        if finished && let Some(handle) = self.consumers.lock().await.remove(&queue) {
+            self.stop_consumer(adapter.clone(), &queue, handle)
+                .await
+                .map_err(|error| {
+                    Error::Handler(format!(
+                        "cannot restart finished queue '{queue}' consumer: {error}"
+                    ))
+                })?;
         }
         let already_running = self.consumers.lock().await.contains_key(&queue);
         if !changed && already_running {
@@ -257,41 +255,38 @@ impl FunctionQueueRuntime {
         }
 
         let previous_consumer = self.consumers.lock().await.remove(&queue);
-        if let Some(handle) = previous_consumer {
-            if let Err(stop_error) = self.stop_consumer(adapter.clone(), &queue, handle).await {
-                let rollback_error =
-                    crate::configuration::persist_config(&self.iii, &authoritative)
-                        .await
-                        .err();
-                let restore_result = self
-                    .restore_definition(adapter.clone(), &queue, previous_definition.as_ref())
-                    .await;
-                let restart_error = if restore_result.is_ok() {
-                    if let Some(previous) = previous_definition.as_ref() {
-                        match self.start_consumer(adapter.clone(), &queue, previous).await {
-                            Ok(consumer) => {
-                                self.replace_consumer(queue.clone(), consumer).await.err()
-                            }
-                            Err(error) => Some(error),
-                        }
-                    } else {
-                        None
+        if let Some(handle) = previous_consumer
+            && let Err(stop_error) = self.stop_consumer(adapter.clone(), &queue, handle).await
+        {
+            let rollback_error = crate::configuration::persist_config(&self.iii, &authoritative)
+                .await
+                .err();
+            let restore_result = self
+                .restore_definition(adapter.clone(), &queue, previous_definition.as_ref())
+                .await;
+            let restart_error = if restore_result.is_ok() {
+                if let Some(previous) = previous_definition.as_ref() {
+                    match self.start_consumer(adapter.clone(), &queue, previous).await {
+                        Ok(consumer) => self.replace_consumer(queue.clone(), consumer).await.err(),
+                        Err(error) => Some(error),
                     }
                 } else {
                     None
-                };
-                let mut message = format!("cannot stop queue '{queue}' consumer: {stop_error}");
-                if let Some(error) = rollback_error {
-                    message.push_str(&format!("; configuration rollback failed: {error}"));
                 }
-                if let Err(error) = restore_result {
-                    message.push_str(&format!("; adapter definition rollback failed: {error}"));
-                }
-                if let Some(error) = restart_error {
-                    message.push_str(&format!("; previous consumer restart failed: {error}"));
-                }
-                return Err(Error::Handler(message));
+            } else {
+                None
+            };
+            let mut message = format!("cannot stop queue '{queue}' consumer: {stop_error}");
+            if let Some(error) = rollback_error {
+                message.push_str(&format!("; configuration rollback failed: {error}"));
             }
+            if let Err(error) = restore_result {
+                message.push_str(&format!("; adapter definition rollback failed: {error}"));
+            }
+            if let Some(error) = restart_error {
+                message.push_str(&format!("; previous consumer restart failed: {error}"));
+            }
+            return Err(Error::Handler(message));
         }
 
         match self
@@ -924,11 +919,10 @@ async fn run_grouped_fifo(
                 };
 
                 groups.retain(|_, sender| !sender.is_closed());
-                if let Some(sender) = groups.get(&group) {
-                    if sender.send(message.clone()).is_ok() {
+                if let Some(sender) = groups.get(&group)
+                    && sender.send(message.clone()).is_ok() {
                         continue;
                     }
-                }
 
                 let (sender, mut group_rx) = mpsc::unbounded_channel();
                 // A fresh channel cannot be closed before its receiver is moved
@@ -1383,8 +1377,8 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     use crate::store::TopicStats;
     use crate::subscribers::EngineChanges;
@@ -1899,11 +1893,13 @@ mod tests {
         assert_eq!(enqueue.baggage.as_deref(), Some("iii.session.id=s1"));
         assert_eq!(enqueue.namespace.as_deref(), Some("my-harness-ns"));
 
-        assert!(serde_json::from_value::<DefineQueueInput>(json!({
-            "queue": "harness-turn",
-            "unexpected": true
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<DefineQueueInput>(json!({
+                "queue": "harness-turn",
+                "unexpected": true
+            }))
+            .is_err()
+        );
     }
 
     #[tokio::test]

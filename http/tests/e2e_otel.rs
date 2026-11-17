@@ -23,13 +23,13 @@ use std::time::Duration;
 use common::{backend, engine, worker};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use serial_test::serial;
+use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
-use tracing::Subscriber;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 /// Fields captured for a single span, keyed by field name and stringified.
 type SpanFields = HashMap<String, String>;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use std::sync::Arc;
 
 mod config;

@@ -16,8 +16,7 @@ pub struct ModuleManifest {
     pub supported_targets: Vec<String>,
 }
 
-pub const DESCRIPTION: &str =
-    "Read PDFs locally: classify text-based versus scanned, convert to markdown, extract \
+pub const DESCRIPTION: &str = "Read PDFs locally: classify text-based versus scanned, convert to markdown, extract \
      positioned text and region text, and report which pages still need OCR.";
 
 pub fn build_manifest() -> ModuleManifest {
@@ -42,9 +41,11 @@ mod tests {
         assert!(json["version"].as_str().is_some_and(|v| !v.is_empty()));
         assert!(json["description"].as_str().is_some_and(|d| d.len() > 20));
         assert!(json["default_config"].is_object());
-        assert!(json["supported_targets"]
-            .as_array()
-            .is_some_and(|t| !t.is_empty()));
+        assert!(
+            json["supported_targets"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty())
+        );
     }
 
     /// The manifest name is the folder name, the binary name, and the registry

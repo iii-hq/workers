@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
-use crate::probe::{ScenarioProbe, LIFECYCLE_FUNCTION_ID};
+use crate::probe::{LIFECYCLE_FUNCTION_ID, ScenarioProbe};
 use crate::types::trace::{TraceEvidenceV1, TraceTreeV1};
 
 #[derive(Deserialize)]

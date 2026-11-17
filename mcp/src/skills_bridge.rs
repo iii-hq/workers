@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{errors::Error, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, errors::Error};
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Detects the engine error variants that mean "function not registered".
 /// Mirrors the TS `isMissingDelegate` predicate.
@@ -147,11 +147,11 @@ fn post_process_skills_index_read(mut result: Value) -> Value {
         return result;
     };
     for item in contents.iter_mut() {
-        if let Some(item_obj) = item.as_object_mut() {
-            if let Some(text) = item_obj.get("text").and_then(Value::as_str) {
-                let stripped = strip_nested_iii_lines_from_markdown(text);
-                item_obj.insert("text".to_string(), Value::String(stripped));
-            }
+        if let Some(item_obj) = item.as_object_mut()
+            && let Some(text) = item_obj.get("text").and_then(Value::as_str)
+        {
+            let stripped = strip_nested_iii_lines_from_markdown(text);
+            item_obj.insert("text".to_string(), Value::String(stripped));
         }
     }
     result
