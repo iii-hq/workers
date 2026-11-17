@@ -1964,10 +1964,29 @@ async fn execute_run(
             piece_over_cap += before - got.len();
             // A later piece that corrects what an earlier one corrected is
             // the message's last word on it; both would name the same old
-            // record, and the second would conflict.
-            let later: HashSet<usize> = got.iter().filter_map(|i| i.replaces).collect();
+            // record, and the second would conflict. Only a user or project
+            // memory the write checks pass retires a listed record (an
+            // agent's retires none, a rule merges by text).
+            // shortcut: a later correction dropped at write time anyway
+            // (past the run cap, or as a known duplicate) still removes the
+            // earlier one; resolve the target at write time if that loses
+            // facts.
+            let corrects = |i: &ExtractedItem| {
+                let text = crate::redact::redact(i.text.trim()).text;
+                !i.is_rule()
+                    && !i.is_agent()
+                    && (3..=500).contains(&text.len())
+                    && crate::redact::reject_injection("extracted memory", &text).is_ok()
+            };
+            let later: HashSet<usize> = got
+                .iter()
+                .filter(|i| corrects(i))
+                .filter_map(|i| i.replaces)
+                .collect();
             let before = items.len();
-            items.retain(|i: &ExtractedItem| i.replaces.is_none_or(|n| !later.contains(&n)));
+            items.retain(|i: &ExtractedItem| {
+                !corrects(i) || i.replaces.is_none_or(|n| !later.contains(&n))
+            });
             piece_superseded += before - items.len();
             items.extend(got);
         }

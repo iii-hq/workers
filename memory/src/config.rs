@@ -62,7 +62,7 @@ pub struct WorkerConfig {
     pub recall_budget_tokens: u64,
 
     /// Extract new memories after each completed turn (a pass reads up to 4
-    /// runs of 24,000 chars of new messages, off the hot path; a longer user
+    /// runs of 24,000 bytes of new messages, off the hot path; a longer user
     /// message takes up to 4 `router::complete` calls of its own). Disable to
     /// run memory as a purely manual store: turns that finish while it is off
     /// are stepped past, never read once it is back on. Off, each finished

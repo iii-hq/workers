@@ -2934,46 +2934,48 @@ mod productive {
             .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
             .collect::<String>();
         let long = format!("{early}\n{filler}{late}");
-        let correction = |t: &str| json!([{"text":t,"entities":["fixture"],"scope":"project","kind":"memory","replaces":1}]);
-        let stack = Boundary::new(Script {
-            path: vec![
-                message("anchor", ""),
-                message("old", old),
-                message("large", &long),
-            ],
-            cursor: Some("anchor".into()),
-            persistent_cursor: true,
-            model_items: VecDeque::from([
-                fact(old),
-                correction(early),
-                json!([]),
-                correction(late),
-            ]),
-            ..Script::default()
-        })
-        .await;
-        stack.run(&job("old")).await.unwrap();
-        let old = stack.log_records("private")[0].clone();
-        stack.run(&job("large")).await.unwrap();
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
-        // Both pieces named the same record: the earlier correction is
-        // dropped instead of leaving the later one to conflict.
-        let texts: Vec<String> = stack
-            .log_records("private")
-            .into_iter()
-            .map(|r| r.text)
-            .collect();
-        assert!(!texts.iter().any(|t| t == early), "{texts:?}");
-        let store = stack.deps.store().await;
-        let bank = store.bank("private").await.unwrap();
-        let retired = bank.get(&old.id).await.unwrap();
-        assert!(!retired.is_live());
-        let replacement = bank
-            .get(retired.superseded_by.as_deref().unwrap())
-            .await
-            .unwrap();
-        assert!(replacement.is_live());
-        assert_eq!(replacement.text, late);
+        let correction = |t: &str, scope: &str| json!([{"text":t,"entities":["fixture"],"scope":scope,"agent":"nobody","kind":"memory","replaces":1}]);
+        // The later correction wins; one for an agent nobody listed is
+        // dropped at write time, so it never takes the earlier one's place.
+        for (late_scope, kept, gone) in [("project", late, early), ("agent", early, late)] {
+            let stack = Boundary::new(Script {
+                path: vec![
+                    message("anchor", ""),
+                    message("old", old),
+                    message("large", &long),
+                ],
+                cursor: Some("anchor".into()),
+                persistent_cursor: true,
+                model_items: VecDeque::from([
+                    fact(old),
+                    correction(early, "project"),
+                    json!([]),
+                    correction(late, late_scope),
+                ]),
+                ..Script::default()
+            })
+            .await;
+            stack.run(&job("old")).await.unwrap();
+            let old = stack.log_records("private")[0].clone();
+            stack.run(&job("large")).await.unwrap();
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
+            let texts: Vec<String> = stack
+                .log_records("private")
+                .into_iter()
+                .map(|r| r.text)
+                .collect();
+            assert!(!texts.iter().any(|t| t == gone), "{late_scope}: {texts:?}");
+            let store = stack.deps.store().await;
+            let bank = store.bank("private").await.unwrap();
+            let retired = bank.get(&old.id).await.unwrap();
+            assert!(!retired.is_live(), "{late_scope}");
+            let replacement = bank
+                .get(retired.superseded_by.as_deref().unwrap())
+                .await
+                .unwrap();
+            assert!(replacement.is_live());
+            assert_eq!(replacement.text, kept, "{late_scope}");
+        }
     }
 
     #[tokio::test]
