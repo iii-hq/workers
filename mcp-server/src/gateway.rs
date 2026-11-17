@@ -254,21 +254,25 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
         Some(p) if p.is_object() => p.clone(),
         Some(_) => return error("payload must be a JSON object"),
     };
+    // Checked before any call, void included: a limit no reply can honour
+    // is the caller's mistake, not a reason to run the function.
+    let max = match args.get("max_chars") {
+        None | Some(Value::Null) => DEFAULT_MAX_CHARS,
+        Some(m) => match m.as_u64() {
+            Some(m) if m as usize >= MIN_MAX_CHARS => m as usize,
+            _ => {
+                return error(format!(
+                    "max_chars must be a whole number of at least {MIN_MAX_CHARS}: a truncated reply needs that much"
+                ));
+            }
+        },
+    };
     if args.get("void").and_then(Value::as_bool) == Some(true) {
         return match ctx.bus.call_void(function_id, payload).await {
             Ok(()) => text(&json!({ "result": null, "void": true })),
             Err(e) => error(e.to_string()),
         };
     }
-    let max = match args.get("max_chars").and_then(Value::as_u64) {
-        None | Some(0) => DEFAULT_MAX_CHARS,
-        Some(m) if (m as usize) < MIN_MAX_CHARS => {
-            return error(format!(
-                "max_chars must be at least {MIN_MAX_CHARS}: a truncated reply needs that much"
-            ));
-        }
-        Some(m) => m as usize,
-    };
     let timeout = args.get("timeout_ms").and_then(Value::as_u64);
     match ctx.bus.call(function_id, payload, timeout).await {
         Ok(result) => raw_text(bounded(&result, max)),
@@ -949,6 +953,34 @@ mod tests {
             r.get("isError").and_then(Value::as_bool) == Some(true),
             r["content"][0]["text"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn an_invalid_max_chars_is_refused_before_any_call() {
+        let e = Engine::new(FakeBus::new().on("a::one", |_| Ok(json!(1))));
+        let s = sessions();
+        for args in [
+            json!({ "function_id": "a::one", "max_chars": 0 }),
+            json!({ "function_id": "a::one", "max_chars": 10 }),
+            json!({ "function_id": "a::one", "max_chars": -5 }),
+            json!({ "function_id": "a::one", "max_chars": 100.5 }),
+            json!({ "function_id": "a::one", "max_chars": "lots" }),
+            // A fire-and-forget call is checked the same way.
+            json!({ "function_id": "a::one", "void": true, "max_chars": 10 }),
+        ] {
+            let (err, text) = raw(&e, &s, None, "iii_call", args.clone()).await;
+            assert!(err, "{args}: {text}");
+            assert!(text.contains("max_chars"), "{args}: {text}");
+        }
+        assert!(e.bus.calls().is_empty(), "nothing was called");
+        // Absent or null: the default.
+        for args in [
+            json!({ "function_id": "a::one" }),
+            json!({ "function_id": "a::one", "max_chars": null }),
+        ] {
+            let (err, text) = raw(&e, &s, None, "iii_call", args.clone()).await;
+            assert!(!err, "{args}: {text}");
+        }
     }
 
     #[test]
