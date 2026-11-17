@@ -14,14 +14,19 @@ function fakeFetch(tools: Record<string, (args: Record<string, unknown>) => stri
       params?: { name: string; arguments: Record<string, unknown> };
     };
     if (msg.id === undefined) return new Response(null, { status: 202 });
+    // A tool that throws answers as an MCP tool error, as mcp-server does.
+    const callTool = () => {
+      try {
+        const text = tools[msg.params?.name ?? '']?.(msg.params?.arguments ?? {});
+        return { content: [{ type: 'text', text }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: String(err) }] };
+      }
+    };
     const result =
       msg.method === 'initialize'
         ? { protocolVersion: '2025-06-18', capabilities: {} }
-        : {
-            content: [
-              { type: 'text', text: tools[msg.params?.name ?? '']?.(msg.params?.arguments ?? {}) },
-            ],
-          };
+        : callTool();
     return Response.json(
       { jsonrpc: '2.0', id: msg.id, result },
       { headers: { 'mcp-session-id': 's' } },
@@ -88,10 +93,21 @@ describe('runCli', () => {
 
   it('sync keeps the agent it has when default-mcp cannot be read', async () => {
     const dir = await pluginDir();
-    const fetchFn = fakeFetch({ iii_list_agents: () => JSON.stringify([]) });
+    const before = await readFile(join(dir, 'agents', 'iii.md'), 'utf8');
+    const fetchFn = fakeFetch({
+      iii_list_agents: () => JSON.stringify([{ id: 'writer' }]),
+      iii_get_agent: () => {
+        throw new Error('directory::agents::get: no such agent default-mcp');
+      },
+    });
     const t = io({}, fetchFn);
-    await runCli(['sync', '--plugin-dir', dir, '--quiet'], t.io);
-    expect(await readFile(join(dir, 'agents', 'iii.md'), 'utf8')).toContain('Use iii_call.');
+    expect(await runCli(['sync', '--plugin-dir', dir, '--quiet'], t.io)).toBe(0);
+    expect(await readFile(join(dir, 'agents', 'iii.md'), 'utf8')).toBe(before);
+    // The profile commands are still written, and recorded.
+    expect(await readFile(join(dir, 'commands', 'writer.md'), 'utf8')).toContain('`writer`');
+    expect(JSON.parse(await readFile(join(dir, '.generated-commands.json'), 'utf8'))).toEqual([
+      'commands/writer.md',
+    ]);
   });
 
   it('session-start explains a bad address in the hook output instead of failing', async () => {
