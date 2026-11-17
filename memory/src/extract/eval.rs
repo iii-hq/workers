@@ -7,9 +7,9 @@
 //!   from an excerpt built to hold nothing more ([`STRICT`]): an
 //!   instruction only the assistant gave, a pasted document or a fetched
 //!   issue relayed, a harness notice, a transient error, a one-off
-//!   instruction, task progress, what a correction leaves behind, a learned
-//!   rule restated, an explicit "remember X" answered with only X, a turn
-//!   with nothing to keep. The report also counts the trap hits the rule
+//!   instruction, task progress, what a correction leaves behind, an
+//!   explicit "remember X" answered with only X, a turn with nothing to
+//!   keep. The report also counts the trap hits the rule
 //!   gate would still let into the bank.
 //! - placement ([`lands`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may; with agents
@@ -1082,8 +1082,9 @@ const CASES: &[Case] = &[
             agent: None,
         }],
     },
-    // A learned line restated, or corrected: rewritten where it is, never
-    // appended again.
+    // A learned line restated comes back unchanged, naming itself, so it
+    // becomes the newest; a corrected one is rewritten where it is. Neither
+    // is appended again.
     Case {
         id: "emoji-again",
         category: "learned rules",
@@ -1095,7 +1096,13 @@ const CASES: &[Case] = &[
             ("user", "And no emojis in replies, please, ever."),
             ("assistant", "Understood, none."),
         ],
-        want: &[],
+        want: &[Want {
+            has: &["emoji"],
+            rule: Some(true),
+            user: true,
+            replaces: Some(1),
+            agent: None,
+        }],
     },
     Case {
         id: "english-to-portuguese",
