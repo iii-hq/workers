@@ -97,4 +97,28 @@ describe('summarizeChatTitle', () => {
       ),
     ).toBeNull()
   })
+
+  // A router error is a message too: its text is the provider's error JSON,
+  // never a title.
+  it('does not read an error reply as a heading', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const call = vi.fn().mockResolvedValue({
+      message: {
+        role: 'assistant',
+        stop_reason: 'error',
+        error_message: 'model: opus-5.5 not found',
+        content: [{ type: 'text', text: 'model: opus-5.5 not found' }],
+      },
+    })
+    expect(
+      await summarizeChatTitle(
+        { call },
+        { sessionId: 's_9', prompt: 'x', model: 'claude-code::claude-code/x' },
+      ),
+    ).toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      '[chat-title] s_9 keeps its derived title: model: opus-5.5 not found',
+    )
+    warn.mockRestore()
+  })
 })

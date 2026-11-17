@@ -3137,14 +3137,59 @@ export function useConversations(
     [patchConversation],
   )
 
+  /* The first ask names the chat twice: at once with its opening words
+     (appendMessageToConversation), then with a short heading the chat's
+     model writes. The heading replaces the words only while they are still
+     the title, so a rename made in the meantime wins. */
+  const requestHeading = useCallback(
+    (id: string, prompt: string, model: ModelId | null, derived: string) => {
+      void getIiiClient()
+        .then((client) =>
+          summarizeChatTitle(client, { sessionId: id, prompt, model }),
+        )
+        .then((heading) => {
+          const current = conversationsRef.current.find((c) => c.id === id)
+          if (
+            !heading ||
+            !current ||
+            current.titleManual ||
+            current.title !== derived ||
+            heading === derived
+          )
+            return
+          editMeta(id, (c) => ({ ...c, title: heading }), heading)
+        })
+        .catch(() => {})
+    },
+    [editMeta],
+  )
+
   const appendMessage = useCallback(
-    (id: string, message: Message) =>
+    (id: string, message: Message) => {
+      const before = conversationsRef.current.find((c) => c.id === id)
       patchConversation(id, (c) =>
         c.sessionMetadata?.read_only === true
           ? c
           : appendMessageToConversation(c, message),
-      ),
-    [patchConversation],
+      )
+      if (
+        serverEnabled &&
+        before &&
+        before.sessionMetadata?.read_only !== true &&
+        !before.titleManual &&
+        message.role === 'user' &&
+        !message.command &&
+        before.messages.every((m) => m.role !== 'user')
+      ) {
+        requestHeading(
+          id,
+          message.content,
+          before.model,
+          deriveTitle(message.content),
+        )
+      }
+    },
+    [patchConversation, requestHeading, serverEnabled],
   )
 
   const updateMessage = useCallback(
@@ -3353,31 +3398,6 @@ export function useConversations(
         forgetNewChatDraft(id)
         retireChatDraftSeed(id)
         saveDraftText(id, '')
-        // The derived title holds the row while the model writes a short
-        // heading for the ask; a rename in the meantime wins.
-        if (!conv.titleManual && titleHint) {
-          void getIiiClient()
-            .then((client) =>
-              summarizeChatTitle(client, {
-                sessionId: id,
-                prompt: titleHint,
-                model: conv.model,
-              }),
-            )
-            .then((summary) => {
-              const current = conversationsRef.current.find((c) => c.id === id)
-              if (
-                !summary ||
-                !current ||
-                current.titleManual ||
-                current.title !== title ||
-                summary === title
-              )
-                return
-              editMeta(id, (c) => ({ ...c, title: summary }), summary)
-            })
-            .catch(() => {})
-        }
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3404,7 +3424,6 @@ export function useConversations(
       conversations,
       patchConversation, // Sent: the session holds its draft now, not the new chat's slot.
       forgetNewChatDraft,
-      editMeta,
     ],
   )
 
