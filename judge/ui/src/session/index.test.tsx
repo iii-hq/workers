@@ -712,7 +712,7 @@ describe('per-session judge provider', () => {
     await act(async () => iii.emit('secrets::on-changed', { name: 'TYPESAFE_API_KEY' }))
     await settle()
     expect(menuButton()?.hasAttribute('data-warning')).toBe(false)
-    expect(menuButton()?.getAttribute('title')).toBe('Judge for this session')
+    expect(menuButton()?.getAttribute('title')).toBe('Judge for this session: typesafe')
   })
 
   it('warns when Default resolves to a judge without a usable key', async () => {
