@@ -1627,7 +1627,7 @@ function WorkspacePanes({
                   }}
                 />
               ) : null}
-              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
+              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-b-sm sm:border">
                 {screen === null ? (
                   <EmptyPane
                     screenOptions={emptyPaneOptions}
