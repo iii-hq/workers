@@ -939,7 +939,8 @@ pub(crate) fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     passes.entry(session_id.to_string()).or_default().clone()
 }
 
-/// A pass that made its [`PASS_CALLS`] and left runs for the queue's retry.
+/// A pass that read its [`PASS_CALLS`] runs and left the rest for the
+/// queue's retry.
 const PENDING: &str = "extraction pending: remaining runs require retry";
 
 /// What extraction spent and wrote: model calls, the usage the router
@@ -1529,8 +1530,9 @@ fn stamped_intervals(
     Ok(intervals)
 }
 
-/// A run's source as the model reads it (every line bounded by
-/// [`model_text`]), with a digest over the full text to notice an edit.
+/// A run's source as the model reads it, in one call or in [`pieces`]
+/// (every line bounded by [`model_text`]), with a digest over the full text
+/// to notice an edit.
 fn capture_run(
     scope: &crate::scope::Resolved,
     turn: Option<&str>,
@@ -1714,14 +1716,25 @@ async fn retained_pass(
 }
 
 /// The most excerpt one extraction call reads: what a window of 12 lines
-/// of 2,000 chars could always send.
+/// of 2,000 chars could always send. A longer user line is read in
+/// [`pieces`].
 const CALL_CHARS: usize = 24_000;
 
-/// Model calls one pass makes; a longer backlog returns pending and retries.
+/// The least text a piece of a long user line reads before the next piece.
+const PIECE_CHARS: usize = 20_000;
+
+/// The most calls one user message takes.
+const USER_PIECES: usize = 4;
+
+/// How much of a user message is read whole ([`model_text`]).
+const USER_CHARS: usize = USER_PIECES * PIECE_CHARS;
+
+/// Runs one pass reads; a longer backlog returns pending and retries. A run
+/// over one long user line takes up to [`USER_PIECES`] calls.
 const PASS_CALLS: usize = 4;
 
-/// Every run, oldest first, with no prefix or tail dropped. The caller makes
-/// at most [`PASS_CALLS`] model calls and returns pending to drain the rest.
+/// Every run, oldest first, with no prefix or tail dropped. The caller reads
+/// at most [`PASS_CALLS`] runs and returns pending to drain the rest.
 /// The window applies only to a bootstrap without a cursor, never to a valid
 /// delta.
 // shortcut: runs after the first are read without the turn's opening request;
@@ -1730,7 +1743,7 @@ fn pass_runs(entries: Vec<Entry>, _window: usize) -> Vec<Vec<Entry>> {
     chunks(entries, CALL_CHARS)
 }
 
-/// One extraction call over `entries`, a run of the span ([`chunks`]), and
+/// One extraction run over `entries`, a run of the span ([`chunks`]), and
 /// its writes; then the cursor moves past the run. `Ok(true)` once the
 /// model was asked for the run's items.
 async fn read_run(
@@ -1803,6 +1816,7 @@ async fn execute_run(
     let said = said_at(&entries, now_ms());
     let first_id = entries.first().map(|(id, ..)| id.clone());
     let (transcript, newest_id, content_len) = excerpt(entries);
+    let pieces = pieces(&transcript);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
     if content_len < 20 {
@@ -1869,6 +1883,10 @@ async fn execute_run(
     let stored_plan = ext(deps, |s| s.extraction_plan(&source))
         .await
         .map_err(|e| format!("extraction plan read: {e}"))?;
+    // shortcut: a replayed plan no longer counts the items its pieces
+    // dropped (over their share, or corrected again by a later piece); keep
+    // the counts in the plan if the tally must be exact across retries.
+    let (mut piece_over_cap, mut piece_superseded) = (0, 0);
     let items = if let Some(plan) = stored_plan {
         let item_fields = [
             "text",
@@ -1902,19 +1920,76 @@ async fn execute_run(
         plan.items
     } else {
         let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
-        let mut items = extract_items(
-            &deps.iii,
-            &model,
-            cfg.max_memories_per_turn,
-            cfg.extraction_timeout_ms,
-            extraction_input(&agents, own, &instructions, &known, &learned, &transcript),
-            !agents.is_empty(),
-            session_id,
-            layer_name.is_some(),
-            !instructions.is_empty(),
-            tally,
-        )
-        .await?;
+        // Only a cut text is longer: its middle is never read.
+        if plan_capture
+            .entries
+            .iter()
+            .any(|(_, role, text, _)| role == "user" && text.len() > USER_CHARS)
+        {
+            tracing::info!(
+                session_id,
+                "a user message over {USER_CHARS} chars was read as its head and tail"
+            );
+        }
+        // Every piece sees the same known and learned lines, so `replaces`
+        // holds across them; items keep piece order in the one plan.
+        // shortcut: a failed piece re-asks every piece of its message (up to
+        // USER_PIECES calls per attempt); checkpoint per piece if that cost
+        // shows up.
+        let mut items = Vec::new();
+        for piece in &pieces {
+            let mut got = extract_items(
+                &deps.iii,
+                &model,
+                cfg.max_memories_per_turn,
+                cfg.extraction_timeout_ms,
+                extraction_input(&agents, own, &instructions, &known, &learned, piece),
+                !agents.is_empty(),
+                session_id,
+                layer_name.is_some(),
+                !instructions.is_empty(),
+                tally,
+            )
+            .await?;
+            // One piece keeps its own share of memories, so a piece that
+            // returns too many never crowds out the later ones. An item for
+            // an unlisted agent is dropped below and takes no share.
+            let (before, mut n) = (got.len(), 0);
+            got.retain(|i| {
+                i.is_rule() || (i.is_agent() && i.agent_in(&agents).is_none()) || {
+                    n += 1;
+                    n <= cfg.max_memories_per_turn
+                }
+            });
+            piece_over_cap += before - got.len();
+            // A later piece that corrects what an earlier one corrected is
+            // the message's last word on it; both would name the same old
+            // record, and the second would conflict. Only a user or project
+            // memory the write checks pass retires a listed record (an
+            // agent's retires none, a rule merges by text).
+            // shortcut: a later correction dropped at write time anyway
+            // (past the run cap, or as a known duplicate) still removes the
+            // earlier one; resolve the target at write time if that loses
+            // facts.
+            let corrects = |i: &ExtractedItem| {
+                let text = crate::redact::redact(i.text.trim()).text;
+                !i.is_rule()
+                    && !i.is_agent()
+                    && (3..=500).contains(&text.len())
+                    && crate::redact::reject_injection("extracted memory", &text).is_ok()
+            };
+            let later: HashSet<usize> = got
+                .iter()
+                .filter(|i| corrects(i))
+                .filter_map(|i| i.replaces)
+                .collect();
+            let before = items.len();
+            items.retain(|i: &ExtractedItem| {
+                !corrects(i) || i.replaces.is_none_or(|n| !later.contains(&n))
+            });
+            piece_superseded += before - items.len();
+            items.extend(got);
+        }
         for item in &mut items {
             item.text = crate::redact::redact(item.text.trim()).text;
             crate::redact::drop_secrets(&mut item.entities);
@@ -1946,6 +2021,8 @@ async fn execute_run(
     // A drop writes no receipt and a retry replays the plan, so drops join
     // the tally only once the run settles.
     let mut drops = PassTally::default();
+    drops.drop_items("over_cap", piece_over_cap);
+    drops.drop_items("superseded", piece_superseded);
     drops.drop_items(
         "unknown_agent",
         items
@@ -2159,11 +2236,10 @@ async fn execute_run(
     }
 
     let mut saved = 0usize;
-    drops.drop_items(
-        "over_cap",
-        items.len().saturating_sub(cfg.max_memories_per_turn),
-    );
-    for (effect_index, mut item) in items.into_iter().take(cfg.max_memories_per_turn) {
+    // Each piece of a long message was asked for its own memories.
+    let cap = cfg.max_memories_per_turn.saturating_mul(pieces.len());
+    drops.drop_items("over_cap", items.len().saturating_sub(cap));
+    for (effect_index, mut item) in items.into_iter().take(cap) {
         // Redact before the fingerprint and before normalization, like
         // memory::save.
         item.text = crate::redact::redact(item.text.trim()).text;
@@ -2782,9 +2858,9 @@ const RUN_KEY_BYTES: usize = crate::extraction_proof::SOURCE_BYTES / 6 - 128 - 4
 
 /// A span cut into the runs one extraction call reads, oldest first: whole
 /// entries, at most `budget` chars of excerpt each, unless one line alone
-/// is longer, which is then a run of its own. Entries with no text (tool-only
-/// steps) cost no excerpt, so their ids also close a run at
-/// [`RUN_KEY_BYTES`]. Nothing is dropped.
+/// is longer, which is then a run of its own, read in [`pieces`]. Entries
+/// with no text (tool-only steps) cost no excerpt, so their ids also close a
+/// run at [`RUN_KEY_BYTES`]. Nothing is dropped.
 fn chunks(entries: Vec<Entry>, budget: usize) -> Vec<Vec<Entry>> {
     let mut runs: Vec<Vec<Entry>> = Vec::new();
     let (mut used, mut keys) = (0, 0);
@@ -2819,6 +2895,40 @@ fn excerpt(entries: Vec<Entry>) -> (String, Option<String>, usize) {
         })
         .collect();
     (lines.join("\n"), newest_id, content_len)
+}
+
+/// The calls that read one run's `transcript`: the transcript itself within
+/// [`CALL_CHARS`]. A longer one is one user line ([`chunks`] puts a line
+/// over the budget in a run of its own), read in pieces that each repeat its
+/// `user [date]: ` prefix and end after the last line break, else space,
+/// past [`PIECE_CHARS`]. [`model_text`] bounds the line, so there are at
+/// most [`USER_PIECES`].
+// shortcut: pieces do not overlap, so a piece with no line break or space
+// near its end cuts a sentence; add overlap if facts are lost there.
+fn pieces(transcript: &str) -> Vec<String> {
+    if transcript.len() <= CALL_CHARS {
+        return vec![transcript.to_string()];
+    }
+    let (prefix, mut rest) = transcript.split_at(transcript.find("]: ").map_or(0, |i| i + 3));
+    let room = CALL_CHARS - prefix.len();
+    let mut pieces = Vec::new();
+    while !rest.is_empty() {
+        let mut end = rest.len();
+        if end > room {
+            // Bytes, not a str slice: byte PIECE_CHARS may sit inside a char.
+            // A found '\n' or ' ' is ASCII, so the byte after it is a boundary.
+            let hi = clamp_char_boundary(rest, room);
+            let tail = &rest.as_bytes()[PIECE_CHARS..hi];
+            end = tail
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .or_else(|| tail.iter().rposition(|&b| b == b' '))
+                .map_or(hi, |i| PIECE_CHARS + i + 1);
+        }
+        pieces.push(format!("{prefix}{}", &rest[..end]));
+        rest = rest[end..].trim_start();
+    }
+    pieces
 }
 
 /// One transcript entry: `(entry_id, role, text, timestamp_ms)`.
@@ -3063,17 +3173,25 @@ fn model_text(role: &str, text: &str) -> String {
     // Redact before the cut: a key crossing it would otherwise reach the
     // model half-visible.
     let mut excerpt = crate::redact::redact(text.trim()).text;
-    // A user's own message is read whole to 12,000 chars (about 3k tokens):
-    // their notes for a project hold facts all the way through. Past that,
-    // and past 2,000 for any other line, keep the head and the tail: a
-    // pasted log usually ends with what to do about it.
-    let max = if role == "user" { 12_000 } else { 2_000 };
-    if excerpt.len() > max {
-        let head = clamp_char_boundary(&excerpt, max / 2);
-        let tail = clamp_char_boundary(&excerpt, excerpt.len() - max / 2);
-        excerpt.replace_range(head..tail, " … ");
-    }
+    // A user's own message, attached files included, is read whole to
+    // [`USER_CHARS`] in up to [`USER_PIECES`] calls: their notes for a
+    // project hold facts all the way through. Past that, and past 2,000 for
+    // any other line, keep the head and the tail: a pasted log usually ends
+    // with what to do about it.
+    cut_middle(
+        &mut excerpt,
+        if role == "user" { USER_CHARS } else { 2_000 },
+    );
     excerpt
+}
+
+/// Past `max` bytes, keep the head and the tail of `text` around " … ".
+fn cut_middle(text: &mut String, max: usize) {
+    if text.len() > max {
+        let head = clamp_char_boundary(text, max / 2);
+        let tail = clamp_char_boundary(text, text.len() - max / 2);
+        text.replace_range(head..tail, " … ");
+    }
 }
 
 /// Largest index <= `max` that lands on a UTF-8 char boundary of `s`.
@@ -4107,7 +4225,7 @@ mod tests {
 
     #[test]
     fn long_pasted_messages_retain_all_runs_for_bounded_retries() {
-        // Each user line keeps up to 12,000 chars, so two never share a run:
+        // Each paste is over half a call, so two never share a run:
         // Ten messages stay ten runs; no prefix is dropped.
         let mut span: Vec<Entry> = (1..=10)
             .map(|i| {
@@ -5332,11 +5450,17 @@ mod tests {
         let long = format!("{} {key}", "x".repeat(1_990));
         let cut = transcript_line("assistant", &long, day1).unwrap();
         assert!(!cut.contains("sk-ant-api03"), "{cut}");
-        // A long paste keeps its head and its tail, where the ask usually is.
+        // A user's paste is read whole...
         let paste = format!("{}Why does this fail?", "log line\n".repeat(1_400));
         let line = transcript_line("user", &paste, day1).unwrap();
+        assert!(line.contains("]: log line\n") && !line.contains(" … "));
+        assert!(line.ends_with("Why does this fail?"));
+        // ...up to its cap, then keeps its head and its tail, where the ask
+        // usually is.
+        let paste = format!("{}Why does this fail?", "log line\n".repeat(12_000));
+        let line = transcript_line("user", &paste, day1).unwrap();
         assert!(line.contains("]: log line\n") && line.contains(" … "));
-        assert!(line.ends_with("Why does this fail?") && line.len() < 12_100);
+        assert!(line.ends_with("Why does this fail?") && line.len() < 80_100);
         assert!(transcript_line("user", "   ", day1).is_none());
     }
 
@@ -5356,6 +5480,97 @@ mod tests {
         // An assistant line keeps its cut.
         let reply = transcript_line("assistant", &notes, day).unwrap();
         assert!(!reply.contains("db-mid") && reply.contains(" … "));
+    }
+
+    #[test]
+    fn a_long_user_message_is_read_whole_in_pieces() {
+        // A value at char 7,500 of a 15,000-char user line reaches the
+        // extraction model, in one call.
+        let notes = format!(
+            "{}The staging port is 48213.{} Thank you",
+            "Some notes. ".repeat(625),
+            " More notes.".repeat(622)
+        );
+        assert_eq!(
+            (notes.find("The staging port"), notes.len()),
+            (Some(7_500), 15_000)
+        );
+        let read = pieces(&excerpt(vec![said("m", "user", &notes)]).0);
+        assert_eq!(read.len(), 1);
+        assert!(read[0].contains("The staging port is 48213.") && !read[0].contains(" … "));
+        assert!(read[0].len() <= CALL_CHARS, "{}", read[0].len());
+
+        // About 60,000 bytes of pasted lines, a key across byte 22,000.
+        // Assembled at runtime: no literal key shape in the source.
+        let key = format!("sk-ant-api03-{}", "a1B2c3D4e5".repeat(3));
+        let marks = [
+            "Start: the build host is alpha-7.",
+            "Middle: the cache size is 512 MB.",
+            "End: the release train leaves on Friday.",
+        ];
+        let paste = (0..1_200)
+            .map(|i| match i {
+                0 => marks[0].to_string(),
+                440 => format!("Key: {key}"),
+                600 => marks[1].to_string(),
+                1_199 => marks[2].to_string(),
+                i => format!("Line {i:06} of the pasted notes, nothing to keep."),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = paste.find(&key).unwrap();
+        assert!(at < 22_000 && at + key.len() > 22_000, "{at}");
+        // One message stays one entry in one run.
+        let runs = pass_runs(
+            vec![
+                said("u", "user", "Here are my notes."),
+                said("p", "user", &paste),
+                said("a", "assistant", "Noted."),
+            ],
+            12,
+        );
+        assert_eq!(runs.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 1]);
+        let transcript = excerpt(vec![said("p", "user", &paste)]).0;
+        let read = pieces(&transcript);
+        assert_eq!(read.len(), 3);
+        for piece in &read {
+            assert!(piece.len() <= CALL_CHARS, "{}", piece.len());
+            assert!(piece.starts_with("user [") && !piece.contains("sk-ant-api03"));
+        }
+        for mark in marks {
+            assert_eq!(
+                read.iter().filter(|p| p.contains(mark)).count(),
+                1,
+                "{mark}"
+            );
+        }
+        assert!(read[..2].iter().all(|p| p.ends_with('\n')));
+        // Nothing between the pieces is lost.
+        let body = |line: &str| line.split_once("]: ").unwrap().1.to_string();
+        assert_eq!(
+            read.iter().map(|p| body(p)).collect::<String>(),
+            body(&transcript)
+        );
+    }
+
+    #[test]
+    fn a_huge_paste_takes_a_bounded_number_of_calls() {
+        // 1 MB of a 3-byte char and no whitespace: every cut lands by bytes.
+        let huge = "€".repeat(350_000);
+        let text = model_text("user", &huge);
+        assert!(text.len() <= USER_CHARS + 8, "{}", text.len());
+        assert!(text.len() < crate::extraction_proof::TEXT_BYTES && text.contains(" … "));
+        let line = transcript_line("user", &huge, 1).unwrap();
+        let prefix = line.find("]: ").unwrap() + 3;
+        let read = pieces(&line);
+        assert_eq!(read.len(), USER_PIECES);
+        for piece in &read {
+            assert!(
+                piece.len() <= CALL_CHARS && piece.len() > prefix,
+                "{}",
+                piece.len()
+            );
+        }
     }
 
     #[test]

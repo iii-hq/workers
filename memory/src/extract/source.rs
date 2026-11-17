@@ -1,8 +1,10 @@
 //! The source transcript of one memory, read back for the verify tier: the
 //! lines its extraction read (the run between `first_entry_id` and
-//! `entry_id`), or the turn an agent saved it from. Each line is what the
-//! extraction model reads of it ([`super::line`]): redacted and cut, so the
-//! transcript never leaves memory raw.
+//! `entry_id`), or the turn an agent saved it from. Each line starts as what
+//! the extraction model reads of it ([`super::line`]): redacted and cut, so
+//! the transcript never leaves memory raw. A user line is then cut again to
+//! its head and tail past [`USER_LINE_CHARS`], so the judge can read less of
+//! it than extraction did.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -12,7 +14,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{CALL_CHARS, PAGE_SIZE, line, parse_entry, session_code, session_page};
+use super::{CALL_CHARS, PAGE_SIZE, cut_middle, line, parse_entry, session_code, session_page};
 use crate::error::MemoryError;
 use crate::types::Provenance;
 
@@ -230,9 +232,17 @@ fn to_line(item: &Value) -> Option<Line> {
     if !matches!(role.as_str(), "user" | "assistant" | "notice") {
         return None;
     }
-    let (date, text) = line(&role, &text, ts)?;
+    let (date, mut text) = line(&role, &text, ts)?;
+    // shortcut: a note from the middle of a long message is judged on
+    // silence; show the judge the piece it came from if verify must cover it.
+    if role == "user" {
+        cut_middle(&mut text, USER_LINE_CHARS);
+    }
     Some(Line { role, date, text })
 }
+
+/// How much of a user line the judge reads whole.
+const USER_LINE_CHARS: usize = 12_000;
 
 /// The lines of one turn off a root → leaf walk, fed a page at a time: the
 /// user line right before the turn's first entry, then every line through
@@ -336,6 +346,14 @@ mod tests {
         assert!(!lines[0].text.contains(&key), "{}", lines[0].text);
         assert_eq!(lines[1].text, "noted");
         assert!(lines[1].date.len() > "YYYY-MM-DD".len());
+    }
+
+    #[test]
+    fn a_long_user_line_is_shown_as_its_head_and_tail() {
+        let text = format!("head {} tail", "x".repeat(14_990));
+        let line = to_line(&item("u", "user", &text, None)).unwrap();
+        assert!(line.text.starts_with("head ") && line.text.ends_with(" tail"));
+        assert!(line.text.contains(" … ") && line.text.len() <= 12_005);
     }
 
     #[test]

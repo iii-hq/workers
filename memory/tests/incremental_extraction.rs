@@ -2789,7 +2789,7 @@ mod productive {
     }
 
     #[tokio::test]
-    async fn a_long_message_is_read_from_its_head_and_tail() {
+    async fn a_huge_message_is_read_in_four_calls() {
         let head = "Amber instruments require copper calibration.";
         let tail = "Birch archives retain monthly invoices.";
         let long = format!("{head} {} {tail}", "filler ".repeat(150_000));
@@ -2801,7 +2801,7 @@ mod productive {
             ],
             cursor: Some("anchor".into()),
             persistent_cursor: true,
-            model_items: VecDeque::from([fact(head)]),
+            model_items: VecDeque::from([fact(head), json!([]), json!([]), json!([])]),
             ..Script::default()
         })
         .await;
@@ -2810,10 +2810,12 @@ mod productive {
         stack.run(&owner).await.unwrap();
         {
             let s = stack.script.lock().unwrap();
-            assert_eq!(s.count("router::complete"), 1);
-            let input = &s.inputs()[0];
-            assert!(input.contains(head) && input.contains(tail));
-            assert!(input.len() < 16_000, "{} bytes", input.len());
+            assert_eq!(s.count("router::complete"), 4);
+            let inputs = s.inputs();
+            assert!(inputs[0].contains(head) && inputs[3].contains(tail));
+            for input in &inputs {
+                assert!(input.len() < 28_000, "{} bytes", input.len());
+            }
         }
         // A redelivered job asks the model nothing.
         let stack = stack.restart().await;
@@ -2834,6 +2836,146 @@ mod productive {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_message_over_one_call_is_extracted_piece_by_piece() {
+        let first = "Amber instruments require copper calibration.";
+        let last = "Birch archives retain monthly invoices.";
+        // The first piece returns one memory over its share of eight.
+        let extra = [
+            "Cedar cabinets hold spare fuses.",
+            "Denim aprons hang beside the kiln.",
+            "Ebony keys open the north gate.",
+            "Fern planters need weekly misting.",
+            "Garnet badges admit night staff.",
+            "Hazel crates ship every Thursday.",
+            "Ivory folders store signed leases.",
+            "Jade lamps stay off during audits.",
+        ];
+        // An item for an agent nobody listed comes first: it is dropped and
+        // takes none of the piece's share.
+        let first_piece: Vec<_> = std::iter::once(json!({
+            "text":"Kiln logs go to the night shift.","entities":["fixture"],
+            "scope":"agent","agent":"nobody","kind":"memory"}))
+        .chain(
+            std::iter::once(first)
+                .chain(extra)
+                .map(|t| fact(t)[0].clone()),
+        )
+        .collect();
+        let filler = (0..980)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let long = format!("{first}\n{filler}{last}");
+        assert!(long.len() > 49_000 && long.len() < 50_000, "{}", long.len());
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("large", &long),
+                stamped("large-end", "large-turn", "private", true),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([json!(first_piece), json!([]), fact(last)]),
+            ..Script::default()
+        })
+        .await;
+        let mut owner = job("large-end");
+        owner.turn_id = Some("large-turn".into());
+        stack.run(&owner).await.unwrap();
+        {
+            let s = stack.script.lock().unwrap();
+            assert_eq!(s.count("router::complete"), 3);
+            let inputs = s.inputs();
+            assert!(inputs[0].contains(first) && inputs[2].contains(last));
+        }
+        // The last piece's memory survives: the cap is eight per piece.
+        let records = stack.log_records("private");
+        let mut want = vec![first];
+        want.extend(&extra[..7]);
+        want.push(last);
+        assert_eq!(
+            records.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            want
+        );
+        for record in &records {
+            let source = record.source.as_ref().unwrap();
+            assert_eq!(source.entry_id.as_deref(), Some("large"));
+        }
+        // A redelivered job asks the model nothing.
+        let stack = stack.restart().await;
+        stack.run(&owner).await.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 0);
+        assert_eq!(stack.log_records("private").len(), 9);
+        let store = stack.deps.store().await;
+        assert!(
+            store
+                .extraction_ranges("incremental-fixture")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .pending_extraction("incremental-fixture")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_piece_correcting_the_same_memory_is_the_one_kept() {
+        let old = "Amber instruments require copper calibration.";
+        let (early, late) = (
+            "Amber instruments now require silver calibration.",
+            "Amber instruments now require gold calibration.",
+        );
+        let filler = (0..980)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let long = format!("{early}\n{filler}{late}");
+        let correction = |t: &str, scope: &str| json!([{"text":t,"entities":["fixture"],"scope":scope,"agent":"nobody","kind":"memory","replaces":1}]);
+        // The later correction wins; one for an agent nobody listed is
+        // dropped at write time, so it never takes the earlier one's place.
+        for (late_scope, kept, gone) in [("project", late, early), ("agent", early, late)] {
+            let stack = Boundary::new(Script {
+                path: vec![
+                    message("anchor", ""),
+                    message("old", old),
+                    message("large", &long),
+                ],
+                cursor: Some("anchor".into()),
+                persistent_cursor: true,
+                model_items: VecDeque::from([
+                    fact(old),
+                    correction(early, "project"),
+                    json!([]),
+                    correction(late, late_scope),
+                ]),
+                ..Script::default()
+            })
+            .await;
+            stack.run(&job("old")).await.unwrap();
+            let old = stack.log_records("private")[0].clone();
+            stack.run(&job("large")).await.unwrap();
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
+            let texts: Vec<String> = stack
+                .log_records("private")
+                .into_iter()
+                .map(|r| r.text)
+                .collect();
+            assert!(!texts.iter().any(|t| t == gone), "{late_scope}: {texts:?}");
+            let store = stack.deps.store().await;
+            let bank = store.bank("private").await.unwrap();
+            let retired = bank.get(&old.id).await.unwrap();
+            assert!(!retired.is_live(), "{late_scope}");
+            let replacement = bank
+                .get(retired.superseded_by.as_deref().unwrap())
+                .await
+                .unwrap();
+            assert!(replacement.is_live());
+            assert_eq!(replacement.text, kept, "{late_scope}");
+        }
     }
 
     #[tokio::test]
@@ -2860,9 +3002,10 @@ mod productive {
             path,
             cursor: Some("anchor".into()),
             persistent_cursor: true,
-            model_items: std::iter::once(long)
-                .chain(texts.iter().map(String::as_str))
-                .map(fact)
+            // The large message takes four calls; its last three find nothing.
+            model_items: std::iter::once(fact(long))
+                .chain(std::iter::repeat_n(json!([]), 3))
+                .chain(texts.iter().map(|text| fact(text)))
                 .collect(),
             ..Script::default()
         })
@@ -2879,7 +3022,7 @@ mod productive {
         let records = stack.log_records("private");
         assert_eq!(records.len(), 131);
         assert_eq!(records[0].text, long);
-        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 131);
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 134);
         // Every range was acknowledged: the ledger is empty.
         assert!(
             stack
@@ -3077,8 +3220,9 @@ mod productive {
     #[tokio::test]
     async fn large_sources_never_stop_extraction() {
         // A tool call of 1.2 MB in each reply (a delta over 4 MiB) and a
-        // request over 1 MiB of text: every run is read, the long request
-        // from its head and tail, and the cursor reaches the last turn.
+        // request over 1 MiB of text: every run is read in one pass, the
+        // long request from its head and tail in four calls, and the cursor
+        // reaches the last turn.
         let reply = |id: &str, turn: &str| {
             let mut item = stamped(id, turn, "private", true);
             item["message"]["content"] = json!([
@@ -3102,7 +3246,14 @@ mod productive {
                     reply("a3", "t2"),
                 ],
                 cursor: Some("anchor".into()),
-                model_items: VecDeque::from([fact(first), json!([]), fact(last)]),
+                model_items: VecDeque::from([
+                    fact(first),
+                    json!([]),
+                    json!([]),
+                    json!([]),
+                    json!([]),
+                    fact(last),
+                ]),
                 ..Script::default()
             })
             .await;
@@ -3122,8 +3273,10 @@ mod productive {
                 Some("a3"),
                 "root {root}"
             );
-            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 3);
-            assert!(stack.script.lock().unwrap().inputs()[1].len() < 16_000);
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 6);
+            for input in stack.script.lock().unwrap().inputs() {
+                assert!(input.len() < 28_000, "{} bytes", input.len());
+            }
             assert!(
                 stack
                     .deps
@@ -3150,12 +3303,12 @@ mod productive {
             let stack = Boundary::new(Script {
                 path: vec![message("anchor", ""), message(&id, &"x".repeat(TEXT))],
                 cursor: (!root).then(|| "anchor".into()),
-                model_items: VecDeque::from([json!([])]),
+                model_items: VecDeque::from([json!([]), json!([]), json!([]), json!([])]),
                 ..Script::default()
             })
             .await;
             stack.run(&job(&id)).await.unwrap();
-            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 1);
+            assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
             assert_eq!(
                 stack.script.lock().unwrap().cursor.as_deref(),
                 Some(id.as_str())
