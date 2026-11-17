@@ -439,8 +439,9 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
 }
 
 /// Captured source is retained independently of the queue's retry lifetime.
-/// It holds what the model reads of each entry (redacted, a long text cut to
-/// its head and tail) and a digest over the full text.
+/// It holds what the model reads of each entry (redacted; a user text whole
+/// to 80,000 bytes and any other to 2,000, a longer one cut to its head and
+/// tail) and a digest over the full text.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingExtraction {

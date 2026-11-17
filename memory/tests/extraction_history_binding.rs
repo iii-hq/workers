@@ -726,12 +726,21 @@ async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_prog
                 .await
                 .extraction_ranges("synthetic-session")
                 .unwrap();
-            // The large request is read from its head and tail under its
-            // own turn's bank; the cursor moves past both turns.
+            // The large request is read from its head and tail, in four
+            // calls, under its own turn's bank; the cursor moves past both
+            // turns.
             let on = policy == "on";
             let prompts = stack.fixture.lock().unwrap().prompts.clone();
-            assert_eq!(prompts.len(), usize::from(on) + 1);
-            assert!(prompts.iter().all(|prompt| prompt.len() < 64 * 1024));
+            assert_eq!(prompts.len(), usize::from(on) * 4 + 1);
+            // Bound the text the model reads: JSON escapes this fixture's
+            // control chars to three times their bytes.
+            for prompt in &prompts {
+                let prompt: Value = serde_json::from_str(prompt).unwrap();
+                let input = prompt["messages"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap();
+                assert!(input.len() < 28_000, "{} bytes", input.len());
+            }
             assert_eq!(dir.path().join("old-bank/memories.jsonl").exists(), on);
             assert_eq!(
                 stack.fixture.lock().unwrap().cursor,
@@ -751,7 +760,7 @@ async fn registered_receiver_large_source_keeps_full_digest_and_later_owned_prog
                 memory::extract::try_run(&stack.deps, &old).await.unwrap();
                 assert_eq!(
                     stack.fixture.lock().unwrap().prompts.len(),
-                    2,
+                    5,
                     "a redelivered job asks the model nothing"
                 );
             }

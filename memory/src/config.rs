@@ -61,13 +61,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_recall_budget_tokens")]
     pub recall_budget_tokens: u64,
 
-    /// Extract new memories after each completed turn (up to 4
-    /// `router::complete` calls, one per 24,000 chars of new messages, off
-    /// the hot path). Disable to run memory as a purely manual store: turns
-    /// that finish while it is off are stepped past, never read once it is
-    /// back on. Off, each finished turn still steps the extraction cursor
-    /// past itself (no model call; it pages the session's messages as a pass
-    /// does), so turning it back on never reads what was said meanwhile.
+    /// Extract new memories after each completed turn (a pass reads up to 4
+    /// runs of 24,000 chars of new messages, off the hot path; a longer user
+    /// message takes up to 4 `router::complete` calls of its own). Disable to
+    /// run memory as a purely manual store: turns that finish while it is off
+    /// are stepped past, never read once it is back on. Off, each finished
+    /// turn still steps the extraction cursor past itself (no model call; it
+    /// pages the session's messages as a pass does), so turning it back on
+    /// never reads what was said meanwhile.
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 
@@ -79,7 +80,7 @@ pub struct WorkerConfig {
     /// How many recent non-empty user/assistant messages a session's first
     /// extraction pass reads (no cursor yet), plus the turn's user message
     /// when they leave it out. Later passes read every message after the
-    /// cursor, unless a backlog takes more than 4 calls: then this window.
+    /// cursor.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 

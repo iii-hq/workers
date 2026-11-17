@@ -95,12 +95,13 @@ rule; point-in-time information belongs in memories.
   may replace a note its source transcript contradicts; the old note stays
   visible with `include_superseded: true`.
 - Extraction reads only what arrived after the session's confirmed cursor,
-  at most 4 model calls per pass; the rest retries from the last confirmed
-  run. A redelivered job adds no second revision (each effect is appended
-  with a source receipt). A long message is read from its head and tail,
-  and never blocks the turns after it. Item events are
-  best-effort, at most once. Deleting a session or trashing a bank purges its
-  in-flight extraction state.
+  at most 4 runs per pass; the rest retries from the last confirmed run. A
+  redelivered job adds no second revision (each effect is appended with a
+  source receipt). A long user message is read whole up to 80,000 chars
+  (past that, its head and tail); any other line past 2,000 keeps its head
+  and tail. A long message never blocks the turns after it. Item events are
+  best-effort, at most once. Deleting a session or trashing a bank purges
+  its in-flight extraction state.
 - Injection is bounded (`max_rule_chars`, `learned_max_chars`,
   `recall_budget_tokens`) — an over-budget rule is truncated visibly, never
   silently dropped. Its marker counts the hidden lines; read them with

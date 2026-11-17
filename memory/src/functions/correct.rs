@@ -13,8 +13,9 @@ use crate::extract::source::{self, Line};
 use crate::types::{Memory, Provenance, fingerprint, now_ms};
 
 pub const TRANSCRIPT_ID: &str = "memory::transcript";
-pub const TRANSCRIPT_DESC: &str = "Internal: the source transcript of one live memory, as the redacted, cut lines extraction \
-     read (its recorded span, or the turn it was saved from). `missing` says why there is none.";
+pub const TRANSCRIPT_DESC: &str = "Internal: the source transcript of one live memory, as redacted lines, a long line as its \
+     head and tail (its recorded span, or the turn it was saved from). `missing` says why there \
+     is none.";
 
 pub const CORRECT_ID: &str = "memory::correct";
 pub const CORRECT_DESC: &str = "Internal: replace a memory its source transcript contradicts. One append writes the new \
