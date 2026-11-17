@@ -23,6 +23,9 @@
 }
 
 [data-iii-ui="kanban"] .kb-chart-stage {
+  /* The wire colour lives here, where both the wire layer and the chart inherit it. Opaque, so where stems
+     overlap the line does not darken. */
+  --kb-wire: color-mix(in srgb, var(--color-glyph-blue) 55%, var(--kb-ground));
   position: absolute;
   top: 0;
   left: 0;
@@ -50,7 +53,6 @@
   /* The card and the connector geometry: the stack spine runs under the card's tile. */
   --kb-node-w: 248px;
   --kb-node-mid: calc(var(--kb-node-w) / 2);
-  --kb-line: color-mix(in srgb, var(--color-glyph-blue) 55%, transparent);
   --kb-drop: 16px;
   --kb-stack-x: 25px;
   --kb-stack-indent: 36px;
@@ -60,6 +62,8 @@
   --kb-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --kb-enter: 220ms;
   --kb-stagger: 40ms;
+  /* A new card waits for the wire drawing out of its parent (240ms) to be halfway. */
+  --kb-enter-delay: 120ms;
   display: flex;
   flex: none;
   justify-content: center;
@@ -95,14 +99,6 @@
   padding-top: calc(var(--kb-drop) * 2);
 }
 
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="single"]::before {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  height: calc(var(--kb-drop) * 2);
-  border-left: 1px solid var(--kb-line);
-  content: "";
-}
 
 /* --- across: the first fan-out, one column per child on a rounded bus ---- */
 
@@ -113,15 +109,6 @@
   padding-top: var(--kb-drop);
 }
 
-/* The stem from the parent card down to the bus. */
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"]::before {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  height: var(--kb-drop);
-  border-left: 1px solid var(--kb-line);
-  content: "";
-}
 
 /* Each column: its card at the left, the gap to the next column inside it so the bus runs on through. */
 [data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item {
@@ -133,44 +120,10 @@
   padding-right: 0;
 }
 
-/* The bus over a middle column, and its drop into the card's middle. */
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item::before {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  border-top: 1px solid var(--kb-line);
-  content: "";
-}
 
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item::after {
-  position: absolute;
-  top: 0;
-  left: var(--kb-node-mid);
-  height: var(--kb-drop);
-  border-left: 1px solid var(--kb-line);
-  content: "";
-}
 
-/* The ends turn down into their cards with a rounded corner. */
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:first-child::before {
-  left: var(--kb-node-mid);
-  height: var(--kb-drop);
-  border-left: 1px solid var(--kb-line);
-  border-top-left-radius: var(--radius-md);
-}
 
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:last-child::before {
-  right: auto;
-  width: var(--kb-node-mid);
-  height: var(--kb-drop);
-  border-right: 1px solid var(--kb-line);
-  border-top-right-radius: var(--radius-md);
-}
 
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="row"] > .kb-chart__item:is(:first-child, :last-child)::after {
-  display: none;
-}
 
 /* --- stacked: everything below a column, indented with elbows ---------- */
 
@@ -181,48 +134,34 @@
   padding: 10px 0 0 var(--kb-stack-indent);
 }
 
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item::before,
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item:not(:last-child)::after {
+/* --- the wires: one SVG under the cards, routed by src/tree/use-chart-motion.ts --------------- */
+
+[data-iii-ui="kanban"] .kb-chart__wires {
   position: absolute;
-  left: calc(var(--kb-stack-x) - var(--kb-stack-indent));
-  content: "";
+  top: 0;
+  left: 0;
+  overflow: visible;
   pointer-events: none;
 }
 
-/* The elbow into this card, from the gap above it. */
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item::before {
-  top: -10px;
-  width: calc(var(--kb-stack-indent) - var(--kb-stack-x) - 1px);
-  height: calc(var(--kb-stack-elbow) + 10px);
-  border-bottom: 1px solid var(--kb-line);
-  border-left: 1px solid var(--kb-line);
-  border-bottom-left-radius: var(--radius-md);
+/* Cards above the wires. */
+[data-iii-ui="kanban"] .kb-chart {
+  position: relative;
 }
 
-/* The spine on past it to the next sibling. */
-[data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item:not(:last-child)::after {
-  top: -10px;
-  bottom: 0;
-  border-left: 1px solid var(--kb-line);
+[data-iii-ui="kanban"] .kb-chart__wire {
+  fill: none;
+  stroke: var(--kb-wire);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* --- where a line leaves a card: a small ring ------------------------------ */
-
-[data-iii-ui="kanban"] .kb-chart__item[data-kids] > .kb-chart__card::after {
-  position: absolute;
-  bottom: -4px;
-  left: calc(var(--kb-node-mid) - 4px);
-  z-index: 1;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--kb-line);
-  border-radius: 50%;
-  background: var(--kb-ground);
-  content: "";
-}
-
-[data-iii-ui="kanban"] .kb-chart__item[data-kids="stack"] > .kb-chart__card::after {
-  left: calc(var(--kb-stack-x) - 4px);
+/* Where lines leave a card. */
+[data-iii-ui="kanban"] .kb-chart__ring {
+  fill: var(--kb-ground);
+  stroke: var(--kb-wire);
+  stroke-width: 1.5;
 }
 
 /* --- the card ------------------------------------------------------------- */
@@ -500,15 +439,23 @@
    it: every card is clickable from its first frame. Folding away stays instant. */
 @media (prefers-reduced-motion: no-preference) {
   [data-iii-ui="kanban"] .kb-chart__group > .kb-chart__item {
+    /* It grows from where its wire arrives: the top middle of a column, the top left of a stacked card. */
+    transform-origin: 50% 0;
     transition:
       opacity var(--kb-enter) var(--kb-ease-out),
       transform var(--kb-enter) var(--kb-ease-out);
-    transition-delay: calc(min(var(--i, 0), 8) * var(--kb-stagger));
+    transition-delay: calc(var(--kb-enter-delay) + min(var(--i, 0), 8) * var(--kb-stagger));
 
     @starting-style {
       opacity: 0;
       transform: translateY(-6px) scale(0.97);
     }
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__group[data-layout="stack"] > .kb-chart__item {
+    transform-origin: 0 0;
   }
 }
 

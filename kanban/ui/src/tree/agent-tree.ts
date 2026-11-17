@@ -165,8 +165,6 @@ export function ticketState(
   return firstStatuses.has(ticket.status) ? 'pending' : 'active'
 }
 
-const STATE_RANK: Record<WorkState, number> = { active: 0, failed: 1, pending: 2, done: 3, canceled: 4 }
-
 export type BuildInput = {
   tickets: readonly TreeTicket[]
   sessions: readonly AgentSession[]
@@ -323,18 +321,18 @@ export function buildTree(input: BuildInput): ProjectTree {
 
 const hasActive = (node: SessionNode): boolean => node.state === 'active' || node.children.some(hasActive)
 
-/** Running first, then by when it started: the order the work happened in. */
+/** By when it started: the order the work happened in. */
 function bySession(a: SessionNode, b: SessionNode): number {
-  return STATE_RANK[a.state] - STATE_RANK[b.state] || a.session.createdAt - b.session.createdAt
+  return a.session.createdAt - b.session.createdAt || a.session.id.localeCompare(b.session.id)
 }
 
-/** Active work first, then waiting, then finished; the board's order inside each. */
+/**
+ * Siblings keep one order for good: tickets by key (the order they were filed), sessions by when they started.
+ * Never by state — a chart that re-sorts as work finishes moves cards out from under the reader (and the tree is
+ * watched while it changes).
+ */
 function byTicket(a: TicketNode, b: TicketNode): number {
-  return (
-    STATE_RANK[a.state] - STATE_RANK[b.state] ||
-    a.ticket.order - b.ticket.order ||
-    a.ticket.key.localeCompare(b.ticket.key, 'en', { numeric: true })
-  )
+  return a.ticket.key.localeCompare(b.ticket.key, 'en', { numeric: true })
 }
 
 /** Every node id in the tree, depth first: "expand all", and the default open set. */

@@ -107,7 +107,7 @@ assert.equal(toAgentSession({ ...row, metadata: null, title: '' }).name, 'kan12-
   assert.deepEqual(
     lead.children.map((child) => child.session.id),
     ['kan12-backend', 'kan12-frontend'],
-    'two sessions on one ticket, running first',
+    'two sessions on one ticket, in the order they started',
   )
   const k5 = tree.roots.find((node) => node.ticket.key === 'KAN-5')
   assert.ok(k5)
@@ -172,8 +172,23 @@ assert.equal(toAgentSession({ ...row, metadata: null, title: '' }).name, 'kan12-
   assert.equal(root.sessions[0].state, 'pending', 'idle with no messages has not started')
   assert.deepEqual(
     root.subtasks.map((node) => node.ticket.key),
-    ['KAN-22', 'KAN-23', 'KAN-21'],
-    'active, then waiting, then done',
+    ['KAN-21', 'KAN-22', 'KAN-23'],
+    'filed order, whatever their state',
+  )
+  // Finishing work never re-sorts siblings: a chart watched while it changes must not move cards around.
+  const later = buildTree({
+    tickets: [run, { ...a }, { ...b, status: 'done' }, { ...c, status: 'in_progress' }, other],
+    sessions: sessions.map((s) => ({ ...s, status: 'done' as const })),
+    prefix: 'KAN',
+    columns,
+    doneStatus: 'done',
+    canceledStatus: 'canceled',
+    inScope: (t) => t.project_id === 'p1',
+  })
+  assert.deepEqual(
+    later.roots[0].subtasks.map((node) => node.ticket.key),
+    ['KAN-21', 'KAN-22', 'KAN-23'],
+    'the same order after states change',
   )
   const k21 = root.subtasks.find((node) => node.ticket.key === 'KAN-21')
   assert.deepEqual(

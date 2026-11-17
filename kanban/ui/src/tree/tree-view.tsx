@@ -32,7 +32,6 @@ import {
   memo,
   type ReactNode,
   useCallback,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -57,6 +56,7 @@ import {
 } from './agent-tree'
 import { useAgentSessions } from './use-agent-sessions'
 import { MAX_SCALE, MIN_SCALE, useCamera } from './use-camera'
+import { useChartMotion } from './use-chart-motion'
 
 /** The chart's root (the project, or every project) and, under "every project", one per project. */
 type GroupNode = {
@@ -236,21 +236,12 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     [toggled, defaultOpen],
   )
   const camera = useCamera(paneKey)
-  /** The card a fold was asked on, and where it was on screen: it stays there while the layout moves. */
-  const anchor = useRef<{ id: string; x: number; y: number } | null>(null)
-  const cardOf = (id: string) =>
-    chartRef.current?.querySelector(`[data-node-id="${CSS.escape(id)}"] > .kb-chart__card`) ?? null
+  /** The card a fold was asked on: it stays where it is while the layout moves (use-chart-motion). */
+  const anchor = useRef<string | null>(null)
   const holdStill = (id: string) => {
-    const box = cardOf(id)?.getBoundingClientRect()
-    anchor.current = box ? { id, x: box.left, y: box.top } : null
+    anchor.current = id
   }
-  useLayoutEffect(() => {
-    const held = anchor.current
-    if (!held) return
-    anchor.current = null
-    const box = cardOf(held.id)?.getBoundingClientRect()
-    if (box) camera.shiftBy(held.x - box.left, held.y - box.top)
-  })
+  useChartMotion({ camera, chart: chartRef, anchor, chartKey: root?.id ?? null })
   const setOpen = useCallback(
     (node: Node, open: boolean) => {
       holdStill(node.id)

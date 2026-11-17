@@ -28,7 +28,7 @@ const REVEAL_PAD = 48
 type Cam = { x: number; y: number; s: number }
 
 /** cubic-bezier(x1, y1, x2, y2) as an easing function (Newton's method on x, then y). */
-function bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
+export function bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
   const cx = 3 * x1
   const bx = 3 * (x2 - x1) - cx
   const ax = 1 - cx - bx
@@ -52,8 +52,18 @@ function bezier(x1: number, y1: number, x2: number, y2: number): (t: number) => 
     return sy(Math.min(1, Math.max(0, t)))
   }
 }
-/** The UI's strong ease-out: starts at once, lands softly. */
-const easeOut = bezier(0.23, 1, 0.32, 1)
+/** The UI's strong ease-out: starts at once, lands softly — for a move you asked for. */
+export const easeOut = bezier(0.23, 1, 0.32, 1)
+/**
+ * On-screen movement the chart makes by itself (a re-fit, keeping a card still while the layout moves): eases in
+ * and out, and is the exact curve and length of the cards' own glide (use-chart-motion), so the two cancel.
+ */
+export const LAYOUT_EASE = [0.77, 0, 0.175, 1] as const
+export const LAYOUT_MS = 300
+export const easeInOut = bezier(...LAYOUT_EASE)
+
+/** Who asked for a glide: you (−/+, Fit, a card brought into view) or the chart keeping itself steady. */
+type GlideMode = 'user' | 'system'
 
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s))
 const reducedMotion = () =>
@@ -75,8 +85,6 @@ export function useCamera(paneKey: string) {
   const persist = useRef<number | undefined>(undefined)
   const labelAt = useRef(0)
   const placed = useRef(false)
-  /** Set by `shiftBy` (a toggle kept its card still): the size change that follows needs no other correction. */
-  const anchoredAt = useRef(0)
 
   const setFollow = useCallback((on: boolean) => {
     followRef.current = on
@@ -108,11 +116,11 @@ export function useCamera(paneKey: string) {
     [size],
   )
 
-  /** Paint the camera on the next frame (one write per frame however many inputs arrived). */
-  const paint = useCallback(() => {
-    if (frame.current) return
-    frame.current = requestAnimationFrame(() => {
-      frame.current = 0
+  /** Write the camera to the stage now. */
+  const apply = useCallback(() => {
+    cancelAnimationFrame(frame.current)
+    frame.current = 0
+    {
       if (!stage) return
       const { x, y, s } = cam.current
       stage.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`
@@ -132,8 +140,14 @@ export function useCamera(paneKey: string) {
         setScale(cam.current.s)
         setStored(Math.round(cam.current.s * 100) / 100)
       }, 300)
-    })
+    }
   }, [stage, setStored])
+
+  /** Paint on the next frame: wheel and drag input, one write per frame however many events arrived. */
+  const paint = useCallback(() => {
+    if (frame.current) return
+    frame.current = requestAnimationFrame(apply)
+  }, [apply])
 
   const stop = useCallback(() => {
     cancelAnimationFrame(glide.current)
@@ -150,7 +164,7 @@ export function useCamera(paneKey: string) {
 
   /** Glide to `target` from wherever the camera is now; a new glide mid-way starts from there. */
   const glideTo = useCallback(
-    (target: Cam) => {
+    (target: Cam, mode: GlideMode = 'user') => {
       stop()
       const to = clamp(target)
       if (reducedMotion()) {
@@ -159,20 +173,38 @@ export function useCamera(paneKey: string) {
       }
       const from = { ...cam.current }
       const start = performance.now()
+      const ms = mode === 'system' ? LAYOUT_MS : GLIDE_MS
+      const ease = mode === 'system' ? easeInOut : easeOut
       const step = (now: number) => {
-        const t = Math.min(1, (now - start) / GLIDE_MS)
-        const k = easeOut(t)
+        const t = Math.min(1, (now - start) / ms)
+        const k = ease(t)
         cam.current = {
           x: from.x + (to.x - from.x) * k,
           y: from.y + (to.y - from.y) * k,
           s: from.s + (to.s - from.s) * k,
         }
-        paint()
+        // In this frame, not the next: a glide that paints a frame late trails whatever it moves with.
+        apply()
         glide.current = t < 1 ? requestAnimationFrame(step) : 0
       }
       glide.current = requestAnimationFrame(step)
     },
-    [clamp, paint, stop, write],
+    [apply, clamp, stop, write],
+  )
+
+  /**
+   * Move the camera by (dx, dy) now, before this frame paints (a re-layout is being kept steady): returns the move
+   * it made, which the bounds may have cut short.
+   */
+  const shiftNow = useCallback(
+    (dx: number, dy: number) => {
+      stop()
+      const before = cam.current
+      cam.current = clamp({ ...before, x: before.x + dx, y: before.y + dy })
+      apply()
+      return { dx: cam.current.x - before.x, dy: cam.current.y - before.y }
+    },
+    [apply, clamp, stop],
   )
 
   /** Scale about a point of the viewport (cursor, or the middle). */
@@ -229,16 +261,10 @@ export function useCamera(paneKey: string) {
     glideTo(fitTarget())
   }, [fitTarget, glideTo, setFollow])
 
-  /** Keep a card still across a re-layout: move the camera by how far the layout moved it. */
-  const shiftBy = useCallback(
-    (dx: number, dy: number) => {
-      if (followRef.current) return
-      anchoredAt.current = performance.now()
-      stop()
-      write({ ...cam.current, x: cam.current.x + dx, y: cam.current.y + dy })
-    },
-    [stop, write],
-  )
+  /** While Fit holds, glide to the fit of the chart as it is now laid out. */
+  const refit = useCallback(() => {
+    if (followRef.current) glideTo(fitTarget(), 'system')
+  }, [fitTarget, glideTo])
 
   /** Bring an element (a card the keyboard moved to) into view, gliding only as far as needed. */
   const reveal = useCallback(
@@ -264,9 +290,11 @@ export function useCamera(paneKey: string) {
   useEffect(() => {
     if (!stage || !viewport) return
     placed.current = false
-    let last = { w: 0, h: 0 }
+    let lastView = { vw: 0, vh: 0 }
+    // The chart's own growth is corrected by use-chart-motion after each commit; this places the chart the first
+    // time, and re-fits when the pane itself is resized.
     const observer = new ResizeObserver(() => {
-      const { w, h } = size()
+      const { w, vw, vh } = size()
       if (!w) return
       if (!placed.current) {
         placed.current = true
@@ -276,15 +304,10 @@ export function useCamera(paneKey: string) {
         const { x, y, s } = cam.current
         stage.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`
         stage.dataset.placed = 'true'
-      } else if (followRef.current) {
-        glideTo(fitTarget())
-      } else if (performance.now() - anchoredAt.current > 120) {
-        // Grown or shrunk by itself (a session arrived, a ticket closed): the chart is centred on its root, so
-        // keep its middle where it was rather than letting everything slide.
-        const dw = w - last.w
-        if (dw) write({ ...cam.current, x: cam.current.x - (dw / 2) * cam.current.s })
+      } else if (followRef.current && (vw !== lastView.vw || vh !== lastView.vh)) {
+        glideTo(fitTarget(), 'system')
       }
-      last = { w, h }
+      lastView = { vw, vh }
     })
     observer.observe(stage)
     observer.observe(viewport)
@@ -401,8 +424,13 @@ export function useCamera(paneKey: string) {
     zoomOut,
     actualSize,
     fit,
-    shiftBy,
+    refit,
+    shiftNow,
     reveal,
+    stage,
+    /** The scale the camera is at this instant (the label lags a little). */
+    scaleNow: () => cam.current.s,
+    isFollowing: () => followRef.current,
     handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp },
   }
 }
