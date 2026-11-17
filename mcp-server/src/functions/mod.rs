@@ -171,6 +171,9 @@ pub struct Routes {
     /// Held across a whole [`recheck_bind`]: one reads `http::status` only
     /// after the previous one acted, so a stale read cannot undo a newer one.
     rechecking: tokio::sync::Mutex<()>,
+    /// Bumped by every check a reload starts: a recovery run started by an
+    /// earlier one stops (see [`recheck_and_recover`]).
+    recovery: std::sync::atomic::AtomicU64,
 }
 
 impl Routes {
@@ -180,6 +183,7 @@ impl Routes {
             api_path,
             handles: tokio::sync::Mutex::new(None),
             rechecking: tokio::sync::Mutex::new(()),
+            recovery: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -237,7 +241,7 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         RegisterFunction::new_async(move |_: Value| {
             let (ctx, routes) = (ctx.clone(), routes.clone());
             async move {
-                recheck_bind(&ctx, &routes).await;
+                recheck_and_recover(&ctx, &routes).await;
                 Ok::<Value, Error>(json!({}))
             }
         })
@@ -265,7 +269,7 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
                 tracing::warn!(
                     "observing {HTTP_RELOAD_FN} is still pending after 30s; serving the MCP routes anyway, and until it is active, a rebind of the http worker is not seen"
                 );
-                recheck_bind(&ctx, &routes).await;
+                recheck_and_recover(&ctx, &routes).await;
                 ready.await
             }
         };
@@ -274,26 +278,57 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
                 tracing::info!(
                     "watching {HTTP_RELOAD_FN}: the MCP routes follow the http worker's bind"
                 );
-                recheck_bind(&ctx, &routes).await;
+                recheck_and_recover(&ctx, &routes).await;
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
                 );
-                recheck_bind(&ctx, &routes).await;
+                recheck_and_recover(&ctx, &routes).await;
             }
         }
     });
     handle
 }
 
-pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) {
+/// Re-check the bind; when `http::status` cannot be read, the routes stay
+/// withdrawn and recovery checks follow after each of
+/// [`http_guard::RECOVERY_DELAYS`], until one reads the bind or a newer
+/// check starts its own.
+pub async fn recheck_and_recover(ctx: &Ctx, routes: &Arc<Routes>) {
+    use std::sync::atomic::Ordering;
+    let generation = routes.recovery.fetch_add(1, Ordering::SeqCst) + 1;
+    if recheck_bind(ctx, routes).await {
+        return;
+    }
+    tracing::warn!(
+        "could not read http::status; the MCP routes stay withdrawn, re-checking after 2, 5, 10, 30 and 60 s, then on the next http reload"
+    );
+    let (ctx, routes) = (ctx.clone(), routes.clone());
+    tokio::spawn(async move {
+        let still = routes.clone();
+        http_guard::recover(
+            &http_guard::RECOVERY_DELAYS,
+            move || still.recovery.load(Ordering::SeqCst) == generation,
+            || {
+                let (ctx, routes) = (ctx.clone(), routes.clone());
+                async move { recheck_bind(&ctx, &routes).await }
+            },
+        )
+        .await;
+    });
+}
+
+/// Check the bind once and withdraw or restore the routes; `false` when
+/// `http::status` could not be read (the routes are then withdrawn).
+pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) -> bool {
     let _one_at_a_time = routes.rechecking.lock().await;
     let status = Bus::call(&ctx.engine, "http::status", json!({}), Some(10_000))
         .await
         .map_err(|e| e.to_string());
     let flag = http_guard::parse_flag(std::env::var(http_guard::PUBLIC_HTTP_ENV).ok().as_deref());
+    let known = !http_guard::status_unknown(&status);
     let bind = http_guard::decide(status, flag, &ctx.cfg.api_path);
     match http_guard::transition(routes.serving().await, &bind) {
         RouteAction::Keep => {}
@@ -313,6 +348,7 @@ pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) {
             tracing::warn!("{w}");
         }
     }
+    known
 }
 
 fn register_handler(iii: &Arc<IIIClient>, ctx: &Ctx) {

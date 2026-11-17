@@ -7,9 +7,50 @@
 //! `III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true|1`. Several mcp-server workers share
 //! one http worker on different `api_path`s.
 
+use std::future::Future;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use serde_json::Value;
+
+/// After a check that could not read `http::status`, the waits before each
+/// recovery check. The routes stay withdrawn meanwhile (the bind is
+/// unknown); after the last one, the next reload of the http worker checks.
+pub const RECOVERY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+/// Whether `http::status` left the bind unknown (an error, or no host).
+/// A public bind is known: it is refused, not retried.
+pub fn status_unknown(status: &Result<Value, String>) -> bool {
+    !matches!(status, Ok(s) if s.get("host").and_then(Value::as_str).is_some())
+}
+
+/// Run `check` after each of `delays` until one reads the bind (`true`), or
+/// `current` says a newer check took over. Returns how many checks ran.
+pub async fn recover<C, F, Fut>(delays: &[Duration], current: C, mut check: F) -> usize
+where
+    C: Fn() -> bool,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let mut tried = 0;
+    for delay in delays {
+        tokio::time::sleep(*delay).await;
+        if !current() {
+            break;
+        }
+        tried += 1;
+        if check().await {
+            break;
+        }
+    }
+    tried
+}
 
 /// The escape hatch for a non-loopback http worker.
 pub const PUBLIC_HTTP_ENV: &str = "III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP";
@@ -115,6 +156,66 @@ pub fn decide(status: Result<Value, String>, flag: Result<bool, String>, api_pat
 mod tests {
     use super::*;
     use serde_json::json;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    const QUICK: [Duration; 5] = [Duration::from_millis(1); 5];
+
+    #[test]
+    fn recovery_waits_2_5_10_30_then_60_seconds() {
+        let secs: Vec<u64> = RECOVERY_DELAYS.iter().map(|d| d.as_secs()).collect();
+        assert_eq!(secs, vec![2, 5, 10, 30, 60]);
+    }
+
+    #[test]
+    fn only_an_unreadable_status_is_unknown() {
+        assert!(status_unknown(&Err("timed out".into())));
+        assert!(status_unknown(&Ok(json!({ "port": 3111 }))));
+        assert!(!status_unknown(&status("127.0.0.1")));
+        // A public bind is known: refused, not retried.
+        assert!(!status_unknown(&status("0.0.0.0")));
+    }
+
+    #[tokio::test]
+    async fn recovery_stops_at_the_first_check_that_reads_the_bind() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let tried = recover(
+            &QUICK,
+            || true,
+            move || {
+                let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { n >= 3 }
+            },
+        )
+        .await;
+        assert_eq!(tried, 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn recovery_gives_up_after_the_last_delay() {
+        let tried = recover(&QUICK, || true, || async { false }).await;
+        assert_eq!(tried, 5, "then the next reload re-checks");
+    }
+
+    #[tokio::test]
+    async fn a_newer_check_cancels_an_older_recovery() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (c, seen) = (calls.clone(), calls.clone());
+        let tried = recover(
+            &QUICK,
+            move || seen.load(Ordering::SeqCst) < 2,
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+                async { false }
+            },
+        )
+        .await;
+        assert_eq!(tried, 2);
+    }
 
     fn status(host: &str) -> Result<Value, String> {
         Ok(json!({ "host": host, "port": 3111, "url": "http://127.0.0.1:3111" }))
