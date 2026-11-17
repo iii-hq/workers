@@ -1,73 +1,90 @@
-# HTTPS18-CODE42-1: preserve build hook status
+# HTTPS18-CODE42-1 / HOOK-COMPAT-1: build hook status and shared state
 
 ## Scope and cause
 
-Base: `fcb5d188816c7b301f9de188c2e5777fc02a3f9f`.
+Original base: `fcb5d188816c7b301f9de188c2e5777fc02a3f9f`.
+Previous commit (preserved): `faeef0773c0d6233fd0b7f324107835bb91210c4`.
 Own worktree: `/home/doggao/iii/wt/workers.smoke-hook-status`.
 Branch: `fix/smoke-adapter-hook-status-impl-4c7e`.
 
-`build_image_script` previously inserted setup/install directly into its
-outer `set -e` script. A failure in a non-final command of an AND-list
-(`begin && npm && finish`) skips the remaining list but does not terminate
-that shell. The following `scripts done` echo returns zero and masks the
-hook's total nonzero status. This is a composition defect, not evidence of
-a wait/Compose defect. See `results/smoke-18-https-adoption-reviewer`, phase
-`code42-build-failure-diagnosis`, and
-`orchestration/smoke-18-adapter-hook-status-finding`.
+The base concatenated setup/install into its outer `set -e` script. A failed
+non-final AND-list command (`begin && npm && finish`) skips the remaining
+list without terminating that shell. The later `scripts done` echo returned
+zero and masked the hook's total nonzero status (HTTPS18-CODE42-1).
 
-## Shell contract
+The previous fix isolated hooks in child shells. Source review approved its
+status propagation but identified HOOK-COMPAT-1: callers could no longer
+share setup's cwd, unexported variables, functions, exported PATH, sourced
+activation, umask/options or traps with install. This revision removes that
+compatibility regression, not merely documents/accepts it. The previous
+commit remains an ancestor; no fixture/failpoint was changed.
 
-Each nonempty setup/install runs as one single-quoted command argument in
-an independent child: `bash -e -c <hook> || exit $?`, falling back to
-`sh -e -c <hook>` when bash is unavailable. This matches the existing
-`RUN_SCRIPT_CMD` preference without adding a custom shell setting. The
-existing private `shell_quote` escapes single quotes; newlines, double
-quotes, dollars and backticks remain hook text until the child parses them.
-The explicit child `-e` remains effective despite the parent's OR-list;
-a bare `false` followed by another command still aborts. Shell AND/OR-list
-semantics inside the hook remain unchanged; the unit's total status is
-propagated, not an inferred status of every internal command.
+## Shared-shell and exit contract
 
-Each hook inherits `/workspace` and exported VM environment, without leaking
-its own cwd, variables, options or `exit` into the next hook. Setup failure
-prevents install. Empty hooks remain skipped; manifest omission/empty
-resolution is unchanged. No API, wire, configuration, copy, ownership,
-init/wait, image writer or Compose change is included. Source review checked
-`iii-init::supervisor::run_worker` (export only on status zero),
-`sync_and_exit`, and `worker_vm::run_build_vm`/`BuildJob::run` (wait status and
-image-write gate); these paths are untouched.
+Each nonempty hook is one safely quoted argument to an unconditional simple
+command in the existing outer shell:
 
-## Evidence and pending validation
+```sh
+eval '<whole hook, quoted with the existing shell_quote helper>'
+case $? in 0) ;; *) exit $? ;; esac
+```
 
-- Added `the_build_script_preserves_each_hook_status_and_shell_semantics`
-  next to the existing build-script tests. It calls the real
-  `build_image_script`, replaces only preparation/copy/env infrastructure
-  with scratch/no-ops, and runs the production `/bin/sh -c RUN_SCRIPT_CMD`
-  entrypoint with real host Bash and sh. Fake executables only model hook
-  commands, never the shell status. Export/image-write are offline guarded
-  scratch sentinels, not actual init/export/writer calls.
-- Its 32 subcases cover both copy modes and shells: install42 with exactly
-  BEGIN/FAILED and no npm/finish/done/export/write; rc0 ordering; setup42
-  preventing install; multiline quoting, literal/active dollar/backticks,
-  cwd/env isolation; explicit child errexit; empty, setup-only, install-only.
-- **Rust test PENDING: not compiled or executed.** No Cargo/rustc invocation.
-- Ran 12 lightweight offline controls with the hook template extracted from
-  the source and the existing entrypoint, real Bash/sh, fake hook commands,
-  and scratch sentinels: install42, success0, setup42, multiline quoting,
-  child-errexit1, empty0 for each shell. All exact statuses, event sequences
-  and sentinel checks passed. This is NOT execution of `build_image_script`
-  or a Rust-test PASS; Python only extracts/interpolates and launches shells.
-- Focal existing-toolchain `rustfmt --edition 2024 --check
-  sandbox-libkrun/src/cli/local_worker.rs`: PASS after formatting edits.
-- `git diff --check`: PASS.
+The helper escapes single quotes, preserving multiline text, heredocs,
+quotes, dollars and backticks until eval parses the hook once. The outer
+shell is still the existing `RUN_SCRIPT_CMD` Bash preference / sh fallback;
+there is no new hook subprocess, forced exec, temp-script mechanism, shell
+setting or public helper/API. Setup and install share the same process,
+cwd, shell variables/functions, exports, sourced state, positional arguments,
+umask, options and traps, as at the base. Initial cwd is `/workspace`.
+Empty hooks remain skipped and manifest omission/empty resolution is unchanged.
+
+Eval is deliberately NOT an if/AND/OR-tested command: outer errexit therefore
+still applies to an internal standalone `false; echo ...`, producing rc1
+before the echo. A final failed AND-list returns the hook's total rc42;
+with errexit enabled eval may terminate immediately with that status, which
+is correct. If the hook intentionally disables errexit, the immediate case
+still propagates its total nonzero status before install/done/export. Case
+pattern matching leaves that status available to `exit $?`; no rc variable,
+positional-argument assignment or trap replacement can collide with caller
+state. Hook `exit` retains its original whole-shell effect.
+
+Ordinary internal shell exceptions remain: AND/OR lists, conditional tests,
+and pipelines follow the chosen shell/options. This does not attempt to
+capture every failed internal command when the whole hook succeeds.
+Copy, ownership, init/wait, image writer, boot-without-image and Compose are
+untouched. Prior source inspection established export only on status zero
+and the host wait/image-write gate; no integrated S507/P8 claim is made.
+
+## Current evidence and pending validation
+
+- The existing focal Rust test still calls REAL `build_image_script` and
+  the SAME `/bin/sh -c RUN_SCRIPT_CMD`, with real Bash/sh and scratch/no-op
+  preparation/copy/env. It retains 8 cases x 2 shells x 2 copy modes = 32.
+- Replaced isolated-cwd/env expectations with shared-state assertions: cd,
+  unexported variable (also absent from child environment), function, sourced
+  activation, exported PATH/env, positional args, umask, noglob and exit trap.
+  The same multiline case covers literal/active quotes/dollars/backticks and
+  a literal heredoc. Other cases cover begin42 AND-list, rc0 order, setup42
+  blocking install (including set +e), standalone false/echo rc1, empty hooks,
+  setup-only and install-only `set +e; false` rc1. Exact event comparison
+  excludes npm/finish/done/export/image-write after failure. Export/write
+  remain offline scratch sentinels, not real init/export/writer execution.
+- **Rust test PENDING: not compiled or run.** No Cargo/rustc invocation.
+- Executed 16 lightweight source-extracted controls (8 cases x Bash/sh),
+  decoding the producer eval template, entrypoint and actual Rust fixture
+  strings. Real shell statuses were 42/0/42/0/1/0/0/1 respectively for each
+  shell. All exact-event, shared-state and export/write sentinel assertions
+  passed. These are NOT execution of `build_image_script` or Rust-test PASS.
+  Scratch is retained, without cleanup/deletion, at
+  `.hook-shared-state-controls/` in this worktree; receipt: `receipt.json`.
+- Existing rustfmt 1.97.1 `--edition 2024 --check` on only
+  `sandbox-libkrun/src/cli/local_worker.rs`: PASS.
+- `git diff --check`: PASS. Neither check entails compilation.
 
 Runtime/VM executions: **0**. Builds: **0**. No network, Node/npm/SDK,
 cache/proc/ELF inspection, binary access/change, driver/fixture edit,
-merge/push/PR/release, retry or admission action. Candidate `734803...` and
-product `544470...` remain untouched. No integrated S507, retention, retry
-or scenario acceptance claim is made.
-
-Stop for independent source review and separate parent build admission.
-Any future heavy work requires that admission and the shared target
-`/home/doggao/iii/wt/kan292-target`, `nice -n 15`, `ionice -c 3`,
-`CARGO_BUILD_JOBS=4` and `flock /tmp/iii-agents-heavy.lock`; none was used here.
+prune/deletion/signals, merge/push/PR/release, retry, measurement or admission.
+Candidate `734803...` and engine `544470...` remain completely untouched.
+Stop for focused independent review. Rust validation/build require separate
+parent admission; any future heavy work must use the prescribed shared
+`kan292-target`, nice15/ionice-c3/CARGO_BUILD_JOBS4/flock, not performed here.

@@ -466,10 +466,9 @@ fi"#
 /// When it exits 0, iii-init exports the merged root for the image. A local
 /// worker's copy leaves out what its run's copy leaves out, but `vendor/`
 /// ([`BUILD_COPIES`]); a bundle's is the whole package but Compose's state.
-/// Each nonempty hook runs independently with `-e`, preferring bash just as
-/// [`RUN_SCRIPT_CMD`] does, otherwise sh. It inherits `/workspace` and the VM
-/// environment; its cwd, variables and shell options do not leak into the next
-/// hook. A nonzero hook status exits the build before the success message.
+/// Each nonempty hook is evaluated in the existing shell, preserving setup's
+/// cwd, variables, functions and options for install. A nonzero total status
+/// exits before the success message, even if the hook disabled `errexit`.
 pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
     let mut parts = script_header();
     parts.push(SOURCE_SHARE_CHECK.to_string());
@@ -498,16 +497,13 @@ echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#
     ] {
         if !command.is_empty() {
             parts.push(format!("echo \"iii: build: running scripts.{name}\" >&2"));
-            // A non-final AND-list failure does not trigger the outer errexit.
-            // Give each hook its own status, cwd and exported environment. The
-            // explicit child -e still applies when its status is tested here.
+            // Keep eval outside conditionals so errexit applies inside the hook.
+            // The case also propagates a final AND-list failure with set +e,
+            // without changing user variables, positional args or traps.
             let command = shell_quote(command);
             parts.push(format!(
-                r#"if command -v bash >/dev/null; then
-  bash -e -c {command} || exit $?
-else
-  sh -e -c {command} || exit $?
-fi"#
+                r#"eval {command}
+case $? in 0) ;; *) exit $? ;; esac"#
             ));
         }
     }
@@ -1528,7 +1524,9 @@ mod tests {
     fn the_build_script_installs_and_exits() {
         let project = project_with("apt-get install -y git", "npm ci");
         let script = build_image_script(&project, /*is_bundle=*/ false);
-        assert!(script.contains("bash -e -c 'apt-get install -y git' || exit $?"));
+        assert!(
+            script.contains("eval 'apt-get install -y git'\ncase $? in 0) ;; *) exit $? ;; esac")
+        );
         assert!(script.contains("npm ci"));
         assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()));
         assert!(script.contains("umount \"$SRC\""));
@@ -1553,8 +1551,31 @@ mod tests {
         let install = "fake-begin && fake-npm && fake-finish";
         let quoted_setup = r#"printf '%s\n' "QUOTED:$HOOK_ENV" 'literal:$HOOK_ENV `exit 99` "double" it'\''s' >&2
 printf '%s\n' "$(printf SUBSTITUTION)" "`printf BACKTICK`" >&2
-cd ..
-export HOOK_ENV=changed"#;
+IFS= read -r heredoc <<'HOOK_LITERAL'
+heredoc: "$HOOK_ENV" `exit 98` 'single' \backslash
+HOOK_LITERAL
+printf '%s\n' "$heredoc" >&2
+cd "$TEST_SUBDIR"
+private_flag=ready
+shared_fn() { printf '%s\n' "FUNCTION:$private_flag" >&2; }
+. "$TEST_VENV"
+export PATH="$TEST_BIN"
+umask 027
+set -f
+set -- "$private_flag" 'second arg'
+trap 'printf "%s\n" TRAP >&2' 0"#;
+        let shared_install = format!(
+            r#"[ "$PWD" = "$TEST_SUBDIR" ] || exit 91
+[ "$private_flag" = ready ] || exit 93
+[ "$VIRTUAL_ENV" = "$TEST_SUBDIR/venv" ] || exit 94
+[ "$venv_private" = activated ] || exit 95
+[ "$1" = ready ] && [ "$2" = 'second arg' ] || exit 96
+[ "$(umask)" = 0027 ] || exit 97
+case $- in *f*) ;; *) exit 98 ;; esac
+[ "$PATH" = "$TEST_BIN" ] || exit 99
+shared_fn
+{install}"#
+        );
         let hook_env = "value with 'quotes', \"double\", $dollars and `backticks`";
         let cases = [
             (
@@ -1588,7 +1609,7 @@ export HOOK_ENV=changed"#;
             ),
             (
                 "setup-fails",
-                install,
+                "set +e\nfake-begin && fake-npm && fake-finish",
                 "printf '%s\\n' UNEXPECTED_INSTALL >&2",
                 42,
                 42,
@@ -1597,7 +1618,7 @@ export HOOK_ENV=changed"#;
             (
                 "multiline-quotes",
                 quoted_setup,
-                install,
+                shared_install.as_str(),
                 0,
                 0,
                 vec![
@@ -1606,14 +1627,16 @@ export HOOK_ENV=changed"#;
                     "literal:$HOOK_ENV `exit 99` \"double\" it's",
                     "SUBSTITUTION",
                     "BACKTICK",
+                    "heredoc: \"$HOOK_ENV\" `exit 98` 'single' \\backslash",
                     "running scripts.install",
+                    "FUNCTION:ready",
                     "BEGIN",
                     "NPM",
                     "FINISH",
                 ],
             ),
             (
-                "child-errexit",
+                "standalone-errexit",
                 "",
                 "false\nprintf '%s\\n' UNEXPECTED_AFTER_FALSE >&2",
                 0,
@@ -1630,12 +1653,12 @@ export HOOK_ENV=changed"#;
                 vec!["running scripts.setup", "SETUP"],
             ),
             (
-                "install-only",
+                "install-only-errexit-disabled",
                 "",
-                install,
+                "set +e\nfalse",
                 0,
-                0,
-                vec!["running scripts.install", "BEGIN", "NPM", "FINISH"],
+                1,
+                vec!["running scripts.install"],
             ),
         ];
         for shell in ["bash", "sh"] {
@@ -1646,13 +1669,25 @@ export HOOK_ENV=changed"#;
                     let workspace = root.join("workspace");
                     let bin = root.join("bin");
                     std::fs::create_dir(&workspace).unwrap();
+                    let subdir = workspace.join("subdir");
+                    std::fs::create_dir(&subdir).unwrap();
+                    let venv = root.join("activate");
+                    std::fs::write(
+                        &venv,
+                        "VIRTUAL_ENV=\"$TEST_SUBDIR/venv\"\nexport VIRTUAL_ENV\nvenv_private=activated\n",
+                    ).unwrap();
                     std::fs::create_dir(&bin).unwrap();
                     symlink(format!("/bin/{shell}"), bin.join(shell)).unwrap();
                     for (name, body) in [
                         (
                             "fake-begin",
-                            r#"[ "$PWD" = "$TEST_WORKSPACE" ] || exit 91
+                            r#"[ "$PWD" = "$EXPECTED_WORKSPACE" ] || exit 91
 [ "$HOOK_ENV" = "$EXPECTED_ENV" ] || exit 92
+[ "${private_flag-unset}" = unset ] || exit 93
+if [ "$PWD" = "$TEST_SUBDIR" ]; then
+  [ "$VIRTUAL_ENV" = "$TEST_SUBDIR/venv" ] || exit 94
+  [ "$PATH" = "$TEST_BIN" ] || exit 95
+fi
 printf '%s\n' BEGIN >&2
 if [ "$BEGIN_RC" -ne 0 ]; then
   printf '%s\n' FAILED >&2
@@ -1718,6 +1753,16 @@ printf '%s\n' IMAGE_WRITE >&2
                         .env("TEST_BIN", &bin)
                         .env("HOME", &root)
                         .env("TEST_WORKSPACE", &workspace)
+                        .env("TEST_SUBDIR", &subdir)
+                        .env("TEST_VENV", &venv)
+                        .env(
+                            "EXPECTED_WORKSPACE",
+                            if *name == "multiline-quotes" {
+                                &subdir
+                            } else {
+                                &workspace
+                            },
+                        )
                         .env("HOOK_ENV", hook_env)
                         .env("EXPECTED_ENV", hook_env)
                         .env("BEGIN_RC", begin_rc.to_string())
@@ -1732,7 +1777,11 @@ printf '%s\n' IMAGE_WRITE >&2
                     let mut expected_log = vec!["copying the worker's code into /workspace"];
                     expected_log.extend_from_slice(expected_events);
                     if *expected_rc == 0 {
-                        expected_log.extend(["scripts done", "EXPORT", "IMAGE_WRITE"]);
+                        expected_log.push("scripts done");
+                        if *name == "multiline-quotes" {
+                            expected_log.push("TRAP");
+                        }
+                        expected_log.extend(["EXPORT", "IMAGE_WRITE"]);
                     }
                     let events: Vec<_> = log
                         .lines()
