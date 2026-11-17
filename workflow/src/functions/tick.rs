@@ -251,9 +251,10 @@ fn json_output_instruction(node: &NodeDef) -> Option<String> {
     Some(format!(
         "Result: deliver it by calling workflow-result::submit once with {{\"result\": <your \
          result as a JSON value>}}. An error names what to fix: call it again. Once it is \
-         accepted, end the turn with one short line, not the JSON. A turn that ends while it \
-         waits on a wake you armed with harness::observe may end with a status line instead.\
-         {schema}"
+         accepted, end the turn with one short line, not the JSON: the node is then finished; \
+         if a wake is still armed, this session and its background jobs are stopped, so \
+         submit last. A turn that ends before the result is submitted, waiting on a wake you armed \
+         with harness::observe, may end with a status line instead.{schema}"
     ))
 }
 
@@ -1840,20 +1841,26 @@ mod tests {
         // Disposed wake, cancel not yet recorded: the parked turn's wiring ack.
         let resp = json!({"status": "completed", "expects_wake": false, "result": "wiring ack"});
         assert_eq!(
-            status_outcome(&resp, false),
+            status_outcome(&resp, false, false),
             NodeOutcome::Done(json!("wiring ack"))
         );
         let armed = json!({"status": "completed", "expects_wake": true, "result": "wiring ack"});
-        assert_eq!(status_outcome(&armed, false), NodeOutcome::StillRunning);
         assert_eq!(
-            status_outcome(&Value::Null, false),
+            status_outcome(&armed, false, false),
+            NodeOutcome::StillRunning
+        );
+        assert_eq!(
+            status_outcome(&Value::Null, false, false),
             NodeOutcome::StillRunning
         );
 
         record.abort = true;
-        assert_eq!(status_outcome(&resp, true), NodeOutcome::StillRunning);
         assert_eq!(
-            status_outcome(&json!({"status": "cancelled"}), true),
+            status_outcome(&resp, true, false),
+            NodeOutcome::StillRunning
+        );
+        assert_eq!(
+            status_outcome(&json!({"status": "cancelled"}), true, false),
             NodeOutcome::Cancelled
         );
         assert!(matches!(
