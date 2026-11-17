@@ -247,9 +247,10 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         .description("Internal: re-checks the http worker's bind after it reloads, and withdraws or restores the MCP routes."),
     );
     let handle = iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID);
-    // The boot check ran before this observer was active, and a refused
-    // observer would leave the guard off without a word: wait for it, then
-    // check once more, so a rebind in between is caught.
+    // The routes are first served here, once this observer is active, by
+    // checking the bind again: a rebind since the boot check is caught, and
+    // none goes unseen while the routes are up. A slow or refused observer
+    // still gets the routes served (after a warning), not a dead endpoint.
     let (watch, ctx, routes) = (handle.clone(), ready_ctx, ready_routes);
     tokio::spawn(async move {
         // Warn if activation is slow, but keep waiting: the SDK keeps the
@@ -262,8 +263,9 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
             Ok(result) => result,
             Err(_) => {
                 tracing::warn!(
-                    "observing {HTTP_RELOAD_FN} is still pending after 30s; until it is active, a rebind of the http worker is not seen"
+                    "observing {HTTP_RELOAD_FN} is still pending after 30s; serving the MCP routes anyway, and until it is active, a rebind of the http worker is not seen"
                 );
+                recheck_bind(&ctx, &routes).await;
                 ready.await
             }
         };
@@ -274,10 +276,13 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
                 );
                 recheck_bind(&ctx, &routes).await;
             }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "observing {HTTP_RELOAD_FN} was refused, so a later rebind of the http worker to a public address will not withdraw the MCP routes. Expose {HTTP_RELOAD_FN} in rbac-proxy (rbac.expose_functions) and restart mcp-server."
+                );
+                recheck_bind(&ctx, &routes).await;
+            }
         }
     });
     handle
@@ -300,7 +305,7 @@ pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) {
         }
         RouteAction::Restore => {
             routes.serve().await;
-            tracing::info!(api_path = %ctx.cfg.api_path, "the http worker is acceptable again; MCP routes restored");
+            tracing::info!(api_path = %ctx.cfg.api_path, "the http worker's bind is acceptable; MCP routes served");
         }
     }
     if let http_guard::Bind::Serve { warnings } = bind {
@@ -475,7 +480,12 @@ async fn write_item(
     if !sessions.claim_stream_item(session_id, generation, id) {
         return false;
     }
-    response.write(frame.as_bytes()).await.is_ok()
+    let written = response.write(frame.as_bytes()).await.is_ok();
+    if let Some(id) = id {
+        // A failed write is unsent again (see `finish_stream_item`).
+        sessions.finish_stream_item(session_id, generation, id, written);
+    }
+    written
 }
 
 #[cfg(test)]

@@ -156,6 +156,31 @@ struct Session {
     sent_through: u64,
     /// The highest SSE event id the cap dropped.
     sse_dropped_through: u64,
+    /// The observation a stream claimed and is writing now.
+    in_flight: Option<InFlight>,
+}
+
+/// A claimed observation whose write has not reported yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InFlight {
+    generation: u64,
+    id: u64,
+    /// `sent_through` before the claim, restored when the write fails.
+    prev: u64,
+    /// A stream that took over sent it in its backlog (a replay from an
+    /// earlier `Last-Event-ID`), so a failed write needs no resend.
+    covered: bool,
+}
+
+/// The observation event ids in a stream backlog.
+fn backlog_ids_of(backlog: &[StreamItem]) -> Vec<u64> {
+    backlog
+        .iter()
+        .filter_map(|i| match i {
+            StreamItem::Observation { id, .. } => Some(*id),
+            StreamItem::Gap { .. } => None,
+        })
+        .collect()
 }
 
 impl Session {
@@ -226,6 +251,7 @@ impl Sessions {
                 stream_gen: 0,
                 sent_through: 0,
                 sse_dropped_through: 0,
+                in_flight: None,
             },
         );
         Ok(id)
@@ -336,6 +362,30 @@ impl Sessions {
                 return Err(format!("unknown session: {session_id}"));
             };
             session.last_seen = Instant::now();
+            if session.observers.len() >= self.limits.max_observers {
+                // A finished observer (it reached max_observations or
+                // expired) holds its place only while its observations are
+                // still buffered: unpolled, or kept for SSE replay.
+                let finished: Vec<String> = session
+                    .observers
+                    .iter()
+                    .filter(|(id, e)| {
+                        e.handle.state() == "disposed" && session.buffered_for(id) == 0
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in &finished {
+                    session.observers.remove(id);
+                    session.order.retain(|o| o != id);
+                }
+                for id in &finished {
+                    inner.owner.remove(id);
+                }
+            }
+            let session = inner
+                .sessions
+                .get_mut(session_id)
+                .expect("the session cannot end while the lock is held");
             if session.observers.len() >= self.limits.max_observers {
                 return Err(format!(
                     "this session already has {} observers (max_observers_per_session); remove one with iii_unobserve",
@@ -565,6 +615,11 @@ impl Sessions {
                 });
             }
         }
+        // The replaced stream's write in flight: if this backlog carries it,
+        // a failure there needs no resend here.
+        if let Some(f) = session.in_flight.as_mut() {
+            f.covered = backlog_ids_of(&backlog).contains(&f.id);
+        }
         let (tx, rx) = mpsc::channel(self.limits.max_buffered.max(1));
         session.stream = Some(tx);
         session.stream_gen += 1;
@@ -596,9 +651,49 @@ impl Sessions {
             return false;
         }
         if let Some(id) = id {
+            session.in_flight = Some(InFlight {
+                generation,
+                id,
+                prev: session.sent_through,
+                covered: false,
+            });
             session.sent_through = session.sent_through.max(id);
         }
         true
+    }
+
+    /// The stream `generation` finished writing claimed observation `id`.
+    /// A failed write is unsent again: the next `GET` without
+    /// `Last-Event-ID` sends it, and a stream that took over meanwhile (and
+    /// left it out of its backlog as claimed) gets it now.
+    pub fn finish_stream_item(&self, session_id: &str, generation: u64, id: u64, written: bool) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(session) = inner.sessions.get_mut(session_id) else {
+            return;
+        };
+        let Some(f) = session
+            .in_flight
+            .filter(|f| f.generation == generation && f.id == id)
+        else {
+            return;
+        };
+        session.in_flight = None;
+        if written {
+            return;
+        }
+        if session.sent_through == id {
+            session.sent_through = f.prev;
+        }
+        if session.stream_gen != generation && !f.covered {
+            let observation = session
+                .buffer
+                .iter()
+                .find(|(seq, _, _)| *seq == id)
+                .map(|(_, _, o)| o.clone());
+            if let Some(observation) = observation {
+                session.push(StreamItem::Observation { id, observation });
+            }
+        }
     }
 
     /// A stream wrote the observation with event id `id`.
@@ -1625,5 +1720,130 @@ mod tests {
         );
         assert!(backlog_ids(&backlog_b).contains(&id), "B sends it instead");
         assert!(s.claim_stream_item(&sid, b, Some(id)));
+    }
+
+    /// A's first observation, claimed by A: (store, session, A's generation, id, A's receiver).
+    async fn claimed_by_a() -> (Sessions, String, u64, u64, mpsc::Receiver<StreamItem>) {
+        let s = store();
+        let o = FakeObserve::default();
+        let sid = sse_session(&s, &o).await;
+        let (_, mut rx_a, a) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        let StreamItem::Observation { id, .. } = rx_a.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        assert!(s.claim_stream_item(&sid, a, Some(id)));
+        (s, sid, a, id, rx_a)
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_leaves_the_observation_for_the_next_stream() {
+        let (s, sid, a, id, _rx_a) = claimed_by_a().await;
+        s.finish_stream_item(&sid, a, id, false);
+        let (backlog, _rx, _) = s.attach_stream(&sid, None).unwrap();
+        assert!(backlog_ids(&backlog).contains(&id), "no stream wrote {id}");
+    }
+
+    #[tokio::test]
+    async fn a_written_observation_is_not_sent_again() {
+        let (s, sid, a, id, _rx_a) = claimed_by_a().await;
+        s.finish_stream_item(&sid, a, id, true);
+        let (backlog, _rx, _) = s.attach_stream(&sid, None).unwrap();
+        assert!(!backlog_ids(&backlog).contains(&id));
+    }
+
+    #[tokio::test]
+    async fn a_write_that_fails_after_a_takeover_reaches_the_new_stream() {
+        let (s, sid, a, id, _rx_a) = claimed_by_a().await;
+        // B attaches while A's write is in flight: claimed, so not in its backlog.
+        let (backlog_b, mut rx_b, _) = s.attach_stream(&sid, None).unwrap();
+        assert!(!backlog_ids(&backlog_b).contains(&id));
+        s.finish_stream_item(&sid, a, id, false);
+        match rx_b.try_recv() {
+            Ok(StreamItem::Observation { id: got, .. }) => assert_eq!(got, id),
+            other => panic!("B must send {id}, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_that_succeeds_after_a_takeover_is_not_resent() {
+        let (s, sid, a, id, _rx_a) = claimed_by_a().await;
+        let (_, mut rx_b, _) = s.attach_stream(&sid, None).unwrap();
+        s.finish_stream_item(&sid, a, id, true);
+        assert!(rx_b.try_recv().is_err(), "A wrote it");
+    }
+
+    #[tokio::test]
+    async fn a_replay_from_an_earlier_event_id_is_not_sent_twice_after_a_failed_write() {
+        let (s, sid, a, id, _rx_a) = claimed_by_a().await;
+        // The client resumes from before `id`: B replays it, as asked.
+        let (backlog_b, mut rx_b, _) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert!(backlog_ids(&backlog_b).contains(&id));
+        s.finish_stream_item(&sid, a, id, false);
+        assert!(rx_b.try_recv().is_err(), "already in B's backlog");
+    }
+
+    #[tokio::test]
+    async fn a_finished_observer_frees_its_place_once_its_observations_are_read() {
+        let s = Sessions::new(limits(16, 1, 500));
+        let fired = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
+        s.observe(&fired, &sid, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        // Unread: it still holds its place, so its observation is kept.
+        let o = FakeObserve::default();
+        assert!(s
+            .observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .is_err());
+        assert_eq!(inputs(&s.poll(&sid, None, 50).unwrap()), vec![json!(1)]);
+        // Read and finished: its place is free.
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .expect("the finished observer no longer counts");
+        let listed = s.list(&sid).unwrap();
+        assert_eq!(listed.len(), 1, "only the new observer: {listed:?}");
+        assert_eq!(listed[0]["function_id"], "c::d");
+    }
+
+    #[tokio::test]
+    async fn a_finished_sse_observer_keeps_its_place_while_its_replay_is_buffered() {
+        let s = Sessions::new(limits(16, 1, 500));
+        let fired = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
+        s.observe(&fired, &sid, req("a::b"), Delivery::Sse, SINK)
+            .await
+            .unwrap();
+        assert!(s.deliver(observation("obs-1", json!(1))));
+        let o = FakeObserve::default();
+        assert!(s
+            .observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .is_err());
+        // A resuming client still gets it.
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert_eq!(backlog_ids(&backlog).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_active_observer_keeps_its_place() {
+        let s = Sessions::new(limits(16, 1, 500));
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(&o, &sid, req("a::b"), Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        assert!(s
+            .observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .is_err());
     }
 }

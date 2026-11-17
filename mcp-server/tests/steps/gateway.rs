@@ -11,6 +11,7 @@ use crate::common::world::McpWorld;
 
 const SESSION_KEY: &str = "mcp_session";
 const OBSERVER_KEY: &str = "observer_id";
+const OBSERVED_KEY: &str = "observed_function";
 
 fn rpc(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
@@ -256,6 +257,9 @@ async fn observe_scope(world: &mut McpWorld, function_id: String) {
     world
         .stash
         .insert(OBSERVER_KEY.into(), v["observer_id"].clone());
+    world
+        .stash
+        .insert(OBSERVED_KEY.into(), Value::String(function_id));
 }
 
 #[when("I set a state key in this scenario's scope")]
@@ -311,6 +315,12 @@ async fn observations_arrive(world: &mut McpWorld, want: usize, secs: u64) {
     seen.extend(v["observations"].as_array().cloned().unwrap_or_default());
     assert_eq!(seen.len(), want, "observations: {seen:?}");
     assert_eq!(seen[0]["input"]["scope"], scope(world));
+    // The engine names the function it observed; the session drops a
+    // delivery that names another (`Sessions::deliver`).
+    let observed = world.stash.get(OBSERVED_KEY).cloned().unwrap_or_default();
+    for o in &seen {
+        assert_eq!(o["function_id"], observed, "observation: {o}");
+    }
 }
 
 #[when("I end the session with DELETE")]

@@ -38,6 +38,9 @@ pub const TOOL_NAMES: [&str; 12] = [
 ];
 
 const DEFAULT_MAX_CHARS: usize = 100_000;
+/// The smallest `max_chars`: the truncation envelope with the longest
+/// `total_chars` (20 digits, 65 characters in all) fits in it, so every reply honours the limit.
+const MIN_MAX_CHARS: usize = 80;
 const INTERNAL_PREFIX: &str = "mcp-server::";
 /// What [`iii_secret_store`] calls: `secrets::set` writes the vault.
 const SECRET_SET_FN: &str = "secrets::set";
@@ -81,7 +84,7 @@ pub fn tools_list() -> Value {
                 "payload": { "type": "object", "description": "The function arguments (a JSON object). Default {}." },
                 "timeout_ms": { "type": "number" },
                 "void": { "type": "boolean", "description": "Fire and forget: return without waiting for a result." },
-                "max_chars": { "type": "number", "description": "Cap on the returned JSON (default 100000)." }
+                "max_chars": { "type": "number", "minimum": 80, "description": "Cap on the returned JSON (default 100000, at least 80)." }
             },
             "required": ["function_id"]
         })),
@@ -140,8 +143,8 @@ fn bounded(result: &Value, max: usize) -> String {
         let cut: String = serialized.chars().take(n).collect();
         json!({ "result": cut, "truncated": true, "total_chars": total }).to_string()
     };
-    // The longest cut whose reply fits; the envelope alone may not fit a
-    // tiny limit, and then it is returned as is.
+    // The longest cut whose reply fits; at MIN_MAX_CHARS or more, the
+    // envelope alone always does.
     let (mut lo, mut hi) = (0usize, total.min(max));
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
@@ -257,17 +260,18 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
             Err(e) => error(e.to_string()),
         };
     }
+    let max = match args.get("max_chars").and_then(Value::as_u64) {
+        None | Some(0) => DEFAULT_MAX_CHARS,
+        Some(m) if (m as usize) < MIN_MAX_CHARS => {
+            return error(format!(
+                "max_chars must be at least {MIN_MAX_CHARS}: a truncated reply needs that much"
+            ));
+        }
+        Some(m) => m as usize,
+    };
     let timeout = args.get("timeout_ms").and_then(Value::as_u64);
     match ctx.bus.call(function_id, payload, timeout).await {
-        Ok(result) => {
-            let max = args
-                .get("max_chars")
-                .and_then(Value::as_u64)
-                .filter(|m| *m > 0)
-                .map(|m| m as usize)
-                .unwrap_or(DEFAULT_MAX_CHARS);
-            raw_text(bounded(&result, max))
-        }
+        Ok(result) => raw_text(bounded(&result, max)),
         Err(e) => error(e.to_string()),
     }
 }
@@ -947,6 +951,16 @@ mod tests {
         )
     }
 
+    #[test]
+    fn the_smallest_limit_fits_the_envelope_for_any_total() {
+        // total_chars is at most 20 digits (u64): the envelope still fits.
+        let huge = Value::String("x".repeat(200));
+        assert!(bounded(&huge, MIN_MAX_CHARS).chars().count() <= MIN_MAX_CHARS);
+        let envelope =
+            json!({ "result": "", "truncated": true, "total_chars": u64::MAX }).to_string();
+        assert!(envelope.chars().count() <= MIN_MAX_CHARS, "{envelope}");
+    }
+
     #[tokio::test]
     async fn max_chars_bounds_the_text_returned() {
         let e = Engine::new(
@@ -959,8 +973,9 @@ mod tests {
                 }),
         );
         let s = sessions();
-        // [0,0,0,0] is 9 chars, but the text returned is longer: it is cut.
-        let (_, text) = raw(
+        // A limit the truncation envelope cannot fit is refused, before the
+        // call: no reply could honour it.
+        let (err, text) = raw(
             &e,
             &s,
             None,
@@ -968,10 +983,11 @@ mod tests {
             json!({ "function_id": "a::zeros", "max_chars": 10 }),
         )
         .await;
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["truncated"], true, "{text}");
-        // Escaped quotes count too; the whole text stays within the limit.
-        for max in [80, 200, 1000] {
+        assert!(err, "{text}");
+        assert!(text.contains("max_chars") && text.contains("80"), "{text}");
+        // Escaped quotes count too; the whole text stays within the limit,
+        // the smallest one included.
+        for max in [80, 81, 200, 1000] {
             let (err, text) = raw(
                 &e,
                 &s,

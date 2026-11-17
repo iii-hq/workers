@@ -163,10 +163,11 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &ctx);
 
     // The routes live as long as the connection; dropping the handles keeps
-    // them. A reload of the http worker re-checks its bind and withdraws or
-    // restores them.
+    // them. They are served once the observer of the http worker's reloads
+    // is active (see `watch_http_reloads`), so no rebind goes unseen while
+    // they are up; each reload re-checks the bind and withdraws or restores
+    // them.
     let routes = functions::Routes::new(iii.clone(), cfg.api_path.clone());
-    routes.serve().await;
     let _reloads = functions::watch_http_reloads(&iii, &ctx, routes.clone());
 
     // Idle-session sweep: once a minute, end the sessions idle longer than
