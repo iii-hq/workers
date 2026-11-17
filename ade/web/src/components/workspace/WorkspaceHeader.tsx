@@ -1,8 +1,17 @@
-import { Menu, Plus, Search, SquarePen } from 'lucide-react'
+import {
+  CircleQuestionMark,
+  Menu,
+  Plus,
+  Search,
+  Settings,
+  SquarePen,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { Hint } from '@/components/ui/Hint'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { ThemeSwitch } from '@/components/ui/ThemeSwitch'
 import { Wordmark } from '@/components/ui/Wordmark'
+import { EngineIndicator } from '@/components/workspace/EngineIndicator'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import { TabLimitNotice } from '@/components/workspace/TabLimitNotice'
 import { TabStrip } from '@/components/workspace/TabStrip'
@@ -11,6 +20,7 @@ import type { ThemePreference } from '@/hooks/use-theme'
 import type { UseWorkspaceTabsReturn } from '@/hooks/use-workspace-tabs'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { bindingsFor, hoverTitle } from '@/lib/keybindings/registry'
+import { requestShortcutsDialog } from '@/lib/shortcuts-request'
 import { tabLimitReachedTitle } from '@/lib/tab-limit'
 import { cn } from '@/lib/utils'
 import {
@@ -48,8 +58,8 @@ export interface WorkspaceHeaderProps {
  * The console's top bar, set in Inter on the neutral palette.
  *
  * Desktop (640px and up) is a 48px menu bar: the wordmark, the workspace
- * tab strip, then a search affordance that spells its own chord and the
- * settings toggle. Phones get a 56px header with the workspace menu, the
+ * tab strip, then the control cluster — search (spelling its own chord),
+ * the theme, help and the settings toggle. Phones get a 56px header with the workspace menu, the
  * panel position dots, search and a new-chat/new-workspace action at 48px
  * touch targets; the menu itself is a bottom sheet (`MobileWorkspaceMenu`).
  *
@@ -226,11 +236,16 @@ export function WorkspaceHeader({
           />
         </div>
 
-        {/* The bar's right-hand cluster: search, then the theme. Search
- keeps a fixed pill and carries its own chord (the caps teach ⌘K
- on sight); it sits right, not centre, so the tab strip gets every
- other pixel of the bar. */}
+        {/* The bar's right-hand cluster: search, the theme, then help and
+ settings — every control that is about the app rather than the
+ work sits together at the top right. Search keeps a fixed pill
+ and carries its own chord (the caps teach ⌘K on sight); it sits
+ right, not centre, so the tab strip gets every other pixel of
+ the bar. */}
         <div className="flex items-center gap-1.5">
+          {/* Which engine this ADE talks to, always in view: a status dot
+ and the engine's host:port, with the full address a click away. */}
+          <EngineIndicator />
           <button
             type="button"
             onClick={onOpenPalette}
@@ -251,6 +266,35 @@ export function WorkspaceHeader({
             />
           </button>
           <ThemeSwitch value={theme} onChange={onThemeChange} />
+          {/* Help opens the shortcuts reference outright, not a palette
+ search. */}
+          <Hint label="Keyboard shortcuts" shortcut="app.shortcuts">
+            <button
+              type="button"
+              onClick={() => requestShortcutsDialog()}
+              aria-label="Help and keyboard shortcuts"
+              className={cn(GHOST_CONTROL, 'size-8')}
+            >
+              <CircleQuestionMark className="size-4" aria-hidden />
+            </button>
+          </Hint>
+          <Hint label="Settings" shortcut="app.settings">
+            <button
+              type="button"
+              onClick={onToggleSettings}
+              aria-label="ADE settings"
+              aria-pressed={settingsOpen}
+              // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
+              className={cn(
+                'learn-iii-settings',
+                GHOST_CONTROL,
+                'size-8',
+                settingsOpen && 'bg-secondary text-foreground',
+              )}
+            >
+              <Settings className="size-4" aria-hidden />
+            </button>
+          </Hint>
         </div>
       </header>
       <TabLimitNotice limit={workspace.tabLimit} />

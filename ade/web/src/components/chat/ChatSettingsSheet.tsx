@@ -69,6 +69,11 @@ interface ChatSettingsSheetProps {
   /** Attaching follows the editor, not the turn options: a queued message
  can still take files mid-stream. Defaults to `disabled`. */
   attachDisabled?: boolean
+  /**
+   * A worker's per-session controls (the judge picker): on a phone they
+   * live here, under the model, instead of on the one-row toolbar.
+   */
+  controls?: ReactNode
 }
 
 interface SettingsSectionProps {
@@ -134,6 +139,7 @@ export function ChatSettingsSheet({
   onPermissionModeChange,
   onAttachFiles,
   attachDisabled,
+  controls,
 }: ChatSettingsSheetProps) {
   const navigation = useSheetNavigation<ChatSettingsPage>('settings')
   const [configurationProvider, setConfigurationProvider] = useState<
@@ -198,6 +204,13 @@ export function ChatSettingsSheet({
                 onClick={() => navigation.push('model')}
               />
             </SettingsSection>
+            {controls ? (
+              <SettingsSection id="chat-settings-session" label="Session">
+                <div className="flex flex-wrap items-center gap-2 px-1 py-1">
+                  {controls}
+                </div>
+              </SettingsSection>
+            ) : null}
 
             {showPermissionMode || (showMemoryBank && onMemoryBankChange) ? (
               <SettingsSection id="chat-settings-behavior" label="Behavior">
