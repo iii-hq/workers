@@ -25,6 +25,8 @@ interface JudgeRow {
   description?: string
   /** The description says why this choice would not be used. */
   warning?: boolean
+  /** The full reason behind a warning, shown as the row's title. */
+  reason?: string
   configure?: ConfigureTarget
 }
 
@@ -77,7 +79,11 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
     {
       id: 'default',
       value: undefined,
-      mark: <Scale size={16} aria-hidden />,
+      mark: (
+        <span className="judge-ui-session-mark" aria-hidden="true">
+          <Scale size={16} aria-hidden />
+        </span>
+      ),
       label: 'Default',
       description: fallbackDescription,
       warning: Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem)),
@@ -89,9 +95,12 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
         id: name,
         value: name,
         mark: <JudgeMark provider={name} />,
-        label: entry?.model ?? name,
-        meta: entry?.model ? name : undefined,
-        description: !entry ? 'Not running' : entry.problem ? `Not configured: ${entry.problem}` : undefined,
+        label: name,
+        meta: entry?.model ?? undefined,
+        description: !entry ? 'Not running' : entry.problem ? 'Not configured' : undefined,
+        // The whole reason, with its fix, is the row's title: the line
+        // itself stays short and the settings sit one click to the right.
+        reason: !entry ? `judge-${name} is not running` : entry.problem ? `Not configured: ${entry.problem}` : undefined,
         warning: !entry || Boolean(entry.problem),
         configure: entry ? providerTarget(entry) : undefined,
       }
@@ -125,7 +134,7 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean)
   const visible = judgeRows(providers, settings, stored).filter((row) => {
     if (words.length === 0) return true
-    const hay = `${row.meta ?? ''} ${row.label} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
+    const hay = `${row.label} ${row.meta ?? ''} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
     return words.every((word) => hay.includes(word))
   })
   const selectedIndex = visible.findIndex((row) => row.value === stored)
@@ -204,7 +213,7 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
                 data-selected={selected || undefined}
                 data-highlighted={row === active || undefined}
                 data-warning={row.warning || undefined}
-                title={row.warning ? row.description : undefined}
+                title={row.reason ?? (row.warning ? row.description : undefined)}
                 onClick={() => onChoose(row.value)}
                 onMouseEnter={() => setActiveIndex(visible.indexOf(row))}
               >

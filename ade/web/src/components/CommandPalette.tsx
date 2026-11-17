@@ -679,7 +679,7 @@ export function CommandPalette({
   return (
     <div
       style={viewportStyle}
-      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-foreground/15 supports-backdrop-filter:backdrop-blur-[2px] sm:pt-[12vh]"
+      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-black/55 supports-backdrop-filter:backdrop-blur-[6px] dark:bg-black/70 sm:pt-[12vh]"
     >
       {/* The scrim is a real button so dismissing by click is reachable
  without a mouse; the dialog below owns every other key. On a phone
