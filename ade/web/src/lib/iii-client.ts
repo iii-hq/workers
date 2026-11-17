@@ -77,8 +77,23 @@ export interface CallOptions {
   namespace?: string
 }
 
+/**
+ * Where this page's client is connected: the WebSocket it opened (the ADE
+ * worker's `/ws` proxy, or a build-time override), the namespace it joined,
+ * and — when the ADE worker reports it on `/runtime` — the engine that
+ * proxy forwards to, credentials stripped. What the header's engine
+ * indicator shows.
+ */
+export interface EngineConnectionInfo {
+  wsUrl: string
+  namespace?: string
+  engineUrl?: string
+}
+
 export interface IiiClient {
   browserId: string
+  /** Where this client is connected; fixed for the client's life. */
+  connection: EngineConnectionInfo
   /**
    * Call an iii function and await its result. Thin wrapper over the SDK's
    * `call({ function_id, payload })`.
@@ -133,6 +148,8 @@ interface Deps {
 
 let _clientPromise: Promise<IiiClient> | null = null
 let _deps: Deps = defaultDeps()
+/** The engine URL the ADE worker reported on `/runtime`, if it did. */
+let _runtimeEngineUrl: string | undefined
 
 function defaultDeps(): Deps {
   return {
@@ -178,6 +195,7 @@ export function __setIiiClientDepsForTests(overrides: Partial<Deps>): void {
 export function __resetIiiClientForTests(): void {
   _deps = defaultDeps()
   _clientPromise = null
+  _runtimeEngineUrl = undefined
 }
 
 async function bootstrap(deps: Deps): Promise<IiiClient> {
@@ -188,10 +206,20 @@ async function bootstrap(deps: Deps): Promise<IiiClient> {
     wsUrl,
     namespace === undefined ? undefined : { namespace },
   )
-  return wrapSdk(sdk, browserId)
+  return wrapSdk(sdk, browserId, {
+    wsUrl,
+    ...(namespace === undefined ? {} : { namespace }),
+    ...(_runtimeEngineUrl === undefined
+      ? {}
+      : { engineUrl: _runtimeEngineUrl }),
+  })
 }
 
-export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
+export function wrapSdk(
+  sdk: ISdk,
+  browserId: string,
+  connection: EngineConnectionInfo = { wsUrl: '' },
+): IiiClient {
   // Track per-functionId unregister fns so dispose() can clean them all up
   // even if individual `on()` callers forgot.
   const handlerUnregisters = new Set<() => void>()
@@ -356,6 +384,7 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
 
   return {
     browserId,
+    connection,
     call,
     trigger: call,
     on,
@@ -412,7 +441,16 @@ async function resolveNamespace(): Promise<string | undefined> {
       `Runtime namespace request failed with HTTP ${response.status}; refusing to connect to default`,
     )
   }
-  const value = (await response.json()) as { namespace?: unknown }
+  const value = (await response.json()) as {
+    namespace?: unknown
+    engine_url?: unknown
+  }
+  // Older ADE workers do not report the engine; the indicator then names
+  // the proxy it reached instead.
+  _runtimeEngineUrl =
+    typeof value.engine_url === 'string' && value.engine_url.length > 0
+      ? value.engine_url
+      : undefined
   if (value.namespace === null || value.namespace === undefined)
     return undefined
   if (typeof value.namespace === 'string' && value.namespace.length > 0) {
