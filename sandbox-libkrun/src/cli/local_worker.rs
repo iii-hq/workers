@@ -466,6 +466,10 @@ fi"#
 /// When it exits 0, iii-init exports the merged root for the image. A local
 /// worker's copy leaves out what its run's copy leaves out, but `vendor/`
 /// ([`BUILD_COPIES`]); a bundle's is the whole package but Compose's state.
+/// Each nonempty hook runs independently with `-e`, preferring bash just as
+/// [`RUN_SCRIPT_CMD`] does, otherwise sh. It inherits `/workspace` and the VM
+/// environment; its cwd, variables and shell options do not leak into the next
+/// hook. A nonzero hook status exits the build before the success message.
 pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
     let mut parts = script_header();
     parts.push(SOURCE_SHARE_CHECK.to_string());
@@ -488,13 +492,24 @@ cd /workspace
 echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#
             .to_string(),
     );
-    if !project.setup_cmd.is_empty() {
-        parts.push("echo \"iii: build: running scripts.setup\" >&2".to_string());
-        parts.push(project.setup_cmd.clone());
-    }
-    if !project.install_cmd.is_empty() {
-        parts.push("echo \"iii: build: running scripts.install\" >&2".to_string());
-        parts.push(project.install_cmd.clone());
+    for (name, command) in [
+        ("setup", &project.setup_cmd),
+        ("install", &project.install_cmd),
+    ] {
+        if !command.is_empty() {
+            parts.push(format!("echo \"iii: build: running scripts.{name}\" >&2"));
+            // A non-final AND-list failure does not trigger the outer errexit.
+            // Give each hook its own status, cwd and exported environment. The
+            // explicit child -e still applies when its status is tested here.
+            let command = shell_quote(command);
+            parts.push(format!(
+                r#"if command -v bash >/dev/null; then
+  bash -e -c {command} || exit $?
+else
+  sh -e -c {command} || exit $?
+fi"#
+            ));
+        }
     }
     parts.push("echo \"iii: build: scripts done\" >&2".to_string());
     parts.join("\n")
@@ -1513,7 +1528,7 @@ mod tests {
     fn the_build_script_installs_and_exits() {
         let project = project_with("apt-get install -y git", "npm ci");
         let script = build_image_script(&project, /*is_bundle=*/ false);
-        assert!(script.contains("apt-get install -y git\necho"));
+        assert!(script.contains("bash -e -c 'apt-get install -y git' || exit $?"));
         assert!(script.contains("npm ci"));
         assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()));
         assert!(script.contains("umount \"$SRC\""));
@@ -1525,6 +1540,219 @@ mod tests {
         let bundle = build_image_script(&project, /*is_bundle=*/ true);
         assert!(bundle.contains("tar -cf - --exclude=.iii ."), "{bundle}");
         assert!(!bundle.contains("--exclude=node_modules"));
+    }
+
+    /// Exercise the generated composition, not a stubbed shell exit status.
+    /// Only VM preparation/copy/env is replaced; export/write are scratch sentinels.
+    #[test]
+    fn the_build_script_preserves_each_hook_status_and_shell_semantics() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::process::Command;
+
+        let setup = "printf '%s\\n' SETUP >&2";
+        let install = "fake-begin && fake-npm && fake-finish";
+        let quoted_setup = r#"printf '%s\n' "QUOTED:$HOOK_ENV" 'literal:$HOOK_ENV `exit 99` "double" it'\''s' >&2
+printf '%s\n' "$(printf SUBSTITUTION)" "`printf BACKTICK`" >&2
+cd ..
+export HOOK_ENV=changed"#;
+        let hook_env = "value with 'quotes', \"double\", $dollars and `backticks`";
+        let cases = [
+            (
+                "install-fails",
+                setup,
+                install,
+                42,
+                42,
+                vec![
+                    "running scripts.setup",
+                    "SETUP",
+                    "running scripts.install",
+                    "BEGIN",
+                    "FAILED",
+                ],
+            ),
+            (
+                "success",
+                setup,
+                install,
+                0,
+                0,
+                vec![
+                    "running scripts.setup",
+                    "SETUP",
+                    "running scripts.install",
+                    "BEGIN",
+                    "NPM",
+                    "FINISH",
+                ],
+            ),
+            (
+                "setup-fails",
+                install,
+                "printf '%s\\n' UNEXPECTED_INSTALL >&2",
+                42,
+                42,
+                vec!["running scripts.setup", "BEGIN", "FAILED"],
+            ),
+            (
+                "multiline-quotes",
+                quoted_setup,
+                install,
+                0,
+                0,
+                vec![
+                    "running scripts.setup",
+                    "QUOTED:value with 'quotes', \"double\", $dollars and `backticks`",
+                    "literal:$HOOK_ENV `exit 99` \"double\" it's",
+                    "SUBSTITUTION",
+                    "BACKTICK",
+                    "running scripts.install",
+                    "BEGIN",
+                    "NPM",
+                    "FINISH",
+                ],
+            ),
+            (
+                "child-errexit",
+                "",
+                "false\nprintf '%s\\n' UNEXPECTED_AFTER_FALSE >&2",
+                0,
+                1,
+                vec!["running scripts.install"],
+            ),
+            ("empty-hooks", "", "", 0, 0, vec![]),
+            (
+                "setup-only",
+                setup,
+                "",
+                0,
+                0,
+                vec!["running scripts.setup", "SETUP"],
+            ),
+            (
+                "install-only",
+                "",
+                install,
+                0,
+                0,
+                vec!["running scripts.install", "BEGIN", "NPM", "FINISH"],
+            ),
+        ];
+        for shell in ["bash", "sh"] {
+            for is_bundle in [false, true] {
+                for (name, setup, install, begin_rc, expected_rc, expected_events) in &cases {
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path().canonicalize().unwrap();
+                    let workspace = root.join("workspace");
+                    let bin = root.join("bin");
+                    std::fs::create_dir(&workspace).unwrap();
+                    std::fs::create_dir(&bin).unwrap();
+                    symlink(format!("/bin/{shell}"), bin.join(shell)).unwrap();
+                    for (name, body) in [
+                        (
+                            "fake-begin",
+                            r#"[ "$PWD" = "$TEST_WORKSPACE" ] || exit 91
+[ "$HOOK_ENV" = "$EXPECTED_ENV" ] || exit 92
+printf '%s\n' BEGIN >&2
+if [ "$BEGIN_RC" -ne 0 ]; then
+  printf '%s\n' FAILED >&2
+  exit "$BEGIN_RC"
+fi"#,
+                        ),
+                        ("fake-npm", "printf '%s\\n' NPM >&2"),
+                        ("fake-finish", "printf '%s\\n' FINISH >&2"),
+                    ] {
+                        let path = bin.join(name);
+                        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                            .unwrap();
+                    }
+
+                    let project = project_with(setup, install);
+                    let mut script = build_image_script(&project, is_bundle);
+                    let copy = if is_bundle {
+                        r#"( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }"#.to_string()
+                    } else {
+                        format!("WS=/workspace\nIIISTATE={WORKSPACE_STATE}\n{}", *BUILD_COPY)
+                    };
+                    let header = script_header();
+                    for (before, after) in [
+                        (SOURCE_SHARE_CHECK, ": # offline source-share preparation"),
+                        (copy.as_str(), ": # offline copy"),
+                        // Keep only the chosen real shell and fakes on PATH,
+                        // exercising RUN_SCRIPT_CMD's bash and no-bash branches.
+                        (header[2].as_str(), "export PATH=\"$TEST_BIN\""),
+                        (
+                            r#"cd /
+umount "$SRC" || { echo "iii: ERROR could not detach $SRC" >&2; exit 1; }
+cd /workspace
+echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#,
+                            "cd \"$TEST_WORKSPACE\"",
+                        ),
+                    ] {
+                        assert!(script.contains(before), "{name}: preparation changed");
+                        script = script.replace(before, after);
+                    }
+                    let script_path = root.join("dev-run.sh");
+                    std::fs::write(&script_path, script).unwrap();
+                    // Same /bin/sh -c entrypoint as image_build_command. Its exec
+                    // stays inside a child so offline success guards can run.
+                    let entrypoint = RUN_SCRIPT_CMD.replace(
+                        "/opt/iii/dev-run.sh",
+                        &shell_quote(script_path.to_str().unwrap()),
+                    );
+                    let output = Command::new("/bin/sh")
+                        .args([
+                            "-c",
+                            &format!(
+                                r#"/bin/sh -c {} || exit $?
+printf '%s\n' EXPORT >&2
+: > "$EXPORT_FILE"
+printf '%s\n' IMAGE_WRITE >&2
+: > "$IMAGE_FILE""#,
+                                shell_quote(&entrypoint)
+                            ),
+                        ])
+                        .env_clear()
+                        .env("PATH", &bin)
+                        .env("TEST_BIN", &bin)
+                        .env("HOME", &root)
+                        .env("TEST_WORKSPACE", &workspace)
+                        .env("HOOK_ENV", hook_env)
+                        .env("EXPECTED_ENV", hook_env)
+                        .env("BEGIN_RC", begin_rc.to_string())
+                        .env("EXPORT_FILE", root.join("exported"))
+                        .env("IMAGE_FILE", root.join("image-written"))
+                        .current_dir(&root)
+                        .output()
+                        .unwrap();
+                    let log = String::from_utf8(output.stderr).unwrap();
+                    let context = format!("{name}, shell={shell}, bundle={is_bundle}: {log}");
+                    assert_eq!(output.status.code(), Some(*expected_rc), "{context}");
+                    let mut expected_log = vec!["copying the worker's code into /workspace"];
+                    expected_log.extend_from_slice(expected_events);
+                    if *expected_rc == 0 {
+                        expected_log.extend(["scripts done", "EXPORT", "IMAGE_WRITE"]);
+                    }
+                    let events: Vec<_> = log
+                        .lines()
+                        .map(|line| line.strip_prefix("iii: build: ").unwrap_or(line))
+                        .collect();
+                    assert_eq!(events, expected_log, "{context}");
+                    assert_eq!(
+                        root.join("exported").exists(),
+                        *expected_rc == 0,
+                        "{context}"
+                    );
+                    assert_eq!(
+                        root.join("image-written").exists(),
+                        *expected_rc == 0,
+                        "{context}"
+                    );
+                    assert!(output.stdout.is_empty(), "{context}: unexpected stdout");
+                }
+            }
+        }
     }
 
     /// The run of a build never installs; a local worker's code still syncs
