@@ -35,8 +35,11 @@ pub use store::{Store, StorePaths};
 /// (`iii.invocation.input` / `iii.invocation.output`), redacting only keys
 /// such as `api_key` or `secret`, not `value`. `secrets::set` receives a
 /// value and `secrets::resolve` returns one, so this worker always turns
-/// payload capture off. Call before any thread is spawned.
-pub fn disable_trace_payloads() {
-    // SAFETY: callers run this first in main, before any thread is spawned (see above).
+/// payload capture off.
+///
+/// # Safety
+/// The entire process must be single-threaded.
+pub unsafe fn disable_trace_payloads() {
+    // SAFETY: the caller guarantees the process is single-threaded.
     unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
 }

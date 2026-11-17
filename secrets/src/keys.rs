@@ -40,11 +40,13 @@ impl fmt::Debug for EnvKey {
 
 impl EnvKey {
     /// Read `III_SECRETS_KEY` and remove it from this process's environment.
-    /// Call before any thread is spawned: removing a variable while another
-    /// thread reads the environment is unsound on some platforms.
-    pub fn take_from_process() -> Self {
+    ///
+    /// # Safety
+    /// The entire process must be single-threaded: removing a variable while
+    /// another thread reads the environment is unsound on some platforms.
+    pub unsafe fn take_from_process() -> Self {
         let value = std::env::var(KEY_ENV).ok();
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        // SAFETY: the caller guarantees the process is single-threaded.
         unsafe { std::env::remove_var(KEY_ENV) };
         Self::from_value(value)
     }

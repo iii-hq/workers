@@ -84,7 +84,8 @@ fn main() -> anyhow::Result<()> {
 
     // Before anything parses a document: without this, CID fonts with no
     // ToUnicode table decode to empty text and nothing says so.
-    cmaps::materialize();
+    // SAFETY: synchronous startup, before this binary starts any threads.
+    unsafe { cmaps::materialize() };
 
     // Environment mutation must finish before Tokio creates worker threads.
     tokio::runtime::Builder::new_multi_thread()

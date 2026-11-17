@@ -29,8 +29,12 @@ struct Cli {
 }
 
 fn main() -> anyhow::Result<()> {
-    secrets::disable_trace_payloads();
-    let env_key = EnvKey::take_from_process();
+    // SAFETY: these are the first actions in synchronous main, before this
+    // binary constructs its runtime or starts any threads.
+    let env_key = unsafe {
+        secrets::disable_trace_payloads();
+        EnvKey::take_from_process()
+    };
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
