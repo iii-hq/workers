@@ -20,6 +20,13 @@ const userPlain: UserMessage = {
   createdAt: Date.now(),
 }
 
+const userShort: UserMessage = {
+  id: 'u0',
+  role: 'user',
+  content: 'Say hi in 3 words.',
+  createdAt: Date.now(),
+}
+
 const userWithAttachments: UserMessage = {
   id: 'u2',
   role: 'user',
@@ -440,6 +447,11 @@ type Story = StoryObj<typeof meta>
 export const UserPlain: Story = {
   name: 'user, plain',
   args: { message: userPlain },
+}
+
+export const UserShort: Story = {
+  name: 'user, short',
+  args: { message: userShort },
 }
 
 export const UserWithAttachments: Story = {

@@ -63,6 +63,21 @@ export interface AgentProfilePickerProps {
   details?: ReactNode
 }
 
+/**
+ * A 16px icon centred in the glyph column, so the lock note and the action
+ * rows line up with the profile tiles instead of starting 8px to their left.
+ */
+function IconCell({ children }: { children: ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className="flex size-8 shrink-0 items-center justify-center"
+    >
+      {children}
+    </span>
+  )
+}
+
 /** The profile's glyph on a small tile; the chosen profile's tile fills with ink. */
 function AgentGlyph({
   icon,
@@ -265,21 +280,23 @@ export function AgentProfilePicker({
         align="start"
         side="top"
         sideOffset={8}
-        className="max-h-[min(30rem,var(--available-height))] w-80 max-w-[calc(100vw-2rem)] gap-0 overflow-y-auto overscroll-contain p-1.5"
+        className="max-h-[min(30rem,var(--available-height))] w-[22rem] max-w-[calc(100vw-2rem)] gap-0 overflow-y-auto overscroll-contain p-1.5"
       >
-        <PopoverTitle className="px-2.5 pt-1.5 pb-2 text-xs font-medium text-ink-faint">
+        <PopoverTitle className="px-2.5 pt-1.5 pb-1.5 text-xs font-medium text-ink-faint">
           Agent profile
         </PopoverTitle>
         {selectionLocked ? (
-          <p className="flex items-center gap-2 px-2.5 pb-2 text-sm text-ink-faint">
-            <Lock aria-hidden className="size-4 shrink-0" />
+          <p className="flex items-center gap-3 px-2.5 pb-1 text-sm text-ink-faint">
+            <IconCell>
+              <Lock className="size-4" />
+            </IconCell>
             Fixed for this conversation
           </p>
         ) : null}
         {agentProfile && !selected ? (
           <div className="flex items-center gap-3 rounded-lg bg-surface-hover/60 px-2.5 py-2">
             <AgentGlyph icon={null} active />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+            <span className="min-w-0 flex-1 truncate text-sm leading-5 font-medium text-ink">
               {agentProfile.name}
             </span>
             <Check aria-hidden className="size-4 shrink-0 text-ink" />
@@ -321,8 +338,10 @@ export function AgentProfilePicker({
                 aria-pressed={active}
                 aria-describedby={update ? markerId : undefined}
                 disabled={selectionLocked}
+                // Top-aligned: the tile and the check sit on the name line,
+                // not adrift in the middle of a two-line description.
                 className={cn(
-                  'group/agent flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring disabled:cursor-default',
+                  'group/agent flex w-full items-start gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring disabled:cursor-default',
                   active
                     ? 'bg-surface-hover/60'
                     : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
@@ -333,12 +352,12 @@ export function AgentProfilePicker({
                 }}
               >
                 <AgentGlyph icon={entry.icon} active={active} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-ink">
+                <span className="min-w-0 flex-1 pt-1.5">
+                  <span className="block truncate text-sm leading-5 font-medium text-ink">
                     {entry.name.trim() || entry.id}
                   </span>
                   {entry.description.trim() ? (
-                    <span className="line-clamp-3 text-sm leading-snug text-ink-faint">
+                    <span className="mt-0.5 line-clamp-2 text-sm leading-5 text-ink-faint">
                       {entry.description}
                     </span>
                   ) : null}
@@ -365,7 +384,7 @@ export function AgentProfilePicker({
                 <Check
                   aria-hidden
                   className={cn(
-                    'size-4 shrink-0 text-ink transition-opacity duration-100',
+                    'mt-2 size-4 shrink-0 text-ink transition-opacity duration-100',
                     active ? 'opacity-100' : 'opacity-0',
                   )}
                 />
@@ -377,7 +396,7 @@ export function AgentProfilePicker({
           <button
             type="button"
             title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
-            className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
+            className="mt-0.5 flex h-10 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
             onClick={() => {
               setOpen(false)
               requestPanelOpen({
@@ -386,13 +405,14 @@ export function AgentProfilePicker({
               })
             }}
           >
-            <CircleArrowUp
-              aria-hidden
-              className={cn(
-                'size-4 shrink-0',
-                selectedUpdate.major ? 'text-warn' : 'text-accent',
-              )}
-            />
+            <IconCell>
+              <CircleArrowUp
+                className={cn(
+                  'size-4',
+                  selectedUpdate.major ? 'text-warn' : 'text-accent',
+                )}
+              />
+            </IconCell>
             <span className="min-w-0 flex-1 truncate">
               {selectedUpdate.major ? (
                 'Review major update'
@@ -412,7 +432,7 @@ export function AgentProfilePicker({
         <button
           type="button"
           title="Choose instructions, a model, and skills."
-          className="group/configure flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
+          className="group/configure flex h-10 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
           onClick={() => {
             setOpen(false)
             requestPanelOpen({
@@ -421,7 +441,9 @@ export function AgentProfilePicker({
             })
           }}
         >
-          <Settings2 aria-hidden className="size-4 shrink-0 text-ink-faint" />
+          <IconCell>
+            <Settings2 className="size-4 text-ink-faint" />
+          </IconCell>
           <span className="min-w-0 flex-1 truncate">Configure an agent</span>
           <ArrowUpRight
             aria-hidden
@@ -430,11 +452,10 @@ export function AgentProfilePicker({
         </button>
         {details ? (
           <details className="group/details shrink-0">
-            <summary className="flex h-9 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-              <SlidersHorizontal
-                aria-hidden
-                className="size-4 shrink-0 text-ink-faint"
-              />
+            <summary className="flex h-10 cursor-pointer list-none items-center gap-3 rounded-lg px-2.5 text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+              <IconCell>
+                <SlidersHorizontal className="size-4 text-ink-faint" />
+              </IconCell>
               <span className="min-w-0 flex-1">Agent details</span>
               <ChevronRight
                 aria-hidden

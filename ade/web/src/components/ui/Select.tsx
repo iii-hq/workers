@@ -399,7 +399,7 @@ export function Select<T extends string>({
           align="start"
           alignItemWithTrigger={false}
           collisionBoundary={panelBoundary ?? undefined}
-          className="max-h-[min(60vh,var(--available-height))] text-base sm:text-sm"
+          className="max-h-[min(60vh,var(--available-height))] p-1 text-base sm:text-sm"
         >
           {allowEmpty ? (
             <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'None'} />
@@ -573,7 +573,7 @@ function SelectItem({
       className={cn(
         // The check sits at the right, as in the shadcn item, so the text
         // starts at the row's edge instead of behind a 28px empty column.
-        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-8 pl-2 outline-none sm:min-h-0 sm:py-1.5',
+        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-3 pl-2 outline-none sm:min-h-0 sm:py-1.5',
         'data-highlighted:bg-muted data-highlighted:text-foreground',
         'data-selected:text-foreground',
         'data-disabled:pointer-events-none data-disabled:opacity-40',
