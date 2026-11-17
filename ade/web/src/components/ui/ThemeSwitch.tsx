@@ -81,7 +81,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
       aria-label="Theme"
       onKeyDown={onKeyDown}
       className={cn(
-        'relative inline-flex h-8 shrink-0 items-center rounded-full bg-secondary p-0.5',
+        'relative inline-flex h-8 shrink-0 items-center rounded-sm bg-neutral-200 dark:bg-neutral-950 border border-neutral-100 dark:border-neutral-800 px-1 py-0.5',
         className,
       )}
     >
@@ -89,7 +89,7 @@ export function ThemeSwitch({ value, onChange, className }: ThemeSwitchProps) {
  rather than two segments swapping. */}
       <span
         aria-hidden
-        className="absolute top-0.5 left-0.5 size-7 rounded-full bg-card shadow-sm transition-transform duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)]"
+        className="absolute top-1.2 left-1.5 size-6 rounded-full bg-neutral-50 dark:bg-neutral-700 shadow-sm transition-transform duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)]"
         style={{ transform: `translateX(${index * SEGMENT}px)` }}
       />
       {OPTIONS.map(({ value: option, label, Icon, motion }) => {
