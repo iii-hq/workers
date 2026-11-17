@@ -708,13 +708,12 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
         // written first would drop a promotion whose write then failed.
         let known = ledger.len();
         ledger.extend(landed.into_iter().chain(covered));
-        if ledger.len() > known {
-            if let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
-            {
-                report
-                    .notes
-                    .push(format!("promotion ledger not saved: {e}"));
-            }
+        if ledger.len() > known
+            && let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
+        {
+            report
+                .notes
+                .push(format!("promotion ledger not saved: {e}"));
         }
         return;
     }
