@@ -988,8 +988,28 @@ buckets:
 
     #[test]
     fn env_var_expansion_in_strings() {
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("IIISTORE_TEST_REGION", "eu-west-1") };
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_var_expansion_in_strings");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("IIISTORE_TEST_REGION", "eu-west-1")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let yaml = r#"
 buckets:
   uploads:
@@ -1002,15 +1022,33 @@ buckets:
             BucketConfig::S3(s) => assert_eq!(s.region, "eu-west-1"),
             _ => panic!(),
         }
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("IIISTORE_TEST_REGION") };
     }
 
     #[test]
     fn missing_env_var_fails_config_load() {
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::missing_env_var_fails_config_load");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove("IIISTORE_TEST_DEFINITELY_UNSET_VAR")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         // Make sure the var really isn't in the environment.
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("IIISTORE_TEST_DEFINITELY_UNSET_VAR") };
         let yaml = r#"
 buckets:
   uploads:

@@ -1462,15 +1462,33 @@ databases:
 
     #[test]
     fn env_var_expansion_in_url() {
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("DATABASE_WORKER_TEST_URL", "sqlite::memory:") };
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_var_expansion_in_url");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("DATABASE_WORKER_TEST_URL", "sqlite::memory:")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         // Quote the interpolation site so the expanded value (which ends in
         // a colon) is unambiguously a YAML scalar.
         let yaml = "databases:\n  p:\n    url: \"${DATABASE_WORKER_TEST_URL}\"\n";
         let c = cfg(yaml);
         assert_eq!(c.databases["p"].url.as_deref(), Some("sqlite::memory:"));
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("DATABASE_WORKER_TEST_URL") };
     }
 
     #[test]
@@ -1481,24 +1499,36 @@ databases:
 
     #[test]
     fn env_var_expansion_multiple_in_one_url() {
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("DBW_TEST_USER", "alice") };
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("DBW_TEST_HOST", "host.example") };
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("DBW_TEST_DB", "shop") };
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_var_expansion_multiple_in_one_url");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("DBW_TEST_USER", "alice")
+                .env("DBW_TEST_HOST", "host.example")
+                .env("DBW_TEST_DB", "shop")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let yaml = "databases:\n  p:\n    url: \"postgres://${DBW_TEST_USER}@${DBW_TEST_HOST}/${DBW_TEST_DB}\"\n";
         let c = cfg(yaml);
         assert_eq!(
             c.databases["p"].url.as_deref(),
             Some("postgres://alice@host.example/shop")
         );
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("DBW_TEST_USER") };
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("DBW_TEST_HOST") };
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("DBW_TEST_DB") };
     }
 
     #[test]

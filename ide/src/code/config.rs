@@ -552,22 +552,34 @@ search_response_budget_bytes: 11
 
     #[test]
     fn from_yaml_expands_env_var() {
-        // Serialized against every other process-env-mutating test in the
-        // crate (see ENV_TEST_MUTEX) — set_var/var race across threads
-        // otherwise.
-        let _env_lock = crate::config::ENV_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("CODER_TEST_ROOT", "/tmp/expanded-glob") };
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::from_yaml_expands_env_var");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("CODER_TEST_ROOT", "/tmp/expanded-glob")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let yaml = "non_accessible_globs:\n  - \"${CODER_TEST_ROOT}\"\n";
         let cfg = CoderConfig::from_yaml(yaml).unwrap();
         assert_eq!(
             cfg.non_accessible_globs,
             vec!["/tmp/expanded-glob".to_string()]
         );
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("CODER_TEST_ROOT") };
     }
 
     #[test]

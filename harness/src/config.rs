@@ -562,11 +562,29 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("HARNESS_TEST_CRON", "0 0 * * * *") };
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::from_yaml_expands_env_var");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("HARNESS_TEST_CRON", "0 0 * * * *")
+                .output()
+                .expect("start isolated test process");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test was not executed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("sweep_expression: \"${HARNESS_TEST_CRON}\"\n").unwrap();
         assert_eq!(cfg.sweep_expression, "0 0 * * * *");
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("HARNESS_TEST_CRON") };
     }
 }

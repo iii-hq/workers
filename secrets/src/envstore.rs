@@ -286,6 +286,28 @@ mod tests {
 
     #[test]
     fn read_prefers_dotenv_then_the_process_environment() {
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::read_prefers_dotenv_then_the_process_environment");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("SECRETS_ENVSTORE_TEST_B", "from-process")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         std::fs::write(&path, "A=from-file\nB=\nA=later-wins\n").unwrap();
@@ -293,8 +315,6 @@ mod tests {
             dotenv: Some(path.clone()),
             process_env: true,
         };
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::set_var("SECRETS_ENVSTORE_TEST_B", "from-process") };
         let names = vec![
             "A".to_owned(),
             "B".to_owned(),
@@ -308,8 +328,6 @@ mod tests {
             values["SECRETS_ENVSTORE_TEST_B"].location,
             PROCESS_ENV_LOCATION
         );
-        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-        unsafe { std::env::remove_var("SECRETS_ENVSTORE_TEST_B") };
     }
 
     #[test]
