@@ -1601,9 +1601,11 @@ async fn a_covered_verdict_without_learned_lines_is_not_recorded() {
         let response = run(&boundary, promotion_only(), false).await;
         let bank = &response.banks[0];
         assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
-        assert!(boundary.snapshot()["state"]
-            .get("promoted:offline")
-            .is_none());
+        assert!(
+            boundary.snapshot()["state"]
+                .get("promoted:offline")
+                .is_none()
+        );
     }
     assert!(payloads(&boundary, "memory::rule::set").is_empty());
     // Not in the ledger, so the candidate is judged again.
