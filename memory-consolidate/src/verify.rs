@@ -356,11 +356,11 @@ pub async fn run_verify_tier<T: ConsolidationTransport + ?Sized>(
                     }
                 }
             }
-            if let Some((which, last)) = &mut held {
-                if *which == first {
-                    *last = Cursor::of(row);
-                    continue;
-                }
+            if let Some((which, last)) = &mut held
+                && *which == first
+            {
+                *last = Cursor::of(row);
+                continue;
             }
             *cursor.lane(first) = Cursor::of(row);
             dirty = false;
@@ -372,10 +372,10 @@ pub async fn run_verify_tier<T: ConsolidationTransport + ?Sized>(
             }
         }
     }
-    if dirty {
-        if let Err(e) = crate::functions::state_set(iii, &cursor_key(bank), json!(cursor)).await {
-            report.notes.push(format!("verify cursor not saved: {e}"));
-        }
+    if dirty
+        && let Err(e) = crate::functions::state_set(iii, &cursor_key(bank), json!(cursor)).await
+    {
+        report.notes.push(format!("verify cursor not saved: {e}"));
     }
     if let (false, Some(id)) = (parsed, &unparsed) {
         report.notes.push(format!(
