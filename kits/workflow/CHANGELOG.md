@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- **A new input form can still be a security decision.** Choosing how a new command takes a secret, or whether it writes without a confirmation, stays consequential and blocks when nobody can answer.
+- **Every answer to the plan's questions reaches the tickets and the plan.** Answers the Workflow agent gave itself under `## Notes` rewrite the cards like a Design card answer does, and R's `## Plan` is rewritten to match, so the plan a user approves never describes a rejected choice.
+
 ## 0.1.2
 
 - **A refused interview card covers only open decisions.** Answers already given stay; only a card refused because no human can answer turns the open decisions into assumptions, and a card refused for its shape is fixed and asked again.
