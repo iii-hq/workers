@@ -1854,6 +1854,10 @@ export function ConfigurationOverlay({
   return (
     <Dialog
       open
+      // A full-page sheet has no "outside": a press on a worker form's
+      // portaled popup (a select's list, a menu) must not close settings.
+      // Back and Escape are the ways out.
+      disablePointerDismissal
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
