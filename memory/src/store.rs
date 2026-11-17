@@ -1728,13 +1728,13 @@ impl Bank {
             .cloned()
             .ok_or_else(|| MemoryError::MemoryNotFound(winner_id.into()))?;
         for (record, snapshot) in [(&loser, expected.0), (&winner, expected.1)] {
-            if let Some(snapshot) = snapshot {
-                if !snapshot_matches(record, snapshot)? {
-                    return Err(MemoryError::InvalidInput(format!(
-                        "memory `{}` changed since expected snapshot",
-                        record.id
-                    )));
-                }
+            if let Some(snapshot) = snapshot
+                && !snapshot_matches(record, snapshot)?
+            {
+                return Err(MemoryError::InvalidInput(format!(
+                    "memory `{}` changed since expected snapshot",
+                    record.id
+                )));
             }
         }
         if loser.pinned || !loser.is_live() || !winner.is_live() {
