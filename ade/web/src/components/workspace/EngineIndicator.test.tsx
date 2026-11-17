@@ -2,6 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import {
   connectionStatusLabel,
@@ -11,6 +12,9 @@ import {
 } from './EngineIndicator'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
+vi.mock('@/lib/clipboard', () => ({
+  copyTextToClipboard: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('@/lib/backend', () => ({ getDefaultBackend: () => ({ id: 'real' }) }))
 
 describe('engineHostLabel', () => {
@@ -90,6 +94,24 @@ describe('EngineIndicator', () => {
       'Engine: 127.0.0.1:49134, Connected',
     )
     expect(host.querySelector('.bg-ok')).not.toBeNull()
+  })
+
+  // Review on #1760: every value in the popover is something to paste.
+  it('puts a copy button beside each value in the popover', async () => {
+    await act(async () => {
+      root.render(<EngineIndicator />)
+    })
+    await act(async () => host.querySelector('button')?.click())
+    const copy = (name: string) =>
+      document.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)
+    expect(copy('Copy the engine URL')).not.toBeNull()
+    expect(copy('Copy the namespace')).not.toBeNull()
+    expect(copy("Copy the page's WebSocket URL")).not.toBeNull()
+    await act(async () => copy('Copy the namespace')?.click())
+    expect(copyTextToClipboard).toHaveBeenCalledWith('project-a')
+    expect(copy('Copied the namespace')).not.toBeNull()
+    await act(async () => copy('Copy the engine URL')?.click())
+    expect(copyTextToClipboard).toHaveBeenLastCalledWith('ws://127.0.0.1:49134')
   })
 
   it('reads out the engine on the phone row', async () => {
