@@ -240,14 +240,12 @@
   line-height: 16px;
 }
 
-/* Why a choice would not be used: one amber line; the full reason is the
-   row's title, and its settings are one click to the right. */
-[data-iii-ui='judge'] .judge-ui-session-option[data-warning] .judge-ui-session-option-description {
-  color: var(--color-warn);
-}
-
+/* Why a choice would not be used: the glyph is amber, the words stay
+   quiet; the full reason is the row's title, and its settings are one
+   click to the right. */
 [data-iii-ui='judge'] .judge-ui-session-option-description > svg {
   flex: 0 0 auto;
+  color: var(--color-warn);
 }
 
 /* The check only shows on the session's choice; the column stays, so the
@@ -261,14 +259,22 @@
   opacity: 1;
 }
 
+/* A row's settings: quiet until the row is pointed at or focused. */
 [data-iii-ui='judge'] .judge-ui-session-row-configure {
   flex: 0 0 auto;
   width: 32px;
   height: 32px;
+  color: var(--color-ink-ghost);
+  transition: color var(--motion-duration-fast);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-row:hover .judge-ui-session-row-configure,
+[data-iii-ui='judge'] .judge-ui-session-row:focus-within .judge-ui-session-row-configure {
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='judge'] .judge-ui-session-row-configure:hover {
+[data-iii-ui='judge'] .judge-ui-session-row-configure:hover,
+[data-iii-ui='judge'] .judge-ui-session-row-configure:focus-visible {
   color: var(--color-ink);
 }
 
@@ -324,7 +330,6 @@
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: 14px;
-  font-weight: 500;
   cursor: pointer;
   transition: background-color var(--motion-duration-fast);
 }
@@ -458,8 +463,8 @@
 [data-iii-ui='judge'] .judge-ui-session-mark {
   display: inline-flex;
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-xs);

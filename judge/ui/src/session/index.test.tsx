@@ -299,7 +299,9 @@ describe('per-session judge provider', () => {
     })
     expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('judge · typesafe')
     expect(options()).toEqual(['default', 'semif', 'typesafe'])
-    expect(labels()).toEqual(['Default', 'qwen3.5-4b', 'jev-latest'])
+    expect(labels()).toEqual(['Default', 'semif', 'typesafe'])
+    expect(option('semif')?.textContent).toContain('qwen3.5-4b')
+    expect(option('typesafe')?.textContent).toContain('jev-latest')
     expect(option('default')?.textContent).toContain('typesafe · jev-latest')
     expect(option('typesafe')?.getAttribute('aria-pressed')).toBe('true')
     // A judge's model comes from its settings, read raw: no `${VAR}` expands into the page.
@@ -384,14 +386,14 @@ describe('per-session judge provider', () => {
 
   it('reads the judges again after a save, so a new model shows', async () => {
     const iii = engine()
-    const { button, labels } = await mount({}, { iii })
+    const { button, option } = await mount({}, { iii })
     await act(async () => button('Configure semif').click())
     iii.state.models['judge-semif'] = 'qwen3.5-9b'
     await act(async () => button('save').click())
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
-    expect(labels()).toContain('qwen3.5-9b')
+    expect(option('semif')?.textContent).toContain('qwen3.5-9b')
   })
 
   it('opens the settings in Settings on a Console without the inline editor', async () => {
@@ -542,7 +544,7 @@ describe('per-session judge provider', () => {
 
   it('never reads the judges on a timer, only on engine changes while the picker is mounted', async () => {
     const iii = engine()
-    const { view, labels } = await mount({}, { iii })
+    const { view, option } = await mount({}, { iii })
     vi.useFakeTimers()
     const lists = () => iii.call.mock.calls.filter(([id]) => id === 'engine::functions::list').length
     const before = lists()
@@ -584,7 +586,7 @@ describe('per-session judge provider', () => {
       await vi.advanceTimersByTimeAsync(400)
     })
     expect(lists()).toBe(before + 1)
-    expect(labels()).toContain('qwen3.5-9b')
+    expect(option('semif')?.textContent).toContain('qwen3.5-9b')
     // Closing the menu keeps them: the menu button's warning follows the engine.
     await act(async () => view.querySelector<HTMLElement>('[data-close-menu]')!.click())
     expect(iii.observers.map((entry) => entry.function_id).sort()).toEqual([
@@ -602,7 +604,7 @@ describe('per-session judge provider', () => {
     const iii = engine()
     iii.state.configurationIds = { judge: 'judge-hub-prod', 'judge-semif': 'semif-prod' }
     iii.state.models['semif-prod'] = 'qwen3.5-4b'
-    const { labels } = await mount({}, { iii })
+    const { option } = await mount({}, { iii })
     const configurationObservers = () =>
       iii.observers.filter((entry) => entry.function_id === 'configuration::on-updated')
     expect(configurationObservers()).toHaveLength(1)
@@ -639,7 +641,7 @@ describe('per-session judge provider', () => {
       await vi.advanceTimersByTimeAsync(400)
     })
     expect(lists()).toBe(before + 1)
-    expect(labels()).toContain('qwen3.5-9b')
+    expect(option('semif')?.textContent).toContain('qwen3.5-9b')
     act(() => root?.unmount())
     root = null
     expect(iii.observers).toEqual([])
@@ -656,7 +658,8 @@ describe('per-session judge provider', () => {
     expect(menuButton()?.getAttribute('aria-label')).toBe(
       `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
     )
-    expect(option('typesafe')?.textContent).toContain(`Not configured: ${reason}`)
+    expect(option('typesafe')?.textContent).toContain('Not configured')
+    expect(option('typesafe')?.getAttribute('title')).toBe(`Not configured: ${reason}`)
     expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
     // Default resolves to the same judge, so it says so too.
     expect(option('default')?.textContent).toContain('typesafe, not configured')
