@@ -266,7 +266,14 @@ impl<'a> TurnWalk<'a> {
             let ours =
                 item.pointer("/origin/turn_id").and_then(Value::as_str) == Some(self.turn_id);
             if self.through.is_none() && !ours {
-                self.before = line.filter(|l| l.role == "user");
+                // An entry with no line (an injected `<memory …>` block) keeps
+                // the request it follows; a reply, even a text-less one,
+                // ends it.
+                let reply =
+                    item.pointer("/message/role").and_then(Value::as_str) == Some("assistant");
+                if line.is_some() || reply {
+                    self.before = line.filter(|l| l.role == "user");
+                }
                 continue;
             }
             self.lines.extend(line);
@@ -360,6 +367,31 @@ mod tests {
         let mut walk = TurnWalk::new("t1");
         walk.feed(&[
             item("a0", "assistant", "an earlier reply", Some("t0")),
+            item("a1", "assistant", "woken", Some("t1")),
+        ]);
+        assert_eq!(texts(&walk.finish().unwrap()), ["woken"]);
+
+        // An injected memory block between the request and the turn keeps
+        // the request; a text-less earlier reply still ends it.
+        let mut walk = TurnWalk::new("t1");
+        walk.feed(&[
+            item("u1", "user", "please use port 8080", None),
+            item(
+                "m1",
+                "user",
+                "<memory bank=\"main\">port 3000</memory>",
+                None,
+            ),
+            item("a1", "assistant", "on it", Some("t1")),
+        ]);
+        assert_eq!(
+            texts(&walk.finish().unwrap()),
+            ["please use port 8080", "on it"]
+        );
+        let mut walk = TurnWalk::new("t1");
+        walk.feed(&[
+            item("u0", "user", "an earlier request", None),
+            item("a0", "assistant", "", Some("t0")),
             item("a1", "assistant", "woken", Some("t1")),
         ]);
         assert_eq!(texts(&walk.finish().unwrap()), ["woken"]);
