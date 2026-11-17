@@ -24,10 +24,31 @@ fn config_schema_serializes() {
 
 #[test]
 fn load_expands_env_and_unset_org_is_empty() {
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::set_var("DEVIN_TEST_KEY_XYZ", "secret123") };
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::remove_var("DEVIN_TEST_ORG_XYZ") };
+    const CHILD: &str = "III_EDITION_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "load_expands_env_and_unset_org_is_empty",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("DEVIN_TEST_KEY_XYZ", "secret123")
+            .env_remove("DEVIN_TEST_ORG_XYZ")
+            .output()
+            .expect("start isolated test");
+        assert!(
+            output.status.success(),
+            "isolated test failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "isolated test did not execute"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");
     std::fs::write(
@@ -39,8 +60,6 @@ fn load_expands_env_and_unset_org_is_empty() {
     assert_eq!(cfg.api_key, "secret123");
     // An unset org var expands to empty, which selects the v1 (personal) mode.
     assert_eq!(cfg.org_id, "");
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::remove_var("DEVIN_TEST_KEY_XYZ") };
 }
 
 #[test]

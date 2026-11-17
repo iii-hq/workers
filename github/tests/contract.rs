@@ -49,10 +49,30 @@ fn resolve_timeout_clamps_to_the_configured_max() {
 /// their defaults; a missing file yields the full defaults.
 #[test]
 fn seed_loading_expands_env_and_defaults_the_rest() {
-    // Unique var name: no other test reads or writes it, so the process-env
-    // mutation cannot race the parallel test runner.
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::set_var("GH_CONTRACT_TOKEN_92AF", "sekrit") };
+    const CHILD: &str = "III_EDITION_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "seed_loading_expands_env_and_defaults_the_rest",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("GH_CONTRACT_TOKEN_92AF", "sekrit")
+            .output()
+            .expect("start isolated test");
+        assert!(
+            output.status.success(),
+            "isolated test failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "isolated test did not execute"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");
     std::fs::write(
@@ -61,8 +81,6 @@ fn seed_loading_expands_env_and_defaults_the_rest() {
     )
     .unwrap();
     let c = Config::load(path.to_str().unwrap()).unwrap();
-    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
-    unsafe { std::env::remove_var("GH_CONTRACT_TOKEN_92AF") };
     assert_eq!(c.token, "sekrit");
     assert_eq!(c.default_timeout_ms, 1000);
     assert_eq!(c.max_timeout_ms, 120_000);
