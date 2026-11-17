@@ -38,10 +38,9 @@ export const Long: Story = {
   },
 }
 
-export const Settling: Story = {
-  name: 'thought, settling',
+export const Done: Story = {
+  name: 'thought, finished (folded)',
   args: {
     message: { ...thoughtStreaming, streaming: false, durationMs: 1250 },
-    settling: true,
   },
 }
