@@ -1,10 +1,8 @@
 import { IconButton } from '@iii-dev/console-ui'
-import { Check, Plus, Scale, TriangleAlert } from 'lucide-react'
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Check, Plus, Scale, Search, Settings2, TriangleAlert } from 'lucide-react'
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useState } from 'react'
 import type { JudgeProvider, JudgeSettings } from './engine'
 
-/** After a rail tap the scroll spy stays quiet until the smooth scroll lands. */
-const RAIL_JUMP_SETTLE_MS = 700
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
 
 /** One worker's settings, opened on the picker's settings page. */
@@ -19,18 +17,15 @@ interface JudgeRow {
   id: string
   /** What choosing it writes to the session; `undefined` = Default. */
   value: string | undefined
+  mark: ReactNode
+  /** The model the judge's settings name (or the provider, failing that). */
   label: string
+  /** The provider, beside the label; the Default row carries none. */
+  meta?: string
   description?: string
   /** The description says why this choice would not be used. */
   warning?: boolean
-}
-
-interface JudgeGroup {
-  key: string
-  label: string
-  mark: ReactNode
   configure?: ConfigureTarget
-  rows: JudgeRow[]
 }
 
 /** A provider's glyph: the registry publishes no icons, so its initial. */
@@ -61,15 +56,11 @@ export function settingsTarget(settings: JudgeSettings): ConfigureTarget {
 }
 
 /**
- * The picker's choices, grouped the way the model picker groups models: the
- * judge settings' Default first, then one group per provider showing the
- * model its settings name. Each group heading has its Configure.
+ * The picker's choices, one flat list the way the model picker lists
+ * models: the judge settings' Default first, then one row per provider
+ * showing the model its settings name, each with its own Configure.
  */
-function judgeGroups(
-  providers: JudgeProvider[] | null,
-  settings: JudgeSettings | null,
-  stored: string | undefined,
-): JudgeGroup[] {
+function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | null, stored: string | undefined): JudgeRow[] {
   const running = new Map((providers ?? []).map((entry) => [entry.provider, entry]))
   const fallback = settings?.provider
   const fallbackEntry = fallback ? running.get(fallback) : undefined
@@ -84,36 +75,25 @@ function judgeGroups(
   if (stored && providers && !running.has(stored)) names.push(stored)
   return [
     {
-      key: 'default',
-      label: 'Judge settings',
+      id: 'default',
+      value: undefined,
       mark: <Scale size={16} aria-hidden />,
+      label: 'Default',
+      description: fallbackDescription,
+      warning: Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem)),
       configure: settings ? settingsTarget(settings) : undefined,
-      rows: [
-        {
-          id: 'default',
-          value: undefined,
-          label: 'Default',
-          description: fallbackDescription,
-          warning: Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem)),
-        },
-      ],
     },
-    ...names.sort().map((name) => {
+    ...names.sort().map((name): JudgeRow => {
       const entry = running.get(name)
       return {
-        key: name,
-        label: name,
+        id: name,
+        value: name,
         mark: <JudgeMark provider={name} />,
+        label: entry?.model ?? name,
+        meta: entry?.model ? name : undefined,
+        description: !entry ? 'Not running' : entry.problem ? `Not configured: ${entry.problem}` : undefined,
+        warning: !entry || Boolean(entry.problem),
         configure: entry ? providerTarget(entry) : undefined,
-        rows: [
-          {
-            id: name,
-            value: name,
-            label: entry?.model ?? name,
-            description: !entry ? 'Not running' : entry.problem ? `Not configured: ${entry.problem}` : undefined,
-            warning: !entry || Boolean(entry.problem),
-          },
-        ],
       }
     }),
   ]
@@ -133,32 +113,21 @@ export interface JudgesPanelProps {
 
 /**
  * The first page: a filter you type into (arrows move, Enter picks, as in
- * the model picker), a rail with one glyph per group and the add button,
- * and the grouped choices.
+ * the model picker), the rows, and a foot with the judge settings and the
+ * way to add a judge.
  */
 export function JudgesPanel({ providers, settings, stored, listError, onChoose, onConfigure, onAdd }: JudgesPanelProps) {
   const listId = useId()
   const [filter, setFilter] = useState('')
   // `null` follows the session's choice; typing or hovering pins a row.
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
-  const [activeGroup, setActiveGroup] = useState<string | null>(null)
-  const listRef = useRef<HTMLDivElement>(null)
-  const scrollFrameRef = useRef<number | null>(null)
-  const railJumpRef = useRef<{ key: string; until: number } | null>(null)
 
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean)
-  const groups = judgeGroups(providers, settings, stored)
-    .map((group) => ({
-      ...group,
-      rows: group.rows.filter((row) => {
-        if (words.length === 0) return true
-        const hay = `${group.label} ${row.label} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
-        return words.every((word) => hay.includes(word))
-      }),
-    }))
-    .filter((group) => words.length === 0 || group.rows.length > 0)
-  const groupsKey = groups.map((group) => group.key).join(' ')
-  const visible = groups.flatMap((group) => group.rows)
+  const visible = judgeRows(providers, settings, stored).filter((row) => {
+    if (words.length === 0) return true
+    const hay = `${row.meta ?? ''} ${row.label} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
+    return words.every((word) => hay.includes(word))
+  })
   const selectedIndex = visible.findIndex((row) => row.value === stored)
   const resolvedIndex = activeIndex ?? Math.max(0, selectedIndex)
   const active = visible[Math.min(resolvedIndex, visible.length - 1)]
@@ -166,68 +135,8 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
 
   useEffect(() => {
     if (!active) return
-    listRef.current?.querySelector(`[data-judge-option="${active.id}"]`)?.scrollIntoView?.({ block: 'nearest' })
-  }, [active])
-
-  // The rail highlights the group whose heading sits at (or just above) the
-  // top of the list — or the last one once the list is scrolled to the end.
-  const syncActiveGroup = useCallback(() => {
-    const list = listRef.current
-    if (!list) return
-    const pinned = railJumpRef.current
-    if (pinned && Date.now() < pinned.until) {
-      setActiveGroup(pinned.key)
-      return
-    }
-    railJumpRef.current = null
-    const sections = Array.from(list.querySelectorAll<HTMLElement>('[data-judge-group]'))
-    if (sections.length === 0) {
-      setActiveGroup(null)
-      return
-    }
-    const scrollable = list.scrollHeight > list.clientHeight + 2
-    const atEnd = scrollable && list.scrollTop + list.clientHeight >= list.scrollHeight - 2
-    let current = sections[0]
-    if (atEnd) current = sections[sections.length - 1]
-    else {
-      for (const section of sections) {
-        if (section.offsetTop <= list.scrollTop + 16) current = section
-        else break
-      }
-    }
-    setActiveGroup(current.dataset.judgeGroup ?? null)
-  }, [])
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the spy reads the DOM, so it re-runs whenever the rendered groups change
-  useEffect(() => {
-    syncActiveGroup()
-  }, [syncActiveGroup, groupsKey])
-
-  useEffect(
-    () => () => {
-      if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
-    },
-    [],
-  )
-
-  const onListScroll = () => {
-    if (scrollFrameRef.current !== null) return
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      syncActiveGroup()
-    })
-  }
-
-  const jumpToGroup = (key: string) => {
-    const list = listRef.current
-    const section = list?.querySelector<HTMLElement>(`[data-judge-group="${key}"]`)
-    if (!list || !section) return
-    const reduceMotion =
-      typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    railJumpRef.current = { key, until: Date.now() + RAIL_JUMP_SETTLE_MS }
-    setActiveGroup(key)
-    list.scrollTo?.({ top: section.offsetTop, behavior: reduceMotion ? 'auto' : 'smooth' })
-  }
+    document.getElementById(optionId(active))?.scrollIntoView?.({ block: 'nearest' })
+  }, [active, optionId])
 
   const onFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // The menu would take every key for its own navigation; Escape reaches
@@ -258,6 +167,7 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
   return (
     <>
       <div className="judge-ui-session-filter">
+        <Search size={16} aria-hidden />
         <input
           type="search"
           value={filter}
@@ -280,102 +190,76 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
           spellCheck={false}
         />
       </div>
-      <div className="judge-ui-session-browse">
-        <nav aria-label="Judges" className="judge-ui-session-rail">
-          {groups.map((group) => (
-            <IconButton
-              key={group.key}
-              label={group.key === 'default' ? 'Default' : group.label}
-              tooltipSide="right"
-              variant="ghost"
-              className="judge-ui-session-rail-button"
-              aria-current={group.key === activeGroup ? 'true' : undefined}
-              data-judge-rail={group.key}
-              onClick={() => jumpToGroup(group.key)}
-            >
-              {group.mark}
-            </IconButton>
-          ))}
-          <IconButton
-            label="Add a judge"
-            tooltipSide="right"
-            variant="ghost"
-            className="judge-ui-session-rail-button"
-            onClick={onAdd}
-          >
-            <Plus size={16} aria-hidden />
-          </IconButton>
-        </nav>
-        <div id={listId} ref={listRef} onScroll={onListScroll} className="judge-ui-session-list">
-          {groups.length === 0 ? (
-            <p className="judge-ui-session-empty">No judge matches “{filter.trim()}”.</p>
-          ) : (
-            groups.map((group) => (
-              <section key={group.key} aria-label={group.label} data-judge-group={group.key}>
-                <div className="judge-ui-session-group-head">
-                  <h3 className="judge-ui-session-group-label">
-                    {group.mark}
-                    <span>{group.label}</span>
-                  </h3>
-                  {group.configure ? (
-                    <button
-                      type="button"
-                      className="judge-ui-session-configure"
-                      aria-label={`Configure ${group.key === 'default' ? 'judge settings' : group.label}`}
-                      onClick={() => group.configure && onConfigure(group.configure)}
-                    >
-                      Configure
-                    </button>
+      <div id={listId} className="judge-ui-session-list">
+        {visible.map((row) => {
+          const selected = row.value === stored
+          return (
+            <div key={row.id} className="judge-ui-session-row">
+              <button
+                id={optionId(row)}
+                data-judge-option={row.id}
+                type="button"
+                className="judge-ui-session-option"
+                aria-pressed={selected}
+                data-selected={selected || undefined}
+                data-highlighted={row === active || undefined}
+                data-warning={row.warning || undefined}
+                title={row.warning ? row.description : undefined}
+                onClick={() => onChoose(row.value)}
+                onMouseEnter={() => setActiveIndex(visible.indexOf(row))}
+              >
+                {row.mark}
+                <span className="judge-ui-session-option-copy">
+                  <span className="judge-ui-session-option-title">
+                    <span className="judge-ui-session-option-label">{row.label}</span>
+                    {row.meta ? <span className="judge-ui-session-option-meta">{row.meta}</span> : null}
+                  </span>
+                  {row.description ? (
+                    <span className="judge-ui-session-option-description">
+                      {row.warning ? <TriangleAlert size={16} aria-hidden /> : null}
+                      {row.description}
+                    </span>
                   ) : null}
-                </div>
-                <div className="judge-ui-session-card">
-                  {group.rows.map((row) => {
-                    const selected = row.value === stored
-                    return (
-                      <button
-                        key={row.id}
-                        id={optionId(row)}
-                        data-judge-option={row.id}
-                        type="button"
-                        className="judge-ui-session-option"
-                        aria-pressed={selected}
-                        data-selected={selected || undefined}
-                        data-highlighted={row === active || undefined}
-                        data-warning={row.warning || undefined}
-                        onClick={() => onChoose(row.value)}
-                        onMouseEnter={() => setActiveIndex(visible.indexOf(row))}
-                      >
-                        <span className="judge-ui-session-option-copy">
-                          <span className="judge-ui-session-option-label">{row.label}</span>
-                          {row.description ? (
-                            <span className="judge-ui-session-option-description" title={row.description}>
-                              {row.warning ? <TriangleAlert size={16} aria-hidden /> : null}
-                              {row.description}
-                            </span>
-                          ) : null}
-                        </span>
-                        {selected ? <Check size={16} aria-hidden /> : null}
-                      </button>
-                    )
-                  })}
-                </div>
-              </section>
-            ))
-          )}
-          {providers === null && words.length === 0 ? (
-            <p className="judge-ui-session-empty" role="status">
-              Checking judges…
-            </p>
-          ) : null}
-          {providers !== null && providers.length === 0 && words.length === 0 ? (
-            <p className="judge-ui-session-empty">No judge providers yet. Add one from the registry with +.</p>
-          ) : null}
-          {listError ? (
-            <p className="judge-ui-session-empty" role="alert">
-              Could not list judges: {listError}
-            </p>
-          ) : null}
-        </div>
+                </span>
+                <Check size={16} aria-hidden className="judge-ui-session-option-check" />
+              </button>
+              {row.configure ? (
+                <IconButton
+                  label={`Configure ${row.id === 'default' ? 'judge settings' : row.id}`}
+                  tooltipSide="left"
+                  variant="ghost"
+                  className="judge-ui-session-row-configure"
+                  onClick={() => row.configure && onConfigure(row.configure)}
+                >
+                  <Settings2 size={16} aria-hidden />
+                </IconButton>
+              ) : null}
+            </div>
+          )
+        })}
+        {visible.length === 0 && words.length > 0 ? (
+          <p className="judge-ui-session-empty">No judge matches “{filter.trim()}”.</p>
+        ) : null}
+        {providers === null && words.length === 0 ? (
+          <p className="judge-ui-session-empty" role="status">
+            Checking judges…
+          </p>
+        ) : null}
+        {providers !== null && providers.length === 0 && words.length === 0 ? (
+          <p className="judge-ui-session-empty">No judge providers yet. Add one from the registry.</p>
+        ) : null}
+        {listError ? (
+          <p className="judge-ui-session-empty" role="alert">
+            Could not list judges: {listError}
+          </p>
+        ) : null}
+      </div>
+      <div className="judge-ui-session-foot">
+        <span className="judge-ui-session-foot-note">Applies from the next turn</span>
+        <button type="button" className="judge-ui-session-foot-action" onClick={onAdd}>
+          <Plus size={16} aria-hidden />
+          Add a judge
+        </button>
       </div>
     </>
   )
