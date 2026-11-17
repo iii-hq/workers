@@ -82,7 +82,8 @@ rule; point-in-time information belongs in memories.
 ## Boundaries
 
 - Not a transcript store: session history lives in session-manager; memory
-  keeps distilled records that point back at their source session.
+  keeps distilled records that point back at their source session and the
+  entries they came from.
 - Not per-turn context compression: that is context-manager's job. This worker
   is the durable cross-session sibling.
 - Deletes are tombstones and bank deletion moves to `.trash/` — nothing is
@@ -90,7 +91,9 @@ rule; point-in-time information belongs in memories.
 - Extraction never edits a memory in place: a restatement reinforces the
   known memory, and a correction supersedes it (a recoverable tombstone;
   pinned memories are never touched). Wider dedup/merge/promote hygiene
-  belongs to the `memory-consolidate` sibling worker.
+  belongs to the `memory-consolidate` sibling worker. Its opt-in verify tier
+  may replace a note its source transcript contradicts; the old note stays
+  visible with `include_superseded: true`.
 - Extraction reads only what arrived after the session's confirmed cursor,
   at most 4 model calls per pass; the rest retries from the last confirmed
   run. A redelivered job adds no second revision (each effect is appended

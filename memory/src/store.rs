@@ -257,6 +257,39 @@ fn push_line(buf: &mut Vec<u8>, value: &impl serde::Serialize) -> Result<(), Mem
     Ok(())
 }
 
+/// Whether `record` still matches a caller's expected snapshot: a full
+/// record or a revision-bound projection. Unknown fields are rejected
+/// rather than silently ignored; a malformed snapshot is an error.
+pub(crate) fn snapshot_matches(
+    record: &Memory,
+    snapshot: &serde_json::Value,
+) -> Result<bool, MemoryError> {
+    let fields = snapshot
+        .as_object()
+        .filter(|fields| !fields.is_empty())
+        .ok_or_else(|| {
+            MemoryError::InvalidInput("expected snapshot must be a nonempty object".into())
+        })?;
+    if fields
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err(MemoryError::InvalidInput(
+            "expected snapshot requires an unsigned revision".into(),
+        ));
+    }
+    let current = serde_json::to_value(record).map_err(|e| MemoryError::Storage(e.to_string()))?;
+    Ok(fields.iter().all(|(key, value)| {
+        current.get(key).unwrap_or(&serde_json::Value::Null) == value
+            && (current.get(key).is_some()
+                || matches!(
+                    key.as_str(),
+                    "source" | "stated_at" | "invalid_at" | "superseded_by"
+                ))
+    }))
+}
+
 /// Replace a small file whole: hidden temp file beside it, fsync, rename
 /// over. A crash leaves the old content or the new, never a torn file.
 fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
@@ -1696,35 +1729,7 @@ impl Bank {
             .ok_or_else(|| MemoryError::MemoryNotFound(winner_id.into()))?;
         for (record, snapshot) in [(&loser, expected.0), (&winner, expected.1)] {
             if let Some(snapshot) = snapshot {
-                // A snapshot may be a full record or a revision-bound projection.
-                // Unknown fields are rejected rather than silently ignored.
-                let fields = snapshot
-                    .as_object()
-                    .filter(|fields| !fields.is_empty())
-                    .ok_or_else(|| {
-                        MemoryError::InvalidInput(
-                            "expected snapshot must be a nonempty object".into(),
-                        )
-                    })?;
-                if fields
-                    .get("revision")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_none()
-                {
-                    return Err(MemoryError::InvalidInput(
-                        "expected snapshot requires an unsigned revision".into(),
-                    ));
-                }
-                let current = serde_json::to_value(record)
-                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
-                if !fields.iter().all(|(key, value)| {
-                    current.get(key).unwrap_or(&serde_json::Value::Null) == value
-                        && (current.get(key).is_some()
-                            || matches!(
-                                key.as_str(),
-                                "source" | "stated_at" | "invalid_at" | "superseded_by"
-                            ))
-                }) {
+                if !snapshot_matches(record, snapshot)? {
                     return Err(MemoryError::InvalidInput(format!(
                         "memory `{}` changed since expected snapshot",
                         record.id

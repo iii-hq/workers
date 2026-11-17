@@ -20,6 +20,10 @@ rules:
   # Consolidation seam: sibling workers retire duplicates through this;
   # agents never rewrite history directly.
   - '!memory::supersede'
+  # The verify tier's seams: the source transcript of a note, and the
+  # one-append correction of a note that transcript contradicts.
+  - '!memory::correct'
+  - '!memory::transcript'
   - '!memory::bank::create'
   - '!memory::bank::delete'
   - '!memory::rule::set'
