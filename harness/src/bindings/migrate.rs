@@ -12,7 +12,7 @@
 //! The rewrite compares the stored JSON itself, not a re-serialized
 //! [`Binding`]: every later compare-and-set compares the current shape.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::{Binding, SourceSpec};
 use crate::deps::Deps;

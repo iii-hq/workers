@@ -11,10 +11,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{CommitAppendResult, SessionStore, StoreError};
 use crate::functions::store_protocol;
@@ -269,7 +269,7 @@ impl SessionStore for BridgeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iii_sdk::{register_worker, InitOptions};
+    use iii_sdk::{InitOptions, register_worker};
 
     /// An unreachable main must surface as a storage error (which the
     /// service maps to `session/storage`) — never a panic or a hang.

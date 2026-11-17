@@ -105,10 +105,10 @@ pub fn extract_hint(input: &HookInput) -> HintOutcome {
     let Some(error) = &result.details.error else {
         return HintOutcome::NoHint;
     };
-    if let Some(code) = error.code.as_deref() {
-        if !JAIL_SCOPE_CODES.contains(&code) {
-            return HintOutcome::NoHint;
-        }
+    if let Some(code) = error.code.as_deref()
+        && !JAIL_SCOPE_CODES.contains(&code)
+    {
+        return HintOutcome::NoHint;
     }
     let Some(hint) = parse_filesystem_access_request(result) else {
         return HintOutcome::NoHint;
@@ -120,10 +120,10 @@ pub fn extract_hint(input: &HookInput) -> HintOutcome {
             .and_then(|v| v.as_object())
             .and_then(|scope| scope.get("root"))
             .and_then(|v| v.as_str());
-        if let Some(root) = scope_root {
-            if dir_contains(root, &hint.requested_root) {
-                return HintOutcome::WorkspaceItself(hint);
-            }
+        if let Some(root) = scope_root
+            && dir_contains(root, &hint.requested_root)
+        {
+            return HintOutcome::WorkspaceItself(hint);
         }
     }
 
@@ -134,7 +134,7 @@ pub fn extract_hint(input: &HookInput) -> HintOutcome {
 mod tests {
     use super::*;
     use crate::types::HookCall;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn hint_message(requested_root: &str) -> String {
         format!(
@@ -261,8 +261,7 @@ mod tests {
 
     #[test]
     fn tail_extraction_ignores_junk_before_the_marker() {
-        let message =
-            "some prefix filesystem_access_request= is not json, and neither is this filesystem_access_request={\"v\":1,\"requested_root\":\"/a/b\",\"attempted_path\":\"/a/b/c\"}";
+        let message = "some prefix filesystem_access_request= is not json, and neither is this filesystem_access_request={\"v\":1,\"requested_root\":\"/a/b\",\"attempted_path\":\"/a/b/c\"}";
         let result = result_with(true, Some("S215"), Some(message), vec![]);
         let HintOutcome::Candidate(hint) = extract_hint(&input_with(Some(result), None)) else {
             panic!("expected a candidate");
@@ -274,8 +273,7 @@ mod tests {
     fn hint_mid_message_is_rejected_when_not_last() {
         // rfind locks onto the LAST marker; if trailing junk follows the
         // real hint, the JSON parse of "hint json + junk" fails.
-        let message =
-            "filesystem_access_request={\"v\":1,\"requested_root\":\"/a/b\",\"attempted_path\":\"/a/b/c\"} trailing junk after";
+        let message = "filesystem_access_request={\"v\":1,\"requested_root\":\"/a/b\",\"attempted_path\":\"/a/b/c\"} trailing junk after";
         let result = result_with(true, Some("S215"), Some(message), vec![]);
         assert_eq!(
             extract_hint(&input_with(Some(result), None)),

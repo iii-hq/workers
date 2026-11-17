@@ -37,8 +37,8 @@ pub mod zoom;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
@@ -56,13 +56,12 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::config::{origin_label, origin_policy_config_key_for, origin_policy_for, WorkerConfig};
+use crate::config::{WorkerConfig, origin_label, origin_policy_config_key_for, origin_policy_for};
 use crate::events::{EventKind, HandoffRequestedEvent, HandoffResolvedEvent, SessionStartedEvent};
-use crate::session::{now_ms, OpenRequest, Session, Sessions, Tab};
+use crate::session::{OpenRequest, Session, Sessions, Tab, now_ms};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
-pub const SESSIONS_START_DESC: &str =
-    "Open a browser tab (a session) and return its session_id. Tabs share one browser \
+pub const SESSIONS_START_DESC: &str = "Open a browser tab (a session) and return its session_id. Tabs share one browser \
      profile (cookies, logins) and stay open until stopped or until an optional ttl_ms; an \
      unused tab sleeps and wakes on the next call. incognito=true opens a PRIVATE tab: nothing \
      it does is saved, and inactivity closes it for good.";
@@ -70,48 +69,40 @@ pub const SESSIONS_LIST_ID: &str = "browser::sessions::list";
 pub const SESSIONS_LIST_DESC: &str =
     "List every browser tab, live or asleep, with its current URL, title, and activity.";
 pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
-pub const SESSIONS_STOP_DESC: &str =
-    "Close an interactive browser tab (a session from browser::sessions::start or attach) \
+pub const SESSIONS_STOP_DESC: &str = "Close an interactive browser tab (a session from browser::sessions::start or attach) \
      for good; do this when the task is done, since every tab holds a Chromium page. \
      Idempotent: closing an unknown or already-closed tab succeeds with was_running=false. \
      Scraping sessions from browser::session-open close with browser::session-close.";
 pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
-pub const SESSIONS_ATTACH_DESC: &str =
-    "Attach a session to an already-running browser over CDP. Opens a fresh tab the session \
+pub const SESSIONS_ATTACH_DESC: &str = "Attach a session to an already-running browser over CDP. Opens a fresh tab the session \
      owns, or adopts a user tab by URL substring and releases it untouched on stop. Reaches \
      the real profile and its logins; needs Chrome started with --remote-debugging-port and \
      allow_attach in config.";
 pub const TABS_LIST_ID: &str = "browser::tabs::list";
-pub const TABS_LIST_DESC: &str =
-    "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
+pub const TABS_LIST_DESC: &str = "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
      whether a session already adopted each). Read-only; adopt one with \
      browser::sessions::attach.";
 pub const NAVIGATE_ID: &str = "browser::navigate";
-pub const NAVIGATE_DESC: &str =
-    "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure \
+pub const NAVIGATE_DESC: &str = "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure \
      or an empty HTTP error response leaves Chromium's error page in the tab and is reported \
      in `error` rather than failing the call. Element refs from earlier snapshots are \
      invalidated by navigation.";
 pub const SNAPSHOT_ID: &str = "browser::snapshot";
-pub const SNAPSHOT_DESC: &str =
-    "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
+pub const SNAPSHOT_DESC: &str = "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
      browser::act accepts; refs stay valid until the next navigation. Prefer this over \
      browser::screenshot; it is cheaper and machine-readable.";
 pub const ELEMENTS_ID: &str = "browser::elements";
-pub const ELEMENTS_DESC: &str =
-    "The page's visible, enabled controls in the viewport as an indexed table (ref, role, \
+pub const ELEMENTS_DESC: &str = "The page's visible, enabled controls in the viewport as an indexed table (ref, role, \
      label, current value, checked/expanded state, what browser::act can do with each, and \
      <select> options), plus the visible text, from one read. Cheaper and flatter than \
      browser::snapshot: use it to drive forms and read what an action changed. Refs (`n4`) \
      stay valid while the element stays in the document.";
 pub const SCREENSHOT_ID: &str = "browser::screenshot";
-pub const SCREENSHOT_DESC: &str =
-    "Screenshot the session's current page as a JPEG (or a lossless PNG with \
+pub const SCREENSHOT_DESC: &str = "Screenshot the session's current page as a JPEG (or a lossless PNG with \
      format=png). Use browser::snapshot for machine-readable structure; \
      screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
-pub const ACT_DESC: &str =
-    "Interact with the page: click (left/right/middle, single or double), hover, type, select \
+pub const ACT_DESC: &str = "Interact with the page: click (left/right/middle, single or double), hover, type, select \
      a native <select> option, press, scroll, or drag (press at the start point, glide to \
      x2/y2, release). Address elements with a ref from browser::elements (`n4`), \
      browser::snapshot (`e3`) or a pick, or raw viewport coordinates. A ref is scrolled into \
@@ -119,8 +110,7 @@ pub const ACT_DESC: &str =
      refused instead of landing on whatever is on top. Typing into an input or textarea by \
      ref replaces its value. Returns once the page had a moment to react.";
 pub const RUN_ID: &str = "browser::run";
-pub const RUN_DESC: &str =
-    "Drive the page toward a goal in one call (fill and submit a form, log in, pick filters, \
+pub const RUN_DESC: &str = "Drive the page toward a goal in one call (fill and submit a form, log in, pick filters, \
      step through a wizard): each step reads the visible controls, asks the judge worker which \
      operation (click, type, select, scroll, wait, done, blocked) and which element, acts, and \
      waits for the requests the action started, until the judge says done or blocked, a field \
@@ -131,71 +121,57 @@ pub const RUN_DESC: &str =
      Without a judge worker it returns status judge_unavailable with the page table: drive with \
      browser::elements and browser::act instead.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
-pub const EVALUATE_DESC: &str =
-    "Evaluate a JavaScript expression in the page and return its completion value. Use for \
+pub const EVALUATE_DESC: &str = "Evaluate a JavaScript expression in the page and return its completion value. Use for \
      reads the snapshot can't express; prefer browser::act for interactions.";
 pub const EXECUTE_ID: &str = "browser::execute";
-pub const EXECUTE_DESC: &str =
-    "Run a multi-step async JavaScript script in the page: top-level await and return work, \
+pub const EXECUTE_DESC: &str = "Run a multi-step async JavaScript script in the page: top-level await and return work, \
      with log(...), sleep(ms), waitFor(selector), and a state object that persists across \
      execute calls for the session. One call replaces a chain of act/evaluate round-trips; \
      returns { result, logs, state }.";
 pub const DOCTOR_ID: &str = "browser::doctor";
-pub const DOCTOR_DESC: &str =
-    "Diagnose the browser environment: which Chromium the worker would launch, its version, \
+pub const DOCTOR_DESC: &str = "Diagnose the browser environment: which Chromium the worker would launch, its version, \
      session capacity, and any degraded capability with how to enable it. Never starts a \
      browser.";
 pub const CHROMIUM_STATUS_ID: &str = "browser::chromium::status";
-pub const CHROMIUM_STATUS_DESC: &str =
-    "Whether this machine has a Chromium the worker can launch: the binary, its version, where \
+pub const CHROMIUM_STATUS_DESC: &str = "Whether this machine has a Chromium the worker can launch: the binary, its version, where \
      it came from (config, $CHROME, a system install, the copy browser::chromium::install \
      downloaded, or a Playwright/Puppeteer cache), every place searched, whether a download is \
      available here, and the latest install job. Read-only; never starts a browser.";
 pub const CHROMIUM_INSTALL_ID: &str = "browser::chromium::install";
-pub const CHROMIUM_INSTALL_DESC: &str =
-    "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache \
+pub const CHROMIUM_INSTALL_DESC: &str = "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache \
      (~/.cache/iii/browser/chrome) for a machine with no Chrome or Chromium. Returns at once \
      with a job_id; progress arrives as calls of browser::on-chromium-install-progress (observe \
      it) and in browser::chromium::status. A Chrome installed on the system still takes \
      precedence. Does nothing when a Chromium is already found, unless force=true.";
 pub const HANDOFF_ID: &str = "browser::handoff";
-pub const HANDOFF_DESC: &str =
-    "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
+pub const HANDOFF_DESC: &str = "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
      continue banner and block until the human clicks it, a browser::handoff::confirm call \
      resolves it, or the timeout elapses. Human acknowledgment is not proof — verify the \
      expected page state after it returns.";
 pub const HANDOFF_CONFIRM_ID: &str = "browser::handoff::confirm";
-pub const HANDOFF_CONFIRM_DESC: &str =
-    "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a \
+pub const HANDOFF_CONFIRM_DESC: &str = "Resolve a paused browser::handoff by handoff_id, or the one pending handoff for a \
      session_id. The console calls this when the human confirms outside the page.";
 pub const CONSOLE_READ_ID: &str = "browser::console::read";
-pub const CONSOLE_READ_DESC: &str =
-    "Read the session's captured console: console.* calls, uncaught exceptions, and \
+pub const CONSOLE_READ_DESC: &str = "Read the session's captured console: console.* calls, uncaught exceptions, and \
      browser-level log entries. Filter with pattern/level and page with since_seq instead of \
      dumping everything.";
 pub const NETWORK_READ_ID: &str = "browser::network::read";
-pub const NETWORK_READ_DESC: &str =
-    "Read the session's captured network requests (method, URL, status, failures). \
+pub const NETWORK_READ_DESC: &str = "Read the session's captured network requests (method, URL, status, failures). \
      failed_only=true is the fast path for 'what broke'.";
 pub const HISTORY_ID: &str = "browser::history";
-pub const HISTORY_DESC: &str =
-    "Go back, go forward, or reload the tab's page. History survives the tab sleeping and the \
+pub const HISTORY_DESC: &str = "Go back, go forward, or reload the tab's page. History survives the tab sleeping and the \
      worker restarting. Back/forward at the history edge is a no-op with moved=false.";
 pub const DOM_READ_ID: &str = "browser::dom::read";
-pub const DOM_READ_DESC: &str =
-    "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to \
+pub const DOM_READ_DESC: &str = "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to \
      browser::snapshot; read deep subtrees by passing a ref.";
 pub const STYLES_READ_ID: &str = "browser::styles::read";
-pub const STYLES_READ_DESC: &str =
-    "Read an element's computed styles (curated design set by default, or named properties) \
+pub const STYLES_READ_DESC: &str = "Read an element's computed styles (curated design set by default, or named properties) \
      plus its inline style attribute.";
 pub const STYLES_WRITE_ID: &str = "browser::styles::write";
-pub const STYLES_WRITE_DESC: &str =
-    "Set one inline CSS property on an element, live in the page. Visual experiment only: the \
+pub const STYLES_WRITE_DESC: &str = "Set one inline CSS property on an element, live in the page. Visual experiment only: the \
      page's source files are untouched, and the edit dies with the next navigation.";
 pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
-pub const SCREENCAST_START_DESC: &str =
-    "Internal: start the live viewport feed — frames arrive as calls of \
+pub const SCREENCAST_START_DESC: &str = "Internal: start the live viewport feed — frames arrive as calls of \
      browser::on-frame-event (observe it with { session_id } args) and browser::frame reads the \
      newest. With a viewer_id the viewer holds a lease: repeat the start to renew it, or it \
      lapses. Console-UI plumbing; agents use browser::screenshot. Not an agent function.";
@@ -203,96 +179,76 @@ pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
     "Internal: stop the live frame push. Idempotent. Not an agent function.";
 pub const FRAME_ID: &str = "browser::frame";
-pub const FRAME_DESC: &str =
-    "Internal: newest screencast frame, or nothing when since_frame is still current. No \
+pub const FRAME_DESC: &str = "Internal: newest screencast frame, or nothing when since_frame is still current. No \
      capture round-trip: a viewer reads it once for its first paint, then frames arrive on \
      browser::on-frame-event. Not an agent function.";
 pub const RECORDING_START_ID: &str = "browser::recording::start";
-pub const RECORDING_START_DESC: &str =
-    "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
+pub const RECORDING_START_DESC: &str = "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
      if needed and pipes it through ffmpeg, which must be on PATH; browser::doctor reports \
      whether it is available.";
 pub const RECORDING_STOP_ID: &str = "browser::recording::stop";
-pub const RECORDING_STOP_DESC: &str =
-    "Stop a session's recording, finalize the file, and return its path, duration, and frame \
+pub const RECORDING_STOP_DESC: &str = "Stop a session's recording, finalize the file, and return its path, duration, and frame \
      count. Idempotent: stopping when nothing is recording returns ok=false.";
 pub const PICK_HINT_ID: &str = "browser::pick::hint";
-pub const PICK_HINT_DESC: &str =
-    "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
+pub const PICK_HINT_DESC: &str = "Internal: element preview at a viewport point (tag, id, classes, bounds) so the console \
      UI can draw a hover highlight in pick mode. Not an agent function.";
 pub const PICK_START_ID: &str = "browser::pick::start";
-pub const PICK_START_DESC: &str =
-    "Internal: enter pick mode so the human can select an element in the console UI. Not an \
+pub const PICK_START_DESC: &str = "Internal: enter pick mode so the human can select an element in the console UI. Not an \
      agent function.";
 pub const PICK_RESOLVE_ID: &str = "browser::pick::resolve";
-pub const PICK_RESOLVE_DESC: &str =
-    "Internal: resolve the element at a clicked viewport point and emit browser::on-picked. The \
+pub const PICK_RESOLVE_DESC: &str = "Internal: resolve the element at a clicked viewport point and emit browser::on-picked. The \
      console calls this on a pick-mode click. Not an agent function.";
 pub const PICK_STOP_ID: &str = "browser::pick::stop";
-pub const PICK_STOP_DESC: &str =
-    "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent \
+pub const PICK_STOP_DESC: &str = "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent \
      function.";
 pub const FIND_IN_PAGE_ID: &str = "browser::find-in-page";
-pub const FIND_IN_PAGE_DESC: &str =
-    "Find text in the page like the browser's find bar: highlights every match in the live \
+pub const FIND_IN_PAGE_DESC: &str = "Find text in the page like the browser's find bar: highlights every match in the live \
      document, scrolls the current one into view, and steps with next / previous. close \
      clears the highlights. Returns count and the 1-based index.";
 pub const ZOOM_ID: &str = "browser::zoom";
-pub const ZOOM_DESC: &str =
-    "Zoom the page in, out, to a level (50-200 %) or back to 100 %, the way the browser's \
+pub const ZOOM_DESC: &str = "Zoom the page in, out, to a level (50-200 %) or back to 100 %, the way the browser's \
      zoom menu does. The viewport keeps its size; the page scales inside it. The level \
      belongs to the loaded document and resets on navigation.";
 pub const PDF_ID: &str = "browser::pdf";
-pub const PDF_DESC: &str =
-    "Print the page to a PDF (the browser's Print -> Save as PDF). Returns it base64 with a \
+pub const PDF_DESC: &str = "Print the page to a PDF (the browser's Print -> Save as PDF). Returns it base64 with a \
      file name from the title.";
 pub const HISTORY_LIST_ID: &str = "browser::history::list";
-pub const HISTORY_LIST_DESC: &str =
-    "List the pages this session visited, newest first, for a history panel or address-bar \
+pub const HISTORY_LIST_DESC: &str = "List the pages this session visited, newest first, for a history panel or address-bar \
      suggestions. Filter with query. browser::history moves back / forward / reloads instead.";
 pub const CLEAR_DATA_ID: &str = "browser::clear-data";
-pub const CLEAR_DATA_DESC: &str =
-    "Clear the browsing data of the site the tab is on: its cookies, its storage, and the \
+pub const CLEAR_DATA_DESC: &str = "Clear the browsing data of the site the tab is on: its cookies, its storage, and the \
      shared cache — like a browser's per-site 'Clear cookies and site data'. Other sites keep \
      their logins; browser::clear-browser-data wipes everything.";
 pub const CLEAR_BROWSER_DATA_ID: &str = "browser::clear-browser-data";
-pub const CLEAR_BROWSER_DATA_DESC: &str =
-    "Clear ALL browser data: closes every tab's page, quits Chromium, and deletes the profile \
+pub const CLEAR_BROWSER_DATA_DESC: &str = "Clear ALL browser data: closes every tab's page, quits Chromium, and deletes the profile \
      (every site's cookies, logins, storage, cache) and the downloads on disk. Tabs stay and \
      reopen signed out. Incognito tabs are closed.";
 pub const DOWNLOADS_LIST_ID: &str = "browser::downloads::list";
-pub const DOWNLOADS_LIST_DESC: &str =
-    "List the files this session downloaded (name, url, size, state), newest first. Read one \
+pub const DOWNLOADS_LIST_DESC: &str = "List the files this session downloaded (name, url, size, state), newest first. Read one \
      with browser::download.";
 pub const DOWNLOAD_ID: &str = "browser::download";
-pub const DOWNLOAD_DESC: &str =
-    "Read a downloaded file's bytes for saving or attaching to the chat. Base64; guid from \
+pub const DOWNLOAD_DESC: &str = "Read a downloaded file's bytes for saving or attaching to the chat. Base64; guid from \
      browser::downloads::list.";
 pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
 pub const DOWNLOAD_REMOVE_DESC: &str =
     "Forget a download and delete its file from the session's download dir.";
 pub const UPLOAD_ID: &str = "browser::upload";
-pub const UPLOAD_DESC: &str =
-    "Upload up to eight base64 files to exactly one input[type=file] selected by CSS. Files \
+pub const UPLOAD_DESC: &str = "Upload up to eight base64 files to exactly one input[type=file] selected by CSS. Files \
      are staged privately for the session and removed when it stops.";
 pub const RESIZE_ID: &str = "browser::resize";
-pub const RESIZE_DESC: &str =
-    "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
+pub const RESIZE_DESC: &str = "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
      pane resizes so the streamed frame fills the pane with no letterboxing and clicks map \
      1:1; the device toolbar calls it with a preset. Clamped 200..4000. mobile=true emulates a \
      phone (touch input, an Android Chrome user agent); reload once when mode_changed.";
 pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
-pub const COOKIES_LIST_DESC: &str =
-    "List the cookies on the session's current page (name, value, domain, path, flags). Cookie \
+pub const COOKIES_LIST_DESC: &str = "List the cookies on the session's current page (name, value, domain, path, flags). Cookie \
      values are credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_SET_ID: &str = "browser::cookies::set";
-pub const COOKIES_SET_DESC: &str =
-    "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
+pub const COOKIES_SET_DESC: &str = "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
      scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are \
      credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
-pub const COOKIES_CLEAR_DESC: &str =
-    "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep \
+pub const COOKIES_CLEAR_DESC: &str = "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep \
      theirs; browser::clear-browser-data removes everything.";
 
 /// One wire-surface entry: everything the golden schema test pins.
@@ -1611,7 +1567,7 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
         other => {
             return Err(handler_err(format!(
                 "unknown action '{other}' (click, hover, type, select, press, scroll, drag)"
-            )))
+            )));
         }
     };
     Ok(detail)
@@ -1974,7 +1930,7 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             )),
                             logs: Vec::new(),
                             state: current_state(),
-                        })
+                        });
                     }
                     Ok(Err(e)) => {
                         let text = e.to_string();
@@ -2625,7 +2581,7 @@ fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     other => {
                         return Err(handler_err(format!(
                             "unknown action '{other}' (in, out, reset, set, read)"
-                        )))
+                        )));
                     }
                 };
                 evaluate_json(&session, zoom::apply_script(level), "zoom").await?;
@@ -2943,16 +2899,14 @@ fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 }
                 if req.storage.unwrap_or(true) {
                     let url = session.page.url().await.ok().flatten().unwrap_or_default();
-                    if let Some(origin) = origin_of(&url) {
-                        if let Ok(params) = cdp_storage::ClearDataForOriginParams::builder()
+                    if let Some(origin) = origin_of(&url)
+                        && let Ok(params) = cdp_storage::ClearDataForOriginParams::builder()
                             .origin(origin)
                             .storage_types("all".to_string())
                             .build()
-                        {
-                            if session.page.execute(params).await.is_ok() {
-                                cleared.push("storage".to_string());
-                            }
-                        }
+                        && session.page.execute(params).await.is_ok()
+                    {
+                        cleared.push("storage".to_string());
                     }
                 }
                 Ok::<_, Error>(clear_data::ClearDataOutput { ok: true, cleared })
@@ -3345,7 +3299,7 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     other => {
                         return Err(handler_err(format!(
                             "unknown action '{other}' (back, forward, reload)"
-                        )))
+                        )));
                     }
                 };
 

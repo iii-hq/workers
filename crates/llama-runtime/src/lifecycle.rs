@@ -143,7 +143,7 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
                 match &state.model {
                     Model::Ready(model) => return Ok(model.clone()),
                     Model::Failed { message, at } if at.elapsed() < RETRY_LOAD_AFTER => {
-                        return Err(Unloaded::failed(message, RETRY_LOAD_AFTER - at.elapsed()))
+                        return Err(Unloaded::failed(message, RETRY_LOAD_AFTER - at.elapsed()));
                     }
                     Model::Loading(done) => done.clone(),
                     Model::Empty | Model::Failed { .. } => self.start(&mut state),
@@ -160,7 +160,7 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
                     return Err(Unloaded::failed(
                         "the load ended without a result",
                         RETRY_LOAD_AFTER,
-                    ))
+                    ));
                 }
                 Err(_) => return Err(Unloaded::deadline()),
             }

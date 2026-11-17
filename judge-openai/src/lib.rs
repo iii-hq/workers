@@ -14,7 +14,7 @@ pub const STATUS_ID: &str = "judge-openai::status";
 pub const SECRET_CHANGED_ID: &str = "judge-openai::on-secret-change";
 pub mod client;
 pub use client::DecisionsClient;
-pub use judge_provider::{ExecutionLimits, RetryPolicy, DEFAULT_RETRY};
+pub use judge_provider::{DEFAULT_RETRY, ExecutionLimits, RetryPolicy};
 pub mod config;
 pub mod configuration;
 mod decisions;

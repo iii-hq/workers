@@ -14,13 +14,13 @@
 //! required" log because they define on-disk roots and boot-time task
 //! wiring.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig, Topology};
 use crate::functions::registry::RegistryCache;

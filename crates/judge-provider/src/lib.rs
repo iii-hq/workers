@@ -5,4 +5,4 @@
 pub mod cancellation;
 pub mod secrets;
 pub mod transport;
-pub use transport::{ExecutionLimits, Failure, RetryPolicy, DEFAULT_RETRY};
+pub use transport::{DEFAULT_RETRY, ExecutionLimits, Failure, RetryPolicy};

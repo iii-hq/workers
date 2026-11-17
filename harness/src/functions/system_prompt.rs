@@ -185,17 +185,17 @@ fn build_parts(
     let selected = selected.filter(|prompt| !prompt.body.is_empty());
     let strategy = selected.as_ref().map(|prompt| prompt.strategy);
     let mut parts = Vec::new();
-    if let Some(built_in) = built_in {
-        if !matches!(
+    if let Some(built_in) = built_in
+        && !matches!(
             strategy,
             Some(SystemPromptStrategy::Override | SystemPromptStrategy::Disabled)
-        ) {
-            parts.push(SystemPromptPart {
-                kind: SystemPromptPartKind::BuiltIn,
-                name: Some(built_in_name),
-                body: built_in,
-            });
-        }
+        )
+    {
+        parts.push(SystemPromptPart {
+            kind: SystemPromptPartKind::BuiltIn,
+            name: Some(built_in_name),
+            body: built_in,
+        });
     }
     if let Some(prompt) =
         selected.filter(|prompt| prompt.strategy != SystemPromptStrategy::Disabled)

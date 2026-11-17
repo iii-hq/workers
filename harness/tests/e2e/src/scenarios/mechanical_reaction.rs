@@ -1,10 +1,10 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::context::E2eContext;
 
 use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
+    CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec, common,
 };
 
 pub const ID: &str = "mechanical_reaction";

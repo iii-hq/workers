@@ -6,8 +6,8 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iii_queue::boot::BootHandle;
@@ -23,7 +23,7 @@ use iii_sdk::{
 use lapin::options::QueueDeclareOptions;
 use lapin::types::FieldTable;
 use lapin::{Connection, ConnectionProperties};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::time::Instant;
 use uuid::Uuid;

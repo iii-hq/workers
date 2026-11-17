@@ -15,7 +15,7 @@
 //! What a call may reach is decided by RBAC (rbac-proxy) on the connection,
 //! not here; the only local rule is that `mcp-server::` internals are refused.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bus::Bus;
 use crate::directory_bridge;
@@ -247,7 +247,9 @@ async fn iii_call<B: Bus>(ctx: &Ctx<'_, B>, args: &Value) -> Value {
         return error("function_id is required");
     };
     if function_id.starts_with(INTERNAL_PREFIX) {
-        return error(format!("`{function_id}`: `{INTERNAL_PREFIX}` functions are this bridge's internals and cannot be called through it"));
+        return error(format!(
+            "`{function_id}`: `{INTERNAL_PREFIX}` functions are this bridge's internals and cannot be called through it"
+        ));
     }
     let payload = match args.get("payload") {
         None | Some(Value::Null) => json!({}),
@@ -383,7 +385,9 @@ pub async fn call_tool<B: Bus + Observe>(
                 let delivery = match args.get("target_function_id") {
                     None | Some(Value::Null) => Delivery::Poll,
                     Some(Value::String(t)) => Delivery::Target(t.clone()),
-                    Some(_) => return Some(error("target_function_id must be a function id (a string)")),
+                    Some(_) => {
+                        return Some(error("target_function_id must be a function id (a string)"));
+                    }
                 };
                 observe(ctx, sid, args, delivery).await
             }
@@ -431,10 +435,11 @@ pub async fn call_tool<B: Bus + Observe>(
             if let Some(sid) = ctx.session_id {
                 // Every session starts on the default profile (the
                 // instructions load it first) until it activates another.
-                v["active_profile"] = json!(ctx
-                    .sessions
-                    .active_profile(sid)
-                    .unwrap_or_else(|| DEFAULT_PROFILE.to_string()));
+                v["active_profile"] = json!(
+                    ctx.sessions
+                        .active_profile(sid)
+                        .unwrap_or_else(|| DEFAULT_PROFILE.to_string())
+                );
             }
             match ctx.mode {
                 RbacMode::Proxied { policy } => {
@@ -482,7 +487,7 @@ pub async fn call_tool<B: Bus + Observe>(
 mod tests {
     use super::*;
     use crate::bus::fake::FakeBus;
-    use crate::rbac_guard::{RbacMode, DANGEROUS_NOTICE};
+    use crate::rbac_guard::{DANGEROUS_NOTICE, RbacMode};
     use crate::sessions::{SessionLimits, Sessions};
     use crate::testkit::Engine;
     use serde_json::json;
@@ -589,10 +594,12 @@ mod tests {
             assert!(d.contains(needle), "{needle} missing from: {d}");
         }
         let props = &tools_list()["tools"][2]["inputSchema"]["properties"];
-        assert!(props["target_function_id"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("runs"));
+        assert!(
+            props["target_function_id"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("runs")
+        );
         assert!(props.get("max_observations").is_some());
         assert!(props.get("max_events").is_none());
         let sse = description("iii_observations_sse");
@@ -670,11 +677,12 @@ mod tests {
             assert!(!err, "{v}");
             assert_eq!(v["id"], "default-mcp");
         }
-        assert!(e
-            .bus
-            .calls()
-            .iter()
-            .all(|(f, p)| f == "directory::agents::get" && p["id"] == "default-mcp"));
+        assert!(
+            e.bus
+                .calls()
+                .iter()
+                .all(|(f, p)| f == "directory::agents::get" && p["id"] == "default-mcp")
+        );
     }
 
     #[test]
@@ -713,9 +721,11 @@ mod tests {
             mode: &proxied(),
             sink: "mcp-server::observed",
         };
-        assert!(call_tool(&ctx, "myworker__echo", &json!({}))
-            .await
-            .is_none());
+        assert!(
+            call_tool(&ctx, "myworker__echo", &json!({}))
+                .await
+                .is_none()
+        );
     }
 
     const SECRET: &str = "sk-live-0123456789abcdef";
@@ -999,9 +1009,9 @@ mod tests {
             FakeBus::new()
                 .on("a::zeros", |_| Ok(json!([0, 0, 0, 0])))
                 .on("a::big", |_| {
-                    Ok(json!((0..500)
-                        .map(|i| format!("\"q{i}\""))
-                        .collect::<Vec<_>>()))
+                    Ok(json!(
+                        (0..500).map(|i| format!("\"q{i}\"")).collect::<Vec<_>>()
+                    ))
                 }),
         );
         let s = sessions();

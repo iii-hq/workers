@@ -127,10 +127,10 @@ impl FetchPayload {
         if self.url.is_empty() {
             return Err("url: must be a non-empty string".to_string());
         }
-        if let Some(m) = &self.method {
-            if !METHODS.contains(&m.to_uppercase().as_str()) {
-                return Err(format!("method: must be one of {}", METHODS.join(", ")));
-            }
+        if let Some(m) = &self.method
+            && !METHODS.contains(&m.to_uppercase().as_str())
+        {
+            return Err(format!("method: must be one of {}", METHODS.join(", ")));
         }
         if matches!(self.timeout_ms, Some(0)) {
             return Err("timeout_ms: must be a positive integer".to_string());
@@ -151,25 +151,25 @@ impl FetchPayload {
                     .to_string(),
             );
         }
-        if let Some(cf) = &self.content_filter {
-            if let Some(t) = cf.threshold {
-                match cf.kind {
-                    // Pruning scores are normalized to [0,1] (a product of factors each
-                    // <= 1): 0 keeps everything, 1 is strictest; outside is degenerate.
-                    FilterType::Pruning => {
-                        if !(0.0..=1.0).contains(&t) {
-                            return Err(
-                                "content_filter.threshold: pruning threshold must be in [0,1]"
-                                    .to_string(),
-                            );
-                        }
+        if let Some(cf) = &self.content_filter
+            && let Some(t) = cf.threshold
+        {
+            match cf.kind {
+                // Pruning scores are normalized to [0,1] (a product of factors each
+                // <= 1): 0 keeps everything, 1 is strictest; outside is degenerate.
+                FilterType::Pruning => {
+                    if !(0.0..=1.0).contains(&t) {
+                        return Err(
+                            "content_filter.threshold: pruning threshold must be in [0,1]"
+                                .to_string(),
+                        );
                     }
-                    FilterType::Bm25 => {
-                        if t < 0.0 {
-                            return Err(
-                                "content_filter.threshold: bm25 threshold must be >= 0".to_string()
-                            );
-                        }
+                }
+                FilterType::Bm25 => {
+                    if t < 0.0 {
+                        return Err(
+                            "content_filter.threshold: bm25 threshold must be >= 0".to_string()
+                        );
                     }
                 }
             }
@@ -178,10 +178,10 @@ impl FetchPayload {
             ("target_elements", &self.target_elements),
             ("excluded_tags", &self.excluded_tags),
         ] {
-            if let Some(v) = list {
-                if v.iter().any(|s| s.trim().is_empty()) {
-                    return Err(format!("{field}: selectors must be non-empty strings"));
-                }
+            if let Some(v) = list
+                && v.iter().any(|s| s.trim().is_empty())
+            {
+                return Err(format!("{field}: selectors must be non-empty strings"));
             }
         }
         Ok(())
@@ -275,10 +275,12 @@ mod tests {
 
     #[test]
     fn rejects_empty_url_and_nonpositive_caps() {
-        assert!(payload(serde_json::json!({ "url": "" }))
-            .unwrap()
-            .validate()
-            .is_err());
+        assert!(
+            payload(serde_json::json!({ "url": "" }))
+                .unwrap()
+                .validate()
+                .is_err()
+        );
         assert!(
             payload(serde_json::json!({ "url": "https://x/", "timeout_ms": 0 }))
                 .unwrap()
@@ -375,14 +377,16 @@ mod tests {
             assert!(payload(obj).unwrap().validate().is_err());
         }
         // Same fields WITH format validate fine.
-        assert!(payload(serde_json::json!({
-            "url": "https://x.test/",
-            "format": "markdown",
-            "include_links": true
-        }))
-        .unwrap()
-        .validate()
-        .is_ok());
+        assert!(
+            payload(serde_json::json!({
+                "url": "https://x.test/",
+                "format": "markdown",
+                "include_links": true
+            }))
+            .unwrap()
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -420,10 +424,12 @@ mod tests {
 
     #[test]
     fn rejects_unknown_filter_type() {
-        assert!(payload(serde_json::json!({
-            "url": "https://x.test/",
-            "content_filter": { "type": "magic" }
-        }))
-        .is_err());
+        assert!(
+            payload(serde_json::json!({
+                "url": "https://x.test/",
+                "content_filter": { "type": "magic" }
+            }))
+            .is_err()
+        );
     }
 }

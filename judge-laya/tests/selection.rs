@@ -2,7 +2,7 @@
 //! request naming laya loads its checkpoints on demand, and the hub's
 //! selection only pins them loaded, never unregisters anything.
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},

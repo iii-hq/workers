@@ -9,13 +9,13 @@ use std::sync::Arc;
 
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tracing_subscriber::EnvFilter;
 
 use secrets::access::CallerDirectory;
 use secrets::detect::Detector;
 use secrets::keys::EnvKey;
-use secrets::{configuration, Ctx, Store, StorePaths};
+use secrets::{Ctx, Store, StorePaths, configuration};
 
 #[derive(Parser)]
 #[command(
@@ -29,8 +29,12 @@ struct Cli {
 }
 
 fn main() -> anyhow::Result<()> {
-    secrets::disable_trace_payloads();
-    let env_key = EnvKey::take_from_process();
+    // SAFETY: these are the first actions in synchronous main, before this
+    // binary constructs its runtime or starts any threads.
+    let env_key = unsafe {
+        secrets::disable_trace_payloads();
+        EnvKey::take_from_process()
+    };
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -95,7 +99,7 @@ async fn run(cli: Cli, env_key: EnvKey) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("secrets ready");

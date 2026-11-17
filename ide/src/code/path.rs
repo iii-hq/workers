@@ -201,13 +201,13 @@ impl PathResolver {
 
         if let Some(scope_root) = scope_root {
             let base_path = Path::new(scope_root);
-            if base_path.is_absolute() {
-                if let Ok(base_canon) = self.canonicalize_wire(scope_root, base_path) {
-                    if base_canon.is_dir() && !roots_canon.contains(&base_canon) {
-                        roots_canon.push(base_canon);
-                        changed = true;
-                    }
-                }
+            if base_path.is_absolute()
+                && let Ok(base_canon) = self.canonicalize_wire(scope_root, base_path)
+                && base_canon.is_dir()
+                && !roots_canon.contains(&base_canon)
+            {
+                roots_canon.push(base_canon);
+                changed = true;
             }
         }
 

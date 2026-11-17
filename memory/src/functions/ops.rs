@@ -7,13 +7,13 @@
 use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
-use crate::extract::{PassHealth, CURSOR_SCOPE};
+use crate::extract::{CURSOR_SCOPE, PassHealth};
 use crate::store::Store;
-use crate::types::{fingerprint, now_ms, Confidence, Memory};
+use crate::types::{Confidence, Memory, fingerprint, now_ms};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DoctorRequest {}

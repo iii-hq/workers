@@ -10,13 +10,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::router::{accepted_icon_svg, ProviderRegisterRequest, ProviderRegisterResponse};
+use crate::types::router::{ProviderRegisterRequest, ProviderRegisterResponse, accepted_icon_svg};
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::{IIIClient, errors::Error};
 use serde_json::Value;
 
 use crate::catalog::store::CatalogStore;
-use crate::config::entry::{register_entry, EntryWriteLock};
+use crate::config::entry::{EntryWriteLock, register_entry};
 use crate::config::schema::{provider_entry_schema, validate_custom_schema};
 use crate::events::RouterEvents;
 use crate::registry::store::{ProviderRecord, RegistryStore};
@@ -60,9 +60,9 @@ pub fn make_provider_register(
     entry_lock: EntryWriteLock,
     events: Arc<RouterEvents>,
 ) -> impl Fn(ProviderRegisterRequest) -> BoxFuture<'static, Result<ProviderRegisterResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderRegisterRequest| {
         let (iii, registry, catalog, entry_lock, events) = (
             iii.clone(),
@@ -160,14 +160,14 @@ pub fn make_provider_register(
                 Ok(upserted) => upserted,
                 Err(error) => {
                     let mut rollback_failures = Vec::new();
-                    if let Some(prepared) = prepared_catalog.take() {
-                        if let Err(rollback) = prepared.rollback().await {
-                            // No registry record was published, so routing
-                            // excludes this owner even if its durable catalog
-                            // rollback also fails. A restart may temporarily
-                            // reload that orphan until the next reconcile.
-                            rollback_failures.push(format!("catalog: {rollback}"));
-                        }
+                    if let Some(prepared) = prepared_catalog.take()
+                        && let Err(rollback) = prepared.rollback().await
+                    {
+                        // No registry record was published, so routing
+                        // excludes this owner even if its durable catalog
+                        // rollback also fails. A restart may temporarily
+                        // reload that orphan until the next reconcile.
+                        rollback_failures.push(format!("catalog: {rollback}"));
                     }
                     if let Err(rollback) = register_entry(&iii, &previous_schemas).await {
                         rollback_failures.push(format!("configuration: {rollback}"));

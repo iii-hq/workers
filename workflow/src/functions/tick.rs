@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     dag,
@@ -774,11 +774,10 @@ async fn fire_ready(
     record.updated_at = deps.now_ms();
     stamp_finished(&mut record.nodes, record.updated_at);
     state::put_run(&deps.iii, record).await?;
-    if needs_follow_up(record, uids, &probes) {
-        if let Err(e) = super::start::enqueue_tick(&deps.iii, &record.run_id, record.step + 1).await
-        {
-            tracing::warn!(run_id = %record.run_id, error = %e, "follow-up tick enqueue failed");
-        }
+    if needs_follow_up(record, uids, &probes)
+        && let Err(e) = super::start::enqueue_tick(&deps.iii, &record.run_id, record.step + 1).await
+    {
+        tracing::warn!(run_id = %record.run_id, error = %e, "follow-up tick enqueue failed");
     }
     Ok(())
 }
@@ -1834,7 +1833,7 @@ mod tests {
 
     #[test]
     fn stopped_parked_node_reading_completed_ends_cancelled() {
-        use crate::reconcile::{status_outcome, NodeOutcome};
+        use crate::reconcile::{NodeOutcome, status_outcome};
         let def = one_node_def();
         let mut record = fresh_record();
         record.nodes.insert("only".into(), running_cp());
@@ -1962,7 +1961,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     use crate::events::test_support::RecordingDeliverer;
-    use crate::events::{RunCompletedEvent, ON_RUN_COMPLETED_FN};
+    use crate::events::{ON_RUN_COMPLETED_FN, RunCompletedEvent};
     use std::sync::Arc;
 
     /// Deps whose client never connects. Finalizing a run with no Running

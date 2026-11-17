@@ -13,7 +13,7 @@ use anyhow::Result;
 use clap::Parser;
 use iii_mcp_server::bus::Bus;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -44,8 +44,18 @@ struct Cli {
     manifest: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // SAFETY: synchronous startup, before this binary starts any threads.
+    unsafe { iii_mcp_server::disable_trace_payloads() };
+
+    // Environment mutation must finish before Tokio creates worker threads.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -74,7 +84,6 @@ async fn main() -> Result<()> {
     };
     let cfg = Arc::new(cfg);
 
-    iii_mcp_server::disable_trace_payloads();
     let iii = register_worker(
         &url,
         InitOptions {

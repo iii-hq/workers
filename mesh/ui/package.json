@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "watch": "node build.mjs --watch",
-    "test": "pnpm build && node tests/render.mjs"
+    "test": "pnpm build && node tests/quick-tunnel.mjs && node tests/render.mjs"
   },
   "dependencies": { "@iii-dev/console-ui": "workspace:*" },
   "devDependencies": {

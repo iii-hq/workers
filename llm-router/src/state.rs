@@ -3,7 +3,7 @@
 //! scope; the router is the only writer of its keys (single-instance worker).
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const STATE_SCOPE: &str = "llm-router";
 

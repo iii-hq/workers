@@ -1,7 +1,7 @@
 //! Boot the TypeSafe JEV provider using the shared configuration-client lifecycle.
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_typesafe::{configuration, register, JevClient};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
+use judge_typesafe::{JevClient, configuration, register};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
 }
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("JEV worker ready");

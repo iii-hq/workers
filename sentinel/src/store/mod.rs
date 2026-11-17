@@ -24,12 +24,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use crate::{
-    ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, GroupTriageV1, IgnoreBaselineV1,
-    IgnoreRuleV1, SentinelError,
+    ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, GroupTriageV1, IgnoreBaselineV1,
+    IgnoreRuleV1, SentinelError, ids,
 };
 
 /// One statement and its bound parameters.
@@ -105,7 +105,7 @@ pub trait Db: Send + Sync {
     async fn execute(&self, sql: &str, params: Vec<Value>) -> Result<u64, SentinelError>;
     /// Atomic and ordered; rolls back on the first failure.
     async fn transaction(&self, statements: &[Statement])
-        -> Result<Vec<StepResult>, SentinelError>;
+    -> Result<Vec<StepResult>, SentinelError>;
 }
 
 /// Who moved a group.
@@ -160,9 +160,11 @@ pub fn transition_statement(
             json!(group_id),
             json!(from.map(|status| status.as_str())),
             json!(to.as_str()),
-            json!(reason
-                .and_then(|reason| serde_json::to_value(reason).ok())
-                .and_then(|value| value.as_str().map(str::to_string))),
+            json!(
+                reason
+                    .and_then(|reason| serde_json::to_value(reason).ok())
+                    .and_then(|value| value.as_str().map(str::to_string))
+            ),
             json!(actor.as_str()),
             json!(at_ms),
         ],
@@ -361,10 +363,10 @@ impl<D: Db> Store<D> {
     ) -> Result<RecordOutcome, SentinelError> {
         // A promotion is not a duplicate of itself: the row it attaches was
         // inserted under this very key when the log arrived.
-        if write.pending_occurrence_id.is_none() {
-            if let Some(group_id) = self.occurrence_group(&write.dedupe_key).await? {
-                return Ok(RecordOutcome::Deduped { group_id });
-            }
+        if write.pending_occurrence_id.is_none()
+            && let Some(group_id) = self.occurrence_group(&write.dedupe_key).await?
+        {
+            return Ok(RecordOutcome::Deduped { group_id });
         }
 
         for _ in 0..CAS_ATTEMPTS {

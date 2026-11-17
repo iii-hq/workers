@@ -62,7 +62,7 @@ pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
                 return Err(format!(
                     "{function_id}: `files` must be an array, got {}",
                     json_type(&other)
-                ))
+                ));
             }
         };
         let files = entries
@@ -111,8 +111,7 @@ const INFO_DESC: &str = "Report the coder access contract: mode (jailed | unjail
      rejected.";
 
 const READ_FILE_ID: &str = "coder::read-file";
-const READ_FILE_DESC: &str =
-    "Read a file. stat: true probes size/mtime/total_lines without content; \
+const READ_FILE_DESC: &str = "Read a file. stat: true probes size/mtime/total_lines without content; \
      line_from/line_to (1-based, inclusive) read a window of a file of any \
      size; numbered: true prefixes absolute line numbers; paths[] (XOR \
      path) batch-reads. Paths: relative to the primary root or absolute \
@@ -127,8 +126,7 @@ const SEARCH_DESC: &str = "Search file contents (literal or regex) and/or paths 
      coder::info).";
 
 const UPDATE_FILE_ID: &str = "coder::update-file";
-const UPDATE_FILE_DESC: &str =
-    "Edit one or more files: batched line ops (1-based, inclusive, applied \
+const UPDATE_FILE_DESC: &str = "Edit one or more files: batched line ops (1-based, inclusive, applied \
      bottom-up), then regex replace ops; each file commits atomically. \
      To rewrite a whole file use coder::create-file with overwrite: true. \
      To replace a large region use two short anchors joined by .*? with \
@@ -136,16 +134,14 @@ const UPDATE_FILE_DESC: &str =
      the primary root or absolute inside an allowed root (see coder::info).";
 
 const CREATE_FILE_ID: &str = "coder::create-file";
-const CREATE_FILE_DESC: &str =
-    "Create one or more files atomically; per-file overwrite and parents \
+const CREATE_FILE_DESC: &str = "Create one or more files atomically; per-file overwrite and parents \
      flags. For a conflict-safe overwrite pass the revision from \
      coder::read-file as expected_revision (stale revision: C221, nothing \
      written). Paths: relative to the primary root or absolute inside an \
      allowed root (see coder::info).";
 
 const DELETE_FILE_ID: &str = "coder::delete-file";
-const DELETE_FILE_DESC: &str =
-    "Remove one or more paths. Directories need recursive: true; missing \
+const DELETE_FILE_DESC: &str = "Remove one or more paths. Directories need recursive: true; missing \
      paths succeed; recursion refuses to descend through non-accessible \
      entries. Paths: relative to the primary root or absolute inside an \
      allowed root (see coder::info).";
@@ -171,8 +167,7 @@ const MOVE_FILE_DESC: &str = "Move or rename one or more paths; per-entry overwr
      inside an allowed root (see coder::info).";
 
 const LIST_TEMPLATES_ID: &str = "coder::list-templates";
-const LIST_TEMPLATES_DESC: &str =
-    "List the worker templates coder::scaffold-worker creates from: id, \
+const LIST_TEMPLATES_DESC: &str = "List the worker templates coder::scaffold-worker creates from: id, \
      name, description, language (node | python) and requires (the compose \
      containers the worker needs, e.g. http). source names where they come \
      from: a local dir, or a cached git clone with ref and revision; warning \
@@ -180,8 +175,7 @@ const LIST_TEMPLATES_DESC: &str =
      re-fetches it now.";
 
 const SCAFFOLD_WORKER_ID: &str = "coder::scaffold-worker";
-const SCAFFOLD_WORKER_DESC: &str =
-    "Create a new iii worker from a coder::list-templates template and start \
+const SCAFFOLD_WORKER_DESC: &str = "Create a new iii worker from a coder::list-templates template and start \
      it: write its files into directory (default workers/<name>; its last \
      folder must be <name>, C232 otherwise) with the template's name token \
      replaced, all or nothing (a directory that exists and is not empty fails \

@@ -1,7 +1,7 @@
 //! AgentFunction (iii function invocation schemas) → Z.AI `tools` array.
 use crate::wire::names::encode_tool_name;
 use llm_router::types::model::AgentFunction;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn functions_to_wire(tools: &[AgentFunction]) -> Vec<Value> {
     tools

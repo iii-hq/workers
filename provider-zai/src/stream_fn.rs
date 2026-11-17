@@ -4,18 +4,18 @@
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{effective_level, is_reasoning_model, reasoning_effort_for, thinking_type};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::pump::{PING_INTERVAL, pump, pump_abortable, send_event};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
 
@@ -25,9 +25,9 @@ pub fn make_stream(
     cache: ScaffoldCache,
     aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         Box::pin(async move {

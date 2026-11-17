@@ -102,7 +102,7 @@ impl Config {
     }
 
     pub fn json_schema() -> Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<Config>();
+        let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<Config>();
         serde_json::to_value(root).expect("config schema serializes")
     }
 

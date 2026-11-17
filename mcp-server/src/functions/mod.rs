@@ -12,20 +12,20 @@
 use std::sync::Arc;
 
 use iii_helpers::observability::Logger;
-use iii_sdk::{errors::Error, IIIClient, ObserverHandle, OutputStream, RegisterFunction, Source};
+use iii_sdk::{IIIClient, ObserverHandle, OutputStream, RegisterFunction, Source, errors::Error};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bus::Bus;
 use crate::config::McpConfig;
 use crate::engine::SdkEngine;
-use crate::handler::{handle_http, App, HttpReply};
+use crate::handler::{App, HttpReply, handle_http};
 use crate::http_guard::{self, RouteAction};
 use crate::rbac_guard::RbacMode;
 use crate::sessions::Sessions;
 use crate::sessions::StreamItem;
 use crate::sink_guard;
-use crate::transport::{encode_sse_gap, encode_sse_jsonrpc, encode_sse_observation, STREAM_OPEN};
+use crate::transport::{STREAM_OPEN, encode_sse_gap, encode_sse_jsonrpc, encode_sse_observation};
 
 /// The methods the endpoint serves on `api_path`.
 pub const ROUTE_METHODS: [&str; 3] = ["POST", "GET", "DELETE"];
@@ -82,7 +82,7 @@ fn default_method() -> String {
 }
 
 fn schema_value<T: schemars::JsonSchema>() -> Value {
-    let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(root).expect("schema serializes");
     if let Some(obj) = v.as_object_mut() {
         obj.remove("$schema");

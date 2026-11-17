@@ -164,8 +164,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     const QUICK: [Duration; 5] = [Duration::from_millis(1); 5];

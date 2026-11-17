@@ -3,16 +3,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 
+use telegram_bot::WorkerConfig;
 use telegram_bot::approval_gate::{self, ApprovalGateStatus};
 use telegram_bot::clients::telegram;
 use telegram_bot::configuration::{self, ConfigCell};
 use telegram_bot::deps::Deps;
 use telegram_bot::functions;
 use telegram_bot::ingress;
-use telegram_bot::WorkerConfig;
 
 #[derive(Parser, Debug)]
 #[command(

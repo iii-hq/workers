@@ -4,7 +4,7 @@
 use cucumber::{given, then};
 use std::sync::atomic::Ordering;
 
-use context_manager::core::lease::{default_lease_key, LEASE_SCOPE};
+use context_manager::core::lease::{LEASE_SCOPE, default_lease_key};
 use context_manager::ports::LeaseRecord;
 use context_manager::types::AgentMessage;
 

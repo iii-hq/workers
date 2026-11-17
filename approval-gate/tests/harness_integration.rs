@@ -4,10 +4,10 @@
 
 use std::collections::BTreeMap;
 
-use approval_gate::testkit::{call, hook_input, state_get, state_set, with_stack, BootOpts};
+use approval_gate::testkit::{BootOpts, call, hook_input, state_get, state_set, with_stack};
 use harness::types::TurnRecord;
 use iii_sdk::RegisterFunction;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn with_harness_stack<F, Fut>(opts: BootOpts, f: F)
 where

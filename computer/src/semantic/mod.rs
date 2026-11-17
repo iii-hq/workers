@@ -16,7 +16,7 @@ mod selector;
 mod walk;
 
 pub use engine::{Query, Row, Scope, SnapshotOut, Verb};
-pub use error::{map_act_error, map_read_error, Code, SemanticError};
+pub use error::{Code, SemanticError, map_act_error, map_read_error};
 pub use executor::SemanticSession;
 pub use outline::label;
 pub use selector::parse_selector;

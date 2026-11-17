@@ -1,14 +1,14 @@
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use qrcode::render::svg;
 use qrcode::QrCode;
+use qrcode::render::svg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::node::{dns_name, funnel_allowed, status_json};
-use super::{register_fn, run, run_json, spec, string_at, u64_at, EmptyInput, FunctionSpec};
-use crate::config::{validate_console_url, SharedConfig, WorkerConfig};
+use super::{EmptyInput, FunctionSpec, register_fn, run, run_json, spec, string_at, u64_at};
+use crate::config::{SharedConfig, WorkerConfig, validate_console_url};
 
 pub const SHARE_ID: &str = "tailscale::share";
 pub const STOP_ID: &str = "tailscale::share::stop";

@@ -5,8 +5,8 @@
 //! client id the editor plugin ecosystem authenticates with.
 use crate::auth;
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -166,9 +166,9 @@ pub async fn poll(
 pub fn make_login_start(
     http: reqwest::Client,
 ) -> impl Fn(LoginStartRequest) -> BoxFuture<'static, Result<LoginStartResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req| {
         let http = http.clone();
         Box::pin(async move { start(&http, DEFAULT_DEVICE_CODE_URL).await })
@@ -179,9 +179,9 @@ pub fn make_login_poll(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(LoginPollRequest) -> BoxFuture<'static, Result<LoginPollResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: LoginPollRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move { poll(&iii, &http, DEFAULT_ACCESS_TOKEN_URL, &req.device_code).await })

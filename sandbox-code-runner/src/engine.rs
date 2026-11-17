@@ -11,9 +11,9 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::error::{classify_probe_error, ProbeOutcome};
+use crate::error::{ProbeOutcome, classify_probe_error};
 
 pub type CallResult = Result<Value, String>;
 
@@ -397,14 +397,16 @@ mod tests {
             "sandbox::exec",
             vec![Ok(json!({ "exit_code": 0 })), Err("gone".into())],
         );
-        assert!(fake
-            .call("sandbox::exec".into(), json!({}), 1)
-            .await
-            .is_ok());
-        assert!(fake
-            .call("sandbox::exec".into(), json!({}), 1)
-            .await
-            .is_err());
+        assert!(
+            fake.call("sandbox::exec".into(), json!({}), 1)
+                .await
+                .is_ok()
+        );
+        assert!(
+            fake.call("sandbox::exec".into(), json!({}), 1)
+                .await
+                .is_err()
+        );
         assert!(
             fake.call("sandbox::exec".into(), json!({}), 1)
                 .await

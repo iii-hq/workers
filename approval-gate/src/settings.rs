@@ -10,7 +10,7 @@ use crate::config::WorkerConfig;
 use crate::error::ApprovalError;
 use crate::state;
 use crate::types::{
-    now_ms, validate_id, AlwaysAllowEntry, ApprovalSettings, GrantedBy, SettingsSource,
+    AlwaysAllowEntry, ApprovalSettings, GrantedBy, SettingsSource, now_ms, validate_id,
 };
 
 pub const SETTINGS_SCOPE: &str = "approval_settings";
@@ -195,10 +195,12 @@ mod tests {
         assert_eq!(source, SettingsSource::Defaults);
         assert_eq!(settings.mode, PermissionMode::Auto);
         assert_eq!(settings.always_allow.len(), 2);
-        assert!(settings
-            .always_allow
-            .iter()
-            .all(|e| e.granted_by == GrantedBy::Seed));
+        assert!(
+            settings
+                .always_allow
+                .iter()
+                .all(|e| e.granted_by == GrantedBy::Seed)
+        );
         assert!(settings.approved_always.is_empty());
     }
 

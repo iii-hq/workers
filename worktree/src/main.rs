@@ -22,14 +22,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, ObserverState, Source};
+use iii_sdk::{InitOptions, ObserverState, Source, register_worker};
 use tokio::sync::RwLock;
 
 use worktree::configuration::{self, ConfigCell, CronSlot};
 use worktree::events::{Emitter, IiiDeliverer};
-use worktree::functions::{self, rest, Deps};
-use worktree::land::test_gate::ShellExecRunner;
+use worktree::functions::{self, Deps, rest};
 use worktree::land::IiiEnqueuer;
+use worktree::land::test_gate::ShellExecRunner;
 use worktree::locks::RepoLocks;
 use worktree::state::IiiStateStore;
 use worktree::{config, git, manifest};

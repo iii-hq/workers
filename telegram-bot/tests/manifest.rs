@@ -23,8 +23,10 @@ fn manifest_subcommand_emits_valid_json() {
     assert_eq!(manifest["name"], env!("CARGO_PKG_NAME"));
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
     assert!(manifest["default_config"].is_object());
-    assert!(!manifest["supported_targets"]
-        .as_array()
-        .expect("supported_targets must be an array")
-        .is_empty());
+    assert!(
+        !manifest["supported_targets"]
+            .as_array()
+            .expect("supported_targets must be an array")
+            .is_empty()
+    );
 }

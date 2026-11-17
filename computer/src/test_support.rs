@@ -1,15 +1,15 @@
 //! Shared test doubles: a fake desktop that counts what it was asked to do,
 //! and `Session` builders for handler and lifecycle tests.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 
 use crate::driver::{Driver, Screen, Shot};
 use crate::frames::FrameNotifier;
 use crate::semantic::SemanticSession;
-use crate::session::{now_ms, Session};
+use crate::session::{Session, now_ms};
 
 /// Every screenshot is a distinct ~64 KB JPEG-looking buffer; `fail` makes
 /// captures error; `inputs` counts every pointer/keyboard call on entry;

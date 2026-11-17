@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
 use crate::catalog::store::CatalogStore;
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::registry::resolve::{referenced_secrets, resolve_provider_config};
 use crate::registry::store::RegistryStore;
 use crate::secrets::SecretCache;
@@ -19,9 +19,9 @@ pub fn make_provider_list(
     secrets: Arc<SecretCache>,
     catalog: Arc<CatalogStore>,
 ) -> impl Fn(ProviderListRequest) -> BoxFuture<'static, Result<ProviderListResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: ProviderListRequest| {
         let (config, registry, secrets, catalog) = (
             config.clone(),

@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::{self, Monitor, ON_CHANGED_FN};

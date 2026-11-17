@@ -1,12 +1,12 @@
 //! Test doubles shared by unit tests: an engine that answers calls
 //! ([`FakeBus`](crate::bus::fake::FakeBus)) and creates observers.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value;
 
-use crate::bus::{fake::FakeBus, Bus, BusError};
+use crate::bus::{Bus, BusError, fake::FakeBus};
 use crate::sessions::{BoxFuture, Observe, ObserveRequest, ObserverLike};
 
 pub struct Obs {

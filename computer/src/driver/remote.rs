@@ -21,17 +21,17 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use super::{encode_jpeg, target_dims, Driver, Screen, Shot};
+use super::{Driver, Screen, Shot, encode_jpeg, target_dims};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -117,28 +117,28 @@ impl RemoteClient {
             loop {
                 match socket.next().await {
                     Some(Ok(Message::Text(t))) => {
-                        return parse_reply(command, &t).map_err(CommandError::Logical)
+                        return parse_reply(command, &t).map_err(CommandError::Logical);
                     }
                     Some(Ok(Message::Binary(b))) => {
                         return parse_reply(command, &String::from_utf8_lossy(&b))
-                            .map_err(CommandError::Logical)
+                            .map_err(CommandError::Logical);
                     }
                     Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
                     Some(Ok(Message::Close(_))) => {
                         return Err(CommandError::Transport(format!(
                             "{command}: server closed the connection"
-                        )))
+                        )));
                     }
                     Some(Ok(_)) => continue,
                     Some(Err(e)) => {
                         return Err(CommandError::Transport(format!(
                             "{command}: transport error: {e}"
-                        )))
+                        )));
                     }
                     None => {
                         return Err(CommandError::Transport(format!(
                             "{command}: connection ended"
-                        )))
+                        )));
                     }
                 }
             }
@@ -247,11 +247,11 @@ impl Driver for RemoteClient {
         let Some(Value::String(b64)) = v.get_mut("image_data").map(Value::take) else {
             return Err("screenshot: reply missing image_data".to_string());
         };
-        if let Some((wire, fitted)) = &*self.last.lock().unwrap_or_else(|e| e.into_inner()) {
-            if *wire == b64 {
-                self.set_scale(fitted.guest, fitted.shot);
-                return Ok(Shot::new(fitted.jpeg.clone()));
-            }
+        if let Some((wire, fitted)) = &*self.last.lock().unwrap_or_else(|e| e.into_inner())
+            && *wire == b64
+        {
+            self.set_scale(fitted.guest, fitted.shot);
+            return Ok(Shot::new(fitted.jpeg.clone()));
         }
         let bytes = STANDARD
             .decode(&b64)

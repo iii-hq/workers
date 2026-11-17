@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -24,7 +24,7 @@ use memory_consolidate::{config, configuration, manifest, rest};
 #[derive(Parser, Debug)]
 #[command(
     name = "memory-consolidate",
-    about = "Scheduled hygiene for the memory worker: deterministic dedup, supersede-only, pinned untouchable, catch-up-on-boot."
+    about = "Scheduled hygiene for the memory worker: deterministic dedup and an opt-in verify tier, supersede-only, pinned untouchable, catch-up-on-boot."
 )]
 struct Cli {
     /// Engine WebSocket URL.

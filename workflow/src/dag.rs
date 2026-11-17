@@ -1405,7 +1405,9 @@ mod tests {
         expand_ready_fanouts(&d, &mut r, &BTreeMap::new());
         assert_eq!(
             r.nodes["critic"].result_error.as_deref(),
-            Some("fanout 'critic' over its own array: array has 10001 items, exceeds the cap of 10000")
+            Some(
+                "fanout 'critic' over its own array: array has 10001 items, exceeds the cap of 10000"
+            )
         );
     }
 

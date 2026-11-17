@@ -10,14 +10,14 @@
 use super::*;
 use chrono::TimeZone;
 use gcloud_storage::client::{Client, ClientConfig};
+use gcloud_storage::http::Error as GcsHttpError;
 use gcloud_storage::http::error::ErrorResponse;
+use gcloud_storage::http::objects::Object;
 use gcloud_storage::http::objects::delete::DeleteObjectRequest;
 use gcloud_storage::http::objects::download::Range;
 use gcloud_storage::http::objects::get::GetObjectRequest;
 use gcloud_storage::http::objects::list::ListObjectsRequest;
 use gcloud_storage::http::objects::upload::{Media, UploadObjectRequest, UploadType};
-use gcloud_storage::http::objects::Object;
-use gcloud_storage::http::Error as GcsHttpError;
 use gcloud_storage::sign::{SignedURLMethod, SignedURLOptions};
 use std::borrow::Cow;
 use std::time::Duration;
@@ -668,7 +668,10 @@ mod tests {
         }
         // Shaped like a key, but the auth library refuses it: same answer.
         for (name, key) in [
-            ("bad-key.json", ",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nnot-a-key\\n-----END PRIVATE KEY-----\\n\""),
+            (
+                "bad-key.json",
+                ",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nnot-a-key\\n-----END PRIVATE KEY-----\\n\"",
+            ),
             ("no-key.json", ""),
         ] {
             let body = format!(

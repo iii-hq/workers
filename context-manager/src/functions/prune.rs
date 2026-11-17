@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::estimate::estimator_for_model;
-use crate::core::prune::{prune as run_prune, PruneParams};
+use crate::core::prune::{PruneParams, prune as run_prune};
 use crate::error::ContextError;
 use crate::ports::Deps;
 use crate::types::{AgentMessage, ModelInput};

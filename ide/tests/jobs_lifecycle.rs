@@ -4,7 +4,7 @@
 
 use std::sync::LazyLock;
 
-use ide::jobs::{self, now_ms, JobHandle, JobRecord, JobStatus};
+use ide::jobs::{self, JobHandle, JobRecord, JobStatus, now_ms};
 use tokio::sync::Mutex;
 
 static JOBS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));

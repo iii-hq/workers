@@ -185,7 +185,7 @@ impl LockSet {
                             return Err(LockError::Io(format!(
                                 "Could not look at {} ({error}).",
                                 path.display()
-                            )))
+                            )));
                         }
                     }
                     if Instant::now() >= deadline {
@@ -203,7 +203,7 @@ impl LockSet {
                     return Err(LockError::Io(format!(
                         "Could not take {} ({error}).",
                         path.display()
-                    )))
+                    )));
                 }
             }
         }
@@ -223,10 +223,10 @@ impl LockSet {
     pub fn touch(&mut self) {
         let now = filetime_now();
         for id in &mut self.held {
-            if set_mtime(&id.path, now).is_ok() {
-                if let Some(fresh) = identity(&id.path) {
-                    id.mtime_ms = fresh.mtime_ms;
-                }
+            if set_mtime(&id.path, now).is_ok()
+                && let Some(fresh) = identity(&id.path)
+            {
+                id.mtime_ms = fresh.mtime_ms;
             }
         }
     }
@@ -274,7 +274,7 @@ fn remove_stale(path: &Path, seen: &LockId) -> Result<(), String> {
             return Err(format!(
                 "Could not remove the stale lock {} ({error}).",
                 path.display()
-            ))
+            ));
         }
     }
     let same =
@@ -404,10 +404,10 @@ fn release(id: &LockId) {
 /// stays; one of the worker's not recognised is waited out as stale.
 pub fn reclaim(ids: &[LockId]) {
     for id in ids.iter().rev() {
-        if let Some(now) = identity(&id.path) {
-            if is_own(id, &now) {
-                let _ = std::fs::remove_dir(&id.path);
-            }
+        if let Some(now) = identity(&id.path)
+            && is_own(id, &now)
+        {
+            let _ = std::fs::remove_dir(&id.path);
         }
     }
 }

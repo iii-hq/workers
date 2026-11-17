@@ -2,7 +2,7 @@
 //! (requires the server run with `--jinja` and a tool-capable chat template).
 use crate::wire::names::encode_tool_name;
 use llm_router::types::model::AgentFunction;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn functions_to_wire(tools: &[AgentFunction]) -> Vec<Value> {
     tools

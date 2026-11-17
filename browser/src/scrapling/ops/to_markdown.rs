@@ -3,7 +3,7 @@
 //! operates on the whole document: no `adaptive` field in its schema (see
 //! schemas.rs `markdown_request`), so no `common::refuse_adaptive` here.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::require_str;
 use crate::scrapling::{dom, markdown};

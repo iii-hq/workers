@@ -12,8 +12,8 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 
-use super::{parse_ref, valid_name, ChangeListener, Refetch, SecretCache, SecretRef};
-use crate::config::state::{snapshot, ConfigCell};
+use super::{ChangeListener, Refetch, SecretCache, SecretRef, parse_ref, valid_name};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::registry::refresh::{Refresh, RefreshQueue};
 use crate::registry::resolve::referenced_secrets;
 use crate::types::router::{RouterAck, SecretChangedEvent, SecretChangedObserved};
@@ -21,10 +21,10 @@ use crate::types::router::{RouterAck, SecretChangedEvent, SecretChangedObserved}
 /// The reference an event is about, canonical: from `ref` (which names the
 /// store), or else from `name` as a vault secret.
 fn event_secret(event: &SecretChangedEvent) -> Option<String> {
-    if let Some(reference) = event.reference.as_deref() {
-        if let Some(Ok(reference)) = parse_ref(reference) {
-            return Some(reference.key());
-        }
+    if let Some(reference) = event.reference.as_deref()
+        && let Some(Ok(reference)) = parse_ref(reference)
+    {
+        return Some(reference.key());
     }
     event
         .name
@@ -73,8 +73,8 @@ mod tests {
     use super::*;
     use crate::config::state::new_config_cell;
     use crate::registry::refresh::testing::recording_queue;
-    use crate::secrets::testing::FakeSecrets;
     use crate::secrets::SecretError;
+    use crate::secrets::testing::FakeSecrets;
     use serde_json::json;
     use std::time::Duration;
 

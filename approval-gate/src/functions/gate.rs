@@ -19,8 +19,8 @@ use crate::redact::redact;
 use crate::session;
 use crate::settings;
 use crate::types::{
-    now_ms, validate_id, HookCall, HookInput, HookOutput, JsonMap, PendingApprovalRecord,
-    PendingKind,
+    HookCall, HookInput, HookOutput, JsonMap, PendingApprovalRecord, PendingKind, now_ms,
+    validate_id,
 };
 
 pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, ApprovalError> {
@@ -197,8 +197,8 @@ mod tests {
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
     use crate::testkit::{
-        hook_input as test_hook_input, log_snapshot, settle, state_get, state_set, with_stack,
-        BootOpts,
+        BootOpts, hook_input as test_hook_input, log_snapshot, settle, state_get, state_set,
+        with_stack,
     };
     use crate::types::{ApprovalSettings, PermissionMode};
 
@@ -234,9 +234,11 @@ mod tests {
             .await;
             let out = handle(&stack.deps, hook_input("shell::run")).await.unwrap();
             assert_eq!(out, HookOutput::Continue);
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                    .await
+                    .is_null()
+            );
         })
         .await;
     }

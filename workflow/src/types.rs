@@ -449,7 +449,7 @@ impl NodeCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn fanout_spec_reads_old_over_and_round_trips_items() {
@@ -609,10 +609,12 @@ mod tests {
         .expect("deserialize old checkpoint");
         assert_eq!(cp.state, NodeState::Running);
         assert_eq!(cp.retries, 1);
-        assert!(serde_json::to_value(&cp)
-            .unwrap()
-            .get("pending_timeout_ms")
-            .is_none());
+        assert!(
+            serde_json::to_value(&cp)
+                .unwrap()
+                .get("pending_timeout_ms")
+                .is_none()
+        );
     }
 
     #[test]

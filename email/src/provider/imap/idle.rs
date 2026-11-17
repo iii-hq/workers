@@ -3,7 +3,7 @@
 //! present is the RFC 2177 IDLE refresh (29 minutes), which is per-spec, not
 //! application-level polling.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_imap::extensions::idle::IdleResponse;
 use serde_json::json;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
 use super::Session;
-use crate::events::dispatcher::EventDispatcher;
 use crate::events::Event;
+use crate::events::dispatcher::EventDispatcher;
 
 /// Park on IDLE until the server pushes data or shuts down. Returns the
 /// underlying connection error so the supervisor (`connection::run_until_shutdown`)

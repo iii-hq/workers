@@ -1,7 +1,7 @@
 //! Contract-first tests for joint investigations. These must fail before the
 //! new route exists; the ordinary investigation contract stays untouched.
-use sentinel::functions::{catalog, INVESTIGATION_ALLOW, INVESTIGATION_DENY};
-use serde_json::{json, Value};
+use sentinel::functions::{INVESTIGATION_ALLOW, INVESTIGATION_DENY, catalog};
+use serde_json::{Value, json};
 
 fn joint_schema(request: bool) -> Value {
     let spec = catalog()

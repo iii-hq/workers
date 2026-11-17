@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
 use quick_tunnel::{
     config::{self, Config},
     manager::Manager,
@@ -88,8 +88,7 @@ async fn run(
             id: config::config_id(),
             form_id: config::DEFAULT_CONFIG_ID,
             name: "Quick Tunnel",
-            description:
-                "Tunnel provider, authorized origins and lifecycle limits (restart to apply)",
+            description: "Tunnel provider, authorized origins and lifecycle limits (restart to apply)",
             schema: serde_json::to_value(schemars::schema_for!(Config))?,
             default_value: serde_json::to_value(Config::default())?,
         };

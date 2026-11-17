@@ -161,12 +161,11 @@ fn json_columns(columns: &[ColumnMeta], rows: &mut [Row]) {
     }
     for row in rows.iter_mut() {
         for &i in &json_idx {
-            if let Some(RowValue::Text(text)) = row.0.get(i) {
-                if let Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
+            if let Some(RowValue::Text(text)) = row.0.get(i)
+                && let Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
                     serde_json::from_str::<serde_json::Value>(text)
-                {
-                    row.0[i] = RowValue::Json(v);
-                }
+            {
+                row.0[i] = RowValue::Json(v);
             }
         }
     }
@@ -216,12 +215,11 @@ fn enrich_schema_err(c: &rusqlite::Connection, sql: &str, e: DbError) -> DbError
 fn schema_hint(c: &rusqlite::Connection, sql: &str, message: &str) -> Option<String> {
     // `INSERT INTO t (bad) …` → "table t has no column named bad": the
     // message itself names the table.
-    if let Some(rest) = message.strip_prefix("table ") {
-        if let Some(table) = rest.split(" has no column named ").next() {
-            if rest.contains(" has no column named ") {
-                return columns_hint(c, table);
-            }
-        }
+    if let Some(rest) = message.strip_prefix("table ")
+        && let Some(table) = rest.split(" has no column named ").next()
+        && rest.contains(" has no column named ")
+    {
+        return columns_hint(c, table);
     }
     // `UPDATE t SET bad = …` / `SELECT bad FROM t` → "no such column: bad":
     // use SQLite's qualifier when present; otherwise hint only when the
@@ -541,11 +539,7 @@ pub async fn execute(
             // prepared statement is dropped so we hold no stale borrow.
             let last_insert_id = if is_insert(&sql) {
                 let r = c.last_insert_rowid();
-                if r != 0 {
-                    Some(r.to_string())
-                } else {
-                    None
-                }
+                if r != 0 { Some(r.to_string()) } else { None }
             } else {
                 None
             };
@@ -1063,17 +1057,19 @@ mod tests {
             );
         }
         // Reads still pass, including read-only PRAGMA-free CTEs.
-        assert!(query(
-            &p,
-            "WITH x(n) AS (VALUES (1)) SELECT n FROM x",
-            &[],
-            crate::driver::ReadOptions {
-                timeout_ms: 30_000,
-                ..Default::default()
-            }
-        )
-        .await
-        .is_ok());
+        assert!(
+            query(
+                &p,
+                "WITH x(n) AS (VALUES (1)) SELECT n FROM x",
+                &[],
+                crate::driver::ReadOptions {
+                    timeout_ms: 30_000,
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_ok()
+        );
         assert_eq!(
             query(
                 &p,

@@ -31,12 +31,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use tokio::sync::RwLock;
 
 use session_manager::configuration::{self, AppState, ConfigCell};
 use session_manager::functions::{self, store_protocol};
-use session_manager::runtime::{build_runtime, worker_metadata, SessionBuildContext};
+use session_manager::runtime::{SessionBuildContext, build_runtime, worker_metadata};
 use session_manager::{config, events, manifest};
 
 #[derive(Parser, Debug)]

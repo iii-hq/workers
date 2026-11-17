@@ -9,7 +9,9 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -36,10 +38,60 @@ func (h *Hub) setProxyHealth(status string, active bool) {
 		h.Sessions.closeAll()
 	}
 }
-func fetchProxyConfig(ctx context.Context, client rpc) (map[string]any, error) {
-	raw, err := configCall(ctx, client, "configuration::get", map[string]any{"id": "rbac-proxy", "raw": true})
+
+var (
+	errNoProxyEntry        = errors.New("rbac-proxy configuration is not registered")
+	errSeveralProxyEntries = errors.New("several rbac-proxy configurations")
+)
+
+// proxyCandidate keeps out entries a node can write (<node>__*) and, for a hub named <prefix>mesh, other namespaces' proxies.
+func proxyCandidate(meshID, id string) bool {
+	prefix, namespaced := strings.CutSuffix(meshID, "mesh")
+	return !strings.Contains(id, "__") && (!namespaced || strings.HasPrefix(id, prefix))
+}
+
+// proxyConfigID finds the entry rbac-proxy reads: its supervisor names it (Compose: <namespace>-<container>), its form stays rbac-proxy.
+func proxyConfigID(ctx context.Context, client rpc, meshID string) (string, error) {
+	raw, err := configCall(ctx, client, "configuration::list", map[string]any{})
+	if err != nil {
+		return "", callFailed(err)
+	}
+	var list struct {
+		Configurations []struct {
+			ID       string          `json:"id"`
+			Metadata json.RawMessage `json:"metadata"`
+		} `json:"configurations"`
+	}
+	if err = json.Unmarshal(raw, &list); err != nil {
+		return "", errors.New("malformed configuration list")
+	}
+	own, ids := strings.TrimSuffix(meshID, "mesh")+"rbac-proxy", []string{}
+	for _, entry := range list.Configurations {
+		var form struct {
+			UIForm string `json:"ui_form"`
+		}
+		if json.Unmarshal(entry.Metadata, &form) != nil || form.UIForm != "rbac-proxy" || !proxyCandidate(meshID, entry.ID) {
+			continue
+		}
+		if entry.ID == own {
+			return own, nil
+		}
+		ids = append(ids, entry.ID)
+	}
+	switch len(ids) {
+	case 0:
+		return "", errNoProxyEntry // its registration is an event this hub observes
+	case 1:
+		return ids[0], nil
+	}
+	// Guessing could write Mesh's hooks into an entry no running proxy reads; a removal or rename is an event too.
+	sort.Strings(ids)
+	return "", fmt.Errorf("%w (%s): name the one this hub uses %s, or remove the others", errSeveralProxyEntries, strings.Join(ids, ", "), own)
+}
+func fetchProxyConfig(ctx context.Context, client rpc, id string) (map[string]any, error) {
+	raw, err := configCall(ctx, client, "configuration::get", map[string]any{"id": id, "raw": true})
 	if remoteCode(err, "NOT_FOUND") {
-		return nil, nil
+		return nil, errNoProxyEntry
 	}
 	if err != nil {
 		return nil, callFailed(err)
@@ -98,7 +150,11 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	current, err := fetchProxyConfig(ctx, h.proxyClient)
+	id, err := proxyConfigID(ctx, h.proxyClient, h.ConfigID)
+	if err != nil {
+		return fmt.Errorf("find proxy configuration: %w", err)
+	}
+	current, err := fetchProxyConfig(ctx, h.proxyClient, id)
 	if err != nil {
 		return fmt.Errorf("read proxy configuration: %w", err)
 	}
@@ -117,16 +173,11 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 			next["engine_url"] = h.proxyEngineURL()
 			next["host"], next["port"] = host, port
 		}
-		if current == nil {
-			_, err = configCall(ctx, h.proxyClient, "configuration::ensure", map[string]any{"id": "rbac-proxy", "name": "RBAC Proxy", "description": "Mesh gateway proxy", "schema": map[string]any{}, "initial_value": next})
-		} else {
-			_, err = configCall(ctx, h.proxyClient, "configuration::set", map[string]any{"id": "rbac-proxy", "value": next})
-		}
-		if err != nil {
+		if _, err = configCall(ctx, h.proxyClient, "configuration::set", map[string]any{"id": id, "value": next}); err != nil {
 			return callFailed(err)
 		}
-		// Ensure may preserve a concurrent owner; only the authoritative result activates.
-		next, err = fetchProxyConfig(ctx, h.proxyClient)
+		// A concurrent writer may win; only the authoritative result activates.
+		next, err = fetchProxyConfig(ctx, h.proxyClient, id)
 		if err != nil {
 			return err
 		}
@@ -147,7 +198,7 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 	if next["engine_url"] != h.proxyEngineURL() {
 		return errors.New("proxy engine URL does not match the Hub bus")
 	}
-	if err := h.applyProxy(ctx, next); err != nil {
+	if err := h.applyProxy(ctx, id, next); err != nil {
 		return err
 	}
 	h.setProxyHealth("ok", true)
@@ -227,8 +278,9 @@ type proxyApplyResult struct {
 	Error         string         `json:"error"`
 }
 
-func (h *Hub) applyProxy(ctx context.Context, desired map[string]any) error {
-	raw, err := h.proxyClient.Call(ctx, iii.CallRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Payload: json.RawMessage(`{"id":"rbac-proxy"}`), Timeout: 15 * time.Second})
+func (h *Hub) applyProxy(ctx context.Context, id string, desired map[string]any) error {
+	payload, _ := json.Marshal(map[string]string{"id": id})
+	raw, err := h.proxyClient.Call(ctx, iii.CallRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Payload: payload, Timeout: 15 * time.Second})
 	if err != nil {
 		return fmt.Errorf("apply proxy configuration: %w", callFailed(err))
 	}

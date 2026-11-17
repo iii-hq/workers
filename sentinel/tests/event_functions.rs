@@ -22,15 +22,15 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker,
 };
-use sentinel::events::{self, group_event, ON_GROUP_CHANGED_FN, ON_INVESTIGATION_CHANGED_FN};
+use sentinel::events::{self, ON_GROUP_CHANGED_FN, ON_INVESTIGATION_CHANGED_FN, group_event};
 use sentinel::{
     Emitter, GroupChangeReasonV1, GroupChangedEventV1, GroupChangedOpV1, GroupStatusV1,
     InvestigationChangedEventV1, InvestigationChangedOpV1, InvestigationStatusV1,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 const DEFAULT_URL: &str = "ws://127.0.0.1:49134";

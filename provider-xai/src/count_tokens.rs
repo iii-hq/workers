@@ -13,8 +13,8 @@
 //!
 //! Exposed behind `router::count_tokens`.
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::endpoint_count::{base_route_url, post_count};
 use llm_router::provider_scaffold::vocabulary_count::ESTIMATOR_TOKENIZER;
@@ -24,9 +24,9 @@ use llm_router::types::model::{AgentFunction, ThinkingLevel};
 use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::config::{config_from_resolve, WorkerConfig};
+use crate::config::{WorkerConfig, config_from_resolve};
 use crate::configuration::ConfigCell;
 use crate::errors::classify_bus_error;
 use crate::reasoning::reasoning_effort_for;

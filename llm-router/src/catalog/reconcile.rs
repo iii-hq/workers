@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::catalog::store::CatalogStore;
 use crate::config::entry::EntryWriteLock;
-use crate::config::state::{snapshot, ConfigCell};
+use crate::config::state::{ConfigCell, snapshot};
 use crate::events::RouterEvents;
 use crate::registry::resolve::{
     discovery_fingerprint, ensure_provider_secret, resolve_provider_config,
@@ -25,9 +25,9 @@ pub fn make_models_reconcile(
     secrets: Arc<SecretCache>,
     entry_lock: EntryWriteLock,
 ) -> impl Fn(ModelsReconcileRequest) -> BoxFuture<'static, Result<ModelsReconcileResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ModelsReconcileRequest| {
         let (registry, catalog, events, config, secrets, entry_lock) = (
             registry.clone(),

@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::protocol::CallRequest;
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::store::Bank;
@@ -339,7 +339,7 @@ pub fn backfill_all(deps: Arc<Deps>) {
 mod tests {
     use super::*;
     use crate::store::Store;
-    use crate::types::{fingerprint, now_ms, Confidence, Memory};
+    use crate::types::{Confidence, Memory, fingerprint, now_ms};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn memory(text: &str) -> Memory {
@@ -693,20 +693,22 @@ mod tests {
             1
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2, "canary + one batch");
-        assert!(bank
-            .semantic(&[1.0, 0.0], "new-default", 5, false)
-            .await
-            .is_empty());
+        assert!(
+            bank.semantic(&[1.0, 0.0], "new-default", 5, false)
+                .await
+                .is_empty()
+        );
         assert_eq!(
             bank.semantic(&[0.0, 1.0], "new-default", 5, false)
                 .await
                 .len(),
             1
         );
-        assert!(bank
-            .semantic(&[1.0, 0.0], "old-default", 5, false)
-            .await
-            .is_empty());
+        assert!(
+            bank.semantic(&[1.0, 0.0], "old-default", 5, false)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -761,7 +763,7 @@ mod tests {
             .await
             .unwrap();
         bank.commit(memory("user collects stamps")).await.unwrap(); // vectorless
-                                                                    // The pass believes the space is m1; the provider now answers m2.
+        // The pass believes the space is m1; the provider now answers m2.
         let calls = AtomicUsize::new(0);
         assert_eq!(
             backfill_pass(&bank, Some("m1".into()), reporting("m2", &calls)).await,

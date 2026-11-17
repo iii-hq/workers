@@ -12,7 +12,7 @@ use tokio::process::Command;
 
 use crate::config::ShellConfig;
 use crate::exec::policy::ExecOverrides;
-use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
+use crate::exec::{ExecCallResult, ExecOutcome, backend::ExecBackend, error::ExecError};
 
 pub fn parse_argv(command: &str, args: Option<&Vec<String>>) -> Result<Vec<String>, String> {
     if let Some(args) = args {
@@ -169,15 +169,15 @@ pub(crate) fn stop_signal(_pid: u32) -> Option<i32> {
 /// (each side would otherwise block on a full pipe). Best-effort: a child that
 /// exited before consuming its input just makes the write fail, which we ignore.
 pub(crate) fn pump_stdin(child: &mut tokio::process::Child, stdin: &Option<String>) {
-    if let Some(data) = stdin {
-        if let Some(mut sin) = child.stdin.take() {
-            let bytes = data.clone().into_bytes();
-            tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                let _ = sin.write_all(&bytes).await;
-                let _ = sin.shutdown().await;
-            });
-        }
+    if let Some(data) = stdin
+        && let Some(mut sin) = child.stdin.take()
+    {
+        let bytes = data.clone().into_bytes();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = sin.write_all(&bytes).await;
+            let _ = sin.shutdown().await;
+        });
     }
 }
 
@@ -520,7 +520,8 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             for k in self.keys {
-                std::env::remove_var(k);
+                // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+                unsafe { std::env::remove_var(k) };
             }
         }
     }
@@ -535,8 +536,10 @@ mod tests {
         // Guard acquired BEFORE set_var: it holds the cross-test env mutex,
         // so the sets below can't race with another test's env mutation.
         let _guard = EnvVarGuard::new(&[ALLOWED, BLOCKED]);
-        std::env::set_var(ALLOWED, "allowed-value");
-        std::env::set_var(BLOCKED, "blocked-value");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(ALLOWED, "allowed-value") };
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(BLOCKED, "blocked-value") };
 
         let mut cfg = test_cfg();
         cfg.env.inherit = false;
@@ -570,7 +573,8 @@ mod tests {
     async fn identity_env_stripped_even_when_inherit_true() {
         const KEY: &str = "III_WORKER_NAME";
         let _guard = EnvVarGuard::new(&[KEY]);
-        std::env::set_var(KEY, "shell");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(KEY, "shell") };
         let cfg = test_cfg();
         assert!(cfg.env.inherit, "the test targets the inheriting default");
 

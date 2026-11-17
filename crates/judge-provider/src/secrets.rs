@@ -5,11 +5,11 @@
 //! with an actionable reason: it never falls back to the worker's environment key.
 //! Any other `scheme://` value is rejected the same way, never sent as a literal key.
 use iii_sdk::{
-    errors::Error, CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source, errors::Error,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     future::Future,
@@ -223,11 +223,11 @@ impl SecretCache {
         let now = Instant::now();
         // The secrets worker cannot rotate or revoke while unreachable: keep a resolved
         // value through an outage instead of failing every call.
-        if let (Err(SecretError::Unavailable), Some(entry)) = (&outcome, entries.get_mut(name)) {
-            if let Ok(value) = &entry.outcome {
-                entry.fetched_at = now;
-                return Ok(value.0.clone());
-            }
+        if let (Err(SecretError::Unavailable), Some(entry)) = (&outcome, entries.get_mut(name))
+            && let Ok(value) = &entry.outcome
+        {
+            entry.fetched_at = now;
+            return Ok(value.0.clone());
         }
         let result = match &outcome {
             Ok(value) => Ok(value.0.clone()),
@@ -465,11 +465,13 @@ mod tests {
             cache.configured_key(Some("ts-literal")).await,
             Ok(Some("ts-literal".into()))
         );
-        assert!(cache
-            .configured_key(Some("secret://a b"))
-            .await
-            .unwrap_err()
-            .contains("malformed"));
+        assert!(
+            cache
+                .configured_key(Some("secret://a b"))
+                .await
+                .unwrap_err()
+                .contains("malformed")
+        );
         assert_eq!(*calls.lock().unwrap(), 0);
 
         // absent worker: actionable, and no fallback key is produced

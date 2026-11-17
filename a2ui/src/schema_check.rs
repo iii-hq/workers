@@ -41,10 +41,10 @@ fn check(
         Value::Object(object) => object,
         _ => return Ok(()),
     };
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        if let Some(target) = resolve_ref(root, reference) {
-            check(root, target, value, at, depth + 1)?;
-        }
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str)
+        && let Some(target) = resolve_ref(root, reference)
+    {
+        check(root, target, value, at, depth + 1)?;
     }
     if let Some(expected) = schema.get("type") {
         let allowed: Vec<&str> = match expected {
@@ -61,19 +61,19 @@ fn check(
             ));
         }
     }
-    if let Some(options) = schema.get("enum").and_then(Value::as_array) {
-        if !options.contains(value) {
-            return Err(format!(
-                "{}: must be one of {}",
-                here(at),
-                Value::Array(options.clone())
-            ));
-        }
+    if let Some(options) = schema.get("enum").and_then(Value::as_array)
+        && !options.contains(value)
+    {
+        return Err(format!(
+            "{}: must be one of {}",
+            here(at),
+            Value::Array(options.clone())
+        ));
     }
-    if let Some(expected) = schema.get("const") {
-        if expected != value {
-            return Err(format!("{}: must equal {expected}", here(at)));
-        }
+    if let Some(expected) = schema.get("const")
+        && expected != value
+    {
+        return Err(format!("{}: must equal {expected}", here(at)));
     }
     match value {
         Value::Object(object) => {
@@ -111,28 +111,28 @@ fn check(
         }
         Value::String(text) => {
             let length = text.chars().count() as u64;
-            if let Some(min) = schema.get("minLength").and_then(Value::as_u64) {
-                if length < min {
-                    return Err(format!("{}: shorter than {min} characters", here(at)));
-                }
+            if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
+                && length < min
+            {
+                return Err(format!("{}: shorter than {min} characters", here(at)));
             }
-            if let Some(max) = schema.get("maxLength").and_then(Value::as_u64) {
-                if length > max {
-                    return Err(format!("{}: longer than {max} characters", here(at)));
-                }
+            if let Some(max) = schema.get("maxLength").and_then(Value::as_u64)
+                && length > max
+            {
+                return Err(format!("{}: longer than {max} characters", here(at)));
             }
         }
         Value::Number(number) => {
             if let Some(number) = number.as_f64() {
-                if let Some(min) = schema.get("minimum").and_then(Value::as_f64) {
-                    if number < min {
-                        return Err(format!("{}: below minimum {min}", here(at)));
-                    }
+                if let Some(min) = schema.get("minimum").and_then(Value::as_f64)
+                    && number < min
+                {
+                    return Err(format!("{}: below minimum {min}", here(at)));
                 }
-                if let Some(max) = schema.get("maximum").and_then(Value::as_f64) {
-                    if number > max {
-                        return Err(format!("{}: above maximum {max}", here(at)));
-                    }
+                if let Some(max) = schema.get("maximum").and_then(Value::as_f64)
+                    && number > max
+                {
+                    return Err(format!("{}: above maximum {max}", here(at)));
                 }
             }
         }
@@ -228,12 +228,14 @@ mod tests {
             "definitions": {"Mode": {"type": "string", "enum": ["all", "changes"]}}
         });
         assert!(validate("config", &schema, &json!({"counter": "clicks"})).is_ok());
-        assert!(validate(
-            "config",
-            &schema,
-            &json!({"counter": "clicks", "min_value": null, "mode": "all"})
-        )
-        .is_ok());
+        assert!(
+            validate(
+                "config",
+                &schema,
+                &json!({"counter": "clicks", "min_value": null, "mode": "all"})
+            )
+            .is_ok()
+        );
 
         let missing = validate("config", &schema, &json!({})).unwrap_err();
         assert_eq!(missing, "config: missing required field `counter`");
@@ -261,18 +263,22 @@ mod tests {
         assert!(validate("x", &union, &json!([1, "b"])).is_err());
         assert!(validate("x", &json!(true), &json!({"any": 1})).is_ok());
         assert!(validate("x", &json!(false), &json!(1)).is_err());
-        assert!(validate(
-            "x",
-            &json!({"format": "uuid", "pattern": "^z"}),
-            &json!("a")
-        )
-        .is_ok());
-        assert!(validate(
-            "x",
-            &json!({"$ref": "https://example.com/remote"}),
-            &json!(1)
-        )
-        .is_ok());
+        assert!(
+            validate(
+                "x",
+                &json!({"format": "uuid", "pattern": "^z"}),
+                &json!("a")
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                "x",
+                &json!({"$ref": "https://example.com/remote"}),
+                &json!(1)
+            )
+            .is_ok()
+        );
     }
 
     #[test]

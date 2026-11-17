@@ -37,9 +37,10 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_supersedes_per_run")]
     pub max_supersedes_per_run: usize,
 
-    /// Hard cap on `router::complete` calls in one pass, the judge and the
-    /// semantic tier together, across every bank (safety valve; the rest
-    /// waits for the next pass and the report says so). 0 = no model calls.
+    /// Hard cap on `router::complete` calls in one pass, the judge, the
+    /// semantic and the verify tiers together, across every bank (safety
+    /// valve; the rest waits for the next pass and the report says so).
+    /// 0 = no model calls.
     #[serde(default = "default_max_llm_calls_per_run")]
     pub max_llm_calls_per_run: usize,
 
@@ -83,8 +84,25 @@ pub struct WorkerConfig {
     /// rest waits for the next pass (a bank cursor tracks progress).
     #[serde(default = "default_semantic_max_per_run")]
     pub semantic_max_per_run: usize,
+
+    /// Run the verify tier last: a `router::complete` judge checks each
+    /// note against the transcript it came from (read through memory), and
+    /// a note the transcript contradicts is replaced through
+    /// `memory::correct`, the old one kept as history. Corrections, agent
+    /// saves and inferred notes go first. Off by default; costs one LLM
+    /// call per checked note.
+    #[serde(default)]
+    pub verify_enabled: bool,
+
+    /// Cap on notes the verify tier checks per bank per pass; the rest
+    /// waits for the next pass (a bank cursor tracks progress).
+    #[serde(default = "default_verify_max_per_run")]
+    pub verify_max_per_run: usize,
 }
 
+fn default_verify_max_per_run() -> usize {
+    20
+}
 fn default_semantic_batch() -> usize {
     8
 }
@@ -201,6 +219,8 @@ mod tests {
         assert_eq!(cfg.max_llm_calls_per_run, 200);
         // The semantic tier is on by default (fail-soft without a router).
         assert!(cfg.semantic_enabled);
+        assert!(!cfg.verify_enabled);
+        assert_eq!(cfg.verify_max_per_run, 20);
     }
 
     #[test]

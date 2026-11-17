@@ -12,18 +12,18 @@ pub fn should_edit(
     throttle_ms: u64,
 ) -> bool {
     let rev_key = (session_id.to_string(), entry_id.to_string());
-    if let Some(prev) = runtime.revisions.get(&rev_key) {
-        if revision <= *prev {
-            return false;
-        }
+    if let Some(prev) = runtime.revisions.get(&rev_key)
+        && revision <= *prev
+    {
+        return false;
     }
 
     let edit_key = (chat_id, message_id);
     let now = Instant::now();
-    if let Some(last) = runtime.edit_times.get(&edit_key) {
-        if now.duration_since(*last) < Duration::from_millis(throttle_ms) {
-            return false;
-        }
+    if let Some(last) = runtime.edit_times.get(&edit_key)
+        && now.duration_since(*last) < Duration::from_millis(throttle_ms)
+    {
+        return false;
     }
 
     runtime.revisions.insert(rev_key, revision);

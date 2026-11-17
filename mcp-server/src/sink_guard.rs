@@ -69,8 +69,8 @@ async fn host_of<B: Bus>(bus: &B, function_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::fake::FakeBus;
     use crate::bus::BusError;
+    use crate::bus::fake::FakeBus;
     use serde_json::json;
 
     fn engine() -> FakeBus {

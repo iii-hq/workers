@@ -1,10 +1,10 @@
 //! Boot the laya provider: register on the bus, then fetch and load the
 //! checkpoints on first use (or at once while the judge hub selects laya).
 use clap::Parser;
-use iii_llama_runtime::{ModelSlot, IDLE_RELEASE};
+use iii_llama_runtime::{IDLE_RELEASE, ModelSlot};
 use iii_sdk::IIIClient;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_laya::{configuration, download, engine, register, LayaClient, PROVIDER};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
+use judge_laya::{LayaClient, PROVIDER, configuration, download, engine, register};
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -171,7 +171,7 @@ async fn serve(iii: Arc<IIIClient>, slot: Arc<ModelSlot<LayaClient>>) -> anyhow:
 
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     tracing::info!("judge-laya ready");

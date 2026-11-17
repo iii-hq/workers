@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tokio::process::Command;
 
 use crate::config::{PiperDevice, TtsBackend, WorkerConfig};
@@ -597,9 +597,11 @@ mod tests {
     fn piper_reports_missing_executable_without_robotic_fallback() {
         let mut cfg = WorkerConfig::default();
         cfg.tts.piper.command = "/missing/piper".into();
-        assert!(piper_paths(&cfg)
-            .unwrap_err()
-            .contains("Piper is not installed"));
+        assert!(
+            piper_paths(&cfg)
+                .unwrap_err()
+                .contains("Piper is not installed")
+        );
     }
 
     #[test]
@@ -615,9 +617,11 @@ mod tests {
             .into_owned();
         assert!(piper_paths(&cfg).unwrap_err().contains("download it"));
         cfg.tts.piper.model = "whisper-tiny".into();
-        assert!(piper_paths(&cfg)
-            .unwrap_err()
-            .contains("Choose a Piper voice"));
+        assert!(
+            piper_paths(&cfg)
+                .unwrap_err()
+                .contains("Choose a Piper voice")
+        );
     }
 
     #[test]

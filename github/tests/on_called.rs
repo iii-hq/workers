@@ -11,11 +11,11 @@ mod real_engine;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use engine::{wait, Engine};
-use github::events::{register_on_called, run_and_emit, CalledEvent, ON_CALLED_FN};
+use engine::{Engine, wait};
+use github::events::{CalledEvent, ON_CALLED_FN, register_on_called, run_and_emit};
 use iii_sdk::{Capture, Error, RegisterFunction, Source};
 use real_engine::RealEngine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const TARGET: &str = "ade::github-activity";
 

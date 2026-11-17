@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::clients::slack;
 use crate::deps::Deps;
@@ -49,12 +49,12 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         ON_MESSAGE_ADDED_ID,
         "Seed the Slack stream for a new assistant entry.",
         |d, evt: MessageAddedEvent| async move {
-            if let Some(msg) = &evt.message {
-                if msg.role == "assistant" {
-                    let text = msg.text();
-                    if let Err(e) = stream::on_assistant_text(&d, &evt.session_id, &text, 0).await {
-                        tracing::warn!(error = %e, "on-message-added stream failed");
-                    }
+            if let Some(msg) = &evt.message
+                && msg.role == "assistant"
+            {
+                let text = msg.text();
+                if let Err(e) = stream::on_assistant_text(&d, &evt.session_id, &text, 0).await {
+                    tracing::warn!(error = %e, "on-message-added stream failed");
                 }
             }
             Ok::<_, Error>(BindingAck { ok: true })
@@ -91,20 +91,22 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             // Non-terminal completion (armed wake): the run continues in a
             // later turn — flush the stream above but hold outcome reporting
             // for the terminal turn.
-            if evt.terminal && evt.status != "completed" && evt.status != "ok" {
-                if let Some(target) = kv::session_target(&d, &evt.session_id).await {
-                    let reason = evt
-                        .result_error
-                        .or(evt.reason)
-                        .unwrap_or_else(|| evt.status.clone());
-                    let _ = slack::call(
-                        &d,
-                        "chat.postMessage",
-                        json!({ "channel": target.channel, "thread_ts": target.thread_ts,
+            if evt.terminal
+                && evt.status != "completed"
+                && evt.status != "ok"
+                && let Some(target) = kv::session_target(&d, &evt.session_id).await
+            {
+                let reason = evt
+                    .result_error
+                    .or(evt.reason)
+                    .unwrap_or_else(|| evt.status.clone());
+                let _ = slack::call(
+                    &d,
+                    "chat.postMessage",
+                    json!({ "channel": target.channel, "thread_ts": target.thread_ts,
                             "text": format!("Turn ended: {reason}") }),
-                    )
-                    .await;
-                }
+                )
+                .await;
             }
             Ok::<_, Error>(BindingAck { ok: true })
         },

@@ -68,8 +68,8 @@
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -78,7 +78,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::futures::Notified;
 use tokio::sync::oneshot::error::TryRecvError;
-use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 
@@ -1236,7 +1236,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tokio::sync::Notify;
-    use tokio::time::{sleep, Instant};
+    use tokio::time::{Instant, sleep};
 
     async fn wait_until<F, Fut>(mut pred: F)
     where
@@ -1386,10 +1386,12 @@ mod tests {
             .unwrap();
 
         let restore = break_journal(&dir);
-        assert!(adapter
-            .ack_function_queue("turns", first.delivery_id)
-            .await
-            .is_err());
+        assert!(
+            adapter
+                .ack_function_queue("turns", first.delivery_id)
+                .await
+                .is_err()
+        );
         restore();
         assert_eq!(store.topic_stats("turns").await.delivered, 0);
 
@@ -1489,11 +1491,13 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(adapter
-            .function_deliveries
-            .lock()
-            .await
-            .contains_key(&original.delivery_id));
+        assert!(
+            adapter
+                .function_deliveries
+                .lock()
+                .await
+                .contains_key(&original.delivery_id)
+        );
         restore();
         let message = tokio::time::timeout(Duration::from_secs(5), replacement.recv())
             .await

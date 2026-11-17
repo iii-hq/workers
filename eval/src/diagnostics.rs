@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use harness::policy::{plan_calls, CallKind};
+use harness::policy::{CallKind, plan_calls};
 use harness::types::message::AgentMessage;
 use harness::types::turn::ExposeMode;
 use serde_json::{Map, Value};
@@ -431,10 +431,10 @@ fn project(entry: &Value) -> Value {
             match key.as_str() {
                 "timestamp" | "native_stop_reason" => {}
                 "details" => {
-                    if message.get("is_error") == Some(&Value::Bool(true)) {
-                        if let Some(error) = value.get("error") {
-                            kept.insert("details".into(), serde_json::json!({ "error": error }));
-                        }
+                    if message.get("is_error") == Some(&Value::Bool(true))
+                        && let Some(error) = value.get("error")
+                    {
+                        kept.insert("details".into(), serde_json::json!({ "error": error }));
                     }
                 }
                 "content" => {
@@ -801,12 +801,14 @@ mod tests {
     #[test]
     fn repeated_error_controls_are_not_flagged() {
         // Corrected arguments.
-        assert!(detect(
-            "s",
-            &repeated("INVALID_SLOT", json!({"day": 2, "slot": "am"}))
-        )
-        .diagnostics
-        .is_empty());
+        assert!(
+            detect(
+                "s",
+                &repeated("INVALID_SLOT", json!({"day": 2, "slot": "am"}))
+            )
+            .diagnostics
+            .is_empty()
+        );
         // A different error code.
         assert!(
             detect("s", &repeated("CONFLICT", json!({"day": 1, "slot": "am"})))
@@ -871,9 +873,11 @@ mod tests {
         assert_eq!(quiet.excluded_probes[0].target, STORED_TYPE_LOOKUP);
         assert_eq!(quiet.excluded_probes[0].code, "NOT_FOUND");
         assert_eq!(quiet.excluded_probes[0].calls, ["a", "b"]);
-        assert!(detect("s", &probe(json!({"namespace": "default"})))
-            .diagnostics
-            .is_empty());
+        assert!(
+            detect("s", &probe(json!({"namespace": "default"})))
+                .diagnostics
+                .is_empty()
+        );
         assert_eq!(
             detect("s", &probe(json!({"namespace": "crm"})))
                 .diagnostics

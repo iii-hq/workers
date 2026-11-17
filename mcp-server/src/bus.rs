@@ -3,7 +3,7 @@
 
 use std::future::Future;
 
-use iii_sdk::{errors::Error, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, errors::Error};
 use serde_json::Value;
 
 /// An engine error as `{ code, message }`.

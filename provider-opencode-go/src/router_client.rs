@@ -4,8 +4,8 @@
 //! registration token. `register` forwards a declaration payload that already
 //! carries both (see `register::declare_once`).
 use crate::PROVIDER_ID;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::router_client as scaffold;
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;

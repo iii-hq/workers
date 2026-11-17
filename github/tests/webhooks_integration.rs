@@ -10,7 +10,7 @@ mod engine;
 #[path = "support/webhook_mocks.rs"]
 mod mocks;
 
-use engine::{wait, Engine};
+use engine::{Engine, wait};
 use futures::FutureExt;
 use github::{config::Config, configuration::ConfigCell, webhooks::WebhookConfig};
 use hmac::{Hmac, Mac};
@@ -21,14 +21,14 @@ use iii_http::{
 use iii_sdk::{
     Error, IIIClient, ObserverHandle, ObserverOptions, RegisterFunction, Source, Target,
 };
-use mocks::{call, Queue, Tunnel, CONSUMER, PROVIDER};
-use serde_json::{json, Value};
+use mocks::{CONSUMER, PROVIDER, Queue, Tunnel, call};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -338,10 +338,12 @@ impl Fixture {
         );
         assert_eq!(posts[0]["endpoint"], "repos/owner/repo/hooks");
         let config = &posts[0]["body"]["config"];
-        assert!(config["url"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://one.trycloudflare.com/webhooks/github/"));
+        assert!(
+            config["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://one.trycloudflare.com/webhooks/github/")
+        );
         assert_eq!(config["content_type"], "json");
         assert_eq!(config["insecure_ssl"], "0");
         assert!(config["secret"].as_str().unwrap().len() >= 32);
@@ -455,10 +457,12 @@ async fn recovery_follows_delivery_cursors_and_stops_after_five_pages() {
             let status = fixture.status(number).await;
             assert_eq!(status["status"], "active", "{status}");
             assert_eq!(status["health"]["hook_ready"], true, "{status}");
-            assert!(status["health"]["last_error"]
-                .as_str()
-                .unwrap()
-                .contains("five pages"));
+            assert!(
+                status["health"]["last_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("five pages")
+            );
             assert!(fixture.database()["repos"]["owner/repo"]["error"].is_null());
         }
         for number in [1, 2] {

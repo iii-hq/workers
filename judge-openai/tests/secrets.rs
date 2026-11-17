@@ -5,14 +5,14 @@
 #[allow(dead_code)]
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
-use iii_sdk::{register_worker, InitOptions};
-use judge_openai::{configuration, DecisionsClient, OpenAiConfig};
-use serde_json::{json, Value};
+use iii_sdk::{InitOptions, register_worker};
+use judge_openai::{DecisionsClient, OpenAiConfig, configuration};
+use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 use wiremock::{
-    matchers::{header, method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{header, method, path},
 };
 
 /// Call `function_id` once with `api_key` configured; `secrets::resolve`

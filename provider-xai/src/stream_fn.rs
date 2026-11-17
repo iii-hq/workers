@@ -5,22 +5,22 @@ use crate::config::config_from_resolve;
 use crate::configuration::ConfigCell;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::responses::{
-    build_responses_body, responses_url, spawn_responses_upstream, ResponsesUpstreamArgs,
+    ResponsesUpstreamArgs, build_responses_body, responses_url, spawn_responses_upstream,
 };
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
-use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
+use llm_router::provider_scaffold::pump::{PING_INTERVAL, pump, pump_abortable, send_event};
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::router::{PromptCacheIntent, ProviderStreamInput, ProviderStreamOutput};
 use tokio::sync::{mpsc, watch};
@@ -45,9 +45,9 @@ pub fn make_stream(
     cache: ScaffoldCache,
     aborts: StreamAborts,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cell, cache, aborts) = (
             iii.clone(),

@@ -1,6 +1,6 @@
 //! Test helpers: the committed tiny GGUF (random qwen3 weights, byte vocabulary).
 #![allow(dead_code)]
-use judge_decider::{download, engine, DeciderClient};
+use judge_decider::{DeciderClient, download, engine};
 use std::path::PathBuf;
 
 pub fn tiny_gguf() -> PathBuf {

@@ -540,8 +540,7 @@ mod tests {
 
     #[test]
     fn parses_webhook_adapter() {
-        let yaml =
-            "updates:\n  name: webhook\n  config:\n    base_url: https://engine.example\n    secret: s";
+        let yaml = "updates:\n  name: webhook\n  config:\n    base_url: https://engine.example\n    secret: s";
         let cfg = WorkerConfig::from_yaml(yaml).unwrap();
         let UpdatesAdapter::Webhook(w) = cfg.updates else {
             panic!("expected webhook");

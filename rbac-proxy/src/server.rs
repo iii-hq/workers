@@ -10,8 +10,8 @@
 //! (the source of truth `rbac-proxy::status` reports).
 
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -24,7 +24,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::configuration::ConfigCell;
 use crate::engine_overrides::CatalogCache;
@@ -122,7 +122,11 @@ impl ServerHandle {
                             *cur = Some(spawn_server(listener, self.state.clone()));
                             *self.state.bound.write().await = previous;
                         }
-                        Err(rollback) => return Err(format!("replacement failed: {error:#}; restoring previous listener failed: {rollback:#}")),
+                        Err(rollback) => {
+                            return Err(format!(
+                                "replacement failed: {error:#}; restoring previous listener failed: {rollback:#}"
+                            ));
+                        }
                     }
                 }
                 return Err(format!("binding {host}:{port}: {error:#}"));

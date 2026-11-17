@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 use tokio::time::sleep;
 
 const WEBHOOK_FN: &str = "telegram-bot::webhook";
@@ -210,10 +210,10 @@ async fn end_to_end_child() {
     let client = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     let registered = loop {
-        if let Some(list) = call(&client, "engine::functions::list", json!({})).await {
-            if lists_function(&list, WEBHOOK_FN) {
-                break true;
-            }
+        if let Some(list) = call(&client, "engine::functions::list", json!({})).await
+            && lists_function(&list, WEBHOOK_FN)
+        {
+            break true;
         }
         if Instant::now() > deadline {
             break false;

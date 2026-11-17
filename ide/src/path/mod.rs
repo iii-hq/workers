@@ -49,13 +49,13 @@ pub(crate) fn canonicalize_with_fallback(p: &Path) -> std::io::Result<PathBuf> {
             let mut walk = canon_anc;
             for component in suffix.components() {
                 walk.push(component);
-                if let Ok(md) = std::fs::symlink_metadata(&walk) {
-                    if md.file_type().is_symlink() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("dangling symlink in path: {}", walk.display()),
-                        ));
-                    }
+                if let Ok(md) = std::fs::symlink_metadata(&walk)
+                    && md.file_type().is_symlink()
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("dangling symlink in path: {}", walk.display()),
+                    ));
                 }
             }
             return Ok(normalize_lexical(&walk));

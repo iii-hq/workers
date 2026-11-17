@@ -5,7 +5,7 @@
 use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 /// Output body injected for a tool call that never got a result.

@@ -18,15 +18,15 @@ use iii_sdk::errors::Error;
 use judge_contract::{Content, Evaluation, Question};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use xa11y_core::{ElementData, Role};
 
 use super::invalid;
 use super::observe::TreeScope;
 use crate::judge::{self, JudgeError};
 use crate::semantic::{
-    is_secret, label, secure_role, Code, Query, Row, SemanticError, SemanticSession, SnapshotOut,
-    Verb, FIND_POLL, MAX_SET_VALUE_CHARS,
+    Code, FIND_POLL, MAX_SET_VALUE_CHARS, Query, Row, SemanticError, SemanticSession, SnapshotOut,
+    Verb, is_secret, label, secure_role,
 };
 use crate::session::Session;
 
@@ -862,7 +862,7 @@ where
                         decision.confidence
                     )),
                     None,
-                )
+                );
             }
             Action::Wait => {
                 let until = (Instant::now() + SETTLE).min(deadline);
@@ -1751,11 +1751,13 @@ mod tests {
         assert_eq!(out.status, RunStatus::Stalled);
         assert!(out.reason.unwrap().contains("same element"));
         assert_eq!(out.steps.len(), 1);
-        assert!(out.steps[0]
-            .error
-            .as_deref()
-            .unwrap()
-            .starts_with("not_supported"));
+        assert!(
+            out.steps[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("not_supported")
+        );
         assert_eq!(t.actions(), ["press:Salvar"]);
     }
 
@@ -1849,11 +1851,13 @@ mod tests {
         .unwrap();
         assert_eq!(out.status, RunStatus::Interrupted);
         assert_eq!(out.steps.len(), 1);
-        assert!(out.steps[0]
-            .error
-            .as_deref()
-            .unwrap()
-            .starts_with("effect_unknown"));
+        assert!(
+            out.steps[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .starts_with("effect_unknown")
+        );
         assert_eq!(t.actions(), ["press:Salvar"]);
     }
 

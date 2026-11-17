@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use rust_stemmers::{Algorithm, Stemmer};
-use tl::{parse, ParserOptions};
+use tl::{ParserOptions, parse};
 
 use crate::schemas::{ContentFilter, FilterType, ThresholdType};
 
@@ -145,11 +145,11 @@ pub fn collect_blocks(html: &str) -> Vec<Block> {
     // lets start/end offsets alone decide descendant vs. ancestor containment.
     let mut anchors: Vec<(usize, usize, usize)> = Vec::new(); // (start, end, text_len)
     for node in dom.nodes() {
-        if let Some(tag) = node.as_tag() {
-            if tag.name().as_utf8_str().eq_ignore_ascii_case("a") {
-                let (s, e) = tag.boundaries(parser);
-                anchors.push((s, e, tag.inner_text(parser).chars().count()));
-            }
+        if let Some(tag) = node.as_tag()
+            && tag.name().as_utf8_str().eq_ignore_ascii_case("a")
+        {
+            let (s, e) = tag.boundaries(parser);
+            anchors.push((s, e, tag.inner_text(parser).chars().count()));
         }
     }
     anchors.sort_unstable_by_key(|&(s, _, _)| s);
@@ -497,7 +497,7 @@ mod tests {
         assert!(out.contains("quick brown fox")); // article kept
         assert!(!out.contains("Home")); // nested nav removed
         assert!(!out.contains("Terms")); // nested footer removed
-                                         // and meaningfully shorter than the input
+        // and meaningfully shorter than the input
         assert!(out.len() < html.len());
     }
 

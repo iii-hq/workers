@@ -9,8 +9,7 @@ pub type SharedConfig = Arc<ArcSwap<WorkerConfig>>;
 
 pub const CONFIG_ID: &str = "tmux";
 pub const CONFIG_NAME: &str = "tmux";
-pub const CONFIG_DESCRIPTION: &str =
-    "tmux binary and server socket, polling cadence, console terminal limits, and the agent CLIs recognised in panes.";
+pub const CONFIG_DESCRIPTION: &str = "tmux binary and server socket, polling cadence, console terminal limits, and the agent CLIs recognised in panes.";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]

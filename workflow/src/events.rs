@@ -19,8 +19,7 @@ use crate::types::{NodeState, RunStatus, WorkflowRunRecord};
 /// The event function every terminal run calls. Private: only this worker
 /// calls it; anyone may observe it.
 pub const ON_RUN_COMPLETED_FN: &str = "workflow::on-run-completed";
-pub const ON_RUN_COMPLETED_DESC: &str =
-    "A workflow run reached a terminal state (completed, failed or cancelled); the event is \
+pub const ON_RUN_COMPLETED_DESC: &str = "A workflow run reached a terminal state (completed, failed or cancelled); the event is \
      {run_id, status, result, result_error, failed_nodes}. To wait for one run, observe it \
      with args {run_id}: a run that already ended is replayed at once, and an unknown or \
      collected run is refused with UNKNOWN_RUN. Without args it reports every run; `filters` \
@@ -441,8 +440,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::test_support::RecordingDeliverer;
     use super::*;
@@ -622,7 +621,7 @@ mod tests {
 
         fn read(
             self: &Arc<Self>,
-        ) -> impl Fn() -> std::future::Ready<Result<Option<WorkflowRunRecord>, WorkflowError>>
+        ) -> impl Fn() -> std::future::Ready<Result<Option<WorkflowRunRecord>, WorkflowError>> + use<>
         {
             let runs = self.clone();
             move || {

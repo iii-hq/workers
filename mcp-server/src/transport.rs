@@ -2,7 +2,7 @@
 //! JSON-RPC reply, and on a session's `GET` stream one SSE event per
 //! observation, as a JSON-RPC notification.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::jsonrpc::JsonRpcResponse;
 
@@ -55,7 +55,7 @@ pub fn encode_sse_jsonrpc(rpc: &JsonRpcResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jsonrpc::{json_rpc_success, JsonRpcId, JsonRpcResponseId};
+    use crate::jsonrpc::{JsonRpcId, JsonRpcResponseId, json_rpc_success};
     use serde_json::json;
 
     #[test]

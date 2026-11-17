@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 
 use crate::error::MemoryError;
 use crate::index::Bm25Index;
-use crate::types::{now_ms, Memory, Rule};
+use crate::types::{Memory, Rule, now_ms};
 
 const MEMORIES_FILE: &str = "memories.jsonl";
 const VECTORS_FILE: &str = "vectors.jsonl";
@@ -255,6 +255,39 @@ fn push_line(buf: &mut Vec<u8>, value: &impl serde::Serialize) -> Result<(), Mem
     serde_json::to_writer(&mut *buf, value).map_err(|e| MemoryError::Storage(e.to_string()))?;
     buf.push(b'\n');
     Ok(())
+}
+
+/// Whether `record` still matches a caller's expected snapshot: a full
+/// record or a revision-bound projection. Unknown fields are rejected
+/// rather than silently ignored; a malformed snapshot is an error.
+pub(crate) fn snapshot_matches(
+    record: &Memory,
+    snapshot: &serde_json::Value,
+) -> Result<bool, MemoryError> {
+    let fields = snapshot
+        .as_object()
+        .filter(|fields| !fields.is_empty())
+        .ok_or_else(|| {
+            MemoryError::InvalidInput("expected snapshot must be a nonempty object".into())
+        })?;
+    if fields
+        .get("revision")
+        .and_then(serde_json::Value::as_u64)
+        .is_none()
+    {
+        return Err(MemoryError::InvalidInput(
+            "expected snapshot requires an unsigned revision".into(),
+        ));
+    }
+    let current = serde_json::to_value(record).map_err(|e| MemoryError::Storage(e.to_string()))?;
+    Ok(fields.iter().all(|(key, value)| {
+        current.get(key).unwrap_or(&serde_json::Value::Null) == value
+            && (current.get(key).is_some()
+                || matches!(
+                    key.as_str(),
+                    "source" | "stated_at" | "invalid_at" | "superseded_by"
+                ))
+    }))
 }
 
 /// Replace a small file whole: hidden temp file beside it, fsync, rename
@@ -1280,10 +1313,10 @@ impl Store {
         banks.remove(name);
         // The default bank's runs go on (it materializes on use): its plans
         // stay. The bank is already gone: a failed purge is logged, not reported.
-        if name != default_bank {
-            if let Err(e) = run_blocking(|| self.purge_bank_plans(name)).await {
-                tracing::warn!(bank = name, error = %e, "extraction plan purge failed");
-            }
+        if name != default_bank
+            && let Err(e) = run_blocking(|| self.purge_bank_plans(name)).await
+        {
+            tracing::warn!(bank = name, error = %e, "extraction plan purge failed");
         }
         Ok(dest.display().to_string())
     }
@@ -1417,10 +1450,10 @@ impl Bank {
         // otherwise; ~19 KB each for a 1536-dim vector.
         // ponytail: compacts at open only; a long uptime grows until the
         // next boot or memory::reload.
-        if lines > 2 * vectors.len() {
-            if let Err(e) = compact_vectors(&vectors_path, &vectors, &memories) {
-                tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
-            }
+        if lines > 2 * vectors.len()
+            && let Err(e) = compact_vectors(&vectors_path, &vectors, &memories)
+        {
+            tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
         }
         drop(sidecar);
 
@@ -1695,41 +1728,13 @@ impl Bank {
             .cloned()
             .ok_or_else(|| MemoryError::MemoryNotFound(winner_id.into()))?;
         for (record, snapshot) in [(&loser, expected.0), (&winner, expected.1)] {
-            if let Some(snapshot) = snapshot {
-                // A snapshot may be a full record or a revision-bound projection.
-                // Unknown fields are rejected rather than silently ignored.
-                let fields = snapshot
-                    .as_object()
-                    .filter(|fields| !fields.is_empty())
-                    .ok_or_else(|| {
-                        MemoryError::InvalidInput(
-                            "expected snapshot must be a nonempty object".into(),
-                        )
-                    })?;
-                if fields
-                    .get("revision")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_none()
-                {
-                    return Err(MemoryError::InvalidInput(
-                        "expected snapshot requires an unsigned revision".into(),
-                    ));
-                }
-                let current = serde_json::to_value(record)
-                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
-                if !fields.iter().all(|(key, value)| {
-                    current.get(key).unwrap_or(&serde_json::Value::Null) == value
-                        && (current.get(key).is_some()
-                            || matches!(
-                                key.as_str(),
-                                "source" | "stated_at" | "invalid_at" | "superseded_by"
-                            ))
-                }) {
-                    return Err(MemoryError::InvalidInput(format!(
-                        "memory `{}` changed since expected snapshot",
-                        record.id
-                    )));
-                }
+            if let Some(snapshot) = snapshot
+                && !snapshot_matches(record, snapshot)?
+            {
+                return Err(MemoryError::InvalidInput(format!(
+                    "memory `{}` changed since expected snapshot",
+                    record.id
+                )));
             }
         }
         if loser.pinned || !loser.is_live() || !winner.is_live() {
@@ -2131,6 +2136,7 @@ impl Bank {
     /// was read. Both sides are compared redacted: `expected` is the redacted
     /// text the merge started from. `Ok(None)`: it changed, nothing written;
     /// `Ok(Some(changed))`: published, `changed` when the file was rewritten.
+    /// `memory::rule::set` with `expected` publishes through it too.
     pub fn extraction_rule_expected(
         &self,
         name: &str,
@@ -2238,7 +2244,7 @@ impl Bank {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{fingerprint, Confidence};
+    use crate::types::{Confidence, fingerprint};
 
     #[test]
     fn authenticated_history_bytes_are_atomic_across_reopen_and_retry() {
@@ -2277,12 +2283,16 @@ mod tests {
         let mut huge = row.clone();
         huge.attestation.turn_id = "retry".into();
         huge.attestation.bank = Some("b".repeat(17000));
-        assert!(store
-            .save_authenticated_history("synthetic", &[huge])
-            .is_err());
-        assert!(store
-            .save_authenticated_history("synthetic", &[row.clone(), row.clone()])
-            .is_err());
+        assert!(
+            store
+                .save_authenticated_history("synthetic", &[huge])
+                .is_err()
+        );
+        assert!(
+            store
+                .save_authenticated_history("synthetic", &[row.clone(), row.clone()])
+                .is_err()
+        );
         let aggregate: Vec<_> = (0..1024)
             .map(|n| {
                 let mut r = row.clone();
@@ -2295,9 +2305,11 @@ mod tests {
                 r
             })
             .collect();
-        assert!(store
-            .save_authenticated_history("synthetic", &aggregate)
-            .is_err());
+        assert!(
+            store
+                .save_authenticated_history("synthetic", &aggregate)
+                .is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         // Individually bounded deliveries cannot overflow a persisted union.
         let union_dir = tempfile::tempdir().unwrap();
@@ -2307,9 +2319,11 @@ mod tests {
             .unwrap();
         let union_path = union.extraction_plan_path(&key);
         let union_before = std::fs::read(&union_path).unwrap();
-        assert!(union
-            .save_authenticated_history("synthetic", &aggregate[350..700])
-            .is_err());
+        assert!(
+            union
+                .save_authenticated_history("synthetic", &aggregate[350..700])
+                .is_err()
+        );
         assert_eq!(std::fs::read(&union_path).unwrap(), union_before);
         union
             .save_authenticated_history("synthetic", std::slice::from_ref(&row))
@@ -2343,9 +2357,11 @@ mod tests {
         std::fs::write(&path, &malformed).unwrap();
         let stale = Store::open(dir.path().into()).unwrap();
         assert!(stale.authenticated_history("synthetic").is_err());
-        assert!(stale
-            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
-            .is_err());
+        assert!(
+            stale
+                .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+                .is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), malformed);
         // On-disk oversized record must be refused before JSON decoding, even
         // when trailing whitespace could otherwise deserialize successfully.
@@ -2354,9 +2370,11 @@ mod tests {
         std::fs::write(&path, &oversized).unwrap();
         let reopened = Store::open(dir.path().into()).unwrap();
         assert!(reopened.authenticated_history("synthetic").is_err());
-        assert!(reopened
-            .save_authenticated_history("synthetic", std::slice::from_ref(&row))
-            .is_err());
+        assert!(
+            reopened
+                .save_authenticated_history("synthetic", std::slice::from_ref(&row))
+                .is_err()
+        );
         assert_eq!(std::fs::read(&path).unwrap(), oversized);
         assert_eq!(
             reopened.pending_extraction("synthetic").unwrap(),
@@ -2487,12 +2505,16 @@ mod tests {
             assert!(store.pending_extraction(&invalid).is_err());
             assert!(store.extraction_ranges(&invalid).is_err());
             assert!(store.set_pending_extraction(&invalid, Value::Null).is_err());
-            assert!(store
-                .retain_extraction_range(&invalid, pending.clone(), true)
-                .is_err());
-            assert!(store
-                .acknowledge_extraction_range(&invalid, &pending)
-                .is_err());
+            assert!(
+                store
+                    .retain_extraction_range(&invalid, pending.clone(), true)
+                    .is_err()
+            );
+            assert!(
+                store
+                    .acknowledge_extraction_range(&invalid, &pending)
+                    .is_err()
+            );
             assert!(store.authenticated_history(&invalid).is_err());
             assert!(store.save_authenticated_history(&invalid, &[]).is_err());
             assert!(store.dismissed_history(&invalid).is_err());
@@ -2501,18 +2523,24 @@ mod tests {
         }
         let oversized_source = "x".repeat(crate::extraction_proof::SOURCE_BYTES / 6 + 1);
         assert!(store.extraction_plan(&oversized_source).is_err());
-        assert!(store
-            .save_extraction_plan(&oversized_source, &Value::Null)
-            .is_err());
+        assert!(
+            store
+                .save_extraction_plan(&oversized_source, &Value::Null)
+                .is_err()
+        );
         let mut bad = pending.clone();
         bad.entries[0].0 = "i".repeat(257);
-        assert!(store
-            .retain_extraction_range(&session, bad.clone(), true)
-            .is_err());
+        assert!(
+            store
+                .retain_extraction_range(&session, bad.clone(), true)
+                .is_err()
+        );
         assert!(store.acknowledge_extraction_range(&session, &bad).is_err());
-        assert!(store
-            .set_pending_extraction(&session, serde_json::to_value(&bad).unwrap())
-            .is_err());
+        assert!(
+            store
+                .set_pending_extraction(&session, serde_json::to_value(&bad).unwrap())
+                .is_err()
+        );
         bad.entries[0].0 = "entry".into();
         bad.entries[0].2 = "x".repeat(crate::extraction_proof::TEXT_BYTES + 1);
         assert!(store.retain_extraction_range(&session, bad, true).is_err());
@@ -2528,12 +2556,16 @@ mod tests {
                 )
             })
             .collect();
-        assert!(store
-            .retain_extraction_range(&session, aggregate.clone(), true)
-            .is_err());
-        assert!(store
-            .set_pending_extraction(&session, serde_json::to_value(aggregate).unwrap())
-            .is_err());
+        assert!(
+            store
+                .retain_extraction_range(&session, aggregate.clone(), true)
+                .is_err()
+        );
+        assert!(
+            store
+                .set_pending_extraction(&session, serde_json::to_value(aggregate).unwrap())
+                .is_err()
+        );
         assert_eq!(snapshot(), before);
         let reopened = Store::open(dir.path().into()).unwrap();
         assert_eq!(
@@ -2695,10 +2727,12 @@ mod tests {
         assert_eq!(bank2.vector_count().await, 0, "and on reopen");
 
         // A vector landing after the retirement is refused.
-        assert!(!bank
-            .set_vector(&m.id, "m", &m.text, vec![0.5])
-            .await
-            .unwrap());
+        assert!(
+            !bank
+                .set_vector(&m.id, "m", &m.text, vec![0.5])
+                .await
+                .unwrap()
+        );
         // Revived, the record is backfill work again.
         let mut back = gone;
         back.invalid_at = None;
@@ -2785,19 +2819,22 @@ mod tests {
         f.invalid_at = Some(now_ms());
         f.revision = 2;
         bank.commit(f.clone()).await.unwrap();
-        assert!(bank
-            .recall("api port", None, "", 5, 30, false)
-            .await
-            .is_empty());
+        assert!(
+            bank.recall("api port", None, "", 5, 30, false)
+                .await
+                .is_empty()
+        );
         assert!(bank.get(&f.id).await.unwrap().invalid_at.is_some());
 
         // And the same is true after a reopen.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        assert!(bank2
-            .recall("api port", None, "", 5, 30, false)
-            .await
-            .is_empty());
+        assert!(
+            bank2
+                .recall("api port", None, "", 5, 30, false)
+                .await
+                .is_empty()
+        );
         let (memories, total) = bank2.list(10, 0, true, None).await;
         assert_eq!(total, 1);
         assert!(memories[0].invalid_at.is_some());
@@ -2905,9 +2942,10 @@ mod tests {
         let (bank, _) = store.ensure_bank("scratch", None).await.unwrap();
         store.trash_bank("scratch", "main").await.unwrap();
         // A handle taken before the trash, as a running extraction holds.
-        assert!(bank
-            .extraction_rule_expected("learned", "", "- Learned line.\n")
-            .is_err());
+        assert!(
+            bank.extraction_rule_expected("learned", "", "- Learned line.\n")
+                .is_err()
+        );
         assert!(bank.set_rule("style", "- Hand-written.\n").is_err());
         assert!(!dir.path().join("scratch").exists());
         assert!(store.is_deleted("scratch"));
@@ -3549,10 +3587,11 @@ mod tests {
         m.revision += 1;
         bank.commit(m.clone()).await.unwrap();
 
-        assert!(bank
-            .recall("retired convention", None, "", 5, 30, false)
-            .await
-            .is_empty());
+        assert!(
+            bank.recall("retired convention", None, "", 5, 30, false)
+                .await
+                .is_empty()
+        );
         let hits = bank
             .recall("retired convention", None, "", 5, 30, true)
             .await;
@@ -3665,9 +3704,10 @@ mod tests {
         assert_eq!(tagged.len(), 1);
         let (all, _) = bank2.list(10, 0, false, None).await;
         assert_eq!(all.len(), 2);
-        assert!(all
-            .iter()
-            .any(|m| m.id == "fplegacy0000000000" && m.tags.is_empty()));
+        assert!(
+            all.iter()
+                .any(|m| m.id == "fplegacy0000000000" && m.tags.is_empty())
+        );
     }
 
     #[test]

@@ -24,14 +24,12 @@ use crate::error::HarnessError;
 use crate::subscriptions::fired;
 
 pub const OBSERVERS_LIST_ID: &str = "harness::observers::list";
-pub const OBSERVERS_LIST_DESC: &str =
-    "List the observers a session created with harness::observe: observer id, observed \
+pub const OBSERVERS_LIST_DESC: &str = "List the observers a session created with harness::observe: observer id, observed \
      function with its args and filters, target (absent = notifies the owner), label, \
      conditions, lifecycle, and fire count. In-turn calls may omit `session_id`.";
 
 pub const OBSERVERS_DISPOSE_ID: &str = "harness::observers::dispose";
-pub const OBSERVERS_DISPOSE_DESC: &str =
-    "Remove one observer a session created, by observer id (the engine observer and the \
+pub const OBSERVERS_DISPOSE_DESC: &str = "Remove one observer a session created, by observer id (the engine observer and the \
      durable record); a still-armed wake notifies its parked owner. `session_id` must name \
      the owner; in-turn calls may omit it.";
 

@@ -9,7 +9,7 @@ use super::Deps;
 use crate::error::ApprovalError;
 use crate::pending;
 use crate::types::{
-    metadata_matches, ListPendingRequest, ListPendingResponse, PendingApprovalRecord,
+    ListPendingRequest, ListPendingResponse, PendingApprovalRecord, metadata_matches,
 };
 
 const DEFAULT_LIMIT: usize = 50;
@@ -59,15 +59,15 @@ pub async fn handle(
         .map_err(|e| ApprovalError::StateUnavailable(format!("pending list failed: {e}")))?;
 
     records.retain(|record| {
-        if let Some(want_sid) = &req.session_id {
-            if want_sid != &record.session_id {
-                return false;
-            }
+        if let Some(want_sid) = &req.session_id
+            && want_sid != &record.session_id
+        {
+            return false;
         }
-        if let Some(want) = &req.metadata {
-            if !metadata_matches(want, record.session_metadata.as_ref()) {
-                return false;
-            }
+        if let Some(want) = &req.metadata
+            && !metadata_matches(want, record.session_metadata.as_ref())
+        {
+            return false;
         }
         true
     });
@@ -101,7 +101,7 @@ mod tests {
 
     use super::*;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{state_set, with_stack, BootOpts};
+    use crate::testkit::{BootOpts, state_set, with_stack};
 
     async fn seed(
         iii: &iii_sdk::IIIClient,

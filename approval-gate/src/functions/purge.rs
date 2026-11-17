@@ -5,7 +5,7 @@
 
 use super::Deps;
 use crate::pending;
-use crate::types::{now_ms, PendingApprovalRecord, PendingResolvedEvent, ResolvedOutcome};
+use crate::types::{PendingApprovalRecord, PendingResolvedEvent, ResolvedOutcome, now_ms};
 
 pub async fn purge_matching<F>(deps: &Deps, predicate: F) -> usize
 where

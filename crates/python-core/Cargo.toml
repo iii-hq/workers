@@ -3,7 +3,7 @@
 [package]
 name = "iii-python-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Run untrusted one-shot Python in CPython-on-WebAssembly inside wasmtime — the runner, guest wrapper and manager, with no bus dependency"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"

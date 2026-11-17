@@ -7,16 +7,16 @@
 //! unknown `Mcp-Session-Id` is 404 so the client re-initializes), then
 //! JSON-RPC dispatch.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bus::Bus;
 use crate::config::McpConfig;
 use crate::directory_bridge;
 use crate::gateway;
 use crate::jsonrpc::{
-    is_json_rpc_request, json_rpc_error, json_rpc_success, parse_json_rpc_request,
-    response_id_from_body, JsonRpcRequest, JsonRpcResponse, JsonRpcResponseId, INTERNAL_ERROR,
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, JsonRpcRequest, JsonRpcResponse,
+    JsonRpcResponseId, METHOD_NOT_FOUND, is_json_rpc_request, json_rpc_error, json_rpc_success,
+    parse_json_rpc_request, response_id_from_body,
 };
 use crate::origin::{header, origin_allowed};
 use crate::rbac_guard::RbacMode;
@@ -170,7 +170,7 @@ pub async fn handle_http<B: Bus + Observe>(
                     return refusal(
                         400,
                         "Bad Request: Last-Event-ID is not an event id from this server",
-                    )
+                    );
                 }
             },
         };
@@ -255,7 +255,7 @@ mod tests {
     use super::*;
     use crate::bus::fake::FakeBus;
     use crate::config::McpConfig;
-    use crate::rbac_guard::{RbacMode, DANGEROUS_NOTICE};
+    use crate::rbac_guard::{DANGEROUS_NOTICE, RbacMode};
     use crate::sessions::{SessionLimits, Sessions};
     use crate::testkit::Engine;
     use serde_json::json;
@@ -337,10 +337,12 @@ mod tests {
         let mut f = Fixture::new(FakeBus::new());
         f.mode = RbacMode::Dangerous;
         let r = f.post(json!({}), rpc("initialize", json!({}))).await;
-        assert!(result(&r)["instructions"]
-            .as_str()
-            .unwrap()
-            .starts_with(DANGEROUS_NOTICE));
+        assert!(
+            result(&r)["instructions"]
+                .as_str()
+                .unwrap()
+                .starts_with(DANGEROUS_NOTICE)
+        );
     }
 
     #[tokio::test]
@@ -356,10 +358,12 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, 403);
-        assert!(rpc_error(&r)["message"]
-            .as_str()
-            .unwrap()
-            .contains("Origin"));
+        assert!(
+            rpc_error(&r)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Origin")
+        );
         assert!(f.engine.bus.calls().is_empty());
         assert!(r.session_id.is_none());
     }
@@ -387,10 +391,12 @@ mod tests {
             )
             .await;
         assert_eq!(r.status, 404);
-        assert!(rpc_error(&r)["message"]
-            .as_str()
-            .unwrap()
-            .contains("Session not found"));
+        assert!(
+            rpc_error(&r)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Session not found")
+        );
     }
 
     #[tokio::test]
@@ -524,12 +530,13 @@ mod tests {
                 "{method}"
             );
         }
-        assert!(!f
-            .engine
-            .bus
-            .calls()
-            .iter()
-            .any(|(id, _)| id.starts_with("skills::") || id.starts_with("prompts::")));
+        assert!(
+            !f.engine
+                .bus
+                .calls()
+                .iter()
+                .any(|(id, _)| id.starts_with("skills::") || id.starts_with("prompts::"))
+        );
     }
 
     #[tokio::test]
@@ -634,10 +641,12 @@ mod tests {
         )
         .await;
         assert_eq!(bad.status, 400);
-        assert!(rpc_error(&bad)["message"]
-            .as_str()
-            .unwrap()
-            .contains("Last-Event-ID"));
+        assert!(
+            rpc_error(&bad)["message"]
+                .as_str()
+                .unwrap()
+                .contains("Last-Event-ID")
+        );
     }
 
     #[tokio::test]

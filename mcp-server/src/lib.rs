@@ -42,8 +42,13 @@ pub mod testkit;
 /// Keep request and response bodies out of this worker's trace spans: a
 /// tool call can carry a credential on its way to `iii_secret_store`. Call
 /// it before connecting to the engine.
-pub fn disable_trace_payloads() {
-    std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1");
+///
+/// # Safety
+/// The process must be single-threaded throughout this call because it
+/// mutates the process environment.
+pub unsafe fn disable_trace_payloads() {
+    // SAFETY: the caller guarantees the process is single-threaded.
+    unsafe { std::env::set_var("III_DISABLE_TRACE_PAYLOADS", "1") };
 }
 
 #[cfg(test)]
@@ -51,8 +56,12 @@ mod startup_tests {
     #[test]
     fn trace_payloads_are_turned_off() {
         // A tool call can carry a credential for iii_secret_store.
-        std::env::remove_var("III_DISABLE_TRACE_PAYLOADS");
-        super::disable_trace_payloads();
+        // SAFETY: no other test in this crate reads or writes
+        // III_DISABLE_TRACE_PAYLOADS.
+        unsafe {
+            std::env::remove_var("III_DISABLE_TRACE_PAYLOADS");
+            super::disable_trace_payloads();
+        }
         assert_eq!(
             std::env::var("III_DISABLE_TRACE_PAYLOADS").as_deref(),
             Ok("1")

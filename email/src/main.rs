@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
+use iii_sdk::{InitOptions, register_worker, runtime::WorkerMetadata};
 use std::sync::Arc;
 
 use email::configuration::{self, AppState};
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = tokio::signal::ctrl_c() => r,

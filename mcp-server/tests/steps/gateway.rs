@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use cucumber::{given, then, when};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::http::{last_header, last_rpc, last_status, post_jsonrpc, send};
 use crate::common::world::McpWorld;
@@ -68,9 +68,11 @@ async fn no_prompts(world: &mut McpWorld) {
     if world.iii.is_none() {
         return;
     }
-    assert!(last_rpc(world)["result"]["capabilities"]
-        .get("prompts")
-        .is_none());
+    assert!(
+        last_rpc(world)["result"]["capabilities"]
+            .get("prompts")
+            .is_none()
+    );
 }
 
 #[then("the response carries an Mcp-Session-Id header")]

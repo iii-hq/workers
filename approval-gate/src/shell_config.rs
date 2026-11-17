@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// Resolve through the IDE in this worker's namespace. Never guess a global

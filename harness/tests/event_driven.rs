@@ -13,9 +13,9 @@ use harness::config::WorkerConfig;
 use harness::deps::Deps;
 use harness::types::message::AgentMessage;
 use harness::types::turn::FunctionPolicy;
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message as Frame;
 
 #[derive(Default)]
@@ -70,10 +70,11 @@ impl Store {
             "state::get" | "harness::state::get" => Ok(self.get(scope, key)),
             "state::set" | "harness::state::set" => {
                 self.put(scope, key, data["value"].clone());
-                if scope == "harness_turn" && data["value"]["status"] == "failed" {
-                    if let Some((key, row)) = self.queue_on_failed_write.take() {
-                        self.put("harness_queue", &key, row);
-                    }
+                if scope == "harness_turn"
+                    && data["value"]["status"] == "failed"
+                    && let Some((key, row)) = self.queue_on_failed_write.take()
+                {
+                    self.put("harness_queue", &key, row);
                 }
                 Ok(json!({}))
             }
@@ -394,11 +395,13 @@ async fn a_binding_that_fires_before_its_deadline_cancels_its_timer() {
         !stack.deps.expiry_timers.is_armed("sub_fired"),
         "retiring the record must cancel its deadline"
     );
-    assert!(!stack
-        .store
-        .lock()
-        .unwrap()
-        .appended("e_obsexpired_sub_fired"));
+    assert!(
+        !stack
+            .store
+            .lock()
+            .unwrap()
+            .appended("e_obsexpired_sub_fired")
+    );
 }
 
 /// The e2e regression: a once Compose wake's terminal event reached the
@@ -570,12 +573,14 @@ async fn a_binding_pass_leaves_a_claimed_wake_to_its_delivery() {
             store.get("harness_binding", "sub_wake")["fires"] == 1
         })
         .await;
-    assert!(stack
-        .store
-        .lock()
-        .unwrap()
-        .get("harness_binding", "sub_wake")["claimed_at"]
-        .is_i64());
+    assert!(
+        stack
+            .store
+            .lock()
+            .unwrap()
+            .get("harness_binding", "sub_wake")["claimed_at"]
+            .is_i64()
+    );
 
     harness::bindings::expiry::sweep(&stack.deps).await;
     harness::bindings::expiry::sweep(&stack.deps).await;

@@ -15,7 +15,7 @@ use fastembed::{
     UserDefinedRerankingModel,
 };
 
-use super::search_index::{canonical_tools, searchable_text, tool_fingerprint, ToolSchema};
+use super::search_index::{ToolSchema, canonical_tools, searchable_text, tool_fingerprint};
 
 pub(crate) const MINILM_REPOSITORY: &str = "sentence-transformers/all-MiniLM-L6-v2";
 pub(crate) const MINILM_REVISION: &str = "c9745ed1d9f207416be6d2e6f8de32d1f16199bf";
@@ -298,30 +298,30 @@ impl SemanticSearch {
                 // fused BM25+dense order (see production_minilm_assemble), so a
                 // missing or broken `reranker/` bundle must not hold back the
                 // dense index.
-                if reranker.is_none() && is_desired(&inner, &fingerprint) {
-                    if let Some(reranker_root) =
+                if reranker.is_none()
+                    && is_desired(&inner, &fingerprint)
+                    && let Some(reranker_root) =
                         inner.model_dir.clone().map(|path| path.join("reranker"))
+                {
+                    match tokio::task::spawn_blocking(move || {
+                        load_verified_reranker(&reranker_root)
+                    })
+                    .await
                     {
-                        match tokio::task::spawn_blocking(move || {
-                            load_verified_reranker(&reranker_root)
-                        })
-                        .await
-                        {
-                            Ok(Ok(loaded)) => match inner.reranker.write() {
-                                Ok(mut slot) => *slot = Some(Arc::new(Mutex::new(loaded))),
-                                Err(_) => tracing::warn!(
-                                    "semantic reranker lock poisoned; hybrid search runs without the cross-encoder"
-                                ),
-                            },
-                            Ok(Err(error)) => tracing::warn!(
-                                %error,
-                                "semantic reranker unavailable; hybrid search runs without the cross-encoder"
+                        Ok(Ok(loaded)) => match inner.reranker.write() {
+                            Ok(mut slot) => *slot = Some(Arc::new(Mutex::new(loaded))),
+                            Err(_) => tracing::warn!(
+                                "semantic reranker lock poisoned; hybrid search runs without the cross-encoder"
                             ),
-                            Err(error) => tracing::warn!(
-                                %error,
-                                "semantic reranker load task failed; hybrid search runs without the cross-encoder"
-                            ),
-                        }
+                        },
+                        Ok(Err(error)) => tracing::warn!(
+                            %error,
+                            "semantic reranker unavailable; hybrid search runs without the cross-encoder"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "semantic reranker load task failed; hybrid search runs without the cross-encoder"
+                        ),
                     }
                 }
             }
@@ -646,10 +646,11 @@ async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavail
         .clone()
         .ok_or_else(|| unavailable("no model directory configured"))?;
     let stamp = bundle_stamp(&dir);
-    if let Some((failed, retry_at, error)) = &*inner.failed_load.lock().expect("failed load") {
-        if *failed == stamp && retry_at.is_none_or(|at| Instant::now() < at) {
-            return Err(unavailable(error.clone()));
-        }
+    if let Some((failed, retry_at, error)) = &*inner.failed_load.lock().expect("failed load")
+        && *failed == stamp
+        && retry_at.is_none_or(|at| Instant::now() < at)
+    {
+        return Err(unavailable(error.clone()));
     }
     let model = tokio::task::spawn_blocking(move || load_verified_minilm(&dir))
         .await
@@ -1319,9 +1320,11 @@ mod tests {
         let whole = encode_chunked(&texts, texts.len(), &mut fake).unwrap();
         assert_eq!(chunked, whole);
         assert_eq!(chunked.len(), texts.len());
-        assert!(encode_chunked(&[], EMBED_CHUNK, &mut fake)
-            .unwrap()
-            .is_empty());
+        assert!(
+            encode_chunked(&[], EMBED_CHUNK, &mut fake)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(batches, [8, 8, 4, 20]);
         assert!(encode_chunked(&texts, EMBED_CHUNK, |_| Err(unavailable("boom"))).is_err());
     }

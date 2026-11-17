@@ -19,7 +19,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const STAMP_REPLY_ID: &str = "workflow::stamp-reply";
 
@@ -214,9 +214,11 @@ mod tests {
     fn removes_supplied_caller_fs_root_when_envelope_has_none() {
         let args = json!({ "definition": {}, "caller_fs_root": "/etc" });
         let out = wire(decide(event("s_orch", "m1", args.clone())));
-        assert!(out["mutations"]["arguments"]
-            .get("caller_fs_root")
-            .is_none());
+        assert!(
+            out["mutations"]["arguments"]
+                .get("caller_fs_root")
+                .is_none()
+        );
         // The removal runs without a session id too.
         let out = wire(decide(
             serde_json::from_value(json!({ "call": { "arguments": args } })).expect("envelope"),

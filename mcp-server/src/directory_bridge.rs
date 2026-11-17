@@ -6,7 +6,7 @@
 //! through the gateway tools (the iii Claude plugin turns them into
 //! `/iii:*` commands), so the bridge serves no MCP prompts.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::bus::{Bus, BusError};
 
@@ -148,7 +148,7 @@ pub async fn get_skill_body<B: Bus>(bus: &B, id: &str) -> Result<String, BusErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{fake::FakeBus, BusError};
+    use crate::bus::{BusError, fake::FakeBus};
     use serde_json::json;
 
     fn skills_rows() -> Value {

@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const PAGE_SIZE: usize = 100;
 

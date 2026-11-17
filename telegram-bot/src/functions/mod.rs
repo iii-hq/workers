@@ -9,9 +9,9 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, IIIClient, Observed, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 

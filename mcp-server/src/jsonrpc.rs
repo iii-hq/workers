@@ -167,10 +167,10 @@ pub fn parse_json_rpc_request(value: &Value) -> Option<JsonRpcRequest> {
 /// Pull a response id out of an arbitrary body so we can echo it back in error
 /// responses for malformed-but-id-bearing requests.
 pub fn response_id_from_body(value: &Value) -> JsonRpcResponseId {
-    if let Some(obj) = value.as_object() {
-        if let Some(id) = obj.get("id").and_then(JsonRpcId::from_value) {
-            return JsonRpcResponseId::Id(id);
-        }
+    if let Some(obj) = value.as_object()
+        && let Some(id) = obj.get("id").and_then(JsonRpcId::from_value)
+    {
+        return JsonRpcResponseId::Id(id);
     }
     JsonRpcResponseId::Null
 }

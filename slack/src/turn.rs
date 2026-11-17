@@ -2,7 +2,7 @@
 //! resolve a model, and start a `harness::send` turn bound to the Slack thread.
 
 use iii_sdk::errors::Error;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::clients::{harness, router, slack};
 use crate::config::{ModelRef, WorkerConfig};

@@ -2,16 +2,16 @@
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{
-    make_refresh_models, refresh_models, refresh_models_periodically, CatalogRefreshState,
+    CatalogRefreshState, make_refresh_models, refresh_models, refresh_models_periodically,
 };
 use crate::errors::invalid_request_from_serde;
 use crate::session::AuthManager;
 use crate::stream_fn::make_stream;
 use crate::surface;
-use crate::{router_client, state, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client, state};
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
-use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
+use llm_router::provider_scaffold::aborts::{StreamAborts, make_abort};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::provider_scaffold::router_client::observe_router_ready;
@@ -19,7 +19,7 @@ use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,10 +79,10 @@ pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
         payload["token"] = json!(t);
     }
     let resp = router_client::register(iii, payload).await?;
-    if let Some(t) = resp.get("registration_token").and_then(Value::as_str) {
-        if token.as_deref() != Some(t) {
-            persist_registration_token(iii, t).await?;
-        }
+    if let Some(t) = resp.get("registration_token").and_then(Value::as_str)
+        && token.as_deref() != Some(t)
+    {
+        persist_registration_token(iii, t).await?;
     }
     Ok(())
 }

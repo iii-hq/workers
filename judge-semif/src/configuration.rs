@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SemifConfig>) -> Res
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge SemIf",
-        description:
-            "SemIf provider for judge: GGUF model, CPU/GPU placement and execution limits (runs in-process).",
+        description: "SemIf provider for judge: GGUF model, CPU/GPU placement and execution limits (runs in-process).",
         schema: SemifConfig::json_schema(),
         default_value: SemifConfig::default().to_json(),
     };

@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use computer::driver::{DisplayInfo, Driver, NativeHost};
-use computer::semantic::{parse_selector, platform, Code, Query, Scope, SemanticSession, Verb};
+use computer::semantic::{Code, Query, Scope, SemanticSession, Verb, parse_selector, platform};
 
 const SECRET: &str = "s3cr3t-fixture";
 const SECRET_B: &str = "campo-b-s3cr3t";
