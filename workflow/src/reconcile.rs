@@ -255,9 +255,14 @@ pub fn classify_terminal(
     }
 }
 
+/// The reply's session holds an armed wake, or is about to be reseeded. Pure.
+fn wake_armed(resp: &Value) -> bool {
+    resp["expects_wake"].as_bool().unwrap_or(false)
+}
+
 /// The outcome a node's `harness::status` reply gives it on a run stopped or not
-/// (`abort`). Pure.
-pub(crate) fn status_outcome(resp: &Value, abort: bool) -> NodeOutcome {
+/// (`abort`), for an attempt that has `submitted` its result or not. Pure.
+pub(crate) fn status_outcome(resp: &Value, abort: bool, submitted: bool) -> NodeOutcome {
     // Null → unknown session, still running.
     //
     // The node's outcome is the SESSION's terminal turn, not necessarily
@@ -271,7 +276,9 @@ pub(crate) fn status_outcome(resp: &Value, abort: bool) -> NodeOutcome {
     // turn-id guard would have skipped the woken turns forever.
     // A finished reply is trusted only from the confirming poll
     // (`settle_outcomes`): in a wake gap the parking turn reads finished.
-    if resp.is_null() || resp["expects_wake"].as_bool().unwrap_or(false) {
+    // An attempt that submitted has delivered: its wake is a leftover, so the
+    // turn's own status settles it, and reconcile then stops its session.
+    if resp.is_null() || (!submitted && wake_armed(resp)) {
         return NodeOutcome::StillRunning;
     }
     let status = resp["status"].as_str().unwrap_or("running");
@@ -310,21 +317,27 @@ fn caller_to_check<'a>(
 /// Failed / Cancelled).  Skips unknown sessions (null response) and sessions
 /// still awaiting a wake (`expects_wake` — the run's outcome arrives on a
 /// later turn in the same session). A finished reply is trusted only from the
-/// confirming poll `SETTLE_CONFIRM_MS` later (`settle_outcomes`). A tolerant node
-/// cancelled by a stop of the caller's turn aborts the run (`caller_to_check`); a
-/// failed caller poll defers that cancel to the next pass.
+/// confirming poll `SETTLE_CONFIRM_MS` later (`settle_outcomes`). An attempt that
+/// submitted its result settles despite an armed wake; a node settled that way
+/// has the run written, then its session stopped so the wake never runs. A
+/// tolerant node cancelled by a stop of the caller's turn aborts the run
+/// (`caller_to_check`); a failed caller poll defers that cancel to the next pass.
 pub async fn reconcile_run(
     deps: &crate::functions::Deps,
     def: &WorkflowDef,
     record: &mut WorkflowRunRecord,
 ) -> Result<(), WorkflowError> {
-    // Collect the (uid, session_id) tuples for all Running nodes so we don't
-    // hold a &mut reference across .await points.
-    let running: Vec<(String, String)> = record
+    // Collect the (uid, session_id, submitted) tuples for all Running nodes so we
+    // don't hold a &mut reference across .await points.
+    let running: Vec<(String, String, bool)> = record
         .nodes
         .iter()
         .filter(|(_, cp)| cp.state == NodeState::Running)
-        .filter_map(|(uid, cp)| cp.session_id.as_ref().map(|sid| (uid.clone(), sid.clone())))
+        .filter_map(|(uid, cp)| {
+            cp.session_id
+                .as_ref()
+                .map(|sid| (uid.clone(), sid.clone(), cp.submitted))
+        })
         .collect();
 
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
@@ -361,8 +374,10 @@ pub async fn reconcile_run(
     // Read after the confirm, so node durations include it.
     let now = deps.now_ms();
     let mut cancelled = Vec::new();
+    // Sessions of nodes settled while a wake was still armed.
+    let mut leftover = Vec::new();
 
-    for (uid, outcome) in outcomes {
+    for (uid, outcome, armed) in outcomes {
         let outcome = match outcome {
             NodeOutcome::Done(res) => match submitted_result(deps, record, &uid).await {
                 Err(_) => NodeOutcome::StillRunning,
@@ -386,6 +401,10 @@ pub async fn reconcile_run(
             },
             other => other,
         };
+        // Left armed, the wake would run a turn in the session of a settled node.
+        if armed && outcome != NodeOutcome::StillRunning {
+            leftover.extend(record.nodes.get(&uid).and_then(|cp| cp.session_id.clone()));
+        }
         match outcome {
             NodeOutcome::StillRunning => {}
             NodeOutcome::Done(res) => {
@@ -448,6 +467,17 @@ pub async fn reconcile_run(
         }
     }
 
+    if !leftover.is_empty() {
+        // Written first: the stopped session ends cancelled, which would cancel a
+        // node still stored as Running if this pass's write were lost.
+        crate::functions::tick::stamp_finished(&mut record.nodes, now);
+        record.updated_at = record.updated_at.max(now);
+        state::put_run(&deps.iii, record).await?;
+        for sid in &leftover {
+            crate::functions::harness_stop_session(deps, sid, timeout_ms).await;
+        }
+    }
+
     Ok(())
 }
 
@@ -467,16 +497,18 @@ fn defer_tolerant_cancels(def: &WorkflowDef, record: &mut WorkflowRunRecord, can
     }
 }
 
-/// Each polled node's outcome. A node whose first `poll` reply reads finished is
-/// polled again after `confirm` and settles from that reply only; all such nodes
-/// share one `confirm`. Under `abort` the run is cancelled whatever the nodes read,
-/// so the first reply settles. A failed poll (`None`) leaves its node out.
+/// Each polled node's outcome, from `running` (uid, session_id, submitted), and
+/// whether the reply it settled from had a wake armed. A node whose first `poll`
+/// reply reads finished is polled again after `confirm` and settles from that
+/// reply only; all such nodes share one `confirm`. Under `abort` the run is
+/// cancelled whatever the nodes read, so the first reply settles. A failed poll
+/// (`None`) leaves its node out.
 async fn settle_outcomes<C, Cf, P, Pf>(
-    running: Vec<(String, String)>,
+    running: Vec<(String, String, bool)>,
     abort: bool,
     confirm: C,
     poll: P,
-) -> Vec<(String, NodeOutcome)>
+) -> Vec<(String, NodeOutcome, bool)>
 where
     C: FnOnce() -> Cf,
     Cf: std::future::Future<Output = ()>,
@@ -485,23 +517,27 @@ where
 {
     let mut outcomes = Vec::new();
     let mut settling = Vec::new();
-    for (uid, session_id) in running {
+    for (uid, session_id, submitted) in running {
         let Some(resp) = poll(&uid, &session_id).await else {
             continue;
         };
-        match status_outcome(&resp, abort) {
+        match status_outcome(&resp, abort, submitted) {
             NodeOutcome::StillRunning => {}
-            outcome if abort => outcomes.push((uid, outcome)),
-            _ => settling.push((uid, session_id)),
+            outcome if abort => outcomes.push((uid, outcome, wake_armed(&resp))),
+            _ => settling.push((uid, session_id, submitted)),
         }
     }
     if settling.is_empty() {
         return outcomes;
     }
     confirm().await;
-    for (uid, session_id) in settling {
+    for (uid, session_id, submitted) in settling {
         if let Some(resp) = poll(&uid, &session_id).await {
-            outcomes.push((uid, status_outcome(&resp, abort)));
+            outcomes.push((
+                uid,
+                status_outcome(&resp, abort, submitted),
+                wake_armed(&resp),
+            ));
         }
     }
     outcomes
@@ -811,20 +847,20 @@ mod tests {
         assert_eq!(outcome, NodeOutcome::Done(json!({"k": "v"})));
     }
 
-    /// `settle_outcomes` over scripted `harness::status` replies, in order per uid
-    /// (`None` is a failed poll). The outcomes, the uids polled in order, and how
-    /// many times `confirm` ran; the confirm is counted, never slept.
-    async fn settle(
-        replies: Vec<(&str, Vec<Option<Value>>)>,
+    /// `settle_outcomes` over scripted `harness::status` replies, in order per
+    /// (uid, submitted) (`None` is a failed poll). The outcomes, the uids polled in
+    /// order, and how many times `confirm` ran; the confirm is counted, never slept.
+    async fn settle_nodes(
+        replies: Vec<(&str, bool, Vec<Option<Value>>)>,
         abort: bool,
-    ) -> (Vec<(String, NodeOutcome)>, Vec<String>, usize) {
+    ) -> (Vec<(String, NodeOutcome, bool)>, Vec<String>, usize) {
         let running = replies
             .iter()
-            .map(|(uid, _)| (uid.to_string(), format!("wf_{uid}")))
+            .map(|(uid, submitted, _)| (uid.to_string(), format!("wf_{uid}"), *submitted))
             .collect();
         let script: std::cell::RefCell<std::collections::HashMap<_, _>> = replies
             .into_iter()
-            .map(|(uid, r)| (uid.to_string(), std::collections::VecDeque::from(r)))
+            .map(|(uid, _, r)| (uid.to_string(), std::collections::VecDeque::from(r)))
             .collect::<std::collections::HashMap<_, _>>()
             .into();
         let polled = std::cell::RefCell::new(Vec::new());
@@ -842,6 +878,23 @@ mod tests {
         };
         let outcomes = settle_outcomes(running, abort, confirm, poll).await;
         (outcomes, polled.into_inner(), confirms.get())
+    }
+
+    /// [`settle_nodes`] for nodes that submitted nothing, without the wake flag.
+    async fn settle(
+        replies: Vec<(&str, Vec<Option<Value>>)>,
+        abort: bool,
+    ) -> (Vec<(String, NodeOutcome)>, Vec<String>, usize) {
+        let replies = replies
+            .into_iter()
+            .map(|(uid, r)| (uid, false, r))
+            .collect();
+        let (outcomes, polled, confirms) = settle_nodes(replies, abort).await;
+        let outcomes = outcomes
+            .into_iter()
+            .map(|(uid, outcome, _)| (uid, outcome))
+            .collect();
+        (outcomes, polled, confirms)
     }
 
     fn completed(result: Value) -> Option<Value> {
@@ -986,5 +1039,101 @@ mod tests {
         assert_eq!(confirms, 0);
         assert_eq!(polled, ["a", "b"]);
         assert_eq!(outcomes, [("a".to_string(), NodeOutcome::Cancelled)]);
+    }
+
+    fn parked() -> Value {
+        json!({"status": "completed", "result": "ack", "expects_wake": true})
+    }
+
+    #[test]
+    fn submitted_reply_ignores_the_armed_wake() {
+        // Not submitted: the wiring ack of a one-way agent keeps waiting.
+        assert_eq!(
+            status_outcome(&parked(), false, false),
+            NodeOutcome::StillRunning
+        );
+        assert_eq!(
+            status_outcome(&parked(), false, true),
+            NodeOutcome::Done(json!("ack"))
+        );
+        // A stopped run still waits for the harness to record the cancel.
+        assert_eq!(
+            status_outcome(&parked(), true, true),
+            NodeOutcome::StillRunning
+        );
+        let busy = json!({"status": "running", "expects_wake": true});
+        assert_eq!(
+            status_outcome(&busy, false, true),
+            NodeOutcome::StillRunning
+        );
+        let failed = json!({"status": "failed", "result_error": "boom", "expects_wake": true});
+        assert_eq!(
+            status_outcome(&failed, false, true),
+            NodeOutcome::Failed("boom".into())
+        );
+        assert_eq!(
+            status_outcome(&Value::Null, false, true),
+            NodeOutcome::StillRunning
+        );
+    }
+
+    #[tokio::test]
+    async fn submitted_node_settles_with_a_wake_still_armed() {
+        let failed_armed =
+            || Some(json!({"status": "failed", "result_error": "boom", "expects_wake": true}));
+        let cancelled_armed = || Some(json!({"status": "cancelled", "expects_wake": true}));
+        let (outcomes, polled, confirms) = settle_nodes(
+            vec![
+                ("sub", true, vec![Some(parked()), Some(parked())]),
+                ("ack", false, vec![Some(parked())]),
+                (
+                    "plain",
+                    false,
+                    vec![completed(json!("x")), completed(json!("x"))],
+                ),
+                ("fail", true, vec![failed_armed(), failed_armed()]),
+                ("cancel", true, vec![cancelled_armed(), cancelled_armed()]),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(confirms, 1);
+        assert_eq!(
+            polled,
+            [
+                "sub", "ack", "plain", "fail", "cancel", "sub", "plain", "fail", "cancel"
+            ]
+        );
+        assert_eq!(
+            outcomes,
+            [
+                ("sub".to_string(), NodeOutcome::Done(json!("ack")), true),
+                ("plain".to_string(), NodeOutcome::Done(json!("x")), false),
+                ("fail".to_string(), NodeOutcome::Failed("boom".into()), true),
+                ("cancel".to_string(), NodeOutcome::Cancelled, true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn submitted_node_still_working_or_woken_stays_running() {
+        let (outcomes, polled, confirms) = settle_nodes(
+            vec![
+                (
+                    "busy",
+                    true,
+                    vec![Some(json!({"status": "running", "expects_wake": true}))],
+                ),
+                ("woken", true, vec![Some(parked()), running()]),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(confirms, 1);
+        assert_eq!(polled, ["busy", "woken", "woken"]);
+        assert_eq!(
+            outcomes,
+            [("woken".to_string(), NodeOutcome::StillRunning, false)]
+        );
     }
 }

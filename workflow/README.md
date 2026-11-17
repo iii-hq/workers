@@ -205,13 +205,17 @@ itself a valid JSON value (one fenced code block is tolerated); anything else
 is denied with the cause and the schema, so the harness re-prompts the turn,
 at most `max_validation_retries` times. A turn that ends with a wake armed
 (`harness::status` reads `expects_wake`) passes whatever it says, so a node can
-park on a status line and answer on the woken turn. When the node settles,
-reconcile checks its result again and stores the parsed value. A result that
-does not parse or match (a turn the hook did not check, for example while this
-worker restarted) gets the same correction sent into the node's session, at
-most twice per attempt; then the node fails. The failed node's error
-(`node_errors`, the run's `result_error`) names the cause without the schema.
-`workflow::start` rejects a schema that does not compile.
+park on a status line and answer on the woken turn. A node that submitted
+settles when its turn ends, even with a wake armed. The worker then stops its
+session tree: armed wakes are disposed, and background shell jobs and child
+sessions are killed. A node that must wait for a wake submits on the woken
+turn. A node that must leave a background job running ends with no wake armed.
+When the node settles, reconcile checks its result again and stores the parsed
+value. A result that does not parse or match (a turn the hook did not check,
+for example while this worker restarted) gets the same correction sent into the
+node's session, at most twice per attempt; then the node fails. The failed
+node's error (`node_errors`, the run's `result_error`) names the cause without
+the schema. `workflow::start` rejects a schema that does not compile.
 
 Provider-native structured output is not used for a node, even on a model that
 supports it: the schema is checked after the answer, not enforced while the
@@ -313,7 +317,7 @@ when it cut the list:
 "node_details": {"kan-12": {
   "state": "running", "label": "KAN-12 · x", "phase": "code", "model": "m",
   "profile": "deepwork-lead", "session_id": "wf_r_ab_kan-12@r0", "attempt": 0,
-  "started_at": 1, "finished_at": 2,
+  "started_at": 1, "finished_at": 2, "elapsed_ms": 1,
   "harness_status": "completed", "expects_wake": true, "last_generate_at": 3,
   "usage": {"complete": true, "sessions": 3, "turns": 12, "function_calls": 40,
             "function_call_errors": 0, "input_tokens": 1, "output_tokens": 1,
@@ -330,23 +334,34 @@ read leaves its fields out, and nothing live is stored. `model` of a node with
 a `profile` is shown only once observed, because the profile may pin another
 model. Callers compute idle time from `last_generate_at`.
 
+`elapsed_ms` is `finished_at` minus `started_at`, or the time since
+`started_at` while the node runs. It is the clock `timeout_ms` is checked
+against, so harness queue wait, parked time and the 2 s settle poll are
+included. It covers the current attempt: a timeout refire starts it again, and
+`attempt` counts those; each earlier attempt ran the full `timeout_ms`.
+
 ## Limits
 
 - **Parked nodes and stop.** A node whose session waits on an armed wake stays
-  running until a later turn ends it. When this worker stops a node session
-  (timeout, refire, `workflow::stop`, a run ending with nodes in flight), it
-  disposes every observer in the session's tree after the stop, so a parked
-  session ends cancelled instead of waking later. This needs harness v1.9.4 or
-  newer: an older harness ignores `quiet_deadlines`, so disposing a parked
-  node's armed wake sends it a `[notification] wake removed` message and starts
-  a new turn right away. A wake that delivers between the stop and the disposal
-  starts one more turn, which a second stop cancels; wakes that turn arms before
-  the second stop stay armed, so the session can still wake once more. If
-  `harness::stop` fails, the observers stay and the session can still wake;
-  nothing retries the stop or the disposal for a refired or timed-out node; only
-  `workflow::stop` gets a second pass when the run finalizes. A node stopped
-  from outside while it holds armed wakes settles only when its wakes retire or
-  at its `timeout_ms`.
+  running until a later turn ends it, unless it already submitted its result.
+  When this worker stops a node session (timeout, refire, `workflow::stop`, a
+  run ending with nodes in flight, a submitted node settling with a wake armed),
+  it disposes every observer in the session's tree after the stop, so a parked
+  session ends cancelled instead of waking later. That stop also kills the
+  session tree's background shell jobs and child sessions; for a submitted node
+  the session reads cancelled in the harness while the node is done. This needs
+  harness v1.9.4 or newer: an older harness ignores `quiet_deadlines`, so
+  disposing a parked node's armed wake sends it a `[notification] wake removed`
+  message and starts a new turn right away. A wake that delivers between the
+  stop and the disposal starts one more turn, which a second stop cancels; wakes
+  that turn arms before the second stop stay armed, so the session can still
+  wake once more. If `harness::stop` fails, the observers stay and the session
+  can still wake; nothing retries the stop or the disposal for a refired,
+  timed-out or settled submitted node; only `workflow::stop` gets a second pass
+  when the run finalizes. A node stopped from outside while it holds armed wakes
+  settles only when its wakes retire or at its `timeout_ms`, unless it had
+  submitted. A submitted one settles at once from its turn's status: done if the
+  turn had completed, cancelled if the stop cancelled a running turn.
 - **A finished node settles on a second poll.** A node whose `harness::status`
   reads finished is polled again 2 s later and settles from that reply, so a
   parked node does not settle on its parking turn. Each tick or sweep pass that

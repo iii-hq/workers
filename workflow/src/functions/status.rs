@@ -107,6 +107,10 @@ pub struct NodeDetail {
     /// Epoch ms the node ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<i64>,
+    /// Ms the current attempt has run: `finished_at`, or now while it runs, minus
+    /// `started_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<i64>,
     /// `harness::status` turn status; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_status: Option<String>,
@@ -206,6 +210,7 @@ fn node_detail(
     record: &WorkflowRunRecord,
     def: Option<&WorkflowDef>,
     live: Option<&LiveNode>,
+    now: i64,
 ) -> NodeDetail {
     let node = node_def(def, uid);
     let cp = record.nodes.get(uid);
@@ -225,6 +230,10 @@ fn node_detail(
         session_id,
         started_at: cp.and_then(|cp| cp.pending_at),
         finished_at: cp.and_then(|cp| cp.finished_at),
+        // A refired node waiting for a slot keeps its timed-out attempt's `pending_at`.
+        elapsed_ms: cp
+            .filter(|_| state != NodeState::Pending)
+            .and_then(|cp| Some((cp.finished_at.unwrap_or(now) - cp.pending_at?).max(0))),
         harness_status: live.harness_status,
         expects_wake: live.expects_wake,
         last_generate_at: live.last_generate_at,
@@ -239,12 +248,13 @@ pub(crate) fn build_status(
     def: Option<&WorkflowDef>,
     live: &BTreeMap<String, LiveNode>,
     details: bool,
+    now: i64,
 ) -> StatusResponse {
     let nodes = node_states(&record, def);
     let phases = phase_counts(&nodes, def);
     let (node_details, details_truncated) = if details {
         let (uids, truncated) = detail_uids(&nodes);
-        let detail = |uid: &String| node_detail(uid, nodes[uid], &record, def, live.get(uid));
+        let detail = |uid: &String| node_detail(uid, nodes[uid], &record, def, live.get(uid), now);
         (
             uids.into_iter()
                 .map(|uid| (uid.clone(), detail(uid)))
@@ -413,7 +423,14 @@ pub async fn handle(
     } else {
         BTreeMap::new()
     };
-    Ok(Some(build_status(record, def.as_ref(), &live, req.details)))
+    // Read after the live reads, so elapsed is as of the reply.
+    Ok(Some(build_status(
+        record,
+        def.as_ref(),
+        &live,
+        req.details,
+        deps.now_ms(),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -546,7 +563,7 @@ mod tests {
     #[test]
     fn build_status_lists_unstarted_nodes_as_pending() {
         let rec = record(json!({"plan": {"state": "running", "session_id": "s"}}));
-        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false);
+        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false, 100);
         assert_eq!(
             states(&resp),
             vec![
@@ -562,7 +579,7 @@ mod tests {
     fn build_status_empty_expanded_fanout_is_not_pending() {
         let mut rec = record(json!({"plan": {"state": "done"}}));
         rec.fanout_src.insert("read".into(), vec![]);
-        let resp = build_status(rec.clone(), Some(&def()), &BTreeMap::new(), false);
+        let resp = build_status(rec.clone(), Some(&def()), &BTreeMap::new(), false, 100);
         assert_eq!(
             states(&resp),
             vec![("plan", NodeState::Done), ("sum", NodeState::Pending)]
@@ -573,7 +590,7 @@ mod tests {
             .insert("read".into(), vec![json!(1), json!(2)]);
         rec.nodes.insert("read#0".into(), NodeCheckpoint::default());
         rec.nodes.insert("read#1".into(), NodeCheckpoint::default());
-        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false);
+        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false, 100);
         assert!(!resp.nodes.contains_key("read"));
         assert_eq!(resp.nodes["read#1"], NodeState::Pending);
     }
@@ -588,7 +605,7 @@ mod tests {
         }));
         rec.fanout_src
             .insert("read".into(), vec![json!(0), json!(1), json!(2)]);
-        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false);
+        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), false, 100);
         assert_eq!(resp.phases.len(), 1, "sum has no phase: {:?}", resp.phases);
         assert_eq!(
             resp.phases["code"],
@@ -609,7 +626,7 @@ mod tests {
             "plan#it2": {"state": "running", "session_id": "wf_r_1_plan#it2@r0"}
         }));
         rec.fanout_src.insert("read".into(), vec![]);
-        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), true);
+        let resp = build_status(rec, Some(&def()), &BTreeMap::new(), true, 100);
         assert_eq!(
             states(&resp),
             vec![
@@ -650,7 +667,7 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let resp = build_status(rec.clone(), Some(&def()), &live, false);
+        let resp = build_status(rec.clone(), Some(&def()), &live, false, 100);
         assert!(resp.node_details.is_empty());
         assert!(
             serde_json::to_value(&resp)
@@ -659,7 +676,7 @@ mod tests {
                 .is_none()
         );
 
-        let resp = build_status(rec, Some(&def()), &live, true);
+        let resp = build_status(rec, Some(&def()), &live, true, 100);
         assert_eq!(
             resp.node_details["plan"],
             NodeDetail {
@@ -671,6 +688,8 @@ mod tests {
                 attempt: Some(0),
                 started_at: Some(5),
                 finished_at: Some(9),
+                // Once finished, `now` is ignored.
+                elapsed_ms: Some(4),
                 usage: Some(json!({"turns": 2})),
                 ..Default::default()
             }
@@ -683,6 +702,23 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_ms_runs_to_now_until_the_node_ends() {
+        let rec = record(json!({
+            "run": {"state": "running", "session_id": "wf_r_1_run@r0", "pending_at": 40},
+            "skew": {"state": "running", "session_id": "wf_r_1_skew@r0", "pending_at": 500},
+            "unsent": {"state": "pending"},
+            "refired": {"state": "pending", "session_id": "wf_r_1_refired@r0", "pending_at": 10, "retries": 1}
+        }));
+        let resp = build_status(rec, None, &BTreeMap::new(), true, 100);
+        assert_eq!(resp.node_details["run"].elapsed_ms, Some(60));
+        // A send stamped after `now` (clock skew) reads 0, never negative.
+        assert_eq!(resp.node_details["skew"].elapsed_ms, Some(0));
+        assert_eq!(resp.node_details["unsent"].elapsed_ms, None);
+        // A refire waiting for a slot has not started its new attempt.
+        assert_eq!(resp.node_details["refired"].elapsed_ms, None);
+    }
+
+    #[test]
     fn build_status_truncates_details_running_first() {
         let mut nodes = serde_json::Map::new();
         for i in 0..MAX_DETAIL_NODES {
@@ -690,7 +726,13 @@ mod tests {
         }
         nodes.insert("z_run".into(), json!({"state": "running"}));
         nodes.insert("y_fail".into(), json!({"state": "failed"}));
-        let resp = build_status(record(Value::Object(nodes)), None, &BTreeMap::new(), true);
+        let resp = build_status(
+            record(Value::Object(nodes)),
+            None,
+            &BTreeMap::new(),
+            true,
+            100,
+        );
         assert!(resp.details_truncated);
         assert_eq!(resp.node_details.len(), MAX_DETAIL_NODES);
         assert!(resp.node_details.contains_key("z_run"));
@@ -707,7 +749,7 @@ mod tests {
             "plan": {"state": "failed", "result_error": "boom"},
             "read#0": {"state": "running", "session_id": "s", "retries": 1}
         }));
-        let resp = build_status(rec, None, &BTreeMap::new(), true);
+        let resp = build_status(rec, None, &BTreeMap::new(), true, 100);
         assert_eq!(
             states(&resp),
             vec![("plan", NodeState::Failed), ("read#0", NodeState::Running)]
@@ -783,7 +825,7 @@ mod tests {
     fn profile_node_model_omitted_until_observed() {
         let mut rec = record(json!({"read#0": {"state": "running", "session_id": "s"}}));
         rec.fanout_src.insert("read".into(), vec![json!(0)]);
-        let resp = build_status(rec.clone(), Some(&def()), &BTreeMap::new(), true);
+        let resp = build_status(rec.clone(), Some(&def()), &BTreeMap::new(), true, 100);
         let read = &resp.node_details["read#0"];
         assert_eq!(read.profile.as_deref(), Some("reader"));
         assert_eq!(read.model, None, "the profile may pin another model");
@@ -797,7 +839,7 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let resp = build_status(rec, Some(&def()), &live, true);
+        let resp = build_status(rec, Some(&def()), &live, true, 100);
         let read = &resp.node_details["read#0"];
         assert_eq!(read.model.as_deref(), Some("pinned"));
         assert_eq!(read.harness_status.as_deref(), Some("running"));

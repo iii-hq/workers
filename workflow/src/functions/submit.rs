@@ -22,7 +22,8 @@ use crate::types::{WorkflowDef, WorkflowRunRecord};
 pub const SUBMIT_ID: &str = "workflow-result::submit";
 pub const SUBMIT_DESC: &str = "Deliver this workflow node's result: call it once with {\"result\": <the JSON value your \
      node's output schema requires>}. An error names what to fix: call it again. Once it is \
-     accepted, end your turn with one short line, not the JSON. Only a workflow node's own \
+     accepted, end your turn with one short line, not the JSON. The node is finished once \
+     the turn ends: submit last. Only a workflow node's own \
      session can call it.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
