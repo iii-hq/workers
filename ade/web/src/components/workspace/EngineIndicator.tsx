@@ -8,7 +8,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/components/shadcn/popover'
-import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { ToolbarPill } from '@/components/ui/ToolbarPill'
 import { getDefaultBackend } from '@/lib/backend'
 import { copyTextToClipboard } from '@/lib/clipboard'
@@ -72,10 +72,66 @@ interface EngineIndicatorProps {
 }
 
 /**
+ * One fact in the engine popover: its name, the value, and a copy button
+ * beside it (every value here is something a person pastes elsewhere). A
+ * missing value shows its placeholder and has nothing to copy.
+ */
+function EngineFact({
+  label,
+  copyName,
+  value,
+  placeholder,
+}: {
+  label: string
+  /** What the copy button copies, for its accessible name. */
+  copyName: string
+  value: string | null
+  placeholder: string
+}) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="flex min-w-0 items-start gap-2">
+        <span
+          className={cn(
+            'min-w-0 flex-1 break-all text-sm leading-5',
+            value ? 'text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          {value ?? placeholder}
+        </span>
+        {value ? (
+          <IconButton
+            label={copied ? `Copied the ${copyName}` : `Copy the ${copyName}`}
+            tooltip={copied ? 'Copied' : 'Copy'}
+            className="-my-1.5 shrink-0"
+            onClick={() => {
+              void copyTextToClipboard(value).then(() => setCopied(true))
+            }}
+          >
+            {copied ? (
+              <Check className="size-4" aria-hidden />
+            ) : (
+              <Copy className="size-4" aria-hidden />
+            )}
+          </IconButton>
+        ) : null}
+      </dd>
+    </div>
+  )
+}
+
+/**
  * Which iii engine this ADE is connected to, in view at all times: a
  * status dot and the engine's `host:port` in the header. The popover
  * spells it out — the engine URL, the namespace, the WebSocket this page
- * opened, the connection state — with a copy for the address, so a person
+ * opened, the connection state — each with a copy button, so a person
  * running several engines can tell at a glance which one a chat goes to.
  */
 export function EngineIndicator({
@@ -87,7 +143,6 @@ export function EngineIndicator({
   const [state, setState] = useState<IIIConnectionState | 'failed' | 'unknown'>(
     'unknown',
   )
-  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (!enabled) return
@@ -107,12 +162,6 @@ export function EngineIndicator({
       off?.()
     }
   }, [enabled])
-
-  useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1500)
-    return () => window.clearTimeout(timer)
-  }, [copied])
 
   if (!enabled) return null
 
@@ -166,52 +215,25 @@ export function EngineIndicator({
           <PopoverDescription>{status}</PopoverDescription>
         </PopoverHeader>
         <dl className="flex flex-col gap-2.5 font-inter">
-          <div className="flex flex-col gap-0.5">
-            <dt className="text-xs text-muted-foreground">Engine</dt>
-            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
-              {info?.engineUrl ??
-                (info ? (
-                  <span className="text-muted-foreground">
-                    Not reported by this ADE worker
-                  </span>
-                ) : (
-                  '…'
-                ))}
-            </dd>
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <dt className="text-xs text-muted-foreground">Namespace</dt>
-            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
-              {info ? namespace : '…'}
-            </dd>
-          </div>
-          <div className="flex flex-col gap-0.5">
-            <dt className="text-xs text-muted-foreground">
-              This page connects through
-            </dt>
-            <dd className="min-w-0 break-all text-sm leading-5 text-foreground">
-              {info?.wsUrl ?? '…'}
-            </dd>
-          </div>
+          <EngineFact
+            label="Engine"
+            copyName="engine URL"
+            value={info?.engineUrl ?? null}
+            placeholder={info ? 'Not reported by this ADE worker' : '…'}
+          />
+          <EngineFact
+            label="Namespace"
+            copyName="namespace"
+            value={info ? namespace : null}
+            placeholder="…"
+          />
+          <EngineFact
+            label="This page connects through"
+            copyName="page's WebSocket URL"
+            value={info?.wsUrl ?? null}
+            placeholder="…"
+          />
         </dl>
-        {address ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="self-start"
-            onClick={() => {
-              void copyTextToClipboard(address).then(() => setCopied(true))
-            }}
-          >
-            {copied ? (
-              <Check className="size-4" aria-hidden />
-            ) : (
-              <Copy className="size-4" aria-hidden />
-            )}
-            {copied ? 'Copied' : 'Copy engine address'}
-          </Button>
-        ) : null}
       </PopoverContent>
     </Popover>
   )
