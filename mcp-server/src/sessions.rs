@@ -132,23 +132,18 @@ struct Entry {
     handle: Arc<dyn ObserverLike>,
     received: u64,
     dropped: u64,
-    /// `max_observations`: once `received` reaches it, every delivery came.
+    /// `max_observations` (0 is no limit, as for the engine): once
+    /// `received` reaches it, every delivery came.
     limit: Option<u64>,
-    /// When `expires_in_ms` ends it.
-    expires_at: Option<Instant>,
 }
 
-/// How long after an observer's expiry a delivery may still be on its way.
-const EXPIRY_GRACE: Duration = Duration::from_secs(30);
-
 impl Entry {
-    /// Ended, with every delivery accounted for: its `max_observations`
-    /// arrived, or its expiry is long enough past. A disposed observer
-    /// short of either may still have an observation in flight.
-    fn complete(&self, now: Instant) -> bool {
-        self.handle.state() == "disposed"
-            && (self.limit.is_some_and(|m| self.received >= m)
-                || self.expires_at.is_some_and(|t| now >= t + EXPIRY_GRACE))
+    /// Ended, with every delivery accounted for: all of its
+    /// `max_observations` arrived. Anything else (an expiry, a limit not
+    /// reached) may still have an observation in flight, with no bound on
+    /// when it lands, so only `iii_unobserve` frees it.
+    fn complete(&self) -> bool {
+        self.handle.state() == "disposed" && self.limit.is_some_and(|m| self.received >= m)
     }
 }
 
@@ -178,6 +173,11 @@ struct Session {
     /// per stream generation (a writer sends one frame at a time), so a
     /// stream that took over cannot erase the replaced one's record.
     in_flight: Vec<InFlight>,
+    /// SSE observations whose write failed after a later one was sent, so
+    /// `sent_through` cannot be rolled back over them: every backlog
+    /// carries them, whatever its `Last-Event-ID`, until a stream writes
+    /// them or the cap drops them.
+    unsent: std::collections::BTreeSet<u64>,
 }
 
 /// A claimed observation whose write has not reported yet.
@@ -272,6 +272,7 @@ impl Sessions {
                 sent_through: 0,
                 sse_dropped_through: 0,
                 in_flight: Vec::new(),
+                unsent: std::collections::BTreeSet::new(),
             },
         );
         Ok(id)
@@ -386,11 +387,10 @@ impl Sessions {
                 // A finished observer holds its place until every delivery
                 // arrived (`Entry::complete`) and none is still buffered:
                 // unpolled, or kept for SSE replay.
-                let now = Instant::now();
                 let finished: Vec<String> = session
                     .observers
                     .iter()
-                    .filter(|(id, e)| e.complete(now) && session.buffered_for(id) == 0)
+                    .filter(|(id, e)| e.complete() && session.buffered_for(id) == 0)
                     .map(|(id, _)| id.clone())
                     .collect();
                 for id in &finished {
@@ -433,10 +433,7 @@ impl Sessions {
                     handle: handle.clone(),
                     received: 0,
                     dropped: 0,
-                    limit: req.max_observations,
-                    expires_at: req
-                        .expires_in_ms
-                        .map(|ms| Instant::now() + Duration::from_millis(ms)),
+                    limit: req.max_observations.filter(|m| *m > 0),
                 },
             );
             inner
@@ -530,7 +527,9 @@ impl Sessions {
                     // Out of the replay window: a gap for a client resuming
                     // from before it, a loss only if no stream wrote it.
                     session.sse_dropped_through = session.sse_dropped_through.max(dropped_seq);
-                    dropped_seq > session.sent_through
+                    // An owed one was never written either.
+                    let owed = session.unsent.remove(&dropped_seq);
+                    owed || dropped_seq > session.sent_through
                 } else {
                     session.dropped += 1;
                     true
@@ -629,7 +628,7 @@ impl Sessions {
             });
         }
         for (seq, id, observation) in &session.buffer {
-            if *seq > after && session.is_sse(id) {
+            if (*seq > after || session.unsent.contains(seq)) && session.is_sse(id) {
                 backlog.push(StreamItem::Observation {
                     id: *seq,
                     observation: observation.clone(),
@@ -703,10 +702,14 @@ impl Sessions {
         };
         let f = session.in_flight.remove(at);
         if written {
+            session.unsent.remove(&id);
             return;
         }
         if session.sent_through == id {
             session.sent_through = f.prev;
+        } else {
+            // A later event already counts as sent: keep this one owed.
+            session.unsent.insert(id);
         }
         if session.stream_gen != generation && !f.covered {
             let observation = session
@@ -1965,5 +1968,71 @@ mod tests {
             Ok(StreamItem::Observation { id, .. }) => assert_eq!(id, one),
             other => panic!("B must send {one}, got {other:?}"),
         }
+    }
+
+    /// A finished observer at a limit of one, and the second observe it blocks.
+    async fn blocked_by(r: ObserveRequest) -> bool {
+        let s = Sessions::new(limits(16, 1, 500));
+        let fired = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
+        s.observe(&fired, &sid, r, Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        let o = FakeObserve {
+            next: AtomicUsize::new(100),
+            ..Default::default()
+        };
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .is_err()
+    }
+
+    #[tokio::test]
+    async fn a_zero_max_observations_is_no_limit() {
+        // The engine ignores 0, so nothing says every delivery arrived.
+        let r = serde_json::from_value(json!({ "function_id": "a::b", "max_observations": 0 }))
+            .unwrap();
+        assert!(blocked_by(r).await, "its place is kept");
+    }
+
+    #[tokio::test]
+    async fn an_expired_observer_keeps_its_place_until_unobserved() {
+        // No bound on delivery time says the last observation arrived;
+        // iii_unobserve frees it.
+        let r =
+            serde_json::from_value(json!({ "function_id": "a::b", "expires_in_ms": 0 })).unwrap();
+        assert!(blocked_by(r).await, "its place is kept");
+    }
+
+    #[tokio::test]
+    async fn a_requeued_observation_survives_a_disconnect_and_a_later_event_id() {
+        // A claims 1; B takes over and writes 2; A's write of 1 fails and 1
+        // is queued for B; B drops before writing it. The client resumes
+        // from 2: 1 must still come, until a stream writes it.
+        let (s, sid, a, one, _rx_a) = claimed_by_a().await;
+        let (_, mut rx_b, b) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(2))));
+        let StreamItem::Observation { id: two, .. } = rx_b.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        assert!(s.claim_stream_item(&sid, b, Some(two)));
+        s.finish_stream_item(&sid, a, one, false);
+        s.finish_stream_item(&sid, b, two, true);
+        drop(rx_b);
+
+        let (backlog_c, _rx_c, c) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert_eq!(
+            backlog_ids(&backlog_c),
+            vec![one],
+            "1 is owed, 2 was written"
+        );
+        assert!(s.claim_stream_item(&sid, c, Some(one)));
+        s.finish_stream_item(&sid, c, one, true);
+
+        let (backlog_d, _rx_d, _) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert!(backlog_ids(&backlog_d).is_empty(), "written now");
     }
 }

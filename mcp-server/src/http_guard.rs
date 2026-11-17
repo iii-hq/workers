@@ -96,10 +96,13 @@ pub enum RouteAction {
     Restore,
 }
 
-pub fn transition(serving: bool, bind: &Bind) -> RouteAction {
+/// `watched`: rebinds are seen (the reload observer is active) or the
+/// public-http override is set. Without it nothing restores the routes,
+/// whoever asks for the check; withdrawing never waits for it.
+pub fn transition(serving: bool, bind: &Bind, watched: bool) -> RouteAction {
     match (serving, bind) {
         (true, Bind::Refuse(why)) => RouteAction::Withdraw(why.clone()),
-        (false, Bind::Serve { .. }) => RouteAction::Restore,
+        (false, Bind::Serve { .. }) if watched => RouteAction::Restore,
         _ => RouteAction::Keep,
     }
 }
@@ -169,6 +172,21 @@ mod tests {
     use std::time::Duration;
 
     const QUICK: [Duration; 5] = [Duration::from_millis(1); 5];
+
+    #[test]
+    fn nothing_restores_the_routes_while_rebinds_cannot_be_seen() {
+        // A direct call of the reload target, or a recovery check, while the
+        // observer is pending or refused: the bind is fine now, but a later
+        // public rebind would go unseen, so the routes stay down.
+        let serve = Bind::Serve { warnings: vec![] };
+        assert_eq!(transition(false, &serve, false), RouteAction::Keep);
+        // Withdrawing never waits for the watch.
+        let refuse = Bind::Refuse("public".into());
+        assert_eq!(
+            transition(true, &refuse, false),
+            RouteAction::Withdraw("public".into())
+        );
+    }
 
     #[test]
     fn without_the_reload_watch_only_the_override_serves() {
@@ -343,12 +361,12 @@ mod tests {
     fn a_reload_withdraws_or_restores_the_routes() {
         let serve = Bind::Serve { warnings: vec![] };
         let refuse = Bind::Refuse("public".into());
-        assert_eq!(transition(true, &serve), RouteAction::Keep);
-        assert_eq!(transition(false, &refuse), RouteAction::Keep);
+        assert_eq!(transition(true, &serve, true), RouteAction::Keep);
+        assert_eq!(transition(false, &refuse, true), RouteAction::Keep);
         assert_eq!(
-            transition(true, &refuse),
+            transition(true, &refuse, true),
             RouteAction::Withdraw("public".into())
         );
-        assert_eq!(transition(false, &serve), RouteAction::Restore);
+        assert_eq!(transition(false, &serve, true), RouteAction::Restore);
     }
 }

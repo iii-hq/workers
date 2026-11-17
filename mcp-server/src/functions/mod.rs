@@ -174,6 +174,9 @@ pub struct Routes {
     /// Bumped by every check a reload starts: a recovery run started by an
     /// earlier one stops (see [`recheck_and_recover`]).
     recovery: std::sync::atomic::AtomicU64,
+    /// Set once the observer of the http worker's reloads is active: until
+    /// then (or if it was refused) no check restores the routes.
+    watching: std::sync::atomic::AtomicBool,
 }
 
 impl Routes {
@@ -184,6 +187,7 @@ impl Routes {
             handles: tokio::sync::Mutex::new(None),
             rechecking: tokio::sync::Mutex::new(()),
             recovery: std::sync::atomic::AtomicU64::new(0),
+            watching: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -283,6 +287,9 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         };
         match result {
             Ok(()) => {
+                routes
+                    .watching
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 tracing::info!(
                     "watching {HTTP_RELOAD_FN}: the MCP routes follow the http worker's bind"
                 );
@@ -327,9 +334,16 @@ pub async fn recheck_and_recover(ctx: &Ctx, routes: &Arc<Routes>) {
     if recheck_bind(ctx, routes).await {
         return;
     }
-    tracing::warn!(
-        "could not read http::status; the MCP routes stay withdrawn, re-checking after 2, 5, 10, 30 and 60 s, then on the next http reload"
-    );
+    if routes.serving().await {
+        tracing::warn!(
+            "could not read http::status; serving the MCP routes anyway ({}=true), re-checking after 2, 5, 10, 30 and 60 s, then on the next http reload",
+            http_guard::PUBLIC_HTTP_ENV
+        );
+    } else {
+        tracing::warn!(
+            "could not read http::status; the MCP routes stay withdrawn, re-checking after 2, 5, 10, 30 and 60 s, then on the next http reload"
+        );
+    }
     let (ctx, routes) = (ctx.clone(), routes.clone());
     tokio::spawn(async move {
         let still = routes.clone();
@@ -355,7 +369,8 @@ pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) -> bool {
     let flag = http_guard::parse_flag(std::env::var(http_guard::PUBLIC_HTTP_ENV).ok().as_deref());
     let known = !http_guard::status_unknown(&status);
     let bind = http_guard::decide(status, flag, &ctx.cfg.api_path);
-    match http_guard::transition(routes.serving().await, &bind) {
+    let watched = routes.watching.load(std::sync::atomic::Ordering::SeqCst) || unwatched_override();
+    match http_guard::transition(routes.serving().await, &bind, watched) {
         RouteAction::Keep => {}
         RouteAction::Withdraw(why) => {
             routes.withdraw().await;
