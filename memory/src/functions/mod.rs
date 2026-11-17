@@ -7,6 +7,7 @@
 //! production code path.
 
 pub mod banks;
+pub mod correct;
 pub mod items;
 pub mod ops;
 pub mod preview;
@@ -251,6 +252,23 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         RELOAD_DESC,
         false,
         |d, r| async move { ops::reload(&d, r).await },
+    );
+    // The verify tier's seams: internal, out of `catalog()` and `call_json`.
+    register(
+        iii,
+        deps,
+        correct::TRANSCRIPT_ID,
+        correct::TRANSCRIPT_DESC,
+        true,
+        |d, r| async move { correct::transcript(&d, r).await },
+    );
+    register(
+        iii,
+        deps,
+        correct::CORRECT_ID,
+        correct::CORRECT_DESC,
+        true,
+        |d, r| async move { correct::correct(&d, r).await },
     );
 
     tracing::info!("all memory::* functions registered");

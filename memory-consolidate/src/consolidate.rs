@@ -191,8 +191,23 @@ pub struct BankReport {
     /// reply of the pass parsed (a poison input); skipped past the cursor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub semantic_failed: Vec<String>,
-    /// Model call attempts by the judge and semantic tiers, failed ones
-    /// included.
+    /// Notes the verify tier found supported by their source transcript.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub verified: usize,
+    /// Notes the verify tier replaced through `memory::correct` (each one
+    /// also spends the per-run supersede cap; not counted in `superseded`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub corrected: usize,
+    /// Notes the verify tier passed without a verdict or a write (no span,
+    /// reinforced, session gone, record changed, ...); a note lists why.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub verify_skipped: usize,
+    /// Verify-tier judge replies refused: a correction that failed a guard
+    /// (quote, numbers, length), or a reply cut short or never parsed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub verify_rejected: usize,
+    /// Model call attempts by the judge, semantic and verify tiers, failed
+    /// ones included.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub llm_calls: usize,
     /// Prompt tokens the router reported, cached ones included.

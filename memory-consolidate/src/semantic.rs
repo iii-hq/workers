@@ -75,7 +75,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    fn of(row: &MemoryRow) -> Self {
+    pub(crate) fn of(row: &MemoryRow) -> Self {
         Cursor {
             updated_at: row.updated_at,
             id: row.id.clone(),
@@ -272,16 +272,19 @@ pub fn parse_actions(text: &str) -> Result<Vec<RawAction>, String> {
     struct Reply {
         actions: Vec<RawAction>,
     }
-    let trimmed = text.trim();
-    let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) else {
-        return Err("judge reply has no JSON object".into());
-    };
-    if end < start {
-        return Err("judge reply has no JSON object".into());
-    }
-    serde_json::from_str::<Reply>(&trimmed[start..=end])
+    serde_json::from_str::<Reply>(json_object(text)?)
         .map(|r| r.actions)
         .map_err(|e| format!("unparseable judge reply: {e}"))
+}
+
+/// The reply from its first `{` to its last `}` (models wrap JSON in prose
+/// or fences).
+pub(crate) fn json_object(text: &str) -> Result<&str, String> {
+    let trimmed = text.trim();
+    match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(start), Some(end)) if start <= end => Ok(&trimmed[start..=end]),
+        _ => Err("judge reply has no JSON object".into()),
+    }
 }
 
 /// How one `router::complete` attempt ended.

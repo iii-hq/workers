@@ -42,6 +42,11 @@ struct Snapshot {
     rule_edit: Option<String>,
     /// A hand edit appended to `learned` while the judge call runs.
     judge_edit: Option<String>,
+    /// `memory::transcript` lines by the record's `source.session_id`; a
+    /// session not listed is `session_not_found`.
+    transcripts: HashMap<String, Value>,
+    /// Every `memory::transcript` call fails with this error.
+    transcript_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -223,6 +228,40 @@ impl ConsolidationTransport for Boundary {
                     }
                     inner.learned = payload["content"].as_str().unwrap().into();
                     Ok(json!({"ok":true,"exists":true}))
+                }
+                "memory::transcript" => {
+                    if let Some(e) = &inner.transcript_error {
+                        return Err(e.clone());
+                    }
+                    let note = inner
+                        .rows
+                        .iter()
+                        .find(|r| r["id"] == payload["id"])
+                        .unwrap();
+                    let session = note["source"]["session_id"].as_str().unwrap_or("");
+                    Ok(match inner.transcripts.get(session) {
+                        Some(lines) => json!({"lines":lines}),
+                        None => json!({"lines":[],"missing":"session_not_found"}),
+                    })
+                }
+                "memory::correct" => {
+                    assert_eq!(payload["expected_memory"]["id"], payload["id"]);
+                    let old = inner
+                        .rows
+                        .iter()
+                        .position(|r| r["id"] == payload["id"])
+                        .unwrap();
+                    let new_id = format!("{}-corrected", payload["id"].as_str().unwrap());
+                    let mut fresh = inner.rows[old].clone();
+                    fresh["id"] = json!(new_id);
+                    fresh["text"] = payload["text"].clone();
+                    fresh["updated_at"] = json!(fresh["updated_at"].as_u64().unwrap() + 1_000);
+                    fresh["source"]["correction_reason"] = payload["reason"].clone();
+                    inner.rows[old]["invalid_at"] = json!(100);
+                    inner.rows[old]["superseded_by"] = json!(new_id);
+                    let superseded = inner.rows[old].clone();
+                    inner.rows.push(fresh.clone());
+                    Ok(json!({"corrected":true,"memory":fresh,"superseded":superseded}))
                 }
                 _ => Err(format!("unexpected offline RPC: {function}")),
             }
@@ -1658,5 +1697,399 @@ async fn an_older_memory_worker_still_takes_the_promotion() {
     assert_eq!(
         boundary.snapshot()["state"]["promoted:offline"],
         json!(["fp-brief"])
+    );
+}
+
+// ---- verify tier ------------------------------------------------------------
+
+/// A note with a recorded span; memory reads its transcript by `session`.
+fn spanned(id: &str, text: &str, at: u64, confidence: &str, session: &str) -> Value {
+    let mut r = row(id, text, at);
+    r["confidence"] = json!(confidence);
+    r["source"] = json!({"session_id":session,"first_entry_id":"e1","entry_id":"e9"});
+    r
+}
+
+fn tea(confidence: &str) -> Value {
+    spanned(
+        "tea",
+        "User drinks green tea every morning.",
+        1,
+        confidence,
+        "s-tea",
+    )
+}
+
+fn standup() -> Value {
+    spanned(
+        "standup",
+        "User's team standup is at 9am.",
+        2,
+        "inferred",
+        "s-standup",
+    )
+}
+
+const STANDUP_MOVED: &str = "Heads up: our team standup moved to 10am, starting Monday.";
+
+/// The transcript `memory::transcript` returns for `session`.
+fn say(boundary: &Boundary, session: &str, lines: &[(&str, &str)]) {
+    let lines: Vec<Value> = lines
+        .iter()
+        .map(|(role, text)| json!({"role":role,"date":"2026-10-15 Thursday","text":text}))
+        .collect();
+    boundary
+        .0
+        .lock()
+        .unwrap()
+        .transcripts
+        .insert(session.into(), json!(lines));
+}
+
+fn with_transcripts(rows: Vec<Value>) -> Boundary {
+    let boundary = Boundary::with_rows(rows);
+    say(
+        &boundary,
+        "s-tea",
+        &[("user", "I drink green tea every morning.")],
+    );
+    say(
+        &boundary,
+        "s-standup",
+        &[("user", STANDUP_MOVED), ("assistant", "Noted.")],
+    );
+    boundary
+}
+
+fn verify_only() -> WorkerConfig {
+    WorkerConfig {
+        verify_enabled: true,
+        ..deterministic_only()
+    }
+}
+
+fn verify_cursor(boundary: &Boundary) -> Value {
+    boundary.snapshot()["state"]["verify_cursor:offline"].clone()
+}
+
+#[tokio::test]
+async fn verify_corrects_a_contradicted_note_once_and_leaves_a_supported_one() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    boundary.decision(json!({"verdict":"supported"}));
+    boundary.decision(
+        json!({"verdict":"contradicted","quote":"our team standup moved to 10am",
+        "corrected":"User's team standup is at 10am."}),
+    );
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert!(bank.errors.is_empty(), "{bank:?}");
+    assert!(response.checkpointed);
+    assert_eq!(
+        (bank.verified, bank.corrected, bank.verify_rejected),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        payloads(&boundary, "memory::transcript")[0],
+        json!({"bank":"offline","id":"tea"})
+    );
+    let corrections = payloads(&boundary, "memory::correct");
+    assert_eq!(corrections.len(), 1);
+    let fix = &corrections[0];
+    assert_eq!(fix["id"], "standup");
+    assert_eq!(fix["text"], "User's team standup is at 10am.");
+    assert_eq!(
+        fix["reason"],
+        "the source conversation says: \"our team standup moved to 10am\""
+    );
+    assert_eq!(fix["expected_memory"]["id"], "standup");
+    assert_eq!(fix["expected_memory"]["revision"], 0);
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":2,"id":"standup"})
+    );
+
+    // Next pass only the correction is new, and its transcript supports it.
+    boundary.decision(json!({"verdict":"supported"}));
+    let again = run(&boundary, verify_only(), false).await;
+    assert_eq!((again.banks[0].verified, again.banks[0].corrected), (1, 0));
+    assert_eq!(payloads(&boundary, "memory::correct").len(), 1);
+    assert_eq!(model_calls(&boundary), 3);
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":1002,"id":"standup-corrected"})
+    );
+}
+
+#[tokio::test]
+async fn verify_refuses_a_correction_with_a_number_missing_from_the_transcript() {
+    let boundary = with_transcripts(vec![standup()]);
+    boundary.decision(
+        json!({"verdict":"contradicted","quote":"our team standup moved to 10am",
+        "corrected":"User's team standup is at 10:30am."}),
+    );
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert_eq!((bank.verify_rejected, bank.corrected), (1, 0));
+    assert!(bank.errors.is_empty(), "{bank:?}");
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":2,"id":"standup"})
+    );
+}
+
+#[tokio::test]
+async fn verify_is_off_by_default() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    let cfg = deterministic_only();
+    assert!(!cfg.verify_enabled);
+    let response = run(&boundary, cfg, false).await;
+    assert!(payloads(&boundary, "memory::transcript").is_empty());
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(verify_cursor(&boundary).is_null());
+    let bank = serde_json::to_value(&response.banks[0]).unwrap();
+    for counter in ["verified", "corrected", "verify_skipped", "verify_rejected"] {
+        assert!(bank.get(counter).is_none(), "{bank}");
+    }
+}
+
+#[tokio::test]
+async fn verify_skips_and_counts_a_missing_session() {
+    let boundary = Boundary::with_rows(vec![spanned(
+        "tea",
+        "User drinks green tea every morning.",
+        1,
+        "inferred",
+        "deleted-session",
+    )]);
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert_eq!(bank.verify_skipped, 1);
+    assert_eq!(bank.notes, ["verify: skipped 1 (session_not_found 1)"]);
+    assert!(bank.errors.is_empty());
+    assert!(response.checkpointed);
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":1,"id":"tea"})
+    );
+}
+
+#[tokio::test]
+async fn verify_skips_unspanned_and_reinforced_notes_without_any_call() {
+    let mut reinforced = tea("extracted");
+    reinforced["corroboration"] = json!(1);
+    reinforced["updated_at"] = json!(2);
+    let mut pinned = standup();
+    pinned["pinned"] = json!(true);
+    let boundary = Boundary::with_rows(vec![
+        row("legacy", "User lives in Lisbon.", 1),
+        reinforced,
+        pinned,
+    ]);
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert!(payloads(&boundary, "memory::transcript").is_empty());
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(bank.verify_skipped, 2);
+    assert_eq!(
+        bank.notes,
+        ["verify: skipped 2 (no recorded span 1, reinforced 1)"]
+    );
+    // Local skips are final: the cursor passes them in one save.
+    assert_eq!(
+        verify_cursor(&boundary)["rest"],
+        json!({"updated_at":2,"id":"tea"})
+    );
+    let saves = payloads(&boundary, "state::set");
+    assert_eq!(
+        saves
+            .iter()
+            .filter(|p| p["key"] == "verify_cursor:offline")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn verify_stops_with_one_note_on_an_older_memory_worker() {
+    let older = "memory::transcript: remote error (function_not_found): function not found";
+    // Memory is current but session-manager is missing: a plain stop.
+    let no_sessions = "memory::transcript: remote error (invocation_failed): sibling_unavailable: \
+                       session::messages: remote error (function_not_found): function not found";
+    for (error, note) in [
+        (
+            older,
+            "verify tier skipped: memory worker lacks memory::transcript — upgrade memory"
+                .to_string(),
+        ),
+        (no_sessions, format!("verify tier stopped: {no_sessions}")),
+    ] {
+        let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+        boundary.0.lock().unwrap().transcript_error = Some(error.into());
+        let response = run(&boundary, verify_only(), false).await;
+        let bank = &response.banks[0];
+        assert_eq!(payloads(&boundary, "memory::transcript").len(), 1);
+        assert_eq!(model_calls(&boundary), 0);
+        assert!(verify_cursor(&boundary).is_null());
+        assert!(bank.errors.is_empty(), "{bank:?}");
+        assert_eq!(bank.notes, [note]);
+    }
+}
+
+#[tokio::test]
+async fn verify_checks_priority_notes_first() {
+    let boundary = with_transcripts(vec![tea("extracted"), standup()]);
+    boundary.decision(json!({"verdict":"supported"}));
+    let cfg = WorkerConfig {
+        verify_max_per_run: 1,
+        ..verify_only()
+    };
+    let response = run(&boundary, cfg, false).await;
+    assert_eq!(
+        payloads(&boundary, "memory::transcript"),
+        [json!({"bank":"offline","id":"standup"})]
+    );
+    assert_eq!(response.banks[0].verified, 1);
+    assert_eq!(
+        verify_cursor(&boundary),
+        json!({"first":{"updated_at":2,"id":"standup"},"rest":{"updated_at":0,"id":""}})
+    );
+}
+
+#[tokio::test]
+async fn verify_defers_at_the_llm_call_cap() {
+    let boundary = with_transcripts(vec![tea("inferred")]);
+    let cfg = WorkerConfig {
+        max_llm_calls_per_run: 0,
+        ..verify_only()
+    };
+    let response = run(&boundary, cfg, false).await;
+    assert!(payloads(&boundary, "memory::transcript").is_empty());
+    assert_eq!(model_calls(&boundary), 0);
+    assert_eq!(
+        response.banks[0].notes,
+        ["verify tier deferred: per-run LLM call cap reached"]
+    );
+    assert!(verify_cursor(&boundary).is_null());
+}
+
+#[tokio::test]
+async fn verify_makes_no_calls_on_a_dry_run() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    let before = boundary.snapshot();
+    let response = run(&boundary, verify_only(), true).await;
+    assert!(payloads(&boundary, "memory::transcript").is_empty());
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert_eq!(model_calls(&boundary), 0);
+    assert!(
+        response.banks[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("unevaluated"))
+    );
+    assert_eq!(before, boundary.snapshot());
+}
+
+#[tokio::test]
+async fn verify_holds_the_cursor_when_no_reply_parses() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    boundary.decision(json!({"answer":"looks fine"}));
+    boundary.decision(json!({"answer":"looks fine"}));
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 2);
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert!(verify_cursor(&boundary).is_null());
+    assert!(
+        bank.notes
+            .iter()
+            .any(|n| n.contains("cursor held before `tea`")),
+        "{:?}",
+        bank.notes
+    );
+}
+
+#[tokio::test]
+async fn verify_holds_the_cursor_when_every_reply_is_truncated() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    for _ in 0..2 {
+        boundary.0.lock().unwrap().replies.push_back(Ok(json!({
+            "message":{"stop_reason":"length","content":[{"type":"text","text":"{\"verdict\":"}]}
+        })));
+    }
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 2);
+    assert!(payloads(&boundary, "memory::correct").is_empty());
+    assert!(verify_cursor(&boundary).is_null());
+    assert_eq!(bank.verify_rejected, 0);
+    assert!(
+        bank.notes
+            .iter()
+            .any(|n| n.contains("cursor held before `tea`")),
+        "{:?}",
+        bank.notes
+    );
+}
+
+#[tokio::test]
+async fn verify_passes_a_held_priority_note_once_the_other_lane_parses() {
+    let plain = spanned(
+        "standup",
+        "User's team standup is at 10am.",
+        2,
+        "extracted",
+        "s-standup",
+    );
+    let boundary = with_transcripts(vec![tea("inferred"), plain]);
+    boundary.decision(json!({"answer":"looks fine"}));
+    boundary.decision(json!({"verdict":"supported"}));
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!((bank.verify_rejected, bank.verified), (1, 1));
+    assert!(bank.notes.is_empty(), "{:?}", bank.notes);
+    assert_eq!(
+        verify_cursor(&boundary),
+        json!({"first":{"updated_at":1,"id":"tea"},"rest":{"updated_at":2,"id":"standup"}})
+    );
+    // Passed for good: the next pass judges nothing.
+    run(&boundary, verify_only(), false).await;
+    assert_eq!(model_calls(&boundary), 2);
+}
+
+#[tokio::test]
+async fn verify_passes_an_unparsed_note_once_a_later_reply_parses() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    boundary.decision(json!({"answer":"looks fine"}));
+    boundary.decision(json!({"verdict":"supported"}));
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!((bank.verify_rejected, bank.verified), (1, 1));
+    assert!(bank.notes.is_empty(), "{:?}", bank.notes);
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":2,"id":"standup"})
+    );
+}
+
+#[tokio::test]
+async fn verify_saves_the_cursor_after_each_note() {
+    let boundary = with_transcripts(vec![tea("inferred"), standup()]);
+    // No second reply: the second judge call fails as transport.
+    boundary.decision(json!({"verdict":"supported"}));
+    let response = run(&boundary, verify_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(model_calls(&boundary), 2);
+    assert_eq!(bank.verified, 1);
+    assert_eq!(
+        bank.notes,
+        ["verify tier stopped: no synthetic decision supplied"]
+    );
+    assert_eq!(
+        verify_cursor(&boundary)["first"],
+        json!({"updated_at":1,"id":"tea"})
     );
 }

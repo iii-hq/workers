@@ -20,8 +20,10 @@ pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 pub const RUN_ID: &str = "memory-consolidate::run";
 pub const RUN_DESC: &str = "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
      near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic \
-     merge/supersede of new memories, each with a reason), applied strictly through \
-     memory::supersede; pinned memories are untouchable. dry_run plans without writing.";
+     merge/supersede of new memories, each with a reason; verify of notes against their \
+     source transcript, replacing a contradicted one), applied strictly through \
+     memory::supersede and memory::correct; pinned memories are untouchable. dry_run plans \
+     without writing.";
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
 pub const STATUS_DESC: &str = "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
@@ -240,7 +242,7 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
         // LAST, on its own fresh fetch: it must never see (or re-judge)
         // records the tiers above retired in this pass. A dry run returns
         // deterministic candidates only, never an inferred semantic plan.
-        if dry_run && (cfg.semantic_enabled || cfg.llm_assist_enabled) {
+        if dry_run && (cfg.semantic_enabled || cfg.llm_assist_enabled || cfg.verify_enabled) {
             report.notes.push(
                 "dry-run: optional judge and semantic tiers unevaluated; no recall, embedding, model or rule calls".into(),
             );
@@ -255,6 +257,14 @@ async fn run_locked<T: ConsolidationTransport + ?Sized>(
             };
             crate::semantic::run_semantic_tier(transport, bank, &opts, &mut budget, &mut report)
                 .await;
+        }
+        if cfg.verify_enabled && !dry_run {
+            let opts = crate::verify::VerifyOptions {
+                model: cfg.llm_model.clone(),
+                max_per_run: cfg.verify_max_per_run,
+                max_llm_calls: llm_calls_left,
+            };
+            crate::verify::run_verify_tier(transport, bank, &opts, &mut budget, &mut report).await;
         }
         llm_calls_left = llm_calls_left.saturating_sub(report.llm_calls);
         reports.push(report);

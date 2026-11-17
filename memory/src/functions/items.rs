@@ -532,7 +532,7 @@ pub struct SupersedeResponse {
 
 const MAX_REASON_CHARS: usize = 500;
 
-fn clamp_reason(reason: Option<String>) -> Option<String> {
+pub(crate) fn clamp_reason(reason: Option<String>) -> Option<String> {
     let reason: String = reason?.trim().chars().take(MAX_REASON_CHARS).collect();
     (!reason.is_empty()).then_some(reason)
 }

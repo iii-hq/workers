@@ -1,8 +1,9 @@
 //! memory-consolidate — scheduled hygiene sibling of the `memory` worker.
 //!
 //! Deterministic near-duplicate dedup over live memories, applied strictly
-//! through the memory worker's public functions (`memory::supersede`, with
-//! `reinforce` on merges): supersede-only, pinned untouchable, audit via
+//! through the memory worker's functions (`memory::supersede`, with
+//! `reinforce` on merges, and the opt-in verify tier's internal
+//! `memory::correct`): nothing is deleted, pinned untouchable, audit via
 //! memory's own `memory::on-item-changed` events (each carrying a `reason`). Self-scheduled with catch-up-on-boot
 //! semantics: the last completed pass is persisted in the state worker, so
 //! a pass missed while the worker was down runs shortly after boot instead
@@ -16,3 +17,4 @@ pub mod llm;
 pub mod manifest;
 pub mod rest;
 pub mod semantic;
+pub mod verify;

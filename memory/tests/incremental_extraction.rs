@@ -695,6 +695,8 @@ mod productive {
         model_pause: Option<Arc<(tokio::sync::Semaphore, tokio::sync::Semaphore)>>,
         // The bank the session's metadata names; `private` when unset.
         session_bank: Option<String>,
+        // `session::messages` reads the path as ending at `from_entry_id`.
+        from_entry: bool,
     }
     impl Script {
         fn answer(&mut self, function: &str, data: &Value) -> Reply {
@@ -739,10 +741,27 @@ mod productive {
                 "session::messages" => {
                     assert_eq!(data["roles"], json!(["user", "assistant"]));
                     assert!(data.get("until").is_none());
-                    assert!(data.get("from_entry_id").is_none());
+                    if !self.from_entry {
+                        assert!(data.get("from_entry_id").is_none());
+                    }
                     if let Some(reply) = self.pages.pop_front() {
                         return reply;
                     }
+                    let leaf = match data["from_entry_id"].as_str() {
+                        Some(from) => {
+                            match self.path.iter().position(|item| item["entry_id"] == from) {
+                                Some(at) => at + 1,
+                                None => {
+                                    return Err((
+                                        "invocation_failed",
+                                        "handler error: session/entry_not_found: no such entry",
+                                    ));
+                                }
+                            }
+                        }
+                        None => self.path.len(),
+                    };
+                    let path = &self.path[..leaf];
                     let start = if let Some(cursor) = data["cursor"].as_str() {
                         assert!(data.get("after_entry_id").is_none());
                         cursor
@@ -751,7 +770,7 @@ mod productive {
                             .parse::<usize>()
                             .unwrap()
                     } else if let Some(anchor) = data["after_entry_id"].as_str() {
-                        let Some(at) = self.path.iter().position(|item| item["entry_id"] == anchor)
+                        let Some(at) = path.iter().position(|item| item["entry_id"] == anchor)
                         else {
                             return Err(SDK_INVALID_CURSOR);
                         };
@@ -759,12 +778,20 @@ mod productive {
                     } else {
                         0
                     };
-                    let end = (start + 100).min(self.path.len());
+                    let end = (start + 100).min(path.len());
                     self.returned.push(end - start);
                     Ok(
-                        json!({"messages":self.path[start..end],"next_cursor":(end < self.path.len()).then(||format!("page/{end}"))}),
+                        json!({"messages":path[start..end],"next_cursor":(end < path.len()).then(||format!("page/{end}"))}),
                     )
                 }
+                "session::get-message" => Ok(self
+                    .path
+                    .iter()
+                    .find(|item| item["entry_id"] == data["entry_id"])
+                    .map_or(Value::Null, |item| {
+                        json!({"entry":{"kind":"message","id":item["entry_id"],
+                            "message":item["message"],"origin":item["origin"]}})
+                    })),
                 "memory::on-item-changed" => {
                     assert!(self.observe_events);
                     let root = self.cursor_file.as_ref().unwrap().parent().unwrap();
@@ -2118,6 +2145,16 @@ mod productive {
             replacement.source.as_ref().unwrap().entry_id.as_deref(),
             Some("end")
         );
+        assert_eq!(
+            replacement
+                .source
+                .as_ref()
+                .unwrap()
+                .first_entry_id
+                .as_deref(),
+            Some("end"),
+            "the run after the cursor is that one entry"
+        );
         assert_eq!(bank.list(10, 0, false, None).await.0.len(), 1);
         assert_eq!(stack.disk_cursor(), json!({"last_entry_id":"end"}));
         stack.run(&job("end")).await.unwrap();
@@ -2126,6 +2163,168 @@ mod productive {
         assert_eq!(s.count("router::complete"), 0);
         assert_eq!(s.count("state::set"), 0);
         assert_eq!(stack.commits(), 3);
+    }
+
+    #[tokio::test]
+    async fn transcript_reads_a_span_through_session_messages() {
+        use memory::functions::correct::{TranscriptResponse, transcript};
+        let path = (0..200)
+            .map(|n| message(&format!("e-{n}"), &format!("line {n}")))
+            .collect();
+        let stack = Boundary::new(Script {
+            path,
+            from_entry: true,
+            ..Script::default()
+        })
+        .await;
+        let text = "Amber instruments require copper calibration.";
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        let record = memory::types::Memory {
+            id: memory::types::fingerprint(text),
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: memory::types::Confidence::Inferred,
+            corroboration: 0,
+            pinned: false,
+            source: Some(memory::types::Provenance {
+                session_id: Some("incremental-fixture".into()),
+                first_entry_id: Some("e-10".into()),
+                entry_id: Some("e-159".into()),
+                ..Default::default()
+            }),
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+            stated_at: Some(1),
+        };
+        bank.commit(record.clone()).await.unwrap();
+        let read = |id: &str| {
+            let req = serde_json::from_value(json!({"bank":"private","id":id})).unwrap();
+            transcript(&stack.deps, req)
+        };
+        let missing = |r: TranscriptResponse| {
+            assert!(r.lines.is_empty());
+            r.missing.unwrap()
+        };
+
+        let response = read(&record.id).await.unwrap();
+        assert_eq!(response.missing, None);
+        let texts: Vec<_> = response.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts.len(), 150, "the first entry and the 149 after it");
+        assert_eq!((texts[0], texts[149]), ("line 10", "line 159"));
+        assert!(response.lines.iter().all(|l| l.role == "user"));
+        {
+            let s = stack.script.lock().unwrap();
+            let requests = s.requests();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                (
+                    &requests[0]["from_entry_id"],
+                    &requests[0]["after_entry_id"],
+                    &requests[0]["limit"],
+                    &requests[0]["include_image_data"],
+                ),
+                (&json!("e-159"), &json!("e-10"), &json!(100), &json!(false))
+            );
+            assert_eq!(requests[1]["from_entry_id"], "e-159");
+            assert!(requests[1].get("after_entry_id").is_none());
+            assert!(requests[1]["cursor"].is_string());
+            assert_eq!(s.count("session::get-message"), 1);
+        }
+
+        stack.script.lock().unwrap().pages.push_back(Err((
+            "invocation_failed",
+            "handler error: session/not_found: session incremental-fixture does not exist",
+        )));
+        assert_eq!(
+            missing(read(&record.id).await.unwrap()),
+            "session_not_found"
+        );
+        stack.script.lock().unwrap().pages.push_back(Err((
+            "invocation_failed",
+            "handler error: session/invalid_request: limit out of range",
+        )));
+        assert!(matches!(
+            read(&record.id).await,
+            Err(memory::error::MemoryError::SiblingUnavailable(_))
+        ));
+
+        let calls = stack.script.lock().unwrap().calls.len();
+        let edited = memory::types::Memory {
+            text: "Amber instruments require bronze calibration.".into(),
+            ..record.clone()
+        };
+        bank.commit(edited).await.unwrap();
+        assert_eq!(missing(read(&record.id).await.unwrap()), "edited");
+        assert_eq!(missing(read("fp-unknown").await.unwrap()), "not_found");
+        assert_eq!(stack.script.lock().unwrap().calls.len(), calls);
+    }
+
+    #[tokio::test]
+    async fn transcript_reads_a_run_of_silent_steps_closed_at_its_key_budget() {
+        use memory::functions::correct::transcript;
+        // Extraction closes a run of text-less tool steps on ids alone: about
+        // 510 harness-shaped ids, six pages after the first entry.
+        let id = |n: usize| format!("e_t_{}_{n}_assistant", "0".repeat(32));
+        let mut path = vec![message(&id(0), "please run the full suite")];
+        path.extend((1..=520).map(|n| {
+            json!({"entry_id": id(n), "message": {"role": "assistant", "content": [],
+                "timestamp": 1_760_443_200_000_u64}})
+        }));
+        let stack = Boundary::new(Script {
+            path,
+            from_entry: true,
+            ..Script::default()
+        })
+        .await;
+        let text = "The full suite runs on request.";
+        let (bank, _) = stack
+            .deps
+            .store()
+            .await
+            .ensure_bank("private", None)
+            .await
+            .unwrap();
+        bank.commit(memory::types::Memory {
+            id: memory::types::fingerprint(text),
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: memory::types::Confidence::Extracted,
+            corroboration: 0,
+            pinned: false,
+            source: Some(memory::types::Provenance {
+                session_id: Some("incremental-fixture".into()),
+                first_entry_id: Some(id(0)),
+                entry_id: Some(id(520)),
+                ..Default::default()
+            }),
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+            stated_at: Some(1),
+        })
+        .await
+        .unwrap();
+        let req = json!({"bank": "private", "id": memory::types::fingerprint(text)});
+        let response = transcript(&stack.deps, serde_json::from_value(req).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.missing, None);
+        let texts: Vec<_> = response.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["please run the full suite"]);
+        assert_eq!(stack.script.lock().unwrap().requests().len(), 6);
     }
 
     #[tokio::test]

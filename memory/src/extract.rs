@@ -25,6 +25,7 @@
 //! Events remain best-effort, not guaranteed exactly-once delivery.
 
 mod history;
+pub mod source;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1800,6 +1801,7 @@ async fn execute_run(
     let source = capture.source_key(session_id);
     let plan_capture = capture.clone();
     let said = said_at(&entries, now_ms());
+    let first_id = entries.first().map(|(id, ..)| id.clone());
     let (transcript, newest_id, content_len) = excerpt(entries);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
@@ -2243,7 +2245,14 @@ async fn execute_run(
                 }
             },
             None => (
-                new_memory(item, session_id, newest_id.as_deref(), now, said),
+                new_memory(
+                    item,
+                    session_id,
+                    first_id.as_deref(),
+                    newest_id.as_deref(),
+                    now,
+                    said,
+                ),
                 Some(ItemEvent::Created),
             ),
         };
@@ -2367,12 +2376,13 @@ pub(crate) fn extracts(kind: Option<&str>) -> bool {
 }
 
 /// A fresh record for one extracted item, written `now` and stated at
-/// `said_at`, when its message was sent. `entry_id` is the newest
-/// transcript entry of the extracted span — the turn's last message — so
-/// the memory points back at the turn it came from.
+/// `said_at`, when its message was sent. `first_entry_id` and `entry_id`
+/// are the oldest and newest transcript entries of the extracted run, so
+/// the memory points back at the span it came from.
 fn new_memory(
     item: ExtractedItem,
     session_id: &str,
+    first_entry_id: Option<&str>,
     entry_id: Option<&str>,
     now: u64,
     said_at: u64,
@@ -2404,8 +2414,8 @@ fn new_memory(
         source: Some(Provenance {
             session_id: Some(session_id.to_string()),
             entry_id: entry_id.map(str::to_string),
-            agent: None,
-            turn_id: None,
+            first_entry_id: first_entry_id.map(str::to_string),
+            ..Provenance::default()
         }),
         created_at: now,
         updated_at: now,
@@ -2588,25 +2598,43 @@ async fn fetch_span(
 }
 
 async fn messages_page(iii: &IIIClient, payload: Value) -> Result<Value, Error> {
+    session_page(iii, "session::messages", payload, 10_000).await
+}
+
+/// One session-manager read, bounded by `timeout_ms`.
+async fn session_page(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Value, Error> {
     iii.call(CallRequest {
-        function_id: "session::messages".into(),
+        function_id: function_id.into(),
         payload,
         action: None,
-        timeout_ms: Some(10_000),
+        timeout_ms: Some(timeout_ms),
     })
     .await
 }
 
-/// The session worker returns `SessionError::InvalidCursor` as
-/// `Error::Handler("session/invalid_cursor: ...")`; iii-sdk 0.26.0 dispatch
-/// sends a non-`Remote` error as code `invocation_failed` with message
-/// `handler error: <text>`. Only that exact envelope (or the documented
-/// structured code) matches, never a free substring or another code.
 fn invalid_history_cursor(error: &Error) -> bool {
-    matches!(error, Error::Remote { code, message, .. }
-        if code == "session/invalid_cursor"
-            || (code == "invocation_failed"
-                && message.starts_with("handler error: session/invalid_cursor: ")))
+    session_code(error, "session/invalid_cursor")
+}
+
+/// Whether `error` is session-manager's `code`. The session worker returns
+/// a `SessionError` as `Error::Handler("<code>: ...")`; iii-sdk 0.26.0
+/// dispatch sends a non-`Remote` error as code `invocation_failed` with
+/// message `handler error: <text>`. Only that exact envelope (or the
+/// documented structured code) matches, never a free substring or another
+/// code.
+fn session_code(error: &Error, code: &str) -> bool {
+    matches!(error, Error::Remote { code: sent, message, .. }
+        if sent == code
+            || (sent == "invocation_failed"
+                && message
+                    .strip_prefix("handler error: ")
+                    .and_then(|rest| rest.strip_prefix(code))
+                    .is_some_and(|rest| rest.starts_with(": "))))
 }
 
 /// Bounded recovery, never a change of session, bank or branch. Without an
@@ -3014,15 +3042,17 @@ fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
 /// (an imported conversation, a first pass over an old session). Empty
 /// turns and our own injected `<memory …>` blocks are dropped.
 fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
+    line(role, text, ts).map(|(date, text)| format!("{role} [{date}]: {text}"))
+}
+
+/// One excerpt line's `(date, text)` before the format: the text as the
+/// extraction model reads it ([`model_text`]).
+fn line(role: &str, text: &str, ts: u64) -> Option<(String, String)> {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.starts_with("<memory ") {
         return None;
     }
-    Some(format!(
-        "{role} [{}]: {}",
-        local_date(ts, "%Y-%m-%d %A"),
-        model_text(role, trimmed)
-    ))
+    Some((local_date(ts, "%Y-%m-%d %A"), model_text(role, trimmed)))
 }
 
 /// What the extraction model reads of one entry's text, and all a run
@@ -4159,7 +4189,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        new_memory(item, "s", None, 1, 1)
+        new_memory(item, "s", None, None, 1, 1)
     }
 
     #[test]
@@ -5340,7 +5370,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        let m = new_memory(item, "s_1", Some("e_9"), 42, 42);
+        let m = new_memory(item, "s_1", Some("e_2"), Some("e_9"), 42, 42);
         assert_eq!(m.text, "user prefers tea");
         assert_eq!(m.id, fingerprint("user prefers tea"));
         assert_eq!(m.entities, vec!["mike"]);
@@ -5349,6 +5379,7 @@ mod tests {
         let src = m.source.unwrap();
         assert_eq!(src.session_id.as_deref(), Some("s_1"));
         assert_eq!(src.entry_id.as_deref(), Some("e_9"));
+        assert_eq!(src.first_entry_id.as_deref(), Some("e_2"));
         assert_eq!((m.created_at, m.updated_at), (42, 42));
     }
 
@@ -5369,7 +5400,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        let m = new_memory(item, "s", Some("e_1"), now, now - 3 * day);
+        let m = new_memory(item, "s", Some("e_1"), Some("e_1"), now, now - 3 * day);
         assert_eq!(
             (m.created_at, m.updated_at, m.stated_at),
             (now, now, Some(now - 3 * day))
