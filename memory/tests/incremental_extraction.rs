@@ -2853,10 +2853,17 @@ mod productive {
             "Ivory folders store signed leases.",
             "Jade lamps stay off during audits.",
         ];
-        let first_piece: Vec<_> = std::iter::once(first)
-            .chain(extra)
-            .map(|t| fact(t)[0].clone())
-            .collect();
+        // An item for an agent nobody listed comes first: it is dropped and
+        // takes none of the piece's share.
+        let first_piece: Vec<_> = std::iter::once(json!({
+            "text":"Kiln logs go to the night shift.","entities":["fixture"],
+            "scope":"agent","agent":"nobody","kind":"memory"}))
+        .chain(
+            std::iter::once(first)
+                .chain(extra)
+                .map(|t| fact(t)[0].clone()),
+        )
+        .collect();
         let filler = (0..980)
             .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
             .collect::<String>();
@@ -2914,6 +2921,59 @@ mod productive {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn a_later_piece_correcting_the_same_memory_is_the_one_kept() {
+        let old = "Amber instruments require copper calibration.";
+        let (early, late) = (
+            "Amber instruments now require silver calibration.",
+            "Amber instruments now require gold calibration.",
+        );
+        let filler = (0..980)
+            .map(|i| format!("Line {i:06} of the pasted notes, nothing to keep.\n"))
+            .collect::<String>();
+        let long = format!("{early}\n{filler}{late}");
+        let correction = |t: &str| json!([{"text":t,"entities":["fixture"],"scope":"project","kind":"memory","replaces":1}]);
+        let stack = Boundary::new(Script {
+            path: vec![
+                message("anchor", ""),
+                message("old", old),
+                message("large", &long),
+            ],
+            cursor: Some("anchor".into()),
+            persistent_cursor: true,
+            model_items: VecDeque::from([
+                fact(old),
+                correction(early),
+                json!([]),
+                correction(late),
+            ]),
+            ..Script::default()
+        })
+        .await;
+        stack.run(&job("old")).await.unwrap();
+        let old = stack.log_records("private")[0].clone();
+        stack.run(&job("large")).await.unwrap();
+        assert_eq!(stack.script.lock().unwrap().count("router::complete"), 4);
+        // Both pieces named the same record: the earlier correction is
+        // dropped instead of leaving the later one to conflict.
+        let texts: Vec<String> = stack
+            .log_records("private")
+            .into_iter()
+            .map(|r| r.text)
+            .collect();
+        assert!(!texts.iter().any(|t| t == early), "{texts:?}");
+        let store = stack.deps.store().await;
+        let bank = store.bank("private").await.unwrap();
+        let retired = bank.get(&old.id).await.unwrap();
+        assert!(!retired.is_live());
+        let replacement = bank
+            .get(retired.superseded_by.as_deref().unwrap())
+            .await
+            .unwrap();
+        assert!(replacement.is_live());
+        assert_eq!(replacement.text, late);
     }
 
     #[tokio::test]

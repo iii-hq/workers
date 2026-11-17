@@ -1883,10 +1883,10 @@ async fn execute_run(
     let stored_plan = ext(deps, |s| s.extraction_plan(&source))
         .await
         .map_err(|e| format!("extraction plan read: {e}"))?;
-    // shortcut: a replayed plan no longer counts the memories its pieces
-    // had over their share; keep the count in the plan if the tally must
-    // be exact across retries.
-    let mut piece_over_cap = 0;
+    // shortcut: a replayed plan no longer counts the items its pieces
+    // dropped (over their share, or corrected again by a later piece); keep
+    // the counts in the plan if the tally must be exact across retries.
+    let (mut piece_over_cap, mut piece_superseded) = (0, 0);
     let items = if let Some(plan) = stored_plan {
         let item_fields = [
             "text",
@@ -1952,15 +1952,23 @@ async fn execute_run(
             )
             .await?;
             // One piece keeps its own share of memories, so a piece that
-            // returns too many never crowds out the later ones.
+            // returns too many never crowds out the later ones. An item for
+            // an unlisted agent is dropped below and takes no share.
             let (before, mut n) = (got.len(), 0);
             got.retain(|i| {
-                i.is_rule() || {
+                i.is_rule() || (i.is_agent() && i.agent_in(&agents).is_none()) || {
                     n += 1;
                     n <= cfg.max_memories_per_turn
                 }
             });
             piece_over_cap += before - got.len();
+            // A later piece that corrects what an earlier one corrected is
+            // the message's last word on it; both would name the same old
+            // record, and the second would conflict.
+            let later: HashSet<usize> = got.iter().filter_map(|i| i.replaces).collect();
+            let before = items.len();
+            items.retain(|i: &ExtractedItem| i.replaces.is_none_or(|n| !later.contains(&n)));
+            piece_superseded += before - items.len();
             items.extend(got);
         }
         for item in &mut items {
@@ -1995,6 +2003,7 @@ async fn execute_run(
     // the tally only once the run settles.
     let mut drops = PassTally::default();
     drops.drop_items("over_cap", piece_over_cap);
+    drops.drop_items("superseded", piece_superseded);
     drops.drop_items(
         "unknown_agent",
         items

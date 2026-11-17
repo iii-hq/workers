@@ -1097,7 +1097,8 @@ const CASES: &[Case] = &[
             ("assistant", "Understood, none."),
         ],
         want: &[Want {
-            has: &["emoji"],
+            // "never": a rule that flips the preference is not this one.
+            has: &["never", "emoji"],
             rule: Some(true),
             user: true,
             replaces: Some(1),
