@@ -308,14 +308,13 @@ impl FunctionFilter {
 
 /// VENDORED from rbac_config.rs.
 pub(crate) fn parse_match_pattern(s: &str) -> Option<String> {
+    // strip_prefix then strip_suffix: the two cannot share a quote, so
+    // `match(")` is no pattern rather than a panicking slice.
     let trimmed = s.trim();
-    if (trimmed.starts_with("match(\"") && trimmed.ends_with("\")"))
-        || (trimmed.starts_with("match('") && trimmed.ends_with("')"))
-    {
-        Some(trimmed[7..trimmed.len() - 2].to_string())
-    } else {
-        None
-    }
+    [("match(\"", "\")"), ("match('", "')")]
+        .iter()
+        .find_map(|(open, close)| trimmed.strip_prefix(open)?.strip_suffix(close))
+        .map(str::to_string)
 }
 
 /// VENDORED from rbac_config.rs.
@@ -927,6 +926,20 @@ pub fn forbidden_message(function_id: &str, remediation: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_match_rule_whose_quotes_overlap_is_not_a_pattern() {
+        // `match(")` passes both the prefix and the suffix check on one
+        // shared quote; slicing it used to panic during deserialization.
+        assert_eq!(parse_match_pattern("match(\")"), None);
+        assert_eq!(parse_match_pattern("match(')"), None);
+        assert_eq!(parse_match_pattern("match(\"\")"), Some(String::new()));
+        assert_eq!(parse_match_pattern("match('/otel')"), Some("/otel".into()));
+        assert_eq!(
+            parse_match_pattern(" match(\"/otel\") "),
+            Some("/otel".into())
+        );
+    }
 
     // --- Wildcard parity fixtures (mirrors rbac_config.rs unit tests) ------
 
