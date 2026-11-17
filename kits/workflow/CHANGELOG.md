@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- **Reviews flag unneeded code.** The batch check, the critic and the design refuters treat code that should not exist or should be smaller as a defect: dead code, an option no caller sets, an abstraction with one implementation, a copy of an existing helper or of the standard library, a dependency for a few lines. Each one is proven with a read-only call and names the smaller form; what a card asks for, tests, input validation and error handling are never flagged.
+- **Interview before the plan.** Before it creates anything, the Workflow agent asks the decisions only the user can make, in rounds of one `harness::ask` card (up to four questions, each with a recommended answer first, at most three rounds): a round asks every decision whose prerequisites are settled, and facts are looked up, never asked. The answers are kept under the run ticket's `## Goal`, so every node and a resume read them. A session nobody can answer takes the recommendations and ends `blocked` only on a consequential decision (scope, compatibility, security, data loss, external cost).
+
 ## 0.1.0
 
 - **New kit `iii/workflow`.** The ticket strategy of `iii/deepwork` (a run ticket, subtask cards, outcome labels, bounded rounds, a critic and a synthesized report) with every wave as one `workflow::start` run.
