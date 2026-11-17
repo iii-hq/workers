@@ -5,40 +5,43 @@
   min-width: 0;
 }
 
+/* The composer toolbar's picker look, shared with the model and agent
+   pickers beside it: a 16px glyph, the choice in 14px Inter, a chevron. */
 [data-iii-ui='judge'] .judge-ui-session-trigger {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-width: 0;
-  max-width: 12rem;
-  height: 28px;
+  max-width: 14rem;
+  height: 36px;
   padding: 0 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: transparent;
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
   transition: color var(--motion-duration-fast), background-color var(--motion-duration-fast);
 }
 
 [data-iii-ui='judge'] .judge-ui-session-trigger:hover,
-[data-iii-ui='judge'] .judge-ui-session-trigger[data-state='open'] {
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-state='open'],
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-popup-open] {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
 
-/* The session's judge would not be used: not running, or no usable key.
-   The glyph carries the amber; the words stay legible at 12px, where the
-   light theme's amber measures 3.75:1 against the composer. */
-[data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] {
-  gap: 6px;
+[data-iii-ui='judge'] .judge-ui-session-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-[data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] > svg {
+/* The session's judge would not be used: not running, or no usable key.
+   The glyph carries the amber. */
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] > svg:first-child {
   color: var(--color-warn);
 }
 
@@ -647,10 +650,12 @@
   align-items: center;
 }
 
+/* The help glyph is a footnote to the picker, not a peer: a light stroke
+   and a 24px target keep it from reading as a fourth control. */
 [data-iii-ui='judge'] .judge-ui-session-help-button {
   flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   color: var(--color-ink-faint);
 }
 

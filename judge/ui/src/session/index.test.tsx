@@ -295,7 +295,7 @@ describe('per-session judge provider', () => {
   it('explains the judge once, then stays out of the way', async () => {
     localStorage.removeItem('judge-ui-session-intro-seen')
     const { view, button } = await mount({})
-    expect(view.querySelector('[role="note"]')?.textContent).toContain('needs no key')
+    expect(view.querySelector('[role="note"]')?.textContent).toContain('Off asks none')
     await act(async () => button('Got it').click())
     expect(view.querySelector('[role="note"]')).toBeNull()
     expect(localStorage.getItem('judge-ui-session-intro-seen')).toBe('true')
@@ -306,9 +306,9 @@ describe('per-session judge provider', () => {
       [SESSION_PROVIDER_KEY]: 'typesafe',
       model: 'm',
     })
-    expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('judge · typesafe')
-    expect(options()).toEqual(['default', 'semif', 'typesafe'])
-    expect(labels()).toEqual(['Default', 'semif', 'typesafe'])
+    expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('typesafe')
+    expect(options()).toEqual(['default', 'off', 'semif', 'typesafe'])
+    expect(labels()).toEqual(['Default', 'Off', 'semif', 'typesafe'])
     expect(option('semif')?.textContent).toContain('qwen3.5-4b')
     expect(option('typesafe')?.textContent).toContain('jev-latest')
     expect(option('default')?.textContent).toContain('typesafe · jev-latest')
@@ -330,6 +330,29 @@ describe('per-session judge provider', () => {
     expect(iii.call.mock.calls.length).toBe(calls)
   })
 
+  // Default resolves to the judge settings' provider, so it is not "no
+  // judge"; Off is, and the hub answers it without forwarding.
+  it('turns the judge off for this session, and back to Default', async () => {
+    const { view, iii, setMetadata, option } = await mount({})
+    expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('Default judge')
+    expect(option('off')?.textContent).toContain('No judge in this session')
+    const calls = iii.call.mock.calls.length
+    await act(async () => option('off')!.click())
+    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'off' })
+    // Nothing to warm up: no judge will be asked.
+    expect(iii.call.mock.calls.length).toBe(calls)
+  })
+
+  it('shows an off session as having no judge, without a warning', async () => {
+    const { view, option, options } = await mount({ [SESSION_PROVIDER_KEY]: 'off' })
+    const menuButton = view.querySelector('.judge-ui-session-trigger')
+    expect(menuButton?.textContent).toBe('No judge')
+    expect(menuButton?.hasAttribute('data-warning')).toBe(false)
+    expect(option('off')?.getAttribute('aria-pressed')).toBe('true')
+    // `off` is not a provider: it never shows up as a "not running" row.
+    expect(options().filter((id) => id === 'off')).toEqual(['off'])
+  })
+
   it('keeps a stored provider that is not running selectable', async () => {
     const { option, view } = await mount({ [SESSION_PROVIDER_KEY]: 'laya' })
     expect(option('laya')?.textContent).toContain('Not running')
@@ -349,8 +372,11 @@ describe('per-session judge provider', () => {
       { iii: engine(['typesafe', 'semif', 'laya', 'decider', 'clef', 'openai']) },
     )
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter judges"]')!
-    // The highlight starts on the session's choice (Default) and walks down.
+    // The highlight starts on the session's choice (Default) and walks down,
+    // past Off.
     expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('default')
+    await press(filter, 'ArrowDown')
+    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('off')
     await press(filter, 'ArrowDown')
     expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('clef')
     expect(filter.getAttribute('aria-activedescendant')).toBe(view.querySelector('[data-highlighted]')?.id)
@@ -456,7 +482,7 @@ describe('per-session judge provider', () => {
     expect(activePage()).toBe('configure')
     expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge-decider')
     await act(async () => button('Back to judges').click())
-    expect(options()).toEqual(['default', 'decider', 'semif', 'typesafe'])
+    expect(options()).toEqual(['default', 'off', 'decider', 'semif', 'typesafe'])
   }, 10_000)
 
   it('shows why an add failed and offers a retry', async () => {
@@ -666,10 +692,10 @@ describe('per-session judge provider', () => {
     iii.state.status.typesafe = { configured: false, reason }
     const { view, option } = await mount({ [SESSION_PROVIDER_KEY]: 'typesafe' }, { iii })
     const menuButton = () => view.querySelector('.judge-ui-session-trigger')
-    expect(menuButton()?.textContent).toBe('judge · typesafe')
+    expect(menuButton()?.textContent).toBe('typesafe')
     expect(menuButton()?.hasAttribute('data-warning')).toBe(true)
     expect(menuButton()?.getAttribute('aria-label')).toBe(
-      `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
+      `Judge for this session: typesafe. typesafe is not configured: ${reason}`,
     )
     expect(option('typesafe')?.textContent).toContain('Needs an API key')
     expect(option('typesafe')?.getAttribute('title')).toBe(`Not configured: ${reason}`)
@@ -686,7 +712,7 @@ describe('per-session judge provider', () => {
     await act(async () => iii.emit('secrets::on-changed', { name: 'TYPESAFE_API_KEY' }))
     await settle()
     expect(menuButton()?.hasAttribute('data-warning')).toBe(false)
-    expect(menuButton()?.getAttribute('title')).toBe('Judge provider for this session')
+    expect(menuButton()?.getAttribute('title')).toBe('Judge for this session')
   })
 
   it('warns when Default resolves to a judge without a usable key', async () => {
