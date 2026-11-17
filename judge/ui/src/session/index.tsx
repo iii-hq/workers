@@ -439,6 +439,8 @@ export function JudgeSessionPicker({
 
   // What this session's judge resolves to, and why it would not be used.
   const off = stored === JUDGE_OFF
+  // The trigger's words; a narrow pane shows only the glyph, so the title says them too.
+  const choiceLabel = off ? 'No judge' : (stored ?? 'Default judge')
   const effective = off ? undefined : (stored ?? settings?.provider)
   const effectiveEntry = providers?.find((entry) => entry.provider === effective)
   const warning =
@@ -471,10 +473,10 @@ export function JudgeSessionPicker({
           className="judge-ui-session-trigger"
           data-warning={warning ? true : undefined}
           aria-label={`Judge for this session: ${off ? 'off' : (stored ?? `default${settings?.provider ? ` (${settings.provider})` : ''}`)}${warning ? `. ${warning}` : ''}`}
-          title={warning ?? 'Judge for this session'}
+          title={warning ?? `Judge for this session: ${choiceLabel}`}
         >
           {warning ? <TriangleAlert size={16} aria-hidden /> : <Scale size={16} aria-hidden />}
-          <span className="judge-ui-session-trigger-label">{off ? 'No judge' : (stored ?? 'Default judge')}</span>
+          <span className="judge-ui-session-trigger-label">{choiceLabel}</span>
           <ChevronDown size={16} aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="judge-ui-session-menu" aria-label="Judge for this session">

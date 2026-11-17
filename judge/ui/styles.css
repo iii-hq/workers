@@ -49,6 +49,21 @@
   flex: 0 0 auto;
 }
 
+/* A pane too narrow for three named pickers: the judge gives way first, to
+   its glyph (the choice stays in the title and the accessible name), so
+   the model's name keeps its room. The agent picker does the same at 480. */
+@container (max-width: 640px) {
+  [data-iii-ui='judge'] .judge-ui-session-trigger-label,
+  [data-iii-ui='judge'] .judge-ui-session-trigger > svg:last-child {
+    display: none;
+  }
+
+  [data-iii-ui='judge'] .judge-ui-session-trigger {
+    justify-content: center;
+    min-width: 32px;
+  }
+}
+
 [data-iii-ui='judge'] .judge-ui-session-trigger:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
