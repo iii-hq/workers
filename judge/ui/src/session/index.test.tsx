@@ -334,15 +334,19 @@ describe('per-session judge provider', () => {
   })
 
   it('filters the judges, moves with the arrows and picks on Enter', async () => {
-    const { view, setMetadata, options } = await mount({})
+    // The filter only shows once there are enough judges to need one.
+    const { view, setMetadata, options } = await mount(
+      {},
+      { iii: engine(['typesafe', 'semif', 'laya', 'decider', 'clef', 'openai']) },
+    )
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter judges"]')!
     // The highlight starts on the session's choice (Default) and walks down.
     expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('default')
     await press(filter, 'ArrowDown')
-    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('semif')
+    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('clef')
     expect(filter.getAttribute('aria-activedescendant')).toBe(view.querySelector('[data-highlighted]')?.id)
     await press(filter, 'Enter')
-    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'semif' })
+    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'clef' })
     // Default matches what it resolves to.
     await type(filter, 'jev')
     expect(options()).toEqual(['default', 'typesafe'])
@@ -658,7 +662,7 @@ describe('per-session judge provider', () => {
     expect(menuButton()?.getAttribute('aria-label')).toBe(
       `Judge provider for this session: typesafe. typesafe is not configured: ${reason}`,
     )
-    expect(option('typesafe')?.textContent).toContain('Not configured')
+    expect(option('typesafe')?.textContent).toContain('Needs an API key')
     expect(option('typesafe')?.getAttribute('title')).toBe(`Not configured: ${reason}`)
     expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
     // Default resolves to the same judge, so it says so too.

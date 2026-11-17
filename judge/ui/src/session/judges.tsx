@@ -4,6 +4,8 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useState } from '
 import type { JudgeProvider, JudgeSettings } from './engine'
 
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
+/** Under this many choices a filter is clutter: the eye finds a row faster. */
+const FILTER_FROM = 6
 
 /** One worker's settings, opened on the picker's settings page. */
 export interface ConfigureTarget {
@@ -18,14 +20,12 @@ interface JudgeRow {
   /** What choosing it writes to the session; `undefined` = Default. */
   value: string | undefined
   mark: ReactNode
-  /** The model the judge's settings name (or the provider, failing that). */
   label: string
-  /** The provider, beside the label; the Default row carries none. */
-  meta?: string
+  /** One quiet line under the name: the model, or what is wrong. */
   description?: string
   /** The description says why this choice would not be used. */
   warning?: boolean
-  /** The full reason behind a warning, shown as the row's title. */
+  /** The full reason behind a warning, with its fix. */
   reason?: string
   configure?: ConfigureTarget
 }
@@ -57,10 +57,14 @@ export function settingsTarget(settings: JudgeSettings): ConfigureTarget {
   }
 }
 
+/** What is wrong, in the words of the fix: the engine's reason is the title. */
+function problemLabel(problem: string): string {
+  return /api key/i.test(problem) ? 'Needs an API key' : 'Not configured'
+}
+
 /**
- * The picker's choices, one flat list the way the model picker lists
- * models: the judge settings' Default first, then one row per provider
- * showing the model its settings name, each with its own Configure.
+ * The picker's choices, one flat list: the judge settings' Default first,
+ * then one row per provider with the model its settings name.
  */
 function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | null, stored: string | undefined): JudgeRow[] {
   const running = new Map((providers ?? []).map((entry) => [entry.provider, entry]))
@@ -73,6 +77,7 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
       : fallbackEntry?.problem
         ? `${fallback}, not configured`
         : [fallback, fallbackEntry?.model].filter(Boolean).join(' · ')
+  const fallbackWarning = Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem))
   const names = [...running.keys()]
   if (stored && providers && !running.has(stored)) names.push(stored)
   return [
@@ -86,8 +91,12 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
       ),
       label: 'Default',
       description: fallbackDescription,
-      warning: Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem)),
-      configure: settings ? settingsTarget(settings) : undefined,
+      warning: fallbackWarning,
+      reason: fallbackWarning
+        ? fallbackEntry?.problem
+          ? `${fallback} is not configured: ${fallbackEntry.problem}`
+          : `judge-${fallback} is not running`
+        : undefined,
     },
     ...names.sort().map((name): JudgeRow => {
       const entry = running.get(name)
@@ -96,12 +105,9 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
         value: name,
         mark: <JudgeMark provider={name} />,
         label: name,
-        meta: entry?.model ?? undefined,
-        description: !entry ? 'Not running' : entry.problem ? 'Not configured' : undefined,
-        // The whole reason, with its fix, is the row's title: the line
-        // itself stays short and the settings sit one click to the right.
-        reason: !entry ? `judge-${name} is not running` : entry.problem ? `Not configured: ${entry.problem}` : undefined,
+        description: !entry ? 'Not running' : entry.problem ? problemLabel(entry.problem) : (entry.model ?? undefined),
         warning: !entry || Boolean(entry.problem),
+        reason: !entry ? `judge-${name} is not running` : entry.problem ? `Not configured: ${entry.problem}` : undefined,
         configure: entry ? providerTarget(entry) : undefined,
       }
     }),
@@ -121,9 +127,9 @@ export interface JudgesPanelProps {
 }
 
 /**
- * The first page: a filter you type into (arrows move, Enter picks, as in
- * the model picker), the rows, and a foot with the judge settings and the
- * way to add a judge.
+ * The first page: a head naming what this is and when it applies, with the
+ * judge settings; the rows; a filter once there are enough rows to need
+ * one (arrows move, Enter picks); and the way to add a judge.
  */
 export function JudgesPanel({ providers, settings, stored, listError, onChoose, onConfigure, onAdd }: JudgesPanelProps) {
   const listId = useId()
@@ -131,10 +137,12 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
   // `null` follows the session's choice; typing or hovering pins a row.
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
 
-  const words = filter.toLowerCase().split(/\s+/).filter(Boolean)
-  const visible = judgeRows(providers, settings, stored).filter((row) => {
+  const rows = judgeRows(providers, settings, stored)
+  const showFilter = rows.length >= FILTER_FROM
+  const words = showFilter ? filter.toLowerCase().split(/\s+/).filter(Boolean) : []
+  const visible = rows.filter((row) => {
     if (words.length === 0) return true
-    const hay = `${row.label} ${row.meta ?? ''} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
+    const hay = `${row.label} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
     return words.every((word) => hay.includes(word))
   })
   const selectedIndex = visible.findIndex((row) => row.value === stored)
@@ -175,33 +183,59 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
 
   return (
     <>
-      <div className="judge-ui-session-filter">
-        <Search size={16} aria-hidden />
-        <input
-          type="search"
-          value={filter}
-          onChange={(event) => {
-            setFilter(event.target.value)
-            setActiveIndex(0)
-          }}
-          onKeyDown={onFilterKeyDown}
-          // biome-ignore lint/a11y/noAutofocus: the menu opened to pick a judge; typing is the fastest way to one
-          autoFocus
-          placeholder="Filter judges…"
-          aria-label="Filter judges"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={listId}
-          aria-activedescendant={active ? optionId(active) : undefined}
-          autoCapitalize="none"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-        />
+      <div className="judge-ui-session-head">
+        <div className="judge-ui-session-head-copy">
+          <span className="judge-ui-session-head-title">Judge</span>
+          <span className="judge-ui-session-head-note">Applies from the next turn</span>
+        </div>
+        {settings ? (
+          <IconButton
+            label="Configure judge settings"
+            tooltip="Judge settings"
+            tooltipSide="top"
+            variant="ghost"
+            className="judge-ui-session-head-settings"
+            onClick={() => onConfigure(settingsTarget(settings))}
+          >
+            <Settings2 size={16} aria-hidden />
+          </IconButton>
+        ) : null}
       </div>
+      {showFilter ? (
+        <div className="judge-ui-session-filter">
+          <Search size={16} aria-hidden />
+          <input
+            type="search"
+            value={filter}
+            onChange={(event) => {
+              setFilter(event.target.value)
+              setActiveIndex(0)
+            }}
+            onKeyDown={onFilterKeyDown}
+            // biome-ignore lint/a11y/noAutofocus: the menu opened to pick a judge; typing is the fastest way to one
+            autoFocus
+            placeholder="Filter judges…"
+            aria-label="Filter judges"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-activedescendant={active ? optionId(active) : undefined}
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+      ) : null}
       <div id={listId} className="judge-ui-session-list">
         {visible.map((row) => {
           const selected = row.value === stored
+          const tip = row.reason ? (
+            <span className="judge-ui-session-tip">
+              <span>{row.reason}</span>
+              {row.configure ? <span className="judge-ui-session-tip-action">Configure {row.id}</span> : null}
+            </span>
+          ) : undefined
           return (
             <div key={row.id} className="judge-ui-session-row">
               <button
@@ -213,16 +247,13 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
                 data-selected={selected || undefined}
                 data-highlighted={row === active || undefined}
                 data-warning={row.warning || undefined}
-                title={row.reason ?? (row.warning ? row.description : undefined)}
+                title={row.reason}
                 onClick={() => onChoose(row.value)}
                 onMouseEnter={() => setActiveIndex(visible.indexOf(row))}
               >
                 {row.mark}
                 <span className="judge-ui-session-option-copy">
-                  <span className="judge-ui-session-option-title">
-                    <span className="judge-ui-session-option-label">{row.label}</span>
-                    {row.meta ? <span className="judge-ui-session-option-meta">{row.meta}</span> : null}
-                  </span>
+                  <span className="judge-ui-session-option-label">{row.label}</span>
                   {row.description ? (
                     <span className="judge-ui-session-option-description">
                       {row.warning ? <TriangleAlert size={16} aria-hidden /> : null}
@@ -234,19 +265,10 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
               </button>
               {row.configure ? (
                 <IconButton
-                  label={`Configure ${row.id === 'default' ? 'judge settings' : row.id}`}
-                  // The whole reason rides on the settings button's tooltip, so
-                  // the keyboard reaches it too, not only a pointer on the row.
-                  tooltip={
-                    row.reason ? (
-                      <span className="judge-ui-session-row-tip">
-                        <span>{row.reason}</span>
-                        <span className="judge-ui-session-row-tip-action">
-                          Configure {row.id === 'default' ? 'judge settings' : row.id}
-                        </span>
-                      </span>
-                    ) : undefined
-                  }
+                  label={`Configure ${row.id}`}
+                  // A warning's whole reason rides on the settings button's
+                  // tooltip, so the keyboard reaches it, not only a pointer.
+                  tooltip={tip}
                   tooltipSide="left"
                   variant="ghost"
                   className="judge-ui-session-row-configure"
@@ -267,7 +289,7 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
           </p>
         ) : null}
         {providers !== null && providers.length === 0 && words.length === 0 ? (
-          <p className="judge-ui-session-empty">No judge providers yet. Add one from the registry.</p>
+          <p className="judge-ui-session-empty">No judge yet. Add one from the registry below.</p>
         ) : null}
         {listError ? (
           <p className="judge-ui-session-empty" role="alert">
@@ -276,7 +298,6 @@ export function JudgesPanel({ providers, settings, stored, listError, onChoose, 
         ) : null}
       </div>
       <div className="judge-ui-session-foot">
-        <span className="judge-ui-session-foot-note">Applies from the next turn</span>
         <button type="button" className="judge-ui-session-foot-action" onClick={onAdd}>
           <Plus size={16} aria-hidden />
           Add a judge
