@@ -35,6 +35,13 @@ struct Snapshot {
     /// A record edited after every read the pass made (applied on the next
     /// supersede, before its guard check).
     stale: Option<String>,
+    /// The bank's `learned` rule as `memory::rule::list` returns it.
+    learned: String,
+    /// A hand edit appended to `learned` on the next `memory::rule::set`,
+    /// before its `expected` check.
+    rule_edit: Option<String>,
+    /// A hand edit appended to `learned` while the judge call runs.
+    judge_edit: Option<String>,
 }
 
 #[derive(Default)]
@@ -74,6 +81,18 @@ impl Boundary {
         self.0.lock().unwrap().replies.push_back(Ok(json!({
             "message":{"stop_reason":"stop","content":[{"type":"text","text":actions.to_string()}]}
         })));
+    }
+
+    fn judge_reply(&self, reply: Value) {
+        self.0
+            .lock()
+            .unwrap()
+            .replies
+            .push_back(Ok(json!(reply.to_string())));
+    }
+
+    fn learned(&self) -> String {
+        self.0.lock().unwrap().learned.clone()
     }
 }
 
@@ -186,6 +205,25 @@ impl ConsolidationTransport for Boundary {
                         json!(survivor["corroboration"].as_u64().unwrap() + 1);
                     Ok(json!({"reinforced":true,"survivor":survivor.clone()}))
                 }
+                "memory::rule::list" => Ok(json!({"bank":payload["bank"],"rules":[
+                    {"name":"learned","content":inner.learned,"updated_at":0}
+                ]})),
+                "memory::rule::set" => {
+                    assert_eq!(payload["name"], "learned");
+                    if let Some(edit) = inner.rule_edit.take() {
+                        inner.learned.push_str(&edit);
+                    }
+                    let stale = payload["expected"]
+                        .as_str()
+                        .is_some_and(|e| e != inner.learned);
+                    if inner.guarded && stale {
+                        return Err("memory::rule::set: invalid_input: rule_changed: rule \
+                                    `learned` changed since `expected` was read"
+                            .into());
+                    }
+                    inner.learned = payload["content"].as_str().unwrap().into();
+                    Ok(json!({"ok":true,"exists":true}))
+                }
                 _ => Err(format!("unexpected offline RPC: {function}")),
             }
         })
@@ -201,6 +239,9 @@ impl ConsolidationTransport for Boundary {
             inner
                 .calls
                 .push(("offline::reorder-decision".into(), json!({"prompt":prompt})));
+            if let Some(edit) = inner.judge_edit.take() {
+                inner.learned.push_str(&edit);
+            }
             let reply = inner
                 .replies
                 .pop_front()
@@ -1417,5 +1458,203 @@ async fn a_zero_call_cap_defers_both_tiers() {
     assert!(
         notes.iter().any(|n| n.contains("semantic tier deferred")),
         "{notes:?}"
+    );
+}
+
+fn corroborated(id: &str, text: &str, at: u64) -> Value {
+    let mut r = row(id, text, at);
+    r["corroboration"] = json!(5);
+    r
+}
+
+fn promotion_only() -> WorkerConfig {
+    WorkerConfig {
+        semantic_enabled: false,
+        llm_assist_enabled: true,
+        promote_corroboration_threshold: 4,
+        ..WorkerConfig::default()
+    }
+}
+
+fn payloads(boundary: &Boundary, function: &str) -> Vec<Value> {
+    boundary
+        .calls()
+        .into_iter()
+        .filter(|(f, _)| f == function)
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// One promotable memory; `learned` and the guard as the test sets them.
+fn one_candidate(learned: &str, guarded: bool) -> Boundary {
+    let boundary = Boundary::with_rows(vec![corroborated(
+        "fp-brief",
+        "User wants brief answers",
+        1,
+    )]);
+    {
+        let mut inner = boundary.0.lock().unwrap();
+        inner.learned = learned.into();
+        inner.guarded = guarded;
+    }
+    boundary.judge_reply(json!({"promotions":[{"id":"fp-brief","rule":"Keep answers brief."}]}));
+    boundary
+}
+
+#[tokio::test]
+async fn a_second_promotion_pass_over_the_same_candidates_adds_nothing() {
+    let boundary = Boundary::with_rows(vec![
+        corroborated("fp-brief", "User wants brief answers", 1),
+        corroborated("fp-cite", "User wants sources cited", 2),
+    ]);
+    boundary.0.lock().unwrap().guarded = true;
+    boundary.judge_reply(json!({"promotions":[
+        {"id":"fp-brief","rule":"Keep answers brief."},
+        {"id":"fp-cite","rule":"Cite sources."}
+    ]}));
+    let first = run(&boundary, promotion_only(), false).await;
+    assert_eq!(first.banks[0].promoted, 2);
+    assert!(first.banks[0].errors.is_empty(), "{:?}", first.banks[0]);
+    assert_eq!(
+        boundary.snapshot()["state"]["promoted:offline"],
+        json!(["fp-brief", "fp-cite"])
+    );
+    let learned = boundary.learned();
+
+    // No reply queued: a judge call would surface as a skip note.
+    let second = run(&boundary, promotion_only(), false).await;
+    let bank = &second.banks[0];
+    assert_eq!(bank.promoted, 0);
+    assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
+    assert_eq!(payloads(&boundary, "offline::reorder-decision").len(), 1);
+    assert_eq!(payloads(&boundary, "memory::rule::set").len(), 1);
+    assert_eq!(boundary.learned(), learned);
+}
+
+#[tokio::test]
+async fn a_promotion_merges_again_when_the_rule_changes_under_it() {
+    let boundary = one_candidate("# Learned\n- Existing line.\n", true);
+    boundary.0.lock().unwrap().rule_edit = Some("- Typed by hand meanwhile.\n".into());
+    let response = run(&boundary, promotion_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(bank.promoted, 1);
+    assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
+    let sets = payloads(&boundary, "memory::rule::set");
+    assert_eq!(sets.len(), 2);
+    assert_eq!(sets[0]["expected"], "# Learned\n- Existing line.\n");
+    assert_eq!(
+        sets[1]["expected"],
+        "# Learned\n- Existing line.\n- Typed by hand meanwhile.\n"
+    );
+    assert_eq!(
+        boundary.learned(),
+        "# Learned\n- Existing line.\n- Typed by hand meanwhile.\n- Keep answers brief.\n"
+    );
+    assert_eq!(
+        boundary.snapshot()["state"]["promoted:offline"],
+        json!(["fp-brief"])
+    );
+}
+
+#[tokio::test]
+async fn a_covered_candidate_is_recorded_and_not_judged_again() {
+    let boundary = Boundary::with_rows(vec![corroborated(
+        "fp-brief",
+        "User wants brief answers",
+        1,
+    )]);
+    boundary.0.lock().unwrap().learned = "# Learned\n- Keep answers brief.\n".into();
+    assert!(
+        boundary.snapshot()["state"]
+            .get("promoted:offline")
+            .is_none(),
+        "promoted before the ledger existed"
+    );
+    boundary.judge_reply(json!({"covered":["fp-brief"]}));
+    let response = run(&boundary, promotion_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(bank.promoted, 0);
+    assert!(bank.errors.is_empty(), "{bank:?}");
+    assert!(payloads(&boundary, "memory::rule::set").is_empty());
+    assert_eq!(
+        boundary.snapshot()["state"]["promoted:offline"],
+        json!(["fp-brief"])
+    );
+    let judged = payloads(&boundary, "offline::reorder-decision");
+    let prompt: Value = serde_json::from_str(judged[0]["prompt"].as_str().unwrap()).unwrap();
+    assert_eq!(prompt["learned_lines"], json!(["Keep answers brief."]));
+
+    run(&boundary, promotion_only(), false).await;
+    assert_eq!(payloads(&boundary, "offline::reorder-decision").len(), 1);
+}
+
+#[tokio::test]
+async fn a_covered_verdict_without_learned_lines_is_not_recorded() {
+    let boundary = Boundary::with_rows(vec![corroborated(
+        "fp-brief",
+        "User wants brief answers",
+        1,
+    )]);
+    boundary.judge_reply(json!({"covered":["fp-brief"]}));
+    boundary.judge_reply(json!({"covered":["fp-brief"]}));
+    for _ in 0..2 {
+        let response = run(&boundary, promotion_only(), false).await;
+        let bank = &response.banks[0];
+        assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
+        assert!(boundary.snapshot()["state"]
+            .get("promoted:offline")
+            .is_none());
+    }
+    assert!(payloads(&boundary, "memory::rule::set").is_empty());
+    // Not in the ledger, so the candidate is judged again.
+    assert_eq!(payloads(&boundary, "offline::reorder-decision").len(), 2);
+}
+
+#[tokio::test]
+async fn the_rule_is_read_again_after_the_judge_call() {
+    // Unguarded, so a write built from the pre-judge read would drop the edit.
+    let boundary = one_candidate("# Learned\n- Existing line.\n", false);
+    boundary.0.lock().unwrap().judge_edit = Some("- Typed during the judge call.\n".into());
+    run(&boundary, promotion_only(), false).await;
+    let order: Vec<String> = boundary
+        .calls()
+        .into_iter()
+        .map(|(f, _)| f)
+        .filter(|f| f.starts_with("memory::rule::") || f == "offline::reorder-decision")
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "memory::rule::list",
+            "offline::reorder-decision",
+            "memory::rule::list",
+            "memory::rule::set"
+        ]
+    );
+    let after_judge = "# Learned\n- Existing line.\n- Typed during the judge call.\n";
+    assert_eq!(
+        payloads(&boundary, "memory::rule::set")[0]["expected"],
+        after_judge
+    );
+    assert_eq!(
+        boundary.learned(),
+        format!("{after_judge}- Keep answers brief.\n")
+    );
+}
+
+#[tokio::test]
+async fn an_older_memory_worker_still_takes_the_promotion() {
+    let boundary = one_candidate("", false);
+    let response = run(&boundary, promotion_only(), false).await;
+    let bank = &response.banks[0];
+    assert_eq!(bank.promoted, 1);
+    assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
+    assert_eq!(payloads(&boundary, "memory::rule::set").len(), 1);
+    let learned = boundary.learned();
+    assert!(learned.starts_with("# Learned\n"), "{learned}");
+    assert!(learned.ends_with("\n- Keep answers brief.\n"), "{learned}");
+    assert_eq!(
+        boundary.snapshot()["state"]["promoted:offline"],
+        json!(["fp-brief"])
     );
 }

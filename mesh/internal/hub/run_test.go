@@ -79,19 +79,19 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					var payload map[string]any
 					json.Unmarshal(frame["data"], &payload)
 					switch string(frame["function_id"]) {
+					case `"configuration::list"`:
+						value = map[string]any{"configurations": []any{map[string]any{"id": "project_rbac-proxy", "metadata": map[string]any{"ui_form": "rbac-proxy"}}, map[string]any{"id": "rbac-proxy"}}}
 					case `"configuration::get"`:
 						value = map[string]any{"value": cfg}
-						if payload["id"] == "rbac-proxy" {
+						if payload["id"] == "project_rbac-proxy" {
 							proxyMu.Lock()
 							value = map[string]any{"value": proxyValue}
 							proxyMu.Unlock()
 						}
-					case `"configuration::ensure"`:
-						if payload["id"] == "rbac-proxy" {
+					case `"configuration::set"`:
+						if payload["id"] == "project_rbac-proxy" {
 							proxyMu.Lock()
-							if proxyValue == nil {
-								proxyValue = payload["initial_value"]
-							}
+							proxyValue = payload["value"]
 							proxyMu.Unlock()
 						}
 					case `"rbac-proxy::on-config-change"`:
@@ -191,16 +191,17 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						if source.FunctionID != "configuration::on-updated" || source.Namespace != "default" || strings.Join(source.Capture, ",") != "output" || target.FunctionID != "mesh::on-config-change" {
 							t.Fatalf("invalid configuration observer: %s", f)
 						}
-						var id string
+						var id, form string
 						json.Unmarshal(source.Filters["input.id"]["$eq"], &id)
+						json.Unmarshal(source.Filters["input.metadata.ui_form"]["$eq"], &form)
 						var events []string
 						json.Unmarshal(source.Filters["input.event_type"]["$in"], &events)
 						if len(events) != 3 {
 							t.Fatalf("missing event filter: %s", f)
 						}
-						if id == "rbac-proxy" {
+						if form == "rbac-proxy" && id == "" {
 							proxyBound = true
-						} else if id == "project_mesh" {
+						} else if id == "project_mesh" && form == "" {
 							bound = true
 						} else {
 							t.Fatalf("configuration filter: %s", f)
@@ -214,8 +215,10 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 							proxyApplies++
 							var callNS string
 							json.Unmarshal(f["namespace"], &callNS)
-							if callNS != ns {
-								t.Fatalf("proxy apply outside primary namespace: %s", callNS)
+							var p map[string]any
+							json.Unmarshal(f["data"], &p)
+							if callNS != ns || p["id"] != "project_rbac-proxy" {
+								t.Fatalf("proxy apply outside primary namespace or entry: %s %+v", callNS, p)
 							}
 						}
 						if strings.Contains(id, "configuration::") {
@@ -224,14 +227,14 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 							}
 							var p map[string]any
 							json.Unmarshal(f["data"], &p)
-							if p["id"] != "project_mesh" && p["id"] != "rbac-proxy" {
+							if p["id"] != "project_mesh" && p["id"] != "project_rbac-proxy" && id != `"configuration::list"` {
 								t.Fatalf("configuration ID: %+v", p)
 							}
 						}
 						if id == `"configuration::get"` {
 							var p map[string]any
 							json.Unmarshal(f["data"], &p)
-							if p["id"] == "rbac-proxy" {
+							if p["id"] == "project_rbac-proxy" {
 								proxyGets++
 							} else {
 								gets++

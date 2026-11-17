@@ -107,6 +107,16 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_rule_chars")]
     pub max_rule_chars: usize,
 
+    /// Size the bank's `learned` rule may reach, in characters as injected.
+    /// A write that takes it past this moves its oldest lines back to memories
+    /// tagged `demoted-rule` (saved before the rule is rewritten), so one
+    /// bank's `learned` rule cannot grow without bound. A turn on a repository
+    /// bank also reads `default_bank`'s, and an agent's bank's if any, so
+    /// their learned rules together can still fill `max_rule_chars`. `0`
+    /// turns the cap off.
+    #[serde(default = "default_learned_max_chars")]
+    pub learned_max_chars: usize,
+
     /// Recency half-life in days for recall ranking: the age at which a
     /// memory's recency is neutral. Recency is a mild factor — a fresh memory
     /// gains up to 20% rank weight, a very old one loses up to 20% — so
@@ -155,6 +165,9 @@ fn default_max_memories_per_turn() -> usize {
 }
 fn default_max_rule_chars() -> usize {
     6_000
+}
+fn default_learned_max_chars() -> usize {
+    3_000
 }
 fn default_decay_half_life_days() -> u64 {
     60

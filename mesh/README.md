@@ -33,14 +33,27 @@ iii call --engine ws://127.0.0.1:49834 mesh::nodes::get name=laptop
 ```
 
 Status reports front-door, gateway and proxy health plus total, online and
-outdated node counts. The hub applies its rbac-proxy settings again when the
-functions on its engine change, when the `rbac-proxy` configuration entry
-changes and when its engine connection returns. It polls nothing. Each change
-of the functions costs one read of the `rbac-proxy` entry and one call to
+outdated node counts. The hub writes its settings to the configuration entry
+rbac-proxy registered for itself: `rbac-proxy` when started alone, or the name
+its supervisor gave it through `III_CONFIG_NAME` (Compose uses
+`<namespace>-<container>`, such as `default-rbac-proxy`). It finds that entry
+in `configuration::list` by its `ui_form: rbac-proxy` metadata, preferring the
+one named like its own entry (`default-mesh` picks `default-rbac-proxy`) and
+otherwise the only other one it may take. It never guesses: with several, the
+proxy stays inactive and `mesh::status` names them until you name the right one
+like the hub's entry or remove the others. A hub named `<prefix>mesh` only takes an entry whose
+name starts with `<prefix>`, so it never writes another namespace's proxy, and
+no hub takes an entry a node can write (`<node>__*`). It never creates the
+entry: until rbac-proxy registers it, the proxy and the gateway stay inactive.
+The hub applies its rbac-proxy settings again when the functions on its engine
+change, when an rbac-proxy configuration entry it could take is registered,
+changes or is removed, and when its engine
+connection returns. It polls nothing. Each change of the functions costs one
+configuration list, one read of the rbac-proxy entry and one call to
 rbac-proxy. A call that times out, or an rbac-proxy that could not bind its
 port, is tried again after 1 second and then at doubling intervals up to a
-minute; a missing rbac-proxy or an entry another worker owns is not retried:
-the hub waits for the event that changes it.
+minute; a missing rbac-proxy or entry, or an entry another worker owns, is not
+retried: the hub waits for the event that changes it.
 
 The list holds each node's name, address, platform, version, online state and
 shared workers; each shared worker lists its hub function ids
@@ -400,7 +413,8 @@ The runner allocates loopback engine and proxy ports and temporary state, and
 cleans up only its own process groups. Raw logs/frames can contain credentials:
 keep `MESH_E2E_REPORT_DIR` private (the runner sets directory mode 0700 and
 files use 0600). Publish only `public-report.json` from the allowlisted
-projection. The runner starts a real engine, rbac-proxy and fp, plus harness,
+projection. The runner starts a real engine, rbac-proxy (under the entry name
+`e2e-rbac-proxy`, as a supervisor names it) and fp, plus harness,
 state, queue and session-manager for the hook test, with an in-process hub. It
 checks the boundary a node connection meets and does not run a client-mode
 engine. ADE source-contract fixtures prove Mesh asset registration/content; the

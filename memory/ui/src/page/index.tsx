@@ -53,7 +53,7 @@ import {
   pinMemory,
   reloadStore,
   saveMemory,
-  setRule,
+  saveRule,
   updateMemory,
 } from './memory-data'
 import { RecallPanel } from './RecallPanel'
@@ -414,9 +414,19 @@ export function MemoryPage({
                   ) : panel === 'rules' ? (
                     <RulesPanel
                       rules={rules}
-                      onSet={(name, content) =>
-                        act(() => setRule(host, selected, name, content))
-                      }
+                      onSet={async (name, content, expected) => {
+                        let saved = ''
+                        const ok = await act(async () => {
+                          saved = await saveRule(
+                            host,
+                            selected,
+                            name,
+                            content,
+                            expected,
+                          )
+                        })
+                        return ok ? saved : null
+                      }}
                       busy={busy}
                       reportDirty={reportDirty}
                     />

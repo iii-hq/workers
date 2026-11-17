@@ -2131,6 +2131,7 @@ impl Bank {
     /// was read. Both sides are compared redacted: `expected` is the redacted
     /// text the merge started from. `Ok(None)`: it changed, nothing written;
     /// `Ok(Some(changed))`: published, `changed` when the file was rewritten.
+    /// `memory::rule::set` with `expected` publishes through it too.
     pub fn extraction_rule_expected(
         &self,
         name: &str,

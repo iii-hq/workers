@@ -1,5 +1,5 @@
 {
-  "description": "Create or replace one rule (atomic write; empty content removes it). Rules are plain markdown files under the bank's rules/ folder.",
+  "description": "Create or replace one rule (atomic write; empty content removes it). With `expected`, the write is refused as `rule_changed` when the rule no longer holds that content. Rules are plain markdown files under the bank's rules/ folder.",
   "function_id": "memory::rule::set",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -15,6 +15,14 @@
       "content": {
         "description": "Markdown content. Empty removes the rule.",
         "type": "string"
+      },
+      "expected": {
+        "default": null,
+        "description": "The rule's content as the caller last read it (`memory::rule::list`). The write is refused with `rule_changed` when the rule holds anything else by then. Empty: the rule must not exist yet. Omitted: replace without checking.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "name": {
         "description": "Rule name, `[a-z0-9][a-z0-9_-]{0,63}` (it becomes `<name>.md`).",

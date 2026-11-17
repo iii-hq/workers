@@ -24,7 +24,11 @@ Two record kinds per bank, chosen by durability semantics:
   prefix a model reasoned under never changes); a later change reaches a running session as one
   appended `<memory update="rules">` message that overrides the frozen section. Guaranteed
   presence; use for what must always hold (writing style, coding conventions, answer format,
-  project constants). Bounded by `max_rule_chars` with a visible truncation marker.
+  project constants). Bounded by `max_rule_chars` with a visible truncation marker; the marker
+  counts the hidden lines and names `memory::rule::list {"bank":"<bank>"}` to read them. The
+  auto-managed `learned` rule is also capped by `learned_max_chars` (default 3000, measured as
+  injected; `0` turns the cap off): a write past it moves the oldest lines to memories tagged
+  `demoted-rule`, saved before the rule is rewritten, and the newest line always stays.
 - **Memories** (`memories.jsonl`) — one-line records recalled on demand, ranked against the current
   question. Append-only full-record log: fsync before RAM, last-wins replay by id, updates append
   revisions, deletes append tombstones. Content-fingerprinted ids (`fp` + FNV-1a of normalized
@@ -61,8 +65,10 @@ One LLM call per completed turn, off the hot path:
 3. One `router::complete` call classifies each extracted item as a **memory** (durable information about
    the user/projects/world) or a **rule** (standing instruction about how the assistant should behave).
    Memories are saved ADD-only; rule-kind items append to the bank's auto-managed `learned` rule,
-   fingerprint-deduped, capped per pass (`rule_learning_enabled` to disable). Hand-authored rules
-   are never touched by any automatic path.
+   fingerprint-deduped, capped per pass (`rule_learning_enabled` to disable). A rule the user
+   states again moves to the newest line. Past `learned_max_chars` the oldest lines are demoted
+   to memories, recalled like any other memory. Hand-authored rules are never touched by any
+   automatic path.
 
 Embeddings are derived data: `vectors.jsonl` sidecars carry the embedded text and the model
 `router::embed` reported for it. A text edit, a retirement, or a change of the reported model (a
@@ -88,7 +94,10 @@ Consumer-facing:
 - `memory::bank::create` / `memory::bank::list` / `memory::bank::delete` — named scopes; delete
   moves the folder to `.trash/` (recoverable).
 - `memory::rule::list` / `memory::rule::set` — the always-injected markdown rules; empty content
-  removes a rule (an empty set against a nonexistent bank is a no-op).
+  removes a rule (an empty set against a nonexistent bank is a no-op). `list` returns content
+  redacted, as it is injected. `set` takes an optional `expected`, the content as last read; the
+  write is refused with `rule_changed` (`invalid_input`) when the rule holds anything else by
+  then, and `""` means the rule must not exist yet.
 - `memory::tags` — distinct tags across a bank's live memories with counts. Tags are topical
   labels for filtering WITHIN a bank (set on save/update, suggested by extraction); `memory::list`
   and `memory::recall` accept a `tag` filter. Organization, not ranking.
@@ -183,8 +192,12 @@ siblings over one on-disk contract, not a monolith with modes.
   one `router::complete` judge per bank confirms which reorder groups really are equivalent
   (merged through the same seam) and promotes standing instructions observed
   `promote_corroboration_threshold`+ times into the bank's `learned` rule — append-only,
-  fingerprint-deduped, and the judge can only act on candidates it was offered. Installable,
-  stoppable, and removable without touching stored memory.
+  fingerprint-deduped, and the judge can only act on candidates it was offered. The judge sees
+  the `learned` lines in force and lists a candidate one of them already states as `covered`
+  instead of promoting it. Promoted and covered ids are kept in the state worker
+  (`promoted:{bank}`), so they are not offered again. The write carries `expected` and merges
+  again on `rule_changed`, up to three tries; an older memory worker ignores `expected`.
+  Installable, stoppable, and removable without touching stored memory.
 
 The seam is the store's append-only contract: any sibling that mutates memory goes through the
 same `memory::*` functions and the same last-wins replay, so the family shares one durability
