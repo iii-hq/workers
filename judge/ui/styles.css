@@ -31,9 +31,14 @@
   color: var(--color-ink);
 }
 
-/* The session's judge would not be used: not running, or no usable key. */
+/* The session's judge would not be used: not running, or no usable key.
+   The glyph carries the amber; the words stay legible at 12px, where the
+   light theme's amber measures 3.75:1 against the composer. */
 [data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] {
-  gap: 4px;
+  gap: 6px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-trigger[data-warning] > svg {
   color: var(--color-warn);
 }
 
@@ -46,19 +51,22 @@
   outline-offset: 1px;
 }
 
-/* The session picker, built like the composer's model picker: pages that
-   slide (judges, add a judge, a judge's settings) in one panel sized by
-   the page on screen. */
+/* The session picker. One panel on the popover surface, edged by a
+   1px ring in the shadow stack (it recedes where a solid border would
+   sit on top) under the floating elevation; forced-colors mode still
+   draws the transparent border. Pages slide (judges, add, settings) and
+   the page on screen gives the panel its height. */
 [data-iii-ui='judge'] .judge-ui-session-menu {
   display: flex;
   flex-direction: column;
-  width: min(380px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
   max-height: min(70vh, 560px);
   padding: 0;
   overflow: hidden;
-  border: 1px solid var(--color-popover-edge);
+  border: 1px solid transparent;
   border-radius: var(--radius-xl);
   background: var(--color-popover-surface);
+  box-shadow: 0 0 0 1px var(--color-popover-edge), var(--shadow-floating);
 }
 
 [data-iii-ui='judge'] .judge-ui-session-pages {
@@ -69,8 +77,6 @@
   overflow: hidden;
 }
 
-/* The page on screen gives the panel its height; the others sit over it
-   while they slide out, then stay mounted but inert. */
 [data-iii-ui='judge'] .judge-ui-session-page {
   display: flex;
   flex: 1 1 auto;
@@ -80,6 +86,8 @@
   --picker-page-offset: var(--distance-base);
 }
 
+/* A page that is leaving sits over the one arriving, then stays mounted
+   but inert. */
 [data-iii-ui='judge'] .judge-ui-session-page[data-active='false'] {
   position: absolute;
   inset: 0;
@@ -96,15 +104,56 @@
   --picker-page-offset: calc(var(--distance-base) * -1);
 }
 
-/* The filter: a search glyph and a bare field on the panel's first line,
-   as the model picker's search, with a rule under it. */
+/* The head: what this is, when a choice applies, and the judge settings.
+   Rows start on the same 14px edge as the title. */
+[data-iii-ui='judge'] .judge-ui-session-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 8px 6px 14px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-head-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-head-title {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-head-note {
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-head-settings {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  color: var(--color-ink-faint);
+}
+
+/* The filter, only once there are enough rows to need one: a glyph and a
+   bare field under a rule. 16px on a coarse pointer, so iOS does not zoom. */
 [data-iii-ui='judge'] .judge-ui-session-filter {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
-  height: 44px;
-  padding: 0 14px;
+  height: 40px;
+  margin: 0 8px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--color-edge);
   color: var(--color-ink-faint);
 }
@@ -126,6 +175,12 @@
   outline: none;
 }
 
+@media (pointer: coarse) {
+  [data-iii-ui='judge'] .judge-ui-session-filter input {
+    font-size: 16px;
+  }
+}
+
 [data-iii-ui='judge'] .judge-ui-session-filter input::placeholder {
   color: var(--color-ink-faint);
 }
@@ -138,39 +193,34 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
   min-width: 0;
   min-height: 0;
-  padding: 4px;
+  padding: 2px 8px 6px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-/* A row: the choice, then its settings, on one wash. The row's radius
-   (lg) is the panel's (xl) less its 4px inset, so the two curves are
-   concentric. The settings button sits beside the choice, not inside it,
-   so each is one control. */
+/* A row: the choice and its settings on one wash. The row radius is `md`
+   inside the panel's `xl`: concentric with the 8px list inset. Rows are
+   44px: a thumb's target as well as a pointer's. */
 [data-iii-ui='judge'] .judge-ui-session-row {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 2px;
-  padding-inline-end: 4px;
-  border-radius: var(--radius-lg);
+  padding-inline-end: 2px;
+  border-radius: var(--radius-md);
   transition: background-color var(--motion-duration-fast);
 }
 
-[data-iii-ui='judge'] .judge-ui-session-row:has(> [data-selected]) {
-  background: var(--color-surface-selected);
-}
-
-/* The keyboard's row and, on a pointer that can hover, the pointer's. */
-[data-iii-ui='judge'] .judge-ui-session-row:has(> [data-highlighted]):not(:has(> [data-selected])) {
+/* The keyboard's row and, on a pointer that can hover, the pointer's.
+   The session's choice is the check, not a wash: one highlight at a time. */
+[data-iii-ui='judge'] .judge-ui-session-row:has(> [data-highlighted]) {
   background: var(--color-surface-hover);
 }
 
 @media (hover: hover) {
-  [data-iii-ui='judge'] .judge-ui-session-row:hover:not(:has(> [data-selected])) {
+  [data-iii-ui='judge'] .judge-ui-session-row:hover {
     background: var(--color-surface-hover);
   }
 }
@@ -182,9 +232,9 @@
   flex: 1 1 auto;
   align-items: center;
   gap: 10px;
-  padding: 6px 8px;
+  padding: 6px 6px;
   border: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-ink);
   font-family: var(--font-sans);
@@ -194,9 +244,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+[data-iii-ui='judge'] .judge-ui-session-option:active {
+  background: var(--color-surface-active);
+}
+
 [data-iii-ui='judge'] .judge-ui-session-option:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--color-rule-focus);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-option-copy {
@@ -204,32 +258,19 @@
   min-width: 0;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 1px;
-}
-
-[data-iii-ui='judge'] .judge-ui-session-option-title {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 8px;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-option-label,
-[data-iii-ui='judge'] .judge-ui-session-option-meta,
 [data-iii-ui='judge'] .judge-ui-session-option-description {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* One weight everywhere: a selected or hovered row never reflows. */
 [data-iii-ui='judge'] .judge-ui-session-option-label {
   font-weight: 500;
   line-height: 20px;
-}
-
-[data-iii-ui='judge'] .judge-ui-session-option-meta {
-  color: var(--color-ink-faint);
-  font-size: 14px;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-option-description {
@@ -241,17 +282,18 @@
   line-height: 16px;
 }
 
-/* Why a choice would not be used: the glyph is amber, the words stay
-   quiet; the full reason is on the settings button's tooltip (so the
-   keyboard reaches it) and the row's title. */
+/* Why a choice would not be used: the glyph is amber (3.75:1 in the
+   light theme, enough for a glyph, not for 12px words), the words stay
+   ink-faint; the full reason is the row's title and the settings
+   button's tooltip. */
 [data-iii-ui='judge'] .judge-ui-session-option-description > svg {
   flex: 0 0 auto;
   color: var(--color-warn);
 }
 
-/* The check only shows on the session's choice; the column stays, so the
-   labels line up. */
+/* The check column is always there, so names never shift. */
 [data-iii-ui='judge'] .judge-ui-session-option-check {
+  flex: 0 0 auto;
   color: var(--color-ink);
   opacity: 0;
 }
@@ -288,7 +330,7 @@
   color: var(--color-ink);
 }
 
-[data-iii-ui='judge'] .judge-ui-session-row-tip {
+[data-iii-ui='judge'] .judge-ui-session-tip {
   display: flex;
   max-width: 18rem;
   flex-direction: column;
@@ -297,7 +339,7 @@
   text-wrap: pretty;
 }
 
-[data-iii-ui='judge'] .judge-ui-session-row-tip-action {
+[data-iii-ui='judge'] .judge-ui-session-tip-action {
   color: var(--color-ink-faint);
 }
 
@@ -308,7 +350,7 @@
   align-items: flex-start;
   gap: 12px;
   margin: 0;
-  padding: 12px 8px;
+  padding: 10px 6px;
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
   font-size: 13px;
@@ -318,55 +360,51 @@
   margin: 0;
 }
 
-/* The foot: when a choice takes effect, and the way to add a judge, as
-   the model picker's "Add provider". */
+/* The foot: the one way to add a judge, as a row of its own under a rule. */
 [data-iii-ui='judge'] .judge-ui-session-foot {
   display: flex;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 6px 6px 14px;
+  padding: 6px 8px 8px;
   border-top: 1px solid var(--color-edge);
 }
 
-[data-iii-ui='judge'] .judge-ui-session-foot-note {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--color-ink-faint);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 [data-iii-ui='judge'] .judge-ui-session-foot-action {
-  display: inline-flex;
-  flex: 0 0 auto;
+  display: flex;
+  width: 100%;
+  min-height: 40px;
   align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 10px;
+  gap: 10px;
+  padding: 0 6px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-size: 14px;
+  text-align: left;
   cursor: pointer;
   transition: background-color var(--motion-duration-fast);
+  -webkit-tap-highlight-color: transparent;
 }
 
-[data-iii-ui='judge'] .judge-ui-session-foot-action:hover {
-  background: var(--color-surface-hover);
+@media (hover: hover) {
+  [data-iii-ui='judge'] .judge-ui-session-foot-action:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui='judge'] .judge-ui-session-foot-action:active {
+  background: var(--color-surface-active);
 }
 
 [data-iii-ui='judge'] .judge-ui-session-foot-action:focus-visible {
   outline: 2px solid var(--color-rule-focus);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-foot-action > svg {
+  flex: 0 0 auto;
+  width: 24px;
   color: var(--color-ink-faint);
 }
 
@@ -494,8 +532,8 @@
   background: var(--color-surface-hover);
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 [data-iii-ui='judge'] .judge-ui-session-worker {
