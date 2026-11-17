@@ -1374,7 +1374,7 @@ async fn extraction_eval() {
                     scope: None,
                     agent: None,
                 };
-                new_memory(item, case.id, None, TS, TS)
+                new_memory(item, case.id, None, None, TS, TS)
             })
             .collect();
         let layered: HashSet<String> = known

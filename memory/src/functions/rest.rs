@@ -176,6 +176,8 @@ mod tests {
             crate::hooks::EXTRACT_JOB_FN,
             crate::events::ON_ITEM_CHANGED_FN,
             REST_ID,
+            super::super::correct::TRANSCRIPT_ID,
+            super::super::correct::CORRECT_ID,
         ] {
             assert!(
                 super::super::call_json(&deps, internal, json!({}))
