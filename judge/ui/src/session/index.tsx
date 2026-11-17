@@ -90,15 +90,15 @@ function JudgeIntro({ onDismiss }: { onDismiss(): void }) {
         <Scale size={16} aria-hidden />
       </span>
       <span className="judge-ui-session-intro-copy">
-        <span className="judge-ui-session-intro-title">The agent asks a judge its small questions</span>
+        <span className="judge-ui-session-intro-title">What a judge does</span>
         <span>
-          Which function fits, do these arguments match, what next in the browser: a fast model answers instead of
-          the chat model. Default follows the judge settings and needs no key of its own.
+          It answers the agent’s small questions, like which function fits or whether the arguments match, with a
+          fast model instead of the chat model. Default needs no key.
         </span>
+        <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
+          Got it
+        </Button>
       </span>
-      <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
-        Got it
-      </Button>
     </div>
   )
 }
@@ -478,8 +478,8 @@ export function JudgeSessionPicker({
           {/* biome-ignore lint/a11y/noStaticElementInteractions: only keeps keys from the menu's own navigation */}
           <div className="judge-ui-session-pages" onKeyDown={keepKeys}>
             <PickerPage page="judges" active={page === 'judges'}>
-              {introSeen ? null : <JudgeIntro onDismiss={() => setIntroSeen(true)} />}
               <JudgesPanel
+                intro={introSeen ? null : <JudgeIntro onDismiss={() => setIntroSeen(true)} />}
                 providers={providers}
                 settings={settings}
                 stored={stored}

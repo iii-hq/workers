@@ -179,8 +179,8 @@
 }
 
 [data-iii-ui='judge'] .judge-ui-session-intro-dismiss {
-  flex: 0 0 auto;
-  align-self: flex-end;
+  align-self: flex-start;
+  margin: 4px 0 0 -8px;
 }
 
 /* The filter, only once there are enough rows to need one: a glyph and a
