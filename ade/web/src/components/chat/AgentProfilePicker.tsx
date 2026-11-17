@@ -282,9 +282,11 @@ export function AgentProfilePicker({
         sideOffset={8}
         className="max-h-[min(30rem,var(--available-height))] w-[22rem] max-w-[calc(100vw-2rem)] gap-0 overflow-y-auto overscroll-contain p-1.5"
       >
-        <PopoverTitle className="px-2.5 pt-1.5 pb-1.5 text-xs font-medium text-ink-faint">
-          Agent profile
-        </PopoverTitle>
+        <div className="px-2.5 py-1.5">
+          <PopoverTitle className="text-xs font-medium text-ink-faint">
+            Agent profile
+          </PopoverTitle>
+        </div>
         {selectionLocked ? (
           <p className="flex items-center gap-3 px-2.5 pb-1 text-sm text-ink-faint">
             <IconCell>

@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/dist", "!!**/storybook-static", "!!public/vendor"]
+    "includes": [
+      "**",
+      "!!**/dist",
+      "!!**/storybook-static",
+      "!!public/vendor",
+      "!!eslint-suppressions.json"
+    ]
   },
   "formatter": {
     "enabled": true,
