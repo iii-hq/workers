@@ -44,17 +44,39 @@ export function cleanChatTitle(raw: string): string | null {
   return title
 }
 
-function textOf(answer: unknown): string {
-  const content = (answer as { message?: { content?: unknown } } | null)
-    ?.message?.content
-  if (!Array.isArray(content)) return ''
-  return content
+type CompleteAnswer = {
+  message?: {
+    content?: unknown
+    stop_reason?: string
+    error_message?: string
+  }
+} | null
+
+/** The reply's text, or why there is none: a router error comes back as a
+ *  message with `stop_reason: "error"`, its text the provider's error. */
+function readAnswer(answer: unknown): { text: string } | { error: string } {
+  const message = (answer as CompleteAnswer)?.message
+  if (!message) return { error: 'no message in the reply' }
+  if (message.stop_reason === 'error') {
+    return { error: message.error_message || 'the provider returned an error' }
+  }
+  if (!Array.isArray(message.content))
+    return { error: 'no content in the reply' }
+  const text = message.content
     .filter(
       (block): block is { type: 'text'; text: string } =>
         block?.type === 'text' && typeof block.text === 'string',
     )
     .map((block) => block.text)
     .join('')
+  return { text }
+}
+
+/** A heading that did not come is not an error the person sees, but the
+ *  console says why, so "my chat kept its first words" can be traced. */
+function keptDerived(sessionId: string, reason: string): null {
+  console.warn(`[chat-title] ${sessionId} keeps its derived title: ${reason}`)
+  return null
 }
 
 /**
@@ -67,7 +89,8 @@ export async function summarizeChatTitle(
   input: { sessionId: string; prompt: string; model: ModelId | null },
 ): Promise<string | null> {
   const prompt = input.prompt.trim()
-  if (!prompt || !input.model) return null
+  if (!prompt) return null
+  if (!input.model) return keptDerived(input.sessionId, 'the chat has no model')
   const { provider, model } = resolveRunParams(input.model)
   try {
     const answer = await client.call(
@@ -91,11 +114,19 @@ export async function summarizeChatTitle(
       },
       { timeoutMs: TITLE_TIMEOUT_MS },
     )
-    return cleanChatTitle(textOf(answer))
+    const read = readAnswer(answer)
+    if ('error' in read) return keptDerived(input.sessionId, read.error)
+    return (
+      cleanChatTitle(read.text) ??
+      keptDerived(
+        input.sessionId,
+        `the reply was not a heading: ${JSON.stringify(read.text.slice(0, 120))}`,
+      )
+    )
   } catch (err) {
-    if (import.meta.env.DEV) {
-      console.warn('[chat-title] router::complete failed', err)
-    }
-    return null
+    return keptDerived(
+      input.sessionId,
+      `router::complete failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }
