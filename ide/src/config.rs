@@ -4,19 +4,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Serializes every test in the crate that mutates PROCESS-WIDE environment
-/// state (`std::env::set_var`/`remove_var`). `cargo test` runs tests within
-/// one binary on multiple threads by default; `set_var`/`var` on different
-/// threads race at the libc level regardless of Rust-side `Mutex` discipline
-/// around any ONE test's own state, so every such test — here and in
-/// `code/config.rs`'s `from_yaml_expands_env_var` — must hold this lock for
-/// its full set→use→unset span. `.unwrap_or_else(...)` recovers from
-/// poisoning: an earlier test panicking mid-mutation still leaves the
-/// environment consistent (its own RAII guard/explicit cleanup already ran),
-/// so a poisoned lock is not a reason to fail later tests too.
-#[cfg(test)]
-pub(crate) static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// Root configuration for the shell worker: exec policy (timeouts, output
 /// caps, allow/denylist, env forwarding), the fs jail, the sandbox toggle,
 /// and the folded `coder::*` code surface. Stored in the `configuration`
