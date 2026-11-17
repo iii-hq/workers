@@ -10,7 +10,7 @@ import {
   type WorkerConfigurationPanelProps,
 } from '@iii-dev/console-ui'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
-import { ArrowLeft, Info, Scale, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Info, Scale, TriangleAlert } from 'lucide-react'
 import {
   type ComponentType,
   type KeyboardEvent,
@@ -32,7 +32,7 @@ import {
   message,
   readJudgeSettings,
 } from './engine'
-import { type ConfigureTarget, JudgesPanel, providerTarget } from './judges'
+import { type ConfigureTarget, JUDGE_OFF, JudgesPanel, providerTarget } from './judges'
 
 /**
  * Session metadata key the harness reads at the start of every turn and
@@ -93,7 +93,7 @@ function JudgeIntro({ onDismiss }: { onDismiss(): void }) {
         <span className="judge-ui-session-intro-title">What a judge does</span>
         <span>
           It answers the agent’s small questions, like which function fits or whether the arguments match, with a
-          fast model instead of the chat model. Default needs no key.
+          fast model instead of the chat model. Default uses the judge in the judge settings; Off asks none.
         </span>
         <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
           Got it
@@ -120,7 +120,8 @@ function JudgeHelp() {
         </span>
       </span>
       <span className="judge-ui-session-help-foot">
-        A change applies from the next turn. Default follows the judge settings.
+        A change applies from the next turn. Default uses the judge in the judge settings; Off asks no judge, and
+        each of these falls back to working without one.
       </span>
     </span>
   )
@@ -419,7 +420,7 @@ export function JudgeSessionPicker({
     setOpen(false)
     // A local provider loads its model on first use: start that now, not on
     // the session's next turn, whose short judge calls would time out on it.
-    if (value) {
+    if (value && value !== JUDGE_OFF) {
       iii.call('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
     }
   }
@@ -437,7 +438,8 @@ export function JudgeSessionPicker({
   }
 
   // What this session's judge resolves to, and why it would not be used.
-  const effective = stored ?? settings?.provider
+  const off = stored === JUDGE_OFF
+  const effective = off ? undefined : (stored ?? settings?.provider)
   const effectiveEntry = providers?.find((entry) => entry.provider === effective)
   const warning =
     !effective || !providers || listError
@@ -468,11 +470,12 @@ export function JudgeSessionPicker({
         <DropdownMenuTrigger
           className="judge-ui-session-trigger"
           data-warning={warning ? true : undefined}
-          aria-label={`Judge provider for this session: ${stored ?? 'default'}${warning ? `. ${warning}` : ''}`}
-          title={warning ?? 'Judge provider for this session'}
+          aria-label={`Judge for this session: ${off ? 'off' : (stored ?? `default${settings?.provider ? ` (${settings.provider})` : ''}`)}${warning ? `. ${warning}` : ''}`}
+          title={warning ?? 'Judge for this session'}
         >
-          {warning ? <TriangleAlert size={16} aria-hidden /> : null}
-          judge · {stored ?? 'default'}
+          {warning ? <TriangleAlert size={16} aria-hidden /> : <Scale size={16} aria-hidden />}
+          <span className="judge-ui-session-trigger-label">{off ? 'No judge' : (stored ?? 'Default judge')}</span>
+          <ChevronDown size={16} aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="end" className="judge-ui-session-menu" aria-label="Judge for this session">
           {/* biome-ignore lint/a11y/noStaticElementInteractions: only keeps keys from the menu's own navigation */}
@@ -549,7 +552,7 @@ export function JudgeSessionPicker({
         tooltipSide="top"
         className="judge-ui-session-help-button"
       >
-        <Info size={16} aria-hidden />
+        <Info size={16} strokeWidth={1.5} aria-hidden />
       </IconButton>
       <WorkerConfigurationDialog configurationId={settingsDialog} onClose={() => setSettingsDialog(null)} />
     </span>

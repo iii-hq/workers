@@ -1,11 +1,18 @@
 import { IconButton } from '@iii-dev/console-ui'
-import { Check, Plus, Scale, Search, Settings2, TriangleAlert } from 'lucide-react'
+import { Check, CircleOff, Plus, Scale, Search, Settings2, TriangleAlert } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useState } from 'react'
 import type { JudgeProvider, JudgeSettings } from './engine'
 
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
 /** Under this many choices a filter is clutter: the eye finds a row faster. */
 const FILTER_FROM = 6
+
+/**
+ * The session value that turns the judge off: the hub answers it as "no
+ * judge" without forwarding, and every caller carries on as it does when no
+ * judge is deployed (`judge_contract::OFF_PROVIDER`).
+ */
+export const JUDGE_OFF = 'off'
 
 /** One worker's settings, opened on the picker's settings page. */
 export interface ConfigureTarget {
@@ -15,7 +22,7 @@ export interface ConfigureTarget {
 }
 
 interface JudgeRow {
-  /** Stable and selector-safe: `default` or the provider name. */
+  /** Stable and selector-safe: `default`, `off` or the provider name. */
   id: string
   /** What choosing it writes to the session; `undefined` = Default. */
   value: string | undefined
@@ -78,8 +85,8 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
         ? `${fallback}, not configured`
         : [fallback, fallbackEntry?.model].filter(Boolean).join(' · ')
   const fallbackWarning = Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem))
-  const names = [...running.keys()]
-  if (stored && providers && !running.has(stored)) names.push(stored)
+  const names = [...running.keys()].filter((name) => name !== JUDGE_OFF)
+  if (stored && stored !== JUDGE_OFF && providers && !running.has(stored)) names.push(stored)
   return [
     {
       id: 'default',
@@ -97,6 +104,17 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
           ? `${fallback} is not configured: ${fallbackEntry.problem}`
           : `judge-${fallback} is not running`
         : undefined,
+    },
+    {
+      id: JUDGE_OFF,
+      value: JUDGE_OFF,
+      mark: (
+        <span className="judge-ui-session-mark" aria-hidden="true">
+          <CircleOff size={16} aria-hidden />
+        </span>
+      ),
+      label: 'Off',
+      description: 'No judge in this session',
     },
     ...names.sort().map((name): JudgeRow => {
       const entry = running.get(name)

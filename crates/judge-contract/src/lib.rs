@@ -40,6 +40,12 @@ pub fn provider_function_id(provider: &str, public_id: &str) -> String {
 /// access decision.
 pub const PROVIDER_BAGGAGE_KEY: &str = "iii.judge.provider";
 
+/// The provider value that means "no judge": a session that sets it gets
+/// `ProviderUnavailable` from the hub without any provider being called, so
+/// every caller carries on exactly as it does when no judge is deployed.
+/// Reserved: no `judge-off` worker is ever routed to.
+pub const OFF_PROVIDER: &str = "off";
+
 /// `judge-<provider>` suffixes are worker names: lowercase letters, digits and
 /// hyphens, at most 64 bytes.
 pub fn is_valid_provider(provider: &str) -> bool {
