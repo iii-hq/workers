@@ -30,10 +30,8 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   memo,
-  type PointerEvent,
   type ReactNode,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -58,6 +56,7 @@ import {
   withoutDone,
 } from './agent-tree'
 import { useAgentSessions } from './use-agent-sessions'
+import { MAX_SCALE, MIN_SCALE, useCamera } from './use-camera'
 
 /** The chart's root (the project, or every project) and, under "every project", one per project. */
 type GroupNode = {
@@ -210,17 +209,53 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     if (root) visit(root)
     return ids
   }, [root])
+  // Decided once per node, when it first appears: work that finishes while you watch stays open (it never folds
+  // itself away under you); a subtree that was already finished when the chart opened starts folded.
+  const firstSeen = useRef(new Map<string, boolean>())
+  const sessionsPending = loading && sessions.length === 0 && !error
+  const scopeKey = project?.id ?? 'all'
+  const seenFor = useRef(scopeKey)
+  if (seenFor.current !== scopeKey) {
+    seenFor.current = scopeKey
+    firstSeen.current = new Map()
+  }
   const defaultOpen = useCallback(
-    (node: Node) =>
-      node.kind === 'group' || needsEyes.has(node.id) || (node.state !== 'done' && node.state !== 'canceled'),
-    [needsEyes],
+    (node: Node) => {
+      const known = firstSeen.current.get(node.id)
+      if (known !== undefined) return known
+      const open =
+        node.kind === 'group' || needsEyes.has(node.id) || (node.state !== 'done' && node.state !== 'canceled')
+      // Not before the sessions are read: a failed agent under a finished ticket must still open it.
+      if (!sessionsPending) firstSeen.current.set(node.id, open)
+      return open
+    },
+    [needsEyes, sessionsPending],
   )
   const isOpen = useCallback(
     (node: Node) => (toggled && typeof toggled === 'object' ? toggled[node.id] : undefined) ?? defaultOpen(node),
     [toggled, defaultOpen],
   )
+  const camera = useCamera(paneKey)
+  /** The card a fold was asked on, and where it was on screen: it stays there while the layout moves. */
+  const anchor = useRef<{ id: string; x: number; y: number } | null>(null)
+  const cardOf = (id: string) =>
+    chartRef.current?.querySelector(`[data-node-id="${CSS.escape(id)}"] > .kb-chart__card`) ?? null
+  const holdStill = (id: string) => {
+    const box = cardOf(id)?.getBoundingClientRect()
+    anchor.current = box ? { id, x: box.left, y: box.top } : null
+  }
+  useLayoutEffect(() => {
+    const held = anchor.current
+    if (!held) return
+    anchor.current = null
+    const box = cardOf(held.id)?.getBoundingClientRect()
+    if (box) camera.shiftBy(held.x - box.left, held.y - box.top)
+  })
   const setOpen = useCallback(
-    (node: Node, open: boolean) => setToggled({ ...(toggled ?? {}), [node.id]: open }),
+    (node: Node, open: boolean) => {
+      holdStill(node.id)
+      setToggled({ ...(toggled ?? {}), [node.id]: open })
+    },
     [toggled, setToggled],
   )
   const setAll = (open: boolean) => {
@@ -232,6 +267,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       kidsOf(node).forEach(visit)
     }
     visit(root)
+    holdStill(root.id)
     setToggled(next)
   }
 
@@ -250,8 +286,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const focusRow = (id: string) => {
     setActiveId(id)
     const el = chartRef.current?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"]`)
-    el?.focus()
-    el?.querySelector('.kb-node')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    el?.focus({ preventScroll: true })
+    camera.reveal(el?.querySelector('.kb-node') ?? null)
   }
 
   const activate = (node: Node) => {
@@ -307,66 +343,6 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
     event.preventDefault()
   }
 
-  // The chart opens on its root: centred, however wide the fan-out below it is.
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const centredFor = useRef<string | null>(null)
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (!el || !root || centredFor.current === root.id) return
-    centredFor.current = root.id
-    el.scrollLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2)
-  })
-  const pan = usePan(scrollRef)
-
-  // Zoom, for a fan-out wider than the pane: −/+ in steps, Fit to see it whole, ⌘/Ctrl + scroll like a canvas.
-  const [storedZoom, setZoom] = usePaneState<number>(`kanban:tree-zoom:${paneKey}`, 1)
-  const zoom = clampZoom(typeof storedZoom === 'number' ? storedZoom : 1)
-  const zoomRef = useRef(zoom)
-  zoomRef.current = zoom
-  const zoomTo = useCallback(
-    (next: number) => {
-      const el = scrollRef.current
-      const before = zoomRef.current
-      const value = clampZoom(next)
-      if (el && value !== before) {
-        // Keep the middle of the view where it was.
-        const cx = (el.scrollLeft + el.clientWidth / 2) / before
-        const cy = (el.scrollTop + el.clientHeight / 2) / before
-        requestAnimationFrame(() => {
-          el.scrollLeft = cx * value - el.clientWidth / 2
-          el.scrollTop = cy * value - el.clientHeight / 2
-        })
-      }
-      setZoom(value)
-    },
-    [setZoom],
-  )
-  const fit = () => {
-    const el = scrollRef.current
-    const chart = chartRef.current
-    if (!el || !chart) return
-    // The chart's size at 100%: what is drawn, divided by the zoom it is drawn at.
-    const rect = chart.getBoundingClientRect()
-    const width = rect.width / zoomRef.current
-    const height = rect.height / zoomRef.current
-    zoomTo(Math.min(1, el.clientWidth / width, el.clientHeight / height))
-    requestAnimationFrame(() => {
-      el.scrollLeft = 0
-      el.scrollTop = 0
-    })
-  }
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return
-      event.preventDefault()
-      zoomTo(zoomRef.current * (event.deltaY > 0 ? 0.9 : 1.1))
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [zoomTo])
-
   const { stats } = tree
   const summary = [
     `${stats.tickets} ${stats.tickets === 1 ? 'ticket' : 'tickets'}`,
@@ -374,6 +350,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   ]
 
   let body: ReactNode
+  /** The chart itself (not a skeleton or an empty state): it goes on the camera's stage. */
+  let charted = false
   if (loading && sessions.length === 0 && !error) {
     body = <ChartSkeleton />
   } else if (tree.roots.length === 0) {
@@ -402,6 +380,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
       />
     )
   } else {
+    charted = true
     body = (
       <div
         aria-label={project ? `${project.name}: tickets and agents` : 'Projects, tickets and agents'}
@@ -409,7 +388,6 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         onKeyDown={onKeyDown}
         ref={chartRef}
         role="tree"
-        style={{ '--kb-zoom': zoom } as CSSProperties}
       >
         <ChartItem
           agents={agents}
@@ -451,16 +429,20 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         </label>
         {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend into a toolbar */}
         <span aria-label="Zoom" className="kb-zoom" role="group">
-          <IconAction disabled={zoom <= MIN_ZOOM} label="Zoom out" onClick={() => zoomTo(zoom - 0.1)}>
+          <IconAction disabled={camera.scale <= MIN_SCALE + 0.001} label="Zoom out" onClick={camera.zoomOut}>
             <Minus size={16} />
           </IconAction>
-          <button className="kb-zoom__value" onClick={() => zoomTo(1)} title="Back to 100%" type="button">
-            {Math.round(zoom * 100)}%
+          <button className="kb-zoom__value" onClick={camera.actualSize} title="Back to 100%" type="button">
+            {Math.round(camera.scale * 100)}%
           </button>
-          <IconAction disabled={zoom >= 1} label="Zoom in" onClick={() => zoomTo(zoom + 0.1)}>
+          <IconAction disabled={camera.scale >= MAX_SCALE - 0.001} label="Zoom in" onClick={camera.zoomIn}>
             <Plus size={16} />
           </IconAction>
-          <IconAction label="Fit the chart" onClick={fit}>
+          <IconAction
+            className={camera.follow ? 'kb-zoom__fit' : undefined}
+            label={camera.follow ? 'Fitting the chart as it grows' : 'Fit the chart'}
+            onClick={camera.fit}
+          >
             <Maximize2 size={16} />
           </IconAction>
         </span>
@@ -482,59 +464,22 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           title="Agent sessions could not be read"
         />
       ) : null}
-      <div
-        className="kb-chart-scroll"
-        data-panning={pan.panning ? 'true' : undefined}
-        ref={scrollRef}
-        {...pan.handlers}
-      >
-        {body}
-      </div>
+      {charted && root ? (
+        <div
+          className="kb-chart-scroll"
+          data-panning={camera.panning ? 'true' : undefined}
+          ref={camera.viewportRef}
+          {...camera.handlers}
+        >
+          <div className="kb-chart-stage" key={root.id} ref={camera.stageRef}>
+            {body}
+          </div>
+        </div>
+      ) : (
+        <div className="kb-chart-empty">{body}</div>
+      )}
     </div>
   )
-}
-
-const MIN_ZOOM = 0.3
-const clampZoom = (value: number) => Math.round(Math.min(1, Math.max(MIN_ZOOM, value)) * 100) / 100
-
-/** Drag the empty canvas to move around a wide chart; a press on a card is left to the card. */
-function usePan(ref: { current: HTMLDivElement | null }) {
-  const [panning, setPanning] = useState(false)
-  const start = useRef<{ x: number; y: number; left: number; top: number; id: number } | null>(null)
-  const handlers = {
-    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
-      const el = ref.current
-      if (!el || event.button !== 0 || event.pointerType !== 'mouse') return
-      if ((event.target as HTMLElement).closest('.kb-node, button, a, input, label')) return
-      // Otherwise the press starts a text selection, and the drag that follows is a native one.
-      event.preventDefault()
-      start.current = {
-        x: event.clientX,
-        y: event.clientY,
-        left: el.scrollLeft,
-        top: el.scrollTop,
-        id: event.pointerId,
-      }
-      el.setPointerCapture(event.pointerId)
-      setPanning(true)
-    },
-    onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
-      const el = ref.current
-      const from = start.current
-      if (!el || !from || from.id !== event.pointerId) return
-      el.scrollLeft = from.left - (event.clientX - from.x)
-      el.scrollTop = from.top - (event.clientY - from.y)
-    },
-    onPointerUp: () => {
-      start.current = null
-      setPanning(false)
-    },
-    onPointerCancel: () => {
-      start.current = null
-      setPanning(false)
-    },
-  }
-  return { panning, handlers }
 }
 
 /** Open a session's chat beside the board (`chat:<id>` reuses its pane when it is already open). */
@@ -558,6 +503,8 @@ type ItemProps = {
   onToggle: (node: Node, open: boolean) => void
   onActivate: (node: Node) => void
   onFocusRow: (id: string) => void
+  /** Its place among its siblings: the stagger of its entrance. */
+  enterIndex?: number
 }
 
 /** One node: its card, then (open) its children laid out by `layoutOf`, hung off the card by the connectors. */
@@ -590,6 +537,7 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
       aria-selected={false}
       aria-setsize={setSize}
       className="kb-chart__item"
+      style={props.enterIndex ? ({ '--i': props.enterIndex } as CSSProperties) : undefined}
       data-kids={open ? layout : undefined}
       data-node-id={node.id}
       data-spine={spine ? 'true' : undefined}
@@ -622,6 +570,7 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
           {kids.map((kid, index) => (
             <ChartItem
               {...props}
+              enterIndex={index}
               key={kid.id}
               level={level + 1}
               node={kid}

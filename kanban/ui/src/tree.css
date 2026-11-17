@@ -11,15 +11,34 @@
   overflow: hidden;
 }
 
+/* The camera's viewport: nothing scrolls, the stage inside is moved (src/tree/use-camera.ts). */
 [data-iii-ui="kanban"] .kb-chart-scroll {
-  /* Flex so the chart's auto margins centre it while it fits and let it scroll from its edge once it does not. */
-  display: flex;
-  align-items: flex-start;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: none;
+  cursor: grab;
+}
+
+[data-iii-ui="kanban"] .kb-chart-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  transform-origin: 0 0;
+}
+
+/* Until the camera has placed it (the same frame it is laid out), the stage is not shown at the top left. */
+[data-iii-ui="kanban"] .kb-chart-stage:not([data-placed]) {
+  visibility: hidden;
+}
+
+[data-iii-ui="kanban"] .kb-chart-empty {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
-  cursor: grab;
 }
 
 [data-iii-ui="kanban"] .kb-chart-scroll[data-panning="true"] {
@@ -37,11 +56,14 @@
   --kb-stack-indent: 36px;
   --kb-stack-elbow: 25px;
   --kb-col-gap: 24px;
+  /* Motion: a strong ease-out for things arriving, a short stagger between siblings. */
+  --kb-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --kb-enter: 220ms;
+  --kb-stagger: 40ms;
   display: flex;
   flex: none;
   justify-content: center;
   width: max-content;
-  margin: 0 auto;
   padding: var(--kb-space-6) var(--kb-space-6) 48px;
   outline: none;
   cursor: auto;
@@ -215,7 +237,20 @@
   border-radius: var(--radius-lg);
   background: var(--color-panel-raised);
   cursor: pointer;
-  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition: border-color var(--motion-duration-fast) ease;
+}
+
+/* A press dips the card; pointer-fine only, so a tap on a phone never leaves it stuck small. */
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="kanban"] .kb-node {
+    transition:
+      border-color var(--motion-duration-fast) ease,
+      transform var(--motion-duration-control) var(--kb-ease-out);
+  }
+
+  [data-iii-ui="kanban"] .kb-node:active {
+    transform: scale(0.985);
+  }
 }
 
 [data-iii-ui="kanban"] .kb-node:is([data-theme="dark"] *) {
@@ -365,6 +400,10 @@
   font-size: var(--kb-text-sm);
   font-weight: 500;
   white-space: nowrap;
+  /* Running → Done blends instead of flipping in one frame. */
+  transition:
+    color var(--motion-duration-control) ease,
+    background-color var(--motion-duration-control) ease;
 }
 
 [data-iii-ui="kanban"] .kb-node__badge svg {
@@ -419,10 +458,6 @@
 
 /* --- zoom ----------------------------------------------------------------- */
 
-[data-iii-ui="kanban"] .kb-chart {
-  zoom: var(--kb-zoom, 1);
-}
-
 [data-iii-ui="kanban"] .kb-zoom {
   display: inline-flex;
   align-items: center;
@@ -456,4 +491,47 @@
 [data-iii-ui="kanban"] .kb-zoom__value:focus-visible {
   outline: 2px solid var(--color-ring);
   outline-offset: 1px;
+}
+
+/* --- arriving: unfolded children and live sessions grow in ---------------- */
+
+/* @starting-style applies to any card newly in the tree: a fold opened, a session just spawned. Siblings cascade
+   40ms apart, capped at eight so a wide fan-out never takes more than about half a second, and nothing waits on
+   it: every card is clickable from its first frame. Folding away stays instant. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-iii-ui="kanban"] .kb-chart__group > .kb-chart__item {
+    transition:
+      opacity var(--kb-enter) var(--kb-ease-out),
+      transform var(--kb-enter) var(--kb-ease-out);
+    transition-delay: calc(min(var(--i, 0), 8) * var(--kb-stagger));
+
+    @starting-style {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.97);
+    }
+  }
+}
+
+/* Reduced motion keeps the arrival legible, without the movement. */
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="kanban"] .kb-chart__group > .kb-chart__item {
+    transition: opacity var(--kb-enter) ease;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+}
+
+/* Fit is holding: the button says so. */
+[data-iii-ui="kanban"] .kb-zoom__fit {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+/* The last fact gives way with an ellipsis, never a clipped word. */
+[data-iii-ui="kanban"] .kb-node__facts > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
