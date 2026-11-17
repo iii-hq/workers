@@ -1224,9 +1224,9 @@
 
 /* ── configuration workbench ───────────────────────────────────────── */
 
-/* The settings page's idiom: a plain text rail on the left, a titled column
-   of hairline-divided rows on the right, the page's own canvas showing
-   through. 15px rail links, 16px section titles, 14px copy. */
+/* The settings page's idiom: the shared line tabs across the top, one per
+   section, and under them a titled column of hairline-divided rows on the
+   page's own canvas. The tab strip stays put; the panel scrolls. */
 [data-iii-ui="browser"] .br-cfg {
   display: flex;
   flex: 1 1 auto;
@@ -1239,136 +1239,24 @@
   color: var(--color-ink);
   font-family: inherit;
 }
-[data-iii-ui="browser"] .br-cfg-workbench {
-  display: flex;
-  flex: 1;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  background: transparent;
-}
-[data-iii-ui="browser"] .br-cfg-nav {
-  display: flex;
-  flex: 0 0 208px;
-  flex-direction: column;
-  min-width: 0;
-  padding-top: 8px;
-  border-right: 1px solid var(--color-edge);
-  background: transparent;
-}
-[data-iii-ui="browser"] .br-cfg-nav-head {
-  padding: 8px 20px 4px;
-  color: var(--color-ink-faint);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 2px 10px;
-  overflow-y: auto;
-  list-style: none;
-}
-[data-iii-ui="browser"] .br-cfg-nav-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-ink-faint);
-  font: inherit;
-  font-size: 15px;
-  line-height: 20px;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--motion-duration-fast) var(--motion-ease-standard),
-    color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-[data-iii-ui="browser"] .br-cfg-nav-row:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-ink);
-}
-/* the selected section: the neutral selection wash, never accent */
-[data-iii-ui="browser"] .br-cfg-nav-row.active {
-  background: var(--color-surface-selected);
-  color: var(--color-ink);
-}
-[data-iii-ui="browser"] .br-cfg-nav-row:focus-visible,
-[data-iii-ui="browser"] .br-cfg-editor:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="browser"] .br-cfg-nav-foot {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 12px 20px 16px;
-  color: var(--color-ink-faint);
-  font-size: 14px;
-  line-height: 20px;
-}
-[data-iii-ui="browser"] .br-cfg-nav-foot > :first-child {
-  margin-top: 6px;
-}
-[data-iii-ui="browser"] .br-cfg-editor {
+[data-iii-ui="browser"] .br-cfg-tabs {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
-  background: transparent;
 }
-[data-iii-ui="browser"] .br-cfg-editor:focus {
-  outline: none;
-}
-[data-iii-ui="browser"] .br-cfg-editor-head {
-  display: flex;
-  flex-shrink: 0;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 24px 32px 0;
-}
-[data-iii-ui="browser"] .br-cfg-editor-title {
-  flex: 1;
-  min-width: 0;
-}
-[data-iii-ui="browser"] .br-cfg-editor-title h3,
-[data-iii-ui="browser"] .br-cfg-editor-title p {
-  margin: 0;
-}
-[data-iii-ui="browser"] .br-cfg-editor-title h3 {
-  color: var(--color-ink);
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 24px;
-}
-[data-iii-ui="browser"] .br-cfg-editor-title p {
-  padding-top: 2px;
-  color: var(--color-ink-faint);
-  font-size: 14px;
-  line-height: 20px;
-}
-[data-iii-ui="browser"] .br-cfg-back {
+/* The rule under the tabs runs the column's full width, not just under the
+   tabs, so it reads as the panel's top edge. */
+[data-iii-ui="browser"] .br-cfg-tablist {
   flex: 0 0 auto;
-  margin: 0 0 0 -8px;
+  justify-content: flex-start;
+  width: auto;
+  height: auto;
+  margin: 0 20px;
+  padding: 0;
 }
-[data-iii-ui="browser"] .br-cfg-editor-scroll {
+[data-iii-ui="browser"] .br-cfg-panel {
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -1376,8 +1264,19 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+[data-iii-ui="browser"] .br-cfg-panel:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="browser"] .br-cfg-lead {
+  margin: 0;
+  padding: 20px 20px 0;
+  color: var(--color-ink-faint);
+  font-size: var(--text-sm);
+  line-height: 20px;
+}
 [data-iii-ui="browser"] .br-cfg-section {
-  padding: 24px 32px 8px;
+  padding: 24px 20px 8px;
 }
 [data-iii-ui="browser"] .br-cfg-section-list,
 [data-iii-ui="browser"] .br-cfg-field-row,
@@ -1530,34 +1429,31 @@
   line-height: 20px;
 }
 [data-iii-ui="browser"] .br-cfg-status {
-  margin: 16px 32px 0;
+  margin: 16px 20px 0;
 }
 [data-iii-ui="browser"] .br-cfg-danger-action {
   margin-top: 10px;
 }
 
-/* narrow: one pane at a time, touch-sized controls */
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-workbench {
-  display: block;
-  min-height: 0;
+/* The column's gutter follows the settings page header above it (20px,
+   56px once the pane is 48rem wide), so the tabs, the lead line and every
+   row start under the worker's title. */
+@container (min-width: 48rem) {
+  [data-iii-ui="browser"] .br-cfg-tablist {
+    margin: 0 56px;
+  }
+  [data-iii-ui="browser"] .br-cfg-lead {
+    padding: 20px 56px 0;
+  }
+  [data-iii-ui="browser"] .br-cfg-section {
+    padding: 24px 56px 8px;
+  }
+  [data-iii-ui="browser"] .br-cfg-status {
+    margin: 16px 56px 0;
+  }
 }
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-nav,
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-editor {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  border-right: 0;
-}
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-nav-row {
-  min-height: 44px;
-}
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-editor-head {
-  align-items: center;
-  padding: 16px 20px 0;
-}
-[data-iii-ui="browser"] .br-cfg.narrow .br-cfg-section {
-  padding: 20px 20px 8px;
-}
+
+/* narrow: the tabs scroll sideways, touch-sized controls */
 [data-iii-ui="browser"] .br-cfg.narrow .br-cfg-row-control {
   width: 100%;
 }

@@ -21,10 +21,14 @@ import {
   StatusDot,
   StatusPanel,
   Switch,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
 } from '@iii-dev/console-ui'
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft } from 'lucide-react'
+import { Gauge, Monitor, Rocket, ScanText, ShieldCheck, Timer } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { clearAllBrowserData, errorMessage } from '../lib/browser'
 import {
@@ -241,20 +245,6 @@ function formatCount(value: number) {
 
 /** A timeout of 0 means the feature is off, not "0ms". */
 const durationLabel = (ms: number) => (ms === 0 ? 'off' : formatDuration(ms))
-
-export function focusBrowserNarrowPane(
-  root: HTMLElement | null,
-  pane: 'nav' | 'editor',
-  selection: SectionId,
-): boolean {
-  const target = root?.querySelector<HTMLElement>(
-    pane === 'editor' ? '.br-cfg-editor' : `[data-config-section="${selection}"]`,
-  )
-  if (!target) return false
-  target.focus({ preventScroll: true })
-  target.scrollIntoView({ block: 'nearest' })
-  return true
-}
 
 function Field({
   label,
@@ -825,15 +815,18 @@ function ConfigSection({ title, description, children }: { title: string; descri
   )
 }
 
-function ConfigNav({
-  value,
-  selection,
-  onSelect,
-}: {
-  value: JsonObject
-  selection: SectionId
-  onSelect: (section: SectionId) => void
-}) {
+const SECTION_ICONS: Record<SectionId, typeof Rocket> = {
+  launch: Rocket,
+  viewport: Monitor,
+  limits: Gauge,
+  behavior: Timer,
+  access: ShieldCheck,
+  scraping: ScanText,
+}
+
+/** The tab strip's entries: a label, and a one-line summary of the current
+ * values for the hover title, so a glance at a tab says what it holds. */
+function configSections(value: JsonObject): Array<{ id: SectionId; label: string; summary: string }> {
   const width = numberValue(value.viewport_width, DEFAULTS.viewport_width)
   const height = numberValue(value.viewport_height, DEFAULTS.viewport_height)
   const maxSessions = numberValue(value.max_sessions, DEFAULTS.max_sessions)
@@ -846,107 +839,34 @@ function ConfigNav({
   const history = booleanValue(value.allow_history_access, DEFAULTS.allow_history_access)
   const cookies = booleanValue(value.allow_cookie_import, DEFAULTS.allow_cookie_import)
   const scrapling = asObject(value.scrapling)
-
-  const sections: Array<{
-    id: SectionId
-    label: string
-    description: string
-    summary: string
-  }> = [
+  return [
     {
       id: 'launch',
       label: 'Launch',
-      description: 'Process, data, and tabs',
       summary: `${headless ? 'headless' : 'headful'} · ${maxSessions} live tabs`,
     },
-    {
-      id: 'viewport',
-      label: 'Viewport',
-      description: 'Canvas, live view, screenshots',
-      summary: `${width} × ${height}`,
-    },
+    { id: 'viewport', label: 'Viewport', summary: `${width} × ${height}` },
     {
       id: 'limits',
       label: 'Capture limits',
-      description: 'Buffers and snapshots',
-      summary: `${formatCount(consoleBuffer)} / ${formatCount(networkBuffer)}`,
+      summary: `${formatCount(consoleBuffer)} console / ${formatCount(networkBuffer)} network entries`,
     },
     {
       id: 'behavior',
       label: 'Behavior',
-      description: 'Timeouts and navigation',
-      summary: `${durationLabel(timeout)} · sleep ${durationLabel(sleepAfter)}`,
+      summary: `${durationLabel(timeout)} timeout · sleep ${durationLabel(sleepAfter)}`,
     },
     {
       id: 'access',
       label: 'Access policy',
-      description: 'Origins and sensitive surfaces',
       summary: `${originCount} origin ${originCount === 1 ? 'rule' : 'rules'} · ${history && cookies ? 'surfaces on' : 'restricted'}`,
     },
     {
       id: 'scraping',
       label: 'Scraping',
-      description: 'Runtime, fetch defaults, and guidance',
       summary: `${numberValue(scrapling.max_sessions, DEFAULTS.scrapling.max_sessions)} max · guidance ${booleanValue(scrapling.inject_guidance, DEFAULTS.scrapling.inject_guidance) ? 'on' : 'off'}`,
     },
   ]
-
-  return (
-    <nav className="br-cfg-nav" aria-label="Browser configuration sections">
-      <div className="br-cfg-nav-head">Browser settings</div>
-      <ul className="br-cfg-nav-list">
-        {sections.map((section) => {
-          const active = section.id === selection
-          return (
-            <li key={section.id}>
-              <button
-                type="button"
-                className={`br-cfg-nav-row${active ? ' active' : ''}`}
-                data-config-section={section.id}
-                aria-current={active ? 'page' : undefined}
-                title={`${section.description} · ${section.summary}`}
-                onClick={() => onSelect(section.id)}
-              >
-                <span className="br-cfg-nav-name">{section.label}</span>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-      <div className="br-cfg-nav-foot">
-        <StatusDot tone="accent" />
-        Changes to limits and timeouts hot-apply after saving.
-      </div>
-    </nav>
-  )
-}
-
-function EditorHeader({
-  title,
-  titleId,
-  description,
-  narrow,
-  onBack,
-}: {
-  title: string
-  titleId: string
-  description: string
-  narrow: boolean
-  onBack: () => void
-}) {
-  return (
-    <header className="br-cfg-editor-head">
-      {narrow ? (
-        <IconButton label="Back to configuration sections" className="br-cfg-back" onClick={onBack}>
-          <ChevronLeft size={16} aria-hidden />
-        </IconButton>
-      ) : null}
-      <div className="br-cfg-editor-title">
-        <h3 id={titleId}>{title}</h3>
-        <p>{description}</p>
-      </div>
-    </header>
-  )
 }
 
 /** The browser's "Clear browsing data" for everything, from Settings: wipes
@@ -1005,18 +925,14 @@ export function BrowserConfigEditor({
   selection,
   value,
   errors,
-  narrow,
   iii,
-  onBack,
   onChange,
 }: {
   selection: SectionId
   value: JsonObject
   errors: ConfigFormProps['errors']
-  narrow: boolean
   /** Bus client for actions (Clear browser data); absent in isolated renders. */
   iii?: ExtensionIii
-  onBack: () => void
   onChange: (value: JsonObject) => void
 }) {
   const setString = (field: string, raw: string) => {
@@ -1077,39 +993,20 @@ export function BrowserConfigEditor({
     onChange({ ...value, [parent]: block })
   }
 
-  const titles: Record<SectionId, { title: string; description: string }> = {
-    launch: {
-      title: 'Browser and tabs',
-      description: 'Choose how Chromium starts, where its data lives, and how many tabs stay live.',
-    },
-    viewport: {
-      title: 'Viewport and screenshots',
-      description: 'Set the canvas used by new sessions and image capture.',
-    },
-    limits: {
-      title: 'Capture limits',
-      description: 'Bound live history and serialized page snapshots.',
-    },
-    behavior: {
-      title: 'Runtime behavior',
-      description: 'Control timeouts, tab sleep, and allowed destinations.',
-    },
-    access: {
-      title: 'Access policy',
-      description: 'Control sensitive browser data and permissions by origin.',
-    },
-    scraping: {
-      title: 'Scraping',
-      description: 'Configure the isolated Scrapling-compatible runtime.',
-    },
+  /* The tab names the section; one lead line says what it covers. */
+  const leads: Record<SectionId, string> = {
+    launch: 'How Chromium starts, where its data lives, and how many tabs stay live.',
+    viewport: 'The canvas new sessions open at, and how screenshots and the live view are captured.',
+    limits: 'How much live history and how large a page snapshot each tab keeps. Changes apply after saving.',
+    behavior: 'Timeouts, tab sleep, and the destinations a tab may open. Changes apply after saving.',
+    access: 'Sensitive browser data and permissions, by origin.',
+    scraping: 'The isolated Scrapling-compatible runtime.',
   }
-  const titleId = `br-cfg-editor-title-${selection}`
 
   return (
-    <section className="br-cfg-editor" data-section={selection} tabIndex={-1} aria-labelledby={titleId}>
-      <EditorHeader {...titles[selection]} titleId={titleId} narrow={narrow} onBack={onBack} />
-      <div className="br-cfg-editor-scroll">
-        {selection === 'launch' ? (
+    <div data-section={selection}>
+      <p className="br-cfg-lead">{leads[selection]}</p>
+      {selection === 'launch' ? (
           <>
             <ConfigSection
               title="Browser process"
@@ -1615,8 +1512,7 @@ export function BrowserConfigEditor({
             </ConfigSection>
           </div>
         ) : null}
-      </div>
-    </section>
+    </div>
   )
 }
 
@@ -1624,9 +1520,7 @@ export function BrowserConfigForm(props: ConfigFormProps & { iii?: ExtensionIii 
   const value = browserConfigurationValue(props.value)
   const { ref: rootRef, narrow } = useContainerNarrow({ below: CONFIG_NARROW_BELOW })
   const [selection, setSelection] = useState<SectionId>('launch')
-  const [narrowPane, setNarrowPane] = useState<'nav' | 'editor'>('nav')
   const domRef = useRef<HTMLDivElement | null>(null)
-  const pendingNarrowFocusRef = useRef<'nav' | 'editor' | null>(null)
   const focusFieldName = props.focusField?.join('.') ?? ''
   const focusRoot = props.focusField?.[0] ?? ''
 
@@ -1638,21 +1532,9 @@ export function BrowserConfigForm(props: ConfigFormProps & { iii?: ExtensionIii 
     [rootRef],
   )
 
-  const choose = (section: SectionId) => {
-    if (narrow) pendingNarrowFocusRef.current = 'editor'
-    setSelection(section)
-    setNarrowPane('editor')
-  }
-
-  const showNavigation = () => {
-    pendingNarrowFocusRef.current = 'nav'
-    setNarrowPane('nav')
-  }
-
   useEffect(() => {
     if (!focusRoot) return
     setSelection(FIELD_SECTION[focusRoot] ?? 'launch')
-    setNarrowPane('editor')
   }, [focusRoot])
 
   useEffect(() => {
@@ -1665,35 +1547,45 @@ export function BrowserConfigForm(props: ConfigFormProps & { iii?: ExtensionIii 
     target?.scrollIntoView({ block: 'center' })
   }, [focusFieldName, focusRoot, selection])
 
-  useEffect(() => {
-    if (!narrow || pendingNarrowFocusRef.current !== narrowPane || !domRef.current) return
-    const frame = requestAnimationFrame(() => {
-      if (focusBrowserNarrowPane(domRef.current, narrowPane, selection)) {
-        pendingNarrowFocusRef.current = null
-      }
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [narrow, narrowPane, selection])
-
-  const showNav = !narrow || narrowPane === 'nav'
-  const showEditor = !narrow || narrowPane === 'editor'
+  const sections = configSections(value)
 
   return (
     <div className={`br-cfg${narrow ? ' narrow' : ''}`} ref={setRoot}>
-      <div className="br-cfg-workbench">
-        {showNav ? <ConfigNav value={value} selection={selection} onSelect={choose} /> : null}
-        {showEditor ? (
-          <BrowserConfigEditor
-            selection={selection}
-            value={value}
-            errors={props.errors}
-            narrow={narrow}
-            iii={props.iii}
-            onBack={showNavigation}
-            onChange={(nextValue) => props.onChange(migrateBrowserConfiguration(props.value, nextValue))}
-          />
-        ) : null}
-      </div>
+      <Tabs
+        value={selection}
+        onValueChange={(next) => setSelection(next as SectionId)}
+        className="br-cfg-tabs"
+      >
+        <TabsList aria-label="Browser settings" className="br-cfg-tablist">
+          {sections.map((section) => {
+            const Icon = SECTION_ICONS[section.id]
+            return (
+              <TabsTrigger
+                key={section.id}
+                value={section.id}
+                icon={<Icon aria-hidden />}
+                title={section.summary}
+                data-config-section={section.id}
+              >
+                {section.label}
+              </TabsTrigger>
+            )
+          })}
+        </TabsList>
+        {sections.map((section) => (
+          <TabsContent key={section.id} value={section.id} className="br-cfg-panel">
+            {section.id === selection ? (
+              <BrowserConfigEditor
+                selection={section.id}
+                value={value}
+                errors={props.errors}
+                iii={props.iii}
+                onChange={(nextValue) => props.onChange(migrateBrowserConfiguration(props.value, nextValue))}
+              />
+            ) : null}
+          </TabsContent>
+        ))}
+      </Tabs>
 
       {props.errors && props.errors.size > 0 ? (
         <StatusPanel
