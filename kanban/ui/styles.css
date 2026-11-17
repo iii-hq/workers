@@ -3,6 +3,7 @@
 @import "./src/filter-bar.css";
 @import "./src/list.css";
 @import "./src/ticket.css";
+@import "./src/tree.css";
 
 /* The kanban worker's console stylesheet. Every rule sits under
  * [data-iii-ui="kanban"]. The page is built from shadcn parts (exported through

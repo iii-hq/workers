@@ -3,11 +3,13 @@ import {
   type Host,
   Markdown,
   PageHeader,
+  type PageHeaderProps,
   PageMain,
   type PageRenderProps,
   PageShell,
   ShadcnBadge,
   ShadcnButton,
+  ShadcnDialogTitle,
   ShadcnDropdownMenu,
   ShadcnDropdownMenuContent,
   ShadcnDropdownMenuGroup,
@@ -46,7 +48,7 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react'
-import { Fragment, memo, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type ComponentProps, Fragment, memo, type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { statusStep } from './board-state'
 import { allLabels } from './filters'
 import { type LinkedTicket, linkTicketKeys, TICKET_HREF } from './links'
@@ -383,6 +385,39 @@ type TicketScreenProps = {
   onDeleted?: (deleted: boolean) => void
   setDirty?: (dirty: boolean | string) => void
   commands?: PageRenderProps['commands']
+  /** `dialog`: drawn inside the board's ticket dialog (its own head, no pane chrome); `onBack` closes it. */
+  variant?: 'page' | 'dialog'
+}
+
+/* The ticket dialog's frame: the same slots as the pane's PageShell / PageHeader / PageMain. */
+function DialogShell({ className, ...rest }: ComponentProps<'div'>) {
+  return <div className={`${className ?? ''} kb-ticket-frame`} data-variant="dialog" {...rest} />
+}
+
+function DialogMain({ className, ...rest }: ComponentProps<'div'>) {
+  return <div className={`kb-ticket-frame__main ${className ?? ''}`} {...rest} />
+}
+
+/** The dialog's head: the ticket glyph and key as its title, the actions, and Close. */
+function DialogHead({ icon, description, actions, onClose }: PageHeaderProps) {
+  return (
+    <header className="kb-ticket-frame__head">
+      <ShadcnDialogTitle className="kb-ticket-frame__title">
+        <span aria-hidden="true" className="kb-ticket-frame__icon">
+          {icon}
+        </span>
+        {description ?? 'Ticket'}
+      </ShadcnDialogTitle>
+      <span className="kb-ticket-frame__actions">
+        {actions}
+        {onClose ? (
+          <IconAction label="Close" onClick={onClose}>
+            <X size={16} />
+          </IconAction>
+        ) : null}
+      </span>
+    </header>
+  )
 }
 
 export function TicketScreen({
@@ -399,7 +434,14 @@ export function TicketScreen({
   onDeleted,
   setDirty,
   commands,
+  variant = 'page',
 }: TicketScreenProps) {
+  const inDialog = variant === 'dialog'
+  const Shell = inDialog ? DialogShell : PageShell
+  const Header = inDialog ? DialogHead : PageHeader
+  const Main = inDialog ? DialogMain : PageMain
+  // The dialog's ✕ closes the dialog; in a pane it closes the pane.
+  const closeFrame = inDialog ? onBack : onRequestClose
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -801,10 +843,11 @@ export function TicketScreen({
   const openTicket = useCallback(
     (key: string) => {
       focusTitleBefore = Date.now() + 3000
-      if (hasPanels) host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id: key } })
-      else onOpenTicket?.(key)
+      // In the dialog a linked ticket takes its place; in a pane it opens beside.
+      if (onOpenTicket && (inDialog || !hasPanels)) onOpenTicket(key)
+      else host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id: key } })
     },
-    [hasPanels, host, onOpenTicket],
+    [hasPanels, host, onOpenTicket, inDialog],
   )
 
   const linkedTickets = useMemo<LinkedTicket[]>(
@@ -839,9 +882,9 @@ export function TicketScreen({
 
   if (loading && !ticket) {
     return (
-      <PageShell {...shell}>
-        <PageHeader icon={<TicketIcon size={16} />} onClose={onRequestClose} title="Ticket" />
-        <PageMain>
+      <Shell {...shell}>
+        <Header icon={<TicketIcon size={16} />} onClose={closeFrame} title="Ticket" />
+        <Main>
           <div aria-busy="true" aria-label="Loading the ticket" className="kb-ticket">
             <div className="kb-ticket__layout">
               <div className="kb-ticket__main">
@@ -854,27 +897,27 @@ export function TicketScreen({
               </div>
             </div>
           </div>
-        </PageMain>
-      </PageShell>
+        </Main>
+      </Shell>
     )
   }
 
   if (error || !ticket) {
     return (
-      <PageShell {...shell}>
-        <PageHeader
+      <Shell {...shell}>
+        <Header
           actions={
-            onBack ? (
+            onBack && !inDialog ? (
               <IconAction label="Back to the board" onClick={onBack}>
                 <ArrowLeft size={16} />
               </IconAction>
             ) : null
           }
           icon={<TicketIcon size={16} />}
-          onClose={onRequestClose}
+          onClose={closeFrame}
           title="Ticket"
         />
-        <PageMain>
+        <Main>
           <div className="kb-ticket">
             <Notice
               actionLabel="Retry"
@@ -883,8 +926,8 @@ export function TicketScreen({
               title="That ticket could not be opened"
             />
           </div>
-        </PageMain>
-      </PageShell>
+        </Main>
+      </Shell>
     )
   }
 
@@ -922,11 +965,11 @@ export function TicketScreen({
   }
 
   return (
-    <PageShell {...shell}>
-      <PageHeader
+    <Shell {...shell}>
+      <Header
         actions={
           <>
-            {onBack ? (
+            {onBack && !inDialog ? (
               <IconAction label="Back to the board" onClick={onBack}>
                 <ArrowLeft size={16} />
               </IconAction>
@@ -976,11 +1019,12 @@ export function TicketScreen({
         }
         description={<span className="kb-header-key">{ticket.key}</span>}
         icon={<TicketIcon size={16} />}
-        onClose={onRequestClose}
+        onClose={closeFrame}
         title="Ticket"
       />
-      <PageMain>
+      <Main>
         <div className="kb-ticket" data-autofocus="" tabIndex={-1}>
+{inDialog ? null : (
           <nav aria-label="Breadcrumb" className="kb-crumbs">
             {openBoard ? (
               <button aria-label="Back to the board" className="kb-crumbs__link kb-crumbs__back" onClick={openBoard} type="button">
@@ -1013,6 +1057,7 @@ export function TicketScreen({
               </ShadcnBadge>
             ) : null}
           </nav>
+          )}
 
           <div className="kb-ticket__layout">
             <div className="kb-ticket__main">
@@ -1497,7 +1542,7 @@ export function TicketScreen({
             </aside>
           </div>
         </div>
-      </PageMain>
+      </Main>
       <ConfirmDialog
         confirmLabel={deleted ? 'Restore' : 'Delete'}
         description={
@@ -1512,7 +1557,7 @@ export function TicketScreen({
         title={deleted ? 'Restore this ticket?' : 'Delete this ticket?'}
       />
       {confirmDialog}
-    </PageShell>
+    </Shell>
   )
 }
 

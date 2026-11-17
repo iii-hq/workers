@@ -900,3 +900,77 @@
 [data-iii-ui="kanban"] .kb-shell[data-narrow="true"] .kb-row__main {
   height: 44px;
 }
+
+/* --- the ticket dialog (board card click) ------------------------------- */
+
+/* Linear's issue modal: wide, tall, over the board. The ticket screen inside keeps its two columns down to
+   760px of dialog (its container query), then stacks; on a phone the dialog is nearly the whole screen. */
+[data-iii-ui="kanban"] .kb-ticket-dialog {
+  --dialog-max-width: 72rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: min(calc(100dvh - 48px), 920px);
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--kb-dialog-bg);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--kb-dialog-bg);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--kb-space-2);
+  height: 48px;
+  padding: 0 var(--kb-space-2) 0 var(--kb-space-5);
+  border-bottom: 1px solid var(--color-dialog-edge, var(--color-edge));
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__title {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--kb-space-2);
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__icon {
+  display: inline-flex;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--kb-space-1);
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui="kanban"] .kb-ticket-frame .kb-ticket {
+  padding-top: var(--kb-space-5);
+}

@@ -1,0 +1,227 @@
+/* The Tree view (src/tree/tree-view.tsx): tickets, subtasks and agent sessions as cards hung off one another by
+ * rounded elbow connectors. Cards are the board card's surface (Tailwind on the element); this file draws the
+ * connectors, the state badges and the agent tiles. */
+
+[data-iii-ui="kanban"] .kb-tree-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui="kanban"] .kb-tree-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--kb-space-4) var(--kb-gutter) var(--kb-space-6);
+  overscroll-behavior: contain;
+}
+
+[data-iii-ui="kanban"] .kb-tree,
+[data-iii-ui="kanban"] .kb-tree__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--kb-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The connector: a line runs down from the parent card (at --kb-tree-x) and turns into each child at the
+   middle of its first line (--kb-tree-elbow). Light lines on the light ground, neutral-800 in dark. */
+[data-iii-ui="kanban"] .kb-tree {
+  --kb-tree-line: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  --kb-tree-live: color-mix(in srgb, var(--color-glyph-blue) 70%, transparent);
+  --kb-tree-indent: 32px;
+  --kb-tree-x: 18px;
+  --kb-tree-elbow: 22px;
+  max-width: 960px;
+  outline: none;
+}
+
+[data-iii-ui="kanban"] .kb-tree__group {
+  position: relative;
+  padding-top: var(--kb-space-2);
+  padding-left: var(--kb-tree-indent);
+}
+
+[data-iii-ui="kanban"] .kb-tree__item {
+  position: relative;
+  outline: none;
+}
+
+[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item::before,
+[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item:not(:last-child)::after {
+  position: absolute;
+  left: calc(var(--kb-tree-x) - var(--kb-tree-indent));
+  content: "";
+  pointer-events: none;
+}
+
+/* The elbow into this child, from the gap above it. */
+[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item::before {
+  top: calc(-1 * var(--kb-space-2));
+  width: calc(var(--kb-tree-indent) - var(--kb-tree-x) - 1px);
+  height: calc(var(--kb-tree-elbow) + var(--kb-space-2));
+  border-bottom: 1px solid var(--kb-tree-line);
+  border-left: 1px solid var(--kb-tree-line);
+  border-bottom-left-radius: var(--radius-md);
+}
+
+/* The spine past this child, down to the next sibling. */
+[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item:not(:last-child)::after {
+  top: calc(-1 * var(--kb-space-2));
+  bottom: 0;
+  border-left: 1px solid var(--kb-tree-line);
+}
+
+/* Work in flight: its elbow is drawn in the running hue, so the live path reads from the top. */
+[data-iii-ui="kanban"] .kb-tree__group > .kb-tree__item[data-state="active"]::before {
+  border-color: var(--kb-tree-live);
+}
+
+[data-iii-ui="kanban"] .kb-tree__row {
+  position: relative;
+}
+
+/* A node with its children shown: a small ring where the line leaves the card. */
+[data-iii-ui="kanban"] .kb-tree__item[aria-expanded="true"] > .kb-tree__row::after {
+  position: absolute;
+  bottom: -4px;
+  left: calc(var(--kb-tree-x) - 3.5px);
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--kb-tree-line);
+  border-radius: 50%;
+  background: var(--kb-ground);
+  content: "";
+}
+
+[data-iii-ui="kanban"] .kb-tree__item[aria-expanded="true"][data-state="active"] > .kb-tree__row::after {
+  border-color: var(--kb-tree-live);
+}
+
+[data-iii-ui="kanban"] .kb-tree__card {
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kb-tree__item:focus-visible > .kb-tree__row > .kb-tree__card {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+
+/* A project heading: no card, a row on the ground. */
+[data-iii-ui="kanban"] .kb-tree__project {
+  display: flex;
+  align-items: center;
+  gap: var(--kb-space-2);
+  min-height: 32px;
+  max-width: 560px;
+  padding: 0 var(--kb-space-1) 0 var(--kb-space-2);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kb-tree__project > .kb-tree__toggle {
+  margin-left: auto;
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kb-tree__project:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui="kanban"] .kb-tree__item[data-kind="project"] {
+  --kb-tree-elbow: 16px;
+}
+
+[data-iii-ui="kanban"] .kb-tree__item[data-kind="project"] > .kb-tree__group {
+  --kb-tree-x: 14px;
+}
+
+/* --- the fold toggle ("3 ⌄") --------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-tree__chevron {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui="kanban"] .kb-tree__toggle[data-open="true"] .kb-tree__chevron {
+  transform: none;
+}
+
+/* --- the agent tile ------------------------------------------------------- */
+
+[data-iii-ui="kanban"] .kb-tree__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-card-edge);
+  border-radius: var(--radius-md);
+  color: var(--kb-tone, var(--color-ink-faint));
+  background: color-mix(in srgb, var(--kb-tone, var(--color-ink)) 8%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-tree__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* --- the state badge: Running / Pending / Done / Failed ------------------ */
+
+[data-iii-ui="kanban"] .kb-tree__badge {
+  --kb-badge: var(--color-ink-faint);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  color: var(--kb-badge);
+  background: color-mix(in srgb, var(--kb-badge) 10%, transparent);
+  font-size: var(--kb-text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kb-tree__badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+[data-iii-ui="kanban"] .kb-tree__badge[data-state="active"] {
+  --kb-badge: var(--color-glyph-blue);
+}
+
+[data-iii-ui="kanban"] .kb-tree__badge[data-state="done"] {
+  --kb-badge: var(--color-ok);
+}
+
+[data-iii-ui="kanban"] .kb-tree__badge[data-state="failed"] {
+  --kb-badge: var(--color-alert);
+}
+
+/* The running mark: a ring with one bright quarter, turned by the shared spin recipe. */
+[data-iii-ui="kanban"] .kb-tree__spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+}
+
+/* A ticket's column: quiet text, the card's glyph already carries the hue; Done keeps its green. */
+[data-iii-ui="kanban"] .kb-tree__badge[data-kind="column"]:not([data-state="done"]) {
+  --kb-badge: var(--color-ink-faint);
+}

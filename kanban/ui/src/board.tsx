@@ -9,11 +9,13 @@ import {
   ShadcnTabs,
   ShadcnTabsList,
   ShadcnTabsTrigger,
+  type LiveAnnouncement,
+  LiveRegion,
   useConfirm,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { Bookmark, Columns3, Layers, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { Bookmark, Columns3, FolderOpen, Layers, Plus, RefreshCw, Tag, Trash2, X } from 'lucide-react'
 import { type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   applyRead,
@@ -64,7 +66,6 @@ import {
   noteOwnWrite,
   OWN_WRITES,
   PLAN_CHANGED_EVENT,
-  PROJECTS_PAGE_ID,
   RELEASES_PAGE_ID,
   statusLabel,
   subscribeChanges,
@@ -75,7 +76,11 @@ import {
   useOwnWritesVersion,
 } from './shared'
 import { cellKey, DragLine, type DropTarget, SwimlaneGrid, SwimlaneSections } from './swimlanes'
-import { TicketScreen } from './ticket'
+import { coerceView, type HubView, HubTabs, ProjectSwitcher } from './hub'
+import { ConvertDialog, NewProjectDialog, ProjectsOverview } from './projects'
+import { resolveEntity } from './plan-rules'
+import { TicketDialog } from './ticket-dialog'
+import { TreeView } from './tree/tree-view'
 import { Empty, Notice } from './ui/feedback'
 import { IconAction } from './ui/icon-action'
 
@@ -140,15 +145,11 @@ function readViews(): SavedView[] | null {
   }
 }
 
-/** Scroll offsets of the board, kept while a ticket is open in its place. */
-type Scroll = {
-  board: number
-  strip: number
-  lanes: Record<string, number>
-  /** The swimlane grid (wide) or the sections (narrow). */
-  swim: { top: number; left: number }
-}
-
+/**
+ * The Kanban hub: one page for a project and its work. The header picks the project (or every project) and the
+ * view — Overview, Board or Tree — and both stay with the pane. A card opens its ticket in a dialog over the
+ * board, so closing it lands where you were. The Projects page is the same hub, opened on the Overview.
+ */
 export function BoardPage({
   host,
   onRequestClose,
@@ -156,7 +157,8 @@ export function BoardPage({
   tabId,
   commands,
   panelContext,
-}: PageRenderProps & { host: Host }) {
+  entry = 'board',
+}: PageRenderProps & { host: Host; entry?: 'board' | 'projects' }) {
   const [data, setData] = useState<BoardData | null>(null)
   // The latest board, readable between renders: every write is applied to it, not to a stale closure.
   const dataRef = useRef<BoardData | null>(null)
@@ -173,7 +175,16 @@ export function BoardPage({
   const [creating, setCreating] = useState<NewTicket | null>(null)
   const [savingView, setSavingView] = useState(false)
   const { confirm, dialog: confirmDialog } = useConfirm()
-  const [inlineTicketId, setInlineTicketId] = useState<string | null>(null)
+  // The ticket in the dialog over the board (a key or id); null = none.
+  const [dialogTicket, setDialogTicket] = useState<string | null>(null)
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [converting, setConverting] = useState(false)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  const announceSeq = useRef(0)
+  const announce = useCallback(
+    (text: string) => setAnnouncement({ seq: ++announceSeq.current, text, urgency: 'polite' }),
+    [],
+  )
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
   const { ref: narrowRef, narrow } = useContainerNarrow({ below: 760 })
@@ -183,15 +194,13 @@ export function BoardPage({
   // Wheel, pan and edge auto-scroll on the wide board (see use-board-scroll).
   const { ref: boardScrollRef, edges: scrollEdges } = useBoardScroll(drag !== null)
   const dragSeq = useRef(0)
-  const boardEl = useRef<HTMLElement | null>(null)
-  const scrollMemo = useRef<Scroll | null>(null)
-  const setBoardEl = useCallback(
-    (node: HTMLElement | null) => {
-      boardEl.current = node
-      narrowRef(node)
-    },
-    [narrowRef],
+  // The project the hub is on (id; a name from a link resolves) and the view; both per pane.
+  const [storedScope, setScope] = usePaneState<string | null>(`kanban:scope:${paneKey}`, null)
+  const [storedView, setView] = usePaneState<HubView>(
+    `kanban:hub-view:${paneKey}`,
+    entry === 'projects' ? 'overview' : 'board',
   )
+  const view = coerceView(storedView, entry === 'projects' ? 'overview' : 'board')
 
   const [storedViews, setStoredViews] = usePaneState<SavedView[]>(VIEWS_KEY, [])
   const [activeViewId, setActiveViewId] = usePaneState<string>(`kanban:view:${paneKey}`, ALL_VIEW.id)
@@ -253,7 +262,20 @@ export function BoardPage({
   const laneNew = narrow && layout === 'board' ? visibleLane : null
   const newStatus = laneNew?.id ?? data?.default_status ?? 'backlog'
   const newLabel = laneNew ? `New ticket in ${laneNew.label}` : 'New ticket'
-  const tickets = useMemo(() => (data?.columns ?? []).flatMap((column) => column.tickets), [data])
+  const allTickets = useMemo(() => (data?.columns ?? []).flatMap((column) => column.tickets), [data])
+  const scope = useMemo(() => resolveEntity(projects, storedScope) ?? null, [projects, storedScope])
+  // A project that is gone (deleted, or this board has another prefix) falls back to every project once the board
+  // has been read; before that, the stored id is kept.
+  const scopeId = scope?.id ?? null
+  const inScope = useCallback((ticket: TicketSummary) => !scopeId || ticket.project_id === scopeId, [scopeId])
+  // The tickets of the project on screen: what the board, its filters and its counts work on.
+  const tickets = useMemo(() => (scopeId ? allTickets.filter(inScope) : allTickets), [allTickets, inScope, scopeId])
+  // The columns with only those tickets: lanes, swimlanes and their counts. Writes still place a card among the
+  // whole column (`fullIndex` reads `columns`).
+  const shownColumns = useMemo(
+    () => (scopeId ? columns.map((column) => ({ ...column, tickets: column.tickets.filter(inScope) })) : columns),
+    [columns, inScope, scopeId],
+  )
   // `now` is re-read whenever the board data changes.
   const ctx = useMemo<MatchContext>(
     () => ({ lastVisit, now: Date.now(), own: OWN_WRITES }),
@@ -264,18 +286,18 @@ export function BoardPage({
   const filtering = !isEmpty(filters)
   // Subtasks and their parents are read off the whole board, not the filtered one: "2/12" does not change with a search.
   const subtasks = useMemo(
-    () => subtaskStats(tickets, doneStatus, canceledStatus),
-    [tickets, doneStatus, canceledStatus],
+    () => subtaskStats(allTickets, doneStatus, canceledStatus),
+    [allTickets, doneStatus, canceledStatus],
   )
-  const keyById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket.key])), [tickets])
-  const titleById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket.title])), [tickets])
+  const keyById = useMemo(() => new Map(allTickets.map((ticket) => [ticket.id, ticket.key])), [allTickets])
+  const titleById = useMemo(() => new Map(allTickets.map((ticket) => [ticket.id, ticket.title])), [allTickets])
   const lanes = useMemo(
     () =>
       group === 'none'
         ? []
         : buildSwimlanes({
           by: group,
-          columns: data?.columns ?? [],
+          columns: shownColumns,
           shownIds,
           releases,
           projects,
@@ -283,7 +305,7 @@ export function BoardPage({
           canceledStatus,
           showEmpty,
         }),
-    [group, data, shownIds, releases, projects, doneStatus, canceledStatus, showEmpty],
+    [group, shownColumns, shownIds, releases, projects, doneStatus, canceledStatus, showEmpty],
   )
   const laneById = useMemo(() => new Map(flattenLanes(lanes).map((lane) => [lane.id, lane])), [lanes])
   // The ids the swimlanes stand for: a ticket that names any other sits in the "No …" lane, whatever it names.
@@ -440,23 +462,33 @@ export function BoardPage({
     }
   }, [load])
 
-  // The Releases and Projects pages open the board on a release or project:
-  // `{ group, release | project, layout }` (`project: ''` is "No project").
+  // Other screens open the hub with a context. The Releases page and older links: `{ group, release | project,
+  // layout }` (`project: ''` is "No project", a filter). The Projects page, palette and chat: `{ id }` (a project
+  // to show) and `{ action: 'new' | 'convert' }`. The host hands the last context to every mount: act once.
   useEffect(() => {
     const context = panelContext?.context as
-      | { group?: unknown; release?: unknown; project?: unknown; layout?: unknown }
+      | { group?: unknown; release?: unknown; project?: unknown; layout?: unknown; id?: unknown; action?: unknown }
       | undefined
     if (!context || typeof context !== 'object') return
-    // Once per request: a remount, or another board pane, gets the same context again.
     if (panelContext && handledContexts.has(panelContext.id)) return
     if (panelContext) handledContexts.add(panelContext.id)
-    if (context.layout === 'list') setLayout('list')
-    if (context.group === 'release' || context.group === 'project' || context.group === 'parent') {
-      setLayout('board')
-      setGroup(context.group)
+    if (typeof context.id === 'string' && context.id) {
+      setScope(context.id)
+      setView('overview')
     }
+    if (context.action === 'new') setCreatingProject(true)
+    if (context.action === 'convert') setConverting(true)
     const release = typeof context.release === 'string' ? context.release : null
     const project = typeof context.project === 'string' ? context.project : null
+    if (context.layout === 'list' || context.group || release !== null || project !== null) setView('board')
+    if (context.layout === 'list') setLayout('list')
+    // A project is the hub's scope, not a filter; grouping by project inside one would be a single lane.
+    if (project) setScope(project)
+    const groupBy = project && context.group === 'project' ? null : context.group
+    if (groupBy === 'release' || groupBy === 'project' || groupBy === 'parent') {
+      setLayout('board')
+      setGroup(groupBy)
+    }
     if (release) {
       // The lane (planned ones are folded by default) and the group a released release sits under: nothing to
       // see otherwise. The group only exists under the filter below when the release is released.
@@ -466,15 +498,21 @@ export function BoardPage({
         [`release:${release}`]: false,
       }))
     }
-    if (release !== null || project !== null) {
+    if (release !== null || project === '') {
+      if (project === '') setScope(null)
       setActiveViewId(ALL_VIEW.id)
       setFilters({
         ...EMPTY_FILTERS,
         releases: release !== null ? [release] : [],
-        projects: project !== null ? [project] : [],
+        projects: project === '' ? [''] : [],
       })
     }
-  }, [panelContext, setActiveViewId, setFilters, setFolded, setGroup, setLayout])
+  }, [panelContext, setActiveViewId, setFilters, setFolded, setGroup, setLayout, setScope, setView])
+
+  // What is on screen is remembered by id: a project reached by name survives a rename.
+  useEffect(() => {
+    if (scope && scope.id !== storedScope) setScope(scope.id)
+  }, [scope, storedScope, setScope])
 
   useEffect(() => {
     let cancelled = false
@@ -525,7 +563,7 @@ export function BoardPage({
         {
           id: 'new-ticket',
           title: 'New ticket',
-          enabled: () => inlineTicketId === null,
+          enabled: () => dialogTicket === null,
           run: () => setCreating({ status: newStatus }),
         },
         { id: 'refresh', title: 'Refresh board', run: () => void load() },
@@ -536,7 +574,7 @@ export function BoardPage({
           run: () => setFilters(EMPTY_FILTERS),
         },
       ]),
-    [commands, newStatus, filters, inlineTicketId, load, setFilters],
+    [commands, newStatus, filters, dialogTicket, load, setFilters],
   )
 
   const clearDrag = useCallback(() => {
@@ -551,54 +589,16 @@ export function BoardPage({
     if (drag && !tickets.some((ticket) => ticket.id === drag.id)) clearDrag()
   }, [drag, tickets, clearDrag])
 
-  /** Keep where the board is scrolled while a ticket takes its place, and put it back on return. */
-  const openInline = useCallback((key: string) => {
-    const root = boardEl.current
-    if (root) {
-      const swim = root.querySelector('.kb-swimlanes, .kb-sections')
-      scrollMemo.current = {
-        board: root.scrollTop,
-        strip: root.querySelector('.kb-columns')?.scrollLeft ?? 0,
-        lanes: Object.fromEntries(
-          Array.from(root.querySelectorAll<HTMLElement>('[data-lane]'), (lane) => [
-            lane.dataset.lane ?? '',
-            lane.querySelector('.kb-column__body')?.scrollTop ?? 0,
-          ]),
-        ),
-        swim: { top: swim?.scrollTop ?? 0, left: swim?.scrollLeft ?? 0 },
-      }
-    }
-    setInlineTicketId(key)
-  }, [])
+  /** A ticket over the board: the dialog. The board underneath is never unmounted, so its scroll stays put. */
+  const openDialog = useCallback((key: string) => setDialogTicket(key), [])
 
-  useLayoutEffect(() => {
-    const root = boardEl.current
-    const saved = scrollMemo.current
-    if (inlineTicketId !== null || !root || !saved) return
-    scrollMemo.current = null
-    root.scrollTop = saved.board
-    const strip = root.querySelector('.kb-columns')
-    if (strip) strip.scrollLeft = saved.strip
-    root.querySelectorAll<HTMLElement>('[data-lane]').forEach((lane) => {
-      const body = lane.querySelector('.kb-column__body')
-      if (body) body.scrollTop = saved.lanes[lane.dataset.lane ?? ''] ?? 0
-    })
-    const swim = root.querySelector('.kb-swimlanes, .kb-sections')
-    if (swim) {
-      swim.scrollTop = saved.swim.top
-      swim.scrollLeft = saved.swim.left
-    }
-  }, [inlineTicketId])
-
+  /** A ticket in a pane of its own (the card's corner action); the dialog when the console has no panes. */
   const openTicket = useCallback(
     (id: string) => {
-      if (canOpenPane) {
-        host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id } })
-        return
-      }
-      openInline(id)
+      if (canOpenPane) host.panels?.open({ pageId: TICKET_PAGE_ID, context: { id } })
+      else openDialog(id)
     },
-    [canOpenPane, host, openInline],
+    [canOpenPane, host, openDialog],
   )
 
   /**
@@ -772,8 +772,12 @@ export function BoardPage({
   const priorities = useMemo(() => data?.priorities ?? [], [data?.priorities])
   const dragged = useMemo(() => (drag ? tickets.find((ticket) => ticket.id === drag.id) : undefined), [drag, tickets])
   const visibleCards = (column: BoardColumn) => column.tickets.filter((ticket) => shownIds.has(ticket.id))
-  const laneCount = (column: BoardColumn) =>
-    filtering ? `${visibleCards(column).length} of ${column.tickets.length}` : String(column.tickets.length)
+  /** A column as this project has it (every ticket when the hub shows every project). */
+  const shownColumn = (column: BoardColumn) => shownColumns.find((candidate) => candidate.id === column.id) ?? column
+  const laneCount = (column: BoardColumn) => {
+    const total = shownColumn(column).tickets.length
+    return filtering ? `${visibleCards(column).length} of ${total}` : String(total)
+  }
 
   // Everything below up to the swimlane props keeps its identity while a card is dragged over the board, so the
   // memoised cards, cells and swimlanes are only redrawn where the drop target moves.
@@ -790,7 +794,7 @@ export function BoardPage({
         onDragStart={handleDragStart}
         canceledStatus={canceledStatus}
         columns={columns}
-        onOpen={openInline}
+        onOpen={openDialog}
         onOpenPane={openTicket}
         onStatus={changeStatus}
         // A parent the board does not hold (deleted) is not named: its key would lead nowhere.
@@ -810,7 +814,7 @@ export function BoardPage({
       handleDragStart,
       keyById,
       titleById,
-      openInline,
+      openDialog,
       openTicket,
       priorities,
       subtasks,
@@ -820,14 +824,15 @@ export function BoardPage({
   const refuseFor = useCallback((lane: Swimlane) => (dragged ? refuseDrop(dragged, lane) : null), [dragged, refuseDrop])
   const openLane = useCallback(
     (lane: Swimlane) => {
-      if (lane.facet === 'parent') openTicket(lane.parent?.key ?? '')
-      else
-        host.panels?.open({
-          pageId: lane.facet === 'release' ? RELEASES_PAGE_ID : PROJECTS_PAGE_ID,
-          context: { id: lane.value },
-        })
+      if (lane.facet === 'parent') openDialog(lane.parent?.key ?? '')
+      else if (lane.facet === 'project') {
+        // A project lane opens that project's Overview right here.
+        if (!lane.value) return
+        setScope(lane.value)
+        setView('overview')
+      } else host.panels?.open({ pageId: RELEASES_PAGE_ID, context: { id: lane.value } })
     },
-    [host, openTicket],
+    [host, openDialog, setScope, setView],
   )
   const onExpand = useCallback((cell: string) => setOpenCells((cells) => new Set(cells).add(cell)), [])
   const onAdd = useCallback((lane: Swimlane, column: BoardColumn) => setCreating(newIn(lane, column.id)), [])
@@ -851,25 +856,6 @@ export function BoardPage({
 
   const swimStatusLabel = useCallback((status: string) => statusLabel(columns, status), [columns])
 
-  if (inlineTicketId) {
-    return (
-      <TicketScreen
-        key={inlineTicketId}
-        host={host}
-        ticketId={inlineTicketId}
-        doneStatus={doneStatus}
-        canceledStatus={canceledStatus}
-        columns={columns}
-        priorities={priorities}
-        agents={agents}
-        onBack={() => setInlineTicketId(null)}
-        onOpenTicket={(key: string) => setInlineTicketId(key)}
-        onRequestClose={onRequestClose}
-        commands={commands}
-      />
-    )
-  }
-
   const hovered = dropTarget?.lane ? laneById.get(dropTarget.lane) : undefined
   const dragMessage = !dragged
     ? ''
@@ -892,13 +878,15 @@ export function BoardPage({
     onDragLeave: handleDragLeave,
     onDrop: onSwimDrop,
     onAdd,
-    onOpenLane: canOpenPane ? openLane : undefined,
+    onOpenLane: canOpenPane || group === 'project' || group === 'parent' ? openLane : undefined,
     statusLabel: swimStatusLabel,
     now: ctx.now,
     empty: filtering ? 'No ticket here matches the filters.' : 'No tickets to group yet.',
   }
 
-  const renderLane = (column: BoardColumn, head: boolean) => (
+  const renderLane = (full: BoardColumn, head: boolean) => {
+    const column = shownColumn(full)
+    return (
     <BoardColumnView
       canceledStatus={canceledStatus}
       cards={visibleCards(column)}
@@ -917,7 +905,8 @@ export function BoardPage({
       onDrop={(event) => handleDrop(null, column.id, event)}
       renderCard={renderCard}
     />
-  )
+    )
+  }
 
   // Search, Filter, Display and the layout switch: in the header when wide, on a row of their own when narrow.
   const controls = (
@@ -973,151 +962,229 @@ export function BoardPage({
       : []),
   ]
 
+  const reloadQuiet = async (quiet = false) => {
+    await load(quiet)
+  }
+  /** The header's project switcher and the Overview's rows: the view on screen stays, for the other project. */
+  const pickScope = (id: string | null) => setScope(id)
+  const openBoardOf = (project: string, list?: 'list') => {
+    if (project === '') {
+      setScope(null)
+      setActiveViewId(ALL_VIEW.id)
+      setFilters({ ...EMPTY_FILTERS, projects: [''] })
+    } else setScope(project)
+    if (list) setLayout('list')
+    setView('board')
+  }
+  const newTicketButton = narrow ? (
+    <IconAction label={newLabel} onClick={() => setCreating({ status: newStatus })} variant="default">
+      <Plus size={16} />
+    </IconAction>
+  ) : (
+    <ShadcnButton onClick={() => setCreating({ status: newStatus })} size="sm" type="button">
+      <Plus size={16} />
+      New ticket
+    </ShadcnButton>
+  )
+  const projectActions =
+    narrow ? (
+      <IconAction label="New project" onClick={() => setCreatingProject(true)} variant="default">
+        <Plus size={16} />
+      </IconAction>
+    ) : (
+      <>
+        <ShadcnButton disabled={!data} onClick={() => setConverting(true)} size="sm" type="button" variant="ghost">
+          <Tag size={16} />
+          Create from a label
+        </ShadcnButton>
+        <ShadcnButton onClick={() => setCreatingProject(true)} size="sm" type="button">
+          <Plus size={16} />
+          New project
+        </ShadcnButton>
+      </>
+    )
+
   return (
-    <PageShell className="kb kb-shell">
+    <PageShell className="kb kb-shell kb-hub" data-narrow={narrow ? 'true' : undefined} ref={narrowRef}>
       <PageHeader
-        actions={
-          <>
-            {narrow ? (
-              <IconAction label={newLabel} onClick={() => setCreating({ status: newStatus })} variant="default">
-                <Plus size={16} />
-              </IconAction>
-            ) : (
-              <ShadcnButton onClick={() => setCreating({ status: newStatus })} size="sm" type="button">
-                <Plus size={16} />
-                New ticket
-              </ShadcnButton>
-            )}
-          </>
-        }
-        icon={<Columns3 size={16} />}
-        menu={headerMenu}
+        actions={view === 'overview' && !scope ? projectActions : newTicketButton}
+        icon={view === 'overview' && !scope ? <FolderOpen size={16} /> : <Columns3 size={16} />}
+        menu={view === 'board' ? headerMenu : [{ id: 'refresh', label: 'Refresh', icon: <RefreshCw size={16} />, onSelect: () => void load() }]}
         onClose={onRequestClose}
-        title="Kanban"
+        title={
+          <ProjectSwitcher
+            onChange={pickScope}
+            onNewProject={() => setCreatingProject(true)}
+            onOpenReleases={canOpenPane ? () => host.panels?.open({ pageId: RELEASES_PAGE_ID }) : undefined}
+            projects={projects}
+            totals={allTickets.length}
+            value={scope}
+          />
+        }
       >
-        <ViewTabs activeId={activeView.id} counts={viewCounts} edited={edited} onSelect={selectView} views={views} />
+        <HubTabs narrow={narrow} onChange={setView} value={view} />
       </PageHeader>
       <PageMain>
-        <div
-          className="kb-board tw:bg-neutral-100 tw:dark:bg-black"
-          data-autofocus=""
-          data-narrow={narrow ? 'true' : undefined}
-          ref={setBoardEl}
-          tabIndex={-1}
-        >
-          {loadError ? (
-            <Notice actionLabel="Retry" detail={loadError} onAction={() => void load()} title="The board could not be read" />
-          ) : null}
-
-          {notice ? (
-            <Notice
-              actionLabel="Dismiss"
-              detail={notice.detail}
-              onAction={() => setActionError(null)}
-              title={notice.headline}
-            />
-          ) : null}
-
-          {loading && !data ? <BoardSkeleton /> : null}
-
-          {data && columns.length === 0 ? (
-            <Empty
-              action={
-                <ShadcnButton onClick={() => setCreating({ status: data.default_status })} size="sm" type="button">
-                  <Plus size={16} />
-                  New ticket
-                </ShadcnButton>
-              }
-              description="The kanban configuration declares no columns yet. Add one in settings."
-              icon={Columns3}
-              title="No columns configured"
-            />
-          ) : null}
-
-          {data && columns.length > 0 ? (
-            <>
-              <div aria-label="Board controls" className={SUBBAR} role="toolbar">
-                {controls}
-              </div>
-            </>
-          ) : null}
-
-          {data && columns.length > 0 && layout === 'list' ? (
-            <TicketList
+        {view === 'overview' ? (
+          <div className="kb-plan kb-hub-overview" data-narrow={narrow ? 'true' : undefined}>
+            <ProjectsOverview
               agents={agents}
-              columns={columns}
-              ctx={ctx}
-              highlightLabels={filters.labels}
+              announce={announce}
+              data={data}
+              error={loadError}
               host={host}
-              labels={allLabels(tickets)}
-              narrow={narrow}
-              onError={setActionError}
-              onAdd={(status: string) => setCreating({ status })}
-              onOpenTicket={openTicket}
-              doneStatus={doneStatus}
-              canceledStatus={canceledStatus}
-              projects={projects}
-              releases={releases}
-              subtasks={subtasks}
-              onUpdated={(updated: Ticket[]) => {
-                setActionError(null)
-                for (const ticket of updated) {
-                  noteOwnWrite(ticket)
-                  write(summarizeTicket(ticket))
-                }
-              }}
-              priorities={priorities}
-              tickets={shown}
+              loading={loading}
+              onConvert={() => setConverting(true)}
+              onNewProject={() => setCreatingProject(true)}
+              onOpenBoard={openBoardOf}
+              onOpenTicket={openDialog}
+              onSelect={pickScope}
+              project={scope}
+              reload={reloadQuiet}
             />
-          ) : null}
-
-          {data && columns.length > 0 && layout === 'board' && narrow ? (
-            <>
-              <ShadcnTabs className="kb-lane-tabs" onValueChange={setActiveLane} value={visibleLane?.id ?? columns[0].id}>
-                <ShadcnTabsList variant="line">
-                  {columns.map((column) => (
-                    <ShadcnTabsTrigger key={column.id} value={column.id}>
-                      {column.label}
-                      <span className="kb-column__count">{laneCount(column)}</span>
-                    </ShadcnTabsTrigger>
-                  ))}
-                </ShadcnTabsList>
-              </ShadcnTabs>
-              {group !== 'none' && drag ? <DragLine message={dragMessage} /> : null}
-              {group === 'none' ? (
-                <div className={`kb-columns ${COLUMNS} tw:pt-2 tw:*:max-w-none tw:*:flex-auto`} data-single="true">
-                  {visibleLane ? renderLane(visibleLane, false) : null}
-                </div>
-              ) : visibleLane ? (
-                <SwimlaneSections {...swimProps} column={visibleLane} showEmpty={showEmpty} />
-              ) : null}
-            </>
-          ) : null}
-
-          {data && columns.length > 0 && layout === 'board' && !narrow && group === 'none' ? (
-            <div
-              className={`kb-columns ${COLUMNS}`}
-              data-edge-left={scrollEdges.left ? 'true' : undefined}
-              data-edge-right={scrollEdges.right ? 'true' : undefined}
-              ref={boardScrollRef}
-            >
-              {columns.map((column) => renderLane(column, true))}
-            </div>
-          ) : null}
-
-          {data && columns.length > 0 && layout === 'board' && !narrow && group !== 'none' ? (
-            <>
-              {drag ? <DragLine message={dragMessage} /> : null}
-              <SwimlaneGrid
-                {...swimProps}
-                canceledStatus={canceledStatus}
-                doneStatus={doneStatus}
-                columnCount={laneCount}
-                onAddInColumn={(column) => setCreating({ status: column.id })}
+          </div>
+        ) : null}
+        {view === 'tree' ? (
+          data ? (
+            <TreeView
+              agents={agents}
+              data={data}
+              host={host}
+              onOpenProject={(id) => {
+                setScope(id)
+              }}
+              onOpenTicket={openDialog}
+              paneKey={paneKey}
+              project={scope}
+            />
+          ) : loadError ? (
+            <Notice actionLabel="Retry" detail={loadError} onAction={() => void load()} title="The board could not be read" />
+          ) : (
+            <BoardSkeleton />
+          )
+        ) : null}
+        {view === 'board' ? (
+        <div
+            className="kb-board tw:bg-neutral-100 tw:dark:bg-black"
+            data-autofocus=""
+            data-narrow={narrow ? 'true' : undefined}
+                      tabIndex={-1}
+          >
+            {loadError ? (
+              <Notice actionLabel="Retry" detail={loadError} onAction={() => void load()} title="The board could not be read" />
+            ) : null}
+  
+            {notice ? (
+              <Notice
+                actionLabel="Dismiss"
+                detail={notice.detail}
+                onAction={() => setActionError(null)}
+                title={notice.headline}
               />
-            </>
-          ) : null}
-        </div>
+            ) : null}
+  
+            {loading && !data ? <BoardSkeleton /> : null}
+  
+            {data && columns.length === 0 ? (
+              <Empty
+                action={
+                  <ShadcnButton onClick={() => setCreating({ status: data.default_status })} size="sm" type="button">
+                    <Plus size={16} />
+                    New ticket
+                  </ShadcnButton>
+                }
+                description="The kanban configuration declares no columns yet. Add one in settings."
+                icon={Columns3}
+                title="No columns configured"
+              />
+            ) : null}
+  
+            {data && columns.length > 0 ? (
+              <>
+                <div aria-label="Board controls" className={SUBBAR} role="toolbar">
+                  <ViewTabs activeId={activeView.id} counts={viewCounts} edited={edited} onSelect={selectView} views={views} />
+                  {controls}
+                </div>
+              </>
+            ) : null}
+  
+            {data && columns.length > 0 && layout === 'list' ? (
+              <TicketList
+                agents={agents}
+                columns={columns}
+                ctx={ctx}
+                highlightLabels={filters.labels}
+                host={host}
+                labels={allLabels(tickets)}
+                narrow={narrow}
+                onError={setActionError}
+                onAdd={(status: string) => setCreating({ status })}
+                onOpenTicket={openDialog}
+                doneStatus={doneStatus}
+                canceledStatus={canceledStatus}
+                projects={projects}
+                releases={releases}
+                subtasks={subtasks}
+                onUpdated={(updated: Ticket[]) => {
+                  setActionError(null)
+                  for (const ticket of updated) {
+                    noteOwnWrite(ticket)
+                    write(summarizeTicket(ticket))
+                  }
+                }}
+                priorities={priorities}
+                tickets={shown}
+              />
+            ) : null}
+  
+            {data && columns.length > 0 && layout === 'board' && narrow ? (
+              <>
+                <ShadcnTabs className="kb-lane-tabs" onValueChange={setActiveLane} value={visibleLane?.id ?? columns[0].id}>
+                  <ShadcnTabsList variant="line">
+                    {columns.map((column) => (
+                      <ShadcnTabsTrigger key={column.id} value={column.id}>
+                        {column.label}
+                        <span className="kb-column__count">{laneCount(column)}</span>
+                      </ShadcnTabsTrigger>
+                    ))}
+                  </ShadcnTabsList>
+                </ShadcnTabs>
+                {group !== 'none' && drag ? <DragLine message={dragMessage} /> : null}
+                {group === 'none' ? (
+                  <div className={`kb-columns ${COLUMNS} tw:pt-2 tw:*:max-w-none tw:*:flex-auto`} data-single="true">
+                    {visibleLane ? renderLane(visibleLane, false) : null}
+                  </div>
+                ) : visibleLane ? (
+                  <SwimlaneSections {...swimProps} column={visibleLane} showEmpty={showEmpty} />
+                ) : null}
+              </>
+            ) : null}
+  
+            {data && columns.length > 0 && layout === 'board' && !narrow && group === 'none' ? (
+              <div
+                className={`kb-columns ${COLUMNS}`}
+                data-edge-left={scrollEdges.left ? 'true' : undefined}
+                data-edge-right={scrollEdges.right ? 'true' : undefined}
+                ref={boardScrollRef}
+              >
+                {columns.map((column) => renderLane(column, true))}
+              </div>
+            ) : null}
+  
+            {data && columns.length > 0 && layout === 'board' && !narrow && group !== 'none' ? (
+              <>
+                {drag ? <DragLine message={dragMessage} /> : null}
+                <SwimlaneGrid
+                  {...swimProps}
+                  canceledStatus={canceledStatus}
+                  doneStatus={doneStatus}
+                  columnCount={laneCount}
+                  onAddInColumn={(column) => setCreating({ status: column.id })}
+                />
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </PageMain>
 
       <SaveViewDialog onOpenChange={setSavingView} onSave={saveView} open={savingView} />
@@ -1128,7 +1195,7 @@ export function BoardPage({
         defaultStatus={creating?.status ?? data?.default_status ?? 'backlog'}
         doneStatus={doneStatus}
         canceledStatus={canceledStatus}
-        defaults={creating ?? undefined}
+        defaults={creating ? (scopeId && creating.project === undefined ? { ...creating, project: scopeId } : creating) : undefined}
         host={host}
         onCreated={(ticket, options) => {
           setActionError(null)
@@ -1136,7 +1203,7 @@ export function BoardPage({
           write(summarizeTicket(ticket))
           if (options?.keepOpen) return
           setCreating(null)
-          openTicket(ticket.key)
+          openDialog(ticket.key)
         }}
         onOpenChange={(open) => {
           if (!open) setCreating(null)
@@ -1144,6 +1211,50 @@ export function BoardPage({
         open={creating !== null}
         priorities={data?.priorities ?? ['low', 'medium', 'high', 'urgent']}
       />
+      <TicketDialog
+        agents={agents}
+        canceledStatus={canceledStatus}
+        columns={columns}
+        commands={commands}
+        doneStatus={doneStatus}
+        host={host}
+        onClose={() => setDialogTicket(null)}
+        onOpenTicket={openDialog}
+        priorities={priorities}
+        ticketId={dialogTicket}
+      />
+      <NewProjectDialog
+        agents={agents}
+        host={host}
+        onCreated={(project) => {
+          setCreatingProject(false)
+          setScope(project.id)
+          setView('overview')
+          announce(`Created ${project.name}`)
+          void load(true)
+        }}
+        onOpenChange={setCreatingProject}
+        open={creatingProject}
+      />
+      {data ? (
+        <ConvertDialog
+          data={data}
+          host={host}
+          into="project"
+          onDone={(outcome) => {
+            const first = outcome.entities[0]
+            if (first) {
+              setScope(first.id)
+              setView('overview')
+            }
+            announce(outcome.text)
+            void load(true)
+          }}
+          onOpenChange={setConverting}
+          open={converting}
+        />
+      ) : null}
+      <LiveRegion announcement={announcement} />
     </PageShell>
   )
 }
