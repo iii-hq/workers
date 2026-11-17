@@ -44,6 +44,7 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { retireChatDraftSeed } from '@/lib/chat-draft-seeds'
+import { summarizeChatTitle } from '@/lib/chat-title'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
@@ -3352,6 +3353,31 @@ export function useConversations(
         forgetNewChatDraft(id)
         retireChatDraftSeed(id)
         saveDraftText(id, '')
+        // The derived title holds the row while the model writes a short
+        // heading for the ask; a rename in the meantime wins.
+        if (!conv.titleManual && titleHint) {
+          void getIiiClient()
+            .then((client) =>
+              summarizeChatTitle(client, {
+                sessionId: id,
+                prompt: titleHint,
+                model: conv.model,
+              }),
+            )
+            .then((summary) => {
+              const current = conversationsRef.current.find((c) => c.id === id)
+              if (
+                !summary ||
+                !current ||
+                current.titleManual ||
+                current.title !== title ||
+                summary === title
+              )
+                return
+              editMeta(id, (c) => ({ ...c, title: summary }), summary)
+            })
+            .catch(() => {})
+        }
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
             { ...c, draft: false, hydrated: false },
@@ -3378,6 +3404,7 @@ export function useConversations(
       conversations,
       patchConversation, // Sent: the session holds its draft now, not the new chat's slot.
       forgetNewChatDraft,
+      editMeta,
     ],
   )
 
