@@ -10,16 +10,14 @@ use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::events::ItemEvent;
 use crate::extract::source::{self, Line};
-use crate::types::{fingerprint, now_ms, Memory, Provenance};
+use crate::types::{Memory, Provenance, fingerprint, now_ms};
 
 pub const TRANSCRIPT_ID: &str = "memory::transcript";
-pub const TRANSCRIPT_DESC: &str =
-    "Internal: the source transcript of one live memory, as the redacted, cut lines extraction \
+pub const TRANSCRIPT_DESC: &str = "Internal: the source transcript of one live memory, as the redacted, cut lines extraction \
      read (its recorded span, or the turn it was saved from). `missing` says why there is none.";
 
 pub const CORRECT_ID: &str = "memory::correct";
-pub const CORRECT_DESC: &str =
-    "Internal: replace a memory its source transcript contradicts. One append writes the new \
+pub const CORRECT_DESC: &str = "Internal: replace a memory its source transcript contradicts. One append writes the new \
      record (the old provenance and statement date, plus the reason) and retires the old one \
      into it; `expected_memory` must still match the old record.";
 

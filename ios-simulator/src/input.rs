@@ -3,7 +3,7 @@
 //! `button` and `key` commands; everything composed lives here so it is
 //! testable without a simulator.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const SHIFT: u32 = 0xe1;
 

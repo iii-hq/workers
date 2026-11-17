@@ -1,6 +1,6 @@
 use security_scan::{
-    build_analysis_plan, AnalysisConfigV1, RunRecordV1, RunStatusV1, ScanModeV1,
-    ANALYSIS_READ_FUNCTIONS,
+    ANALYSIS_READ_FUNCTIONS, AnalysisConfigV1, RunRecordV1, RunStatusV1, ScanModeV1,
+    build_analysis_plan,
 };
 
 fn analysis_config() -> AnalysisConfigV1 {
@@ -59,27 +59,31 @@ fn analysis_plan_is_scoped_to_an_isolated_worktree_and_read_only_functions() {
     }));
     assert!(plan.system_prompt.contains("untrusted review data"));
     assert!(plan.system_prompt.contains("Never execute repository code"));
-    assert!(plan
-        .denied_functions
-        .iter()
-        .any(|function| function == "github::*"));
-    assert!(plan
-        .denied_functions
-        .iter()
-        .any(|function| function == "shell::*"));
+    assert!(
+        plan.denied_functions
+            .iter()
+            .any(|function| function == "github::*")
+    );
+    assert!(
+        plan.denied_functions
+            .iter()
+            .any(|function| function == "shell::*")
+    );
     assert!(plan.system_prompt.contains("concrete remediation plan"));
     assert!(plan.message.contains("dependencies and packages"));
     assert!(plan.message.contains("secrets and credentials"));
     assert!(plan.message.contains("CI/release weaknesses"));
-    assert!(plan
-        .message
-        .contains("Populate the assessments object for every area"));
+    assert!(
+        plan.message
+            .contains("Populate the assessments object for every area")
+    );
     assert!(plan.output_schema.get("properties").is_some());
-    assert!(plan
-        .output_schema
-        .get("required")
-        .and_then(|required| required.as_array())
-        .is_some_and(|required| required.iter().any(|field| field == "assessments")));
+    assert!(
+        plan.output_schema
+            .get("required")
+            .and_then(|required| required.as_array())
+            .is_some_and(|required| required.iter().any(|field| field == "assessments"))
+    );
     assert_eq!(plan.model, "security-review-model");
     assert_eq!(plan.provider.as_deref(), Some("router"));
     assert_eq!(plan.max_turns, 4);

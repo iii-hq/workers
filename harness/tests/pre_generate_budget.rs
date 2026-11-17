@@ -10,9 +10,9 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
-use iii_sdk::{register_worker, InitOptions};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use iii_sdk::{InitOptions, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 mod support;

@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use super::{validate_relative_path, write_file_atomic, DownloadResult};
+use super::{DownloadResult, validate_relative_path, write_file_atomic};
 
 /// Validate the user-supplied skill name. The name is used both as the
 /// subfolder inside the cloned repo (`skills/<skill>/`) and as the

@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use iii_sdk::{
-    register_worker, CallRequest, Capture, InitOptions, ObserverHandle, ObserverOptions,
-    RegisterFunction, Source,
+    CallRequest, Capture, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
+    register_worker,
 };
 use serde_json::json;
 use tokio::time::{sleep, timeout};
@@ -1396,13 +1396,13 @@ fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
     let state = &evaluation["state"];
     let questions = &evaluation["questions"];
     let pick = |question: &str, choice: &str| {
-        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
-            ["criteria"]
-            .as_object()
-            .expect("choice criteria")
-            .keys()
-            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
-            .collect();
+        let probabilities: serde_json::Map<String, serde_json::Value> =
+            questions[question]["criteria"]
+                .as_object()
+                .expect("choice criteria")
+                .keys()
+                .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+                .collect();
         json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
     };
     let field = |label: &str| {
@@ -1544,9 +1544,11 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
     assert!(requests[..n].iter().all(|r| r.get("provider").is_none()));
     assert!(requests[n..].iter().all(|r| r["provider"] == "semif"));
     // input values never reach the judge (until the page itself shows them)
-    assert!(!requests[n]["evaluations"][0]["state"]
-        .to_string()
-        .contains("Crash on save"));
+    assert!(
+        !requests[n]["evaluations"][0]["state"]
+            .to_string()
+            .contains("Crash on save")
+    );
     // each request asks the operation, the completion check, and one head
     // per offered operation
     let heads: Vec<&String> = requests[n]["evaluations"][0]["questions"]
@@ -1679,13 +1681,13 @@ fn eager_login_judge(request: &serde_json::Value) -> serde_json::Value {
     let state = &evaluation["state"];
     let questions = &evaluation["questions"];
     let pick = |question: &str, choice: &str| {
-        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
-            ["criteria"]
-            .as_object()
-            .expect("choice criteria")
-            .keys()
-            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
-            .collect();
+        let probabilities: serde_json::Map<String, serde_json::Value> =
+            questions[question]["criteria"]
+                .as_object()
+                .expect("choice criteria")
+                .keys()
+                .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+                .collect();
         json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
     };
     let text = state["page"]["text"].as_str().unwrap_or_default();

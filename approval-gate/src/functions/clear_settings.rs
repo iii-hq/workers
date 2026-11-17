@@ -19,7 +19,7 @@ pub async fn handle(
 mod tests {
     use super::*;
     use crate::functions::set_mode;
-    use crate::testkit::{with_stack, BootOpts};
+    use crate::testkit::{BootOpts, with_stack};
     use crate::types::{PermissionMode, SetModeRequest};
 
     #[tokio::test(flavor = "multi_thread")]

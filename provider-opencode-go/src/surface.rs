@@ -14,8 +14,7 @@ use llm_router::types::router::{
 };
 
 pub const STREAM_ID: &str = "provider::opencode_go::stream";
-pub const STREAM_DESC: &str =
-    "Stream an OpenCode Go response: resolve credentials, call the configured \
+pub const STREAM_DESC: &str = "Stream an OpenCode Go response: resolve credentials, call the configured \
      Chat Completions endpoint, and relay AssistantMessageEvent frames to writer_ref.";
 
 pub const ABORT_ID: &str = "provider::opencode_go::abort";
@@ -23,19 +22,16 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::opencode_go::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the OpenCode Go catalog slice from GET /v1/models and \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenCode Go catalog slice from GET /v1/models and \
      reconcile it through the router; returns the model count written.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::opencode_go::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, \
      response_format?} locally with each model family's own published vocabulary; never runs \
      the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::opencode_go::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

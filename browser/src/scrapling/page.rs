@@ -6,7 +6,7 @@
 //! post-fetch half (inline extraction, markdown/text rendering, raw HTML) is
 //! written once here and reuses the parse modules the worker already has.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::scrapling::{dom, markdown, ops::extract::apply_selectors};
 

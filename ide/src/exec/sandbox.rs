@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::calls::CallFwd;
 use crate::exec::policy::ExecOverrides;
-use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
+use crate::exec::{ExecCallResult, ExecOutcome, backend::ExecBackend, error::ExecError};
 
 /// Wire response from the engine's `sandbox::exec` function.
 /// `pub(crate)` because `functions::exec_bg::spawn_sandbox_job` (T9)
@@ -497,9 +497,10 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "S301");
-        assert!(err
-            .message
-            .contains("compose::add worker=iii-sandbox installs it"));
+        assert!(
+            err.message
+                .contains("compose::add worker=iii-sandbox installs it")
+        );
     }
 
     #[tokio::test]

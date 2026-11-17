@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tmux::accounts::Accounts;
 use tmux::accounts::credentials::FileStore;
 use tmux::accounts::login::Runner;
 use tmux::accounts::paths::ClaudePaths;
-use tmux::accounts::Accounts;
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
@@ -68,14 +68,16 @@ async fn the_real_claude_code_signs_in_through_the_worker_s_pty() {
     }
     // SAFETY: the only test in this binary; nothing else reads the
     // environment yet.
-    std::env::set_var(
-        "PATH",
-        format!(
-            "{}:{}",
-            traps.display(),
-            std::env::var("PATH").unwrap_or_default()
-        ),
-    );
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                traps.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+    };
     let vars: std::collections::HashMap<&str, String> = std::collections::HashMap::from([
         ("HOME", home.to_string_lossy().into_owned()),
         (

@@ -18,11 +18,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PAGE: usize = 500;
 const CALL_TIMEOUT_MS: u64 = 15_000;
@@ -723,13 +723,12 @@ pub async fn run_llm_tier<T: ConsolidationTransport + ?Sized>(
         // written first would drop a promotion whose write then failed.
         let known = ledger.len();
         ledger.extend(landed.into_iter().chain(covered));
-        if ledger.len() > known {
-            if let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
-            {
-                report
-                    .notes
-                    .push(format!("promotion ledger not saved: {e}"));
-            }
+        if ledger.len() > known
+            && let Err(e) = crate::functions::state_set(iii, &ledger_key(bank), json!(ledger)).await
+        {
+            report
+                .notes
+                .push(format!("promotion ledger not saved: {e}"));
         }
         return;
     }

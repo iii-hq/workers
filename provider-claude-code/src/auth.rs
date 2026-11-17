@@ -13,9 +13,9 @@
 //! macOS keeps the live credential in the login Keychain ("Claude Code-
 //! credentials") and leaves any `.credentials.json` stale, so the dev fallback
 //! reads both stores and takes whichever expires later.
-use crate::{router_client, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client};
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Refresh proactively when the token expires within this margin.
 const EXPIRY_MARGIN_SECS: i64 = 60;
@@ -307,15 +307,15 @@ mod tests {
     fn missing_or_wrong_shape_yields_none() {
         assert!(credential_from_credentials_json(&json!({})).is_none());
         // no accessToken
-        assert!(credential_from_credentials_json(
-            &json!({ "claudeAiOauth": { "refreshToken": "r" } })
-        )
-        .is_none());
+        assert!(
+            credential_from_credentials_json(&json!({ "claudeAiOauth": { "refreshToken": "r" } }))
+                .is_none()
+        );
         // blank accessToken
-        assert!(credential_from_credentials_json(
-            &json!({ "claudeAiOauth": { "accessToken": "   " } })
-        )
-        .is_none());
+        assert!(
+            credential_from_credentials_json(&json!({ "claudeAiOauth": { "accessToken": "   " } }))
+                .is_none()
+        );
     }
 
     #[test]
@@ -332,9 +332,11 @@ mod tests {
         let stale = br#"{"mcpOAuth":{"srv":{"accessToken":"secret-mcp"}}}"#;
         let err = credential_from_keychain_password(stale).unwrap_err();
         assert!(err.contains("claudeAiOauth") && !err.contains("secret"));
-        assert!(credential_from_keychain_password(b"secret-not-json")
-            .unwrap_err()
-            .contains("not JSON"));
+        assert!(
+            credential_from_keychain_password(b"secret-not-json")
+                .unwrap_err()
+                .contains("not JSON")
+        );
         let live = br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-x"}}"#;
         assert_eq!(
             credential_from_keychain_password(live).unwrap()["access_token"],

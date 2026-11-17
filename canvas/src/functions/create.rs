@@ -200,10 +200,12 @@ mod tests {
         .expect("creates");
 
         assert_eq!(record.id.len(), 8);
-        assert!(record
-            .id
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(
+            record
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        );
         assert_eq!(record.name, "checkout");
         assert_eq!(record.format, CanvasFormat::Mermaid);
         assert_eq!(record.family.as_deref(), Some("flowchart"));
@@ -318,9 +320,10 @@ mod tests {
         for _ in 0..1000 {
             let id = random_id();
             assert_eq!(id.len(), 8);
-            assert!(id
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            );
             seen.insert(id);
         }
         assert!(

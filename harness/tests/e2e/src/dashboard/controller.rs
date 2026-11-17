@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{SecondsFormat, Utc};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -15,8 +15,8 @@ use url::Url;
 
 use super::store::{read_report, recover_interrupted_runs, write_metadata};
 use super::{
-    ApiError, DashboardArgs, Defaults, JobStatus, JobView, RunMetadata, RunRequest, RunSnapshot,
-    LOCAL_SCHEMA_VERSION,
+    ApiError, DashboardArgs, Defaults, JobStatus, JobView, LOCAL_SCHEMA_VERSION, RunMetadata,
+    RunRequest, RunSnapshot,
 };
 use crate::scenarios::ScenarioId;
 

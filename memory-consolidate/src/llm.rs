@@ -22,10 +22,10 @@
 
 use std::collections::BTreeSet;
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::consolidate::{MemoryRow, PlannedGroup};
 

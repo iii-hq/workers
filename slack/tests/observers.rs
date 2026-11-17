@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, register_worker};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
+use slack::WorkerConfig;
 use slack::deps::Deps;
 use slack::functions::bindings;
-use slack::WorkerConfig;
 
 const APPROVAL_FNS: [&str; 2] = [
     bindings::APPROVAL_PENDING_CREATED_FN,

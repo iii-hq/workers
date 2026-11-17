@@ -100,10 +100,10 @@ pub async fn handle_session(req: KillSessionJobsRequest) -> KillSessionJobsRespo
     let mut killed = Vec::new();
     for job_id in jobs::running_owned_by(&req.session_ids).await {
         // A job that finished or was pruned since the scan has nothing to kill.
-        if let Ok(resp) = handle(KillRequest { job_id }).await {
-            if resp.killed {
-                killed.push(resp.job_id);
-            }
+        if let Ok(resp) = handle(KillRequest { job_id }).await
+            && resp.killed
+        {
+            killed.push(resp.job_id);
         }
     }
     KillSessionJobsResponse { killed }

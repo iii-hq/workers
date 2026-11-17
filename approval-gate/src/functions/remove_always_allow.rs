@@ -30,7 +30,7 @@ mod tests {
 
     use super::*;
     use crate::config::WorkerConfig;
-    use crate::testkit::{with_stack, BootOpts};
+    use crate::testkit::{BootOpts, with_stack};
     use crate::types::PermissionMode;
 
     #[tokio::test(flavor = "multi_thread")]

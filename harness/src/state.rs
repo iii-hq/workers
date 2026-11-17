@@ -13,11 +13,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::HarnessError;
 use crate::trace_tags::run_hidden;
@@ -282,10 +282,10 @@ const STORED_REFS: [(&str, &str, &str); 2] = [
 
 fn refs_to_stored(record: &mut Value) {
     for (at, text, slot) in STORED_REFS {
-        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
-            if let Some(digest) = fields.remove(slot) {
-                fields.insert(text.to_owned(), json!({ "$ref": digest }));
-            }
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut)
+            && let Some(digest) = fields.remove(slot)
+        {
+            fields.insert(text.to_owned(), json!({ "$ref": digest }));
         }
     }
 }
@@ -295,12 +295,12 @@ fn refs_to_stored(record: &mut Value) {
 /// fails ([`read_listed_turn`] still needs its refs).
 fn parse_stored_turn(record: &mut Value) -> serde_json::Result<Option<TurnRecord>> {
     for (at, text, slot) in STORED_REFS {
-        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
-            if let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref")) {
-                let digest = digest.take();
-                fields.remove(text);
-                fields.insert(slot.to_owned(), digest);
-            }
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut)
+            && let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref"))
+        {
+            let digest = digest.take();
+            fields.remove(text);
+            fields.insert(slot.to_owned(), digest);
         }
     }
     Option::<TurnRecord>::deserialize(&*record)

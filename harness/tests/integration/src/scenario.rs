@@ -13,9 +13,9 @@ mod runner;
 mod state;
 
 pub use playground::{
-    playground_scenario, PlaygroundOutcome, PlaygroundReadyV1, PlaygroundResultV1,
+    PlaygroundOutcome, PlaygroundReadyV1, PlaygroundResultV1, playground_scenario,
 };
-pub use runner::{run_scenario, RunOutcome};
+pub use runner::{RunOutcome, run_scenario};
 
 #[cfg(test)]
 mod tests;

@@ -2,15 +2,15 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use storage::config::{redact_url, WorkerConfig};
+use storage::config::{WorkerConfig, redact_url};
 use storage::configuration;
 use storage::events::dispatcher::EngineDispatcher;
 use storage::handlers::{
-    buckets, delete_object, get_object, head_object, list_buckets, list_objects, multipart,
-    parse_request, presign_post, presign_url, put_object, schema_of, test_bucket, AppState,
+    AppState, buckets, delete_object, get_object, head_object, list_buckets, list_objects,
+    multipart, parse_request, presign_post, presign_url, put_object, schema_of, test_bucket,
 };
 use tokio::sync::RwLock;
 
@@ -414,7 +414,7 @@ async fn main() -> Result<()> {
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = tokio::signal::ctrl_c() => r,

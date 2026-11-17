@@ -8,12 +8,12 @@ use crate::material::Stage;
 use aws_config::retry::RetryConfig;
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
+use aws_sdk_s3::Client;
 use aws_sdk_s3::config::SharedCredentialsProvider;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
-use aws_sdk_s3::Client;
 use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 use chrono::TimeZone;
 use std::time::Duration;
@@ -416,13 +416,13 @@ impl Backend for S3Backend {
                 0
             }
         };
-        if let Some(cap) = req.max_inline_bytes {
-            if size > cap {
-                return Err(BackendError::ObjectTooLarge {
-                    actual_size: size,
-                    cap,
-                });
-            }
+        if let Some(cap) = req.max_inline_bytes
+            && size > cap
+        {
+            return Err(BackendError::ObjectTooLarge {
+                actual_size: size,
+                cap,
+            });
         }
         let body = resp
             .body
@@ -788,7 +788,7 @@ impl Backend for S3Backend {
                         "HeadBucket: HTTP {} (the key may not read this bucket, or another \
                          account owns the name)",
                         status_of(&error).unwrap_or(403)
-                    )))
+                    )));
                 }
                 Some(301) => {
                     return Err(BackendError::Provider {
@@ -796,7 +796,7 @@ impl Backend for S3Backend {
                         message: "HeadBucket: HTTP 301 (the bucket lives in another region or \
                                   needs another endpoint)"
                             .into(),
-                    })
+                    });
                 }
                 _ => return Err(with_operation("HeadBucket", map_s3_error(error))),
             },
@@ -845,7 +845,7 @@ fn composite_checksum(
     kind: Option<&str>,
     expected_parts: Option<usize>,
 ) -> Result<(), BackendError> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     let (digest, count) = value
         .rsplit_once('-')
         .ok_or_else(|| multipart_invalid("invalid composite checksum"))?;
@@ -995,7 +995,22 @@ mod tests {
                 if number == 2 {
                     assert!(request.contains("part-number-marker=1"));
                 }
-                let body = format!("<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>{}<Part><PartNumber>{}</PartNumber><ETag>\"opaque{}\"</ETag><Size>1</Size>{}</Part></ListPartsResult>", number == 1, if number == 1 { "<NextPartNumberMarker>1</NextPartNumberMarker>" } else { "" }, number, number, if number == 1 { "<ChecksumSHA256>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ChecksumSHA256>" } else { "" });
+                let body = format!(
+                    "<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>{}<Part><PartNumber>{}</PartNumber><ETag>\"opaque{}\"</ETag><Size>1</Size>{}</Part></ListPartsResult>",
+                    number == 1,
+                    if number == 1 {
+                        "<NextPartNumberMarker>1</NextPartNumberMarker>"
+                    } else {
+                        ""
+                    },
+                    number,
+                    number,
+                    if number == 1 {
+                        "<ChecksumSHA256>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ChecksumSHA256>"
+                    } else {
+                        ""
+                    }
+                );
                 stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
             }
         });

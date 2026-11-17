@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ClefConfig>) -> Resu
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge clef",
-        description:
-            "clef provider for judge: Clef model, CPU/GPU placement and execution limits (runs in-process).",
+        description: "clef provider for judge: Clef model, CPU/GPU placement and execution limits (runs in-process).",
         schema: ClefConfig::json_schema(),
         default_value: ClefConfig::default().to_json(),
     };

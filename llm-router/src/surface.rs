@@ -29,26 +29,22 @@ use crate::types::router::{
 // event it is called with, and none takes args.
 
 pub const ON_READY_ID: &str = "router::on-ready";
-pub const ON_READY_DESC: &str =
-    "The router is ready: each observer receives the event once the router has \
+pub const ON_READY_DESC: &str = "The router is ready: each observer receives the event once the router has \
      booted and the observer is accepted, once per router start, and once more \
      when its worker reconnects within the observer grace period. Providers \
      observe it to re-declare. Takes no args; the event is {}.";
 
 pub const ON_MODELS_CHANGED_ID: &str = "router::models::on-changed";
-pub const ON_MODELS_CHANGED_DESC: &str =
-    "A provider reconciled its catalog slice. Event: { provider, count }. Takes no \
+pub const ON_MODELS_CHANGED_DESC: &str = "A provider reconciled its catalog slice. Event: { provider, count }. Takes no \
      args; filter on input.provider.";
 
 pub const ON_PROVIDER_CHANGED_ID: &str = "router::provider::on-changed";
-pub const ON_PROVIDER_CHANGED_DESC: &str =
-    "The provider registry changed: a declaration (op register), a discovery \
+pub const ON_PROVIDER_CHANGED_DESC: &str = "The provider registry changed: a declaration (op register), a discovery \
      result (discovery) or an availability flip (available, unavailable). Event: \
      { provider, op }. Takes no args; filter on input.provider and input.op.";
 
 pub const CHAT_ID: &str = "router::chat";
-pub const CHAT_DESC: &str =
-    "Stream a chat completion: route {model, provider?} to a provider, relay \
+pub const CHAT_DESC: &str = "Stream a chat completion: route {model, provider?} to a provider, relay \
      assistant frames to writer_ref, and return the terminal response.";
 
 pub const COMPLETE_ID: &str = "router::complete";
@@ -56,36 +52,30 @@ pub const COMPLETE_DESC: &str = "Non-streaming convenience over router::chat: ru
      internal channel and return the final assistant message + usage.";
 
 pub const ABORT_ID: &str = "router::abort";
-pub const ABORT_DESC: &str =
-    "Abort an in-flight router::chat/complete by request_id; reports whether a live request was cancelled.";
+pub const ABORT_DESC: &str = "Abort an in-flight router::chat/complete by request_id; reports whether a live request was cancelled.";
 
 pub const EMBED_ID: &str = "router::embed";
-pub const EMBED_DESC: &str =
-    "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
+pub const EMBED_DESC: &str = "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
      or discovers the first embed-capable one from the live registry, then from embed-only \
      workers; one vector per input, order preserved.";
 
 pub const TRANSCRIBE_ID: &str = "router::transcribe";
-pub const TRANSCRIBE_DESC: &str =
-    "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, \
+pub const TRANSCRIBE_DESC: &str = "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, \
      mime?, language?} to {provider, model, text, segments?}. Resolves the provider from the \
      catalog's stt models when none is named.";
 
 pub const SPEAK_ID: &str = "router::speak";
-pub const SPEAK_DESC: &str =
-    "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} \
+pub const SPEAK_DESC: &str = "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} \
      to {provider, model, audio_base64, mime}. Resolves the provider from the catalog's tts \
      models when none is named.";
 
 pub const COUNT_TOKENS_ID: &str = "router::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages, \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages, \
      thinking_level?, response_format?} through the resolved provider's \
      provider::<id>::count_tokens surface; never runs the model and costs nothing.";
 
 pub const MODELS_LIST_ID: &str = "router::models::list";
-pub const MODELS_LIST_DESC: &str =
-    "List catalog models, optionally filtered by provider, a capability flag, and modality \
+pub const MODELS_LIST_DESC: &str = "List catalog models, optionally filtered by provider, a capability flag, and modality \
      (chat by default; stt, tts, or any).";
 
 pub const MODELS_GET_ID: &str = "router::models::get";
@@ -101,8 +91,7 @@ pub const MODELS_SUPPORTS_DESC: &str =
     "Check whether a model supports a capability flag (fails open for unknown models).";
 
 pub const PROVIDER_LIST_ID: &str = "router::provider::list";
-pub const PROVIDER_LIST_DESC: &str =
-    "List registered providers with their configured/available status, where each \
+pub const PROVIDER_LIST_DESC: &str = "List registered providers with their configured/available status, where each \
      credential comes from (credential_source, credential_ref, credential_error; never a value), \
      and the provider's starting point (default_model: the newest model of the best-ranked variant \
      its preferences name, else its first declared preference present in the catalog, else the \
@@ -117,8 +106,7 @@ pub const PROVIDER_REGISTER_DESC: &str = "Provider self-declaration at attach ti
      upsert); composes the configuration entry schema and reconciles static models.";
 
 pub const PROVIDER_RESOLVE_ID: &str = "router::provider::resolve";
-pub const PROVIDER_RESOLVE_DESC: &str =
-    "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
+pub const PROVIDER_RESOLVE_DESC: &str = "Resolve a provider's effective credential + api_url + max_tokens (token-gated); a \
      secret://NAME or env://NAME api_key resolves through the secrets worker.";
 
 pub const UPDATE_CREDENTIAL_ID: &str = "router::provider::update_credential";
@@ -130,19 +118,16 @@ pub const MODELS_RECONCILE_DESC: &str =
     "Replace a provider's catalog slice — the only catalog write path (token-gated).";
 
 pub const ON_FUNCTIONS_CHANGED_ID: &str = "router::on_functions_changed";
-pub const ON_FUNCTIONS_CHANGED_DESC: &str =
-    "Internal: a worker's function registrations changed — re-discover live \
+pub const ON_FUNCTIONS_CHANGED_DESC: &str = "Internal: a worker's function registrations changed — re-discover live \
      providers and nudge them to re-declare, so a provider that reconnected \
      is resolvable again without waiting for its own catalog timer.";
 
 pub const ON_CONFIG_CHANGED_ID: &str = "router::on_config_changed";
-pub const ON_CONFIG_CHANGED_DESC: &str =
-    "Internal: reactively reload the in-memory configuration snapshot and \
+pub const ON_CONFIG_CHANGED_DESC: &str = "Internal: reactively reload the in-memory configuration snapshot and \
      fan out provider model discovery after configuration changes.";
 
 pub const ON_SECRET_CHANGED_ID: &str = "router::on_secret_changed";
-pub const ON_SECRET_CHANGED_DESC: &str =
-    "Internal: a secret changed in the secrets worker — re-resolve the secret:// or \
+pub const ON_SECRET_CHANGED_DESC: &str = "Internal: a secret changed in the secrets worker — re-resolve the secret:// or \
      env:// credential reference and refresh the providers that use it.";
 
 /// One function's complete agent-facing wire surface: id, registration

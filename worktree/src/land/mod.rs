@@ -26,12 +26,12 @@ use iii_sdk::CallRequest;
 use iii_sdk::{CallAction, IIIClient};
 use serde_json::Value;
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::events::{Emitter, EventKind, LandBlockedEvent, LandedEvent};
 use crate::git::ops;
 use crate::locks::RepoLocks;
 use crate::state::{self, StateStore};
-use crate::types::{now_ms, LandJob, LandPhase, Lifecycle, WorktreeRecord};
+use crate::types::{LandJob, LandPhase, Lifecycle, WorktreeRecord, now_ms};
 
 use test_gate::TestRunner;
 

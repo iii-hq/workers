@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use super::node::status_json;
 use super::{
-    bool_at, register_fn, run, run_json, run_text, spec, string_at, strings_at, u64_at, EmptyInput,
-    FunctionSpec,
+    EmptyInput, FunctionSpec, bool_at, register_fn, run, run_json, run_text, spec, string_at,
+    strings_at, u64_at,
 };
 use crate::config::{SharedConfig, WorkerConfig};
 
@@ -444,10 +444,11 @@ const DEFAULT_CONTROL_URL: &str = "https://controlplane.tailscale.com";
 
 pub fn up_args(prefs: &Prefs) -> Vec<String> {
     let mut args = vec!["up".to_string()];
-    if let Some(url) = &prefs.control_url {
-        if !url.is_empty() && url != DEFAULT_CONTROL_URL {
-            args.push(format!("--login-server={url}"));
-        }
+    if let Some(url) = &prefs.control_url
+        && !url.is_empty()
+        && url != DEFAULT_CONTROL_URL
+    {
+        args.push(format!("--login-server={url}"));
     }
     if prefs.accept_routes {
         args.push("--accept-routes".to_string());
@@ -518,9 +519,11 @@ mod tests {
         assert_eq!(peers[1].relay.as_deref(), Some("nyc"));
         assert!(peers[1].taildrop_target);
         assert!(!peers[0].ingress && !peers[1].ingress);
-        assert!(!serde_json::to_string(&peers)
-            .unwrap()
-            .contains("nodekey:secret"));
+        assert!(
+            !serde_json::to_string(&peers)
+                .unwrap()
+                .contains("nodekey:secret")
+        );
     }
 
     #[test]
@@ -614,11 +617,13 @@ mod tests {
             ]
         );
         assert!(prefs_set_args(&PrefsSetInput::default()).is_err());
-        assert!(prefs_set_args(&PrefsSetInput {
-            advertise_routes: Some(vec!["--reset".into()]),
-            ..Default::default()
-        })
-        .is_err());
+        assert!(
+            prefs_set_args(&PrefsSetInput {
+                advertise_routes: Some(vec!["--reset".into()]),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]

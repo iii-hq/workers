@@ -1,16 +1,16 @@
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_queue::adapter::QueueAdapter;
 use iii_queue::adapters::redis::RedisAdapter;
 use iii_queue::subscribers::{Invoker, Subscriber};
-use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
-use serde_json::{json, Value};
+use iii_sdk::errors::Error;
+use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -163,9 +163,11 @@ async fn each_subscription_receives_one_copy_connect_or_skip() {
         2,
         "exactly one delivery per subscription — a duplicate subscription would add more"
     );
-    assert!(deliveries
-        .iter()
-        .all(|(_, payload)| payload == &json!({"event": 1})));
+    assert!(
+        deliveries
+            .iter()
+            .all(|(_, payload)| payload == &json!({"event": 1}))
+    );
     for subscriber in ["subscriber-a", "subscriber-b"] {
         assert!(
             deliveries.iter().any(|(id, _)| id == subscriber),

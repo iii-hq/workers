@@ -3,8 +3,8 @@
 use judge_contract::{
     CancelRequest, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse, Stats,
 };
-use judge_openai::{DecisionsClient, ExecutionLimits, RetryPolicy, DEFAULT_MODEL, DEFAULT_RETRY};
-use serde_json::{json, Value};
+use judge_openai::{DEFAULT_MODEL, DEFAULT_RETRY, DecisionsClient, ExecutionLimits, RetryPolicy};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -12,8 +12,8 @@ use tokio::{
     time::{sleep, timeout},
 };
 use wiremock::{
-    matchers::{header, method, path},
     Mock, MockServer, Request, ResponseTemplate,
+    matchers::{header, method, path},
 };
 
 fn client(server: &MockServer) -> DecisionsClient {

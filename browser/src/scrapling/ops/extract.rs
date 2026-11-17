@@ -2,7 +2,7 @@
 //! attr/html/all) applied to one context element (core.py `apply_selectors`
 //! + `op_extract`). Also the find-similar per-item projection (Task 15).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::{adaptive, dom, query, text};
 use crate::scrapling::{ops::common, require_str};
@@ -81,10 +81,12 @@ fn apply_selectors_with_adaptive(
         out.insert(
             name,
             if want_all {
-                json!(results
-                    .iter()
-                    .map(|r| common::pull(r, attr, html_flag))
-                    .collect::<Vec<_>>())
+                json!(
+                    results
+                        .iter()
+                        .map(|r| common::pull(r, attr, html_flag))
+                        .collect::<Vec<_>>()
+                )
             } else {
                 results
                     .first()

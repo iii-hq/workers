@@ -13,7 +13,7 @@
 
 mod support;
 
-use worktree::surface::{catalog, FunctionSpec};
+use worktree::surface::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

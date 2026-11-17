@@ -16,7 +16,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// The function the console observes for the activity feed.
 pub const ON_CALLED_FN: &str = "github::on-called";

@@ -4,13 +4,13 @@
 //! successful non-empty refresh replaces the router slice wholesale, so newly
 //! published models appear and retired models disappear. Failed or empty
 //! refreshes leave the last known router catalog untouched.
-use crate::config::{build_backend_config, CodexBackendConfig};
-use crate::request::{build_backend_headers, CODEX_COMPAT_VERSION};
+use crate::config::{CodexBackendConfig, build_backend_config};
+use crate::request::{CODEX_COMPAT_VERSION, build_backend_headers};
 use crate::session::AuthManager;
-use crate::{router_client, state as registration_state, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client, state as registration_state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::model::{Model, ReasoningEffort};
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, RefreshModelsRequest, RefreshModelsResponse,
@@ -307,9 +307,9 @@ pub fn make_refresh_models(
     refresh_state: Arc<CatalogRefreshState>,
     auth: Arc<AuthManager>,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let (iii, http, refresh_state, auth) = (
             iii.clone(),
@@ -334,7 +334,9 @@ pub async fn refresh_models_periodically(
     loop {
         tokio::time::sleep(MODELS_REFRESH_INTERVAL).await;
         match refresh_models(&iii, &http, &refresh_state, false, &auth).await {
-            Ok(count) => println!("[provider-openai-codex] periodic catalog refresh: {count} models"),
+            Ok(count) => {
+                println!("[provider-openai-codex] periodic catalog refresh: {count} models")
+            }
             Err(e) => eprintln!(
                 "[provider-openai-codex] periodic catalog refresh failed ({e}); keeping last known catalog"
             ),

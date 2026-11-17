@@ -5,13 +5,13 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::events::{CreatedEvent, EventKind};
 use crate::functions::Deps;
 use crate::git::{canonical_or_self, ops, validate_abs_path, validate_ref_name};
 use crate::ids;
 use crate::state;
-use crate::types::{now_ms, Lifecycle, WorktreeRecord};
+use crate::types::{Lifecycle, WorktreeRecord, now_ms};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {

@@ -7,8 +7,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 
 pub const ID: &str = "harness::context-policy";
-pub const DESC: &str =
-    "Return the Harness context-pruning policy for a destination model without making a model request.";
+pub const DESC: &str = "Return the Harness context-pruning policy for a destination model without making a model request.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ContextPolicyRequest {
@@ -32,7 +31,7 @@ pub async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::{handle, ContextPolicyRequest};
+    use super::{ContextPolicyRequest, handle};
 
     #[tokio::test]
     async fn handler_delegates_to_the_shared_binding_predicate() {

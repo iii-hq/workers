@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Capture, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{Capture, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
 use security_scan::events::{
-    self, ChangeFeed, ChangeKind, ReconciliationChangedEventV1, ON_RECONCILIATION_CHANGED_FN,
-    ON_RUN_CHANGED_FN,
+    self, ChangeFeed, ChangeKind, ON_RECONCILIATION_CHANGED_FN, ON_RUN_CHANGED_FN,
+    ReconciliationChangedEventV1,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 fn client(url: &str, name: &str) -> Arc<IIIClient> {

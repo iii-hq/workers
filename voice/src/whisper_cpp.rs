@@ -11,7 +11,7 @@ use tokio::process::Command;
 
 use crate::audio::{self, TARGET_SAMPLE_RATE};
 use crate::config::WorkerConfig;
-use crate::engine::{join_segments, Segment, Transcript};
+use crate::engine::{Segment, Transcript, join_segments};
 use crate::models::{self, ModelKind};
 
 const STDERR_LIMIT: usize = 600;

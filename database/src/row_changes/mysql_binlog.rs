@@ -24,15 +24,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use mysql_async::BinlogStreamRequest;
 use mysql_async::binlog::events::{EventData, RowsEventData};
 use mysql_async::binlog::row::BinlogRow;
 use mysql_async::binlog::value::BinlogValue;
 use mysql_async::consts::ColumnFlags;
 use mysql_async::prelude::Queryable;
-use mysql_async::BinlogStreamRequest;
 use serde_json::{Map, Value};
 
-use super::bus::{now_ms, RowChangeBus, RowChangedEvent, KEY_CAP};
+use super::bus::{KEY_CAP, RowChangeBus, RowChangedEvent, now_ms};
 use super::sql::Op;
 use crate::connector::Connector;
 use crate::driver::mysql::my_to_row_value;
@@ -78,7 +78,7 @@ pub(crate) async fn binlog_position(conn: &mut mysql_async::Conn) -> Result<(Str
             Ok(None) => {
                 return Err(
                     "the server reports no binlog position — is log_bin enabled?".to_string(),
-                )
+                );
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -287,10 +287,10 @@ async fn stream_once(
                             .and_then(key_of)
                             .or_else(|| before.as_ref().and_then(key_of)),
                     };
-                    if let Some(key) = key {
-                        if p.keys.len() < KEY_CAP {
-                            p.keys.push(key);
-                        }
+                    if let Some(key) = key
+                        && p.keys.len() < KEY_CAP
+                    {
+                        p.keys.push(key);
                     }
                 }
             }

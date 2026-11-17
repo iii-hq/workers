@@ -15,7 +15,8 @@ fn main() {
     let path = args.next().expect("usage: probe <file.pdf> [password]");
     let password = args.next();
 
-    pdf::cmaps::materialize();
+    // SAFETY: synchronous startup, before this binary starts any threads.
+    unsafe { pdf::cmaps::materialize() };
     let cfg = WorkerConfig::default();
     let src = || PdfSource {
         path: Some(path.clone()),

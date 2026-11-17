@@ -456,10 +456,9 @@ mod tests {
             Some("orders"),
             Op::Insert,
             150,
-            Some(vec![serde_json::json!({ "id": 1 })
-                .as_object()
-                .unwrap()
-                .clone()]),
+            Some(vec![
+                serde_json::json!({ "id": 1 }).as_object().unwrap().clone(),
+            ]),
             true,
         );
         let value = serde_json::to_value(&capped).unwrap();

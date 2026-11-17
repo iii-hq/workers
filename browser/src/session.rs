@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use chromiumoxide::Page;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::dom;
@@ -29,14 +30,13 @@ use chromiumoxide::cdp::browser_protocol::page as cdp_page;
 use chromiumoxide::cdp::browser_protocol::target as cdp_target;
 use chromiumoxide::cdp::js_protocol::runtime;
 use chromiumoxide::error::CdpError;
-use chromiumoxide::Page;
 use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    origin_label, origin_policy_config_key_for, origin_policy_for, BrowserEngine, SharedConfig,
-    WorkerConfig,
+    BrowserEngine, SharedConfig, WorkerConfig, origin_label, origin_policy_config_key_for,
+    origin_policy_for,
 };
 use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, FrameEventPayload,
@@ -420,11 +420,11 @@ impl NavStack {
             self.pending = None;
             return;
         }
-        if let Some(target) = self.pending.take() {
-            if self.urls.get(target).is_some_and(|u| u == url) {
-                self.index = target;
-                return;
-            }
+        if let Some(target) = self.pending.take()
+            && self.urls.get(target).is_some_and(|u| u == url)
+        {
+            self.index = target;
+            return;
         }
         // A reload, or the page coming back after sleep: same entry.
         if self.urls.get(self.index).is_some_and(|u| u == url) {
@@ -721,10 +721,10 @@ impl Tab {
         for guid in guids {
             self.remove_download_file(&guid);
         }
-        if self.incognito {
-            if let Some(dir) = &self.downloads_dir {
-                let _ = std::fs::remove_dir_all(dir);
-            }
+        if self.incognito
+            && let Some(dir) = &self.downloads_dir
+        {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 
@@ -787,10 +787,10 @@ impl SharedBrowser {
             // caller for chromiumoxide's whole request timeout.
             terminate_child(&mut child).await;
         } else {
-            if browser.close().await.is_err() {
-                if let Some(Err(e)) = browser.kill().await {
-                    tracing::warn!(error = %e, "browser kill failed");
-                }
+            if browser.close().await.is_err()
+                && let Some(Err(e)) = browser.kill().await
+            {
+                tracing::warn!(error = %e, "browser kill failed");
             }
             let _ = browser.wait().await;
         }
@@ -1073,11 +1073,11 @@ impl Session {
         let navigation = async {
             let mut loaded = url.to_string();
             let mut error = self.navigate_page(url).await?;
-            if let (true, Some(err)) = (allow_http, error.as_deref()) {
-                if let Some(plain) = http_fallback_url(url, err) {
-                    error = self.navigate_page(&plain).await?;
-                    loaded = plain;
-                }
+            if let (true, Some(err)) = (allow_http, error.as_deref())
+                && let Some(plain) = http_fallback_url(url, err)
+            {
+                error = self.navigate_page(&plain).await?;
+                loaded = plain;
             }
             // An error page is committed already; only a real load waits.
             if error.is_none() {
@@ -2529,19 +2529,20 @@ impl Sessions {
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
 
-        if origin_gate_enabled && owns_page {
-            if let Some(url) = url.as_deref() {
-                session.clear_navigation_error();
-                let navigation = session.navigate(url).await;
-                let policy_error = session.take_navigation_error();
-                if let Some(error) = policy_error {
-                    session.shutdown().await;
-                    return Err(error);
-                }
-                if let Err(error) = navigation {
-                    session.shutdown().await;
-                    return Err(format!("failed to open tab: {error}"));
-                }
+        if origin_gate_enabled
+            && owns_page
+            && let Some(url) = url.as_deref()
+        {
+            session.clear_navigation_error();
+            let navigation = session.navigate(url).await;
+            let policy_error = session.take_navigation_error();
+            if let Some(error) = policy_error {
+                session.shutdown().await;
+                return Err(error);
+            }
+            if let Err(error) = navigation {
+                session.shutdown().await;
+                return Err(format!("failed to open tab: {error}"));
             }
         }
 
@@ -4035,20 +4036,20 @@ async fn spawn_event_pumps(
     // the tab strip hears it as `browser::on-session-updated` instead of
     // re-reading the list on a timer. Best-effort: an engine without
     // isolated worlds or bindings keeps the title read at each navigation.
-    if let Ok(mut events) = page.event_listener::<runtime::EventBindingCalled>().await {
-        if arm_title_watch(page).await {
-            let s = session.clone();
-            let sx = sessions.clone();
-            tasks.push(tokio::spawn(async move {
-                while let Some(event) = events.next().await {
-                    if event.name == TITLE_BINDING {
-                        note_title(&sx, &s, &event.payload).await;
-                    } else if event.name == ICON_BINDING {
-                        note_favicon(&sx, &s, &event.payload).await;
-                    }
+    if let Ok(mut events) = page.event_listener::<runtime::EventBindingCalled>().await
+        && arm_title_watch(page).await
+    {
+        let s = session.clone();
+        let sx = sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                if event.name == TITLE_BINDING {
+                    note_title(&sx, &s, &event.payload).await;
+                } else if event.name == ICON_BINDING {
+                    note_favicon(&sx, &s, &event.payload).await;
                 }
-            }));
-        }
+            }
+        }));
     }
 
     // console.* calls

@@ -13,10 +13,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::consolidate::{call, normalize, BankReport, ConsolidationTransport, MemoryRow};
-use crate::semantic::{classify, json_object, pending, Cursor, Outcome};
+use crate::consolidate::{BankReport, ConsolidationTransport, MemoryRow, call, normalize};
+use crate::semantic::{Cursor, Outcome, classify, json_object, pending};
 
 /// Static system prompt (identical for every note, so providers can cache it).
 pub const VERIFY_SYSTEM: &str = "You check one NOTE from a user's long-term memory against \
@@ -356,11 +356,11 @@ pub async fn run_verify_tier<T: ConsolidationTransport + ?Sized>(
                     }
                 }
             }
-            if let Some((which, last)) = &mut held {
-                if *which == first {
-                    *last = Cursor::of(row);
-                    continue;
-                }
+            if let Some((which, last)) = &mut held
+                && *which == first
+            {
+                *last = Cursor::of(row);
+                continue;
             }
             *cursor.lane(first) = Cursor::of(row);
             dirty = false;
@@ -372,10 +372,10 @@ pub async fn run_verify_tier<T: ConsolidationTransport + ?Sized>(
             }
         }
     }
-    if dirty {
-        if let Err(e) = crate::functions::state_set(iii, &cursor_key(bank), json!(cursor)).await {
-            report.notes.push(format!("verify cursor not saved: {e}"));
-        }
+    if dirty
+        && let Err(e) = crate::functions::state_set(iii, &cursor_key(bank), json!(cursor)).await
+    {
+        report.notes.push(format!("verify cursor not saved: {e}"));
     }
     if let (false, Some(id)) = (parsed, &unparsed) {
         report.notes.push(format!(
@@ -415,7 +415,7 @@ async fn verify_note<T: ConsolidationTransport + ?Sized>(
             return Step::Stop(
                 "verify tier skipped: memory worker lacks memory::transcript — upgrade memory"
                     .into(),
-            )
+            );
         }
         Err(e) => return Step::Stop(format!("verify tier stopped: {e}")),
     };
@@ -570,13 +570,15 @@ mod tests {
         ] {
             assert_eq!(check(said, corrected, NOTE, &[line("user", said)]), missing);
         }
-        assert!(check(
-            "My rent went up to $1,500",
-            "User's rent is $1,500 a month.",
-            NOTE,
-            &[line("user", "My rent went up to $1,500 a month")]
-        )
-        .is_ok());
+        assert!(
+            check(
+                "My rent went up to $1,500",
+                "User's rent is $1,500 a month.",
+                NOTE,
+                &[line("user", "My rent went up to $1,500 a month")]
+            )
+            .is_ok()
+        );
     }
 
     #[test]

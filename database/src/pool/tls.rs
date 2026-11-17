@@ -24,9 +24,9 @@
 
 use crate::config::TlsMode;
 use crate::error::DbError;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
-use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use std::sync::{Arc, Once};
@@ -551,9 +551,11 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
 
     #[test]
     fn make_pg_connector_disable_returns_none() {
-        assert!(make_pg_connector(&ResolvedTls::mode(TlsMode::Disable))
-            .unwrap()
-            .is_none());
+        assert!(
+            make_pg_connector(&ResolvedTls::mode(TlsMode::Disable))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

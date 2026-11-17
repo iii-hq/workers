@@ -11,10 +11,10 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
-use harness::timer::{TimerBus, MAX_TIMER_MS, ON_TIMER_FN};
-use iii_sdk::{register_worker, CallRequest, InitOptions};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use harness::timer::{MAX_TIMER_MS, ON_TIMER_FN, TimerBus};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 mod support;

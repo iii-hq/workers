@@ -37,11 +37,11 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::subscribers::{
-    RegisterError, RegisteredSubscriber, SubscriberSpec, Subscribers,
-    FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS,
+    FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS, RegisterError, RegisteredSubscriber, SubscriberSpec,
+    Subscribers,
 };
 
 /// The function a queue topic's messages are delivered through.
@@ -50,8 +50,7 @@ pub const ON_MESSAGE_FN: &str = "queue::on-message";
 /// The call metadata key naming the subscriber (observer id) a message is for.
 pub const SUBSCRIBER_METADATA_KEY: &str = "subscriber";
 
-pub const ON_MESSAGE_DESCRIPTION: &str =
-    "One call per message published to a durable queue topic, for each subscriber of the topic. \
+pub const ON_MESSAGE_DESCRIPTION: &str = "One call per message published to a durable queue topic, for each subscriber of the topic. \
      Observe it with args { topic, max_retries?, backoff_ms?, queue_config?, group? }: each \
      observer is a subscriber with its own durable queue, retries and dead-letter queue, except \
      that observers naming the same group share one queue and handle each message once. The \
@@ -328,7 +327,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
-    use tokio::time::{sleep, Instant};
+    use tokio::time::{Instant, sleep};
 
     fn remote(code: &str, message: &str) -> Error {
         Error::Remote {

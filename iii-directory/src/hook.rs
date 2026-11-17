@@ -525,8 +525,11 @@ mod tests {
         let prompt = hint_text(&response);
         assert!(prompt.starts_with("<discovery_assist"));
         assert!(prompt.contains("call directory::search_functions ONCE"));
-        assert!(prompt
-            .contains("Before calling any task function whose ID has not already been verified"));
+        assert!(
+            prompt.contains(
+                "Before calling any task function whose ID has not already been verified"
+            )
+        );
         assert!(prompt.contains("Never invent or call an unverified function ID"));
         assert!(prompt.contains("A clear capability need is not a verified function ID"));
         assert!(prompt.contains("do not look up its contract first"));
@@ -579,8 +582,11 @@ mod tests {
         let prompt = hint_text(&response);
         assert!(prompt.contains("A call marked pre-verified by a Harness runtime block or update"));
         assert!(prompt.contains("do not search for it or fetch its contract"));
-        assert!(prompt
-            .contains("Before calling any task function whose ID has not already been verified"));
+        assert!(
+            prompt.contains(
+                "Before calling any task function whose ID has not already been verified"
+            )
+        );
         assert!(prompt.contains("then BEFORE their first use call engine::functions::info"));
     }
 

@@ -8,7 +8,7 @@ use memory_consolidate::config::WorkerConfig;
 use memory_consolidate::consolidate::{self, ConsolidationTransport, MemoryRow, TransportFuture};
 use memory_consolidate::functions::{self, Deps, RunRequest};
 use memory_consolidate::semantic::{self, SemanticOptions};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/consolidation_safety.json")).unwrap()
@@ -398,10 +398,12 @@ async fn dry_run_handler_is_read_only_and_never_requests_decisions_or_embeddings
     );
     assert_eq!(response.banks[0].groups[0].loser_ids, ["b"]);
     assert!(response.banks[0].semantic.is_empty());
-    assert!(response.banks[0]
-        .notes
-        .iter()
-        .any(|n| n.contains("unevaluated")));
+    assert!(
+        response.banks[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("unevaluated"))
+    );
     assert_eq!(
         before,
         boundary.snapshot(),
@@ -589,10 +591,12 @@ async fn pinned_legacy_and_cap_use_the_same_handler_without_rule_writes() {
     assert_eq!(retry.superseded, 1);
     assert_eq!(retry.banks[0].capped, 0);
     assert_eq!(boundary.snapshot()["rows"][2], pinned);
-    assert!(boundary
-        .calls()
-        .iter()
-        .all(|(f, _)| !f.starts_with("memory::rule::")));
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, _)| !f.starts_with("memory::rule::"))
+    );
 }
 
 #[tokio::test]
@@ -614,10 +618,12 @@ async fn failed_mutation_holds_checkpoint_and_retry_only_applies_live_duplicates
         before["state"]["last_run"],
         boundary.snapshot()["state"]["last_run"]
     );
-    assert!(!boundary
-        .calls()
-        .iter()
-        .any(|(f, p)| f == "state::set" && p["key"] == "last_run"));
+    assert!(
+        !boundary
+            .calls()
+            .iter()
+            .any(|(f, p)| f == "state::set" && p["key"] == "last_run")
+    );
     let retry = run(&boundary, cfg.clone(), false).await;
     assert!(retry.checkpointed);
     assert_eq!(retry.superseded, 1);
@@ -699,12 +705,14 @@ async fn supplied_semantic_corpus_runs_through_handler_and_checks_actual_mutatio
                 assert_eq!(before, after);
             }
         }
-        assert!(boundary
-            .calls()
-            .iter()
-            .all(|(f, _)| f != "router::models::list"
-                && f != "router::embed"
-                && !f.starts_with("memory::rule::")));
+        assert!(
+            boundary
+                .calls()
+                .iter()
+                .all(|(f, _)| f != "router::models::list"
+                    && f != "router::embed"
+                    && !f.starts_with("memory::rule::"))
+        );
         positives += actual.len();
     }
     assert_eq!(
@@ -767,10 +775,12 @@ async fn failed_scan_and_dry_run_errors_never_advance_schedule() {
             before["state"]["last_run"],
             boundary.snapshot()["state"]["last_run"]
         );
-        assert!(!boundary
-            .calls()
-            .iter()
-            .any(|(f, p)| f == "state::set" && p["key"] == "last_run"));
+        assert!(
+            !boundary
+                .calls()
+                .iter()
+                .any(|(f, p)| f == "state::set" && p["key"] == "last_run")
+        );
         if dry_run {
             assert_eq!(before, boundary.snapshot());
         }
@@ -797,10 +807,12 @@ async fn zero_budget_and_two_pinned_records_never_emit_mutations() {
         assert_eq!(response.superseded, 0);
         assert_eq!(response.banks[0].capped, usize::from(!both_pinned));
         assert_eq!(before["rows"], boundary.snapshot()["rows"]);
-        assert!(boundary
-            .calls()
-            .iter()
-            .all(|(f, _)| f != "memory::supersede"));
+        assert!(
+            boundary
+                .calls()
+                .iter()
+                .all(|(f, _)| f != "memory::supersede")
+        );
     }
 }
 
@@ -842,10 +854,12 @@ async fn semantic_transport_failure_holds_cursor_until_a_supplied_reply_can_be_c
     assert_eq!(budget, 1);
     assert_eq!(before["state"], boundary.snapshot()["state"]);
     assert!(failed.semantic.is_empty());
-    assert!(failed
-        .notes
-        .iter()
-        .any(|n| n.contains("no synthetic decision supplied")));
+    assert!(
+        failed
+            .notes
+            .iter()
+            .any(|n| n.contains("no synthetic decision supplied"))
+    );
     boundary.decision(json!({"actions":[{"type":"merge","survivor":"n1","retired":"c1","reason":"Synthetic supplied equivalence; not measured semantics."}]}));
     let mut report = consolidate::BankReport::default();
     semantic::run_semantic_tier(&boundary, "offline", &options(), &mut budget, &mut report).await;
@@ -864,10 +878,12 @@ async fn semantic_transport_failure_holds_cursor_until_a_supplied_reply_can_be_c
             .count(),
         1
     );
-    assert!(boundary
-        .calls()
-        .iter()
-        .all(|(f, _)| f != "router::models::list" && f != "router::embed"));
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, _)| f != "router::models::list" && f != "router::embed")
+    );
 }
 
 #[tokio::test]
@@ -1003,20 +1019,24 @@ async fn unreadable_or_unsaved_semantic_cursor_never_erases_progress() {
             "state::get" => {
                 assert_eq!(budget, 1);
                 assert!(report.notes.iter().any(|n| n.contains("cursor unreadable")));
-                assert!(!boundary
-                    .calls()
-                    .iter()
-                    .any(|(f, _)| f == "router::complete"));
+                assert!(
+                    !boundary
+                        .calls()
+                        .iter()
+                        .any(|(f, _)| f == "router::complete")
+                );
             }
             "memory::supersede" => {
                 assert_eq!(budget, 1);
                 assert_eq!(report.superseded, 0);
                 assert!(!report.errors.is_empty());
-                assert!(boundary.snapshot()["rows"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|r| r["invalid_at"].is_null()));
+                assert!(
+                    boundary.snapshot()["rows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|r| r["invalid_at"].is_null())
+                );
             }
             _ => {
                 assert_eq!(budget, 0);
@@ -1136,11 +1156,13 @@ async fn a_record_edited_after_the_scan_is_reported_and_never_retired() {
         assert!(!response.checkpointed, "{edited}");
         assert_eq!(response.superseded, 0);
         assert!(response.banks[0].errors[0].contains("changed since expected snapshot"));
-        assert!(boundary.snapshot()["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|r| r["invalid_at"].is_null()));
+        assert!(
+            boundary.snapshot()["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["invalid_at"].is_null())
+        );
     }
 }
 
@@ -1163,11 +1185,13 @@ async fn a_semantic_merge_keeps_the_provenance_snapshot_guard() {
     assert_eq!(response.superseded, 0);
     assert!(response.banks[0].errors[0].contains("changed since expected snapshot"));
     assert_eq!(supersedes(&boundary).len(), 1);
-    assert!(boundary.snapshot()["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|r| r["invalid_at"].is_null()));
+    assert!(
+        boundary.snapshot()["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["invalid_at"].is_null())
+    );
 }
 
 #[tokio::test]
@@ -1400,10 +1424,12 @@ async fn an_unreadable_report_ring_is_never_overwritten() {
         boundary.snapshot()["state"]["reports"],
         json!([{"previous":true}])
     );
-    assert!(boundary
-        .calls()
-        .iter()
-        .all(|(f, p)| !(f == "state::set" && p["key"] == "reports")));
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, p)| !(f == "state::set" && p["key"] == "reports"))
+    );
 }
 
 #[tokio::test]
@@ -1437,9 +1463,11 @@ async fn the_llm_call_cap_defers_the_rest_across_banks() {
         "{:?}",
         second.notes
     );
-    assert!(boundary.snapshot()["state"]
-        .get("semantic_cursor:second")
-        .is_none());
+    assert!(
+        boundary.snapshot()["state"]
+            .get("semantic_cursor:second")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1455,10 +1483,12 @@ async fn a_zero_call_cap_defers_both_tiers() {
         ..WorkerConfig::default()
     };
     let response = run(&boundary, cfg, false).await;
-    assert!(boundary
-        .calls()
-        .iter()
-        .all(|(f, _)| f != "router::complete" && f != "offline::reorder-decision"));
+    assert!(
+        boundary
+            .calls()
+            .iter()
+            .all(|(f, _)| f != "router::complete" && f != "offline::reorder-decision")
+    );
     let notes = &response.banks[0].notes;
     assert!(
         notes.iter().any(|n| n.contains("llm tier deferred")),
@@ -1610,9 +1640,11 @@ async fn a_covered_verdict_without_learned_lines_is_not_recorded() {
         let response = run(&boundary, promotion_only(), false).await;
         let bank = &response.banks[0];
         assert!(bank.errors.is_empty() && bank.notes.is_empty(), "{bank:?}");
-        assert!(boundary.snapshot()["state"]
-            .get("promoted:offline")
-            .is_none());
+        assert!(
+            boundary.snapshot()["state"]
+                .get("promoted:offline")
+                .is_none()
+        );
     }
     assert!(payloads(&boundary, "memory::rule::set").is_empty());
     // Not in the ledger, so the candidate is judged again.
@@ -1952,10 +1984,12 @@ async fn verify_makes_no_calls_on_a_dry_run() {
     assert!(payloads(&boundary, "memory::transcript").is_empty());
     assert!(payloads(&boundary, "memory::correct").is_empty());
     assert_eq!(model_calls(&boundary), 0);
-    assert!(response.banks[0]
-        .notes
-        .iter()
-        .any(|n| n.contains("unevaluated")));
+    assert!(
+        response.banks[0]
+            .notes
+            .iter()
+            .any(|n| n.contains("unevaluated"))
+    );
     assert_eq!(before, boundary.snapshot());
 }
 

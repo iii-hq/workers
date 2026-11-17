@@ -197,10 +197,30 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_the_seed_only() {
-        std::env::set_var("CANVAS_TEST_LIST", "99");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_expansion_applies_to_the_seed_only");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("CANVAS_TEST_LIST", "99")
+                .output()
+                .expect("start isolated test process");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test was not executed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("max_list: ${CANVAS_TEST_LIST}\n").expect("expands");
         assert_eq!(cfg.max_list, 99);
-        std::env::remove_var("CANVAS_TEST_LIST");
 
         let cfg =
             WorkerConfig::from_yaml("max_list: ${CANVAS_UNSET_VAR:42}\n").expect("falls back");

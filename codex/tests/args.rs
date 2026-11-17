@@ -1,9 +1,9 @@
 //! Arg + config serialization tests.
 
-use codex::codex::args::{build_args, resolve, toml_value, ResolvedOptions};
+use codex::codex::args::{ResolvedOptions, build_args, resolve, toml_value};
 use codex::config::Config;
 use codex::functions::types::RunRequest;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 fn opts() -> ResolvedOptions {
     ResolvedOptions {

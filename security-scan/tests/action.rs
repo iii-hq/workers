@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use security_scan::{
-    action_id, build_fix_plan, build_issue_plan, sanitize_github_artifact_url,
-    validate_action_request, ActionEnqueueRequestV1, AnalysisConfigV1, CreateActionOutcome,
-    CreateRunOutcome, EnqueueRequest, RepositoryConfigV1, RepositoryGitHubConfigV1, RunRecordV1,
-    RunStatusV1, ScanModeV1, SecurityActionKindV1, SecurityActionRecordV1, SecurityActionStatusV1,
-    SecurityAssessmentsV1, SecurityFindingV1, SecurityReportV1, SecurityRuntime,
-    SecurityScanActionRequestV1, SecurityScanError, SecurityScanService, SeverityV1, WorkerConfig,
-    ACTION_DENIED_FUNCTIONS, FIX_ACTION_FUNCTIONS, ISSUE_ACTION_FUNCTIONS,
+    ACTION_DENIED_FUNCTIONS, ActionEnqueueRequestV1, AnalysisConfigV1, CreateActionOutcome,
+    CreateRunOutcome, EnqueueRequest, FIX_ACTION_FUNCTIONS, ISSUE_ACTION_FUNCTIONS,
+    RepositoryConfigV1, RepositoryGitHubConfigV1, RunRecordV1, RunStatusV1, ScanModeV1,
+    SecurityActionKindV1, SecurityActionRecordV1, SecurityActionStatusV1, SecurityAssessmentsV1,
+    SecurityFindingV1, SecurityReportV1, SecurityRuntime, SecurityScanActionRequestV1,
+    SecurityScanError, SecurityScanService, SeverityV1, WorkerConfig, action_id, build_fix_plan,
+    build_issue_plan, sanitize_github_artifact_url, validate_action_request,
 };
 use tokio::sync::Mutex;
 
@@ -113,21 +113,24 @@ fn issue_plan_allows_only_github_issue_create() {
             .map(|function| (*function).to_string())
             .collect::<Vec<_>>()
     );
-    assert!(plan
-        .allowed_functions
-        .iter()
-        .all(|function| function == "github::issue::create"));
-    for denied in ACTION_DENIED_FUNCTIONS {
-        assert!(plan
-            .denied_functions
+    assert!(
+        plan.allowed_functions
             .iter()
-            .any(|function| function == denied));
+            .all(|function| function == "github::issue::create")
+    );
+    for denied in ACTION_DENIED_FUNCTIONS {
+        assert!(
+            plan.denied_functions
+                .iter()
+                .any(|function| function == denied)
+        );
     }
     assert!(!plan.unattended);
     assert!(plan.filesystem_root.is_empty());
-    assert!(plan
-        .system_prompt
-        .contains("github::issue::create exactly once"));
+    assert!(
+        plan.system_prompt
+            .contains("github::issue::create exactly once")
+    );
 }
 
 #[test]
@@ -149,33 +152,42 @@ fn fix_plan_uses_exact_sha_worktree_and_draft_pr_policy() {
             .map(|function| (*function).to_string())
             .collect::<Vec<_>>()
     );
-    assert!(plan
-        .allowed_functions
-        .iter()
-        .any(|function| function == "github::pr::create"));
-    assert!(plan
-        .allowed_functions
-        .iter()
-        .any(|function| function == "coder::update-file"));
-    assert!(!plan
-        .allowed_functions
-        .iter()
-        .any(|function| function == "github::pr::merge"));
-    assert!(plan
-        .denied_functions
-        .iter()
-        .any(|function| function == "github::pr::merge"));
-    assert!(!plan
-        .allowed_functions
-        .iter()
-        .any(|function| function == "shell::exec" || function == "editor::git::commit"));
-    assert!(plan
-        .allowed_functions
-        .iter()
-        .any(|function| function == "security-scan::action-commit"));
-    assert!(plan
-        .message
-        .contains("0123456789abcdef0123456789abcdef01234567"));
+    assert!(
+        plan.allowed_functions
+            .iter()
+            .any(|function| function == "github::pr::create")
+    );
+    assert!(
+        plan.allowed_functions
+            .iter()
+            .any(|function| function == "coder::update-file")
+    );
+    assert!(
+        !plan
+            .allowed_functions
+            .iter()
+            .any(|function| function == "github::pr::merge")
+    );
+    assert!(
+        plan.denied_functions
+            .iter()
+            .any(|function| function == "github::pr::merge")
+    );
+    assert!(
+        !plan
+            .allowed_functions
+            .iter()
+            .any(|function| function == "shell::exec" || function == "editor::git::commit")
+    );
+    assert!(
+        plan.allowed_functions
+            .iter()
+            .any(|function| function == "security-scan::action-commit")
+    );
+    assert!(
+        plan.message
+            .contains("0123456789abcdef0123456789abcdef01234567")
+    );
     assert!(plan.system_prompt.contains("draft=true"));
     assert!(plan.system_prompt.contains("Never merge"));
 }
@@ -200,69 +212,87 @@ fn github_artifact_urls_are_https_github_only() {
         .unwrap(),
         "https://github.com/iii-hq/iii/pull/9"
     );
-    assert!(sanitize_github_artifact_url(
-        "javascript:alert(1)",
-        SecurityActionKindV1::Issue,
-        "iii-hq/iii"
-    )
-    .is_err());
-    assert!(sanitize_github_artifact_url(
-        "https://evil.example/iii-hq/iii/issues/12",
-        SecurityActionKindV1::Issue,
-        "iii-hq/iii"
-    )
-    .is_err());
-    assert!(sanitize_github_artifact_url(
-        "https://user:token@github.com/iii-hq/iii/issues/12",
-        SecurityActionKindV1::Issue,
-        "iii-hq/iii"
-    )
-    .is_err());
-    assert!(sanitize_github_artifact_url(
-        "https://github.com/iii-hq/iii/pull/9",
-        SecurityActionKindV1::Issue,
-        "iii-hq/iii"
-    )
-    .is_err());
-    assert!(sanitize_github_artifact_url(
-        "https://github.com/other/repo/issues/12",
-        SecurityActionKindV1::Issue,
-        "iii-hq/iii"
-    )
-    .is_err());
+    assert!(
+        sanitize_github_artifact_url(
+            "javascript:alert(1)",
+            SecurityActionKindV1::Issue,
+            "iii-hq/iii"
+        )
+        .is_err()
+    );
+    assert!(
+        sanitize_github_artifact_url(
+            "https://evil.example/iii-hq/iii/issues/12",
+            SecurityActionKindV1::Issue,
+            "iii-hq/iii"
+        )
+        .is_err()
+    );
+    assert!(
+        sanitize_github_artifact_url(
+            "https://user:token@github.com/iii-hq/iii/issues/12",
+            SecurityActionKindV1::Issue,
+            "iii-hq/iii"
+        )
+        .is_err()
+    );
+    assert!(
+        sanitize_github_artifact_url(
+            "https://github.com/iii-hq/iii/pull/9",
+            SecurityActionKindV1::Issue,
+            "iii-hq/iii"
+        )
+        .is_err()
+    );
+    assert!(
+        sanitize_github_artifact_url(
+            "https://github.com/other/repo/issues/12",
+            SecurityActionKindV1::Issue,
+            "iii-hq/iii"
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn fix_pr_requires_suggest_mode_and_a_patch() {
-    assert!(validate_action_request(
-        &completed_run(ScanModeV1::Scan, Some("patch")),
-        0,
-        SecurityActionKindV1::FixPr
-    )
-    .is_err());
-    assert!(validate_action_request(
-        &completed_run(ScanModeV1::Suggest, None),
-        0,
-        SecurityActionKindV1::FixPr
-    )
-    .is_err());
-    assert!(validate_action_request(
-        &completed_run(ScanModeV1::Suggest, Some("patch")),
-        0,
-        SecurityActionKindV1::FixPr
-    )
-    .is_ok());
-    assert!(validate_action_request(
-        &completed_run(ScanModeV1::Scan, None),
-        0,
-        SecurityActionKindV1::Issue
-    )
-    .is_ok());
+    assert!(
+        validate_action_request(
+            &completed_run(ScanModeV1::Scan, Some("patch")),
+            0,
+            SecurityActionKindV1::FixPr
+        )
+        .is_err()
+    );
+    assert!(
+        validate_action_request(
+            &completed_run(ScanModeV1::Suggest, None),
+            0,
+            SecurityActionKindV1::FixPr
+        )
+        .is_err()
+    );
+    assert!(
+        validate_action_request(
+            &completed_run(ScanModeV1::Suggest, Some("patch")),
+            0,
+            SecurityActionKindV1::FixPr
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_action_request(
+            &completed_run(ScanModeV1::Scan, None),
+            0,
+            SecurityActionKindV1::Issue
+        )
+        .is_ok()
+    );
 }
 
 #[test]
 fn fix_pr_results_must_be_drafts_with_sanitized_urls() {
-    use security_scan::{result_from_output, ActionHarnessOutputV1};
+    use security_scan::{ActionHarnessOutputV1, result_from_output};
     let output = ActionHarnessOutputV1 {
         url: "https://github.com/iii-hq/iii/pull/4".into(),
         title: None,

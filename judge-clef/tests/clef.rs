@@ -1,9 +1,9 @@
 //! Clef-Flash end to end against Cloudflare's own pipeline (bf16 backbone and
 //! head through `joint_schema_model.py`): `tests/fixtures/clef_reference.json`,
 //! from `make_reference.py`.
-use judge_clef::{download, encode, engine, ClefClient};
+use judge_clef::{ClefClient, download, encode, engine};
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, Question};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 fn argmax(p: &[f64]) -> usize {

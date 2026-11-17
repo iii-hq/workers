@@ -15,8 +15,8 @@
 use std::net::Shutdown;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use image::RgbaImage;
@@ -27,8 +27,8 @@ use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
 use super::{Btn, Grab};
-use crate::driver::sandbox::MAX_WHEEL_NOTCHES;
 use crate::driver::DisplayInfo;
+use crate::driver::sandbox::MAX_WHEEL_NOTCHES;
 
 pub const WAYLAND: &str = "this Linux desktop runs Wayland; screenshots and coordinate input \
                            need an X11 session (Xorg or Xvfb)";
@@ -621,7 +621,7 @@ fn keysym_for(name: &str) -> Result<u32, String> {
                         "unknown key '{other}' (a single character, or one of enter, tab, escape, \
                          backspace, delete, space, up, down, left, right, home, end, pageup, \
                          pagedown, f1-f12, cmd, ctrl, alt, shift)"
-                    ))
+                    ));
                 }
             }
         }
@@ -651,11 +651,9 @@ fn plan_text(text: &str, map: &Keymap, all_spare: bool) -> Result<Vec<Segment>, 
         if ks == 0 {
             return Err(format!("cannot type U+{:04X}", ch as u32));
         }
-        if !all_spare {
-            if let Some(k) = map.find(ks) {
-                cur.keys.push(k);
-                continue;
-            }
+        if !all_spare && let Some(k) = map.find(ks) {
+            cur.keys.push(k);
+            continue;
         }
         let kc = match cur.bind.iter().find(|(_, s)| *s == ks) {
             Some(&(kc, _)) => kc,
@@ -991,9 +989,11 @@ mod tests {
             per: 1,
             syms: vec![0x61],
         };
-        assert!(plan_text("ç", &full, false)
-            .unwrap_err()
-            .contains("no free keycode"));
+        assert!(
+            plan_text("ç", &full, false)
+                .unwrap_err()
+                .contains("no free keycode")
+        );
     }
 
     #[test]
@@ -1161,11 +1161,11 @@ mod tests {
         sync(&watch).unwrap();
         let mut typed = 0;
         while let Some(ev) = watch.poll_for_event().unwrap() {
-            if let x11rb::protocol::Event::KeyPress(k) = ev {
-                if k.detail != caps {
-                    typed += 1;
-                    assert_eq!(u16::from(k.state) & LOCK, 0, "typed with Lock: {k:?}");
-                }
+            if let x11rb::protocol::Event::KeyPress(k) = ev
+                && k.detail != caps
+            {
+                typed += 1;
+                assert_eq!(u16::from(k.state) & LOCK, 0, "typed with Lock: {k:?}");
             }
         }
         assert_eq!(typed, 8, "seven characters and the Shift of the H");

@@ -17,9 +17,9 @@
 //!
 //! Exposed behind `router::count_tokens`.
 use iii_sdk::errors::Error;
-use llm_router::provider_scaffold::tiktoken_count::{count_chat_tokens, ESTIMATOR_TIKTOKEN};
+use llm_router::provider_scaffold::tiktoken_count::{ESTIMATOR_TIKTOKEN, count_chat_tokens};
 use llm_router::provider_scaffold::vocabulary_count::{
-    resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
+    ESTIMATOR_TOKENIZER, VocabularyRef, resolve,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
@@ -215,8 +215,7 @@ fn prompt(rows: &[Value], tools: &[Value]) -> String {
     out
 }
 
-const SARVAM_M_THINK: &str =
-    "Think deeply before answering the user's question. Do the thinking inside <think>...</think> tags.";
+const SARVAM_M_THINK: &str = "Think deeply before answering the user's question. Do the thinking inside <think>...</think> tags.";
 
 /// sarvam-m's published template (tokenizer_config.json) in the thinking mode
 /// Sarvam always runs: it has no off switch.
@@ -425,7 +424,8 @@ mod tests {
             });
             std::fs::write(dir.join("sarvamai--sarvam-30b.json"), per_char.to_string()).unwrap();
             std::fs::write(dir.join("sarvamai--sarvam-m.json"), "not a tokenizer").unwrap();
-            std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir);
+            // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+            unsafe { std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir) };
             dir
         });
     }

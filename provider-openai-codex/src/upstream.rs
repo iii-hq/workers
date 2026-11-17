@@ -1,14 +1,14 @@
 //! POST /v1/chat/completions (stream:true) → SSE → mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
+use crate::PROVIDER_ID;
 use crate::errors::classify;
 use crate::session::{AuthManager, CredentialSource};
-use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
-use crate::PROVIDER_ID;
+use crate::sse::{PartialState, build_final, build_partial, handle_chunk, synthetic_error_event};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
+    error_chain, flush_tail, truncated_stream_error,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -79,68 +79,67 @@ async fn run_upstream(
 
     // This branch runs before Start or any content is emitted. A 401 after
     // streaming starts is terminal and is never replayed.
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        if let Some(auth) = auth {
-            let rejected = args
-                .headers
-                .iter()
-                .find(|(k, _)| *k == "authorization")
-                .and_then(|(_, v)| v.strip_prefix("Bearer "));
-            if let Some(rejected) = rejected {
-                match auth.resolve(Some(rejected)).await {
-                    Ok(Some(fresh)) if fresh.source == CredentialSource::Managed => {
-                        let account = fresh.value.get("account_id").and_then(Value::as_str);
-                        let original_account = args
-                            .headers
-                            .iter()
-                            .find(|(k, _)| *k == "chatgpt-account-id")
-                            .map(|(_, v)| v.as_str());
-                        if account != original_account {
-                            let _ = tx
-                                .send(synthetic_error_event(
-                                    "Codex account changed. Send the request again.",
-                                    &args.model,
-                                    ErrorKind::AuthExpired,
-                                ))
-                                .await;
-                            return;
-                        }
-                        if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str)
-                        {
-                            let mut retry = client.post(&args.api_url);
-                            for (name, value) in &args.headers {
-                                if *name != "authorization" {
-                                    retry = retry.header(*name, value);
-                                }
-                            }
-                            drop(resp);
-                            resp = match retry.bearer_auth(token).json(&args.body).send().await {
-                                Ok(response) => response,
-                                Err(_) => {
-                                    let _ = tx
-                                        .send(synthetic_error_event(
-                                            "Codex request failed after renewing the session.",
-                                            &args.model,
-                                            ErrorKind::Transient,
-                                        ))
-                                        .await;
-                                    return;
-                                }
-                            };
-                        }
-                    }
-                    Err(e) => {
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        && let Some(auth) = auth
+    {
+        let rejected = args
+            .headers
+            .iter()
+            .find(|(k, _)| *k == "authorization")
+            .and_then(|(_, v)| v.strip_prefix("Bearer "));
+        if let Some(rejected) = rejected {
+            match auth.resolve(Some(rejected)).await {
+                Ok(Some(fresh)) if fresh.source == CredentialSource::Managed => {
+                    let account = fresh.value.get("account_id").and_then(Value::as_str);
+                    let original_account = args
+                        .headers
+                        .iter()
+                        .find(|(k, _)| *k == "chatgpt-account-id")
+                        .map(|(_, v)| v.as_str());
+                    if account != original_account {
                         let _ = tx
                             .send(synthetic_error_event(
-                                &e.message,
+                                "Codex account changed. Send the request again.",
                                 &args.model,
-                                e.error_kind(),
+                                ErrorKind::AuthExpired,
                             ))
                             .await;
                         return;
                     }
-                    _ => {}
+                    if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str) {
+                        let mut retry = client.post(&args.api_url);
+                        for (name, value) in &args.headers {
+                            if *name != "authorization" {
+                                retry = retry.header(*name, value);
+                            }
+                        }
+                        drop(resp);
+                        resp = match retry.bearer_auth(token).json(&args.body).send().await {
+                            Ok(response) => response,
+                            Err(_) => {
+                                let _ = tx
+                                    .send(synthetic_error_event(
+                                        "Codex request failed after renewing the session.",
+                                        &args.model,
+                                        ErrorKind::Transient,
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        };
+                    }
                 }
+                Err(e) => {
+                    let _ = tx
+                        .send(synthetic_error_event(
+                            &e.message,
+                            &args.model,
+                            e.error_kind(),
+                        ))
+                        .await;
+                    return;
+                }
+                _ => {}
             }
         }
     }

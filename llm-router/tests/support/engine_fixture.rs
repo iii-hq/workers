@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, InitOptions};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
 use serde_json::json;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);

@@ -3,7 +3,7 @@
 [package]
 name = "provider-command-code"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Command Code dual-protocol provider worker behind llm-router."

@@ -15,12 +15,12 @@
 //! and no `{{now_plus_…ms}}` token — `in_ms` is run-relative by nature, which
 //! is the point of the feature.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";

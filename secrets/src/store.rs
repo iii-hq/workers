@@ -17,12 +17,12 @@ use crate::config::SecretsConfig;
 use crate::crypto::MasterKey;
 use crate::detect::Found;
 use crate::envstore::EnvSource;
-use crate::error::{codes, SecretsError};
+use crate::error::{SecretsError, codes};
 use crate::events::{ChangeAction, ChangedEvent};
 use crate::keys::{self, EnvKey, KeyRequest};
 use crate::names::{self, mask, normalize_consumers, validate_name};
 use crate::secret::SecretString;
-use crate::vault::{EnvGrant, SecretRecord, Vault, VAULT_FILE};
+use crate::vault::{EnvGrant, SecretRecord, VAULT_FILE, Vault};
 
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 const MAX_DESCRIPTION_CHARS: usize = 1024;
@@ -130,10 +130,10 @@ impl State {
                 create: create && vault.secrets.is_empty(),
                 project_dir: self.paths.project_dir.as_deref(),
             })?;
-            if loaded.created {
-                if let Some(file) = &file {
-                    tracing::info!(path = %file.display(), "created master key file");
-                }
+            if loaded.created
+                && let Some(file) = &file
+            {
+                tracing::info!(path = %file.display(), "created master key file");
             }
             if vault.key_check.is_none() {
                 let mut next = vault;
@@ -862,11 +862,13 @@ mod tests {
             .unwrap();
         assert_eq!(created.action, ChangeAction::Created);
         let before = std::fs::read(fx.paths.vault_path()).unwrap();
-        assert!(store
-            .compare_and_set("SESSION", None, &next, None, Some(CONSUMER))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .compare_and_set("SESSION", None, &next, None, Some(CONSUMER))
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(std::fs::read(fx.paths.vault_path()).unwrap(), before);
         let event = store
             .compare_and_set(
@@ -982,16 +984,18 @@ mod tests {
         let previous = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert!(store
-            .compare_and_set(
-                "SESSION",
-                Some(&value),
-                &"replacement".into(),
-                None,
-                Some(CONSUMER)
-            )
-            .await
-            .is_err());
+        assert!(
+            store
+                .compare_and_set(
+                    "SESSION",
+                    Some(&value),
+                    &"replacement".into(),
+                    None,
+                    Some(CONSUMER)
+                )
+                .await
+                .is_err()
+        );
         std::fs::remove_dir(&path).unwrap();
         std::fs::write(&path, previous).unwrap();
         assert_eq!(
@@ -1150,7 +1154,7 @@ mod tests {
         assert!(key_path.exists());
         #[cfg(unix)]
         {
-            use crate::fsutil::{mode_of, DIR_MODE, FILE_MODE};
+            use crate::fsutil::{DIR_MODE, FILE_MODE, mode_of};
             assert_eq!(mode_of(&fx.paths.vault_path()).unwrap(), FILE_MODE);
             assert_eq!(mode_of(&fx.paths.data_dir).unwrap(), DIR_MODE);
             assert_eq!(mode_of(&key_path).unwrap(), FILE_MODE);
@@ -1233,10 +1237,12 @@ mod tests {
             assert!(!error.message.contains("1234567890"));
         }
         let huge = "x".repeat(MAX_VALUE_BYTES + 1);
-        assert!(store
-            .set("A", &huge.as_str().into(), None, None)
-            .await
-            .is_err());
+        assert!(
+            store
+                .set("A", &huge.as_str().into(), None, None)
+                .await
+                .is_err()
+        );
         assert_eq!(
             store.access("MISSING", vec![]).await.unwrap_err().code,
             codes::SECRET_NOT_FOUND
@@ -1466,9 +1472,11 @@ mod tests {
             .set_env("E", Some(&"written-to-staging".into()), None, None)
             .await
             .unwrap();
-        assert!(std::fs::read_to_string(&staging)
-            .unwrap()
-            .contains("E=written-to-staging"));
+        assert!(
+            std::fs::read_to_string(&staging)
+                .unwrap()
+                .contains("E=written-to-staging")
+        );
         assert!(!std::fs::read_to_string(&path).unwrap().contains("E="));
         assert_eq!(
             store.status().await.unwrap().env_file.as_deref(),

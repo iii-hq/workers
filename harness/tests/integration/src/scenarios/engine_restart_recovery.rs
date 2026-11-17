@@ -6,8 +6,8 @@
 
 use serde_json::json;
 
-use super::dsl::{ControlledFunction, Generation, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{ControlledFunction, Generation, Model, Request, Response, Scenario, Send};
 use crate::evidence_data::message_text;
 use crate::fixtures::ScenarioFixture;
 

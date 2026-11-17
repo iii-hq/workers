@@ -29,8 +29,7 @@ use crate::runner::Lang;
 
 /// The function the console page observes.
 pub const ON_EVENT_FN: &str = "sandbox-code-runner::on-event";
-pub const ON_EVENT_DESC: &str =
-    "Called on runtime lifecycle changes: a persistent runtime came up \
+pub const ON_EVENT_DESC: &str = "Called on runtime lifecycle changes: a persistent runtime came up \
      (runtime_created), a run finished (run_settled), a bus function was \
      registered (function_registered), a teardown landed (teardown), or \
      the daemon fleet changed (fleet — carries the full sandbox::list \

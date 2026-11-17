@@ -12,8 +12,8 @@
 //! that is not configured yet. This reports the live state of a pool that
 //! already exists, and deliberately accepts no URL.
 
-use super::query::{self, err_to_str, QueryReq};
 use super::AppState;
+use super::query::{self, QueryReq, err_to_str};
 use crate::config::DriverKind;
 use crate::error::DbError;
 use crate::pool::PoolStats;
@@ -416,7 +416,7 @@ pub async fn terminate(state: &AppState, req: TerminateReq) -> Result<TerminateR
             return Err(err_to_str(DbError::InvalidParam {
                 index: 0,
                 reason: "sqlite runs in-process and has no sessions to terminate".into(),
-            }))
+            }));
         }
     };
 

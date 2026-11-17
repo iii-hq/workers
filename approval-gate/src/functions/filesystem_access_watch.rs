@@ -25,8 +25,8 @@ use crate::harness;
 use crate::pending;
 use crate::redact::redact;
 use crate::types::{
-    now_ms, validate_id, AccessRequest, HookCall, HookInput, HookOutput, PendingApprovalRecord,
-    PendingKind,
+    AccessRequest, HookCall, HookInput, HookOutput, PendingApprovalRecord, PendingKind, now_ms,
+    validate_id,
 };
 
 pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, ApprovalError> {
@@ -237,7 +237,7 @@ mod tests {
     use super::*;
     use crate::pending::PENDING_SCOPE;
     use crate::testkit::{
-        log_snapshot, settle, state_get, state_set, with_stack, BootOpts, TestStack,
+        BootOpts, TestStack, log_snapshot, settle, state_get, state_set, with_stack,
     };
 
     fn jail_message(requested_root: &str) -> String {
@@ -400,9 +400,11 @@ mod tests {
                 handle(&stack.deps, input).await.unwrap(),
                 HookOutput::Continue
             );
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                    .await
+                    .is_null()
+            );
         })
         .await;
     }
@@ -416,9 +418,11 @@ mod tests {
                 handle(&stack.deps, input).await.unwrap(),
                 HookOutput::Continue
             );
-            assert!(state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
-                .await
-                .is_null());
+            assert!(
+                state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1")
+                    .await
+                    .is_null()
+            );
         })
         .await;
     }

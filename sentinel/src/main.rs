@@ -19,21 +19,21 @@ use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use sentinel::events::Emitter;
 use sentinel::iii_runtime::harness::{IiiEngineWindow, IiiHarness};
 use sentinel::iii_runtime::{
     Checkouts, IiiDb, IiiJudge, IiiRegistry, IiiTelemetry, IngestQueue, Runtime,
 };
-use sentinel::ingest::{ring::PhantomRing, Ingest};
-use sentinel::investigation::proxies::Proxies;
+use sentinel::ingest::{Ingest, ring::PhantomRing};
 use sentinel::investigation::Investigations;
+use sentinel::investigation::proxies::Proxies;
 use sentinel::observers::Observers;
 use sentinel::registry::Registry;
 use sentinel::service::Service;
 use sentinel::store::Store;
 use sentinel::triage::Triage;
-use sentinel::{configuration, dependencies, events, functions, manifest, Counters, IngestJob};
+use sentinel::{Counters, IngestJob, configuration, dependencies, events, functions, manifest};
 use tokio::sync::RwLock;
 
 /// How often the observers are reconciled and stale work is swept.

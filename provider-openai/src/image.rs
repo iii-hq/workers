@@ -20,15 +20,15 @@
 //! token accounting or budgets.
 
 use base64::Engine as _;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-use crate::config::{config_from_resolve, ConfigError};
+use crate::config::{ConfigError, config_from_resolve};
 use crate::state;
 
 /// The image models this surface accepts. Anything else is rejected up
@@ -865,15 +865,19 @@ mod tests {
 
         let mut r = req(IMAGE_MODELS[0]);
         r.output_format = Some("gif".into());
-        assert!(validate(r)
-            .unwrap_err()
-            .starts_with("output_format must be one of"));
+        assert!(
+            validate(r)
+                .unwrap_err()
+                .starts_with("output_format must be one of")
+        );
 
         let mut r = req(IMAGE_MODELS[0]);
         r.inline = Some("thumbnail".into());
-        assert!(validate(r)
-            .unwrap_err()
-            .starts_with("inline must be one of"));
+        assert!(
+            validate(r)
+                .unwrap_err()
+                .starts_with("inline must be one of")
+        );
     }
 
     #[test]
@@ -945,15 +949,21 @@ mod tests {
         assert_eq!(img.revised_prompt.as_deref(), Some("a tall lighthouse"));
         assert_eq!(img.usage.unwrap().total_tokens, Some(1052));
 
-        assert!(parse_response(&json!({ "data": [] }))
-            .unwrap_err()
-            .contains("data[0]"));
-        assert!(parse_response(&json!({ "data": [{ "url": "https://x" }] }))
-            .unwrap_err()
-            .contains("b64_json"));
-        assert!(parse_response(&json!({ "data": [{ "b64_json": "@@@" }] }))
-            .unwrap_err()
-            .contains("base64"));
+        assert!(
+            parse_response(&json!({ "data": [] }))
+                .unwrap_err()
+                .contains("data[0]")
+        );
+        assert!(
+            parse_response(&json!({ "data": [{ "url": "https://x" }] }))
+                .unwrap_err()
+                .contains("b64_json")
+        );
+        assert!(
+            parse_response(&json!({ "data": [{ "b64_json": "@@@" }] }))
+                .unwrap_err()
+                .contains("base64")
+        );
     }
 
     #[test]
@@ -979,9 +989,11 @@ mod tests {
         // Small inputs are never upscaled.
         let small = make_preview(&sample_png(64, 32)).unwrap();
         assert_eq!((small.width, small.height), (64, 32));
-        assert!(make_preview(b"not an image")
-            .unwrap_err()
-            .starts_with("decode"));
+        assert!(
+            make_preview(b"not an image")
+                .unwrap_err()
+                .starts_with("decode")
+        );
     }
 
     #[tokio::test]
@@ -1093,32 +1105,46 @@ mod tests {
             resolve_image_path(&dir, &abs).unwrap(),
             canon.join("ok.png")
         );
-        assert!(resolve_image_path(&dir, "../secret.txt")
-            .unwrap_err()
-            .contains("outside"));
+        assert!(
+            resolve_image_path(&dir, "../secret.txt")
+                .unwrap_err()
+                .contains("outside")
+        );
         let secret = root.join("secret.txt").display().to_string();
-        assert!(resolve_image_path(&dir, &secret)
-            .unwrap_err()
-            .contains("outside"));
-        assert!(resolve_image_path(&dir, "missing.png")
-            .unwrap_err()
-            .contains("does not exist"));
-        assert!(resolve_image_path(&dir, "  ")
-            .unwrap_err()
-            .contains("empty"));
-        assert!(resolve_image_path(&dir, ".")
-            .unwrap_err()
-            .contains("not a file"));
+        assert!(
+            resolve_image_path(&dir, &secret)
+                .unwrap_err()
+                .contains("outside")
+        );
+        assert!(
+            resolve_image_path(&dir, "missing.png")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        assert!(
+            resolve_image_path(&dir, "  ")
+                .unwrap_err()
+                .contains("empty")
+        );
+        assert!(
+            resolve_image_path(&dir, ".")
+                .unwrap_err()
+                .contains("not a file")
+        );
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join("secret.txt"), dir.join("link.png")).unwrap();
-            assert!(resolve_image_path(&dir, "link.png")
-                .unwrap_err()
-                .contains("outside"));
+            assert!(
+                resolve_image_path(&dir, "link.png")
+                    .unwrap_err()
+                    .contains("outside")
+            );
         }
-        assert!(resolve_image_path(&root.join("never"), "x.png")
-            .unwrap_err()
-            .contains("no generated images yet"));
+        assert!(
+            resolve_image_path(&root.join("never"), "x.png")
+                .unwrap_err()
+                .contains("no generated images yet")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1203,11 +1229,13 @@ mod tests {
             Path::new("/tmp/x.png"),
         );
         assert_eq!(resp.content.len(), 1);
-        assert!(resp.content[0]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("inline preview unavailable"));
+        assert!(
+            resp.content[0]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("inline preview unavailable")
+        );
         assert!(resp.details.preview.is_none());
         assert_eq!(resp.details.width, None);
     }

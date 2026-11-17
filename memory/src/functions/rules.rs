@@ -139,10 +139,12 @@ pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, Me
     if written {
         deps.emitter.bank("rules-changed", &bank_name).await;
     }
-    if written && exists && req.name == crate::extract::LEARNED_RULE {
-        if let Err(e) = crate::learned::demote_over_cap(deps, &bank_name).await {
-            tracing::warn!(bank = %bank_name, error = %e, "learned rule demotion failed");
-        }
+    if written
+        && exists
+        && req.name == crate::extract::LEARNED_RULE
+        && let Err(e) = crate::learned::demote_over_cap(deps, &bank_name).await
+    {
+        tracing::warn!(bank = %bank_name, error = %e, "learned rule demotion failed");
     }
     Ok(RuleSetResponse { ok: true, exists })
 }

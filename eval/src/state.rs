@@ -5,7 +5,7 @@
 use iii_sdk::{CallRequest, IIIClient};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::contract::{
     AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, MonitorConfigV1, SuggestionReviewV1,

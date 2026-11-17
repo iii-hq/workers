@@ -297,10 +297,12 @@ mod tests {
         assert!(!req.questions[0].multi_select);
         assert_eq!(req.questions[0].options[0].description, None);
         let wire = serde_json::to_value(&req).unwrap();
-        assert!(!wire["questions"][0]["options"][0]
-            .as_object()
-            .unwrap()
-            .contains_key("description"));
+        assert!(
+            !wire["questions"][0]["options"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("description")
+        );
         assert_eq!(validate(&req), Ok(()));
     }
 

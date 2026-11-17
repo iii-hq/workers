@@ -16,23 +16,23 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::agent_feed::{emit_agent_event, emit_raw_event};
 use crate::config::Config;
-use crate::functions::types::{extract_prompt, RunRequest};
+use crate::functions::types::{RunRequest, extract_prompt};
 use crate::iii_prompt::III_CONTEXT_PROMPT;
 use crate::session_link::{self, TurnLink};
 use crate::state::{load_session, save_session};
-use crate::wire::{assistant_message, now_ms, ContentBlock, SessionRecord, Status};
+use crate::wire::{ContentBlock, SessionRecord, Status, assistant_message, now_ms};
 
 /// A minimal cancellation token (avoids pulling tokio-util just for this).
 mod cancel {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Clone, Default)]
     pub struct CancellationToken(Arc<AtomicBool>);
@@ -113,13 +113,13 @@ pub fn compose_prompt(prompt: &str, want_ctx: bool, is_first_turn: bool) -> Stri
 fn parse_session_ref(text: &str) -> (Option<String>, Option<String>) {
     for line in text.lines().rev() {
         let t = line.trim();
-        if t.starts_with('{') {
-            if let Ok(v) = serde_json::from_str::<Value>(t) {
-                let id = v.get("id").and_then(Value::as_str).map(String::from);
-                let url = v.get("url").and_then(Value::as_str).map(String::from);
-                if id.is_some() || url.is_some() {
-                    return (id, url);
-                }
+        if t.starts_with('{')
+            && let Ok(v) = serde_json::from_str::<Value>(t)
+        {
+            let id = v.get("id").and_then(Value::as_str).map(String::from);
+            let url = v.get("url").and_then(Value::as_str).map(String::from);
+            if id.is_some() || url.is_some() {
+                return (id, url);
             }
         }
     }
@@ -240,12 +240,13 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
 
     release(&session_id).await;
 
-    if outcome.is_error && outcome.result_text.is_empty() {
-        if let Ok(tail) = stderr_tail.await {
-            let tail = tail.trim();
-            if !tail.is_empty() {
-                outcome.result_text = tail.chars().take(2000).collect();
-            }
+    if outcome.is_error
+        && outcome.result_text.is_empty()
+        && let Ok(tail) = stderr_tail.await
+    {
+        let tail = tail.trim();
+        if !tail.is_empty() {
+            outcome.result_text = tail.chars().take(2000).collect();
         }
     }
 

@@ -4,8 +4,8 @@
 //! API as the Chat Completions provider so `upstream.rs` is unchanged.
 //! Unknown event types are ignored (forward-compat: the backend adds events).
 use crate::wire::names::decode_tool_name;
-use crate::{now_ms, PROVIDER_ID};
-use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
+use crate::{PROVIDER_ID, now_ms};
+use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -384,10 +384,10 @@ pub fn handle_chunk(
         }
         n if n.contains("function_call_arguments.done") => {
             let full = chunk.get("arguments").and_then(Value::as_str).unwrap_or("");
-            if !full.is_empty() {
-                if let Some(last) = state.tool_calls.last_mut() {
-                    last.args_json = full.to_string();
-                }
+            if !full.is_empty()
+                && let Some(last) = state.tool_calls.last_mut()
+            {
+                last.args_json = full.to_string();
             }
         }
         n if n.contains("output_item.done") => {
@@ -612,9 +612,11 @@ mod tests {
             json!({ "type": "response.output_text.delta", "delta": "llo" }),
             json!({ "type": "response.completed", "response": { "usage": { "input_tokens": 3, "output_tokens": 2 } } }),
         ]);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::TextStart { .. }))
+        );
         let done = events.last().unwrap();
         match done {
             AssistantMessageEvent::Done { message } => {
@@ -730,9 +732,11 @@ mod tests {
             json!({ "type": "response.completed", "response": { "usage": { "input_tokens": 3, "output_tokens": 2 } } }),
         ]);
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
-        assert!(!events
-            .iter()
-            .any(|e| matches!(e, AssistantMessageEvent::Error { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::Error { .. }))
+        );
         let Some(AssistantMessageEvent::Done { message }) = events.last() else {
             panic!("want done last, got {:?}", events.last());
         };

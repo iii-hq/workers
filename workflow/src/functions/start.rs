@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
     error::WorkflowError,
@@ -212,8 +212,7 @@ impl JsonSchema for StartRequest {
 }
 
 /// Copy-pasteable shape appended to every shape and parse error.
-const SHAPE_HINT: &str =
-    "Shape: {\"nodes\":{\"a\":{\"task\":\"<what a does>\"},\"b\":{\"task\":\"<what b \
+const SHAPE_HINT: &str = "Shape: {\"nodes\":{\"a\":{\"task\":\"<what a does>\"},\"b\":{\"task\":\"<what b \
     does>\",\"reads\":\"a\"}},\"input\":<any JSON>}.\n\
     Node keys: task (required), reads, fanout, schema, model, profile, provider, system_prompt, \
     functions, filesystem_root, loop, label, phase, timeout_ms, retries, on_error.\n\
@@ -867,10 +866,10 @@ fn add_read_dependencies(def: &mut WorkflowDef) {
                 refs.push(rest.split('.').next().unwrap_or(rest).to_string());
             }
         }
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                refs.push(rest.split('.').next().unwrap_or(rest).to_string());
-            }
+        if let Some(fanout) = &node.fanout
+            && let Some(rest) = fanout.over.strip_prefix("node:")
+        {
+            refs.push(rest.split('.').next().unwrap_or(rest).to_string());
         }
         for r in refs {
             if !node.depends_on.contains(&r) {
@@ -1077,29 +1076,27 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     for (node_id, node) in &def.nodes {
         if let Some(output) = &node.agent.output {
             let is_json = output.get("type").and_then(|t| t.as_str()) == Some("json");
-            if is_json {
-                if let Some(schema) = crate::reconcile::output_schema(output) {
-                    if schema.is_object() {
-                        let has_type = schema
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .map(|t| !t.trim().is_empty())
-                            .unwrap_or(false);
-                        if !has_type {
-                            return Err(WorkflowError::InvalidDef(format!(
-                                "node '{}': schema has no top-level \"type\" — an \
+            if is_json && let Some(schema) = crate::reconcile::output_schema(output) {
+                if schema.is_object() {
+                    let has_type = schema
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .map(|t| !t.trim().is_empty())
+                        .unwrap_or(false);
+                    if !has_type {
+                        return Err(WorkflowError::InvalidDef(format!(
+                            "node '{}': schema has no top-level \"type\" — an \
                                  empty/typeless schema is rejected by the provider (\"input_schema.type: Field required\"). Use a real JSON \
                                  Schema, e.g. {{\"type\":\"object\",\"properties\":{{...}}}}.",
-                                node_id
-                            )));
-                        }
-                    }
-                    // The model cannot repair a schema that does not compile; every answer would be denied.
-                    if let Err(e) = jsonschema::JSONSchema::compile(schema) {
-                        return Err(WorkflowError::InvalidDef(format!(
-                            "node '{node_id}': schema is not a valid JSON Schema: {e}"
+                            node_id
                         )));
                     }
+                }
+                // The model cannot repair a schema that does not compile; every answer would be denied.
+                if let Err(e) = jsonschema::JSONSchema::compile(schema) {
+                    return Err(WorkflowError::InvalidDef(format!(
+                        "node '{node_id}': schema is not a valid JSON Schema: {e}"
+                    )));
                 }
             }
         }
@@ -1113,11 +1110,11 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
 
     for node in def.nodes.values() {
         // fanout.over: "node:<dep_id>.<path...>" → extract dep_id
-        if let Some(fanout) = &node.fanout {
-            if let Some(rest) = fanout.over.strip_prefix("node:") {
-                let dep_id = rest.split('.').next().unwrap_or(rest);
-                must_have_json_output.insert(dep_id.to_string());
-            }
+        if let Some(fanout) = &node.fanout
+            && let Some(rest) = fanout.over.strip_prefix("node:")
+        {
+            let dep_id = rest.split('.').next().unwrap_or(rest);
+            must_have_json_output.insert(dep_id.to_string());
         }
     }
 
@@ -1154,19 +1151,19 @@ pub fn validate_def(def: &WorkflowDef) -> Result<(), WorkflowError> {
     // segment) fall through to the runtime guard, so this never rejects a
     // legitimate def.
     for (node_id, node) in &def.nodes {
-        if let Some(fanout) = &node.fanout {
-            if let Some(leaf_type) = fanout_over_proven_nonarray(def, &fanout.over) {
-                let path = fanout.over.strip_prefix("node:").unwrap_or(&fanout.over);
-                let dep = path.split('.').next().unwrap_or(path);
-                return Err(WorkflowError::InvalidDef(format!(
-                    "node '{node_id}': fanout \"{path}\" resolves to a {leaf_type} in node \
+        if let Some(fanout) = &node.fanout
+            && let Some(leaf_type) = fanout_over_proven_nonarray(def, &fanout.over)
+        {
+            let path = fanout.over.strip_prefix("node:").unwrap_or(&fanout.over);
+            let dep = path.split('.').next().unwrap_or(path);
+            return Err(WorkflowError::InvalidDef(format!(
+                "node '{node_id}': fanout \"{path}\" resolves to a {leaf_type} in node \
                      '{dep}'s declared schema, but a fanout iterates an ARRAY. Point `fanout` at a \
                      field that node '{dep}'s schema declares as {{\"type\":\"array\"}}. (To run \
                      several agents over one value, for example several critics over one draft, \
                      write the angles as an array in `fanout` and name the value in `reads`: \
                      {{\"fanout\":[\"security\",\"cost\"],\"reads\":\"draft\"}}.)"
-                )));
-            }
+            )));
         }
     }
 
@@ -1219,7 +1216,7 @@ fn validate_loops(def: &WorkflowDef) -> Result<(), String> {
                     return Err(format!(
                         "node '{id}': loop.while.field = \"{field}\" is not declared in the node's \
                          schema (missing segment '{seg}')"
-                    ))
+                    ));
                 }
                 Ok(leaf) => {
                     // `dag::condition_holds` compares strings only, so a non-string leaf never holds.
@@ -1241,18 +1238,18 @@ fn validate_loops(def: &WorkflowDef) -> Result<(), String> {
                              loop compares strings only"
                         ));
                     }
-                    if let Some(values) = leaf.get("enum").and_then(Value::as_array) {
-                        if !values.iter().any(|v| v.as_str() == Some(equals.as_str())) {
-                            let listed: Vec<String> = values
-                                .iter()
-                                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
-                                .collect();
-                            return Err(format!(
-                                "node '{id}': loop.while.equals = \"{equals}\" is not one of the \
+                    if let Some(values) = leaf.get("enum").and_then(Value::as_array)
+                        && !values.iter().any(|v| v.as_str() == Some(equals.as_str()))
+                    {
+                        let listed: Vec<String> = values
+                            .iter()
+                            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+                            .collect();
+                        return Err(format!(
+                            "node '{id}': loop.while.equals = \"{equals}\" is not one of the \
                                  values the schema declares for '{field}' ({})",
-                                listed.join(", ")
-                            ));
-                        }
+                            listed.join(", ")
+                        ));
                     }
                 }
                 Err(None) => {}
@@ -1528,11 +1525,7 @@ async fn fetch_registered_models(deps: &Deps) -> Option<BTreeSet<(String, String
         })
         .collect();
 
-    if set.is_empty() {
-        None
-    } else {
-        Some(set)
-    }
+    if set.is_empty() { None } else { Some(set) }
 }
 
 /// The caller's model, for nodes that omit `model`.
@@ -1882,10 +1875,10 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
     };
 
     // Idempotency short-circuit (unlocked fast path; re-checked under the lock).
-    if let Some(key) = &idem_key {
-        if let Some(run_id) = idem_hit(deps, key).await? {
-            return Ok(start_response(run_id, caller_session_id.as_deref()));
-        }
+    if let Some(key) = &idem_key
+        && let Some(run_id) = idem_hit(deps, key).await?
+    {
+        return Ok(start_response(run_id, caller_session_id.as_deref()));
     }
 
     // Bound sub-workflow nesting: a node that opted into `workflow::start` could
@@ -1916,10 +1909,10 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
         Some(_) => Some(deps.locks.guard(IDEM_LOCK).await),
         None => None,
     };
-    if let Some(key) = &idem_key {
-        if let Some(run_id) = idem_hit(deps, key).await? {
-            return Ok(start_response(run_id, caller_session_id.as_deref()));
-        }
+    if let Some(key) = &idem_key
+        && let Some(run_id) = idem_hit(deps, key).await?
+    {
+        return Ok(start_response(run_id, caller_session_id.as_deref()));
     }
 
     let run_id = new_run_id();
@@ -1964,10 +1957,10 @@ pub async fn handle(deps: &Deps, mut req: StartRequest) -> Result<StartResponse,
         record.status = RunStatus::Failed;
         record.result_error = Some(format!("failed to enqueue initial tick: {e}"));
         record.updated_at = deps.now_ms();
-        if state::put_run(&deps.iii, &record).await.is_ok() {
-            if let Some(key) = &record.idem_key {
-                let _ = state::delete_idem(&deps.iii, key).await;
-            }
+        if state::put_run(&deps.iii, &record).await.is_ok()
+            && let Some(key) = &record.idem_key
+        {
+            let _ = state::delete_idem(&deps.iii, key).await;
         }
         return Err(e);
     }
@@ -3538,27 +3531,51 @@ mod tests {
         };
         let cases: Vec<(Value, &str)> = vec![
             (top("reply_to", json!({})), "`reply_to` was removed"),
-            (json!({"definition": {"nodes": {"a": {"task": "t"}}}}), "`definition` was removed"),
-            (json!({"workflow": {"nodes": {"a": {"task": "t"}}}}), "`definition` was removed"),
+            (
+                json!({"definition": {"nodes": {"a": {"task": "t"}}}}),
+                "`definition` was removed",
+            ),
+            (
+                json!({"workflow": {"nodes": {"a": {"task": "t"}}}}),
+                "`definition` was removed",
+            ),
             (top("version", json!(1)), "`version` was removed: drop it"),
             (
                 top("c", json!({"task": "t"})),
                 "`c` looks like a node written beside `nodes`: move it inside `nodes`",
             ),
-            (top("model", json!("m")), "`model` is a node field: put it inside a node under `nodes`"),
+            (
+                top("model", json!("m")),
+                "`model` is a node field: put it inside a node under `nodes`",
+            ),
             (top("name", json!("x")), "unknown top-level field `name`"),
             (json!({}), "missing `nodes`"),
             (json!({"nodes": {}}), "`nodes` is empty"),
-            (json!({"nodes": [1]}), "`nodes` must be an object keyed by node id, not an array"),
-            (json!({"nodes": {"a.b": {"task": "t"}}}), "node id `a.b` must not contain `#`, `.` or `/`"),
+            (
+                json!({"nodes": [1]}),
+                "`nodes` must be an object keyed by node id, not an array",
+            ),
+            (
+                json!({"nodes": {"a.b": {"task": "t"}}}),
+                "node id `a.b` must not contain `#`, `.` or `/`",
+            ),
             (
                 json!({"nodes": {"a": {"task": "t"}, "output": "a"}}),
                 "`output` is a top-level field written inside `nodes`: close `nodes` first",
             ),
             (top("output", json!({"from": "node:a"})), "not {\"from\":…}"),
-            (top("output", json!([])), "`output` must name a node; omit it to return every node"),
-            (top("output", json!("node:a")), "`output`: write the bare id `a`, not `node:a`"),
-            (top("output", json!("x")), "`output` names `x`, which is not a node (nodes: a, b)"),
+            (
+                top("output", json!([])),
+                "`output` must name a node; omit it to return every node",
+            ),
+            (
+                top("output", json!("node:a")),
+                "`output`: write the bare id `a`, not `node:a`",
+            ),
+            (
+                top("output", json!("x")),
+                "`output` names `x`, which is not a node (nodes: a, b)",
+            ),
             (
                 top("max_concurrency", json!("2")),
                 "`max_concurrency` must be a non-negative integer, not a string",
@@ -3571,25 +3588,55 @@ mod tests {
                 node(json!({"timeout_ms": 1.5})),
                 "node `a`: `timeout_ms` must be a non-negative integer, not 1.5",
             ),
-            (node(json!({"reads": []})), "node `a`: `reads` is an empty array"),
-            (node(json!({"agent": {"model": "m"}})), "`agent` was removed: put `model`"),
-            (node(json!({"agent": "p"})), "`agent` was removed: a profile id goes in \"profile\":\"x\" (node `a`)"),
-            (node(json!({"input": {"from": "run_input"}})), "a node has no `input`"),
-            (node(json!({"depends_on": ["b"]})), "`depends_on` is not a node field"),
-            (node(json!({"output": {"type": "json"}})), "`output` is not a node field"),
+            (
+                node(json!({"reads": []})),
+                "node `a`: `reads` is an empty array",
+            ),
+            (
+                node(json!({"agent": {"model": "m"}})),
+                "`agent` was removed: put `model`",
+            ),
+            (
+                node(json!({"agent": "p"})),
+                "`agent` was removed: a profile id goes in \"profile\":\"x\" (node `a`)",
+            ),
+            (
+                node(json!({"input": {"from": "run_input"}})),
+                "a node has no `input`",
+            ),
+            (
+                node(json!({"depends_on": ["b"]})),
+                "`depends_on` is not a node field",
+            ),
+            (
+                node(json!({"output": {"type": "json"}})),
+                "`output` is not a node field",
+            ),
             (
                 node(json!({"notify": {"function_id": "f"}})),
                 "node `a`: `notify` is a top-level field: put it beside `nodes`",
             ),
-            (node(json!({"default_functions": []})), "node `a`: on a node the field is `functions`"),
+            (
+                node(json!({"default_functions": []})),
+                "node `a`: on a node the field is `functions`",
+            ),
             (
                 node(json!({"c": {"task": "t"}})),
                 "node `a`: `c` looks like a node written inside `a`; close `a` first",
             ),
             (node(json!({"x": 1})), "node `a`: unknown field `x`"),
-            (json!({"nodes": {"a": {}}}), "node `a`: missing `task`, the text that tells this node"),
-            (json!({"nodes": {"a": {"task": " "}}}), "node `a`: missing `task`"),
-            (json!({"nodes": {"a": {"task": 1}}}), "node `a`: missing `task`"),
+            (
+                json!({"nodes": {"a": {}}}),
+                "node `a`: missing `task`, the text that tells this node",
+            ),
+            (
+                json!({"nodes": {"a": {"task": " "}}}),
+                "node `a`: missing `task`",
+            ),
+            (
+                json!({"nodes": {"a": {"task": 1}}}),
+                "node `a`: missing `task`",
+            ),
             (
                 node(json!({"reads": {"from": "b"}})),
                 "node `a`: `reads` must be a node id or an array of ids, not an object",
@@ -3598,8 +3645,14 @@ mod tests {
                 node(json!({"reads": ["b", 1]})),
                 "node `a`: `reads` must be a node id or an array of ids, not an array holding a number",
             ),
-            (node(json!({"reads": "node:b"})), "node `a`: write the bare id `b`, not `node:b`"),
-            (node(json!({"fanout": "node:b.x"})), "node `a`: write the bare id `b.x`, not `node:b.x`"),
+            (
+                node(json!({"reads": "node:b"})),
+                "node `a`: write the bare id `b`, not `node:b`",
+            ),
+            (
+                node(json!({"fanout": "node:b.x"})),
+                "node `a`: write the bare id `b.x`, not `node:b.x`",
+            ),
             (
                 node(json!({"reads": "b.result"})),
                 "node `a`: `reads` takes a whole result; only `fanout` takes a path. Write `b`",
@@ -3608,21 +3661,42 @@ mod tests {
                 node(json!({"reads": "x"})),
                 "node `a`: `reads` names `x`, which is not a node (nodes: a, b). Omit `reads`",
             ),
-            (node(json!({"reads": "run_input"})), "node `a`: the run `input` is not a node"),
-            (node(json!({"fanout": "input.items"})), "node `a`: the run `input` is not a node"),
-            (node(json!({"fanout": {"over": "node:b.x"}})), "not {\"over\":…}"),
-            (node(json!({"fanout": []})), "node `a`: `fanout` is an empty array"),
+            (
+                node(json!({"reads": "run_input"})),
+                "node `a`: the run `input` is not a node",
+            ),
+            (
+                node(json!({"fanout": "input.items"})),
+                "node `a`: the run `input` is not a node",
+            ),
+            (
+                node(json!({"fanout": {"over": "node:b.x"}})),
+                "not {\"over\":…}",
+            ),
+            (
+                node(json!({"fanout": []})),
+                "node `a`: `fanout` is an empty array",
+            ),
             (
                 node(json!({"fanout": "[\"x\"]"})),
                 "node `a`: `fanout` holds an array written as a string",
             ),
-            (node(json!({"fanout": "x.items"})), "node `a`: `fanout` names `x`, which is not a node"),
+            (
+                node(json!({"fanout": "x.items"})),
+                "node `a`: `fanout` names `x`, which is not a node",
+            ),
             (
                 node(json!({"schema": {"type": "json", "schema": {"type": "object"}}})),
                 "node `a`: `schema` is the JSON Schema itself",
             ),
-            (node(json!({"schema": {"type": "text"}})), "node `a`: omit `schema` for a text node"),
-            (node(json!({"provider": "groq"})), "node `a`: `provider` needs `model`"),
+            (
+                node(json!({"schema": {"type": "text"}})),
+                "node `a`: omit `schema` for a text node",
+            ),
+            (
+                node(json!({"provider": "groq"})),
+                "node `a`: `provider` needs `model`",
+            ),
             (
                 node(json!({"model": " ", "provider": "groq"})),
                 "node `a`: `provider` needs `model`",

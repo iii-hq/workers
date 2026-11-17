@@ -370,8 +370,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
 #[cfg(test)]
 mod tests {
-    use super::{listed_ids, StartGate};
-    use serde_json::{json, Value};
+    use super::{StartGate, listed_ids};
+    use serde_json::{Value, json};
 
     #[test]
     fn start_gate_refuses_until_boot_decides() {

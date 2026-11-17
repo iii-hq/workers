@@ -8,7 +8,7 @@
 //! says the value redactor is actually firing.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
 
 use crate::{
     EngineStatusV1, GroupCountsV1, IngestStatusV1, InvestigationCountsV1, RepositoryStatusV1,

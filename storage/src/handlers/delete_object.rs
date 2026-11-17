@@ -1,6 +1,6 @@
 //! `storage::deleteObject` — idempotent delete.
 
-use super::{err_to_str, validate_key, AppState};
+use super::{AppState, err_to_str, validate_key};
 use crate::backend::DeleteReq as BackendDeleteReq;
 use crate::error::backend_error_to_storage;
 use schemars::JsonSchema;

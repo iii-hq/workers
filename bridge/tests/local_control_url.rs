@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, register_worker};
+use serde_json::{Value, json};
 
 struct Engine {
     child: Child,

@@ -4,19 +4,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Serializes every test in the crate that mutates PROCESS-WIDE environment
-/// state (`std::env::set_var`/`remove_var`). `cargo test` runs tests within
-/// one binary on multiple threads by default; `set_var`/`var` on different
-/// threads race at the libc level regardless of Rust-side `Mutex` discipline
-/// around any ONE test's own state, so every such test — here and in
-/// `code/config.rs`'s `from_yaml_expands_env_var` — must hold this lock for
-/// its full set→use→unset span. `.unwrap_or_else(...)` recovers from
-/// poisoning: an earlier test panicking mid-mutation still leaves the
-/// environment consistent (its own RAII guard/explicit cleanup already ran),
-/// so a poisoned lock is not a reason to fail later tests too.
-#[cfg(test)]
-pub(crate) static ENV_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// Root configuration for the shell worker: exec policy (timeouts, output
 /// caps, allow/denylist, env forwarding), the fs jail, the sandbox toggle,
 /// and the folded `coder::*` code surface. Stored in the `configuration`
@@ -914,7 +901,8 @@ impl ShellConfig {
     /// JSON Schema registered with the configuration worker so operators get
     /// a typed editing surface.
     pub fn json_schema() -> serde_json::Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
+        let root =
+            schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<ShellConfig>();
         serde_json::to_value(root).expect("ShellConfig JSON Schema serializes")
     }
 }
@@ -992,9 +980,10 @@ mod tests {
     #[test]
     fn test_denylist_blocks_dangerous_form_but_not_benign() {
         let c = cfg_with_deny(vec![r"--checkpoint-action"]);
-        assert!(c
-            .is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
-            .is_ok());
+        assert!(
+            c.is_command_allowed(&["tar".into(), "-czf".into(), "out.tgz".into()])
+                .is_ok()
+        );
         let err = c
             .is_command_allowed(&[
                 "tar".into(),

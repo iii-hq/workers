@@ -4,7 +4,7 @@
 //! as the reference does; the head reads the question and option spans.
 use judge_contract::{ErrorCode, Evaluation, Question};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::ops::Range;
 
 pub const PREFIX: &str = "<|im_start|>system\nRead the complete state and schema. Decide every field jointly. Each answer must be exactly one of that field's allowed options.<|im_end|>\n<|im_start|>user\nSTATE:\n";

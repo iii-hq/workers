@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::state::{prompt_digest, TurnListing};
+use crate::state::{TurnListing, prompt_digest};
 use crate::types::turn::TurnRecord;
 
 /// How long an unreferenced body is kept: a send stores its body before it

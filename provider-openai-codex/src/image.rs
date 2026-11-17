@@ -21,22 +21,22 @@
 //! or `inline: "full"`. Agent-callable on purpose: images have no router
 //! front door.
 
-use crate::config::{build_backend_config, CodexBackendConfig, CodexConfig};
+use crate::config::{CodexBackendConfig, CodexConfig, build_backend_config};
 use crate::errors::{classify, classify_bus_error};
 use crate::request::build_headers;
 use crate::session::AuthManager;
 use crate::state;
 use base64::Engine as _;
 use futures::StreamExt;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::sse_transport::{append_utf8_chunk, normalize_crlf};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{CredentialSource, ProviderResolveResponse};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -803,22 +803,21 @@ pub async fn handle(
 
     // One rotation retry before any body is read, mirroring the chat path:
     // a 401 on a token the session can renew is not the caller's problem.
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        if let Ok(Some(fresh)) = auth.resolve(Some(&backend.access_token)).await {
-            if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str) {
-                let renewed = CodexBackendConfig {
-                    access_token: token.to_string(),
-                    account_id: fresh
-                        .value
-                        .get("account_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&backend.account_id)
-                        .to_string(),
-                    api_url: backend.api_url.clone(),
-                };
-                resp = send(http, &renewed, &params.host_model, &body).await?;
-            }
-        }
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        && let Ok(Some(fresh)) = auth.resolve(Some(&backend.access_token)).await
+        && let Some(token) = fresh.value.get("access_token").and_then(Value::as_str)
+    {
+        let renewed = CodexBackendConfig {
+            access_token: token.to_string(),
+            account_id: fresh
+                .value
+                .get("account_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&backend.account_id)
+                .to_string(),
+            api_url: backend.api_url.clone(),
+        };
+        resp = send(http, &renewed, &params.host_model, &body).await?;
     }
 
     let status = resp.status();
@@ -1048,9 +1047,11 @@ mod tests {
     fn rejects_bad_enums_empty_prompt_and_transparent_jpeg() {
         let mut r = req(IMAGE_MODELS[0]);
         r.quality = Some("ultra".into());
-        assert!(validate(r)
-            .unwrap_err()
-            .starts_with("quality must be one of"));
+        assert!(
+            validate(r)
+                .unwrap_err()
+                .starts_with("quality must be one of")
+        );
         let mut r = req(IMAGE_MODELS[0]);
         r.prompt = "".into();
         assert_eq!(validate(r).unwrap_err(), "prompt must not be empty");
@@ -1060,9 +1061,11 @@ mod tests {
         assert!(validate(r).unwrap_err().contains("transparent"));
         let mut r = req(IMAGE_MODELS[0]);
         r.inline = Some("thumb".into());
-        assert!(validate(r)
-            .unwrap_err()
-            .starts_with("inline must be one of"));
+        assert!(
+            validate(r)
+                .unwrap_err()
+                .starts_with("inline must be one of")
+        );
     }
 
     #[test]
@@ -1166,10 +1169,11 @@ mod tests {
         let mut c = ImageStreamCollector::default();
         c.feed_block("data: [DONE]\n\n");
         assert!(c.terminal);
-        assert!(c
-            .finish()
-            .unwrap_err()
-            .contains("without an image_generation_call"));
+        assert!(
+            c.finish()
+                .unwrap_err()
+                .contains("without an image_generation_call")
+        );
 
         let mut c = ImageStreamCollector::default();
         c.feed_event(&json!({
@@ -1211,9 +1215,11 @@ mod tests {
         assert!(px[0] > 200 && px[1] > 200 && px[2] > 200, "{px:?}");
         let small = make_preview(&sample_png(64, 32)).unwrap();
         assert_eq!((small.width, small.height), (64, 32));
-        assert!(make_preview(b"not an image")
-            .unwrap_err()
-            .starts_with("decode"));
+        assert!(
+            make_preview(b"not an image")
+                .unwrap_err()
+                .starts_with("decode")
+        );
     }
 
     #[tokio::test]
@@ -1304,32 +1310,46 @@ mod tests {
             resolve_image_path(&dir, &abs).unwrap(),
             canon.join("ok.png")
         );
-        assert!(resolve_image_path(&dir, "../secret.txt")
-            .unwrap_err()
-            .contains("outside"));
+        assert!(
+            resolve_image_path(&dir, "../secret.txt")
+                .unwrap_err()
+                .contains("outside")
+        );
         let secret = root.join("secret.txt").display().to_string();
-        assert!(resolve_image_path(&dir, &secret)
-            .unwrap_err()
-            .contains("outside"));
-        assert!(resolve_image_path(&dir, "missing.png")
-            .unwrap_err()
-            .contains("does not exist"));
-        assert!(resolve_image_path(&dir, "  ")
-            .unwrap_err()
-            .contains("empty"));
-        assert!(resolve_image_path(&dir, ".")
-            .unwrap_err()
-            .contains("not a file"));
+        assert!(
+            resolve_image_path(&dir, &secret)
+                .unwrap_err()
+                .contains("outside")
+        );
+        assert!(
+            resolve_image_path(&dir, "missing.png")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        assert!(
+            resolve_image_path(&dir, "  ")
+                .unwrap_err()
+                .contains("empty")
+        );
+        assert!(
+            resolve_image_path(&dir, ".")
+                .unwrap_err()
+                .contains("not a file")
+        );
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join("secret.txt"), dir.join("link.png")).unwrap();
-            assert!(resolve_image_path(&dir, "link.png")
-                .unwrap_err()
-                .contains("outside"));
+            assert!(
+                resolve_image_path(&dir, "link.png")
+                    .unwrap_err()
+                    .contains("outside")
+            );
         }
-        assert!(resolve_image_path(&root.join("never"), "x.png")
-            .unwrap_err()
-            .contains("no generated images yet"));
+        assert!(
+            resolve_image_path(&root.join("never"), "x.png")
+                .unwrap_err()
+                .contains("no generated images yet")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1407,11 +1427,13 @@ mod tests {
             Path::new("/tmp/x.png"),
         );
         assert_eq!(resp.content.len(), 1);
-        assert!(resp.content[0]
-            .text
-            .as_deref()
-            .unwrap()
-            .contains("inline preview unavailable"));
+        assert!(
+            resp.content[0]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("inline preview unavailable")
+        );
         assert!(resp.details.preview.is_none());
     }
 }

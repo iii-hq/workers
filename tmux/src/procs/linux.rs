@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::{parse_proc_net_tcp, ProcTable, SocketListener};
+use super::{ProcTable, SocketListener, parse_proc_net_tcp};
 use crate::model::AddressFamily;
 
 fn current_uid() -> u32 {

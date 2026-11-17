@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     error::WorkflowError,
@@ -370,7 +370,9 @@ pub async fn reconcile_run(
                 Ok(None) => match json_node_outcome(def, &uid, res) {
                     Ok(value) => NodeOutcome::Done(value),
                     Err(reason) => {
-                        let reason = format!("{NOT_SUBMITTED}, and the final message does not settle it either: {reason}");
+                        let reason = format!(
+                            "{NOT_SUBMITTED}, and the final message does not settle it either: {reason}"
+                        );
                         correct_json_node(deps, record, &uid, reason, timeout_ms).await
                     }
                 },

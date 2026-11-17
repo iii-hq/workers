@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const WORKFLOW_QUEUE: &str = "workflow";
 /// Default queue for `notify` callbacks, apart from the ticks so a slow handler

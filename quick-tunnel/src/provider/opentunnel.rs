@@ -12,7 +12,7 @@ use std::{
 
 use opentunnel::{Client, ClientOptions, Error, Event, ProxyProtocol, Route, Routes, State};
 use tokio::{
-    sync::{broadcast::error::RecvError, oneshot, Mutex},
+    sync::{Mutex, broadcast::error::RecvError, oneshot},
     task::JoinHandle,
 };
 
@@ -550,10 +550,22 @@ mod tests {
     fn proxy_header_matches_the_vector_the_mesh_hub_parses() {
         // The three vectors of mesh/internal/hub/proxyproto_test.go.
         for (peer, len, vector) in [
-            ("203.0.113.7:4000", 69, "0d0a0d0a000d0a515549540a21110035cb007107000000000fa001bb020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a"),
-            ("[2001:db8::1]:443", 93, "0d0a0d0a000d0a515549540a2121004d20010db80000000000000000000000010000000000000000000000000000000001bb01bb020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a"),
+            (
+                "203.0.113.7:4000",
+                69,
+                "0d0a0d0a000d0a515549540a21110035cb007107000000000fa001bb020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a",
+            ),
+            (
+                "[2001:db8::1]:443",
+                93,
+                "0d0a0d0a000d0a515549540a2121004d20010db80000000000000000000000010000000000000000000000000000000001bb01bb020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a",
+            ),
             // An unparseable peer string gives LOCAL: no addresses.
-            ("unknown", 57, "0d0a0d0a000d0a515549540a20000029020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a"),
+            (
+                "unknown",
+                57,
+                "0d0a0d0a000d0a515549540a20000029020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a",
+            ),
         ] {
             let expected: Vec<u8> = (0..vector.len())
                 .step_by(2)

@@ -11,7 +11,7 @@ pub const STATUS_ID: &str = "judge-typesafe::status";
 pub const SECRET_CHANGED_ID: &str = "judge-typesafe::on-secret-change";
 pub mod client;
 pub use client::JevClient;
-pub use judge_provider::{ExecutionLimits, RetryPolicy, DEFAULT_RETRY};
+pub use judge_provider::{DEFAULT_RETRY, ExecutionLimits, RetryPolicy};
 pub mod config;
 pub mod configuration;
 pub mod register;

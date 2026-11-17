@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 #[test]
 fn completion_future_keeps_finalization_out_of_its_inline_state() {

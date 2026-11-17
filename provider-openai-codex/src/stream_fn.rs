@@ -2,19 +2,19 @@
 use crate::config::build_config;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_effort_for};
-use crate::request::{build_body, build_headers, resolve_cache_routing, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers, resolve_cache_routing};
 use crate::session::AuthManager;
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
+use crate::upstream::{UpstreamArgs, spawn_upstream};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
+use llm_router::provider_scaffold::pump::{PING_INTERVAL, pump, pump_abortable, send_event};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, ProviderStreamInput, ProviderStreamOutput,
@@ -28,9 +28,9 @@ pub fn make_stream(
     aborts: StreamAborts,
     auth: Arc<AuthManager>,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
         let auth = auth.clone();

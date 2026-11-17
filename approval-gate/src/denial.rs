@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::redact::redact;
 use crate::types::{
-    text_block, DenialEnvelope, DeniedBy, MatchedConstraint, TextBlock, DENIAL_SCHEMA_VERSION,
+    DENIAL_SCHEMA_VERSION, DenialEnvelope, DeniedBy, MatchedConstraint, TextBlock, text_block,
 };
 
 pub const HUMAN_ONLY_RULE_ID: &str = "human_only_function";
@@ -124,9 +124,11 @@ mod tests {
             envelope.args_excerpt.unwrap()["api_key"],
             json!("<redacted>")
         );
-        assert!(envelope
-            .reason
-            .contains("matched rule no_shell on cmd contains \"rm\""));
+        assert!(
+            envelope
+                .reason
+                .contains("matched rule no_shell on cmd contains \"rm\"")
+        );
         assert!(envelope.reason.contains("Try different arguments"));
     }
 

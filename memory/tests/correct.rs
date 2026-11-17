@@ -11,8 +11,8 @@ use memory::deps::Deps;
 use memory::error::MemoryError;
 use memory::functions::correct::{self, CorrectResponse};
 use memory::store::Store;
-use memory::types::{fingerprint, Confidence, Memory, Provenance};
-use serde_json::{json, Value};
+use memory::types::{Confidence, Memory, Provenance, fingerprint};
+use serde_json::{Value, json};
 
 const BANK: &str = "offline";
 const OLD: &str = "Amber instruments require copper calibration.";

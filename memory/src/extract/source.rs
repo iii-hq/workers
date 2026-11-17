@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{line, parse_entry, session_code, session_page, CALL_CHARS, PAGE_SIZE};
+use super::{CALL_CHARS, PAGE_SIZE, line, parse_entry, session_code, session_page};
 use crate::error::MemoryError;
 use crate::types::Provenance;
 

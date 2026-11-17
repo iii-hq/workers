@@ -15,7 +15,7 @@
 
 mod support;
 
-use ide::code::functions::{catalog, FunctionSpec};
+use ide::code::functions::{FunctionSpec, catalog};
 
 /// `coder::read-file` -> `coder.read-file.json` (no `::` in filenames so
 /// the goldens stay portable across filesystems).
@@ -239,10 +239,12 @@ fn create_file_example_round_trips_with_relative_and_absolute_entries() {
     );
     assert!(!input.files[0].overwrite);
     assert!(input.files[1].overwrite);
-    assert!(input
-        .files
-        .iter()
-        .all(|file| file.expected_revision.is_none()));
+    assert!(
+        input
+            .files
+            .iter()
+            .all(|file| file.expected_revision.is_none())
+    );
 }
 
 #[test]

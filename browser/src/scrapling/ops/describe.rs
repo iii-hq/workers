@@ -1,7 +1,7 @@
 //! scrapling::describe — full identity + structure of the first css/xpath
 //! match (core.py `op_describe`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::scrapling::{dom, query, selgen};
 use crate::scrapling::{ops::common, require_str};
@@ -34,11 +34,12 @@ pub fn op(payload: &Value) -> Result<Value, String> {
             obj.insert("full_xpath".into(), json!(selgen::full_xpath_selector(*el)));
             obj.insert(
                 "classes".into(),
-                json!(el
-                    .attr("class")
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()),
+                json!(
+                    el.attr("class")
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                ),
             );
             obj.insert(
                 "parent_tag".into(),
@@ -47,9 +48,11 @@ pub fn op(payload: &Value) -> Result<Value, String> {
             obj.insert("children".into(), json!(dom::element_children(*el).len()));
             obj.insert(
                 "siblings".into(),
-                json!(parent
-                    .map(|p| dom::element_children(p).len().saturating_sub(1))
-                    .unwrap_or(0)),
+                json!(
+                    parent
+                        .map(|p| dom::element_children(p).len().saturating_sub(1))
+                        .unwrap_or(0)
+                ),
             );
             e
         }

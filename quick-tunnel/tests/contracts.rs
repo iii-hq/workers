@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use quick_tunnel::{api::*, config::Config, manager::Manager, service};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{net::TcpListener, sync::mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -35,10 +35,12 @@ fn contracts_default_tunnel_and_reject_arbitrary_origins() {
     .unwrap();
     assert_eq!(request.tunnel_id, "webhooks");
     assert!(serde_json::from_value::<AcquireRequest>(json!({"consumer_id":"github", "expires_at":"2030-01-01T00:00:00Z", "origin":"http://127.0.0.1:22"})).is_err());
-    assert!(serde_json::from_value::<AcquireRequest>(
-        json!({"consumer_id":"github", "expires_at":"tomorrow"})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<AcquireRequest>(
+            json!({"consumer_id":"github", "expires_at":"tomorrow"})
+        )
+        .is_err()
+    );
     assert_eq!(
         serde_json::from_value::<StatusRequest>(json!({}))
             .unwrap()

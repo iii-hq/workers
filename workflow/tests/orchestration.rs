@@ -6,11 +6,11 @@
 /// the tick loop.
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use workflow::{
     dag,
-    functions::tick::{decide, TickDecision},
-    reconcile::{classify_terminal, NodeOutcome},
+    functions::tick::{TickDecision, decide},
+    reconcile::{NodeOutcome, classify_terminal},
     types::{
         AgentSpec, FanoutSpec, InputSpec, NodeCheckpoint, NodeDef, NodeState, OutputRef, RunStatus,
         WorkflowDef, WorkflowRunRecord,
@@ -745,7 +745,7 @@ fn empty_fanout_completes_run() {
 
 #[test]
 fn sweep_refires_then_fails_after_budget() {
-    use workflow::timeout::{node_limits, timeout_action, TimeoutAction};
+    use workflow::timeout::{TimeoutAction, node_limits, timeout_action};
     // The node's own limits win over the worker defaults (30 s, no retries).
     let mut def = three_node_def();
     let plan = def.nodes.get_mut("plan").unwrap();
@@ -835,7 +835,7 @@ fn max_concurrency_drains_fanout_in_waves() {
 /// sibling had already failed, keeping a dead run spending tokens.
 #[test]
 fn sweep_refire_goes_through_decide() {
-    use workflow::timeout::{mark_refire, timeout_action, TimeoutAction};
+    use workflow::timeout::{TimeoutAction, mark_refire, timeout_action};
 
     let def = diamond_def();
     let mut record = new_record(json!({}));

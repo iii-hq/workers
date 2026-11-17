@@ -192,12 +192,12 @@ pub(crate) fn check_freeform(source: &str, max_source_bytes: usize) -> Vec<Valid
         )),
         Some(_) => {}
     }
-    if let Some(t) = obj.get("type").and_then(|v| v.as_str()) {
-        if t != "excalidraw" {
-            issues.push(ValidationIssue::general(format!(
-                "scene `type` is {t:?}; excalidraw scenes use \"excalidraw\""
-            )));
-        }
+    if let Some(t) = obj.get("type").and_then(|v| v.as_str())
+        && t != "excalidraw"
+    {
+        issues.push(ValidationIssue::general(format!(
+            "scene `type` is {t:?}; excalidraw scenes use \"excalidraw\""
+        )));
     }
     issues
 }
@@ -402,10 +402,11 @@ mod tests {
         })
         .await;
         assert!(!out.valid);
-        assert!(out
-            .issues
-            .iter()
-            .any(|i| i.line == Some(2) && i.message.contains("never closed")));
+        assert!(
+            out.issues
+                .iter()
+                .any(|i| i.line == Some(2) && i.message.contains("never closed"))
+        );
     }
 
     /// Sequence arrows spell `-)` and er cardinalities spell `o{` — families

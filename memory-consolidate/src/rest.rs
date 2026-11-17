@@ -18,13 +18,12 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::functions::{self, Deps, RUN_ID, STATUS_ID};
 
 pub const REST_ID: &str = "memory-consolidate::rest";
-pub const REST_DESC: &str =
-    "Internal: target of the memory-consolidate REST routes, the http::on-request observers \
+pub const REST_DESC: &str = "Internal: target of the memory-consolidate REST routes, the http::on-request observers \
      with args { method: POST, path: /memory-consolidate/run | /memory-consolidate/status }. \
      Receives the HttpRequest, runs the function the route's path names with the request's \
      JSON body, and returns the HttpResponse { status_code, body }: 200 with the function's \

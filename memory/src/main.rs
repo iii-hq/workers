@@ -32,8 +32,8 @@ use clap::Parser;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
-    RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source, register_worker,
 };
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -42,7 +42,7 @@ use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
 use memory::functions::rest;
-use memory::observed::{delivered_event, Delivered};
+use memory::observed::{Delivered, delivered_event};
 use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
@@ -547,9 +547,11 @@ mod tests {
         assert_eq!(options, ObserverOptions::default().id("fixed"));
         // The other seams carry no backlog: each process observes them
         // under ids of its own.
-        assert!(seams
-            .iter()
-            .all(|(_, _, options)| *options == ObserverOptions::default()));
+        assert!(
+            seams
+                .iter()
+                .all(|(_, _, options)| *options == ObserverOptions::default())
+        );
     }
 
     #[test]

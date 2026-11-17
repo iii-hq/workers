@@ -4,7 +4,7 @@ use std::time::Duration;
 use nix::sys::signal::Signal;
 use serde::Serialize;
 
-use super::child::{SupervisedChild, REAP_INTERVAL};
+use super::child::{REAP_INTERVAL, SupervisedChild};
 use super::spec::ProcessSpec;
 
 pub const DEFAULT_TEARDOWN_BUDGET: Duration = Duration::from_secs(15);
@@ -134,19 +134,19 @@ impl ProcessSupervisor {
         let mut report = TeardownReport::default();
 
         for supervised in self.children.iter().rev() {
-            if supervised.group_is_alive() {
-                if let Err(error) = supervised.signal_tree(Signal::SIGTERM) {
-                    tracing::warn!(
-                        target: "harness_integration::process",
-                        worker = %supervised.name(),
-                        "SIGTERM failed: {error}"
-                    );
-                    report.issues.push(TeardownIssue {
-                        process: supervised.name().to_string(),
-                        operation: "sigterm".to_string(),
-                        error: format!("{error:#}"),
-                    });
-                }
+            if supervised.group_is_alive()
+                && let Err(error) = supervised.signal_tree(Signal::SIGTERM)
+            {
+                tracing::warn!(
+                    target: "harness_integration::process",
+                    worker = %supervised.name(),
+                    "SIGTERM failed: {error}"
+                );
+                report.issues.push(TeardownIssue {
+                    process: supervised.name().to_string(),
+                    operation: "sigterm".to_string(),
+                    error: format!("{error:#}"),
+                });
             }
         }
 

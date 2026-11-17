@@ -14,12 +14,12 @@
 //! Same standing + `max_fires: 1` shape as INT-006, for the same reason: the
 //! probe boundary needs a terminal first turn.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const OBSERVE: &str = "harness::observe";

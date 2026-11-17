@@ -315,7 +315,28 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_seed_yaml_only() {
-        std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_expansion_applies_to_seed_yaml_only");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("MEMORY_TEST_DIR", "/tmp/mem-test")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("data_dir: ${MEMORY_TEST_DIR}").unwrap();
         assert_eq!(cfg.data_dir, "/tmp/mem-test");
     }

@@ -22,11 +22,11 @@ use std::time::Duration;
 use browser::events::{Emitter, EventKind, FrameEventPayload, ON_FRAME_EVENT_FN};
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, ObserverHandle,
-    RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
-use tokio::time::{sleep, timeout, Instant};
+use serde_json::{Value, json};
+use tokio::time::{Instant, sleep, timeout};
 
 /// An engine with only the worker manager, and the worker binary when a test
 /// starts it.

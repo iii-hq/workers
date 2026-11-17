@@ -14,7 +14,7 @@ use iii_http::types::HttpRequest;
 use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, RegisterFunction};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
 fn config(enabled: bool) -> RestApiConfig {

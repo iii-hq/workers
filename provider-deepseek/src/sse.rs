@@ -3,8 +3,8 @@
 //! returns 0+ events. [DONE] is the upstream pump's concern.
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
-use crate::{now_ms, PROVIDER_ID};
-use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
+use crate::{PROVIDER_ID, now_ms};
+use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -356,40 +356,40 @@ pub fn handle_chunk(
         // Thinking mode streams the chain of thought as `reasoning_content`
         // deltas ahead of the answer `content`. Surface it as a thinking block
         // so the console renders the thoughts instead of a bare "thinking…".
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-            if !reasoning.is_empty() {
-                // A thinking delta after an answer (or a tool call) opens a
-                // NEW thinking block rather than reopening the first one, so
-                // the message keeps the order the model produced.
-                if !state.open_is_thinking() {
-                    close_open_block(state, model, &mut events);
-                    state.open = Some(state.push_segment(Segment::Thinking(String::new())));
-                    events.push(AssistantMessageEvent::ThinkingStart {
-                        partial: build_partial(state, model),
-                    });
-                }
-                state.extend_open(reasoning);
-                events.push(AssistantMessageEvent::ThinkingDelta {
-                    partial: None,
-                    delta: reasoning.to_string(),
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str)
+            && !reasoning.is_empty()
+        {
+            // A thinking delta after an answer (or a tool call) opens a
+            // NEW thinking block rather than reopening the first one, so
+            // the message keeps the order the model produced.
+            if !state.open_is_thinking() {
+                close_open_block(state, model, &mut events);
+                state.open = Some(state.push_segment(Segment::Thinking(String::new())));
+                events.push(AssistantMessageEvent::ThinkingStart {
+                    partial: build_partial(state, model),
                 });
             }
+            state.extend_open(reasoning);
+            events.push(AssistantMessageEvent::ThinkingDelta {
+                partial: None,
+                delta: reasoning.to_string(),
+            });
         }
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
-            if !text.is_empty() {
-                if !state.open_is_text() {
-                    close_open_block(state, model, &mut events);
-                    state.open = Some(state.push_segment(Segment::Text(String::new())));
-                    events.push(AssistantMessageEvent::TextStart {
-                        partial: build_partial(state, model),
-                    });
-                }
-                state.extend_open(text);
-                events.push(AssistantMessageEvent::TextDelta {
-                    partial: None,
-                    delta: text.to_string(),
+        if let Some(text) = delta.get("content").and_then(Value::as_str)
+            && !text.is_empty()
+        {
+            if !state.open_is_text() {
+                close_open_block(state, model, &mut events);
+                state.open = Some(state.push_segment(Segment::Text(String::new())));
+                events.push(AssistantMessageEvent::TextStart {
+                    partial: build_partial(state, model),
                 });
             }
+            state.extend_open(text);
+            events.push(AssistantMessageEvent::TextDelta {
+                partial: None,
+                delta: text.to_string(),
+            });
         }
         if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for tc in tool_calls {
@@ -421,28 +421,28 @@ pub fn handle_chunk(
                 }
                 let slot = state.open.expect("a call block is open");
                 let entry = state.call_at(slot);
-                if let Some(id) = tc.get("id").and_then(Value::as_str) {
-                    if !id.is_empty() {
-                        entry.id = id.to_string();
-                    }
+                if let Some(id) = tc.get("id").and_then(Value::as_str)
+                    && !id.is_empty()
+                {
+                    entry.id = id.to_string();
                 }
-                if let Some(name) = tc.pointer("/function/name").and_then(Value::as_str) {
-                    if !name.is_empty() {
-                        entry.function_id = decode_tool_name(name);
-                    }
+                if let Some(name) = tc.pointer("/function/name").and_then(Value::as_str)
+                    && !name.is_empty()
+                {
+                    entry.function_id = decode_tool_name(name);
                 }
-                if let Some(args) = tc.pointer("/function/arguments").and_then(Value::as_str) {
-                    if !args.is_empty() {
-                        let entry = state.call_at(slot);
-                        entry.args_json.push_str(args);
-                        let id = entry.id.clone();
-                        events.push(AssistantMessageEvent::FunctioncallDelta {
-                            partial: None,
-                            delta: args.to_string(),
-                            id,
-                            arguments_preview: None,
-                        });
-                    }
+                if let Some(args) = tc.pointer("/function/arguments").and_then(Value::as_str)
+                    && !args.is_empty()
+                {
+                    let entry = state.call_at(slot);
+                    entry.args_json.push_str(args);
+                    let id = entry.id.clone();
+                    events.push(AssistantMessageEvent::FunctioncallDelta {
+                        partial: None,
+                        delta: args.to_string(),
+                        id,
+                        arguments_preview: None,
+                    });
                 }
             }
         }
