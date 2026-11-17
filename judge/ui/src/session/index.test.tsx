@@ -292,6 +292,15 @@ async function press(input: HTMLInputElement, key: string) {
 }
 
 describe('per-session judge provider', () => {
+  it('explains the judge once, then stays out of the way', async () => {
+    localStorage.removeItem('judge-ui-session-intro-seen')
+    const { view, button } = await mount({})
+    expect(view.querySelector('[role="note"]')?.textContent).toContain('needs no key')
+    await act(async () => button('Got it').click())
+    expect(view.querySelector('[role="note"]')).toBeNull()
+    expect(localStorage.getItem('judge-ui-session-intro-seen')).toBe('true')
+  })
+
   it("lists Default and each running judge with its model, and writes only this session's metadata key", async () => {
     const { view, iii, setMetadata, option, options, labels } = await mount({
       [SESSION_PROVIDER_KEY]: 'typesafe',

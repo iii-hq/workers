@@ -9,7 +9,8 @@ import {
   WorkerConfigurationDialog,
   type WorkerConfigurationPanelProps,
 } from '@iii-dev/console-ui'
-import { ArrowLeft, Info, TriangleAlert } from 'lucide-react'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
+import { ArrowLeft, Info, Scale, TriangleAlert } from 'lucide-react'
 import {
   type ComponentType,
   type KeyboardEvent,
@@ -45,6 +46,9 @@ const PICKER_PAGE = uiClasses.motionPickerPage ?? 'iii-ui-motion-picker-page'
 const PAGE_TRANSITION_MS = 250
 /** A burst of engine changes (a worker registering its functions) reads once. */
 const LIVE_DEBOUNCE_MS = 300
+/** Once the intro is dismissed it stays dismissed, in this browser. */
+const INTRO_SEEN_KEY = 'judge-ui-session-intro-seen'
+
 /** The hub's configuration entry under its default name. */
 const HUB_CONFIGURATION = 'judge'
 /** Every provider's configuration entry under its default name starts with this. */
@@ -73,6 +77,31 @@ function dispose(off: (() => void) | null) {
 let liveSeq = 0
 
 type Page = 'judges' | 'add' | 'configure'
+
+/**
+ * What the judge is, the first time the picker opens: nobody has to know
+ * the word to send a message, and Default needs no key, so the picker is
+ * where the idea gets explained, once.
+ */
+function JudgeIntro({ onDismiss }: { onDismiss(): void }) {
+  return (
+    <div className="judge-ui-session-intro" role="note">
+      <span className="judge-ui-session-mark" aria-hidden="true">
+        <Scale size={16} aria-hidden />
+      </span>
+      <span className="judge-ui-session-intro-copy">
+        <span className="judge-ui-session-intro-title">The agent asks a judge its small questions</span>
+        <span>
+          Which function fits, do these arguments match, what next in the browser: a fast model answers instead of
+          the chat model. Default follows the judge settings and needs no key of its own.
+        </span>
+      </span>
+      <Button variant="ghost" size="sm" className="judge-ui-session-intro-dismiss" onClick={onDismiss}>
+        Got it
+      </Button>
+    </div>
+  )
+}
 
 /** What the judge is and where a session's choice takes effect. */
 function JudgeHelp() {
@@ -168,6 +197,7 @@ export function JudgeSessionPicker({
   const stored = typeof raw === 'string' && raw ? raw : undefined
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState<Page>('judges')
+  const [introSeen, setIntroSeen] = usePaneState(INTRO_SEEN_KEY, false)
   // The settings page keeps its content while it slides out.
   const [configuring, setConfiguring] = useState<ConfigureTarget | null>(null)
   const [shownConfiguring, setShownConfiguring] = useState<ConfigureTarget | null>(null)
@@ -448,6 +478,7 @@ export function JudgeSessionPicker({
           {/* biome-ignore lint/a11y/noStaticElementInteractions: only keeps keys from the menu's own navigation */}
           <div className="judge-ui-session-pages" onKeyDown={keepKeys}>
             <PickerPage page="judges" active={page === 'judges'}>
+              {introSeen ? null : <JudgeIntro onDismiss={() => setIntroSeen(true)} />}
               <JudgesPanel
                 providers={providers}
                 settings={settings}

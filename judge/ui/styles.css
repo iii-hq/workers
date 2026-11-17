@@ -144,6 +144,45 @@
   color: var(--color-ink-faint);
 }
 
+/* The intro, once: what the judge is, in the words a first visit needs.
+   Sits inside the list inset on the hover wash, so it reads as a note in
+   the panel and not as another row to pick. */
+[data-iii-ui='judge'] .judge-ui-session-intro {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 8px 6px;
+  padding: 10px 10px 10px 8px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='judge'] .judge-ui-session-intro-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  text-wrap: pretty;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-intro-title {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+[data-iii-ui='judge'] .judge-ui-session-intro-dismiss {
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+
 /* The filter, only once there are enough rows to need one: a glyph and a
    bare field under a rule. 16px on a coarse pointer, so iOS does not zoom. */
 [data-iii-ui='judge'] .judge-ui-session-filter {
