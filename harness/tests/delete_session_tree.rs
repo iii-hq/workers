@@ -262,10 +262,14 @@ impl Stack {
                         .get(function)
                         .cloned()
                         .unwrap_or_else(|| "test_error".into());
-                    (
-                        store.respond(function, &message["data"], &message["action"]),
-                        code,
-                    )
+                    let result = store.respond(function, &message["data"], &message["action"]);
+                    if function == "shell::kill-session-jobs" {
+                        store.calls.push((
+                            "namespace of shell::kill-session-jobs".into(),
+                            message["namespace"].clone(),
+                        ));
+                    }
+                    (result, code)
                 };
                 notice.notify_waiters();
                 if message["invocation_id"].is_null() {
@@ -1903,6 +1907,34 @@ async fn ordinary_stop_kills_the_stopped_subtree_background_jobs() {
         .fail
         .insert("shell::kill-session-jobs".into());
     ordinary_stop(&stack, "child1").await;
+}
+
+/// A background job started in another namespace runs under that namespace's
+/// shell, so a stop also sweeps every other namespace that lists
+/// `shell::exec_bg`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_sweeps_background_jobs_in_another_namespace() {
+    let stack = Stack::new("running").await;
+    let own = harness::clients::engine::resolve_namespace("shell::exec_bg", None);
+    let exec_bg = |namespace: &str| harness::clients::engine::FunctionDescriptor {
+        function_id: "shell::exec_bg".into(),
+        namespace: namespace.into(),
+        description: None,
+        parameters: None,
+    };
+    harness::discovery::apply(&stack.deps.functions, vec![exec_bg(&own), exec_bg("zz-a")]).await;
+    ordinary_stop(&stack, "child2").await;
+    let calls = stack.store.lock().unwrap().calls.clone();
+    let sweeps = calls
+        .iter()
+        .filter(|(id, _)| id == "shell::kill-session-jobs")
+        .count();
+    assert_eq!(sweeps, 2, "own namespace and zz-a: {calls:?}");
+    let to_zz_a = calls
+        .iter()
+        .filter(|(id, ns)| id == "namespace of shell::kill-session-jobs" && ns == "zz-a")
+        .count();
+    assert_eq!(to_zz_a, 1, "{calls:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
