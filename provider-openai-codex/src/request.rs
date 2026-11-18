@@ -239,9 +239,10 @@ mod tests {
         let h = build_headers(&cfg);
         assert!(h.contains(&("authorization", "Bearer at".to_string())));
         assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
-        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
+        assert!(h.contains(&("version", "0.169.0".to_string())));
         assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
-        assert!(h.iter().any(|(k, _)| *k == "openai-beta"));
+        assert!(h.contains(&("openai-beta", "responses=experimental".to_string())));
+        assert!(h.contains(&("content-type", "application/json".to_string())));
         assert!(h.contains(&("accept", "text/event-stream".to_string())));
     }
 
@@ -253,9 +254,13 @@ mod tests {
             api_url: crate::config::DEFAULT_API_URL.into(),
         };
         let h = build_backend_headers(&cfg);
-        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
+        assert!(h.contains(&("authorization", "Bearer at".to_string())));
+        assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
+        assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
+        assert!(h.contains(&("version", "0.169.0".to_string())));
         assert!(!h.iter().any(|(key, _)| *key == "openai-beta"));
         assert!(!h.iter().any(|(key, _)| *key == "accept"));
+        assert!(!h.iter().any(|(key, _)| *key == "content-type"));
     }
 
     /// RFC 4122 v4 shape: 36 chars, hyphens at 8/13/18/23, version nibble
