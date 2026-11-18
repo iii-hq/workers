@@ -94,6 +94,14 @@
       "generate": {
         "$ref": "#/definitions/GeneratePayload"
       },
+      "own_namespace": {
+        "default": null,
+        "description": "The calling harness's own namespace. Only namespace-aware harnesses send it; without it the hint stays as before.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       },
