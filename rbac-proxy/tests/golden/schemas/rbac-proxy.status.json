@@ -1,5 +1,5 @@
 {
-  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, which endpoints are exposed, and the live downstream connection count.",
+  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, which authentication is in force (auth function, loopback grant, or none), which endpoints are exposed, and the live downstream connection count.",
   "function_id": "rbac-proxy::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -8,12 +8,48 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AuthMode": {
+        "description": "Which authentication admits new connections.",
+        "oneOf": [
+          {
+            "description": "`rbac.auth_function_id` authenticates every connection.",
+            "enum": [
+              "function"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No auth function; `rbac.loopback_auth` admits loopback peers only.",
+            "enum": [
+              "loopback"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Neither: every connection is refused.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
     "properties": {
       "active_connections": {
         "description": "Live downstream connections.",
         "format": "uint32",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "auth": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AuthMode"
+          }
+        ],
+        "description": "The authentication in force for new connections: `function` (the `auth_function_id`), `loopback` (no auth function; `loopback_auth` admits loopback peers) or `none` (every connection is refused)."
       },
       "engine_url": {
         "description": "Upstream engine URL, with any `user:pass@` credentials redacted.",
@@ -47,6 +83,7 @@
     },
     "required": [
       "active_connections",
+      "auth",
       "engine_url",
       "expose_endpoints",
       "host",

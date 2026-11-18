@@ -150,7 +150,26 @@ fn register_support(engine_ws: &str) -> IIIClient {
     support
 }
 
+/// The `rbac:` block of the main end-to-end run: an auth function.
+const AUTH_FUNCTION_RBAC: &str = "rbac:\n  auth_function_id: test::auth\n  \
+     expose_endpoints:\n    - match(\"/\")\n    - match(\"/ws/channels/*\")\n    - match(\"/otel\")\n  \
+     expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n";
+
+/// The `rbac:` block of the loopback run: no auth function, the built-in
+/// loopback grant only. `secret::*` is exposed, so only the grant's
+/// `forbidden_functions` keeps `secret::echo` out.
+const LOOPBACK_RBAC: &str = "rbac:\n  loopback_auth:\n    \
+     worker_names: [rbac-proxy-itest-loopback]\n    \
+     forbidden_functions: [secret::echo]\n  \
+     expose_functions:\n    - match(\"api::*\")\n    - match(\"secret::*\")\n";
+
 async fn boot() -> Option<Harness> {
+    boot_with(AUTH_FUNCTION_RBAC).await
+}
+
+/// Boot the engine and the proxy, the proxy seeded with the `rbac:` block
+/// `rbac`.
+async fn boot_with(rbac: &str) -> Option<Harness> {
     let Some(iii_bin) = iii_bin() else {
         eprintln!("skipping: no `iii` binary (set III_BIN or put iii on PATH)");
         return None;
@@ -171,18 +190,12 @@ async fn boot() -> Option<Harness> {
     )
     .expect("write integration configuration");
 
-    // Seed config: RBAC on, exposing only api::* and the functions-discovery
-    // surface. Written before any child starts, so failing here leaks none.
+    // Seed config: the run's `rbac:` block. Written before any child starts, so failing here leaks none.
     // It lives in the run's directory: concurrent runs no longer share a path.
     let seed_path = dir.join("seed.yaml");
     std::fs::write(
         &seed_path,
-        format!(
-            "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
-             rbac:\n  auth_function_id: test::auth\n  \
-             expose_endpoints:\n    - match(\"/\")\n    - match(\"/ws/channels/*\")\n    - match(\"/otel\")\n  \
-             expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
-        ),
+        format!("host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n{rbac}"),
     )
     .expect("write integration configuration");
 
@@ -281,10 +294,18 @@ fn downstream(proxy_port: u16) -> IIIClient {
 /// would otherwise write `iii ps` markers under the real `~/.iii/run`.
 #[test]
 fn end_to_end_rbac_through_proxy() {
-    let home = std::env::temp_dir().join(format!("rbac-proxy-itest-home-{}", std::process::id()));
+    run_isolated_child("end_to_end_child");
+}
+
+/// Run the ignored test `child` in a child process with a private `HOME`.
+fn run_isolated_child(child: &str) {
+    let home = std::env::temp_dir().join(format!(
+        "rbac-proxy-itest-home-{child}-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&home).expect("create the private HOME");
     let output = Command::new(std::env::current_exe().expect("test binary"))
-        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .args(["--exact", child, "--ignored", "--nocapture"])
         .env("HOME", &home)
         .env("RBAC_PROXY_E2E_CHILD", "1")
         .output();
@@ -672,6 +693,108 @@ async fn end_to_end_child() {
         AUTH_ENDPOINTS.lock().unwrap().iter().any(|e| e == "/"),
         "the auth function was told the endpoint for `/` too"
     );
+}
+
+/// A worker on 127.0.0.1 with no credentials, through a proxy with no auth
+/// function and `rbac.loopback_auth` set, is admitted with the configured
+/// grants.
+#[test]
+fn loopback_auth_through_proxy() {
+    run_isolated_child("loopback_auth_child");
+}
+
+#[tokio::test]
+#[ignore = "isolated subprocess invoked by loopback_auth_through_proxy"]
+async fn loopback_auth_child() {
+    if std::env::var_os("RBAC_PROXY_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of loopback_auth_through_proxy");
+        return;
+    }
+    let Some(h) = boot_with(LOOPBACK_RBAC).await else {
+        eprintln!("skipping: prerequisites not met (see logs above)");
+        return;
+    };
+    let proxy_port = h.proxy_port;
+
+    // No authorization header at all: the peer address admits it.
+    let client = register_worker(
+        &format!("ws://127.0.0.1:{proxy_port}"),
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                name: "rbac-proxy-itest-loopback".to_string(),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    );
+    sleep(Duration::from_millis(800)).await;
+
+    // An exposed function answers.
+    let echoed = timeout(
+        Duration::from_secs(8),
+        client.call(call("api::echo", json!({ "via": "loopback" }))),
+    )
+    .await
+    .expect("api::echo did not return in time")
+    .expect("a loopback worker may call an exposed function");
+    assert_eq!(echoed["via"], "loopback");
+
+    // The grant's forbidden_functions applies, over expose_functions.
+    match client.call(call("secret::echo", json!({}))).await {
+        Err(Error::Remote { code, .. }) => assert_eq!(code, "FORBIDDEN"),
+        other => panic!("expected FORBIDDEN remote error, got {other:?}"),
+    }
+
+    // The granted worker name reaches the engine as declared.
+    let workers = h
+        ._support
+        .call(call("engine::workers::list", json!({})))
+        .await
+        .expect("engine::workers::list on the engine");
+    let names: Vec<&str> = workers["workers"]
+        .as_array()
+        .expect("workers")
+        .iter()
+        .filter_map(|w| w["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"rbac-proxy-itest-loopback"),
+        "granted name not kept: {names:?}"
+    );
+
+    // The session probe says a loopback grant is in force.
+    {
+        let mut ws = raw_client_at(proxy_port, "/", "Bearer ignored").await;
+        let probe = request(
+            &mut ws,
+            json!({
+                "type": "invokefunction",
+                "invocation_id": "44444444-4444-4444-8444-444444444444",
+                "function_id": "rbac-proxy::session",
+                "data": {}
+            }),
+            |v| v["type"] == "invocationresult",
+        )
+        .await;
+        let policy = &probe["result"]["policy"];
+        assert_eq!(policy["auth"], "loopback", "got {probe}");
+        assert_eq!(policy["auth_function"], false, "got {probe}");
+        assert_eq!(
+            probe["result"]["worker_names"],
+            json!(["rbac-proxy-itest-loopback"])
+        );
+        let _ = ws.close(None).await;
+    }
+
+    // rbac-proxy::status names the auth in force.
+    let status = h
+        ._support
+        .call(call("rbac-proxy::status", json!({})))
+        .await
+        .expect("rbac-proxy::status");
+    assert_eq!(status["auth"], "loopback", "got {status}");
+    assert_eq!(status["rbac_enabled"], false, "got {status}");
 }
 
 type RawClient =

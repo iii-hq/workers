@@ -267,6 +267,84 @@ mod tests {
     }
 
     #[test]
+    fn config_parses_with_and_without_loopback_auth() {
+        let without = WorkerConfig::from_json(&json!({ "rbac": {} })).unwrap();
+        assert!(without.rbac.loopback_auth.is_none());
+        assert_eq!(without, WorkerConfig::default());
+
+        let with: WorkerConfig = serde_yaml_ng::from_str(
+            "rbac:\n  loopback_auth:\n    worker_names: [mcp-server]\n    forbidden_functions: [secrets::resolve]\n",
+        )
+        .unwrap();
+        let grants = with.rbac.loopback_auth.as_ref().unwrap();
+        assert_eq!(grants.worker_names, vec!["mcp-server"]);
+        assert_eq!(grants.forbidden_functions, vec!["secrets::resolve"]);
+        // The rest takes the auth result's defaults.
+        assert!(grants.allow_function_registration);
+        assert_eq!(grants.context, json!({}));
+        assert!(grants.namespaces.is_empty());
+        assert!(grants.allowed_functions.is_empty());
+        assert!(grants.function_registration_prefix.is_none());
+        assert!(with.rbac.auth_function_id.is_none());
+        assert!(
+            !with.rbac_enabled(),
+            "rbac_enabled keeps meaning an auth function"
+        );
+        assert_eq!(WorkerConfig::from_json(&with.to_json()).unwrap(), with);
+
+        // `{}` admits loopback peers with the defaults.
+        let empty = WorkerConfig::from_json(&json!({ "rbac": { "loopback_auth": {} } })).unwrap();
+        assert_eq!(
+            empty.rbac.loopback_auth,
+            Some(crate::rbac::LoopbackAuth::default())
+        );
+        assert!(
+            WorkerConfig::from_json(&json!({ "rbac": { "loopback_auth": { "nope": 1 } } }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn loopback_auth_is_in_the_schema_with_docs() {
+        let schema = WorkerConfig::json_schema();
+        let prop = &schema["definitions"]["RbacConfig"]["properties"]["loopback_auth"];
+        assert!(
+            prop["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("loopback") && d.contains("auth_function_id")),
+            "{prop}"
+        );
+        assert!(
+            prop.to_string().contains("#/definitions/LoopbackAuth"),
+            "{prop}"
+        );
+        let grants = &schema["definitions"]["LoopbackAuth"];
+        assert_eq!(grants["type"], "object");
+        // Unknown keys are refused by configuration::set too.
+        assert_eq!(grants["additionalProperties"], false, "{grants}");
+        for key in [
+            "namespaces",
+            "allowed_functions",
+            "forbidden_functions",
+            "allow_function_registration",
+            "context",
+            "function_registration_prefix",
+            "worker_names",
+        ] {
+            assert!(
+                grants["properties"][key]["description"].is_string(),
+                "{key} has no description: {grants}"
+            );
+        }
+        assert_eq!(
+            grants["properties"]["allow_function_registration"]["default"],
+            true
+        );
+        // The built-in default leaves it unset: no change unless asked for.
+        assert!(schema["example"]["rbac"].get("loopback_auth").is_none());
+    }
+
+    #[test]
     fn json_schema_is_typed_object_with_example() {
         let schema = WorkerConfig::json_schema();
         assert_eq!(schema["type"], "object");
