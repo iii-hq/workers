@@ -387,6 +387,8 @@ type TicketScreenProps = {
   commands?: PageRenderProps['commands']
   /** `dialog`: drawn inside the board's ticket dialog (its own head, no pane chrome); `onBack` closes it. */
   variant?: 'page' | 'dialog'
+  /** In the dialog: the previous / next ticket controls, drawn in its head before the actions. */
+  dialogNav?: ReactNode
 }
 
 /* The ticket dialog's frame: the same slots as the pane's PageShell / PageHeader / PageMain. */
@@ -398,8 +400,8 @@ function DialogMain({ className, ...rest }: ComponentProps<'div'>) {
   return <div className={`kb-ticket-frame__main ${className ?? ''}`} {...rest} />
 }
 
-/** The dialog's head: the ticket glyph and key as its title, the actions, and Close. */
-function DialogHead({ icon, description, actions, onClose }: PageHeaderProps) {
+/** The dialog's head: the ticket glyph and key as its title, previous / next, the actions, and Close. */
+function DialogHead({ icon, description, actions, onClose, children }: PageHeaderProps) {
   return (
     <header className="kb-ticket-frame__head">
       <ShadcnDialogTitle className="kb-ticket-frame__title">
@@ -409,6 +411,7 @@ function DialogHead({ icon, description, actions, onClose }: PageHeaderProps) {
         {description ?? 'Ticket'}
       </ShadcnDialogTitle>
       <span className="kb-ticket-frame__actions">
+        {children}
         {actions}
         {onClose ? (
           <IconAction label="Close" onClick={onClose}>
@@ -435,6 +438,7 @@ export function TicketScreen({
   setDirty,
   commands,
   variant = 'page',
+  dialogNav,
 }: TicketScreenProps) {
   const inDialog = variant === 'dialog'
   const Shell = inDialog ? DialogShell : PageShell
@@ -442,6 +446,8 @@ export function TicketScreen({
   const Main = inDialog ? DialogMain : PageMain
   // The dialog's ✕ closes the dialog; in a pane it closes the pane.
   const closeFrame = inDialog ? onBack : onRequestClose
+  // Previous / next stay in the head while a ticket loads or fails, so walking the board never dead-ends.
+  const nav = inDialog ? dialogNav : null
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -883,7 +889,9 @@ export function TicketScreen({
   if (loading && !ticket) {
     return (
       <Shell {...shell}>
-        <Header icon={<TicketIcon size={16} />} onClose={closeFrame} title="Ticket" />
+        <Header icon={<TicketIcon size={16} />} onClose={closeFrame} title="Ticket">
+          {nav}
+        </Header>
         <Main>
           <div aria-busy="true" aria-label="Loading the ticket" className="kb-ticket">
             <div className="kb-ticket__layout">
@@ -916,7 +924,9 @@ export function TicketScreen({
           icon={<TicketIcon size={16} />}
           onClose={closeFrame}
           title="Ticket"
-        />
+        >
+          {nav}
+        </Header>
         <Main>
           <div className="kb-ticket">
             <Notice
@@ -1021,7 +1031,9 @@ export function TicketScreen({
         icon={<TicketIcon size={16} />}
         onClose={closeFrame}
         title="Ticket"
-      />
+      >
+        {nav}
+      </Header>
       <Main>
         <div className="kb-ticket" data-autofocus="" tabIndex={-1}>
 {inDialog ? null : (

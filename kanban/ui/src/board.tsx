@@ -283,6 +283,16 @@ export function BoardPage({
   )
   const shown = useMemo(() => applyFilters(tickets, filters, ctx), [tickets, filters, ctx])
   const shownIds = useMemo(() => new Set(shown.map((ticket) => ticket.id)), [shown])
+  /** The dialog's previous / next: the tickets on screen, column by column, top to bottom (as the board draws them). */
+  const dialogOrder = useMemo(
+    () =>
+      (data?.columns ?? []).flatMap((column) =>
+        column.tickets
+          .filter((ticket) => shownIds.has(ticket.id))
+          .map((ticket) => ({ id: ticket.id, key: ticket.key })),
+      ),
+    [data, shownIds],
+  )
   const filtering = !isEmpty(filters)
   // Subtasks and their parents are read off the whole board, not the filtered one: "2/12" does not change with a search.
   const subtasks = useMemo(
@@ -1220,6 +1230,7 @@ export function BoardPage({
         host={host}
         onClose={() => setDialogTicket(null)}
         onOpenTicket={openDialog}
+        order={dialogOrder}
         priorities={priorities}
         ticketId={dialogTicket}
       />

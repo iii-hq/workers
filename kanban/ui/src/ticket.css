@@ -974,3 +974,22 @@
 [data-iii-ui="kanban"] .kb-ticket-frame .kb-ticket {
   padding-top: var(--kb-space-5);
 }
+
+/* Previous / next in the ticket dialog's head: the position, then the two arrows, set apart from the actions. */
+[data-iii-ui="kanban"] .kb-ticket-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: var(--kb-space-1);
+  padding-right: var(--kb-space-2);
+  border-right: 1px solid var(--color-dialog-edge, var(--color-edge));
+}
+
+[data-iii-ui="kanban"] .kb-ticket-nav__pos {
+  min-width: 44px;
+  margin-right: 2px;
+  color: var(--color-ink-faint);
+  font-size: var(--kb-text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
