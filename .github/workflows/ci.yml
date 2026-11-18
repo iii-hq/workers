@@ -1566,6 +1566,9 @@ jobs:
           elif [[ "$WORKER" == judge-clef ]]; then
             export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
           fi
+          # mcp-server boots with its config.collect.yaml (interface_only:
+          # registers its functions, serves nothing), so it needs neither
+          # rbac-proxy nor an http worker here.
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.

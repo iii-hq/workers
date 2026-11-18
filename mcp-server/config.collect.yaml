@@ -1,0 +1,8 @@
+# Interface-collection config: release publishing and the CI smoke boot the
+# built worker with this file against a bare engine (no rbac-proxy, no http
+# worker), only to read back the functions it registers.
+#
+# interface_only registers those functions and serves nothing: no /mcp route,
+# no reload watch, and every MCP request is answered 503 with no downstream
+# call. So it needs neither rbac-proxy nor a loopback http bind.
+interface_only: true

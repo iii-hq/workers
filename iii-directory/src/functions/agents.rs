@@ -1568,7 +1568,10 @@ mod tests {
             .into_iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["current", "default", "iii", "iii-minimal"]);
+        assert_eq!(
+            ids,
+            vec!["current", "default", "default-mcp", "iii", "iii-minimal"]
+        );
     }
 
     #[test]
@@ -1771,6 +1774,7 @@ mod tests {
             vec![
                 ("captain", "Local Captain"),
                 ("default", "Default"),
+                ("default-mcp", "Default (MCP)"),
                 ("iii", "iii"),
                 ("iii-minimal", "iii-minimal"),
                 ("scout", "Scout")
