@@ -9,6 +9,11 @@
 //! Exposes the VM substrate so integration tests exercise the real code
 //! instead of duplicate copies.
 
+// Private offline generation primitives. No runtime issuer or remote entrypoint.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod compat_generation;
+
 pub mod cli;
 pub(crate) mod core;
 pub mod daemon_exit;

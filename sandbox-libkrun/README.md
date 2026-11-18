@@ -191,6 +191,15 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   moves to `upper.ext4.pre-build`, and a legacy rootfs clone (`root/`) to
   `root.pre-build/` with a fresh `root/`; the VM's log names the kept path.
   `worker::destroy` with `prune` removes them with the rest.
+  **This is archival, not a transparent 0.3-to-0.5 data migration.** Do not
+  equate a retained `.pre-build` file with data available in the new guest.
+  Private Linux offline-generation primitives now exist under
+  [`src/compat_generation`](src/compat_generation/README.md), but are not wired
+  to normal start/build/destroy or advertised as a migration feature. They
+  require a future authenticated local-owner coordinator, exact old lower/profile,
+  retired old credentials/writers, independent offline backups and supported
+  metadata/filesystem capabilities. Preserve the old installation and backup;
+  no automated in-place upgrade or rollback is certified by this component.
 - **`worker::destroy` and `prune`.** From 0.5.0 (sandbox contract 1.4) a
   destroy without `prune` removes the VM's runtime state (its `root/` share,
   console log, instance and state-key records, build scratch) and its build-dir
