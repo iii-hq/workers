@@ -385,6 +385,11 @@ pub(crate) fn effective_contract(
             descriptor.parameters.clone(),
         ));
     }
+    // internal_ids holds bare ids from every namespace: a copy listed only
+    // elsewhere leaves the implicit one unvouched, so the caller asks info.
+    if snapshot.functions.iter().any(|d| d.function_id == id) {
+        return None;
+    }
     // ponytail: an internal-only id is presence without a schema, so a frozen
     // internal contract that later changes is never reported `changed` (and
     // internal churn never moves the generation). Hydrate the frozen internal
@@ -1311,7 +1316,9 @@ mod tests {
                 .as_deref(),
             Some("here")
         );
-        let elsewhere = crate::discovery::snapshot_of(vec![d("zz-a", "shell::exec")]);
+        let mut elsewhere = crate::discovery::snapshot_of(vec![d("zz-a", "shell::exec")]);
+        // As in production: internal_ids holds bare ids from every namespace.
+        elsewhere.internal_ids.insert("shell::exec".into());
         assert!(effective_contract("shell::exec", &all, &elsewhere).is_none());
     }
 
