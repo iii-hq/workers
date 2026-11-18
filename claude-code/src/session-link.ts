@@ -31,11 +31,14 @@ function title(task: string): string {
 export async function linkChildSession(
   iii: IIIClient,
   options: { sessionId: string; parentSessionId?: string; task: string },
-): Promise<{ linked: boolean; detail: string }> {
+): Promise<{ linked: boolean; detail: string; owner: Ownership }> {
   const metadata: Record<string, unknown> = { agent: 'claude-code' };
   if (options.parentSessionId) metadata.parent_session_id = options.parentSessionId;
   try {
-    await iii.call({
+    // `ensure` answers with the session's STORED metadata — for a session it
+    // just created that is ours, for an existing one it is whoever made it.
+    // That is the ownership evidence; the call succeeding is not.
+    const res = await iii.call<unknown, { meta?: { metadata?: Record<string, unknown> } } | null>({
       function_id: 'session::ensure',
       payload: {
         session_id: options.sessionId,
@@ -44,12 +47,18 @@ export async function linkChildSession(
       },
       timeoutMs: TIMEOUT_MS,
     });
-    return { linked: true, detail: '' };
+    const stored = res?.meta?.metadata;
+    const owner: Ownership = !stored
+      ? 'unknown'
+      : stored.agent === 'claude-code'
+        ? 'child'
+        : 'other';
+    return { linked: true, detail: '', owner };
   } catch (err) {
     // A missing session-manager costs the console its session tree, not the run.
     const detail = `session::ensure failed for ${options.sessionId}: ${String(err)}`;
     console.warn(`claude-code: ${detail}`);
-    return { linked: false, detail };
+    return { linked: false, detail, owner: 'unknown' };
   }
 }
 
@@ -115,50 +124,60 @@ export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): P
 }
 
 /**
- * Persist one message into the child session's transcript.
- *
- * The `claude::on-agent-event` feed is a live tape: a console window opened after the run has
- * nothing to replay from it, which is why a finished sub-agent used to render
- * blank with `message_count: 0`. The session manager is the durable side, and
- * the console reads it with `session::messages`. Best-effort, like the rest of
- * this module: a missing session manager costs the replay, not the run.
+ * Who owns `sessionId` in session-manager. `child` is a session this worker
+ * created (`metadata.agent: 'claude-code'`) — a run with `parent_session_id`
+ * links one, and an orchestrator resumes it with `claude::start { session_id }`
+ * alone. `other` is a session another agent owns (a harness chat driving
+ * `claude::run` with its own id) or none at all: never written to. `unknown`
+ * is a failed lookup, which the caller asks again before writing rather than
+ * dropping the turn.
  */
-export async function appendMessage(
-  iii: IIIClient,
-  sessionId: string,
-  message: unknown,
-): Promise<boolean> {
+export type Ownership = 'child' | 'other' | 'unknown';
+
+export async function childSessionOwnership(iii: IIIClient, sessionId: string): Promise<Ownership> {
   try {
-    await iii.call({
-      function_id: 'session::append',
-      payload: { session_id: sessionId, message },
+    const res = await iii.call<unknown, { meta?: { metadata?: Record<string, unknown> } } | null>({
+      function_id: 'session::get',
+      payload: { session_id: sessionId },
       timeoutMs: TIMEOUT_MS,
     });
-    return true;
+    return res?.meta?.metadata?.agent === 'claude-code' ? 'child' : 'other';
   } catch (err) {
-    console.warn(`claude-code: session::append failed for ${sessionId}: ${String(err)}`);
-    return false;
+    console.warn(`claude-code: session::get failed for ${sessionId}: ${String(err)}`);
+    return 'unknown';
   }
 }
 
+/** session-manager's StopReason; anything else fails the append. */
+const STOP_REASONS = new Set(['end', 'length', 'function_call', 'aborted', 'error']);
+
+function sessionStopReason(raw: unknown): string {
+  const reason = String(raw ?? 'end');
+  if (STOP_REASONS.has(reason)) return reason;
+  // SDK result subtypes: `error_max_turns`, `error_max_budget_usd`, … hit a
+  // cap; every other subtype (`error_during_execution`) is a failure.
+  return reason.startsWith('error_max') ? 'length' : 'error';
+}
+
 /**
- * Write a finished turn into the child session: what was asked, then every
- * message the turn produced, in order. Called once, when the run ends — the
- * live view is the claude::on-agent-event feed, this is what a window opened later replays.
+ * Shape one transcript message for `session::append`. The feed's assistant
+ * message carries the worker's usage (`input_tokens`, …) and the SDK's stop
+ * subtype; session-manager wants its own `Usage` and `StopReason`, and rejects
+ * an unknown stop reason outright — which would cut the transcript short.
  */
-export async function appendTranscript(
-  iii: IIIClient,
-  sessionId: string,
-  task: string,
-  messages: unknown[],
-): Promise<void> {
-  const asked = {
-    role: 'user',
-    content: [{ type: 'text', text: task }],
-    timestamp: Date.now(),
+export function toSessionMessage(message: Record<string, unknown>): Record<string, unknown> {
+  if (message.role !== 'assistant') return message;
+  const usage = message.usage as Record<string, number | undefined> | null | undefined;
+  return {
+    ...message,
+    stop_reason: sessionStopReason(message.stop_reason),
+    usage: usage
+      ? {
+          input: usage.input_tokens ?? 0,
+          output: usage.output_tokens ?? 0,
+          cache_read: usage.cache_read_tokens ?? 0,
+          cache_write: usage.cache_write_tokens ?? 0,
+        }
+      : null,
   };
-  if (!(await appendMessage(iii, sessionId, asked))) return;
-  for (const message of messages) {
-    if (!(await appendMessage(iii, sessionId, message))) return;
-  }
 }

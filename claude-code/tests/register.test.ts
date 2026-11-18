@@ -147,7 +147,7 @@ describe('register', () => {
     });
   });
 
-  it('claude::task publishes frames on both feeds through the record wrapper', async () => {
+  it('claude::task publishes frames on both feeds', async () => {
     const fake = await registeredWorker();
     queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
     await fake.observeFeed(ON_AGENT_EVENT_FN, 'task-1');
@@ -167,8 +167,8 @@ describe('register', () => {
     ]);
     expect(agent.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4]);
     expect(fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event)).toEqual(fullTurn);
-    // The wrapper still captures the transcript for session::append.
-    expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(true);
+    // No parent and no existing child session: nothing to persist into.
+    expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(false);
   });
 
   it('claude::task refuses a task with nothing in it', async () => {
@@ -240,6 +240,80 @@ describe('register', () => {
     })) as Record<string, unknown>;
     expect(stopRes.stopped).toBe(true);
     expect(capture.interrupted).toBe(true);
+  });
+
+  it('claude::stop before the query exists is honored, not lost', async () => {
+    // The run's slot exists from the first moment, but the query only after
+    // setup (session lookup, context, plugin). A stop in that window used to
+    // report stopped: true and let the turn run anyway.
+    const fake = await registeredWorker();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const realCall = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload?: { scope?: string; key?: string };
+    }) => {
+      if (req.function_id === 'state::get' && req.payload?.key === 'early-1') await held;
+      return realCall(req as never);
+    };
+
+    const run = fake.registered.get('claude::run')?.({ prompt: 'long', session_id: 'early-1' }) as
+      | Promise<Record<string, unknown>>
+      | undefined;
+    const stopRes = (await fake.registered.get('claude::stop')?.({
+      session_id: 'early-1',
+    })) as Record<string, unknown>;
+    expect(stopRes.stopped).toBe(true);
+    release?.();
+    const result = (await run) as Record<string, unknown>;
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      session_id: 'early-1',
+      stop_reason: 'interrupted',
+      is_error: false,
+    });
+    // The slot is free again for the next turn.
+    const next = (await fake.registered.get('claude::stop')?.({ session_id: 'early-1' })) as Record<
+      string,
+      unknown
+    >;
+    expect(next.stopped).toBe(false);
+  });
+
+  it('claude::task records error, not done, when the SDK result is an error', async () => {
+    // An is_error result resolves normally; the orchestrator reads agent_tasks
+    // as the task's outcome, so it must say error.
+    const fake = await registeredWorker();
+    queryMock.mockImplementation(
+      scriptedQuery(
+        [
+          { type: 'system', subtype: 'init', session_id: 'cs-err' },
+          {
+            type: 'result',
+            subtype: 'error_during_execution',
+            is_error: true,
+            result: 'the model refused',
+            num_turns: 1,
+            total_cost_usd: 0,
+            usage: { input_tokens: 1, output_tokens: 0 },
+          },
+        ],
+        { interrupted: false },
+      ) as never,
+    );
+    await fake.registered.get('claude::task')?.({ task: 'review', session_id: 'task-err' });
+    await vi.waitFor(() => {
+      expect(fake.state.get('agent_tasks/task-err')).toMatchObject({ status: 'error' });
+    });
+    expect(fake.state.get('agent_tasks/task-err')).toMatchObject({
+      status: 'error',
+      error: 'the model refused',
+    });
   });
 
   it('rejects a second run while one is already live for the session', async () => {
