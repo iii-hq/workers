@@ -7,6 +7,7 @@
 //! `RouteTable` keyed by observer id.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 
 use colored::Colorize;
 
@@ -20,6 +21,9 @@ pub struct Route {
     pub http_path: String,
     pub http_method: String,
     pub public_webhook: bool,
+    /// Served only on a connection accepted on a loopback local address
+    /// (see [`Admission`]).
+    pub loopback_only: bool,
     pub middleware_function_ids: Vec<String>,
 }
 
@@ -138,6 +142,54 @@ fn listener_path_params(
     Some(params)
 }
 
+/// Whether `ip` is a loopback address: `127.0.0.0/8`, `::1`, or an
+/// IPv4-mapped loopback address (`::ffff:127.x.y.z`).
+pub fn is_loopback_ip(ip: IpAddr) -> bool {
+    // TDD stub: replaced by the real check.
+    let _ = ip;
+    false
+}
+
+/// What one accepted connection may reach, decided per connection and read
+/// on every request: the restricted listener admits only `public_webhook`
+/// routes, and a `loopback_only` route is admitted only on a connection whose
+/// LOCAL address (the socket's own address, not the peer's) is loopback.
+///
+/// A refused route behaves as if it did not exist on that connection: it
+/// neither matches nor contributes to the `Allow` header of a 405.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admission {
+    /// The connection was accepted by the restricted webhook listener.
+    pub public_webhooks_only: bool,
+    /// The connection's local address is loopback.
+    pub loopback_connection: bool,
+}
+
+impl Admission {
+    pub const fn new(public_webhooks_only: bool, loopback_connection: bool) -> Self {
+        Self {
+            public_webhooks_only,
+            loopback_connection,
+        }
+    }
+
+    /// The admission of a connection accepted on `local_addr` by the normal
+    /// (`public_webhooks_only == false`) or the restricted listener. An
+    /// unknown local address is not loopback.
+    pub fn for_connection(public_webhooks_only: bool, local_addr: Option<SocketAddr>) -> Self {
+        Self::new(
+            public_webhooks_only,
+            local_addr.is_some_and(|addr| is_loopback_ip(addr.ip())),
+        )
+    }
+
+    /// Whether `route` exists for this connection.
+    pub fn admits(&self, route: &Route) -> bool {
+        // TDD stub: ignores loopback_only.
+        !self.public_webhooks_only || route.public_webhook
+    }
+}
+
 /// Registry of routes, keyed by observer id so a route can be removed by id
 /// alone. Rejects inserting a route whose method+path shape conflicts with
 /// another observer's route already registered (same shape, different param
@@ -199,17 +251,20 @@ impl RouteTable {
         method: &str,
         actual_path: &str,
     ) -> Option<(Route, HashMap<String, String>)> {
-        self.match_route_for_listener(method, actual_path, false)
+        self.match_route_for_listener(method, actual_path, Admission::new(false, true))
     }
 
-    /// Same registry and precedence, filtered before matching on the restricted
-    /// listener. No decoding, slash normalization, or method aliasing there.
+    /// Same registry and precedence, filtered by the connection's
+    /// [`Admission`] before matching: a route it refuses does not exist for
+    /// the request. On the restricted listener, no decoding, slash
+    /// normalization, or method aliasing.
     pub fn match_route_for_listener(
         &self,
         method: &str,
         actual_path: &str,
-        public_only: bool,
+        admission: Admission,
     ) -> Option<(Route, HashMap<String, String>)> {
+        let public_only = admission.public_webhooks_only;
         let method = if public_only {
             method.to_string()
         } else {
@@ -217,9 +272,7 @@ impl RouteTable {
         };
         self.by_id
             .values()
-            .filter(|route| {
-                (!public_only || route.public_webhook) && route.http_method.to_uppercase() == method
-            })
+            .filter(|route| admission.admits(route) && route.http_method.to_uppercase() == method)
             .filter_map(|route| {
                 listener_path_params(&route.http_path, actual_path, public_only)
                     .map(|params| (param_segment_count(&route.http_path), route.clone(), params))
@@ -233,19 +286,22 @@ impl RouteTable {
     /// path) from 405 (path exists, method not allowed). Returns uppercased
     /// methods, deduped, in sorted order.
     pub fn allowed_methods(&self, actual_path: &str) -> Vec<String> {
-        self.allowed_methods_for_listener(actual_path, false)
+        self.allowed_methods_for_listener(actual_path, Admission::new(false, true))
     }
 
-    /// Private routes must not leak through a restricted listener's Allow header.
+    /// Routes the connection's [`Admission`] refuses must not leak through
+    /// the Allow header: private routes on the restricted listener,
+    /// `loopback_only` routes on a non-loopback connection.
     pub fn allowed_methods_for_listener(
         &self,
         actual_path: &str,
-        public_only: bool,
+        admission: Admission,
     ) -> Vec<String> {
+        let public_only = admission.public_webhooks_only;
         let mut methods: Vec<String> = self
             .by_id
             .values()
-            .filter(|route| !public_only || route.public_webhook)
+            .filter(|route| admission.admits(route))
             .filter(|route| {
                 listener_path_params(&route.http_path, actual_path, public_only).is_some()
             })
@@ -267,9 +323,13 @@ mod tests {
             http_path: path.to_string(),
             http_method: method.to_string(),
             public_webhook: false,
+            loopback_only: false,
             middleware_function_ids: Vec::new(),
         }
     }
+
+    /// The restricted listener, on a non-loopback connection.
+    const WEBHOOK: Admission = Admission::new(true, false);
 
     // =========================================================================
     // route_signature
@@ -341,27 +401,35 @@ mod tests {
             "/%70rivate",
             "/private%2f",
         ] {
-            assert!(table.match_route_for_listener("GET", path, true).is_none());
-            assert!(table.allowed_methods_for_listener(path, true).is_empty());
+            assert!(
+                table
+                    .match_route_for_listener("GET", path, WEBHOOK)
+                    .is_none()
+            );
+            assert!(table.allowed_methods_for_listener(path, WEBHOOK).is_empty());
         }
         assert!(
             table
-                .match_route_for_listener("POST", "/hook", true)
+                .match_route_for_listener("POST", "/hook", WEBHOOK)
                 .is_some()
         );
         assert_eq!(
-            table.allowed_methods_for_listener("/hook", true),
+            table.allowed_methods_for_listener("/hook", WEBHOOK),
             vec!["POST"]
         );
         for method in ["GET", "HEAD", "DELETE", "OPTIONS", "post"] {
             assert!(
                 table
-                    .match_route_for_listener(method, "/hook", true)
+                    .match_route_for_listener(method, "/hook", WEBHOOK)
                     .is_none()
             );
         }
         for path in ["/hook/", "//hook", "/%68ook", "/hook%2f"] {
-            assert!(table.match_route_for_listener("POST", path, true).is_none());
+            assert!(
+                table
+                    .match_route_for_listener("POST", path, WEBHOOK)
+                    .is_none()
+            );
         }
         // Existing normal-listener normalization stays backwards compatible.
         assert!(table.match_route("get", "/private/").is_some());
@@ -370,7 +438,7 @@ mod tests {
         table.insert(revoked).unwrap();
         assert!(
             table
-                .match_route_for_listener("POST", "/hook", true)
+                .match_route_for_listener("POST", "/hook", WEBHOOK)
                 .is_none()
         );
     }
@@ -385,7 +453,7 @@ mod tests {
             .insert(route("private", "POST", "/hooks/admin"))
             .unwrap();
         let (matched, params) = table
-            .match_route_for_listener("POST", "/hooks/admin", true)
+            .match_route_for_listener("POST", "/hooks/admin", WEBHOOK)
             .unwrap();
         assert_eq!(matched.id(), "public");
         assert_eq!(params["id"], "admin");
@@ -395,7 +463,7 @@ mod tests {
         );
         assert!(
             table
-                .match_route_for_listener("POST", "/hooks/", true)
+                .match_route_for_listener("POST", "/hooks/", WEBHOOK)
                 .is_none()
         );
     }
@@ -519,5 +587,309 @@ mod tests {
                 ))
                 .is_err()
         );
+    }
+
+    // =========================================================================
+    // loopback_only admission
+    // =========================================================================
+
+    /// The normal listener, on a connection accepted on a loopback address.
+    const LOOPBACK: Admission = Admission::new(false, true);
+    /// The normal listener, on a connection accepted on any other address.
+    const REMOTE: Admission = Admission::new(false, false);
+
+    fn loopback_route(observer_id: &str, method: &str, path: &str) -> Route {
+        Route {
+            loopback_only: true,
+            ..route(observer_id, method, path)
+        }
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn loopback_addresses_are_loopback() {
+        for ip in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "127.255.255.254",
+            "::1",
+            "::ffff:127.0.0.1",
+            "::ffff:127.10.20.30",
+        ] {
+            assert!(is_loopback_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn other_addresses_are_not_loopback() {
+        for ip in [
+            "0.0.0.0",
+            "10.0.0.1",
+            "192.168.1.20",
+            "172.16.0.1",
+            "128.0.0.1",
+            "126.255.255.255",
+            "8.8.8.8",
+            "::",
+            "::2",
+            "fe80::1",
+            "2001:db8::1",
+            "::ffff:10.0.0.1",
+            "::ffff:0.0.0.0",
+            // IPv4-compatible (deprecated), not IPv4-mapped: not loopback.
+            "::127.0.0.1",
+        ] {
+            assert!(!is_loopback_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn admission_reads_the_connections_local_address() {
+        for (local, loopback) in [
+            ("127.0.0.1:3111", true),
+            ("127.0.0.53:80", true),
+            ("[::1]:3111", true),
+            ("[::ffff:127.0.0.1]:3111", true),
+            ("10.1.2.3:3111", false),
+            ("192.168.0.10:3111", false),
+            ("[2001:db8::7]:3111", false),
+            ("[::ffff:192.168.0.10]:3111", false),
+        ] {
+            for public_webhooks_only in [false, true] {
+                assert_eq!(
+                    Admission::for_connection(public_webhooks_only, Some(addr(local))),
+                    Admission::new(public_webhooks_only, loopback),
+                    "{local}"
+                );
+            }
+        }
+        // An unknown local address is not loopback: fail closed.
+        assert_eq!(
+            Admission::for_connection(false, None),
+            Admission::new(false, false)
+        );
+    }
+
+    #[test]
+    fn admission_of_a_route() {
+        let plain = route("plain", "GET", "/a");
+        let local = loopback_route("local", "GET", "/b");
+        let public = Route {
+            public_webhook: true,
+            ..route("public", "POST", "/c")
+        };
+        assert!(LOOPBACK.admits(&plain));
+        assert!(REMOTE.admits(&plain));
+        assert!(LOOPBACK.admits(&local));
+        assert!(!REMOTE.admits(&local));
+        assert!(LOOPBACK.admits(&public));
+        assert!(REMOTE.admits(&public));
+        // The restricted listener admits only public_webhook routes, whatever
+        // the connection.
+        for loopback in [false, true] {
+            let webhook = Admission::new(true, loopback);
+            assert!(!webhook.admits(&plain));
+            assert!(!webhook.admits(&local));
+            assert!(webhook.admits(&public));
+        }
+    }
+
+    #[test]
+    fn loopback_only_route_is_served_on_a_loopback_connection() {
+        let mut table = RouteTable::default();
+        table.insert(loopback_route("mcp", "POST", "/mcp")).unwrap();
+        let (matched, params) = table
+            .match_route_for_listener("POST", "/mcp", LOOPBACK)
+            .unwrap();
+        assert_eq!(matched.id(), "mcp");
+        assert!(matched.loopback_only);
+        assert!(params.is_empty());
+        // Wrong method on a loopback connection: the route exists, so 405.
+        assert!(
+            table
+                .match_route_for_listener("GET", "/mcp", LOOPBACK)
+                .is_none()
+        );
+        assert_eq!(
+            table.allowed_methods_for_listener("/mcp", LOOPBACK),
+            vec!["POST"]
+        );
+    }
+
+    #[test]
+    fn loopback_only_route_does_not_exist_on_a_remote_connection() {
+        let mut table = RouteTable::default();
+        table.insert(loopback_route("mcp", "POST", "/mcp")).unwrap();
+        for method in ["POST", "post", "GET", "DELETE"] {
+            assert!(
+                table
+                    .match_route_for_listener(method, "/mcp", REMOTE)
+                    .is_none(),
+                "{method}"
+            );
+        }
+        // No Allow leak: the only route of the path is refused, so it is a
+        // 404 (empty), not a 405.
+        assert!(
+            table
+                .allowed_methods_for_listener("/mcp", REMOTE)
+                .is_empty()
+        );
+        // Nor on the restricted listener, over loopback or not.
+        for loopback in [false, true] {
+            let webhook = Admission::new(true, loopback);
+            assert!(
+                table
+                    .match_route_for_listener("POST", "/mcp", webhook)
+                    .is_none()
+            );
+            assert!(
+                table
+                    .allowed_methods_for_listener("/mcp", webhook)
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_only_parameter_route_is_refused_on_a_remote_connection() {
+        let mut table = RouteTable::default();
+        table
+            .insert(loopback_route("admin", "GET", "/admin/:section"))
+            .unwrap();
+        let (_, params) = table
+            .match_route_for_listener("GET", "/admin/users", LOOPBACK)
+            .unwrap();
+        assert_eq!(params["section"], "users");
+        assert!(
+            table
+                .match_route_for_listener("GET", "/admin/users", REMOTE)
+                .is_none()
+        );
+        assert!(
+            table
+                .allowed_methods_for_listener("/admin/users", REMOTE)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn other_routes_are_unaffected_by_the_connection() {
+        let mut table = RouteTable::default();
+        table.insert(route("users", "GET", "/users/:id")).unwrap();
+        table.insert(loopback_route("mcp", "POST", "/mcp")).unwrap();
+        for admission in [LOOPBACK, REMOTE] {
+            let (matched, params) = table
+                .match_route_for_listener("GET", "/users/42", admission)
+                .unwrap();
+            assert_eq!(matched.id(), "users");
+            assert_eq!(params["id"], "42");
+            assert_eq!(
+                table.allowed_methods_for_listener("/users/42", admission),
+                vec!["GET"]
+            );
+            assert!(
+                table
+                    .match_route_for_listener("GET", "/nothing", admission)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn refused_methods_do_not_leak_into_allow() {
+        // Same path: GET is loopback_only, POST is not.
+        let mut table = RouteTable::default();
+        table
+            .insert(loopback_route("read", "GET", "/state"))
+            .unwrap();
+        table.insert(route("write", "POST", "/state")).unwrap();
+        assert_eq!(
+            table.allowed_methods_for_listener("/state", LOOPBACK),
+            vec!["GET", "POST"]
+        );
+        assert_eq!(
+            table.allowed_methods_for_listener("/state", REMOTE),
+            vec!["POST"]
+        );
+        assert!(
+            table
+                .match_route_for_listener("GET", "/state", REMOTE)
+                .is_none()
+        );
+        assert_eq!(
+            table
+                .match_route_for_listener("POST", "/state", REMOTE)
+                .unwrap()
+                .0
+                .id(),
+            "write"
+        );
+    }
+
+    #[test]
+    fn a_refused_literal_route_falls_through_as_if_absent() {
+        // `/items/copy` (loopback_only) beats `/items/:id` over loopback; on a
+        // remote connection it does not exist, so `/items/:id` serves.
+        let mut table = RouteTable::default();
+        table.insert(route("item", "GET", "/items/:id")).unwrap();
+        table
+            .insert(loopback_route("copy", "GET", "/items/copy"))
+            .unwrap();
+        assert_eq!(
+            table
+                .match_route_for_listener("GET", "/items/copy", LOOPBACK)
+                .unwrap()
+                .0
+                .id(),
+            "copy"
+        );
+        let (matched, params) = table
+            .match_route_for_listener("GET", "/items/copy", REMOTE)
+            .unwrap();
+        assert_eq!(matched.id(), "item");
+        assert_eq!(params["id"], "copy");
+    }
+
+    #[test]
+    fn loopback_only_shares_the_conflict_namespace() {
+        let mut table = RouteTable::default();
+        table.insert(loopback_route("a", "GET", "/a/:x")).unwrap();
+        // Same shape, plain route: still HTTP_ROUTE_CONFLICT territory.
+        assert!(table.insert(route("b", "GET", "/a/:y")).is_err());
+        assert!(table.insert(loopback_route("c", "GET", "/a/:z")).is_err());
+        // And the other way round.
+        let mut table = RouteTable::default();
+        table.insert(route("a", "GET", "/b/:x")).unwrap();
+        let err = table
+            .insert(loopback_route("b", "GET", "/b/:y"))
+            .unwrap_err();
+        assert!(err.contains("conflicts with already-registered route 'GET /b/:x'"));
+        // Re-observing under the same id may flip loopback_only.
+        table.insert(loopback_route("a", "GET", "/b/:x")).unwrap();
+        assert!(
+            table
+                .match_route_for_listener("GET", "/b/1", REMOTE)
+                .is_none()
+        );
+        table.insert(route("a", "GET", "/b/:x")).unwrap();
+        assert!(
+            table
+                .match_route_for_listener("GET", "/b/1", REMOTE)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_unfiltered_lookup_still_sees_loopback_only_routes() {
+        // `match_route` / `allowed_methods` are the normal listener over
+        // loopback: every non-restricted route.
+        let mut table = RouteTable::default();
+        table.insert(loopback_route("mcp", "POST", "/mcp")).unwrap();
+        assert_eq!(table.match_route("POST", "/mcp").unwrap().0.id(), "mcp");
+        assert_eq!(table.allowed_methods("/mcp"), vec!["POST"]);
     }
 }

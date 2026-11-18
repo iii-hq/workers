@@ -18,6 +18,8 @@ use dashmap::DashMap;
 use iii_sdk::channel::ChannelReader;
 use tokio::sync::oneshot;
 
+use crate::routes::Admission;
+
 /// Key of the call metadata that names the request in flight.
 pub const REQUEST_ID_KEY: &str = "request_id";
 
@@ -25,7 +27,7 @@ pub const REQUEST_ID_KEY: &str = "request_id";
 pub struct InFlight {
     /// The request's HTTP span, named after the route once one matches.
     span: tracing::Span,
-    public_webhooks_only: bool,
+    admission: Admission,
     body: Option<Bytes>,
     route: OnceLock<String>,
     response: Mutex<Option<oneshot::Sender<ChannelReader>>>,
@@ -34,7 +36,13 @@ pub struct InFlight {
 impl InFlight {
     /// Whether the restricted listener received the request.
     pub fn public_webhooks_only(&self) -> bool {
-        self.public_webhooks_only
+        self.admission.public_webhooks_only
+    }
+
+    /// What the connection that carried the request may reach: decided by
+    /// the listener and the connection's local address.
+    pub fn admission(&self) -> Admission {
+        self.admission
     }
 
     /// The request's exact bytes; `None` when the body is over the server's
@@ -97,14 +105,14 @@ impl InFlightRequests {
     /// opened the channels.
     pub fn open(
         &self,
-        public_webhooks_only: bool,
+        admission: Admission,
         body: Option<Bytes>,
     ) -> (Ticket, oneshot::Receiver<ChannelReader>) {
         let (sender, receiver) = oneshot::channel();
         let request = Arc::new(InFlight {
             // `open` runs inside the request's instrumented HTTP span.
             span: tracing::Span::current(),
-            public_webhooks_only,
+            admission,
             body,
             route: OnceLock::new(),
             response: Mutex::new(Some(sender)),
@@ -165,10 +173,14 @@ mod tests {
     #[test]
     fn a_request_is_in_flight_until_its_ticket_drops() {
         let requests = InFlightRequests::default();
-        let (ticket, _receiver) = requests.open(true, Some(Bytes::from_static(b"raw")));
+        let (ticket, _receiver) = requests.open(
+            Admission::new(true, false),
+            Some(Bytes::from_static(b"raw")),
+        );
         let id = ticket.id().to_string();
         let request = requests.get(&id).expect("in flight");
         assert!(request.public_webhooks_only());
+        assert_eq!(request.admission(), Admission::new(true, false));
         assert_eq!(request.body().map(|b| b.as_ref()), Some(&b"raw"[..]));
         drop(ticket);
         assert!(requests.get(&id).is_none());
@@ -177,7 +189,7 @@ mod tests {
     #[test]
     fn the_hook_records_the_matched_route_once() {
         let requests = InFlightRequests::default();
-        let (ticket, _receiver) = requests.open(false, None);
+        let (ticket, _receiver) = requests.open(Admission::new(false, false), None);
         assert_eq!(ticket.request().route(), None);
         let request = requests.get(ticket.id()).unwrap();
         request.set_route("GET", "/orders/:id");
@@ -189,13 +201,13 @@ mod tests {
     #[tokio::test]
     async fn the_response_reader_is_handed_over_once() {
         let requests = InFlightRequests::default();
-        let (ticket, receiver) = requests.open(false, Some(Bytes::new()));
+        let (ticket, receiver) = requests.open(Admission::new(false, false), Some(Bytes::new()));
         let request = requests.get(ticket.id()).unwrap();
         assert!(request.hand_over(reader()));
         assert!(!request.hand_over(reader()), "a second reader is refused");
         assert!(receiver.await.is_ok());
 
-        let (ticket, receiver) = requests.open(false, Some(Bytes::new()));
+        let (ticket, receiver) = requests.open(Admission::new(false, false), Some(Bytes::new()));
         drop(receiver);
         assert!(
             !requests.get(ticket.id()).unwrap().hand_over(reader()),

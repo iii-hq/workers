@@ -44,7 +44,7 @@ use tokio::sync::RwLock;
 use crate::configuration::ConfigCell;
 use crate::inflight::{InFlight, InFlightRequests, REQUEST_ID_KEY};
 use crate::middleware::{self, MiddlewareOutcome, error_body, response_value};
-use crate::routes::{Route, RouteTable, log_registered, log_unregistered};
+use crate::routes::{Admission, Route, RouteTable, log_registered, log_unregistered};
 use crate::types::{HttpRequest, HttpRouteArgs, InboundRequest};
 
 /// The function observers declare routes on.
@@ -52,6 +52,10 @@ pub const ON_REQUEST_FN: &str = "http::on-request";
 
 /// Rejection code of an observer whose route collides with a registered one.
 pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
+
+/// Rejection code of an observer whose args are well formed but contradict
+/// each other (`public_webhook` with `loopback_only`).
+pub const HTTP_ROUTE_INVALID: &str = "HTTP_ROUTE_INVALID";
 
 /// Channel buffer size for both request-body and response channels (matches
 /// the engine default in `views.rs`).
@@ -151,6 +155,21 @@ fn internal_error(message: &str) -> Value {
     response_value(500, error_body("INTERNAL_ERROR", message, None))
 }
 
+/// The route an observer `observer_id` with `args` declares: a normalized path
+/// and an uppercased method. Rejects contradictory args with
+/// [`HTTP_ROUTE_INVALID`].
+pub fn route_from_args(observer_id: &str, args: HttpRouteArgs) -> Result<Route, ObserveRejection> {
+    // TDD stub: no validation yet.
+    Ok(Route {
+        observer_id: observer_id.to_string(),
+        http_path: args.path,
+        http_method: args.method.to_uppercase(),
+        public_webhook: args.public_webhook,
+        loopback_only: args.loopback_only,
+        middleware_function_ids: args.middleware_function_ids,
+    })
+}
+
 /// The hooks of [`ON_REQUEST_FN`]: one route per observer in the shared
 /// [`RouteTable`], and delivery of each request to its route's observer.
 #[derive(Clone)]
@@ -167,13 +186,7 @@ impl RouteHooks {
     /// uppercased method.
     pub fn route_for(obs: &Observer) -> Result<Route, ObserveRejection> {
         let args: HttpRouteArgs = obs.args()?;
-        Ok(Route {
-            observer_id: obs.id().to_string(),
-            http_path: args.path,
-            http_method: args.method.to_uppercase(),
-            public_webhook: args.public_webhook,
-            middleware_function_ids: args.middleware_function_ids,
-        })
+        route_from_args(obs.id(), args)
     }
 
     /// The route `method` and `path` match on the listener, with its path
@@ -182,13 +195,15 @@ impl RouteHooks {
         &self,
         method: &str,
         path: &str,
-        public_webhooks_only: bool,
+        admission: Admission,
     ) -> Result<(Route, HashMap<String, String>), Value> {
         let routes = self.routes.read().await;
-        if let Some(matched) = routes.match_route_for_listener(method, path, public_webhooks_only) {
+        if let Some(matched) = routes.match_route_for_listener(method, path, admission) {
             return Ok(matched);
         }
-        let allowed = routes.allowed_methods_for_listener(path, public_webhooks_only);
+        // Routes the connection may not reach are absent here too, so a path
+        // whose only routes are refused is a 404, never a 405 with Allow.
+        let allowed = routes.allowed_methods_for_listener(path, admission);
         Err(if allowed.is_empty() {
             not_found()
         } else {
@@ -255,10 +270,14 @@ impl RemovedHook for RouteHooks {
 impl DeliverHook for RouteHooks {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
         let in_flight = request_id(&call).and_then(|id| self.requests.get(id));
-        let public_webhooks_only = in_flight.as_ref().is_some_and(|r| r.public_webhooks_only());
+        // No request in flight: the call did not come from this worker's
+        // server; admit as the normal listener on a non-loopback connection.
+        let admission = in_flight
+            .as_ref()
+            .map_or(Admission::new(false, false), |r| r.admission());
         let field = |name: &str| call.input.get(name).and_then(Value::as_str).unwrap_or("");
         let (route, path_params) = match self
-            .match_route(field("method"), field("path"), public_webhooks_only)
+            .match_route(field("method"), field("path"), admission)
             .await
         {
             Ok(matched) => matched,
@@ -397,5 +416,59 @@ mod tests {
         assert_eq!(rejected.status_code, 422);
         assert_eq!(rejected.body["error"]["code"], "CONDITION_NOT_MET");
         assert_eq!(rejected.body["skipped"], true);
+    }
+
+    fn args(value: Value) -> HttpRouteArgs {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_route_carries_loopback_only_from_its_args() {
+        let route = route_from_args(
+            "obs-mcp",
+            args(json!({"method": "post", "path": "/mcp", "loopback_only": true})),
+        )
+        .unwrap();
+        assert_eq!(route.observer_id, "obs-mcp");
+        assert_eq!(route.http_method, "POST");
+        assert_eq!(route.http_path, "/mcp");
+        assert!(route.loopback_only);
+        assert!(!route.public_webhook);
+
+        let route =
+            route_from_args("obs-a", args(json!({"method": "GET", "path": "/a/{id}"}))).unwrap();
+        assert_eq!(route.http_path, "/a/:id");
+        assert!(!route.loopback_only);
+        let route = route_from_args(
+            "obs-hook",
+            args(json!({"method": "POST", "path": "/hook", "public_webhook": true})),
+        )
+        .unwrap();
+        assert!(route.public_webhook);
+        assert!(!route.loopback_only);
+    }
+
+    #[test]
+    fn public_webhook_and_loopback_only_together_are_rejected() {
+        let rejection = route_from_args(
+            "obs-both",
+            args(json!({
+                "method": "POST",
+                "path": "/hook",
+                "public_webhook": true,
+                "loopback_only": true,
+            })),
+        )
+        .unwrap_err();
+        assert_eq!(rejection.code, HTTP_ROUTE_INVALID);
+        assert!(rejection.message.contains("public_webhook"), "{rejection}");
+        assert!(rejection.message.contains("loopback_only"), "{rejection}");
+        assert!(rejection.message.contains("POST /hook"), "{rejection}");
+    }
+
+    #[test]
+    fn the_description_documents_loopback_only() {
+        assert!(ON_REQUEST_DESCRIPTION.contains("loopback_only"));
+        assert!(ON_REQUEST_DESCRIPTION.contains("public_webhook"));
     }
 }

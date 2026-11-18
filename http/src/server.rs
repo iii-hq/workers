@@ -61,7 +61,7 @@ use crate::config::RestApiConfig;
 use crate::configuration::ConfigCell;
 use crate::handler::{self, AppState};
 use crate::inflight::InFlightRequests;
-use crate::routes::RouteTable;
+use crate::routes::{Admission, RouteTable};
 
 /// Sentinel meaning "any origin" in CORS config.
 const ALLOW_ORIGIN_ANY: &str = "*";
@@ -187,6 +187,10 @@ pub struct HotRouter {
     /// Present only on the normal router; kept even while disabled so reload
     /// can enable the restricted listener without registering another provider.
     pub webhook: Option<Arc<WebhookServer>>,
+    /// The local address of the accepted connection this clone serves, set
+    /// by [`MakeHotRouterService`] per connection; `None` on the shared
+    /// router, whose requests are then treated as non-loopback.
+    pub connection_local_addr: Option<SocketAddr>,
 }
 
 pub struct WebhookServer {
@@ -203,9 +207,15 @@ impl Service<Request<Body>> for HotRouter {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
+    fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let router_arc = self.inner.clone();
         let state = self.state.clone();
+        // Decided per connection, from the socket's own local address, and
+        // read on every request: a rebind never changes what an accepted
+        // connection may reach.
+        let admission =
+            Admission::for_connection(state.public_webhooks_only, self.connection_local_addr);
+        req.extensions_mut().insert(admission);
         Box::pin(async move {
             // The restricted listener faces the internet: a request no
             // public route matches is refused here, before CORS (which
@@ -216,10 +226,10 @@ impl Service<Request<Body>> for HotRouter {
             if state.public_webhooks_only {
                 let table = state.routes.read().await;
                 if table
-                    .match_route_for_listener(req.method().as_str(), req.uri().path(), true)
+                    .match_route_for_listener(req.method().as_str(), req.uri().path(), admission)
                     .is_none()
                 {
-                    let allowed = table.allowed_methods_for_listener(req.uri().path(), true);
+                    let allowed = table.allowed_methods_for_listener(req.uri().path(), admission);
                     let status = if allowed.is_empty() {
                         StatusCode::NOT_FOUND
                     } else {
@@ -261,7 +271,8 @@ impl Service<Request<Body>> for HotRouter {
 }
 
 /// The `MakeService` handed to `axum::serve`: yields a clone of the shared
-/// [`HotRouter`] for each accepted connection. Ported from the engine.
+/// [`HotRouter`] for each accepted connection, carrying that connection's
+/// local address (see [`Admission`]). Ported from the engine.
 pub struct MakeHotRouterService {
     pub router: HotRouter,
 }
@@ -275,8 +286,9 @@ impl<'a> Service<IncomingStream<'a, TcpListener>> for MakeHotRouterService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _req: IncomingStream<'a, TcpListener>) -> Self::Future {
-        let router = self.router.clone();
+    fn call(&mut self, stream: IncomingStream<'a, TcpListener>) -> Self::Future {
+        let mut router = self.router.clone();
+        router.connection_local_addr = stream.io().local_addr().ok();
         Box::pin(async move { Ok(router) })
     }
 }
@@ -321,6 +333,7 @@ pub async fn serve(
             public_webhooks_only: true,
         }),
         webhook: None,
+        connection_local_addr: None,
     };
     let webhook_control =
         webhook_listener.map(|listener| spawn_server(listener, webhook_router.clone()));
@@ -337,6 +350,7 @@ pub async fn serve(
             hot_router: webhook_router,
             control: Arc::new(Mutex::new(webhook_control)),
         })),
+        connection_local_addr: None,
     };
 
     let control = spawn_server(listener, hot_router.clone());

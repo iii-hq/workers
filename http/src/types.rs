@@ -207,6 +207,14 @@ pub struct HttpRouteArgs {
     /// opt-in only; the default keeps the route on the normal listener.
     #[serde(default)]
     pub public_webhook: bool,
+    /// Serve this route only on connections accepted on a loopback local
+    /// address (`127.0.0.0/8`, `::1`, `::ffff:127.x`). Explicit opt-in only;
+    /// decided per connection, so a rebind to a public address never exposes
+    /// it, while local clients still reach it on a `0.0.0.0` bind. Elsewhere
+    /// the route does not exist (404). Cannot be combined with
+    /// `public_webhook`.
+    #[serde(default)]
+    pub loopback_only: bool,
     /// Functions run before the target, in list order, after any global
     /// middleware.
     #[serde(default)]
@@ -470,6 +478,7 @@ mod tests {
         assert_eq!(args.method, "GET");
         assert_eq!(args.path, "/a");
         assert!(!args.public_webhook);
+        assert!(!args.loopback_only);
         assert!(args.middleware_function_ids.is_empty());
     }
 
@@ -490,13 +499,61 @@ mod tests {
             "method": "post",
             "path": "/users/{userId}/tasks/{tid}",
             "public_webhook": true,
+            "loopback_only": false,
             "middleware_function_ids": ["mw-1"],
         }))
         .unwrap();
         assert_eq!(args.method, "post");
         assert_eq!(args.path, "/users/:userId/tasks/:tid");
         assert!(args.public_webhook);
+        assert!(!args.loopback_only);
         assert_eq!(args.middleware_function_ids, vec!["mw-1"]);
+    }
+
+    #[test]
+    fn http_route_args_default_loopback_only_to_false() {
+        let args: HttpRouteArgs =
+            serde_json::from_value(json!({"method": "POST", "path": "/mcp"})).unwrap();
+        assert!(!args.loopback_only);
+    }
+
+    #[test]
+    fn http_route_args_parse_loopback_only() {
+        let args: HttpRouteArgs = serde_json::from_value(
+            json!({"method": "POST", "path": "/mcp", "loopback_only": true}),
+        )
+        .unwrap();
+        assert!(args.loopback_only);
+        assert!(!args.public_webhook);
+        let args: HttpRouteArgs = serde_json::from_value(
+            json!({"method": "POST", "path": "/mcp", "loopback_only": false}),
+        )
+        .unwrap();
+        assert!(!args.loopback_only);
+    }
+
+    #[test]
+    fn http_route_args_refuse_a_non_boolean_loopback_only() {
+        for value in [json!("true"), json!(1), json!(null), json!({})] {
+            assert!(
+                serde_json::from_value::<HttpRouteArgs>(
+                    json!({"method": "POST", "path": "/mcp", "loopback_only": value}),
+                )
+                .is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_route_args_schema_documents_an_optional_loopback_only() {
+        let schema = serde_json::to_value(schemars::schema_for!(HttpRouteArgs)).unwrap();
+        let property = &schema["properties"]["loopback_only"];
+        assert_eq!(property["type"], "boolean");
+        assert_eq!(property["default"], false);
+        let description = property["description"].as_str().unwrap();
+        assert!(description.contains("loopback"), "{description}");
+        assert!(description.contains("public_webhook"), "{description}");
     }
 
     #[test]

@@ -53,7 +53,7 @@ use crate::configuration::ConfigCell;
 use crate::inflight::{InFlightRequests, REQUEST_ID_KEY};
 use crate::middleware::{self, generate_error_id};
 use crate::on_request::ON_REQUEST_FN;
-use crate::routes::RouteTable;
+use crate::routes::{Admission, RouteTable};
 use crate::types::{ControlMessage, HttpResponse, InboundRequest};
 
 /// Shared state injected into the handler via an axum `Extension`.
@@ -69,6 +69,15 @@ pub struct AppState {
     pub config: ConfigCell,
     /// Set only by the listener, never from a request header or query parameter.
     pub public_webhooks_only: bool,
+}
+
+impl AppState {
+    /// The admission of a request without a per-connection [`Admission`]
+    /// extension: this listener's, on a connection that is not loopback
+    /// (fail closed).
+    pub fn fallback_admission(&self) -> Admission {
+        Admission::new(self.public_webhooks_only, false)
+    }
 }
 
 /// Maximum request body size read into memory. A larger body is answered
@@ -236,6 +245,7 @@ fn buffered(result: Result<Result<Value, Error>, tokio::task::JoinError>, path: 
 /// response channel) to an HTTP response.
 pub async fn dynamic_handler(
     Extension(state): Extension<Arc<AppState>>,
+    admission: Option<Extension<Admission>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -243,6 +253,8 @@ pub async fn dynamic_handler(
     body: Body,
 ) -> Response {
     let actual_path = uri.path().to_string();
+    // Set per connection by `HotRouter` from the socket's local address.
+    let admission = admission.map_or_else(|| state.fallback_admission(), |Extension(a)| a);
 
     // Read once for the whole request, so `default_timeout` reflects the
     // latest hot-reloaded value (see `crate::configuration`) while staying
@@ -362,7 +374,7 @@ pub async fn dynamic_handler(
             body: parsed_body,
         };
 
-        let (ticket, opened) = state.requests.open(state.public_webhooks_only, body_bytes);
+        let (ticket, opened) = state.requests.open(admission, body_bytes);
         let response = respond(&state, request, ticket.id(), opened, default_timeout).await;
         record_status(
             response,
