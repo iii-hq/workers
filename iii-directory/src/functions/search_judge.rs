@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::{CallRequest, IIIClient};
+use iii_sdk::{CallRequest, CallRequestWithMetadata, IIIClient};
 use judge_contract::{Content, EvaluateRequest, Evaluation, Question, Stats};
 use serde::Serialize;
 use serde_json::Value;
@@ -159,6 +159,9 @@ pub struct JudgeSearch {
     /// Advertised limits per judge provider (`""` = the hub's default), each
     /// with the instant it was read.
     window: Arc<Mutex<HashMap<String, (Instant, Limits)>>>,
+    /// Namespace hosting the judge when this worker's own does not (`None`:
+    /// call it unqualified).
+    namespace: Arc<Mutex<Option<String>>>,
 }
 
 /// What the judge's models advertise, read at the paired instant: the
@@ -264,6 +267,20 @@ impl JudgeSearch {
             transport,
             paused_until: Arc::default(),
             window: Arc::default(),
+            namespace: Arc::default(),
+        }
+    }
+
+    /// Route the judge calls to `namespace` (`None`: this worker's own).
+    pub fn set_namespace(&self, namespace: Option<String>) {
+        *self.namespace.lock().expect("judge namespace") = namespace;
+    }
+
+    /// `request`, sent to the judge's namespace when one is set.
+    fn routed(&self, request: CallRequest) -> CallRequestWithMetadata {
+        match self.namespace.lock().expect("judge namespace").clone() {
+            Some(namespace) => request.namespace(namespace),
+            None => request.into(),
         }
     }
 
@@ -339,12 +356,12 @@ impl JudgeSearch {
         }
         let reply = match &self.transport {
             Transport::Bus(iii) => iii
-                .call(CallRequest {
+                .call(self.routed(CallRequest {
                     function_id: judge_contract::MODELS_FUNCTION_ID.into(),
                     payload,
                     action: None,
                     timeout_ms: Some(budget),
-                })
+                }))
                 .await
                 .ok()?,
             #[cfg(test)]
@@ -576,13 +593,15 @@ impl JudgeSearch {
         };
         let reply = match &self.transport {
             Transport::Bus(iii) => iii
-                .call(CallRequest {
-                    function_id: judge_contract::FUNCTION_ID.into(),
-                    payload: request_payload(&request, session_provider().as_deref())
-                        .ok_or_else(|| fail(JudgeError::PayloadTooLarge))?,
-                    action: None,
-                    timeout_ms: Some(remaining),
-                })
+                .call(
+                    self.routed(CallRequest {
+                        function_id: judge_contract::FUNCTION_ID.into(),
+                        payload: request_payload(&request, session_provider().as_deref())
+                            .ok_or_else(|| fail(JudgeError::PayloadTooLarge))?,
+                        action: None,
+                        timeout_ms: Some(remaining),
+                    }),
+                )
                 .await
                 .map_err(|error| fail(bus_error(error)))?,
             #[cfg(test)]
@@ -1134,6 +1153,22 @@ mod tests {
 
     fn one_reply(body: Value) -> (JudgeSearch, Requests) {
         recorder(move |_| Ok(body.clone()))
+    }
+
+    #[test]
+    fn judge_calls_name_the_namespace_set_for_them() {
+        let judge = JudgeSearch::default();
+        let request = || CallRequest {
+            function_id: judge_contract::FUNCTION_ID.into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: None,
+        };
+        assert!(format!("{:?}", judge.routed(request())).contains("namespace: None"));
+        judge.set_namespace(Some("hub".into()));
+        assert!(format!("{:?}", judge.routed(request())).contains("namespace: Some(\"hub\")"));
+        judge.set_namespace(None);
+        assert!(format!("{:?}", judge.routed(request())).contains("namespace: None"));
     }
 
     #[test]

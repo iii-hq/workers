@@ -161,6 +161,16 @@ pub struct Deps {
     pub iii: Option<Arc<IIIClient>>,
 }
 
+impl Deps {
+    /// This worker's engine namespace (its SDK's), else `default`.
+    pub fn own_namespace(&self) -> String {
+        self.iii
+            .as_ref()
+            .and_then(|iii| iii.namespace())
+            .unwrap_or_else(|| "default".to_string())
+    }
+}
+
 const SESSIONS_CAP: usize = 1024;
 
 /// Per-session memory: which candidates search already delivered (repeat
@@ -1380,6 +1390,11 @@ pub async fn search_functions(
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
     let judge = judge_deadline(&cfg, &tools, &deps.judge);
+    deps.judge.set_namespace(call_namespace(
+        &tools,
+        judge_contract::FUNCTION_ID,
+        &deps.own_namespace(),
+    ));
     let fingerprint = tool_fingerprint(&tools);
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();
@@ -1889,6 +1904,17 @@ fn judge_deadline(
         tokio::time::Instant::now()
             + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms)
     })
+}
+
+/// The namespace a worker in `own` must name to call `function_id`: `None`
+/// (its own) when `own` holds the id or the catalog places it nowhere, else
+/// the first namespace that holds it.
+pub fn call_namespace(catalog: &[ToolSchema], function_id: &str, own: &str) -> Option<String> {
+    let tool = catalog.iter().find(|tool| tool.name == function_id)?;
+    if tool.namespaces.iter().any(|namespace| namespace == own) {
+        return None;
+    }
+    tool.namespaces.first().cloned()
 }
 
 /// Per capability, the documents the judge scores. A corpus of at most
@@ -2874,6 +2900,21 @@ mod tests {
             parameters: json!({ "type": "object" }),
             namespaces: namespaces.iter().map(|n| n.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn call_namespace_stays_unqualified_when_own_namespace_holds_the_id() {
+        let judge = |ns: &[&str]| vec![namespaced("judge::evaluate", ns)];
+        assert_eq!(
+            call_namespace(&judge(&["default", "proj"]), "judge::evaluate", "proj"),
+            None
+        );
+        assert_eq!(
+            call_namespace(&judge(&["default", "hub"]), "judge::evaluate", "proj").as_deref(),
+            Some("default")
+        );
+        assert_eq!(call_namespace(&judge(&[]), "judge::evaluate", "proj"), None);
+        assert_eq!(call_namespace(&[], "judge::evaluate", "proj"), None);
     }
 
     async fn search_as(

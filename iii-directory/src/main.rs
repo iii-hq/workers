@@ -43,6 +43,7 @@ use iii_directory::functions::download::{
     InFlightGuard, download_worker_skills, reconcile_decision, refresh_decision,
 };
 use iii_directory::functions::registry::RegistryCache;
+use iii_directory::functions::search::call_namespace;
 use iii_directory::functions::search_index::ToolSchema;
 use iii_directory::functions::skills::{
     ENGINE_NAMESPACE, RegisteredWorkersCache, compose_status_request, make_registered_cache,
@@ -238,8 +239,9 @@ async fn main() -> Result<()> {
     let judge = search_deps.judge.clone();
     let follower = iii.clone();
     let judge_catalog = search_catalog.clone();
+    let own = search_deps.own_namespace();
     tokio::spawn(async move {
-        while !judge_hub_installed(&judge_catalog.read().await) {
+        while !judge_hub_installed(&judge_catalog.read().await, &own) {
             tokio::time::sleep(JUDGE_HUB_CHECK_INTERVAL).await;
         }
         match iii_config_client::follow(
@@ -429,9 +431,12 @@ const JUDGE_HUB_FN: &str = "judge::evaluate";
 /// How often the judge-config follower re-reads the local catalog for the hub.
 const JUDGE_HUB_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Whether the judge hub is installed, by its entry point in `catalog`.
-fn judge_hub_installed(catalog: &[ToolSchema]) -> bool {
+/// Whether the judge hub is installed where this worker (in `own`) calls it
+/// unqualified, by its entry point in `catalog`.
+fn judge_hub_installed(catalog: &[ToolSchema], own: &str) -> bool {
+    // shortcut: config-client follow() takes no namespace, so a judge hub in another namespace is not followed and its window cache just expires; add a namespace to follow() if that matters.
     catalog.iter().any(|tool| tool.name == JUDGE_HUB_FN)
+        && call_namespace(catalog, JUDGE_HUB_FN, own).is_none()
 }
 
 /// Register the internal `directory::__on_workers_changed` handler and
@@ -843,14 +848,31 @@ mod tests {
             parameters: json!({ "type": "object" }),
             namespaces: Vec::new(),
         };
-        assert!(!judge_hub_installed(&[]));
-        assert!(!judge_hub_installed(&[
-            tool("judge-typesafe::evaluate"),
-            tool("directory::search_functions"),
-        ]));
-        assert!(judge_hub_installed(&[
-            tool("state::get"),
-            tool("judge::evaluate")
-        ]));
+        assert!(!judge_hub_installed(&[], "proj"));
+        assert!(!judge_hub_installed(
+            &[
+                tool("judge-typesafe::evaluate"),
+                tool("directory::search_functions"),
+            ],
+            "proj"
+        ));
+        assert!(judge_hub_installed(
+            &[tool("state::get"), tool("judge::evaluate")],
+            "proj"
+        ));
+        assert!(!judge_hub_installed(
+            &[ToolSchema {
+                namespaces: vec!["default".into()],
+                ..tool("judge::evaluate")
+            }],
+            "proj"
+        ));
+        assert!(judge_hub_installed(
+            &[ToolSchema {
+                namespaces: vec!["proj".into()],
+                ..tool("judge::evaluate")
+            }],
+            "proj"
+        ));
     }
 }
