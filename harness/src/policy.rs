@@ -244,7 +244,7 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
 }
 
 /// The single `agent_call` schema attached by default — the model calls
-/// any allowed function via `{ function, description, payload }`. The
+/// any allowed function via `{ function, namespace?, description, payload }`. The
 /// `description` label names the session's response language (unknown: the
 /// one the session context names), so a model never guesses one.
 pub fn agent_call_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
@@ -263,6 +263,10 @@ pub fn agent_call_schema(language: Option<&ResponseLanguage>) -> AgentFunction {
             "type": "object",
             "properties": {
                 "function": { "type": "string", "description": "Target iii function id." },
+                "namespace": {
+                    "type": "string",
+                    "description": "Engine namespace to call the function in. Omit it to call in your own namespace."
+                },
                 "description": {
                     "type": "string",
                     "minLength": 1,
@@ -312,12 +316,15 @@ pub struct PlannedCall {
     pub function_id: String,
     pub arguments: Value,
     pub kind: CallKind,
+    /// The `agent_call` envelope's `namespace`; `None` when absent or blank,
+    /// for native calls and for `submit_result`.
+    pub namespace: Option<String>,
 }
 
 /// Extract the planned calls from an assistant message in content order. In
-/// `agent_call` exposure the wrapper carries `{ function, description,
-/// payload }`; in
-/// native exposure the block's `function_id` is the target directly.
+/// `agent_call` exposure the wrapper carries `{ function, namespace?,
+/// description, payload }`; in native exposure the block's `function_id` is
+/// the target directly.
 pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<PlannedCall> {
     let mut out = Vec::new();
     for block in &message.content {
@@ -333,16 +340,22 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                     function_id: SUBMIT_RESULT_NAME.to_string(),
                     arguments: arguments.clone(),
                     kind: CallKind::SubmitResult,
+                    namespace: None,
                 });
                 continue;
             }
-            let (target, mut payload) =
+            let (target, mut payload, mut namespace) =
                 if is_agent_call_name(function_id) || expose == ExposeMode::AgentCall {
-                    let target = arguments
-                        .get("function")
+                    // Only a real wrapper (a string `function`) has an envelope
+                    // `namespace`; a native-shaped call keeps its own argument.
+                    let wrapper = arguments.get("function").and_then(Value::as_str);
+                    let namespace = wrapper
+                        .and(arguments.get("namespace"))
                         .and_then(Value::as_str)
-                        .unwrap_or(function_id)
-                        .to_string();
+                        .map(str::trim)
+                        .filter(|ns| !ns.is_empty())
+                        .map(str::to_string);
+                    let target = wrapper.unwrap_or(function_id).to_string();
                     let payload = match arguments.get("payload") {
                         // A stringified payload is always wrong (the schema says
                         // object): recover the object when the text is one.
@@ -369,13 +382,25 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                             // recovery logic hoists flattened target args, so
                             // explicitly strip the new display-only field.
                             map.remove("description");
+                            if wrapper.is_some() {
+                                map.remove("namespace");
+                            }
                             Value::Object(map)
                         }
                     };
-                    (target, payload)
+                    (target, payload, namespace)
                 } else {
-                    (function_id.clone(), arguments.clone())
+                    (function_id.clone(), arguments.clone(), None)
                 };
+            // `engine::*` ids exist only in `default`, so a namespace beside a
+            // contract lookup can only mean the namespace to look up.
+            if target == "engine::functions::info"
+                && let Value::Object(p) = &mut payload
+                && !p.contains_key("namespace")
+                && let Some(ns) = namespace.take()
+            {
+                p.insert("namespace".to_string(), Value::String(ns));
+            }
             // Degradation markers on the wrapper must survive the unwrap: a
             // max_tokens cut landing after a complete `payload` salvages to
             // `{function, payload, _partial: true}`, and arguments that were
@@ -397,6 +422,7 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                 function_id: target,
                 arguments: payload,
                 kind: CallKind::Call,
+                namespace,
             });
         }
     }
@@ -762,6 +788,92 @@ mod tests {
         assert_eq!(
             calls[0].arguments,
             json!({ "function_id": "state::on-changed", "filters": { "input.key": { "$eq": "k" } } })
+        );
+    }
+
+    fn planned(args: Value) -> PlannedCall {
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_CALL_NAME.into(),
+            arguments: args,
+        }]);
+        plan_calls(&msg, ExposeMode::AgentCall).remove(0)
+    }
+
+    #[test]
+    fn agent_call_namespace_is_planned_beside_the_target_never_in_the_payload() {
+        let call = planned(
+            json!({ "function": "shell::exec", "namespace": "laptop", "description": "d", "payload": { "cmd": "ls" } }),
+        );
+        assert_eq!(
+            (call.namespace.as_deref(), call.arguments),
+            (Some("laptop"), json!({ "cmd": "ls" }))
+        );
+        let flat = planned(
+            json!({ "function": "shell::exec", "namespace": "laptop", "description": "d", "cmd": "ls" }),
+        );
+        assert_eq!(
+            (flat.namespace.as_deref(), flat.arguments),
+            (Some("laptop"), json!({ "cmd": "ls" }))
+        );
+        assert_eq!(
+            planned(json!({ "function": "shell::exec", "namespace": "  ", "payload": {} }))
+                .namespace,
+            None
+        );
+        // A native-shaped call (the tool name is the target, no `function`
+        // key) keeps its own `namespace` argument and runs as today.
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: "directory::search_functions".into(),
+            arguments: json!({ "query": "q", "namespace": "laptop" }),
+        }]);
+        let native = plan_calls(&msg, ExposeMode::AgentCall).remove(0);
+        assert_eq!(
+            (native.namespace, native.arguments),
+            (None, json!({ "query": "q", "namespace": "laptop" }))
+        );
+    }
+
+    #[test]
+    fn a_namespace_beside_a_contract_lookup_is_the_lookup_namespace() {
+        for args in [
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"] } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "function_ids": ["shell::exec"] }),
+            json!({ "function": "engine::functions::info", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
+        ] {
+            let call = planned(args);
+            assert_eq!(
+                (call.namespace, call.arguments),
+                (
+                    None,
+                    json!({ "function_ids": ["shell::exec"], "namespace": "laptop" })
+                )
+            );
+        }
+        let both = planned(
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_id": "a::b", "namespace": "hub" } }),
+        );
+        assert_eq!(
+            (
+                both.namespace.as_deref(),
+                both.arguments["namespace"].clone()
+            ),
+            (Some("laptop"), json!("hub"))
+        );
+    }
+
+    #[test]
+    fn agent_call_schema_offers_an_optional_namespace() {
+        let schema = agent_call_schema(None);
+        assert_eq!(
+            schema.parameters["properties"]["namespace"],
+            json!({ "type": "string",
+                "description": "Engine namespace to call the function in. Omit it to call in your own namespace." })
+        );
+        assert_eq!(
+            schema.parameters["required"],
+            json!(["function", "description"])
         );
     }
 
