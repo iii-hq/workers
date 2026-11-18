@@ -186,13 +186,14 @@ struct Session {
     /// `sent_through` cannot be rolled back over them. Every backlog carries
     /// them, whatever its `Last-Event-ID`, until the client shows it has
     /// one (see `written`) or the cap drops it. A write does not settle
-    /// it: the client can drop before reading. Value: where it was last
-    /// written, (stream generation, write order).
-    unsent: std::collections::BTreeMap<u64, Option<(u64, u64)>>,
-    /// Where each buffered SSE observation was last written: (stream
-    /// generation, write order). A client resuming from `Last-Event-ID` L
-    /// has every owed observation its stream wrote at or before L.
-    written: HashMap<u64, (u64, u64)>,
+    /// it: the client can drop before reading. Value: each write of it
+    /// since it became owed, as (stream generation, write order).
+    unsent: std::collections::BTreeMap<u64, Vec<(u64, u64)>>,
+    /// Every write of each buffered SSE observation: (stream generation,
+    /// write order). A client resuming from `Last-Event-ID` L got L from one
+    /// of the streams that wrote it, so an owed observation is settled only
+    /// if every one of them wrote it before L.
+    written: HashMap<u64, Vec<(u64, u64)>>,
     /// Counts successful writes, for `written`.
     write_order: u64,
 }
@@ -641,10 +642,17 @@ impl Sessions {
         session.last_seen = Instant::now();
         // The client has `last_event_id` and, the stream being ordered,
         // everything its stream wrote before it: those owed are settled.
-        if let Some(&(stream, order)) = last_event_id.and_then(|l| session.written.get(&l)) {
-            session
-                .unsent
-                .retain(|_, w| !matches!(w, Some((g, o)) if *g == stream && *o <= order));
+        if let Some(at_l) = last_event_id
+            .and_then(|l| session.written.get(&l))
+            .filter(|w| !w.is_empty())
+            .cloned()
+        {
+            // Settled only if every stream that wrote L wrote it first.
+            session.unsent.retain(|_, writes| {
+                !at_l
+                    .iter()
+                    .all(|(g, o)| writes.iter().any(|(gx, ox)| gx == g && ox <= o))
+            });
         }
         let after = last_event_id.unwrap_or(session.sent_through);
         let mut backlog = Vec::new();
@@ -731,9 +739,9 @@ impl Sessions {
         if written {
             session.write_order += 1;
             let at = (generation, session.write_order);
-            session.written.insert(id, at);
+            session.written.entry(id).or_default().push(at);
             if let Some(w) = session.unsent.get_mut(&id) {
-                *w = Some(at);
+                w.push(at);
             }
             return;
         }
@@ -741,7 +749,7 @@ impl Sessions {
             session.sent_through = f.prev;
         } else {
             // A later event already counts as sent: keep this one owed.
-            session.unsent.insert(id, None);
+            session.unsent.entry(id).or_default();
         }
         if session.stream_gen != generation && !f.covered {
             let observation = session
@@ -2188,5 +2196,21 @@ mod tests {
             "{:?}",
             backlog_ids(&backlog)
         );
+    }
+
+    #[tokio::test]
+    async fn an_event_written_on_two_streams_settles_nothing_it_cannot_vouch_for() {
+        // 1 is owed; B wrote 2. C replays from 0 and writes 1, then 2, but
+        // the client reads none of C. It resumes from 2, which it got from
+        // B: that says nothing about 1, so 1 stays owed.
+        let (s, sid, one, two) = owed_one_after_two().await;
+        let (backlog_c, _rx_c, c) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert_eq!(backlog_ids(&backlog_c), vec![one, two]);
+        for id in [one, two] {
+            assert!(s.claim_stream_item(&sid, c, Some(id)));
+            s.finish_stream_item(&sid, c, id, true);
+        }
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert_eq!(backlog_ids(&backlog), vec![one], "2 could have come from B");
     }
 }
