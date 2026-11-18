@@ -689,7 +689,8 @@ impl Sessions {
         // a failure there needs no resend here.
         let ids = backlog_ids_of(&backlog);
         for f in session.in_flight.iter_mut() {
-            f.covered = f.covered || ids.contains(&f.id);
+            // Only the stream that now owns the session can still send it.
+            f.covered = ids.contains(&f.id);
         }
         let (tx, rx) = mpsc::channel(self.limits.max_buffered.max(1));
         session.stream = Some(tx);
@@ -762,10 +763,10 @@ impl Sessions {
         }
         if session.sent_through == id {
             session.sent_through = f.prev;
-        } else {
-            // A later event already counts as sent: keep this one owed.
-            session.unsent.entry(id).or_default();
         }
+        // Owed until the client shows it has it: whichever stream sends it
+        // next may drop first, after writing later events.
+        session.unsent.entry(id).or_default();
         if session.stream_gen != generation && !f.covered {
             let observation = session
                 .buffer
@@ -2254,5 +2255,30 @@ mod tests {
             vec![one],
             "B's pending 2 may be what it got"
         );
+    }
+
+    #[tokio::test]
+    async fn a_replay_that_covered_a_write_is_replaced_before_sending_it() {
+        // A claims 1. B replays from 0 (covers 1) but is replaced by C,
+        // without Last-Event-ID, before writing it. A's write fails. C
+        // writes 2; the client resumes from 2: 1 must still come.
+        let (s, sid, a, one, _rx_a) = claimed_by_a().await;
+        let (backlog_b, _rx_b, _) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert!(backlog_ids(&backlog_b).contains(&one));
+        let (backlog_c, mut rx_c, c) = s.attach_stream(&sid, None).unwrap();
+        assert!(!backlog_ids(&backlog_c).contains(&one), "claimed");
+        s.finish_stream_item(&sid, a, one, false);
+        assert!(s.deliver(observation("obs-1", json!(2))));
+        let mut got = vec![];
+        while let Ok(StreamItem::Observation { id, .. }) = rx_c.try_recv() {
+            got.push(id);
+        }
+        assert!(got.contains(&one), "C must send 1: {got:?}");
+        let two = *got.iter().max().unwrap();
+        assert!(s.claim_stream_item(&sid, c, Some(two)));
+        s.finish_stream_item(&sid, c, two, true);
+        // C dropped before writing 1: a resume from 2 still owes it.
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert_eq!(backlog_ids(&backlog), vec![one]);
     }
 }
