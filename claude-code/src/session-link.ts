@@ -31,11 +31,14 @@ function title(task: string): string {
 export async function linkChildSession(
   iii: IIIClient,
   options: { sessionId: string; parentSessionId?: string; task: string },
-): Promise<{ linked: boolean; detail: string }> {
+): Promise<{ linked: boolean; detail: string; owner: Ownership }> {
   const metadata: Record<string, unknown> = { agent: 'claude-code' };
   if (options.parentSessionId) metadata.parent_session_id = options.parentSessionId;
   try {
-    await iii.call({
+    // `ensure` answers with the session's STORED metadata — for a session it
+    // just created that is ours, for an existing one it is whoever made it.
+    // That is the ownership evidence; the call succeeding is not.
+    const res = await iii.call<unknown, { meta?: { metadata?: Record<string, unknown> } } | null>({
       function_id: 'session::ensure',
       payload: {
         session_id: options.sessionId,
@@ -44,12 +47,18 @@ export async function linkChildSession(
       },
       timeoutMs: TIMEOUT_MS,
     });
-    return { linked: true, detail: '' };
+    const stored = res?.meta?.metadata;
+    const owner: Ownership = !stored
+      ? 'unknown'
+      : stored.agent === 'claude-code'
+        ? 'child'
+        : 'other';
+    return { linked: true, detail: '', owner };
   } catch (err) {
     // A missing session-manager costs the console its session tree, not the run.
     const detail = `session::ensure failed for ${options.sessionId}: ${String(err)}`;
     console.warn(`claude-code: ${detail}`);
-    return { linked: false, detail };
+    return { linked: false, detail, owner: 'unknown' };
   }
 }
 
@@ -115,33 +124,6 @@ export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): P
 }
 
 /**
- * Persist one message into the child session's transcript.
- *
- * The `claude::on-agent-event` feed is a live tape: a console window opened after the run has
- * nothing to replay from it, which is why a finished sub-agent used to render
- * blank with `message_count: 0`. The session manager is the durable side, and
- * the console reads it with `session::messages`. Best-effort, like the rest of
- * this module: a missing session manager costs the replay, not the run.
- */
-export async function appendMessage(
-  iii: IIIClient,
-  sessionId: string,
-  message: unknown,
-): Promise<boolean> {
-  try {
-    await iii.call({
-      function_id: 'session::append',
-      payload: { session_id: sessionId, message },
-      timeoutMs: TIMEOUT_MS,
-    });
-    return true;
-  } catch (err) {
-    console.warn(`claude-code: session::append failed for ${sessionId}: ${String(err)}`);
-    return false;
-  }
-}
-
-/**
  * Who owns `sessionId` in session-manager. `child` is a session this worker
  * created (`metadata.agent: 'claude-code'`) — a run with `parent_session_id`
  * links one, and an orchestrator resumes it with `claude::start { session_id }`
@@ -198,40 +180,4 @@ export function toSessionMessage(message: Record<string, unknown>): Record<strin
         }
       : null,
   };
-}
-
-/**
- * Write a finished turn into the child session: what was asked, then every
- * message the turn produced, in order. Called once per turn, before the
- * session reads `done` — the live view is the claude::on-agent-event feed,
- * this is what a window opened later replays. `terminalStop` is how the turn
- * ended (the SDK result subtype); it lands on the LAST assistant message only,
- * so a turn that hit `error_max_turns` after an assistant reply does not read
- * as a clean `end`. Earlier messages keep their own reason.
- */
-export async function appendTranscript(
-  iii: IIIClient,
-  sessionId: string,
-  task: string,
-  messages: unknown[],
-  terminalStop?: string,
-): Promise<void> {
-  const asked = {
-    role: 'user',
-    content: [{ type: 'text', text: task }],
-    timestamp: Date.now(),
-  };
-  if (!(await appendMessage(iii, sessionId, asked))) return;
-  const records = messages as Array<Record<string, unknown>>;
-  let last = -1;
-  records.forEach((message, index) => {
-    if (message.role === 'assistant') last = index;
-  });
-  for (const [index, message] of records.entries()) {
-    const ended =
-      index === last && terminalStop && terminalStop !== 'end'
-        ? { ...message, stop_reason: terminalStop }
-        : message;
-    if (!(await appendMessage(iii, sessionId, toSessionMessage(ended)))) return;
-  }
 }

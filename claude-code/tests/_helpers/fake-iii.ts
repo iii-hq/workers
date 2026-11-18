@@ -65,6 +65,8 @@ export type FakeIii = {
   deliveries: Delivery[];
   /** Frames one feed delivered to its default observer target, in order. */
   feedFrames: (functionId: string) => Array<Record<string, unknown>>;
+  /** A session's transcript as session-manager holds it now (appends + updates applied). */
+  sessionMessages: (sessionId?: string) => Array<Record<string, unknown>>;
 };
 
 /**
@@ -88,6 +90,11 @@ export function fakeIii(): FakeIii {
   const observed: FakeIii['observed'] = [];
   const deliveries: Delivery[] = [];
   let nextObserver = 0;
+  let nextEntry = 0;
+  const transcripts = new Map<
+    string,
+    Array<{ entry_id: string; revision: number; message: Record<string, unknown> }>
+  >();
   let nextActivation = 0;
 
   // The envelope iii delivers: the call's fields the observer's capture names;
@@ -230,6 +237,35 @@ export function fakeIii(): FakeIii {
         }
         return { created, meta: state.get(sessionKey), session_id: payload.session_id };
       }
+      // The transcript: `append` returns the entry id, `update-message`
+      // replaces an entry's content (and usage), as session-manager does.
+      if (req.function_id === 'session::append') {
+        const sid = String(payload.session_id);
+        const list = transcripts.get(sid) ?? [];
+        // A caller-supplied id makes the append idempotent: a retry of a
+        // write that already committed returns the existing entry.
+        const supplied = typeof payload.entry_id === 'string' ? payload.entry_id : undefined;
+        if (supplied && list.some((e) => e.entry_id === supplied)) {
+          return { entry_id: supplied, timestamp: 0 };
+        }
+        const entry_id = supplied ?? `e-${++nextEntry}`;
+        list.push({ entry_id, revision: 0, message: structuredClone(payload.message) as never });
+        transcripts.set(sid, list);
+        return { entry_id, timestamp: 0 };
+      }
+      if (req.function_id === 'session::update-message') {
+        const entry = transcripts
+          .get(String(payload.session_id))
+          ?.find((e) => e.entry_id === payload.entry_id);
+        if (!entry) throw new Error(`unknown entry ${String(payload.entry_id)}`);
+        entry.message = {
+          ...entry.message,
+          content: structuredClone(payload.content),
+          ...(payload.usage !== undefined ? { usage: structuredClone(payload.usage) } : {}),
+        };
+        entry.revision += 1;
+        return { updated: true, revision: entry.revision };
+      }
       if (req.function_id === 'session::get') {
         const meta = state.get(`session-manager/${String(payload.session_id)}`);
         return meta ? { meta } : null;
@@ -337,5 +373,10 @@ export function fakeIii(): FakeIii {
     feedTarget,
     deliveries,
     feedFrames,
+    sessionMessages: (sessionId?: string) =>
+      (sessionId === undefined
+        ? [...transcripts.values()].flat()
+        : (transcripts.get(sessionId) ?? [])
+      ).map((e) => e.message),
   };
 }

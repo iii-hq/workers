@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 
@@ -7,12 +7,14 @@ import { registerAgentFeeds } from '../src/agent-feed.js';
 import { type Config, loadConfig } from '../src/config.js';
 import { executeRun, RunPayloadSchema, register } from '../src/run.js';
 import { toSessionMessage } from '../src/session-link.js';
+import { streamTiming } from '../src/session-writer.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 import {
   assistantMsg,
   fullTurn,
   initMsg,
   resultMsg,
+  type QueryCapture,
   scriptedQuery,
   toolResultMsg,
 } from './_helpers/fake-query.js';
@@ -26,24 +28,80 @@ import {
  */
 
 const queryMock = vi.mocked(query);
+const defaultThrottleMs = streamTiming.throttleMs;
 
 beforeEach(() => {
   queryMock.mockReset();
+  // Deterministic streaming: every change is written at once, no timer.
+  streamTiming.throttleMs = 0;
+});
+
+afterEach(() => {
+  streamTiming.throttleMs = defaultThrottleMs;
 });
 
 async function cfg(): Promise<Config> {
   return loadConfig('/nonexistent/config.yaml');
 }
 
+/** The child's transcript as session-manager holds it (appends + updates applied). */
 function appended(fake: FakeIii, sessionId?: string) {
-  return fake.calls
-    .filter(
-      (c) =>
-        c.function_id === 'session::append' &&
-        (sessionId === undefined || c.payload.session_id === sessionId),
-    )
-    .map((c) => c.payload.message as Record<string, unknown>);
+  return fake.sessionMessages(sessionId);
 }
+
+function statuses(fake: FakeIii) {
+  return fake.calls
+    .filter((c) => c.function_id === 'session::set-status')
+    .map((c) => c.payload.status);
+}
+
+const stream = (event: Record<string, unknown>) => ({ type: 'stream_event', event });
+
+/** One model message streamed in two blocks (text, then a tool call), which
+ *  the SDK then reports as TWO assistant messages sharing the message id. */
+const streamedTurn = [
+  initMsg,
+  stream({ type: 'message_start', message: { id: 'msg_1', model: 'claude-opus-4-8' } }),
+  stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+  stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hel' } }),
+  stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'lo' } }),
+  stream({ type: 'content_block_stop', index: 0 }),
+  {
+    type: 'assistant',
+    message: { id: 'msg_1', model: 'claude-opus-4-8', content: [{ type: 'text', text: 'Hello' }] },
+  },
+  stream({
+    type: 'content_block_start',
+    index: 1,
+    content_block: { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} },
+  }),
+  stream({
+    type: 'content_block_delta',
+    index: 1,
+    delta: { type: 'input_json_delta', partial_json: '{"command":' },
+  }),
+  stream({
+    type: 'content_block_delta',
+    index: 1,
+    delta: { type: 'input_json_delta', partial_json: '"ls"}' },
+  }),
+  stream({ type: 'content_block_stop', index: 1 }),
+  {
+    type: 'assistant',
+    message: {
+      id: 'msg_1',
+      model: 'claude-opus-4-8',
+      usage: { input_tokens: 5, output_tokens: 2 },
+      content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }],
+    },
+  },
+  // The SDK's per-message usage is a snapshot from the message start; the
+  // final output count arrives on the stream's message_delta.
+  stream({ type: 'message_delta', usage: { output_tokens: 42 } }),
+  stream({ type: 'message_stop' }),
+  toolResultMsg,
+  resultMsg,
+];
 
 async function run(fake: FakeIii, payload: Record<string, unknown>, turn = fullTurn) {
   queryMock.mockImplementation(scriptedQuery(turn, { interrupted: false }) as never);
@@ -60,6 +118,123 @@ async function run(fake: FakeIii, payload: Record<string, unknown>, turn = fullT
 function seedSession(fake: FakeIii, sessionId: string, metadata: Record<string, unknown>) {
   fake.state.set(`session-manager/${sessionId}`, { session_id: sessionId, metadata });
 }
+
+describe('live child session', () => {
+  it('shows the prompt and a working status while the turn is still running', async () => {
+    const fake = fakeIii();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        await gate;
+        yield* fullTurn.slice(1);
+      },
+      interrupt: async () => {},
+    })) as never);
+    const feeds = registerAgentFeeds(fake.iii);
+    const running = executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({
+        prompt: 'make the film',
+        session_id: 'live-1',
+        parent_session_id: 'p-1',
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(appended(fake, 'live-1')).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          content: [{ type: 'text', text: 'make the film' }],
+        }),
+      ]);
+    });
+    expect(statuses(fake)).toEqual(['working']);
+    release();
+    await running;
+    expect(appended(fake, 'live-1').map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'function_result',
+    ]);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('streams a model message into ONE assistant entry and finishes it with usage', async () => {
+    const fake = fakeIii();
+    await run(
+      fake,
+      { prompt: 'x', session_id: 'stream-1', parent_session_id: 'p-1' },
+      streamedTurn,
+    );
+
+    const assistantAppends = fake.calls.filter(
+      (c) =>
+        c.function_id === 'session::append' &&
+        c.payload.session_id === 'stream-1' &&
+        (c.payload.message as { role?: string }).role === 'assistant',
+    );
+    expect(assistantAppends).toHaveLength(1);
+
+    // The text grew in place before the message was complete.
+    const texts = fake.calls
+      .filter((c) => c.function_id === 'session::update-message')
+      .map((c) => (c.payload.content as Array<{ text?: string }>)[0]?.text);
+    expect(texts).toContain('Hello');
+    const first = (assistantAppends[0].payload.message as { content: Array<{ text: string }> })
+      .content[0].text;
+    expect(first).toBe('Hel');
+
+    const messages = appended(fake, 'stream-1');
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'function_result']);
+    expect(messages[1]).toMatchObject({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'Hello' },
+        {
+          type: 'function_call',
+          id: 'toolu_1',
+          function_id: 'claude-code::Bash',
+          arguments: { command: 'ls' },
+        },
+      ],
+      usage: { input: 5, output: 42, cache_read: 0, cache_write: 0 },
+    });
+  });
+
+  it('asks the SDK for partial messages only when a child session is streamed', async () => {
+    const child = fakeIii();
+    const childCapture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, childCapture) as never);
+    const childFeeds = registerAgentFeeds(child.iii);
+    await executeRun(
+      child.iii,
+      await cfg(),
+      childFeeds.agent.emit,
+      childFeeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'c-1', parent_session_id: 'p-1' }),
+    );
+    expect(childCapture.options?.includePartialMessages).toBe(true);
+
+    const plain = fakeIii();
+    const plainCapture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, plainCapture) as never);
+    const plainFeeds = registerAgentFeeds(plain.iii);
+    await executeRun(
+      plain.iii,
+      await cfg(),
+      plainFeeds.agent.emit,
+      plainFeeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'plain-2' }),
+    );
+    expect(plainCapture.options).not.toHaveProperty('includePartialMessages');
+  });
+});
 
 describe('child session transcript', () => {
   it('a run with parent_session_id persists the prompt and every message of the turn', async () => {
@@ -365,5 +540,162 @@ describe('entrypoints', () => {
     });
     const roles = appended(fake, 'child-task').map((m) => m.role);
     expect(roles).toEqual(['user', 'assistant', 'function_result']);
+  });
+});
+
+describe('review: ownership, status and write completeness', () => {
+  function failing(fake: FakeIii, fn: string, times = Number.POSITIVE_INFINITY) {
+    const real = fake.iii.call.bind(fake.iii);
+    let n = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === fn && n++ < times) {
+        fake.calls.push({ function_id: req.function_id, payload: {} });
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+  }
+
+  it('a new child still saves when session::get keeps failing: ensure proved ownership', async () => {
+    const fake = fakeIii();
+    failing(fake, 'session::get');
+    await run(fake, { prompt: 'x', session_id: 'new-1', parent_session_id: 'p-1' });
+    expect(appended(fake, 'new-1').map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'function_result',
+    ]);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('sets working before the first write when an ownership retry confirms the child', async () => {
+    const fake = fakeIii();
+    seedSession(fake, 'resume-1', { agent: 'claude-code', parent_session_id: 'p-1' });
+    failing(fake, 'session::get', 1);
+    await run(fake, { prompt: 'again', session_id: 'resume-1' });
+    const working = fake.calls.findIndex(
+      (c) => c.function_id === 'session::set-status' && c.payload.status === 'working',
+    );
+    const firstAppend = fake.calls.findIndex((c) => c.function_id === 'session::append');
+    expect(working).toBeGreaterThan(-1);
+    expect(working).toBeLessThan(firstAppend);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('keeps the failure text as the status reason when the turn fails after partial output', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        yield assistantMsg;
+        throw new Error('spawn failed');
+      },
+      interrupt: async () => {},
+    })) as never);
+    const feeds = registerAgentFeeds(fake.iii);
+    await executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'partial-1', parent_session_id: 'p-1' }),
+    );
+    const error = fake.calls.find(
+      (c) => c.function_id === 'session::set-status' && c.payload.status === 'error',
+    );
+    expect(String(error?.payload.reason)).toContain('spawn failed');
+    const messages = appended(fake, 'partial-1');
+    expect(JSON.stringify(messages)).toContain('running ls');
+    expect(JSON.stringify(messages[messages.length - 1])).toContain('spawn failed');
+  });
+
+  it('retries a failed append with the same entry id and does not duplicate it', async () => {
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    let appends = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      // The second append commits, then times out on the way back.
+      if (req.function_id === 'session::append' && ++appends === 2) {
+        await real(req as never);
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'retry-1', parent_session_id: 'p-1' });
+    expect(appended(fake, 'retry-1').map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'function_result',
+    ]);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+
+  it('never marks the child done when its transcript could not be written in full', async () => {
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    let appends = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::append' && ++appends > 1) throw new Error('down');
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'x', session_id: 'broken-1', parent_session_id: 'p-1' });
+    expect(statuses(fake)).not.toContain('done');
+    expect(statuses(fake)[statuses(fake).length - 1]).toBe('error');
+  });
+});
+
+describe('claude::start busy slot', () => {
+  it('reports busy instead of started when the session is still running', async () => {
+    const fake = fakeIii();
+    const config = await cfg();
+    const feeds = registerAgentFeeds(fake.iii);
+    register(fake.iii, () => config, feeds.agent.emit, feeds.raw.emit);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        yield initMsg;
+        await gate;
+        yield resultMsg;
+      },
+      interrupt: async () => {},
+    })) as never);
+    await fake.registered.get('claude::start')?.({ prompt: 'one', session_id: 'busy-1' });
+    await vi.waitFor(() => expect(queryMock).toHaveBeenCalledTimes(1));
+    const second = (await fake.registered.get('claude::start')?.({
+      prompt: 'two',
+      session_id: 'busy-1',
+    })) as Record<string, unknown>;
+    expect(second).toMatchObject({ session_id: 'busy-1', started: false, busy: true });
+    release();
+  });
+});
+
+describe('feed failures', () => {
+  it('a rejecting raw feed loses nothing: the child transcript and the turn complete', async () => {
+    const fake = fakeIii();
+    queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
+    const feeds = registerAgentFeeds(fake.iii);
+    const rejecting = async () => {
+      throw new Error('raw feed down');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      rejecting,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'raw-1', parent_session_id: 'p-1' }),
+    );
+    warn.mockRestore();
+    expect(result).toMatchObject({ result: 'done', is_error: false });
+    expect(appended(fake, 'raw-1').map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'function_result',
+    ]);
+    expect(statuses(fake)).toEqual(['working', 'done']);
   });
 });

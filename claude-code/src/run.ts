@@ -24,12 +24,13 @@ import {
 } from './map.js';
 import { listSessions, loadSession, saveSession } from './state.js';
 import {
-  appendTranscript,
   childSessionOwnership,
   linkChildSession,
+  type Ownership,
   recordTaskOutcome,
   setSessionStatus,
 } from './session-link.js';
+import { ChildTranscript, type TurnSink } from './session-writer.js';
 import { runTurnSpan } from './trace.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
@@ -248,31 +249,50 @@ export async function executeRun(
     // because `parent_session_id` only applies on creation, and that link is
     // what nests it in the console. A later turn on the same child (resumed
     // with its session id alone) stays a child.
-    if (payload.parent_session_id) {
-      await linkChildSession(iii, {
-        sessionId: session_id,
-        parentSessionId: payload.parent_session_id,
-        task: prompt,
-      });
-    }
-    // Ownership, not the link, decides: `session::ensure` adopts an existing
-    // session without comparing owners, so only a session this worker created
-    // is ever written to.
-    let ownership = await childSessionOwnership(iii, session_id);
+    const link = payload.parent_session_id
+      ? await linkChildSession(iii, {
+          sessionId: session_id,
+          parentSessionId: payload.parent_session_id,
+          task: prompt,
+        })
+      : undefined;
+    // Ownership, not the link's success, decides: `session::ensure` adopts an
+    // existing session without comparing owners, but it does answer with the
+    // stored metadata — the evidence used first. Only a session this worker
+    // created is ever written to.
+    let ownership: Ownership =
+      link && link.owner !== 'unknown' ? link.owner : await childSessionOwnership(iii, session_id);
     if (ownership === 'child') await setSessionStatus(iii, session_id, 'working');
     // The feeds are a live tape: a window opened after the run has nothing to
-    // replay from them, which is why a finished sub-agent rendered blank with
-    // `message_count: 0`. A child's turn is therefore also written to
-    // session-manager — whichever entrypoint (run, start, task) started it.
-    // runReserved fills `transcript` as messages arrive, before any feed
-    // publication or record save, so neither failing can lose them.
-    const transcript: AgentMessage[] = [];
-    const persist = async (stop: string, status: 'done' | 'error', reason?: string) => {
-      if (ownership === 'unknown') ownership = await childSessionOwnership(iii, session_id);
-      if (ownership !== 'child') return;
-      // Transcript first, status second: the console opens a child on `done`.
-      await appendTranscript(iii, session_id, prompt, transcript, stop);
-      await setSessionStatus(iii, session_id, status, reason);
+    // replay from them. A child's turn is written to session-manager AS IT
+    // HAPPENS — the prompt now, each message streaming in place — so the
+    // console renders it like any chat, whichever entrypoint started it. When
+    // ownership could not be read yet, the writer only keeps the turn and
+    // asks again at the end.
+    const writer =
+      ownership === 'other'
+        ? undefined
+        : new ChildTranscript(iii, session_id, ownership === 'child', prompt);
+    const finish = async (status: 'done' | 'error', reason?: string) => {
+      if (!writer) return;
+      const written = await writer.finish(async () => {
+        ownership = await childSessionOwnership(iii, session_id);
+        if (ownership !== 'child') return false;
+        await setSessionStatus(iii, session_id, 'working');
+        return true;
+      });
+      if (!written.write) return;
+      // Transcript first, status second: the console opens a child on `done`,
+      // and a transcript that could not be written whole is never `done`.
+      if (written.complete) await setSessionStatus(iii, session_id, status, reason);
+      else {
+        await setSessionStatus(
+          iii,
+          session_id,
+          'error',
+          reason ?? 'the transcript could not be saved in full',
+        );
+      }
     };
     // One turn, one traced scope. The identity keys are the harness's own, so
     // a headless Claude Code turn groups and labels itself in the console's
@@ -286,19 +306,38 @@ export async function executeRun(
         kind: 'claude.run',
         message: prompt,
       },
-      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle, transcript),
+      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle, writer),
     ).catch(async (err) => {
-      transcript.push(
-        makeAssistantMessage([{ type: 'text', text: String(err) }], '', null, 'error'),
-      );
-      await persist('error', 'error', String(err));
+      writer?.note('error', String(err));
+      await finish('error', String(err));
       throw err;
     });
-    await persist(String(result.stop_reason ?? 'end'), result.is_error === true ? 'error' : 'done');
+    const stop = String(result.stop_reason ?? 'end');
+    const said =
+      typeof result.result === 'string' && result.result
+        ? result.result
+        : `Claude Code stopped: ${stop}`;
+    // A turn that hit a cap or failed ends with how it ended: entries already
+    // written cannot have their stop reason rewritten.
+    if (stop !== 'end') writer?.note(stop, said);
+    await finish(
+      result.is_error === true ? 'error' : 'done',
+      result.is_error === true ? said : undefined,
+    );
     return result;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
   }
+}
+
+function publishing(feed: Emit, name: string): Emit {
+  return async (sessionId, event) => {
+    try {
+      await feed(sessionId, event);
+    } catch (err) {
+      console.warn(`claude-code: ${name} delivery failed for ${sessionId}: ${String(err)}`);
+    }
+  };
 }
 
 async function runReserved(
@@ -310,10 +349,14 @@ async function runReserved(
   session_id: string,
   prompt: string,
   handle: LiveRun,
-  transcript: AgentMessage[] = [],
+  sink?: TurnSink,
 ): Promise<Record<string, unknown>> {
   const prior = await loadSession(iii, session_id);
   const d = cfg.defaults;
+  // A feed is a live view: one that cannot deliver must never end the turn or
+  // cost the child transcript a message.
+  const agentFeed = publishing(emit, 'claude::on-agent-event');
+  const rawFeed = publishing(emitRaw, 'claude::on-raw-event');
 
   const record: SessionRecord = prior ?? {
     session_id,
@@ -361,6 +404,9 @@ async function runReserved(
       : { type: 'preset', preset: 'claude_code', ...(append ? { append } : {}) },
     settingSources: [],
     ...(cfg.claude_executable ? { pathToClaudeCodeExecutable: cfg.claude_executable } : {}),
+    // A child session renders its turn live: ask for the stream. Before the
+    // caller's options, so a caller can still turn it off.
+    ...(sink?.streaming ? { includePartialMessages: true } : {}),
     ...callerOptions(payload, cfg),
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
   };
@@ -380,6 +426,7 @@ async function runReserved(
   record.updated_at_ms = Date.now();
   await saveSession(iii, record);
 
+  const transcript: AgentMessage[] = [];
   const pendingResults: FunctionResultMessage[] = [];
   const calls: ToolCallIndex = new Map();
   let resultText = '';
@@ -388,7 +435,10 @@ async function runReserved(
 
   try {
     for await (const msg of q) {
-      await emitRaw(session_id, msg);
+      // The child transcript sees every event before the feeds or the record
+      // do, so neither failing can lose what the turn produced.
+      if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
+      await rawFeed(session_id, msg);
       if (msg.type === 'system' && msg.subtype === 'init') {
         record.claude_session_id = msg.session_id;
         await saveSession(iii, record);
@@ -396,11 +446,17 @@ async function runReserved(
         const usage = mapUsage(msg.message.usage);
         const content = mapAssistantContent(msg.message.content as never, calls);
         const assistant = makeAssistantMessage(content, msg.message.model ?? record.model, usage);
+        sink?.assistant(
+          (msg.message as { id?: string }).id,
+          content,
+          msg.message.model ?? record.model,
+          usage,
+        );
         transcript.push(assistant);
-        await emit(session_id, { type: 'message_complete', message: assistant });
+        await agentFeed(session_id, { type: 'message_complete', message: assistant });
         for (const block of content) {
           if (block.type === 'function_call') {
-            await emit(session_id, {
+            await agentFeed(session_id, {
               type: 'function_execution_start',
               function_call_id: block.id,
               function_id: block.function_id,
@@ -421,9 +477,10 @@ async function runReserved(
             content,
             b.is_error === true,
           );
+          sink?.functionResult(fr);
           transcript.push(fr);
           pendingResults.push(fr);
-          await emit(session_id, {
+          await agentFeed(session_id, {
             type: 'function_execution_end',
             function_call_id: callId,
             function_id: fr.function_id,
@@ -454,21 +511,21 @@ async function runReserved(
   await saveSession(iii, record);
 
   if (transcript.length === 0) {
-    transcript.push(
-      makeAssistantMessage(
-        [{ type: 'text', text: resultText }],
-        record.model,
-        record.usage,
-        stopReason,
-      ),
+    const closing = makeAssistantMessage(
+      [{ type: 'text', text: resultText }],
+      record.model,
+      record.usage,
+      stopReason,
     );
+    sink?.terminal(closing);
+    transcript.push(closing);
   }
-  await emit(session_id, {
+  await agentFeed(session_id, {
     type: 'turn_end',
     message: lastAssistant(transcript),
     function_results: pendingResults,
   });
-  await emit(session_id, { type: 'agent_end', messages: transcript });
+  await agentFeed(session_id, { type: 'agent_end', messages: transcript });
 
   return {
     session_id,
@@ -500,6 +557,18 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     async (payload: unknown) => {
       const parsed = RunPayloadSchema.parse(payload ?? {});
       const session_id = parsed.session_id ?? randomUUID();
+      // Refuse here, not in the background: a busy result from executeRun
+      // would be discarded and the caller told `started: true` for a prompt
+      // that never runs (a follow-up sent on `agent_end` lands in the window
+      // where the previous turn is still writing its transcript).
+      if (live.has(session_id)) {
+        return {
+          session_id,
+          started: false,
+          busy: true,
+          reason: 'a run is already active for this session',
+        };
+      }
       void executeRun(iii, getCfg(), emit, emitRaw, { ...parsed, session_id }).catch(
         async (err) => {
           console.error(`claude::start background run failed for ${session_id}: ${String(err)}`);
