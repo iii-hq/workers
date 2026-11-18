@@ -196,6 +196,13 @@ pub(crate) fn prepare_info_result(
         let namespace = contract.get("namespace").and_then(Value::as_str);
         let key =
             namespace.map_or_else(|| function_id.clone(), |ns| contract_key(ns, &function_id));
+        // A bare call reaches the implicit copy: name any other namespace.
+        let target = match namespace {
+            Some(ns) if ns != crate::clients::engine::resolve_namespace(&function_id, None) => {
+                format!("{function_id} in namespace `{ns}`")
+            }
+            _ => function_id.clone(),
+        };
         match ledger.get(&key) {
             Some(source)
                 if source.eligible
@@ -214,7 +221,7 @@ pub(crate) fn prepare_info_result(
                     item["note"] = json!(format!(
                         "This contract was already in your context (call {source_id}) and is \
                          sent again in full because it was requested again. Call \
-                         {function_id} now instead of fetching its contract."
+                         {target} now instead of fetching its contract."
                     ));
                     full.push((key, contract_digest, 2));
                 } else {
@@ -231,7 +238,7 @@ pub(crate) fn prepare_info_result(
                     if source.repeats >= 2 {
                         marker["note"] = json!(format!(
                             "This contract was already sent in full (call {source_id}). Do \
-                             not fetch it again: call {function_id} now."
+                             not fetch it again: call {target} now."
                         ));
                     }
                     *item = marker;
@@ -731,11 +738,12 @@ pub(crate) async fn invoke_target_classified(
     namespace: Option<&str>,
     arguments: &Value,
 ) -> (ResultData, bool) {
-    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
-        StartGate::Pass => (arguments.clone(), None),
-        StartGate::Deny(denied) => return (denied, false),
-        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
-    };
+    let (arguments, start_note) =
+        match scaffold_start_gate(function_id, namespace, arguments, policy) {
+            StartGate::Pass => (arguments.clone(), None),
+            StartGate::Deny(denied) => return (denied, false),
+            StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+        };
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
@@ -773,10 +781,17 @@ pub(crate) async fn invoke_target_classified(
 /// whole so the engine's batch cap still answers. `None` when the payload
 /// names a namespace or does not hold only string ids: it is sent as given.
 pub(crate) fn info_requests(payload: &Value) -> Option<Vec<Value>> {
+    info_requests_with(payload, |id| {
+        crate::clients::engine::resolve_namespace(id, None)
+    })
+}
+
+/// [`info_requests`] with the id-to-namespace rule given, so a test can make
+/// the namespaces differ whatever the environment.
+fn info_requests_with(payload: &Value, resolve: impl Fn(&str) -> String) -> Option<Vec<Value>> {
     if payload.get("namespace").is_some_and(|ns| !ns.is_null()) {
         return None;
     }
-    let resolve = |id: &str| crate::clients::engine::resolve_namespace(id, None);
     if let Some(id) = payload.get("function_id").and_then(Value::as_str) {
         let mut request = payload.clone();
         request["namespace"] = json!(resolve(id));
@@ -948,10 +963,25 @@ pub(crate) enum StartGate {
 /// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
 pub(crate) fn scaffold_start_gate(
     function_id: &str,
+    namespace: Option<&str>,
     arguments: &Value,
     policy: &CompiledPolicy,
 ) -> StartGate {
-    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER {
+        return StartGate::Pass;
+    }
+    // That namespace's coder adds to its own stack, which this session's
+    // policy and grants for compose::add were not judged for.
+    if namespace
+        .is_some_and(|ns| ns != crate::clients::engine::resolve_namespace(function_id, None))
+    {
+        return start_refused(
+            arguments,
+            "a scaffold named in another namespace cannot start its worker from this session",
+            "Call it without `namespace` to start it in this harness's stack.",
+        );
+    }
+    if policy.allows("compose::add") {
         return StartGate::Pass;
     }
     start_refused(
@@ -1466,12 +1496,12 @@ mod tests {
         let coder_only = pol(&["coder::*"]);
         let allowed = pol(&["coder::*", "compose::add"]);
 
-        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+        let StartGate::Deny(denied) = scaffold_start_gate(id, None, &explicit, &coder_only) else {
             panic!("an explicit start without compose::add must be refused");
         };
         assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
         // The default start degrades to the files only, with a note.
-        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, None, &default, &coder_only)
         else {
             panic!("a defaulted start without compose::add must go files-only");
         };
@@ -1484,10 +1514,42 @@ mod tests {
                 &allowed
             };
             assert!(
-                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                matches!(scaffold_start_gate(id, None, args, policy), StartGate::Pass),
                 "{args}"
             );
         }
+    }
+
+    /// Prevents: a scaffold named in another namespace starting its worker on
+    /// this session's compose::add policy and grants.
+    #[test]
+    fn a_scaffold_named_in_another_namespace_never_starts() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let allowed = pol(&["coder::*", "compose::add"]);
+        let elsewhere = Some("zz-a");
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, elsewhere, &explicit, &allowed)
+        else {
+            panic!("an explicit start in another namespace must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        let StartGate::FilesOnly(sent, _) = scaffold_start_gate(id, elsewhere, &default, &allowed)
+        else {
+            panic!("a defaulted start in another namespace must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(matches!(
+            scaffold_start_gate(id, elsewhere, &opt_out, &allowed),
+            StartGate::Pass
+        ));
+        let implicit = crate::clients::engine::resolve_namespace(id, None);
+        assert!(matches!(
+            scaffold_start_gate(id, Some(&implicit), &default, &allowed),
+            StartGate::Pass
+        ));
     }
 
     /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
@@ -1834,10 +1896,21 @@ mod tests {
         let (first, updates) = prepare_info_result("call_1", &args, &data, &in_a, true);
         assert_eq!(shown(&first)["request_schema"], json!({ "type": "object" }));
         assert_eq!(updates[0].0, "b/worker::function");
-        let in_b = BTreeMap::from([(contract_key("b", "worker::function"), entry)]);
+        let in_b = BTreeMap::from([(contract_key("b", "worker::function"), entry.clone())]);
         let (again, _) = prepare_info_result("call_2", &args, &data, &in_b, true);
         assert_eq!(shown(&again)["contract_status"], "unchanged_in_context");
         assert_eq!(shown(&again)["namespace"], "b");
+        // The escalation notes name the namespace a bare call would miss.
+        for repeats in [1, 2] {
+            let row = FunctionContractLedgerEntry {
+                repeats,
+                ..entry.clone()
+            };
+            let ledger = BTreeMap::from([(contract_key("b", "worker::function"), row)]);
+            let (noted, _) = prepare_info_result("call_3", &args, &data, &ledger, true);
+            let note = shown(&noted)["note"].as_str().unwrap().to_string();
+            assert!(note.contains("worker::function in namespace `b`"), "{note}");
+        }
     }
 
     #[test]
@@ -2609,6 +2682,24 @@ mod tests {
         assert_eq!(
             info_requests(&json!({ "function_id": "shell::exec", "namespace": "laptop" })),
             None
+        );
+        // Two namespaces whatever the environment: the grouping must hold.
+        let resolve = |id: &str| {
+            if id == "configuration::get" {
+                "default".to_string()
+            } else {
+                "zz-own".to_string()
+            }
+        };
+        assert_eq!(
+            info_requests_with(
+                &json!({ "function_ids": ["shell::exec", "configuration::get", "fs::read"] }),
+                resolve
+            ),
+            Some(vec![
+                json!({ "function_ids": ["configuration::get"], "namespace": "default" }),
+                json!({ "function_ids": ["shell::exec", "fs::read"], "namespace": "zz-own" }),
+            ])
         );
     }
 

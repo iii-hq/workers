@@ -537,12 +537,17 @@ pub(crate) async fn lookup_contracts(
 /// inside a group), each group cut into `engine::functions::info` batches of
 /// at most [`INFO_BATCH_MAX`].
 pub(crate) fn info_batches(ids: &[String]) -> Vec<(String, Vec<String>)> {
+    info_batches_by(ids, |id| {
+        crate::clients::engine::resolve_namespace(id, None)
+    })
+}
+
+/// [`info_batches`] with the id-to-namespace rule given, so a test can make
+/// the namespaces differ whatever the environment.
+fn info_batches_by(ids: &[String], resolve: impl Fn(&str) -> String) -> Vec<(String, Vec<String>)> {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for id in ids {
-        groups
-            .entry(crate::clients::engine::resolve_namespace(id, None))
-            .or_default()
-            .push(id.clone());
+        groups.entry(resolve(id)).or_default().push(id.clone());
     }
     groups
         .into_iter()
@@ -1324,15 +1329,17 @@ mod tests {
 
     #[test]
     fn info_batches_group_ids_by_resolved_namespace() {
-        let mut ids: Vec<String> = (0..40).map(|i| format!("w::f{i}")).collect();
-        ids.push("configuration::get".into());
-        let batches = info_batches(&ids);
-        assert_eq!(batches.iter().map(|(_, b)| b.len()).sum::<usize>(), 41);
-        for (ns, batch) in &batches {
-            assert!(batch.len() <= INFO_BATCH_MAX);
-            for id in batch {
-                assert_eq!(&crate::clients::engine::resolve_namespace(id, None), ns);
-            }
-        }
+        let mut ids: Vec<String> = (0..40).map(|i| format!("a::f{i}")).collect();
+        ids.push("b::g".into());
+        // Each id's namespace is the text before `::`, whatever the environment.
+        let batches = info_batches_by(&ids, |id| id.split("::").next().unwrap().to_string());
+        assert_eq!(
+            batches,
+            vec![
+                ("a".to_string(), ids[..32].to_vec()),
+                ("a".to_string(), ids[32..40].to_vec()),
+                ("b".to_string(), vec!["b::g".to_string()]),
+            ]
+        );
     }
 }
