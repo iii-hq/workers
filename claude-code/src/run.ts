@@ -167,7 +167,12 @@ const STATUS_RESPONSE_FORMAT = jsonSchema(
 );
 const SESSIONS_RESPONSE_FORMAT = jsonSchema(z.object({ sessions: z.array(SessionRecordSchema) }));
 
-type LiveRun = { interrupt: () => Promise<void> };
+/**
+ * A run's slot. `interrupt` is a placeholder until the query exists; a stop
+ * that arrives before then sets `stopped`, which the run checks just before
+ * creating the query, so the stop is honored rather than lost.
+ */
+type LiveRun = { interrupt: () => Promise<void>; stopped?: boolean };
 const live = new Map<string, LiveRun>();
 
 /** Best-effort: flip a session record to `error` so a failed background run
@@ -241,7 +246,11 @@ export async function executeRun(
   if (live.has(session_id)) {
     return { session_id, busy: true, reason: 'a run is already active for this session' };
   }
-  const handle: LiveRun = { interrupt: async () => {} };
+  const handle: LiveRun = {
+    interrupt: async () => {
+      handle.stopped = true;
+    },
+  };
   live.set(session_id, handle);
 
   try {
@@ -411,14 +420,20 @@ async function runReserved(
     ...(cfg.approval_gate ? { canUseTool: gatedCanUseTool(iii, session_id) } : {}),
   };
 
-  const q = query({ prompt, options });
+  // A stop that arrived during setup: start no query. The turn ends like an
+  // interrupted one (stop_reason `interrupted`, not an error). No await sits
+  // between this check and the handle's promotion, so no stop slips between.
+  const stoppedEarly = handle.stopped === true;
+  const q = stoppedEarly ? null : query({ prompt, options });
   // promote the placeholder to the real interrupt now that the query exists.
   // Its answer is discarded on purpose: a caller of `claude::stop` learns
   // whether a run WAS live from the stop response, and the SDK's control
   // reply adds nothing a caller can act on.
-  handle.interrupt = async () => {
-    await q.interrupt();
-  };
+  if (q) {
+    handle.interrupt = async () => {
+      await q.interrupt();
+    };
+  }
 
   // persist `working` only once the query + live handle exist, so a throw
   // during setup never leaves the record stuck in `working`
@@ -433,8 +448,12 @@ async function runReserved(
   let stopReason = 'end';
   let isError = false;
 
+  if (stoppedEarly) {
+    stopReason = 'interrupted';
+    resultText = 'Stopped before the turn started.';
+  }
   try {
-    for await (const msg of q) {
+    for await (const msg of q ?? []) {
       // The child transcript sees every event before the feeds or the record
       // do, so neither failing can lose what the turn produced.
       if (msg.type === 'stream_event') sink?.streamEvent((msg as { event?: unknown }).event);
@@ -618,13 +637,19 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // The transcript itself is persisted by executeRun, like any linked run.
       void executeRun(iii, getCfg(), emit, emitRaw, run)
         .then(async (result) => {
+          // An SDK error result resolves normally: the outcome follows it,
+          // since the orchestrator reads this record as the task's outcome.
+          const text = typeof result.result === 'string' ? result.result : undefined;
+          const failed = result.is_error === true;
           await recordTaskOutcome(iii, {
             session_id,
             parent_session_id: parsed.parent_session_id,
             agent: 'claude-code',
             task: parsed.task,
-            status: 'done',
-            result: typeof result.result === 'string' ? result.result : undefined,
+            status: failed ? 'error' : 'done',
+            ...(failed
+              ? { error: text || `Claude Code stopped: ${String(result.stop_reason ?? 'error')}` }
+              : { result: text }),
             updated_at_ms: Date.now(),
           });
         })
