@@ -14,6 +14,8 @@ pub struct ResolveRequest {
     pub decision: ResolveDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -58,14 +60,19 @@ pub async fn approve_always(
     iii: &IIIClient,
     session_id: &str,
     function_id: &str,
+    namespace: Option<&str>,
     timeout_ms: u64,
 ) -> Result<(), Error> {
+    let mut payload = json!({
+        "session_id": session_id,
+        "function_id": function_id,
+    });
+    if let Some(ns) = namespace {
+        payload["namespace"] = json!(ns);
+    }
     iii.call(CallRequest {
         function_id: "approval::approve-always".into(),
-        payload: json!({
-            "session_id": session_id,
-            "function_id": function_id,
-        }),
+        payload,
         action: None,
         timeout_ms: Some(timeout_ms),
     })
