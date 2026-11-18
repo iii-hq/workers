@@ -314,7 +314,6 @@ fn compact_contract(item: &mut Value) -> bool {
         "metadata",
         "observer_count",
         "worker_name",
-        "namespace",
         "$schema",
         "title",
     ] {
@@ -2484,6 +2483,7 @@ mod tests {
         let expected = serde_json::json!({
             "function_id": "worker::function",
             "description": "Does the thing.",
+            "namespace": "default",
             "request_schema": {
                 "type": "object",
                 "properties": {
@@ -2646,7 +2646,6 @@ mod tests {
                 "response_schema",
                 "worker_name",
                 "observer_count",
-                "namespace",
                 "metadata",
             ] {
                 assert!(compacted.get(key).is_none(), "{id}: `{key}` survived");
