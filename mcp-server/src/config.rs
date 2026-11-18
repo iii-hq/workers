@@ -28,6 +28,13 @@ pub struct McpConfig {
     /// Observations held per session; the oldest are dropped beyond it.
     #[serde(default = "default_max_buffered_observations")]
     pub max_buffered_observations: usize,
+    /// Register the functions and serve nothing: no `api_path` route, no
+    /// reload watch, every MCP request answered 503 with no downstream
+    /// call. For interface collection (`config.collect.yaml`), which boots
+    /// the worker against a bare engine; it needs neither rbac-proxy nor a
+    /// loopback http bind, since nothing reaches the engine through it.
+    #[serde(default)]
+    pub interface_only: bool,
 }
 
 impl McpConfig {
@@ -70,6 +77,7 @@ impl Default for McpConfig {
             max_sessions: default_max_sessions(),
             max_observers_per_session: default_max_observers_per_session(),
             max_buffered_observations: default_max_buffered_observations(),
+            interface_only: false,
         }
     }
 }
@@ -100,6 +108,23 @@ pub fn load_config(path: &str) -> Result<McpConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_only_is_off_unless_set() {
+        assert!(!McpConfig::default().interface_only);
+        let c: McpConfig = serde_yaml_ng::from_str("api_path: /mcp").unwrap();
+        assert!(!c.interface_only);
+        let c: McpConfig = serde_yaml_ng::from_str("interface_only: true").unwrap();
+        assert!(c.interface_only);
+    }
+
+    #[test]
+    fn the_collection_config_boots_interface_only() {
+        // Release interface collection boots the worker with this file
+        // against a bare engine (no rbac-proxy, no http worker).
+        let c: McpConfig = serde_yaml_ng::from_str(include_str!("../config.collect.yaml")).unwrap();
+        assert!(c.interface_only);
+    }
 
     #[test]
     fn defaults_from_empty_yaml() {

@@ -249,7 +249,13 @@ the `/mcp` routes until it is back on loopback (rbac-proxy must expose
 `http::status` and `http::on-config-change`). The routes are served only
 once that observer is active: if rbac-proxy refuses it, `/mcp` is not served
 and the log says what to expose, since a later rebind would go unseen.
-`III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true` serves without it. When a check cannot read
+`III_MCP_DANGEROUSLY_ALLOW_PUBLIC_HTTP=true` serves without it.
+
+Interface collection (release publishing and the CI smoke) boots the worker
+with `config.collect.yaml`, which sets `interface_only: true`: it registers its
+functions and serves nothing (no `/mcp` route, every MCP request answered
+503, no downstream call), so it starts without rbac-proxy or an http worker.
+It is not a way to run the server. When a check cannot read
 `http::status` (it timed out during a reload, say), the routes stay withdrawn
 and the check runs again after 2, 5, 10, 30 and 60 seconds, stopping at the
 first that reads the bind; after that, the next reload checks again.

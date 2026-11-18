@@ -447,6 +447,7 @@ pub async fn call_tool<B: Bus + Observe>(
                     v["policy"] = policy.clone();
                 }
                 RbacMode::Dangerous => v["access_control"] = json!("disabled"),
+                RbacMode::InterfaceOnly => v["access_control"] = json!("interface-only"),
             }
             if let Some(notice) = ctx.mode.client_notice() {
                 v["warning"] = json!(notice);

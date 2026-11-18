@@ -101,6 +101,31 @@ async fn run() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
+    // interface_only (config.collect.yaml): register the functions and serve
+    // nothing. Nothing reaches the engine through it, so neither guard
+    // applies.
+    if cfg.interface_only {
+        tracing::warn!(
+            "interface_only: functions registered, {} not served, every MCP request refused",
+            cfg.api_path
+        );
+        let sessions = Arc::new(Sessions::new(cfg.session_limits()));
+        let ctx = functions::Ctx::new(
+            SdkEngine {
+                client: iii.clone(),
+            },
+            cfg.clone(),
+            sessions,
+            Arc::new(rbac_guard::RbacMode::InterfaceOnly),
+        );
+        functions::register_all(&iii, &ctx);
+        let routes = functions::Routes::new(iii.clone(), cfg.api_path.clone());
+        functions::register_reload_target(&iii, &ctx, routes);
+        tokio::signal::ctrl_c().await?;
+        iii.shutdown_async().await;
+        return Ok(());
+    }
+
     // RBAC first: nothing is registered or served until the connection is
     // known to be behind rbac-proxy (or the escape hatch is set).
     let probe = Bus::call(

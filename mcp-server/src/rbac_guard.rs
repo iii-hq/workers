@@ -61,6 +61,8 @@ pub enum RbacMode {
     Proxied { policy: Value },
     /// Started with the escape hatch, without RBAC.
     Dangerous,
+    /// `interface_only`: functions registered, nothing served, no calls.
+    InterfaceOnly,
 }
 
 impl RbacMode {
@@ -68,7 +70,7 @@ impl RbacMode {
     pub fn client_notice(&self) -> Option<&'static str> {
         match self {
             RbacMode::Dangerous => Some(DANGEROUS_NOTICE),
-            RbacMode::Proxied { .. } => None,
+            RbacMode::Proxied { .. } | RbacMode::InterfaceOnly => None,
         }
     }
 }

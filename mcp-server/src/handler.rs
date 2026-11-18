@@ -146,6 +146,12 @@ pub async fn handle_http<B: Bus + Observe>(
     headers: &Value,
     body: &Value,
 ) -> HttpReply {
+    if app.cfg.interface_only {
+        return refusal(
+            503,
+            "Service Unavailable: this mcp-server runs interface_only (it registers its functions and serves nothing)",
+        );
+    }
     if !origin_allowed(headers, &app.cfg.allowed_origins) {
         return refusal(
             403,
@@ -314,6 +320,18 @@ mod tests {
             res.get("isError") == Some(&json!(true)),
             res["content"][0]["text"].as_str().unwrap().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn interface_only_serves_nothing_and_calls_nothing() {
+        let mut f = Fixture::new(FakeBus::new());
+        f.cfg.interface_only = true;
+        for method in ["POST", "GET", "DELETE"] {
+            let r = handle_http(&f.app(), method, &json!({}), &rpc("initialize", json!({}))).await;
+            assert_eq!(r.status, 503, "{method}");
+            assert!(r.session_id.is_none());
+        }
+        assert!(f.engine.bus.calls().is_empty(), "no downstream call");
     }
 
     #[tokio::test]

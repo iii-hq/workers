@@ -237,8 +237,10 @@ impl Routes {
 /// at runtime). No polling: the http worker's reload handler is observed,
 /// and each time it ran, `http::status` is read again and the routes are
 /// withdrawn or restored. Calling the target directly only re-checks.
-pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) -> ObserverHandle {
-    let (ready_ctx, ready_routes) = (ctx.clone(), routes.clone());
+/// Register the reload target (re-checks the bind); [`watch_http_reloads`]
+/// observes the http worker's reloads with it. Registered alone for
+/// `interface_only`, so the interface lists it.
+pub fn register_reload_target(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) {
     let ctx = ctx.clone();
     iii.register_function(
         RELOAD_FUNCTION_ID,
@@ -254,6 +256,11 @@ pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) 
         .metadata(json!({ "internal": true, "trace_hidden": true }))
         .description("Internal: re-checks the http worker's bind after it reloads, and withdraws or restores the MCP routes."),
     );
+}
+
+pub fn watch_http_reloads(iii: &Arc<IIIClient>, ctx: &Ctx, routes: Arc<Routes>) -> ObserverHandle {
+    let (ready_ctx, ready_routes) = (ctx.clone(), routes.clone());
+    register_reload_target(iii, ctx, routes);
     let handle = iii.observe(Source::function(HTTP_RELOAD_FN), RELOAD_FUNCTION_ID);
     // The routes are first served here, once this observer is active, by
     // checking the bind again: a rebind since the boot check is caught, and
@@ -364,6 +371,10 @@ pub async fn recheck_and_recover(ctx: &Ctx, routes: &Arc<Routes>) {
 /// `http::status` could not be read (the routes are then withdrawn, unless
 /// the public-http override serves an unknown bind).
 pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) -> bool {
+    if ctx.cfg.interface_only {
+        // Serves nothing, whatever the bind.
+        return true;
+    }
     let _one_at_a_time = routes.rechecking.lock().await;
     let status = Bus::call(&ctx.engine, "http::status", json!({}), Some(10_000))
         .await
