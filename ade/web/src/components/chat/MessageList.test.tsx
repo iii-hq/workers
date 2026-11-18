@@ -242,6 +242,9 @@ describe('MessageList function-call groups', () => {
     )
 
     expect(html).toContain(
+      'aria-label="action required for state::list in namespace laptop"',
+    )
+    expect(html).toContain(
       'Execution is paused until you approve or deny this call in namespace laptop.',
     )
     expect(html).toContain(

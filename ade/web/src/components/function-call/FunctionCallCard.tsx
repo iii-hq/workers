@@ -789,7 +789,9 @@ export function FunctionCallCard({
       data-expanded={expandedSurface}
       {...(unloaded ? { 'data-unloaded': '' } : {})}
       aria-label={
-        pending ? `action required for ${message.functionId}` : undefined
+        pending
+          ? `action required for ${message.functionId}${message.namespace ? ` in namespace ${message.namespace}` : ''}`
+          : undefined
       }
       tabIndex={pending ? -1 : undefined}
       data-function-status={status}

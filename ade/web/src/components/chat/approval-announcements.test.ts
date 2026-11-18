@@ -18,7 +18,7 @@ describe('approval announcements', () => {
     )
     expect(
       filesystemDecisionText('allowed /data for this session', 'laptop'),
-    ).toBe('allowed /data for this session in namespace laptop')
+    ).toBe('allowed /data for this session; the call is in namespace laptop')
   })
 
   it('stay unchanged without a namespace', () => {

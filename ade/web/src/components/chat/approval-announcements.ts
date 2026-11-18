@@ -15,6 +15,8 @@ export const actionRequiredText = (
 export const approvedAlwaysText = (functionId: string, namespace?: string) =>
   `approved always this session: ${inNamespace(functionId, namespace)}`
 
-/** Filesystem-access outcome ("allowed /x for this session") plus the namespace. */
+/** Filesystem-access outcome ("allowed /x for this session") plus the call's
+ * namespace. A folder decision is not per namespace, so the namespace names
+ * the call, never the scope of the decision. */
 export const filesystemDecisionText = (outcome: string, namespace?: string) =>
-  namespace ? `${outcome} in namespace ${namespace}` : outcome
+  namespace ? `${outcome}; the call is in namespace ${namespace}` : outcome
