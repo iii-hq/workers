@@ -13,6 +13,14 @@
         "minItems": 1,
         "type": "array",
         "uniqueItems": true
+      },
+      "namespace": {
+        "default": null,
+        "description": "Keep only functions present in this engine namespace; omit it to search every namespace.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "required": [
@@ -32,6 +40,13 @@
           },
           "function_id": {
             "type": "string"
+          },
+          "namespaces": {
+            "description": "Engine namespaces holding this id; pass one as `namespace` to read its contract or call it there.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -116,9 +131,23 @@
             "description": "The observer's id.",
             "type": "string"
           },
+          "namespace": {
+            "description": "The engine namespace the observer is registered in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "target": {
             "description": "The function the observer runs; inspect it with `engine::functions::info`.",
             "type": "string"
+          },
+          "target_namespace": {
+            "description": "The engine namespace of `target`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "worker_name": {
             "description": "The worker that created the observer.",
@@ -145,13 +174,14 @@
             },
             "type": "array"
           },
-          "namespace": {
+          "worker": {
+            "description": "The id prefix its functions share (`shell` in `shell::exec`); not an engine namespace.",
             "type": "string"
           }
         },
         "required": [
           "functions",
-          "namespace"
+          "worker"
         ],
         "type": "object"
       },

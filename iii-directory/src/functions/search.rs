@@ -134,6 +134,9 @@ const MAX_INSTALLABLE_FUNCTIONS: usize = 6;
 /// is caller-supplied and unauthenticated: good enough to key a
 /// resend-avoidance cache, never a security boundary.
 const SESSION_BAGGAGE_KEY: &str = "iii.session.id";
+/// OTel baggage key a namespace-aware harness stamps with its own engine
+/// namespace; its presence turns on the namespace fields of a search.
+const OWN_NAMESPACE_BAGGAGE_KEY: &str = "iii.own_namespace";
 static CATALOG_RELOAD: Mutex<()> = Mutex::const_new(());
 
 pub type CatalogCell = Arc<RwLock<Arc<Vec<ToolSchema>>>>;
@@ -421,6 +424,9 @@ pub struct SearchFunctionsRequest {
     // phrase-by-phrase by tests/search_schemas.rs, not descriptive prose.
     #[schemars(with = "HashSet<String>", length(min = 1), inner(length(min = 1)))]
     pub capabilities: Vec<String>,
+    /// Keep only functions present in this engine namespace; omit it to search every namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -428,6 +434,9 @@ pub struct FunctionCandidate {
     pub function_id: String,
     /// First description sentence, capped at 160 bytes.
     pub description: String,
+    /// Engine namespaces holding this id; pass one as `namespace` to read its contract or call it there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
 }
 
 /// An installed skill document (a `directory::skills::list` row) whose
@@ -458,11 +467,18 @@ pub struct ObserverCandidate {
     pub args: Value,
     /// The observer's filters.
     pub filters: Value,
+    /// The engine namespace the observer is registered in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// The engine namespace of `target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchWorker {
-    pub namespace: String,
+    /// The id prefix its functions share (`shell` in `shell::exec`); not an engine namespace.
+    pub worker: String,
     pub functions: Vec<FunctionCandidate>,
 }
 
@@ -859,6 +875,26 @@ fn baggage_session_id() -> Option<String> {
     (!session_id.is_empty()).then_some(session_id)
 }
 
+/// The caller's own engine namespace from OTel baggage; `None` from a
+/// harness that predates namespaces, which keeps the old search output.
+pub(crate) fn baggage_own_namespace() -> Option<String> {
+    use opentelemetry::baggage::BaggageExt;
+    let context = opentelemetry::Context::current();
+    let own = context
+        .baggage()
+        .get(OWN_NAMESPACE_BAGGAGE_KEY)?
+        .to_string();
+    (!own.is_empty()).then_some(own)
+}
+
+fn namespace_guidance(own: &str) -> String {
+    format!(
+        "Each candidate lists the `namespaces` that hold its id; your own namespace is `{own}`. \
+Pass `namespace` to engine::functions::info and in agent_call to use a copy in another \
+namespace, or omit it to use your own; read contracts once per namespace."
+    )
+}
+
 fn limit_search_workers(selected: Vec<String>, max_workers: usize) -> Vec<String> {
     let mut namespaces: Vec<String> = Vec::new();
     selected
@@ -883,10 +919,14 @@ fn limit_search_workers(selected: Vec<String>, max_workers: usize) -> Vec<String
 /// (`selected` is already worker-capped per batch). Ids missing from the
 /// catalog are skipped; within a worker the rank order is preserved — best
 /// first.
-fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWorker> {
+fn assemble_workers(
+    selected: &[String],
+    tools: &[ToolSchema],
+    show_namespaces: bool,
+) -> Vec<SearchWorker> {
     let mut workers: Vec<SearchWorker> = Vec::new();
     for function_id in selected {
-        let Some(namespace) = function_namespace(function_id) else {
+        let Some(worker_name) = function_namespace(function_id) else {
             continue;
         };
         let Some(tool) = tools.iter().find(|tool| &tool.name == function_id) else {
@@ -895,14 +935,19 @@ fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWork
         let candidate = FunctionCandidate {
             function_id: tool.name.clone(),
             description: crate::functions::search_index::slim_description(&tool.description),
+            namespaces: if show_namespaces {
+                tool.namespaces.clone()
+            } else {
+                Vec::new()
+            },
         };
         match workers
             .iter()
-            .position(|worker| worker.namespace == namespace)
+            .position(|worker| worker.worker == worker_name)
         {
             Some(index) => workers[index].functions.push(candidate),
             None => workers.push(SearchWorker {
-                namespace: namespace.to_string(),
+                worker: worker_name.to_string(),
                 functions: vec![candidate],
             }),
         }
@@ -1089,6 +1134,7 @@ fn assemble_installable(
             // First sentence only — enough to decide whether the worker
             // fits; the full contract arrives after installing.
             description: crate::functions::search_index::slim_description(&tool.description),
+            namespaces: Vec::new(),
         };
         match section
             .iter()
@@ -1410,8 +1456,25 @@ pub async fn search_functions(
     let (
         (mut selected, installable, search_mode),
         (skills, skills_judged),
-        (observers, observers_judged),
+        (mut observers, observers_judged),
     ) = tokio::join!(function_search, skill_search, observer_search);
+    let own = baggage_own_namespace();
+    if own.is_some() {
+        let namespace = request.namespace.as_deref().map(str::trim);
+        if let Some(ns) = namespace.filter(|ns| !ns.is_empty()) {
+            // shortcut: filters after ranking, so other namespaces' ids can use up the candidate budget; filter the ranking lanes if filtered searches come back thin.
+            selected.retain(|id| {
+                tools
+                    .iter()
+                    .any(|t| &t.name == id && t.namespaces.iter().any(|n| n == ns))
+            });
+        }
+    } else {
+        for observer in &mut observers {
+            observer.namespace = None;
+            observer.target_namespace = None;
+        }
+    }
     let search_mode = if skills_judged || observers_judged {
         FunctionSearchMode::Judge
     } else {
@@ -1443,7 +1506,7 @@ pub async fn search_functions(
             .first_send(id, preamble),
         None => true,
     };
-    let workers = assemble_workers(&selected, &tools);
+    let workers = assemble_workers(&selected, &tools, own.is_some());
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
             SEARCH_REFINE_GUIDANCE.to_string()
@@ -1482,6 +1545,10 @@ unchanged — reuse the earlier result): {}.",
         format!("{guidance} {workflow}")
     } else {
         guidance
+    };
+    let guidance = match own.as_deref() {
+        Some(own) if !workers.is_empty() => format!("{guidance} {}", namespace_guidance(own)),
+        _ => guidance,
     };
     let guidance = format!("{guidance} {SEARCH_LANGUAGE_GUIDANCE}");
     let guidance = if skills.is_empty() {
@@ -1789,6 +1856,15 @@ fn observer_candidate(row: &Value) -> Option<ObserverCandidate> {
             .map(str::to_string),
         args: object_or_empty("args"),
         filters: object_or_empty("filters"),
+        namespace: row
+            .get("namespace")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        target_namespace: row
+            .get("target")
+            .and_then(|target| target.get("namespace"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -2515,6 +2591,8 @@ mod tests {
         assert_eq!(candidate.target, "harness::sweep-pending");
         assert_eq!(candidate.worker_name.as_deref(), Some("harness"));
         assert_eq!(candidate.args["expression"], "0 0 0 * * *");
+        assert_eq!(candidate.namespace.as_deref(), Some("default"));
+        assert_eq!(candidate.target_namespace.as_deref(), Some("default"));
         for (function_id, target) in [
             ("ade::ui::asset", "state::ui-content"),
             (
@@ -2777,7 +2855,7 @@ mod tests {
             namespaces: Vec::new(),
         }];
 
-        let workers = assemble_workers(&["github::pr::create".into()], &tools);
+        let workers = assemble_workers(&["github::pr::create".into()], &tools, false);
         let candidate = serde_json::to_value(&workers[0].functions[0]).unwrap();
 
         assert_eq!(
@@ -2787,6 +2865,99 @@ mod tests {
                 "description": "Create a pull request?"
             })
         );
+    }
+
+    fn namespaced(name: &str, namespaces: &[&str]) -> ToolSchema {
+        ToolSchema {
+            name: name.into(),
+            description: format!("{name} description"),
+            parameters: json!({ "type": "object" }),
+            namespaces: namespaces.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+
+    async fn search_as(
+        deps: &Deps,
+        session: &str,
+        own: Option<&str>,
+        capability: &str,
+        namespace: Option<&str>,
+    ) -> Value {
+        use opentelemetry::baggage::BaggageExt;
+        let mut baggage = vec![opentelemetry::KeyValue::new(
+            SESSION_BAGGAGE_KEY,
+            session.to_string(),
+        )];
+        if let Some(own) = own {
+            // The literal the harness sends, so a typo in the constant fails here.
+            baggage.push(opentelemetry::KeyValue::new(
+                "iii.own_namespace",
+                own.to_string(),
+            ));
+        }
+        let _guard = opentelemetry::Context::new().with_baggage(baggage).attach();
+        let request = SearchFunctionsRequest {
+            capabilities: vec![capability.into()],
+            namespace: namespace.map(str::to_string),
+        };
+        serde_json::to_value(search_functions(deps, request).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn same_id_in_two_namespaces_is_one_candidate_listing_both() {
+        let deps = search_deps(vec![
+            namespaced("shell::exec", &["default", "laptop"]),
+            namespaced("state::set", &["default"]),
+        ]);
+        // Baggage only: no pre-generate hook ran, as on a default install.
+        let out = search_as(&deps, "ns-a", Some("default"), "shell::exec", None).await;
+        assert_eq!(out["workers"].as_array().unwrap().len(), 1);
+        assert_eq!(out["workers"][0]["worker"], "shell");
+        assert_eq!(out["workers"][0]["functions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            out["workers"][0]["functions"][0]["namespaces"],
+            json!(["default", "laptop"])
+        );
+        assert!(out["guidance"].as_str().unwrap().contains(
+            "Each candidate lists the `namespaces` that hold its id; your own namespace is `default`."
+        ));
+        assert_eq!(
+            search_as(&deps, "ns-b", Some("default"), "state::set", Some("laptop")).await["workers"],
+            json!([])
+        );
+        assert_eq!(
+            search_as(
+                &deps,
+                "ns-c",
+                Some("default"),
+                "shell::exec",
+                Some("laptop")
+            )
+            .await["workers"][0]["functions"][0]["function_id"],
+            "shell::exec"
+        );
+        // A blank filter is no filter.
+        assert_eq!(
+            search_as(&deps, "ns-d", Some("default"), "state::set", Some(" ")).await["workers"][0]
+                ["worker"],
+            "state"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_harness_gets_no_namespaces() {
+        let deps = search_deps(vec![
+            namespaced("shell::exec", &["default", "laptop"]),
+            namespaced("state::set", &["default"]),
+        ]);
+        let out = search_as(&deps, "old-harness", None, "state::set", Some("laptop")).await;
+        assert_eq!(out["workers"][0]["worker"], "state"); // filter ignored
+        assert!(
+            out["workers"][0]["functions"][0]
+                .get("namespaces")
+                .is_none()
+        );
+        assert!(!out["guidance"].as_str().unwrap().contains("`namespaces`"));
     }
 
     #[test]
@@ -3144,6 +3315,7 @@ mod tests {
         let response = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["fetch a browser page".into()],
             },
         )
@@ -3253,6 +3425,7 @@ mod tests {
         let response = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec![
                     "fetch webpage content".into(),
                     "web scraping".into(),
@@ -3311,6 +3484,7 @@ mod tests {
         let response = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec![
                     "summarize text content".into(),
                     "summarise provided text".into(),
@@ -3346,6 +3520,7 @@ mod tests {
         let response = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["fetch a browser page".into()],
             },
         )
@@ -3398,6 +3573,7 @@ mod tests {
         let first = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["compose::add".into()],
             },
         )
@@ -3407,6 +3583,7 @@ mod tests {
         let repeated = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["compose::add".into(), "compose::remove".into()],
             },
         )
@@ -3526,6 +3703,7 @@ mod tests {
         let response = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["send an email message".into()],
             },
         )
@@ -3576,6 +3754,7 @@ mod tests {
         let installable_only = search_functions(
             &deps,
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: vec!["send an email message".into()],
             },
         )
@@ -3696,7 +3875,10 @@ mod tests {
         let mut capabilities: Vec<String> = (1..=18).map(|n| format!("cap {n}")).collect();
         capabilities.push("nineteen".into());
         capabilities.push("twenty".into());
-        let request = SearchFunctionsRequest { capabilities };
+        let request = SearchFunctionsRequest {
+            capabilities,
+            namespace: None,
+        };
 
         let response = search_functions(&search_deps(Vec::new()), request)
             .await
@@ -3714,6 +3896,7 @@ mod tests {
     #[tokio::test]
     async fn search_batches_more_than_six_capabilities_without_a_note() {
         let request = SearchFunctionsRequest {
+            namespace: None,
             capabilities: (1..=8).map(|n| format!("cap {n}")).collect(),
         };
 
@@ -3733,6 +3916,7 @@ mod tests {
         let error = search_functions(
             &search_deps(Vec::new()),
             SearchFunctionsRequest {
+                namespace: None,
                 capabilities: Vec::new(),
             },
         )
@@ -4177,6 +4361,7 @@ mod tests {
                 .map(|id| FunctionCandidate {
                     function_id: (*id).into(),
                     description: String::new(),
+                    namespaces: Vec::new(),
                 })
                 .collect(),
             install: install_call("email"),

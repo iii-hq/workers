@@ -151,6 +151,7 @@ async fn ask(deps: &Deps, capabilities: &[&str]) -> SearchFunctionsResponse {
     search_functions(
         deps,
         SearchFunctionsRequest {
+            namespace: None,
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
         },
     )
