@@ -139,7 +139,7 @@ The form shows which checkpoint the running worker actually loaded (through
 `judge-laya::models::list`, one card per loaded checkpoint with its
 `context_window`) and warns when the selection needs a restart.
 
-## Routing (laya 0.3.28 `Router`)
+## Routing (laya 0.4.35 `Router`)
 
 A request naming `model` uses that checkpoint, which must be `model` or in
 `preload` (`invalid_request` otherwise). Without it, each evaluation picks its
@@ -148,8 +148,11 @@ of laya's four typed-decisions workflows (`agent_trace_observability`,
 `customer_service`, `invoice_processing`, `security_incidents`) go to
 `laya-typed-decisions`; with `auto_route`, the state's script and language
 (laya's dependency-free detector, checked against laya's own answers in
-`tests/fixtures/lang.json`) send non-English states to `laya-multilingual` and
-English ones to `laya`. Latin text no word list identifies (too short, or
+`tests/fixtures/lang.json` and laya's recorded vectors in
+`tests/fixtures/upstream/`) send non-English states to `laya-multilingual` and
+English ones to `laya`. Acronyms do not name a language: an all-caps line such
+as `MON DES EST LA` needs a five-letter word and a four-letter function word
+(or non-English letters) before it reads as French. Latin text no word list identifies (too short, or
 content words only, such as "Quero cancelar" or "ok thanks") is no evidence of
 English either: it takes the default `model`, like a state with no letters
 (laya #203). One non-English line or string field is enough, even

@@ -1,7 +1,13 @@
 """Regenerate lang.json: laya's own `analyse` over the cases below.
 
-    git -C <laya clone> show v0.3.28:laya/lang.py > /tmp/laya_lang.py
+    git -C <laya clone> show v0.4.35:laya/lang.py > /tmp/laya_lang.py
     python3 -I tests/fixtures/lang.py /tmp/laya_lang.py
+
+lang.json was generated from v0.3.28; the three cases v0.4.35 answers
+differently were then edited by hand to its answer: `collision_son` and
+`en_code_lines` are English now (`your` and `if` joined laya's English stop
+words), and `vi` counts its tone-marked letters as non-English (laya added
+them to `_NON_EN_DIACRITICS`).
 
 laya's lang.py has no dependencies, so it is loaded from that file alone (the
 laya package's __init__ pulls in torch). Object keys are sorted before analysis, as
