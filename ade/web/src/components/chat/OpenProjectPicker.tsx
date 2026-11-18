@@ -71,7 +71,7 @@ interface Section {
 
 const RECENT_CHIPS = 4
 /** New folder in the listed folder. Finder's ⇧⌘N opens Chrome's incognito
-    window and can't be caught, so it is ⌥⌘N here. */
+ window and can't be caught, so it is ⌥⌘N here. */
 const NEW_FOLDER_BINDING = 'Mod+Alt+N'
 const HOME_REPOS = 6
 const ELSEWHERE = 6
@@ -82,19 +82,19 @@ const isPathText = (text: string) =>
 
 /** Footer key caps: hairline boxes that read as labels. */
 const CAP =
-  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-[11px] font-medium text-muted-foreground shadow-none'
+  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
 
 /**
  * "Add project": a path field first, the way Finder's Go to Folder and a
  * shell prompt work, with the folder it points at listed underneath.
  *
  * - The field holds a path (`~/conductor/repos/`). Typing narrows the
- *   folder's children and the best completion shows as ghost text, fish
- *   style; Tab or → takes it, Backspace over a `/` climbs a level.
+ *  folder's children and the best completion shows as ghost text, fish
+ *  style; Tab or → takes it, Backspace over a `/` climbs a level.
  * - The listing under it is that folder: repositories first, each row
- *   opens on click and offers Add, the way Vercel's Import repository
- *   list does. A name that isn't in the folder is looked up across the
- *   background index (`lib/project-index`) under "Elsewhere".
+ *  opens on click and offers Add, the way Vercel's Import repository
+ *  list does. A name that isn't in the folder is looked up across the
+ *  background index (`lib/project-index`) under "Elsewhere".
  * - Recent projects sit as chips above the listing: one click adds.
  * - The footer always names the folder Add project will add.
  *
@@ -658,7 +658,7 @@ export function OpenProjectPicker({
                 <KeyCombo
                   binding={NEW_FOLDER_BINDING}
                   className="gap-0.5"
-                  capClassName="h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-[11px] font-medium text-muted-foreground shadow-none"
+                  capClassName="h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none"
                 />
               ) : null}
             </Button>
@@ -784,7 +784,7 @@ export function OpenProjectPicker({
                 ) : (
                   <FolderOpen className="size-4 shrink-0" aria-hidden />
                 )}
-                <span className="truncate font-mono text-[13px] text-foreground">
+                <span className="truncate font-mono text-body text-foreground">
                   {tildify(target, home)}
                 </span>
               </>
@@ -814,7 +814,7 @@ export function OpenProjectPicker({
               <KeyCombo
                 binding="Mod+Enter"
                 className="gap-0.5"
-                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-[11px] font-medium text-primary-foreground shadow-none"
+                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-meta font-medium text-primary-foreground shadow-none"
               />
             ) : null}
           </Button>
@@ -881,7 +881,7 @@ function FolderRow({
         ) : null}
       </span>
       {/* Add shows on the highlighted row; a click elsewhere on the row
-          opens the folder instead. */}
+ opens the folder instead. */}
       <Button
         type="button"
         variant="secondary"

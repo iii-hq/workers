@@ -5,9 +5,9 @@ import { useEffect } from 'react'
 import { $createFunctionMentionNode } from './FunctionMentionNode'
 
 /* Matches a single `@fn(<id>)` token where `<id>` contains no whitespace and
-   no closing paren. Intentionally non-global so the transform processes one
-   match per pass — Lexical will re-run it on the resulting nodes until the
-   text stops matching, which keeps the conversion incremental and safe. */
+ no closing paren. Intentionally non-global so the transform processes one
+ match per pass — Lexical will re-run it on the resulting nodes until the
+ text stops matching, which keeps the conversion incremental and safe. */
 const FN_PATTERN = /@fn\(([^)\s]+)\)/
 
 /**
@@ -38,8 +38,8 @@ export function FunctionMentionTransformPlugin() {
       const functionId = match[1]
 
       /* `splitText` returns the chunks in order; the original node is mutated
-         to hold the first chunk and any tail chunks are returned as new nodes.
-         We pick whichever chunk is the matched substring as `target`. */
+ to hold the first chunk and any tail chunks are returned as new nodes.
+ We pick whichever chunk is the matched substring as `target`. */
       let target: TextNode
       if (start === 0 && end === text.length) {
         target = node

@@ -13,7 +13,13 @@ from _screenshot_images import jpeg, png, webp
 from build_publish_payload import build_payload, publish_screenshots
 
 SOURCE_SHA = "a" * 40
-TAG = f"build-{SOURCE_SHA}"
+IMAGE_TAG = f"build-{SOURCE_SHA}"
+
+
+def tag(worker: str) -> str:
+    return f"build-{worker}-{SOURCE_SHA}"
+
+
 REPOSITORY = "iii-hq/workers"
 INTERFACE = {
     "functions": [{
@@ -115,7 +121,7 @@ def receipt(root: Path, worker: str, image: dict | None = None, **overrides) -> 
         "contract": "build-upload-receipt",
         "worker": worker,
         "source_sha": SOURCE_SHA,
-        "release": {"tag": TAG, "id": 1, "url": f"https://github.com/{REPOSITORY}/releases/tag/{TAG}"},
+        "release": {"tag": tag(worker), "id": 1, "url": f"https://github.com/{REPOSITORY}/releases/tag/{tag(worker)}"},
         "assets": [
             {"name": a["name"], "asset": build_manifest.asset_name(worker, a["name"]), "sha256": a["sha256"], "size": a["size"], "state": "uploaded"}
             for a in prepared["artifacts"]
@@ -163,12 +169,17 @@ def test_asset_names_carry_the_worker_exactly_once() -> None:
     assert build_manifest.asset_name("web", "webhook-x86_64.tar.gz") == "web-webhook-x86_64.tar.gz"
 
 
-def test_release_tag_is_content_addressed_by_source_sha() -> None:
-    assert build_manifest.release_tag(SOURCE_SHA) == TAG
-    with pytest.raises(SystemExit):
-        build_manifest.release_tag("main")
-    with pytest.raises(SystemExit):
-        build_manifest.release_tag("A" * 40)
+def test_release_tag_is_one_release_per_worker_and_source_sha() -> None:
+    # GitHub caps a release at 1000 assets; a release shared by every worker of
+    # a SHA filled up at ~60 Rust workers (16 assets each).
+    assert build_manifest.release_tag("web", SOURCE_SHA) == "build-web-" + SOURCE_SHA
+    assert build_manifest.release_tag("web", SOURCE_SHA) != build_manifest.release_tag("smoke", SOURCE_SHA)
+    assert build_manifest.image_tag(SOURCE_SHA) == IMAGE_TAG
+    for bad in ("main", "A" * 40):
+        with pytest.raises(SystemExit):
+            build_manifest.release_tag("web", bad)
+        with pytest.raises(SystemExit):
+            build_manifest.image_tag(bad)
 
 
 def plan_args(root: Path, worker: str = "web") -> argparse.Namespace:
@@ -202,7 +213,7 @@ def test_rust_manifest_maps_every_target_to_a_release_asset_url(tmp_path: Path) 
     assert manifest["built_at"] == "2026-09-03T00:00:00Z"
     assert manifest["package_manifest_version"] == "1.4.0"
     assert manifest["artifact_kind"] == "rust-binary"
-    assert manifest["release"] == {"tag": TAG, "url": f"https://github.com/{REPOSITORY}/releases/tag/{TAG}"}
+    assert manifest["release"] == {"tag": tag("web"), "url": f"https://github.com/{REPOSITORY}/releases/tag/{tag('web')}"}
     assert manifest["image"] is None
     assert manifest["descriptor"] == selected
     assert manifest["interface"] == INTERFACE
@@ -213,7 +224,7 @@ def test_rust_manifest_maps_every_target_to_a_release_asset_url(tmp_path: Path) 
         "web-tool-aarch64-apple-darwin.tar.gz", "web-tool-aarch64-apple-darwin.sha256",
     }
     linux = by_name["web-tool-x86_64-unknown-linux-gnu.tar.gz"]
-    assert linux["url"] == f"https://github.com/{REPOSITORY}/releases/download/{TAG}/web-tool-x86_64-unknown-linux-gnu.tar.gz"
+    assert linux["url"] == f"https://github.com/{REPOSITORY}/releases/download/{tag('web')}/web-tool-x86_64-unknown-linux-gnu.tar.gz"
     assert linux["target"] == "x86_64-unknown-linux-gnu"
     assert linux["role"] == "binary"
     assert linux["prepared_name"] == "tool-x86_64-unknown-linux-gnu.tar.gz"
@@ -263,7 +274,7 @@ def test_bundle_manifest_exposes_archive_url_and_sha256(tmp_path: Path) -> None:
     assert all(artifact["target"] is None for artifact in manifest["artifacts"])
     assert manifest["registry_artifacts"] == {
         "kind": "javascript-bundle",
-        "archive_url": f"https://github.com/{REPOSITORY}/releases/download/{TAG}/smoke.tar.gz",
+        "archive_url": f"https://github.com/{REPOSITORY}/releases/download/{tag('smoke')}/smoke.tar.gz",
         "sha256": deployment_train.sha256(root / "smoke.tar.gz"),
     }
     payload = build_payload(
@@ -290,14 +301,14 @@ OCI_FILES = {
     "img-image-linux-arm64.oci.tar.gz": ("img-linux-arm64", "oci-platform"),
     "img-image-linux-arm64.oci.tar.sha256": ("img-linux-arm64", "checksum"),
 }
-IMAGE = {"repository": "ghcr.io/iii-hq/img", "tag": TAG, "digest": "sha256:" + "c" * 64, "state": "pushed"}
+IMAGE = {"repository": "ghcr.io/iii-hq/img", "tag": IMAGE_TAG, "digest": "sha256:" + "c" * 64, "state": "pushed"}
 
 
 def test_oci_manifest_records_the_index_digest_and_a_digest_pinned_image_tag(tmp_path: Path) -> None:
     root = prepared_release(tmp_path, descriptor("img", "oci-image"), OCI_FILES)
     manifest = written(write_args(root, receipt(root, "img", image=IMAGE), "img"))
-    assert manifest["image"] == {"repository": "ghcr.io/iii-hq/img", "tag": TAG, "digest": "sha256:" + "c" * 64}
-    assert manifest["registry_artifacts"] == {"kind": "oci-image", "image_tag": f"ghcr.io/iii-hq/img:{TAG}@sha256:{'c' * 64}"}
+    assert manifest["image"] == {"repository": "ghcr.io/iii-hq/img", "tag": IMAGE_TAG, "digest": "sha256:" + "c" * 64}
+    assert manifest["registry_artifacts"] == {"kind": "oci-image", "image_tag": f"ghcr.io/iii-hq/img:{IMAGE_TAG}@sha256:{'c' * 64}"}
     assert {artifact["target"] for artifact in manifest["artifacts"]} == {"linux/amd64", "linux/arm64"}
     payload = build_payload(
         registry_projection=manifest["descriptor"]["registry_projection"], published_version="1.4.0-rc.2",
@@ -409,7 +420,7 @@ def test_manifest_carries_the_descriptor_screenshots_as_release_assets(tmp_path:
     manifest = written(write_args(root, receipt(root, "web"), "web"))
 
     def url(asset: str) -> str:
-        return f"https://github.com/{REPOSITORY}/releases/download/{TAG}/{asset}"
+        return f"https://github.com/{REPOSITORY}/releases/download/{tag('web')}/{asset}"
 
     shots = selected["screenshots"]
     assert manifest["screenshots"] == [

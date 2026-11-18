@@ -48,7 +48,7 @@ mod tests {
     use super::*;
     use crate::config::PoolConfig;
     use crate::handle::HandleRegistry;
-    use crate::handlers::{prepare, AppState};
+    use crate::handlers::{AppState, prepare};
     use crate::pool::{Pool, SqlitePool};
     use serde_json::json;
     use std::collections::HashMap;

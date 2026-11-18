@@ -64,7 +64,9 @@ export function sourceControlDetail(git: GitState | null): string {
   if (git === null) return 'Reading the repository'
   if (git.kind === 'not-a-repo') return 'Not a git repository'
   if (git.kind === 'error') return 'Git is unavailable here'
-  if (git.changes.length === 0) return 'Working tree clean'
+  // The list is the opened folder's; a subfolder says so, since the branch
+  // chip's dot can still mark changes elsewhere in the worktree.
+  if (git.changes.length === 0) return git.status.prefix ? 'No changes in this folder' : 'Working tree clean'
   const staged = git.changes.filter((change) => change.staged).length
   return staged === 0 ? `${plural(git.changes.length, 'change')}, nothing staged` : `${plural(git.changes.length, 'change')}, ${staged} staged`
 }

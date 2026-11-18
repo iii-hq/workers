@@ -36,7 +36,7 @@ No provider key or network access is required.
 | INT-026 | `agent-identity` | direct | a send naming `options.agent` runs as the directory profile (the profile body IS the prompt, nothing built-in underneath) and a spawn with `agent: coder` seeds the child with the prompt resolved through `extends` |
 | INT-027 | `agent-preloaded-functions` | direct | a profile's `functions:` (its own plus its parent's through `extends`, root-first, once each) render as a `<preloaded_functions>` block of live contracts in the frozen system prompt, after the identity; an id the engine does not know is named as unavailable instead of failing the session |
 | INT-028 | `agent-preloaded-skills` | direct | a profile's `skills:` (its own plus its parent's through `extends`, root-first, once each) are PRELOADED: each skill's body from the real directory is frozen as a `<skill id>` section of a `<preloaded_skills>` block after the identity; an id the directory cannot serve is named as unavailable, and an undeclared skill gets no block (the profile never narrows the skills index) |
-| INT-029 | `provider-startup-timeout` | direct | keepalives followed by a transient startup timeout fail once with durable diagnostics, no fabricated partial output, and no automatic resume |
+| INT-029 | `provider-startup-timeout` | direct | a transient startup timeout after a function call retries with the same model input and completes with the function executed once |
 | INT-030 | `oversized-function-result` | direct | a function result over the capture-time byte cap (`max_result_bytes`) reaches the model as an elision marker and the turn completes with the stack still connected |
 | INT-031 | `agent-shared-prompt-prefix` | direct | two sessions running as the same directory profile (a send and a spawned peer) send the router byte-identical `system_sections[0]` and `cache_intent.surface_digest`, differ only in the per-session tail, and keep the flat `system_prompt` equal to the sections joined |
 | INT-032 | `repeated-failed-call-breaker` | direct | after a function fails twice with the identical error (same function and arguments), the third identical call is answered locally with `is_error` and `details.error: "repeated_failure"`; the target runs exactly twice and the turn completes |
@@ -50,6 +50,8 @@ No provider key or network access is required.
 | INT-040 | `call-argument-contract` | direct | through `agent_call`, a malformed call whose contract the model never fetched gets the compacted request schema in its diagnosis (no `engine::functions::info` step needed); after the model fetches the contract, the next diagnosis only points at it |
 | INT-041 | `stop-parked-quiet-deadline` | direct | a person's Stop (`quiet_deadlines`) on a parked session: its wake's deadline starts no turn and the exchange ends `terminal: true` |
 | INT-042 | `stop-parked-next-wake` | direct | an agent's stop on a parked session leaves it to end on its next wake, the deadline notice included |
+| INT-043 | `harness-crash-recovery` | direct | SIGKILL the harness while a controlled function is in flight and start a new harness process; the queue delivers the interrupted step again, the call closes as `interrupted`, and the turn completes inside the orphan redrive window |
+| INT-044 | `provider-recovery-exhausted` | direct | A stream breaks after partial output, then every reconnect fails before any output. The turn keeps the partial result and reports exhaustion after three retries. |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
@@ -157,7 +159,7 @@ The fixture tests pin:
 
 - the streamed frame sequence and terminal response agreement;
 - function-call and function-result history for INT-002;
-- fault timing, held-response wiring, and restart deadlines for INT-010;
+- fault timing, held-response wiring, and restart deadlines for INT-010 and INT-043;
 - the Console-specific system-prompt and `agent_call` tool matchers;
 - serialization round trips and the authoritative `harness::send` schema.
 

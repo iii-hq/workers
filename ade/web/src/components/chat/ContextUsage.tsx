@@ -98,7 +98,7 @@ export function ContextUsage({
       <PopoverTrigger
         aria-label={label}
         className={cn(
-          'flex self-stretch items-center gap-1.5 rounded-sm px-0.5 font-inter text-xs text-ink-faint transition-colors duration-[var(--motion-duration-control)] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus aria-expanded:text-ink',
+          'flex self-stretch items-center gap-1.5 rounded-sm px-0.5 font-inter text-xs text-ink-faint transition-colors duration-[var(--motion-duration-control)] hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:text-ink',
         )}
       >
         <span
@@ -111,10 +111,12 @@ export function ContextUsage({
         >
           <RingGauge ratio={ratio} size={16} stroke={2.5} />
         </span>
+        {/* Under 24rem the counts give way to the chat's title too; the
+ ring stays and the trigger's label still says everything. */}
         {hasCapacity ? (
           <span
             className={cn(
-              'tabular-nums whitespace-nowrap',
+              'tabular-nums whitespace-nowrap @max-[24rem]:hidden',
               tone !== 'normal' && TEXT_TONE[tone],
             )}
           >
@@ -123,12 +125,12 @@ export function ContextUsage({
             {formatTokenCount(capacity)}
           </span>
         ) : (
-          <span className="tabular-nums text-ink">
+          <span className="tabular-nums text-ink @max-[24rem]:hidden">
             {formatTokenCount(tokens)}
           </span>
         )}
         {/* Under a 30rem pane (`@container` on the chat root) the caret
-            goes; the ring and the counts are what you act on. */}
+ goes; the ring and the counts are what you act on. */}
         <ChevronDown
           aria-hidden
           className={cn(
@@ -162,7 +164,7 @@ export function ContextUsage({
             />
             <span
               className={cn(
-                'shrink-0 font-mono text-[13px] tabular-nums',
+                'shrink-0 font-mono text-body tabular-nums',
                 TEXT_TONE[tone],
               )}
             >

@@ -252,20 +252,20 @@ export function AddProviderPanel({
                       <span className="truncate font-sans text-base font-medium text-ink sm:text-sm">
                         {label}
                       </span>
-                      <span className="hidden min-w-0 truncate font-mono text-[11px] text-ink-ghost sm:inline">
+                      <span className="hidden min-w-0 truncate font-mono text-meta text-ink-ghost sm:inline">
                         {worker.name}
                         {worker.version ? `@${worker.version}` : ''}
                       </span>
                     </div>
                     {worker.description ? (
-                      <p className="line-clamp-2 font-sans text-sm leading-snug text-pretty text-ink-faint sm:text-[12px]">
+                      <p className="line-clamp-2 font-sans text-sm leading-snug text-pretty text-ink-faint sm:text-xs">
                         {worker.description}
                       </p>
                     ) : null}
                     {failed ? (
                       <span
                         role="alert"
-                        className="font-mono text-[11px] text-alert break-all"
+                        className="font-mono text-meta text-alert break-all"
                       >
                         {add.error}
                       </span>
@@ -284,7 +284,7 @@ export function AddProviderPanel({
                           Configure
                         </Button>
                       ) : (
-                        <span className="flex items-center gap-1.5 font-sans text-sm text-ink-faint sm:text-[12px]">
+                        <span className="flex items-center gap-1.5 font-sans text-sm text-ink-faint sm:text-xs">
                           <Check className="size-4 shrink-0" aria-hidden />
                           {present ? 'Installed' : 'Starting…'}
                         </span>
@@ -292,7 +292,7 @@ export function AddProviderPanel({
                     ) : adding ? (
                       <span
                         role="status"
-                        className="flex items-center gap-1.5 font-sans text-sm text-ink-faint tabular-nums sm:text-[12px]"
+                        className="flex items-center gap-1.5 font-sans text-sm text-ink-faint tabular-nums sm:text-xs"
                       >
                         <RefreshCw
                           className="size-4 shrink-0 animate-spin"
@@ -324,7 +324,7 @@ export function AddProviderPanel({
           </ul>
         )}
       </div>
-      <p className="shrink-0 px-4 pb-3 font-sans text-[12px] leading-relaxed text-ink-ghost">
+      <p className="shrink-0 px-4 pb-3 font-sans text-xs leading-relaxed text-ink-ghost">
         Adding a provider runs <span className="font-mono">compose::add</span> —
         the same as{' '}
         <span className="font-mono">iii call compose::add worker=…</span> in

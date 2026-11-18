@@ -1,5 +1,5 @@
 /* The conversation list on the sidebar's own rhythm rather than the tree
-   recipe's: 36px rows, a 10px inset on both edges, rounded-xl and 14px
+   recipe's: 36px rows, a 10px inset on both edges, rounded-sm and 14px
    titles — the same box as the New chat / Add project / Search rows above,
    so a selected chat and a hovered nav row paint one identical wash. These
    live here, not as Tailwind utilities on the container, because
@@ -8,8 +8,8 @@
 /* Doubled with the recipe's class so the overrides outrank `.iii-ui-tree`
    whichever stylesheet loads first. */
 .iii-ui-tree.conversation-tree {
-  --iii-ui-tree-inset: 10px;
-  --iii-ui-tree-trailing: 10px;
+  --iii-ui-tree-inset: 12px;
+  --iii-ui-tree-trailing: 12px;
 }
 
 .iii-ui-tree.conversation-tree:not([data-narrow]) {
@@ -17,35 +17,27 @@
 }
 
 .conversation-tree .iii-ui-tree-item {
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-sm);
   font-family: var(--font-inter);
   font-size: 0.875rem;
+  /* 2px between rows: a selected row and a hovered neighbour stay two shapes. */
+  margin-block: 1px;
 }
 
 .conversation-tree .iii-ui-tree-item__meta {
   font-size: 0.75rem;
 }
 
-/* One selected wash for the sidebar: the nav rows' hover uses the same
-   neutral-200/70 and neutral-900 (ConversationSidebar's NAV_ROW). Hover
-   is a lighter step of it, so the open chat still reads as selected; the
-   selected rules come last so a hovered open chat keeps its wash. */
+/* One wash for the sidebar, from the palette: hover is the `accent` tint
+   (the nav rows use the same, ConversationSidebar's NAV_ROW) and the open
+   chat is the `secondary` step, so it still reads as selected under the
+   pointer; the selected rule comes last so a hovered open chat keeps it. */
 .conversation-tree .iii-ui-tree-item:hover {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"]) .conversation-tree .iii-ui-tree-item:hover {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 .conversation-tree .iii-ui-tree-item[aria-current="page"] {
-  background: color-mix(in oklab, var(--color-neutral-200) 70%, transparent);
-}
-
-:where([data-theme="dark"])
-  .conversation-tree
-  .iii-ui-tree-item[aria-current="page"] {
-  background: var(--color-neutral-900);
+  background: var(--secondary);
 }
 
 /* ── row menu and pin ─────────────────────────────────────────────── */
@@ -54,13 +46,7 @@
    keep the cluster in flow and the row washed so the trigger does not
    vanish from under its own menu. */
 .conversation-tree .iii-ui-tree-item[data-menu-open] {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"])
-  .conversation-tree
-  .iii-ui-tree-item[data-menu-open] {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 .conversation-tree .iii-ui-tree-item[data-menu-open] .iii-ui-tree-item__action {
@@ -114,7 +100,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-tree .conversation-inactive-toggle .iii-ui-tree-item__icon > svg {
+  .conversation-tree
+    .conversation-inactive-toggle
+    .iii-ui-tree-item__icon
+    > svg {
     transition: none;
   }
 }
@@ -128,7 +117,7 @@
   display: inline-flex;
   flex: 0 0 auto;
   margin-left: auto;
-  padding-left: 0.5rem;
+  padding-left: 0.875rem;
   align-items: center;
   gap: 0.375rem;
 }
@@ -224,10 +213,11 @@
   --iii-ui-tree-inset: calc(10px + var(--iii-ui-tree-indent));
 }
 
-/* Each row is its own child of the list, so the window can drop it. A project's
-   rows still touch; only the first keeps the list's gap under its header. */
+/* Each row is its own child of the list, so the window can drop it. Rows
+   stand 2px apart (the row rule's margin), so a selected row and the hovered
+   one under it read as two washes, not one blob. */
 .conversation-tree .conversation-project-rows[data-stacked] {
-  margin-top: -1px;
+  margin-top: 1px;
 }
 
 /* A header heading the whole list has nothing above it to stand off from. The
@@ -238,11 +228,7 @@
 }
 
 .conversation-project-header:hover {
-  background: color-mix(in oklab, var(--color-neutral-200) 45%, transparent);
-}
-
-:where([data-theme="dark"]) .conversation-project-header:hover {
-  background: color-mix(in oklab, var(--color-neutral-900) 60%, transparent);
+  background: var(--accent);
 }
 
 /* The plus shows with the pointer on the project; touch keeps it visible. */

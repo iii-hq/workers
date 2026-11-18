@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
-    RegisterFunction, Source,
+    CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -317,16 +317,18 @@ async fn live_frames_without_iii_stream() {
         seqs(&b).len() >= 3
     })
     .await;
-    assert!(b
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|p| p["session_id"] == c2.as_str()));
-    assert!(a
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|p| p["session_id"] == c1.as_str()));
+    assert!(
+        b.lock()
+            .unwrap()
+            .iter()
+            .all(|p| p["session_id"] == c2.as_str())
+    );
+    assert!(
+        a.lock()
+            .unwrap()
+            .iter()
+            .all(|p| p["session_id"] == c1.as_str())
+    );
 
     // Slow consumer: coalesced, newest-first, no backlog.
     tokio::time::sleep(Duration::from_secs(3)).await;

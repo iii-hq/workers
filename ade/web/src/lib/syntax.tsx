@@ -81,10 +81,10 @@ function PlainCode({
 }
 
 /* prism-react-renderer bundles only a handful of languages. JSON isn't among
-   them, so we register it directly on the shared Prism instance. The grammar
-   below is the canonical one from prismjs/components/prism-json.js — small,
-   well-tested, and inlined here to avoid pulling in `prismjs` as a peer dep.
-   Guarded so HMR reloads don't double-register. */
+ them, so we register it directly on the shared Prism instance. The grammar
+ below is the canonical one from prismjs/components/prism-json.js — small,
+ well-tested, and inlined here to avoid pulling in `prismjs` as a peer dep.
+ Guarded so HMR reloads don't double-register. */
 type PrismLanguages = { languages: Record<string, unknown> }
 const prism = Prism as unknown as PrismLanguages
 if (!prism.languages.json) {
@@ -115,16 +115,16 @@ if (!prism.languages.json) {
 }
 
 /* Token palette for read-only code. Every colour is a design token, so the
-   palette flips with `[data-theme="dark"]`: the `syntax-*` tones (GitHub
+ palette flips with `[data-theme="dark"]`: the `syntax-*` tones (GitHub
    "prettylights" in light, Vesper in dark, the editor's own dark theme; AA
-   against `bg`) carry the token kinds, comments and
-   punctuation recede through the `--syntax-*` palette, and diff lines reuse the `ok` /
+ against `bg`) carry the token kinds, comments and
+ punctuation recede through the `--syntax-*` palette, and diff lines reuse the `ok` /
    `alert-strong` status tones. prism-react-renderer merges a nested token's
-   styles parent -> child -> alias with the last one winning, so `property`
-   is deliberately unstyled: JSON keys keep the plain ink and aliased kinds
-   such as Rust's `macro` (alias `property`) or TOML's `key` keep their own
-   colour. A surface that repoints `--syntax-*` (`code-theme-editor`)
-   still recolours plain text, comments and punctuation. */
+ styles parent -> child -> alias with the last one winning, so `property`
+ is deliberately unstyled: JSON keys keep the plain ink and aliased kinds
+ such as Rust's `macro` (alias `property`) or TOML's `key` keep their own
+ colour. A surface that repoints `--syntax-*` (`code-theme-editor`)
+ still recolours plain text, comments and punctuation. */
 export const syntaxTheme: PrismTheme = {
   plain: { color: 'var(--syntax-plain)' },
   styles: [
@@ -177,11 +177,11 @@ export const syntaxTheme: PrismTheme = {
 }
 
 /* Extra grammars beyond the Prism core bundled by `prism-react-renderer`.
-   Registered alongside JSON above so `CodeHighlight` can highlight
+ Registered alongside JSON above so `CodeHighlight` can highlight
    `sandbox::run` / `fs::read` payloads without pulling in `prismjs`.
-   Grammars taken verbatim from prismjs/components, trimmed to the
-   tokens our `syntaxTheme` actually styles (the unstyled tokens render
-   as plain `var(--color-ink)`). */
+ Grammars taken verbatim from prismjs/components, trimmed to the
+ tokens our `syntaxTheme` actually styles (the unstyled tokens render
+ as plain `var(--color-ink)`). */
 if (!prism.languages.python) {
   prism.languages.python = {
     comment: { pattern: /(^|[^\\])#.*/, lookbehind: true, greedy: true },
@@ -225,7 +225,7 @@ if (!prism.languages.python) {
 if (!prism.languages.bash) {
   /* Minimal bash grammar — enough for the shapes that ride through
      `sandbox::run` (shebangs, comments, common builtins) without
-     mirroring the full prism-bash grammar. */
+ mirroring the full prism-bash grammar. */
   prism.languages.bash = {
     shebang: { pattern: /^#!\s*\/.*/, alias: 'important' },
     comment: { pattern: /(^|[^"{\\$])#.*/, lookbehind: true },
@@ -288,7 +288,7 @@ if (!prism.languages.toml) {
 
 if (!prism.languages.diff) {
   /* Unified and normal diffs: file and hunk headers as `coord`, then whole
-     removed / added lines. Trimmed from prismjs/components/prism-diff.js. */
+ removed / added lines. Trimmed from prismjs/components/prism-diff.js. */
   prism.languages.diff = {
     coord: [
       /^(?:diff --git|index) .*$/m,
@@ -302,7 +302,7 @@ if (!prism.languages.diff) {
 }
 
 /* Fence names people and models write that Prism does not register under
-   that id. Each points at a grammar registered by now, so a ```rs or
+ that id. Each points at a grammar registered by now, so a ```rs or
    ```golang block highlights instead of falling back to plain text. */
 const LANGUAGE_ALIASES: Record<string, string> = {
   rs: 'rust',
@@ -326,7 +326,7 @@ interface JsonHighlightProps {
   code: string
   className?: string
   /** When set, the wrapper uses `whitespace-pre-wrap` so long lines wrap
-      naturally; default keeps strict pre so JSON indentation is preserved. */
+ naturally; default keeps strict pre so JSON indentation is preserved. */
   wrap?: boolean
 }
 
@@ -339,13 +339,13 @@ interface JsonHighlightProps {
 interface CodeHighlightProps {
   code: string
   /** Prism language id (`'javascript'`, `'python'`, `'bash'`, …). When
-      the grammar isn't registered Prism falls back to plain text — the
-      same chrome still applies, just without coloring. */
+ the grammar isn't registered Prism falls back to plain text — the
+ same chrome still applies, just without coloring. */
   language: string
   className?: string
   wrap?: boolean
   /** Lines that should carry a `data-prompt` marker (a shell `$`, drawn by
-      the caller's CSS as a pseudo-element so it is never selected). */
+ the caller's CSS as a pseudo-element so it is never selected). */
   linePrompt?: (lineText: string, index: number) => boolean
 }
 
@@ -454,8 +454,8 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
             {tokens.map((line, lineIdx) => {
               const lineProps = getLineProps({ line })
               /* Prism's tokenization is deterministic for a given `code`: line
-                 and token order maps 1:1 to source position, so positional
-                 keys are stable between renders of the same input. */
+ and token order maps 1:1 to source position, so positional
+ keys are stable between renders of the same input. */
               const lineKey = `${lineIdx}:${line.length}`
               const blank = line.length === 1 && line[0].empty === true
               return (

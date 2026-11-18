@@ -4,7 +4,7 @@
 //! types. Request differences and function history remain explicit at each
 //! scenario call site.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{ScenarioDriver, VerifyFn};
 use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};
@@ -116,7 +116,36 @@ impl Scenario {
     }
 
     pub(super) fn engine_sigkill(
+        self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        self.sigkill(
+            FaultKind::EngineSigkill,
+            function,
+            after_target_calls,
+            restart_delay_ms,
+        )
+    }
+
+    pub(super) fn harness_sigkill(
+        self,
+        function: &ControlledFunction,
+        after_target_calls: u64,
+        restart_delay_ms: u64,
+    ) -> Self {
+        self.sigkill(
+            FaultKind::HarnessSigkill,
+            function,
+            after_target_calls,
+            restart_delay_ms,
+        )
+    }
+
+    fn sigkill(
         mut self,
+        kind: FaultKind,
         function: &ControlledFunction,
         after_target_calls: u64,
         restart_delay_ms: u64,
@@ -126,7 +155,7 @@ impl Scenario {
             "fault target call count must be positive"
         );
         self.fault = Some(CompiledFaultV1 {
-            kind: FaultKind::EngineSigkill,
+            kind,
             function_id: function.id().to_string(),
             after_target_calls,
             restart_delay_ms,
@@ -307,12 +336,13 @@ impl Scenario {
     }
 
     /// Declare that the FIRST `count` completions in the statuses list are
-    /// PARKED: the turn completed while its session still owned an armed
-    /// wake, so `harness::on-turn-completed` carried `terminal: false`. They
-    /// appear in the statuses list and in the traces, but the completion
-    /// waiter and the durable terminal check bind only to the remaining
-    /// terminal turns. The park-then-wake run (arm a once-wake, park, be
-    /// woken) is the shape that needs this.
+    /// PARKED: the turn ended while its session still owned an armed wake, or
+    /// its finalize drained a queued message and reseeded the session, so
+    /// `harness::on-turn-completed` carried `terminal: false`. They appear in
+    /// the statuses list and in the traces, but the completion waiter and the
+    /// durable terminal check bind only to the remaining terminal turns. The
+    /// park-then-wake run (arm a once-wake, park, be woken) and a failed turn
+    /// that reseeds a parked message are the shapes that need this.
     pub(super) fn parked_completions(mut self, count: usize) -> Self {
         self.parked_completions = count;
         self
@@ -1294,19 +1324,6 @@ impl Message {
             "model": model.id,
             "provider": model.provider,
             "usage": usage(input_tokens, output_tokens)
-        })
-    }
-
-    /// The durable residue of a failed generation: the harness appends an empty
-    /// assistant row before streaming, and a scripted failure never fills it.
-    /// A later turn in the session sees it in its assembled context.
-    pub(super) fn assistant_empty(model: &ModelFixtureV1) -> Value {
-        json!({
-            "role": "assistant",
-            "content": [],
-            "stop_reason": "end",
-            "model": model.id,
-            "provider": model.provider
         })
     }
 

@@ -12,8 +12,8 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iii_queue::config::QueueConfig;
@@ -22,10 +22,10 @@ use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction, Source,
-    WorkerIdentityMode,
+    CallRequest, IIIClient, InitOptions, RegisterFunction, Source, WorkerIdentityMode,
+    register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::Instant;
 use uuid::Uuid;
 

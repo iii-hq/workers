@@ -55,7 +55,7 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
 
-    /// Mid-stream transient provider/router failures to resume from the
+    /// Retryable provider/router failures to recover from the
     /// preserved transcript before the turn is marked failed. Transport
     /// retries remain owned by llm-router.
     #[serde(default = "default_max_transient_resumes")]
@@ -180,7 +180,7 @@ impl WorkerConfig {
     /// `configuration::get` are already env-expanded), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {
@@ -303,11 +303,7 @@ fn default_max_validation_retries() -> u32 {
     2
 }
 fn default_max_transient_resumes() -> u32 {
-    // Provider overloads (Anthropic 529s) cluster in bursts, and only
-    // mid-stream errors burn this budget (pre-stream errors are retried
-    // with backoff inside llm-router). A budget of 1 killed a turn that
-    // was one generation step from done when a second overload landed
-    // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
+    // Provider overloads can span several generations of the same turn.
     3
 }
 /// Default for [`WorkerConfig::max_result_bytes`]: 256 KiB, the same ceiling
@@ -548,10 +544,12 @@ mod tests {
     #[test]
     fn json_schema_has_properties_and_example() {
         let schema = WorkerConfig::json_schema();
-        assert!(schema
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .is_some());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .is_some()
+        );
         assert_eq!(
             schema.get("example"),
             Some(&WorkerConfig::default().to_json())
@@ -560,9 +558,29 @@ mod tests {
 
     #[test]
     fn from_yaml_expands_env_var() {
-        std::env::set_var("HARNESS_TEST_CRON", "0 0 * * * *");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::from_yaml_expands_env_var");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("HARNESS_TEST_CRON", "0 0 * * * *")
+                .output()
+                .expect("start isolated test process");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test was not executed: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("sweep_expression: \"${HARNESS_TEST_CRON}\"\n").unwrap();
         assert_eq!(cfg.sweep_expression, "0 0 * * * *");
-        std::env::remove_var("HARNESS_TEST_CRON");
     }
 }

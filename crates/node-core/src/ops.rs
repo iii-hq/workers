@@ -7,14 +7,14 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use deno_core::{extension, op2, OpState};
+use deno_core::{OpState, extension, op2};
 use deno_error::JsErrorBox;
 use futures::future::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::engine::{
-    hook_outcome, parse_guest_observe, CallResult, Engine, GuestFunctionOptions, HookMethod,
-    ProxyHandler, UnregisterFn,
+    CallResult, Engine, GuestFunctionOptions, HookMethod, ProxyHandler, UnregisterFn, hook_outcome,
+    parse_guest_observe,
 };
 use crate::error::NodeEngineError;
 use crate::runtime::{Command, LogLine};
@@ -354,8 +354,8 @@ async fn op_iii_call_observer(
         let mut borrowed = state.borrow_mut();
         let ops = borrowed.borrow_mut::<OpsState>();
         let hooked_observers = ops.hooked_observers.clone();
-        let known = hooked_observers.lock().unwrap().contains_key(&observer_id);
-        known
+
+        hooked_observers.lock().unwrap().contains_key(&observer_id)
     };
     if !hooked {
         return Err(JsErrorBox::type_error(format!(
@@ -1539,9 +1539,10 @@ mod tests {
             GuestFunctionOptions::default(),
             noop_handler(),
         );
-        assert!(fake
-            .registered_ids()
-            .contains(&"victim::secret".to_string()));
+        assert!(
+            fake.registered_ids()
+                .contains(&"victim::secret".to_string())
+        );
 
         let mut attacker = test_ops("attacker::", "rt-attacker", fake.clone());
         let err = unregister_checked(

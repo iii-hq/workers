@@ -1,6 +1,6 @@
 {
   "function_id": "browser::navigate",
-  "description": "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure or an empty HTTP error response leaves Chromium's error page in the tab and is reported in `error` rather than failing the call. Element refs from earlier snapshots are invalidated by navigation.",
+  "description": "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure or an empty HTTP error response leaves Chromium's error page in the tab and is reported in `error` rather than failing the call. A url that is a file downloads instead: the call returns once the download begins, with `download` set, and the tab stays on its page. Element refs from earlier snapshots are invalidated by navigation.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "NavigateInput",
@@ -39,6 +39,17 @@
       "url"
     ],
     "properties": {
+      "download": {
+        "description": "Set when the url was a file: Chromium downloaded it instead of loading a page, and the tab stays on the page it was on. The file is listed by `browser::downloads::list`; read it with `browser::download` and this guid once it completes.",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BeganDownload"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "error": {
         "description": "Chromium's error text when the navigation ended on the browser's own error page: a network failure (`net::ERR_NAME_NOT_RESOLVED`), or an empty HTTP error response (`net::ERR_HTTP_RESPONSE_CODE_FAILURE`, a 4xx/5xx with no body). Like a browser, the tab still shows that page and stays usable.",
         "type": [
@@ -63,6 +74,30 @@
       "url": {
         "description": "URL after redirects.",
         "type": "string"
+      }
+    },
+    "definitions": {
+      "BeganDownload": {
+        "description": "A download the tab's main frame began: what `browser::navigate` reports when the url it was given turned out to be a file.",
+        "type": "object",
+        "required": [
+          "file_name",
+          "guid",
+          "refused"
+        ],
+        "properties": {
+          "file_name": {
+            "type": "string"
+          },
+          "guid": {
+            "description": "The download's CDP guid, for `browser::download`.",
+            "type": "string"
+          },
+          "refused": {
+            "description": "The origin policy refused it: nothing was saved.",
+            "type": "boolean"
+          }
+        }
       }
     }
   }

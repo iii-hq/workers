@@ -4,7 +4,7 @@
 use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Body of the synthetic `role: "tool"` row injected for an orphan tool call
 /// (OpenAI rejects assistant `tool_calls` without a tool message per id).

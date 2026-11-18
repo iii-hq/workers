@@ -11,7 +11,8 @@ pub struct ScenarioFixture {
     /// Playground turns and harness-initiated follow-on turns (e.g. a reseed
     /// after a message parks mid-final-step) push it higher. May be LESS than
     /// `expected_turn_statuses.len()`: the difference is PARKED completions —
-    /// turns that completed while the session owned an armed wake
+    /// turns that ended while the session owned an armed wake, or whose
+    /// finalize drained a queued message and reseeded the session
     /// (`terminal: false`), declared with `parked_completions(n)` and always
     /// first in the statuses list.
     pub expected_terminal_turns: usize,
@@ -142,15 +143,6 @@ impl ScenarioFixture {
             anyhow::ensure!(
                 matches!(status.as_str(), "completed" | "failed" | "cancelled"),
                 "unknown terminal turn status {status:?}"
-            );
-        }
-        // A parked completion is by definition a COMPLETED turn whose session
-        // still owned an armed wake — a turn cannot park by failing.
-        let parked = self.expected_turn_statuses.len() - self.expected_terminal_turns;
-        for status in &self.expected_turn_statuses[..parked] {
-            anyhow::ensure!(
-                status == "completed",
-                "a parked completion must be `completed`, got {status:?}"
             );
         }
         // Controlled-call waits depend on a controlled function existing:

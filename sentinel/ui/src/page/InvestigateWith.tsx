@@ -49,7 +49,7 @@ export function InvestigateWith({ host, onCancel, onInvestigate, open }: Props) 
           if (model) onInvestigate(model, provider)
         }}
       >
-        <DialogTitle>Investigate with…</DialogTitle>
+        <DialogTitle>Investigate with</DialogTitle>
         <DialogDescription>
           For this investigation only. The configured default is unchanged — set one in the
           configuration and Investigate stops asking.

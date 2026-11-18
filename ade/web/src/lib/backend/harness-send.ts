@@ -180,6 +180,9 @@ export interface HarnessArmedWake {
  * (mirrors `harness_queue` rows surfaced by `harness::status`). `message` is
  * the wire AgentMessage; only text blocks matter for preview purposes.
  */
+/** `harness::status` → `queued[].channel` (harness/src/functions/send.rs `DeliveryChannel`). */
+export type HarnessDeliveryChannel = 'direct' | 'invoked-agent' | 'notification'
+
 export interface HarnessQueuedMessage {
   id: string
   session_id: string
@@ -190,6 +193,10 @@ export interface HarnessQueuedMessage {
     content?: Array<{ type: string; text?: string }>
   }
   origin?: unknown
+  /** How the row reached the session: `direct` is a person (or a client acting
+   *  as one); `notification` an observer or system notice; `invoked-agent` a
+   *  sub-agent's opening task. Absent on rows parked by an older harness. */
+  channel?: HarnessDeliveryChannel
   queued_at: number
 }
 

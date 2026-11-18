@@ -33,7 +33,7 @@ const COPY: Record<Exclude<DiscoveryOutcome, 'success'>, [string, string]> = {
   ],
   empty: [
     'No chat models available',
-    'The lookup completed successfully but returned no chat models.',
+    'The lookup finished but returned no chat models.',
   ],
   not_configured: [
     'Configure xAI',
@@ -147,7 +147,7 @@ export function XaiDiscoveryStatus({
                 </Button>
               </div>
               <details>
-                <summary className="cursor-pointer rounded-sm py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus">
+                <summary className="cursor-pointer rounded-sm py-3 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                   Technical details
                 </summary>
                 <p>

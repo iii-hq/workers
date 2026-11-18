@@ -14,13 +14,13 @@
 
 use std::collections::HashSet;
 
-use pdf_inspector::types::ItemType;
 use pdf_inspector::TextItem;
+use pdf_inspector::types::ItemType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
-use crate::source::{describe_error, PdfSource};
+use crate::source::{PdfSource, describe_error};
 
 pub const ID: &str = "pdf::extract-items";
 pub const DESC: &str = "Extract positioned text items: the box, font, size and styling of every \

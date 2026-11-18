@@ -1,6 +1,6 @@
 //! `storage::headObject` — fetch object metadata without downloading the body.
 
-use super::{err_to_str, validate_key, AppState};
+use super::{AppState, err_to_str, validate_key};
 use crate::backend::HeadReq as BackendHeadReq;
 use crate::error::backend_error_to_storage;
 use chrono::{DateTime, Utc};

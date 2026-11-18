@@ -1,6 +1,6 @@
 //! Operator-owned model choice, hardware placement and execution limits. No
 //! credentials: the model runs in-process from public Hugging Face files.
-use crate::{download::MODELS, Limits};
+use crate::{Limits, download::MODELS};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

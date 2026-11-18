@@ -8,7 +8,7 @@ mod support;
 
 use std::path::Path;
 
-use support::{commit_file, create_request, git, init_repo, make_env, test_config, TestEnv};
+use support::{TestEnv, commit_file, create_request, git, init_repo, make_env, test_config};
 use worktree::functions::{create, prune, status};
 
 struct Setup {

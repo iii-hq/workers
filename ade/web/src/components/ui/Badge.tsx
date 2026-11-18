@@ -1,10 +1,16 @@
 import type * as React from 'react'
+import { Badge as BaseBadge, badgeVariants } from '@/components/shadcn/badge'
 import { cn } from '@/lib/utils'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
+/**
+ * The console's status tones on the shadcn badge: `default` is the
+ * neutral `muted` wash, `ok` / `warn` / `alert` tint with the status colour
+ * and `accent` with the primary fill's tint. A tone is never a solid fill.
+ */
 export type BadgeVariant = 'default' | 'ok' | 'warn' | 'alert' | 'accent'
 
 const variantTone: Record<BadgeVariant, string> = {
@@ -27,9 +33,11 @@ export function Badge({
   ...props
 }: BadgeProps) {
   return (
-    <span
+    <BaseBadge
+      variant="outline"
       className={cn(
-        'inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 font-sans text-base font-medium sm:text-xs',
+        // Touch-sized on phones, 12px type from `sm` up.
+        'h-auto max-w-full rounded-full border-transparent px-2.5 py-1 font-sans text-base sm:text-xs',
         variantTone[variant],
         className,
       )}
@@ -37,6 +45,8 @@ export function Badge({
       {...props}
     >
       {children}
-    </span>
+    </BaseBadge>
   )
 }
+
+export { badgeVariants }

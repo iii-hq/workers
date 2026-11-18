@@ -151,7 +151,7 @@ export function ReasoningEffortSlider({
     >
       <label
         htmlFor={id}
-        className="reasoning-effort__label truncate font-sans text-sm font-medium text-ink sm:text-[13px]"
+        className="reasoning-effort__label truncate font-sans text-sm font-medium text-ink sm:text-body"
       >
         Reasoning effort
       </label>
@@ -196,9 +196,9 @@ export function ReasoningEffortSlider({
         />
       </div>
       {/* Every level name is stacked invisibly under the visible one so the
-          cell keeps the widest label's width and the track never resizes. */}
+ cell keeps the widest label's width and the track never resizes. */}
       <span
-        className="reasoning-effort__value grid font-sans text-sm font-semibold capitalize sm:text-[13px]"
+        className="reasoning-effort__value grid font-sans text-sm font-semibold capitalize sm:text-body"
         title={current.description}
       >
         {options.map((option) => (

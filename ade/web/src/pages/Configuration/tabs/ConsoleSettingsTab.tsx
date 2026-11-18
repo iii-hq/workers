@@ -43,6 +43,7 @@ import {
   saveNewChatMode,
   useNewChatMode,
 } from '@/lib/new-chat-mode'
+import { requestOnboardingWizard } from '@/lib/onboarding/open'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 import { type SendKey, saveSendKey, useSendKey } from '@/lib/send-key'
 import {
@@ -84,7 +85,7 @@ const NEW_CHAT_MODE_OPTIONS: { value: NewChatMode; label: string }[] = [
 ]
 
 /* Spelled out rather than as key caps, so the closed trigger reads at a
-   glance; Cmd on a Mac, Ctrl everywhere else. */
+ glance; Cmd on a Mac, Ctrl everywhere else. */
 function buildSendKeyOptions(): { value: SendKey; label: string }[] {
   const mod = shortcutPlatform() === 'mac' ? 'Cmd' : 'Ctrl'
   return [
@@ -101,13 +102,16 @@ const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
 ]
 
 /* A row's dropdown: the shadcn trigger at Linear's width, white on the
-   card so it reads as a control and not a chip. */
+ card so it reads as a control and not a chip. */
 const ROW_SELECT_TRIGGER =
-  'h-9 min-w-40 border-neutral-200 bg-white text-[15px] hover:bg-neutral-50 dark:border-neutral-900 dark:bg-black dark:hover:bg-neutral-900'
+  'h-9 min-w-40 border-border bg-card text-[15px] hover:bg-muted'
 
 interface ConsoleSettingsTabProps {
   theme: ThemePreference
   onThemeChange: (next: ThemePreference) => void
+  /** Close settings: "Run setup" closes them before the wizard opens, so
+   *  the chat or tour it starts is not hidden behind this page. */
+  onClose?: () => void
 }
 
 /**
@@ -119,6 +123,7 @@ interface ConsoleSettingsTabProps {
 export function ConsoleSettingsTab({
   theme,
   onThemeChange,
+  onClose,
 }: ConsoleSettingsTabProps) {
   // The permissions section only applies when the optional approval-gate worker
   // is connected (it owns `approval::*` + the config entry). Absent → hide the
@@ -470,7 +475,7 @@ export function ConsoleSettingsTab({
               Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-100 p-2 dark:border-neutral-800">
+          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-border p-2">
             <FunctionAllowlistTree
               functions={allowlistCandidates}
               allowlist={allowlistSet}
@@ -543,6 +548,22 @@ export function ConsoleSettingsTab({
         description="Manage model credentials, endpoints, and provider-specific settings."
       >
         <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.setup}
+            label="Setup"
+            description="Run the setup wizard again: connect a provider, add Judge, or take the learn-iii tour."
+            action={
+              <Button
+                variant="outline"
+                onClick={() => {
+                  onClose?.()
+                  requestOnboardingWizard()
+                }}
+              >
+                Run setup
+              </Button>
+            }
+          />
           <SettingsRow
             id={GENERAL_ANCHOR.modelProviders}
             label="Model providers"

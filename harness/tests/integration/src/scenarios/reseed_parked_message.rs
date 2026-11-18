@@ -9,11 +9,12 @@
 //! steering check, so a generation that parks a steer and then fails routes
 //! the parked message deterministically through the finalize drain, which must
 //! reseed a turn to react to it (both finalize paths share the same drain +
-//! reseed). Without the reseed the parked message is stranded, no second
-//! terminal turn arrives, and the run times out.
+//! reseed). The failed turn reports `terminal: false` because its finalize
+//! reseeded the session. Without the reseed the parked message is stranded,
+//! the terminal (reseeded) turn never arrives, and the run times out.
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -29,10 +30,11 @@ pub(super) fn scenario() -> ScenarioFixture {
         "reseed-parked-message",
         "A message parked during a turn's final step is delivered by a reseeded turn.",
         ScenarioDriver::Direct,
-        model.clone(),
+        model,
     )
     .send(Send::message(MESSAGE).idempotency_key("{{run_id}}:integration-003"))
     .terminal_turn_statuses(["failed", "completed"])
+    .parked_completions(1)
     .generation(
         // Turn 1's only step: the steer parks while the harness awaits this
         // generation, then the scripted failure drives finalize_failed — whose
@@ -50,19 +52,14 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .generation(
         // The reseeded turn's own step 0 (`:0` pins a fresh turn id, not an
-        // advance of turn 1). Its context carries the original user message,
-        // the failed generation's empty assistant residue, and the parked
-        // follow-up delivered by the finalize drain.
+        // advance of turn 1). Only the original user message and the parked
+        // follow-up delivered by the finalize drain reach the model.
         Generation::new(2)
             .expect(
                 Request::new()
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_exact([
-                        Message::user(MESSAGE),
-                        Message::assistant_empty(&model),
-                        Message::user(PARKED),
-                    ])
+                    .messages_exact([Message::user(MESSAGE), Message::user(PARKED)])
                     .without_tools(),
             )
             .respond(Response::text(SECOND_TEXT, 12, 4)),
@@ -106,7 +103,7 @@ mod tests {
     #[test]
     fn parks_before_a_failing_terminal_generation_and_expects_a_reseeded_turn() {
         let fixture = scenario();
-        assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.expected_turn_statuses, ["failed", "completed"]);
         assert_eq!(fixture.expected_traces(), 1);
 

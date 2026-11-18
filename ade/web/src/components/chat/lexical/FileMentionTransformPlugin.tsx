@@ -6,10 +6,10 @@ import { parseFileMentionInner } from '@/lib/file-mention-token'
 import { $createFileMentionNode } from './FileMentionNode'
 
 /* Matches a single `#file(<path>[:<from>[-<to>]])` token where the inner
-   text contains no closing paren (spaces are fine — file names can carry
-   them). Intentionally non-global so the transform processes one match per
-   pass — Lexical will re-run it on the resulting nodes until the text stops
-   matching, which keeps the conversion incremental and safe. */
+ text contains no closing paren (spaces are fine — file names can carry
+ them). Intentionally non-global so the transform processes one match per
+ pass — Lexical will re-run it on the resulting nodes until the text stops
+ matching, which keeps the conversion incremental and safe. */
 const FILE_PATTERN = /#file\(([^)]+)\)/
 
 /**
@@ -42,8 +42,8 @@ export function FileMentionTransformPlugin() {
       if (ref.path.length === 0) return
 
       /* `splitText` returns the chunks in order; the original node is mutated
-         to hold the first chunk and any tail chunks are returned as new nodes.
-         We pick whichever chunk is the matched substring as `target`. */
+ to hold the first chunk and any tail chunks are returned as new nodes.
+ We pick whichever chunk is the matched substring as `target`. */
       let target: TextNode
       if (start === 0 && end === text.length) {
         target = node

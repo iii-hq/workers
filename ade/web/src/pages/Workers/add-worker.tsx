@@ -89,10 +89,10 @@ export function AddWorkerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="wk-surface wk-dialog wk-dialog-box gap-0 p-0 [--dialog-max-width:38rem]">
         <div className="flex flex-col gap-1.5 px-6 pt-6 pb-4">
-          <DialogTitle className="pr-8 font-inter text-[16px] font-semibold leading-6 text-neutral-900 dark:text-neutral-50">
+          <DialogTitle className="pr-8 font-inter text-base font-semibold leading-6 text-foreground">
             Add worker
           </DialogTitle>
-          <DialogDescription className="font-inter text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          <DialogDescription className="font-inter text-body leading-5 text-muted-foreground">
             Declare a worker in the compose file, from the registry or from a
             directory on the daemon host.
           </DialogDescription>
@@ -192,7 +192,7 @@ function Dependencies({
         names.length ? (
           <Fragment key={label}>
             <FieldLabel>{label}</FieldLabel>
-            <span className="wk-machine">{names.join(', ')}</span>
+            <span className="wk-machine">{names.join(',')}</span>
           </Fragment>
         ) : null,
       )}

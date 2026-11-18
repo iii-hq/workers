@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use harness::functions::send::{MessageInput, SendOptions, SendRequest, SendResponse, SessionInit};
 use harness::types::model::Model;
 use harness::types::turn::FunctionPolicy;
@@ -157,10 +157,10 @@ fn validate_config(config: &SuiteRunConfig) -> Result<()> {
     if needs_judge && config.judge.is_none() {
         bail!("selected scenarios require --judge-model and --judge-provider");
     }
-    if let Some(judge) = &config.judge {
-        if judge.model.trim().is_empty() || judge.provider.trim().is_empty() {
-            bail!("judge model and provider cannot be empty");
-        }
+    if let Some(judge) = &config.judge
+        && (judge.model.trim().is_empty() || judge.provider.trim().is_empty())
+    {
+        bail!("judge model and provider cannot be empty");
     }
     Ok(())
 }
@@ -250,14 +250,14 @@ async fn run_once(
             ),
         );
     }
-    if let Some(cleanup) = spec.cleanup {
-        if let Err(error) = cleanup(context, &run_id).await {
-            report.push_failure(
-                RunStatus::InfrastructureError,
-                FailurePhase::Cleanup,
-                format!("scenario '{}': scenario cleanup failed: {error:#}", spec.id),
-            );
-        }
+    if let Some(cleanup) = spec.cleanup
+        && let Err(error) = cleanup(context, &run_id).await
+    {
+        report.push_failure(
+            RunStatus::InfrastructureError,
+            FailurePhase::Cleanup,
+            format!("scenario '{}': scenario cleanup failed: {error:#}", spec.id),
+        );
     }
     report.wall_time_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     if report.failures.is_empty() {
@@ -661,13 +661,15 @@ fn validate_objective_evaluation(
         if gate.reason.trim().is_empty() {
             bail!(
                 "scenario '{}': evaluation contract violation: hard gate '{}' has an empty reason; include the observed evidence",
-                spec.id, gate.id
+                spec.id,
+                gate.id
             );
         }
         if !gate_ids.insert(gate.id.as_str()) {
             bail!(
                 "scenario '{}': evaluation contract violation: hard gate '{}' was returned more than once; expected unique gate ids",
-                spec.id, gate.id
+                spec.id,
+                gate.id
             );
         }
     }
@@ -704,7 +706,8 @@ fn validate_objective_evaluation(
         if award.reason.trim().is_empty() {
             bail!(
                 "scenario '{}': evaluation contract violation: criterion '{}' has an empty reason; include the observed evidence",
-                spec.id, award.id
+                spec.id,
+                award.id
             );
         }
         let criterion = criteria
@@ -724,7 +727,8 @@ fn validate_objective_evaluation(
         if award.awarded > criterion.weight {
             bail!(
                 "scenario '{}': evaluation contract violation: criterion '{}' awarded {}; expected awarded in 0..={}; action: reduce the award or change the configured weight",
-                spec.id, award.id,
+                spec.id,
+                award.id,
                 award.awarded,
                 criterion.weight
             );
@@ -732,7 +736,8 @@ fn validate_objective_evaluation(
         if !seen.insert(award.id.as_str()) {
             bail!(
                 "scenario '{}': evaluation contract violation: criterion '{}' was returned more than once; expected exactly one award per configured criterion",
-                spec.id, criterion.id
+                spec.id,
+                criterion.id
             );
         }
     }
@@ -840,26 +845,30 @@ mod tests {
     #[test]
     fn objective_awards_must_be_complete_and_bounded() {
         let spec = spec();
-        assert!(validate_objective_evaluation(
-            &spec,
-            &ObjectiveEvaluation {
-                hard_gates: Vec::new(),
-                awards: vec![CriterionAward {
-                    id: "objective".into(),
-                    awarded: 100,
-                    reason: "ok".into(),
-                }],
-            }
-        )
-        .is_ok());
-        assert!(validate_objective_evaluation(
-            &spec,
-            &ObjectiveEvaluation {
-                hard_gates: Vec::new(),
-                awards: Vec::new(),
-            }
-        )
-        .is_err());
+        assert!(
+            validate_objective_evaluation(
+                &spec,
+                &ObjectiveEvaluation {
+                    hard_gates: Vec::new(),
+                    awards: vec![CriterionAward {
+                        id: "objective".into(),
+                        awarded: 100,
+                        reason: "ok".into(),
+                    }],
+                }
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_objective_evaluation(
+                &spec,
+                &ObjectiveEvaluation {
+                    hard_gates: Vec::new(),
+                    awards: Vec::new(),
+                }
+            )
+            .is_err()
+        );
         let error = validate_objective_evaluation(
             &spec,
             &ObjectiveEvaluation {

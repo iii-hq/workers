@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures_util::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value;
+use serde_yaml_ng::Value;
 use tokio::process::Command;
 
 const MAX_CHILDREN: usize = 200;
@@ -69,7 +69,7 @@ fn expand(path: &str) -> PathBuf {
 }
 
 pub fn parse_manifest(dir: &Path, source: &str) -> Option<Manifest> {
-    let root: Value = serde_yaml::from_str(source).ok()?;
+    let root: Value = serde_yaml_ng::from_str(source).ok()?;
     let text = |key: &str| root.get(key).and_then(Value::as_str).map(str::to_string);
     Some(Manifest {
         path: dir.to_string_lossy().into_owned(),
@@ -353,10 +353,12 @@ mod tests {
 
         // A canonical Windows path is `\\?\C:\...`; git reports the top level as `C:/...`.
         #[cfg(windows)]
-        assert!(std::fs::canonicalize(&worker)
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(r"\\?\"));
+        assert!(
+            std::fs::canonicalize(&worker)
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(r"\\?\")
+        );
         let found = inspect(&InspectInput {
             path: worker.to_string_lossy().into_owned(),
             run: None,

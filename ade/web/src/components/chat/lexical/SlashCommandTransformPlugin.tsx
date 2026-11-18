@@ -6,11 +6,11 @@ import { SKILL_ID_SOURCE } from '@/lib/slash-commands'
 import { $createSlashCommandNode } from './SlashCommandNode'
 
 /* A single `/skill:<id>` token that the writer has finished: it sits after
-   a start, whitespace or `(` and is followed by whitespace. Without the
-   trailing-space rule the pill would snap shut on the first character
-   typed after `/skill:` — while the palette is still open on it. Non-global
-   so the transform handles one match per pass; Lexical re-runs it on the
-   resulting nodes until the text stops matching. */
+ a start, whitespace or `(` and is followed by whitespace. Without the
+ trailing-space rule the pill would snap shut on the first character
+ typed after `/skill:` — while the palette is still open on it. Non-global
+ so the transform handles one match per pass; Lexical re-runs it on the
+ resulting nodes until the text stops matching. */
 const SKILL_PATTERN = new RegExp(
   String.raw`(?<=^|[\s(])(\/skill:${SKILL_ID_SOURCE})(?=\s)`,
 )
@@ -42,8 +42,8 @@ export function SlashCommandTransformPlugin() {
       const end = start + match[1].length
 
       /* `splitText` returns the chunks in order; the original node is mutated
-         to hold the first chunk and any tail chunks are returned as new nodes.
-         We pick whichever chunk is the matched substring as `target`. */
+ to hold the first chunk and any tail chunks are returned as new nodes.
+ We pick whichever chunk is the matched substring as `target`. */
       let target: TextNode
       if (start === 0 && end === text.length) {
         target = node

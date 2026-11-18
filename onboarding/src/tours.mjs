@@ -77,7 +77,7 @@ const agentStep = (step) => {
     ...step,
     ask: {
       ...step.ask,
-      text: `${step.ask.text} When you are ending your turn, write ${key}: true to state, scope "${STATE_SCOPE}".`,
+      text: `${step.ask.text} The very last thing you do before ending your turn, after everything else is finished: call state::set with scope "${STATE_SCOPE}", key "${key}" and value true. The tour moves on only when that write lands, so never skip it.`,
     },
     condition: {
       function_id: "state::on-changed",

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use provider_llamacpp::register::register_provider;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
@@ -139,7 +139,8 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
     // boots: every in-process read happens after this single mutation and
     // no test ever sets the variable, so concurrent tests cannot race it.
     static STRIP_HOST_KEY: std::sync::Once = std::sync::Once::new();
-    STRIP_HOST_KEY.call_once(|| std::env::remove_var("LLAMACPP_API_KEY"));
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    STRIP_HOST_KEY.call_once(|| unsafe { std::env::remove_var("LLAMACPP_API_KEY") });
     let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await

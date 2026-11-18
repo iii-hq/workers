@@ -47,6 +47,10 @@ def test_all_external_actions_are_pinned_by_commit_sha() -> None:
             assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", reference), (
                 f"{path.name}:{line_number}: mutable action reference {reference}"
             )
+            # An all-zero placeholder resolves to no commit: the job cannot start.
+            assert not reference.endswith("@" + "0" * 40), (
+                f"{path.name}:{line_number}: placeholder action reference {reference}"
+            )
 
 
 def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
@@ -272,6 +276,7 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
         "ci.yml", "build.yml", "_worker-e2e.yml",
         "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
         "storage-e2e.yml", "browser-scrapling-e2e.yml", "judge-e2e.yml",
+        "mesh-e2e.yml",
     }
 
 

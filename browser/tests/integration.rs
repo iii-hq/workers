@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use iii_sdk::{
-    register_worker, CallRequest, Capture, InitOptions, ObserverHandle, ObserverOptions,
-    RegisterFunction, Source,
+    CallRequest, Capture, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
+    register_worker,
 };
 use serde_json::json;
 use tokio::time::{sleep, timeout};
@@ -1396,13 +1396,13 @@ fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
     let state = &evaluation["state"];
     let questions = &evaluation["questions"];
     let pick = |question: &str, choice: &str| {
-        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
-            ["criteria"]
-            .as_object()
-            .expect("choice criteria")
-            .keys()
-            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
-            .collect();
+        let probabilities: serde_json::Map<String, serde_json::Value> =
+            questions[question]["criteria"]
+                .as_object()
+                .expect("choice criteria")
+                .keys()
+                .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+                .collect();
         json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
     };
     let field = |label: &str| {
@@ -1544,9 +1544,11 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
     assert!(requests[..n].iter().all(|r| r.get("provider").is_none()));
     assert!(requests[n..].iter().all(|r| r["provider"] == "semif"));
     // input values never reach the judge (until the page itself shows them)
-    assert!(!requests[n]["evaluations"][0]["state"]
-        .to_string()
-        .contains("Crash on save"));
+    assert!(
+        !requests[n]["evaluations"][0]["state"]
+            .to_string()
+            .contains("Crash on save")
+    );
     // each request asks the operation, the completion check, and one head
     // per offered operation
     let heads: Vec<&String> = requests[n]["evaluations"][0]["questions"]
@@ -1679,13 +1681,13 @@ fn eager_login_judge(request: &serde_json::Value) -> serde_json::Value {
     let state = &evaluation["state"];
     let questions = &evaluation["questions"];
     let pick = |question: &str, choice: &str| {
-        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
-            ["criteria"]
-            .as_object()
-            .expect("choice criteria")
-            .keys()
-            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
-            .collect();
+        let probabilities: serde_json::Map<String, serde_json::Value> =
+            questions[question]["criteria"]
+                .as_object()
+                .expect("choice criteria")
+                .keys()
+                .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+                .collect();
         json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
     };
     let text = state["page"]["text"].as_str().unwrap_or_default();
@@ -2028,6 +2030,133 @@ async fn a_stalled_load_times_out_on_budget_and_keeps_the_tab() {
             .expect("stop");
         assert_eq!(stopped["was_running"], true, "{stopped}");
     }
+    client.shutdown_async().await;
+}
+
+/// A loopback site with a page at `/` and a file at `/report.csv` served
+/// as an attachment: a url a browser downloads instead of loading.
+fn serve_page_and_attachment() -> String {
+    const PAGE: &str = "<!doctype html><title>start</title><p>start page</p>";
+    const FILE: &str = "a,b\n1,2\n";
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let response = if request.starts_with("GET /report.csv") {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                         Content-Disposition: attachment; filename=\"report.csv\"\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{FILE}",
+                        FILE.len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{PAGE}",
+                        PAGE.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+/// QA 2026-11-16: typing a file's url in the address bar spun for 30 s and
+/// said nothing. A url that downloads loads no page, so chromiumoxide held
+/// the navigation to its own 30 s deadline (and every later one behind it).
+/// `browser::navigate` must answer as soon as the download begins, name it,
+/// leave the tab on its page, and leave the tab free for the next address.
+#[tokio::test]
+async fn navigating_to_a_file_downloads_it_and_frees_the_tab_at_once() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.call(CallRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("call timed out")
+        }
+    };
+    let site = serve_page_and_attachment();
+    let opened = call("browser::sessions::start", json!({ "url": site }))
+        .await
+        .expect("start");
+    let id = opened["session_id"].as_str().expect("id").to_string();
+
+    let started = std::time::Instant::now();
+    let nav = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": format!("{site}report.csv"), "timeout_ms": 20_000 }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    eprintln!("navigate to an attachment took {elapsed:?}: {nav:?}");
+    let nav = nav.expect("navigate to the file");
+    assert_eq!(nav["timed_out"], false, "{nav}");
+    assert_eq!(nav["download"]["file_name"], "report.csv", "{nav}");
+    assert_eq!(nav["url"], site, "the tab stays on its page: {nav}");
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+
+    let guid = nav["download"]["guid"].as_str().expect("guid").to_string();
+    let mut listed = serde_json::Value::Null;
+    for _ in 0..50 {
+        listed = call("browser::downloads::list", json!({ "session_id": id }))
+            .await
+            .expect("downloads list");
+        let done = listed["downloads"].as_array().is_some_and(|all| {
+            all.iter()
+                .any(|d| d["guid"] == guid.as_str() && d["state"] == "completed")
+        });
+        if done {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        listed["downloads"].as_array().is_some_and(|all| all
+            .iter()
+            .any(|d| d["guid"] == guid.as_str() && d["state"] == "completed")),
+        "{listed}"
+    );
+
+    // The next address loads at once, not after chromiumoxide's 30 s.
+    let started = std::time::Instant::now();
+    let next = call(
+        "browser::navigate",
+        json!({ "session_id": id, "url": format!("{site}again"), "timeout_ms": 20_000 }),
+    )
+    .await
+    .expect("navigate after the download");
+    let elapsed = started.elapsed();
+    eprintln!("the next navigate took {elapsed:?}: {next}");
+    assert_eq!(next["ok"], true, "{next}");
+    assert_eq!(next["timed_out"], false, "{next}");
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+
+    call("browser::sessions::stop", json!({ "session_id": id }))
+        .await
+        .expect("stop");
     client.shutdown_async().await;
 }
 

@@ -31,13 +31,12 @@ pub struct StopResponse {
 
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
-    if let Some(want) = &req.turn_id {
-        if crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+    if let Some(want) = &req.turn_id
+        && crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
             .await?
             .is_none_or(|r| &r.turn_id != want)
-        {
-            return Ok(StopResponse { stopping: false });
-        }
+    {
+        return Ok(StopResponse { stopping: false });
     }
     let tree = super::session_tree::collect(deps, &req.session_id).await?;
     if !tree.complete && !tree.sessions.is_empty() {
@@ -50,10 +49,9 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         if let Some(record) =
             crate::state::get_turn_unhydrated(&deps.iii, &node.session_id, cfg.session_timeout_ms)
                 .await?
+            && !record.status.is_terminal()
         {
-            if !record.status.is_terminal() {
-                deps.cancels.fire(&record.turn_id);
-            }
+            deps.cancels.fire(&record.turn_id);
         }
     }
     let session_ids: Vec<String> = tree.sessions.iter().map(|n| n.session_id.clone()).collect();
@@ -121,7 +119,8 @@ const KILL_SESSION_JOBS_TIMEOUT_MS: u64 = 5_000;
 /// `stopping`; deletion additionally fails closed on any `unconfirmed` reason.
 #[derive(Debug, Default)]
 pub(crate) struct StopOutcome {
-    /// A matching non-terminal turn was found and its stop accepted.
+    /// A matching non-terminal turn, or a finished one still promising a
+    /// continuation, was found and its stop accepted.
     pub stopping: bool,
     /// Why the stop could not be confirmed (router abort failure, unknown
     /// external pending work). The abort flag is persisted regardless.
@@ -150,25 +149,47 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(StopOutcome::default());
     };
-    if let Some(tid) = &req.turn_id {
-        if &record.turn_id != tid {
-            return Ok(StopOutcome::default());
-        }
+    if let Some(tid) = &req.turn_id
+        && &record.turn_id != tid
+    {
+        return Ok(StopOutcome::default());
     }
     if record.status.is_terminal() {
         let turn_id = record.turn_id.clone();
+        let continues = record.continues;
         crate::session_status::spawn_project(deps, record);
-        if req.quiet_deadlines {
-            let _guard = deps.locks.guard(&req.session_id).await;
-            if let Some(mut record) = crate::state::get_turn_unhydrated(
+        if req.quiet_deadlines || continues {
+            let guard = deps.locks.guard(&req.session_id).await;
+            match crate::state::get_turn_unhydrated(
                 &deps.iii,
                 &req.session_id,
                 cfg.session_timeout_ms,
             )
             .await?
-            .filter(|record| record.turn_id == turn_id && record.status.is_terminal())
             {
-                flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+                Some(mut record) if record.turn_id == turn_id && record.status.is_terminal() => {
+                    if record.continues {
+                        cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+                        return Ok(StopOutcome {
+                            stopping: true,
+                            ..Default::default()
+                        });
+                    }
+                    if req.quiet_deadlines {
+                        flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
+                    }
+                }
+                // The finalize kept the lock through its reseed: the turn it seeded
+                // is the one this stop came for.
+                Some(next) if continues && !next.status.is_terminal() => {
+                    drop(guard);
+                    let req = StopRequest {
+                        turn_id: Some(next.turn_id),
+                        ..req
+                    };
+                    return Box::pin(stop_one(deps, req)).await;
+                }
+                _ => {}
             }
         }
         return Ok(StopOutcome::default());
@@ -189,8 +210,8 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // failure must never skip the durable abort write below. Deletion reads
     // the recorded failure and fails closed.
     let mut outcome = StopOutcome::default();
-    if let Some(request_id) = &record.stream_request_id {
-        if let Err(error) = deps
+    if let Some(request_id) = &record.stream_request_id
+        && let Err(error) = deps
             .iii
             .call(iii_sdk::protocol::CallRequest {
                 function_id: "router::abort".into(),
@@ -199,12 +220,11 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
                 timeout_ms: Some(cfg.session_timeout_ms),
             })
             .await
-        {
-            tracing::warn!(request_id, %error, "router::abort failed");
-            outcome
-                .unconfirmed
-                .push(format!("router::abort {request_id}: {error}"));
-        }
+    {
+        tracing::warn!(request_id, %error, "router::abort failed");
+        outcome
+            .unconfirmed
+            .push(format!("router::abort {request_id}: {error}"));
     }
 
     // Authoritative abort write UNDER the per-session lock (see locks.rs): the
@@ -230,8 +250,12 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         // The in-process cancel signal and router abort above can finalize the
         // turn before this handler reacquires the session lock. The stop was
         // accepted against the matching non-terminal pre-read; report that
-        // acceptance even though the durable abort bit can no longer be set.
-        if req.quiet_deadlines {
+        // acceptance even though the durable abort bit can no longer be set. A
+        // finalize whose reseed and settle both failed left its promised turn
+        // stored: take it back, or the orphan redrive seeds it after this stop.
+        if record.continues {
+            cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+        } else if req.quiet_deadlines {
             flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
         }
         return Ok(outcome);
@@ -302,11 +326,37 @@ async fn flag_parked_turn(
     record: &mut crate::types::turn::TurnRecord,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
-    if !record.abort && crate::bindings::session_expects_wake(deps, &record.session_id).await {
+    if !record.abort && crate::bindings::session_expects_wake(deps, record).await {
         record.abort = true;
         crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
     }
     Ok(())
+}
+
+/// Take back the turn a finished one still promises: the stop reached the session
+/// before the reseed, so the drained message waits in the transcript for the next
+/// send. The exchange ends as cancelled, now or when its last wake goes. The caller
+/// holds the session lock and read `record` under it.
+async fn cancel_continuation(
+    deps: &Deps,
+    record: &mut crate::types::turn::TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    record.continues = false;
+    record.abort = true;
+    record.owes_completion = true;
+    // Written before the exchange ends: the orphan redrive would reseed a
+    // stored `continues` after the stop's terminal completion.
+    let ended = async {
+        crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+        crate::turn_loop::end_stopped_exchange(deps, record).await
+    }
+    .await;
+    if ended.is_err() {
+        // Whichever write landed, the stored record still awaits a step.
+        crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+    }
+    ended.map(|_| ())
 }
 
 /// A pending call that is neither a hook hold nor a legacy child spawn: an

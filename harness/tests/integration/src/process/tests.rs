@@ -106,10 +106,10 @@ async fn observing_a_leader_exit_does_not_abandon_its_descendants() {
 
 async fn wait_for_pid(path: &std::path::Path) -> u32 {
     for _ in 0..50 {
-        if let Ok(raw) = std::fs::read_to_string(path) {
-            if let Ok(pid) = raw.trim().parse() {
-                return pid;
-            }
+        if let Ok(raw) = std::fs::read_to_string(path)
+            && let Ok(pid) = raw.trim().parse()
+        {
+            return pid;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

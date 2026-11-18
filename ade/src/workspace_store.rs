@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tokio::sync::{watch, Mutex, MutexGuard, RwLock};
+use tokio::sync::{Mutex, MutexGuard, RwLock, watch};
 
 /// File name inside `data_dir` holding the layout document.
 pub const WORKSPACE_FILE: &str = "workspace.json";
@@ -109,7 +109,7 @@ impl WorkspaceStore {
                 return Err(format!(
                     "cannot read workspace layout {}: {error}",
                     path.display()
-                ))
+                ));
             }
         };
         match serde_json::from_slice::<Value>(&bytes) {

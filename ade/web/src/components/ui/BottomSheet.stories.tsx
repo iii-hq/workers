@@ -23,9 +23,9 @@ export const Basic: Story = {
     const [open, setOpen] = useState(false)
     return (
       <BottomSheet open={open} onOpenChange={setOpen}>
-        <BottomSheetTrigger asChild>
-          <Button type="button">Open sheet</Button>
-        </BottomSheetTrigger>
+        <BottomSheetTrigger
+          render={<Button type="button">Open sheet</Button>}
+        />
         <BottomSheetContent
           heading="Session options"
           description="The portal carries the worker's data-iii-ui scope."

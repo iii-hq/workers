@@ -1,5 +1,5 @@
 use iii_directory::fs_source::{scan_agents, scan_skills, scan_system_prompts};
-use iii_directory::sources::registry::{download, VersionSpec};
+use iii_directory::sources::registry::{VersionSpec, download};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {

@@ -89,6 +89,7 @@ pub struct CompiledFaultV1 {
 #[serde(rename_all = "snake_case")]
 pub enum FaultKind {
     EngineSigkill,
+    HarnessSigkill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

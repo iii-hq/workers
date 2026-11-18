@@ -9,6 +9,11 @@ import { type RegisteredOverlay, useExtOverlays } from '@/lib/ui-slots'
  * events through; each overlay positions itself and opts back in. It sits
  * above panes and below every popup (dialogs, sheets, menus are `z-50`).
  * Each overlay is told the active chat, the way a page is.
+ *
+ * The layer publishes `--overlay-inset-top` (index.css): where the shell's
+ * chrome ends — the top bar and a pane's header row. An overlay that docks
+ * to a top corner starts below it, so it never covers a pane's split and
+ * close controls or the context panel's tabs.
  */
 export function ExtOverlays() {
   const overlays = useExtOverlays()

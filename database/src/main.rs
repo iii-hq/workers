@@ -4,6 +4,7 @@ use database::config::WorkerConfig;
 use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{
+    AppState,
     begin_transaction::{self, BeginTxReq},
     browse::{self, BrowseTableReq},
     column_stats::{self, ColumnStatsReq},
@@ -29,12 +30,11 @@ use database::handlers::{
     transaction::{self, TxReq},
     transaction_execute::{self, TxExecuteReq},
     transaction_query::{self, TxQueryReq},
-    AppState,
 };
 use database::row_changes::NativeCapture;
 use database::transaction::TxRegistry;
 use iii_helpers::observability::{Logger, OtelConfig};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -926,7 +926,7 @@ fn redact_url(s: &str) -> String {
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         tokio::select! {
             r = tokio::signal::ctrl_c() => r,

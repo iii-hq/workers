@@ -30,7 +30,7 @@ function chipIcon(type: string) {
 }
 
 /* A skill chip reads `/coder/index`: the `skill:` namespace stays hidden
-   here as it is in the command pill and the palette. */
+ here as it is in the command pill and the palette. */
 function chipName(attachment: Attachment): string {
   if (attachment.type === 'text/x-skill') {
     return `/${slashCommandLabel(attachment.name)}`
@@ -158,7 +158,7 @@ export function AttachmentChip({
           <button
             type="button"
             onClick={() => onRemove(attachment.id)}
-            className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-faint transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
+            className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-faint transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
             aria-label={`remove ${attachment.name}`}
           >
             <X size={16} aria-hidden />
@@ -171,7 +171,7 @@ export function AttachmentChip({
     <div
       ref={lazy ? stored.ref : undefined}
       className={cn(
-        'inline-flex items-center gap-x-2 rounded-sm bg-surface px-2 py-1 font-mono text-[12px] text-ink max-w-[260px]',
+        'inline-flex items-center gap-x-2 rounded-sm bg-surface px-2 py-1 font-mono text-xs text-ink max-w-[260px]',
         className,
       )}
       {...(lazy ? { 'data-lazy-image': stored.state.phase } : {})}
@@ -187,7 +187,7 @@ export function AttachmentChip({
               <img
                 src={thumbnail}
                 alt=""
-                className="size-6 border border-rule-2 object-cover"
+                className="size-6 object-cover outline -outline-offset-1 outline-black/10 dark:outline-white/10"
               />
             ) : failed ? (
               <TriangleAlert size={16} aria-hidden className="text-warn" />

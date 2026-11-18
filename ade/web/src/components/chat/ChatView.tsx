@@ -68,6 +68,7 @@ import type {
   ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { isWaitingOnAnswer, WAITING_ON_ANSWER_LABEL } from '@/lib/chat-activity'
 import {
   AskInSideChatContext,
   findSideChat,
@@ -159,7 +160,7 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
-import { idleComposerPlaceholder } from './agent-defaults'
+import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
 import {
   type AsideRequest,
   type AsideTab,
@@ -176,7 +177,14 @@ import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
+import { isPersonQueuedRow } from './queued-strip'
 import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
+import {
+  draftWithPulledBack,
+  pullBackQueued,
+  pulledBackNotice,
+  type QueuedRow,
+} from './stop-queued'
 import {
   agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -254,13 +262,8 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
-  /** Header label for a session-pinned workspace panel. */
+  /** The chat's title, the header's label ('Chat' when absent). */
   panelTitle?: string
-  /**
-   * The open-chats tab row: when set (and there is no ← back button), it
-   * takes the header's left side in place of the title and agent label.
-   */
-  headerTabs?: ReactNode
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
   /** The pane's command registrar: chat's keys and palette rows. */
@@ -312,7 +315,6 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   panelTitle,
-  headerTabs,
   onRequestClose,
   commands,
   onBack,
@@ -326,6 +328,13 @@ export function ChatView({
   asideSide = 'right',
 }: ChatViewProps) {
   const readOnly = conversation.sessionMetadata?.read_only === true
+  // Beside the title in the header: read-only, or a non-default agent.
+  const headerAside = readOnly
+    ? 'Read-only'
+    : conversation.agentProfile &&
+        conversation.agentProfile.id !== DEFAULT_AGENT_ID
+      ? conversation.agentProfile.name
+      : null
   const imported =
     typeof conversation.sessionMetadata?.external_source === 'string'
   const [importedTurnEstablished, setImportedTurnEstablished] = useState<
@@ -362,23 +371,23 @@ export function ChatView({
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [readOnly])
   /* With no model yet, setup does the whole job — find a signed-in CLI or a
-     key on this machine, add the worker, store the key — where the picker
-     can only list providers. The picker stays the fallback. */
+ key on this machine, add the worker, store the key — where the picker
+ can only list providers. The picker stays the fallback. */
   const handleConfigureProvider = useCallback(() => {
     if (onboardingWizardAvailable()) requestOnboardingWizard('models')
     else handleOpenModelPicker()
   }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel
      (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
-     effort control, not only to the model list). */
+ effort control, not only to the model list). */
   const modelLocked = Boolean(conversation.agentProfile?.model)
   const handleThinkingLevelChange = useCallback(
     (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
     [conversation.id, onUpdateThinkingLevel],
   )
   /* Lives on the conversation record, not in local state: the interactive
-     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
-     keys this view by conversation id) would be invisible. */
+ picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+ keys this view by conversation id) would be invisible. */
   const effectiveSystemPrompt =
     conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
@@ -582,9 +591,9 @@ export function ChatView({
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
 
   /* What the model on the other end can do with a picture, read at send time
-     rather than closed over: the send and edit-queued callbacks are built
-     before the catalog lookup below, and a model switched between typing and
-     sending has to be the one the guard judges. Filled in further down. */
+ rather than closed over: the send and edit-queued callbacks are built
+ before the catalog lookup below, and a model switched between typing and
+ sending has to be the one the guard judges. Filled in further down. */
   const visionRef = useRef<{ supports?: boolean; model: string | null }>({
     supports: undefined,
     model: null,
@@ -820,7 +829,11 @@ export function ChatView({
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
   // already covered by a draft or an arrived transcript row (a stale poll
-  // must not re-show a message that just drained into the chat).
+  // must not re-show a message that just drained into the chat). Only the
+  // person's own rows: the harness's notices to the agent (observer fires,
+  // container reports, sub-agent tasks) park in the same queue but are not
+  // messages the person wrote, so they stay out of the strip and off the
+  // ↑-to-edit path (`isPersonQueuedRow`).
   const queuedStrip = useMemo(() => {
     const seen = new Set<string>(queuedDrafts.map((d) => d.id))
     for (const m of conversation.messages) seen.add(m.id)
@@ -829,9 +842,31 @@ export function ChatView({
       text: d.content || '(attachments only)',
     }))
     const server = serverQueued
-      .filter((row) => !seen.has(row.id))
-      .map((row) => ({ id: row.id, text: row.text || '(notification)' }))
+      .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
+      .map((row) => ({ id: row.id, text: row.text || '(attachments only)' }))
     return [...drafts, ...server]
+  }, [queuedDrafts, serverQueued, conversation.messages])
+
+  // What a Stop takes back out of the queue (`stop-queued`): the person's
+  // rows in the strip, this tab's drafts with what they carry. Read through a
+  // ref so the Stop handler sees the strip as it is at the click.
+  const stopPullBackRef = useRef<
+    (QueuedRow & { draft?: UserMessage; attachments?: Attachment[] })[]
+  >([])
+  stopPullBackRef.current = useMemo(() => {
+    const seen = new Set<string>(queuedDrafts.map((d) => d.id))
+    for (const m of conversation.messages) seen.add(m.id)
+    return [
+      ...queuedDrafts.map((d) => ({
+        id: d.id,
+        text: d.content,
+        draft: d,
+        attachments: d.attachments,
+      })),
+      ...serverQueued
+        .filter((row) => isPersonQueuedRow(row) && !seen.has(row.id))
+        .map((row) => ({ id: row.id, text: row.text })),
+    ]
   }, [queuedDrafts, serverQueued, conversation.messages])
 
   // Delivery window: the turn stream this tab owned finished normally while
@@ -1099,9 +1134,9 @@ export function ChatView({
   }, [modelOptions, effectiveModel])
 
   /* What the send path may do with an attached picture. `undefined` when the
-     catalog has no row or the router said nothing — the attachment router
-     treats that as "send it", so a missing capability flag never silently
-     eats an image. */
+ catalog has no row or the router said nothing — the attachment router
+ treats that as "send it", so a missing capability flag never silently
+ eats an image. */
   const modelVision = useMemo(() => {
     const match = modelOptions.find((o) => o.id === effectiveModel)
     return match?.supportsVision
@@ -2516,12 +2551,63 @@ export function ChatView({
     // Re-enable the button if the stop RPC fails while the server still
     // reports working — otherwise `stopping` never clears (the reset
     // effect waits on the indicator) and the user can't retry.
-    void backend.abortRun?.(sessionId).catch(() => {
-      stopRequestedRef.current = false
-      setStopping(false)
-      setStopRequested(false)
-    })
-  }, [backend, sessionId, readOnly])
+    const stopServer = () =>
+      void backend.abortRun?.(sessionId).catch(() => {
+        stopRequestedRef.current = false
+        setStopping(false)
+        setStopRequested(false)
+      })
+    // Stop means stop: what the person queued is not sent on its own after
+    // it, so it comes back to the composer (`stop-queued`). It has to leave
+    // the queue BEFORE the stop lands, or the cancelled turn drains it into
+    // the chat as a message nothing will answer.
+    const removeQueued = backend.removeQueued
+    const queued = stopPullBackRef.current
+    if (!removeQueued || !conversationsCtx || queued.length === 0) {
+      stopServer()
+      return
+    }
+    const conversationId = conversation.id
+    // Out of the strip now: the indicator just went idle, and the end-of-turn
+    // flush would show them in the chat as sent.
+    const pulling = new Set(queued.map((row) => row.id))
+    setQueuedDrafts((drafts) => drafts.filter((d) => !pulling.has(d.id)))
+    void pullBackQueued(queued, (id) => removeQueued(conversationId, id))
+      .then(({ restored, kept }) => {
+        // These already went to the agent: shown as sent, as the flush would.
+        for (const row of kept) {
+          if (row.draft) onAppendMessage(conversationId, row.draft)
+        }
+        if (restored.length === 0) return
+        conversationsCtx.setDraftText(
+          conversationId,
+          draftWithPulledBack(
+            conversationsCtx.getDraftText(conversationId),
+            restored,
+          ),
+        )
+        const chips = restored.flatMap((row) => row.attachments ?? [])
+        if (chips.length > 0) {
+          conversationsCtx.setDraftAttachments(conversationId, [
+            ...(conversationsCtx.getDraftAttachments(conversationId) ?? []),
+            ...chips,
+          ])
+        }
+        setComposerGeneration((generation) => generation + 1)
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(pulledBackNotice(restored.length)),
+        )
+      })
+      .finally(stopServer)
+  }, [
+    backend,
+    sessionId,
+    readOnly,
+    conversationsCtx,
+    conversation.id,
+    onAppendMessage,
+  ])
 
   // Rescue a parked stream loop: the session hit a terminal error server-side
   // (status-changed arrives on the session-directory subscription) but the
@@ -2542,6 +2628,13 @@ export function ChatView({
     [conversation.messages, streamingIndicator],
   )
   const isThinking = turnVisualState.showWaiting
+  // A question card is up and only the person can move the chat on: the
+  // status line says so, holding still, instead of timing a model that is
+  // not what the chat waits on (the sidebar row says the same).
+  const waitingOnAnswer = useMemo(
+    () => isWaitingOnAnswer(conversation, streamingIndicator),
+    [conversation, streamingIndicator],
+  )
 
   // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
@@ -2576,14 +2669,14 @@ export function ChatView({
     : `waiting for ${waitingModelLabel}…`
 
   /* Trace → message landing: a pending turn-focus for THIS session resolves
-     to the transcript row to center (see lib/turn-anchor), recomputed as the
-     transcript hydrates. Consumed when MessageList lands on it. A missing
-     anchor drops the request only when nothing can still produce it — the
-     transcript is hydrated AND no turn is running (a live turn writes its
-     durable rows as it goes, so the click means "land there once it
-     exists") — and only after a grace, because completion flips the status
-     idle before the turn's last rows reach the transcript. So a stale
-     request still can't fire on a later visit. */
+ to the transcript row to center (see lib/turn-anchor), recomputed as the
+ transcript hydrates. Consumed when MessageList lands on it. A missing
+ anchor drops the request only when nothing can still produce it — the
+ transcript is hydrated AND no turn is running (a live turn writes its
+ durable rows as it goes, so the click means "land there once it
+ exists") — and only after a grace, because completion flips the status
+ idle before the turn's last rows reach the transcript. So a stale
+ request still can't fire on a later visit. */
   const chatFocusEvent = useChatMessageFocus()
   const chatFocus =
     chatFocusEvent && chatFocusEvent.sessionId === conversation.id
@@ -2597,11 +2690,11 @@ export function ChatView({
     [chatFocus, conversation.messages],
   )
   /* The transcript is paged: the turn may be above the loaded window. When
-     no loaded row belongs to it and older history exists, ask for the pages
-     back to the turn's first entry (the server widens the page to that
-     block; no client cap), then let the landing below run on the result.
-     One attempt per request — a turn that never wrote that entry is a miss,
-     not a reason to keep paging — and the drop grace is held meanwhile. */
+ no loaded row belongs to it and older history exists, ask for the pages
+ back to the turn's first entry (the server widens the page to that
+ block; no client cap), then let the landing below run on the result.
+ One attempt per request — a turn that never wrote that entry is a miss,
+ not a reason to keep paging — and the drop grace is held meanwhile. */
   const loadingOlderHistory = conversation.history?.loadingOlder === true
   const historyFetchedForFocusRef = useRef<number | null>(null)
   useEffect(() => {
@@ -2653,8 +2746,8 @@ export function ChatView({
   chatFocusIdRef.current = chatFocus?.id ?? null
 
   /* Paged history: the list asks for the page above when the reader nears
-     the top, and for placeholder calls when a group expands. Both are
-     store actions; the view only forwards them with its conversation id. */
+ the top, and for placeholder calls when a group expands. Both are
+ store actions; the view only forwards them with its conversation id. */
   const loadOlderMessages = conversationsCtx?.loadOlderMessages
   const loadActivityEntries = conversationsCtx?.loadActivityEntries
   const handleLoadOlder = useMemo(
@@ -2779,9 +2872,9 @@ export function ChatView({
   )
 
   /* Same shape as the working-directory request above: the page asks, the
-     view that owns the session decides. `handleThinkingLevelChange` is the
-     one the picker calls, so a page and the picker leave the conversation in
-     the same state. */
+ view that owns the session decides. `handleThinkingLevelChange` is the
+ one the picker calls, so a page and the picker leave the conversation in
+ the same state. */
   useEffect(
     () =>
       onThinkingLevelChangeRequest(({ sessionId, level }) => {
@@ -3079,25 +3172,25 @@ export function ChatView({
       {side ? null : (
         <PageHeader
           /* Dark: the header sits on the chat's black canvas, framed by a
-             neutral-900 edge on its bottom and sides. */
-          className={cn(
-            headerPad,
-            'dark:bg-panel dark:border-x dark:border-b dark:border-neutral-900',
-          )}
+ neutral-900 edge on its bottom and sides. */
+          className={cn(headerPad, 'dark:bg-panel dark:border-x dark:border-b')}
           onClose={onRequestClose}
           actions={
             readOnly ? undefined : (
               <div className="flex items-center gap-1.5 font-sans text-sm">
                 {/* Header read-outs share ONE surface. This system draws no
-                lines (index.css:44-52 — rule/rule-2 are transparent in both
-                themes), so a group is a fill, not a run of dividers. It also
-                keeps the related session metadata visually together.
-                The group stays at every pane width; each read-out owns its
-                narrow form under a 30rem pane (`@container`, the design
-                system's narrow-container threshold): the context meter —
-                built-in or the harness chip — drops to its `used/usable`
-                counts, the sandbox chip is already `⬚ N`. */}
-                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5">
+ lines (index.css:44-52 — rule/rule-2 are transparent in both
+ themes), so a group is a fill, not a run of dividers. It also
+ keeps the related session metadata visually together.
+ The group stays at every pane width; each read-out owns its
+ narrow form under a 30rem pane (`@container`, the design
+ system's narrow-container threshold): the context meter —
+ built-in or the harness chip — drops to its `used/usable`
+ counts, the sandbox chip is already `⬚ N`. Under 24rem the
+ back arrow and the title come first: the meter keeps its ring
+ alone, the group and the status dot tighten, and nothing in
+ here ever slides over the title side. */}
+                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5 @max-[24rem]:gap-2 @max-[24rem]:px-1.5">
                   {sessionChips}
                   {hasInjectedContextChip ? null : (
                     <ContextUsage
@@ -3117,11 +3210,11 @@ export function ChatView({
                   </IconButton>
                 ) : null}
                 {/* Status sits OUTSIDE the group — it is state, not a control.
-                The dot alone carries it (green ready, pulsing accent
-                working, red error); the word lives in the tooltip and in an
-                sr-only role="status" span so transitions still announce.
+ The dot alone carries it (green ready, pulsing accent
+ working, red error); the word lives in the tooltip and in an
+ sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
-                target without letting an error widen the header. */}
+ target without letting an error widen the header. */}
                 <Hint
                   label={
                     conversation.status === 'error'
@@ -3132,7 +3225,7 @@ export function ChatView({
                   }
                 >
                   {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1 @max-[24rem]:w-4">
                     <StatusDot
                       tone={
                         conversation.status === 'error'
@@ -3163,7 +3256,7 @@ export function ChatView({
                   type="button"
                   onClick={onBack}
                   aria-label="back to chats"
-                  className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+                  className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:size-7"
                 >
                   <span
                     className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -3173,21 +3266,24 @@ export function ChatView({
                 </button>
               </Hint>
             ) : null}
-            {headerTabs && !onBack ? (
-              headerTabs
-            ) : (
+            <h2
+              className="min-w-0 truncate font-medium text-ink"
+              title={panelTitle ?? 'Chat'}
+            >
+              {panelTitle ?? 'Chat'}
+            </h2>
+            {/* Beside the title only what sets this chat apart: read-only,
+ or an agent other than the default. The model is in the composer. */}
+            {headerAside ? (
               <>
-                <span className="min-w-0 truncate font-medium text-ink">
-                  {panelTitle ?? 'Chat'}
+                <span className="shrink-0 text-ink-ghost" aria-hidden>
+                  ·
                 </span>
-                <span className="shrink-0 text-ink-ghost">·</span>
-                <span className="min-w-0 truncate">
-                  {readOnly
-                    ? 'Read-only'
-                    : (conversation.agentProfile?.name ?? effectiveModel)}
+                <span className="min-w-0 shrink-[2] truncate">
+                  {headerAside}
                 </span>
               </>
-            )}
+            ) : null}
           </div>
         </PageHeader>
       )}
@@ -3235,14 +3331,17 @@ export function ChatView({
                     appearance: conversation.subagentAppearance,
                   }}
                   transcriptHydrated={conversation.hydrated !== false}
-                  isThinking={isThinking}
+                  isThinking={isThinking || waitingOnAnswer}
+                  waitingOnPerson={waitingOnAnswer}
                   turnVisualPhase={turnVisualState.phase}
                   turnKey={turnVisualState.turnKey}
                   thinkingDetail={
-                    conversation.status === 'working' &&
-                    conversation.statusReason
-                      ? conversation.statusReason
-                      : (phaseDetail ?? waitingFallback)
+                    waitingOnAnswer
+                      ? WAITING_ON_ANSWER_LABEL
+                      : conversation.status === 'working' &&
+                          conversation.statusReason
+                        ? conversation.statusReason
+                        : (phaseDetail ?? waitingFallback)
                   }
                   density={density}
                   onResolveApproval={resolveApproval}
@@ -3302,7 +3401,7 @@ export function ChatView({
             {fileOpenError ? (
               <p
                 role="alert"
-                className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
+                className="mx-auto max-w-[760px] break-words text-xs text-alert"
               >
                 {fileOpenError}
               </p>
@@ -3323,14 +3422,14 @@ export function ChatView({
                   aria-label="queued messages"
                 >
                   {/* The message being edited is pulled out of the queue and lives
-                  only in the composer — hidden here until it's saved back (in
-                  place, so it reappears at its spot) or removed. */}
+ only in the composer — hidden here until it's saved back (in
+ place, so it reappears at its spot) or removed. */}
                   {queuedStrip
                     .filter((row) => row.id !== browsedQueuedId)
                     .map((row) => (
                       <div
                         key={row.id}
-                        className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
+                        className="flex items-center gap-2 border-b border-border px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-xs"
                       >
                         <span className="min-w-0 flex-1 truncate">
                           {row.text}
@@ -3341,11 +3440,11 @@ export function ChatView({
                       </div>
                     ))}
                   {/* No edit hint while draining — the rows are being delivered,
-                  so inviting an edit would be a race the user loses. */}
+ so inviting an edit would be a race the user loses. */}
                   {backend.editQueued &&
                   queuedDrafts.length > 0 &&
                   !drainingQueue ? (
-                    <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
+                    <div className="px-3 py-0.5 text-right text-meta text-ink-ghost max-sm:hidden">
                       {browsedQueuedId
                         ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
                         : 'Press ↑ in the composer to edit queued messages'}
@@ -3470,6 +3569,7 @@ export function ChatView({
                 }
                 externalInput={!side}
                 composerId={composerId}
+                sessionId={conversation.id}
                 compact={side?.compact}
                 header={
                   side?.quote ? (

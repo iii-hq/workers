@@ -677,10 +677,12 @@ mod metadata_tests {
             .find(|(source, _, _)| source.function_id() == "queue::on-message")
             .unwrap();
         assert_eq!(queue.2, ObserverOptions::default().id("fixed"));
-        assert!(sources
-            .iter()
-            .filter(|(source, _, _)| source.function_id() != "queue::on-message")
-            .all(|(_, _, options)| *options == ObserverOptions::default()));
+        assert!(
+            sources
+                .iter()
+                .filter(|(source, _, _)| source.function_id() != "queue::on-message")
+                .all(|(_, _, options)| *options == ObserverOptions::default())
+        );
     }
 
     #[test]

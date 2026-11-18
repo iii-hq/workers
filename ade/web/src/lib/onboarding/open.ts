@@ -12,6 +12,26 @@ export type WizardStepId =
   | 'ready'
   | 'explore'
 
+/**
+ * What the palette's "Set up models and keys" row answers to. People look
+ * for the wizard by what it is ("setup" as one word, "wizard") and by what
+ * it leads to (the tour), not only by its title's words.
+ */
+export const SETUP_WIZARD_KEYWORDS: readonly string[] = [
+  'setup',
+  'wizard',
+  'onboarding',
+  'getting started',
+  'welcome',
+  'tour',
+  'learn-iii',
+  'harness',
+  'provider',
+  'model',
+  'key',
+  'judge',
+]
+
 type Listener = (step: WizardStepId | undefined) => void
 
 const listeners = new Set<Listener>()

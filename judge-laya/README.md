@@ -28,6 +28,13 @@ for the next one. The first load downloads the checkpoint
 into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`) and
 converts it once to the GGUF llama.cpp loads, under `$HF_HOME/judge-laya/`
 (keyed by model and revision; under a second for `laya`, 844 MB).
+Every checkpoint is read at the commit of `convaiinnovations/laya` that laya
+reviewed (`55cf4c4e`, `REVISION` in `src/download.rs`), and each file is
+checked against its sha256 before it is used; a mismatch fails the load and
+names the cached file (and the blob it links to) to delete before retrying. Once
+the pinned snapshot is cached, a load does not contact the Hub. A GGUF
+converted from an earlier `main` commit is not reused (each checkpoint
+converts once more, without a download) and can be deleted by hand.
 `laya` reads the tokenizer in its own `tokenizer/`, as laya 0.3.28 does; a
 cache filled by an earlier judge-laya, which read ModernBERT-large's, lacks
 it, so the first load after upgrading needs the Hub once (it downloads 3.6 MB,
@@ -41,7 +48,13 @@ a directory holding `model.safetensors`, `encoder/config.json`,
 `rl_agent_config.json` and `tokenizer.json` (plus an optional pre-converted
 `model.gguf`; without it the checkpoint is converted into the temporary
 directory); `III_LAYA_GGUF` swaps only the GGUF of the default model, and
-`cargo run --example convert_gguf` converts one ahead of time.
+`cargo run --release --example convert_gguf -- <checkpoint dir> <tokenizer.json> <out.gguf>`
+converts one ahead of time (name it `model.gguf` inside the checkpoint
+directory, or point `III_LAYA_GGUF` at it). Either file is
+served under the `model` name, which must name the checkpoint the file holds
+(the default is `laya`, the English one):
+nothing checks it, and with `III_LAYA_GGUF` the tokenizer and agent config of
+that model still come from the Hub.
 
 The GGUF holds the checkpoint's own (fine-tuned) encoder and decision head
 (two pre-norm blocks, the scorer and the question-type embedding) in
@@ -120,10 +133,9 @@ with a hundred questions, or route such callers to a hosted provider.
 | Field | Default | Applied |
 |---|---|---|
 | `model` | `laya` | next start (`laya-multilingual` for non-English, `laya-typed-decisions` for laya's four workflows) |
-| `preload` | `[]` | next start (extra checkpoints, ~1 GB of RAM each; 1.6 GB on the CPU) |
+| `preload` | `[]` | next start (extra checkpoints, ~1 GB of RAM each; 1.6 GB on the CPU; an entry equal to `model` is ignored) |
 | `auto_route` | `false` | new calls |
 | `auto_task_detection` | `false` | new calls |
-| `revision` | `main` | next start |
 | `threads` | min(8, logical cores) | next start |
 | `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU) |
 | `batch_questions` | 16 | new calls (at most 8192 tokens per pass: 8 questions for the 1024-token checkpoints) |
@@ -134,7 +146,21 @@ The form shows which checkpoint the running worker actually loaded (through
 `judge-laya::models::list`, one card per loaded checkpoint with its
 `context_window`) and warns when the selection needs a restart.
 
-## Routing (laya 0.3.28 `Router`)
+**Upgrading:** the `revision` setting is gone (every checkpoint is
+read at the pinned commit), and the worker refuses a configuration that still
+holds it: it does not start, and a hot reload keeps the previous settings.
+Remove only the `revision` key from the stored configuration before
+restarting, in the source that manages it (a compose file or
+`configuration::set`); saving any change in the form also drops it.
+
+## Routing (laya 0.4.35 `Router`)
+
+Routing is opt-in: preload `laya-multilingual` and turn on `auto_route`. It is
+off by default because on English text it costs without gaining: measured on
+English JevBench against `laya` alone, routing with `model: laya-multilingual`
+and `preload: [laya]` lost 3 decisions and won none, doubled resident memory
+(~1 GB to ~2 GB) and added 44–62% to median latency; its gain on non-English
+text was not measured.
 
 A request naming `model` uses that checkpoint, which must be `model` or in
 `preload` (`invalid_request` otherwise). Without it, each evaluation picks its
@@ -143,8 +169,11 @@ of laya's four typed-decisions workflows (`agent_trace_observability`,
 `customer_service`, `invoice_processing`, `security_incidents`) go to
 `laya-typed-decisions`; with `auto_route`, the state's script and language
 (laya's dependency-free detector, checked against laya's own answers in
-`tests/fixtures/lang.json`) send non-English states to `laya-multilingual` and
-English ones to `laya`. Latin text no word list identifies (too short, or
+`tests/fixtures/lang.json` and laya's recorded vectors in
+`tests/fixtures/upstream/`) send non-English states to `laya-multilingual` and
+English ones to `laya`. Acronyms do not name a language: an all-caps line such
+as `MON DES EST LA` needs a five-letter word, plus a four-letter function
+word or enough non-English letters, before it reads as French. Latin text no word list identifies (too short, or
 content words only, such as "Quero cancelar" or "ok thanks") is no evidence of
 English either: it takes the default `model`, like a state with no letters
 (laya #203). One non-English line or string field is enough, even

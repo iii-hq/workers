@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
-use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
+use crate::types::errors::{RouterCode, RouterError, is_function_not_found};
 use crate::types::router::{DiscoveryStatus, ProviderDeclaration};
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::{IIIClient, errors::Error};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;

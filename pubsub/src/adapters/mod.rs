@@ -92,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_adapter_rejects_unknown_name() {
-        let cfg: PubSubConfig = serde_yaml::from_str("{adapter: {name: kafka}}").unwrap();
+        let cfg: PubSubConfig = serde_yaml_ng::from_str("{adapter: {name: kafka}}").unwrap();
         // `Arc<dyn PubSubAdapter>` isn't Debug, so avoid `unwrap_err`.
         let err = match build_adapter(&cfg, std::sync::Arc::new(NoopRelay)).await {
             Ok(_) => panic!("unknown adapter name must error"),

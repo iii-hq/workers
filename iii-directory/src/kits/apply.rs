@@ -23,10 +23,10 @@ use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::compose::{wait_operation, ComposeControl, OperationOutcome};
-use super::lock::{local_sha, sha256_hex, KitsLock, LockedFile, LockedKit};
+use super::compose::{ComposeControl, OperationOutcome, wait_operation};
+use super::lock::{KitsLock, LockedFile, LockedKit, local_sha, sha256_hex};
 use super::merge::has_conflict_markers;
 use super::origin::SourceKind;
 use super::plan::{Change, Decision, FileKind, KitsEnv, Plan, PlanFile, PlanKind, WorkerAction};
@@ -174,7 +174,7 @@ pub fn revalidate(
             return Err(ApplyError::Stale(format!(
                 "{} was installed after this plan was made",
                 plan.kit
-            )))
+            )));
         }
         PlanKind::Update | PlanKind::Remove if installed != plan.from => {
             return Err(ApplyError::Stale(format!(
@@ -182,7 +182,7 @@ pub fn revalidate(
                 plan.kit,
                 installed.as_deref().unwrap_or("not installed"),
                 plan.from.as_deref().unwrap_or("?")
-            )))
+            )));
         }
         _ => {}
     }
@@ -416,14 +416,14 @@ pub async fn apply_plan(
             bodies.insert(sha, file.content);
         }
         for file in &plan.files {
-            if let Some(theirs) = &file.theirs {
-                if downloaded.get(&file.path) != Some(theirs) {
-                    return Err(ApplyError::Failed(format!(
-                        "D516 integrity: the registry served different content for {} than the plan reviewed. \
+            if let Some(theirs) = &file.theirs
+                && downloaded.get(&file.path) != Some(theirs)
+            {
+                return Err(ApplyError::Failed(format!(
+                    "D516 integrity: the registry served different content for {} than the plan reviewed. \
                          Next: call directory::download-kit kit={} to review the current version.",
-                        file.path, plan.kit
-                    )));
-                }
+                    file.path, plan.kit
+                )));
             }
         }
     }
@@ -620,10 +620,10 @@ pub async fn apply_plan(
                 {
                     continue;
                 }
-                if let Some(other) = c.kit.as_ref().and_then(|k| lock.kits.get_mut(k)) {
-                    if let Some(f) = other.files.get_mut(&file.path) {
-                        f.skipped = true;
-                    }
+                if let Some(other) = c.kit.as_ref().and_then(|k| lock.kits.get_mut(k))
+                    && let Some(f) = other.files.get_mut(&file.path)
+                {
+                    f.skipped = true;
                 }
             }
         }

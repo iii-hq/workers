@@ -10,7 +10,7 @@
 
 mod support;
 
-use harness::surface::{catalog, FunctionSpec};
+use harness::surface::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))
@@ -279,7 +279,7 @@ fn hook_function_formats_match_goldens() {
 #[test]
 fn hook_inputs_validate_against_their_published_formats() {
     use harness::hooks::HookPoint;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     let call = json!({ "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "ls" } });
     let cases: [(HookPoint, Value); 6] = [

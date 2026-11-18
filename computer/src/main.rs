@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 
 use computer::config::WorkerConfig;
 use computer::events::{self, IiiEventSink};
@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
                 return None;
             }
         };
-        match serde_yaml::from_str::<serde_json::Value>(&contents) {
+        match serde_yaml_ng::from_str::<serde_json::Value>(&contents) {
             Ok(v) => match WorkerConfig::from_json(&v) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
@@ -177,16 +177,29 @@ mod tests {
 
     #[test]
     fn cli_reads_iii_url_from_environment() {
-        let previous = std::env::var_os("III_URL");
-        std::env::set_var("III_URL", "ws://127.0.0.1:49234");
-
-        let cli = Cli::try_parse_from(["computer"]).expect("parse computer CLI");
-
-        if let Some(value) = previous {
-            std::env::set_var("III_URL", value);
-        } else {
-            std::env::remove_var("III_URL");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::cli_reads_iii_url_from_environment");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("III_URL", "ws://127.0.0.1:49234")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
         }
+        let cli = Cli::try_parse_from(["computer"]).expect("parse computer CLI");
 
         assert_eq!(cli.url, "ws://127.0.0.1:49234");
     }

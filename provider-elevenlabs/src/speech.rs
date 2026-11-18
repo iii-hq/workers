@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use base64::Engine as _;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::credential::Credential;
 use llm_router::types::events::ErrorKind;
@@ -328,10 +328,10 @@ fn segments_from_words(words: &[WireWord]) -> Vec<TranscriptSegment> {
             }
             _ => {}
         }
-        if let (Some(prev_end), Some(this_start)) = (end, word.start) {
-            if this_start - prev_end > SEGMENT_GAP_SECS {
-                flush(&mut text, &mut start, &mut end, &mut out);
-            }
+        if let (Some(prev_end), Some(this_start)) = (end, word.start)
+            && this_start - prev_end > SEGMENT_GAP_SECS
+        {
+            flush(&mut text, &mut start, &mut end, &mut out);
         }
         if start.is_none() {
             start = word.start;
@@ -512,10 +512,10 @@ pub async fn speak(
         None => DEFAULT_VOICE_ID.to_string(),
     };
     let mut body = serde_json::json!({ "text": text, "model_id": model });
-    if let Some(language) = req.language.filter(|l| !l.trim().is_empty()) {
-        if model != "eleven_multilingual_v2" {
-            body["language_code"] = serde_json::json!(language);
-        }
+    if let Some(language) = req.language.filter(|l| !l.trim().is_empty())
+        && model != "eleven_multilingual_v2"
+    {
+        body["language_code"] = serde_json::json!(language);
     }
     if let Some(speed) = req.speed {
         body["voice_settings"] = serde_json::json!({ "speed": speed });

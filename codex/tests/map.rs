@@ -5,7 +5,7 @@ use codex::codex::events_types::{
     Usage, WebSearchItem,
 };
 use codex::map;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn function_ids_for_builtin_items() {

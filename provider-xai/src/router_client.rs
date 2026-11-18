@@ -2,8 +2,8 @@
 //! (`llm_router::provider_scaffold::router_client`): every call binds this
 //! crate's `PROVIDER_ID` and carries the registration token.
 use crate::PROVIDER_ID;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::router_client as scaffold;
 use llm_router::types::model::Model;
 use llm_router::types::router::{DiscoveryReport, ProviderResolveResponse};

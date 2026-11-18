@@ -126,6 +126,13 @@ describe('model switch confirmation', () => {
     expect(
       document.querySelector('[role="alertdialog"]')?.textContent,
     ).toContain('Compact this conversation to switch models?')
+    // Base UI lands the initial focus a frame after the dialog opens.
+    await act(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    )
     expect(document.activeElement).toBe(button('Cancel switch'))
     expect(s.compact).not.toHaveBeenCalled()
     expect(s.onSwitch).not.toHaveBeenCalled()

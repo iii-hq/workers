@@ -10,20 +10,20 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use crate::accounts::panes::{pane_claude, ClaudeProc, Marks, PaneState};
 use crate::accounts::Accounts;
+use crate::accounts::panes::{ClaudeProc, Marks, PaneState, pane_claude};
 use crate::activity::{ActivityReader, ClaudeRecord, Recorder};
-use crate::agents::{host_names, session_title, AgentSet, AgentTracker};
+use crate::agents::{AgentSet, AgentTracker, host_names, session_title};
 use crate::binary::{BinaryCache, Resolved};
 use crate::compose;
 use crate::config::{SharedConfig, WorkerConfig};
 use crate::install::installable;
 use crate::model::{
-    now_ms, AgentState, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane,
-    PaneClaude, PaneRef, PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window,
+    AgentState, AgentStatus, ComposeRef, ComposeStack, Listener, Overview, Pane, PaneClaude,
+    PaneRef, PortsSnapshot, Session, SessionsSnapshot, TmuxInfo, Window, now_ms,
 };
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
-use crate::tmux_cli::{list_all_args, parse_list_all, RawSnapshot, Socket, Tmux, TmuxError};
+use crate::tmux_cli::{RawSnapshot, Socket, Tmux, TmuxError, list_all_args, parse_list_all};
 
 /// How old the agents of the last collection may be when a function asks
 /// for one pane's.
@@ -154,10 +154,8 @@ impl Collector {
     /// collection at most [`SEEN_FRESH`] old (`fresh`: made now). Empty when
     /// tmux could not list them; see [`Collector::claude_panes_checked`].
     pub async fn claude_panes(&self, fresh: bool) -> HashMap<String, PaneState> {
-        if !fresh {
-            if let Some(seen) = self.claude_seen(Some(SEEN_FRESH)) {
-                return seen.panes;
-            }
+        if !fresh && let Some(seen) = self.claude_seen(Some(SEEN_FRESH)) {
+            return seen.panes;
         }
         self.overview().await;
         // The collection just made (or a newer one), however long it took.
@@ -269,7 +267,7 @@ impl Collector {
                     error: Some(error),
                     installable: installable(&config.tmux_binary),
                     ..TmuxInfo::default()
-                }
+                };
             }
         };
         let tmux = Tmux {

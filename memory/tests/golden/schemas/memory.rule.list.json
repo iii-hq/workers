@@ -1,5 +1,5 @@
 {
-  "description": "List a bank's rules (markdown, injected whole into the system prompt on every turn). Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent.",
+  "description": "List a bank's rules (markdown, injected whole into the system prompt on every turn). Stored as plain files under the bank's rules/ folder; editing them by hand is equivalent. Content is returned redacted, as it is injected.",
   "function_id": "memory::rule::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

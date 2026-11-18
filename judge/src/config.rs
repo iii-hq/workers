@@ -1,5 +1,5 @@
 //! Operator-owned default provider; requests may still name their own.
-use crate::register::{validate_provider, DEFAULT_PROVIDER};
+use crate::register::{DEFAULT_PROVIDER, validate_provider};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

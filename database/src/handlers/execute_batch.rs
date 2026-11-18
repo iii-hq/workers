@@ -39,8 +39,8 @@ fn lenient_statements<'de, D>(de: D) -> Result<Vec<BatchStatement>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error as _;
     use serde::Deserialize as _;
+    use serde::de::Error as _;
 
     let v = match Value::deserialize(de)? {
         Value::String(s) => serde_json::from_str(&s)

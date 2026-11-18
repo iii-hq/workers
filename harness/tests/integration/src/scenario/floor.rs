@@ -1,7 +1,7 @@
 //! Runner-owned post-conditions shared by every scenario.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde_json::Value;
 
@@ -19,7 +19,8 @@ pub struct FloorExpectations<'a> {
     /// (non-terminal) completions first, terminal turns after.
     pub turn_statuses: &'a [String],
     /// How many of the TRAILING statuses are terminal turns. A parked
-    /// completion (a turn that ended with an armed wake) carries
+    /// completion (a turn that ended with an armed wake, or whose finalize
+    /// reseeded the session) carries
     /// `terminal: false` in its lifecycle payload, and the floor demands the
     /// flag match the position — a run must not pass with its park missing,
     /// nor with a turn parked that was declared terminal.
@@ -209,18 +210,19 @@ fn collect_recovered_enqueue_errors(
     recovered: &mut BTreeSet<(String, String)>,
 ) {
     for (position, attempt) in siblings.iter().enumerate() {
-        if attempt.name == TURN_ENQUEUE_TRACE_NAME && span_has_error(attempt) {
-            if let Some(identity) = enqueue_attempt_identity(attempt) {
-                let later_success = siblings[position + 1..].iter().any(|candidate| {
-                    candidate.name == TURN_ENQUEUE_TRACE_NAME
-                        && !span_has_error(candidate)
-                        && enqueue_attempt_identity(candidate).as_ref() == Some(&identity)
-                        && enqueue_execution(candidate)
-                            .is_some_and(|span| span.status.eq_ignore_ascii_case("ok"))
-                });
-                if later_success {
-                    collect_error_span_keys(attempt, recovered);
-                }
+        if attempt.name == TURN_ENQUEUE_TRACE_NAME
+            && span_has_error(attempt)
+            && let Some(identity) = enqueue_attempt_identity(attempt)
+        {
+            let later_success = siblings[position + 1..].iter().any(|candidate| {
+                candidate.name == TURN_ENQUEUE_TRACE_NAME
+                    && !span_has_error(candidate)
+                    && enqueue_attempt_identity(candidate).as_ref() == Some(&identity)
+                    && enqueue_execution(candidate)
+                        .is_some_and(|span| span.status.eq_ignore_ascii_case("ok"))
+            });
+            if later_success {
+                collect_error_span_keys(attempt, recovered);
             }
         }
         collect_recovered_enqueue_errors(&attempt.children, recovered);
@@ -312,7 +314,8 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
     // Each turn's status AND terminal flag must match its position in trace
     // order (summary turn ids are ordered by first span start): the first
     // `parked()` completions are non-terminal — the session still owned an
-    // armed wake — and every turn after them is terminal.
+    // armed wake, or the finalize reseeded it — and every turn after them is
+    // terminal.
     let expected_by_turn: BTreeMap<&str, (&str, bool)> = run
         .traces
         .summary
@@ -621,9 +624,11 @@ mod tests {
         let mut pending = clean_evidence();
         pending.traces.traces[0].roots[0].pending = true;
         pending.traces = TraceEvidenceV1::new(pending.traces.traces);
-        assert!(floor_failure(&pending)
-            .unwrap()
-            .contains("pending spans: 1"));
+        assert!(
+            floor_failure(&pending)
+                .unwrap()
+                .contains("pending spans: 1")
+        );
 
         let mut error = clean_evidence();
         error.traces.traces[0].roots[0].status = "error".into();
@@ -700,9 +705,11 @@ mod tests {
             .roots
             .push(lifecycle_span("turn-1", conflicting));
         evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
-        assert!(floor_failure(&evidence)
-            .unwrap()
-            .contains("consistent retries: false"));
+        assert!(
+            floor_failure(&evidence)
+                .unwrap()
+                .contains("consistent retries: false")
+        );
     }
 
     fn expectations<'a>(turn_statuses: &'a [String], traces: usize) -> FloorExpectations<'a> {

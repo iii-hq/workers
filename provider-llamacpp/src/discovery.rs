@@ -7,12 +7,12 @@
 //! with no `--api-key` at all — and the catalog is only pruned on an actual
 //! 401/403 from the server (an operator-configured key we don't have).
 use crate::config::{
-    credential_parts, remember_probed_api_url, DEFAULT_API_URL_CANDIDATES, DEFAULT_MAX_TOKENS,
+    DEFAULT_API_URL_CANDIDATES, DEFAULT_MAX_TOKENS, credential_parts, remember_probed_api_url,
 };
-use crate::{router_client, state, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::sse_transport::error_chain;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
@@ -187,10 +187,12 @@ pub fn params_billions(id: &str) -> Option<f64> {
                 j += 1;
             }
             let ends_token = j + 1 >= b.len() || !b[j + 1].is_ascii_alphanumeric();
-            if j < b.len() && b[j].eq_ignore_ascii_case(&'b') && ends_token {
-                if let Ok(n) = b[i..j].iter().collect::<String>().parse::<f64>() {
-                    return Some(n);
-                }
+            if j < b.len()
+                && b[j].eq_ignore_ascii_case(&'b')
+                && ends_token
+                && let Ok(n) = b[i..j].iter().collect::<String>().parse::<f64>()
+            {
+                return Some(n);
             }
             i = j.max(i + 1);
         } else {
@@ -250,7 +252,7 @@ async fn fetch_live_models(
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            return FetchOutcome::Transient(format!("models fetch failed: {}", error_chain(&e)))
+            return FetchOutcome::Transient(format!("models fetch failed: {}", error_chain(&e)));
         }
     };
     let status = resp.status().as_u16();
@@ -346,9 +348,9 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {

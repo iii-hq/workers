@@ -1,7 +1,7 @@
 //! End to end: fetch the checkpoint from the Hub, then answer a judge
 //! `EvaluateRequest` (JSON on stdin, or a built-in ticket) in-process.
 use anyhow::Result;
-use judge_laya::{download, LayaClient};
+use judge_laya::{LayaClient, download};
 use serde_json::json;
 use std::io::Read;
 use std::time::Instant;
@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
     let model = std::env::var("LAYA_MODEL").unwrap_or_else(|_| "laya".into());
     let t0 = Instant::now();
     let gguf = std::env::var_os("III_LAYA_GGUF").map(std::path::PathBuf::from);
-    let checkpoint = download::fetch(&model, None, gguf.as_deref())?;
+    let checkpoint = download::fetch(&model, gguf.as_deref())?;
     eprintln!(
         "checkpoint {} @ {} fetched in {:.1}s",
         checkpoint.model,

@@ -35,8 +35,8 @@ export function TreeView({ input, output, running }: TreeViewProps) {
   const summary = resp ? summariseTree(resp.root) : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="path">{resp?.path ?? req.path ?? '.'}</Chip>
         {req.max_depth != null ? (
           <Chip label="depth">{req.max_depth}</Chip>
@@ -61,14 +61,14 @@ export function TreeView({ input, output, running }: TreeViewProps) {
           </>
         ) : null}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · scanning…
           </span>
         ) : null}
       </div>
 
       {resp ? (
-        <div className="py-1 font-mono text-[12px] text-ink overflow-x-auto">
+        <div className="py-1 font-mono text-xs text-ink overflow-x-auto">
           <TreeRows node={resp.root} path={resp.path} depth={0} />
         </div>
       ) : (

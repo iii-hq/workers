@@ -1,8 +1,8 @@
 //! Descriptor validation, metadata round trip and the wire shapes.
 
 use mention_contract::{
-    MentionField, MentionOpen, MentionProvider, MentionSearchRequest, MentionView, ProviderError,
-    DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, METADATA_KEY,
+    DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, METADATA_KEY, MentionField, MentionOpen,
+    MentionProvider, MentionSearchRequest, MentionView, ProviderError,
 };
 use serde_json::json;
 

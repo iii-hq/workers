@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::clients::session::LoadedEntry;
 use crate::types::content::ContentBlock;
@@ -228,6 +228,9 @@ pub fn build(
         let model_message = match (&entry.message, &entry.custom) {
             _ if own_reply == Some(entry.entry_id.as_str()) => None,
             (Some(AgentMessage::Custom(_)), _) => None,
+            // Failed generations can leave a blank streamed entry. Keep it in
+            // the log for accounting and retry with the original model input.
+            (Some(AgentMessage::Assistant(reply)), _) if !reply.has_content() => None,
             (Some(message), _) => {
                 let mut message = message.clone();
                 // The console also sends the <attached-file> text expansion;
@@ -398,6 +401,30 @@ mod tests {
 
     fn ids(window: &Window) -> Vec<&str> {
         window.candidate.iter().map(|(id, _)| id.as_str()).collect()
+    }
+
+    #[test]
+    fn historical_blank_replies_are_skipped_and_function_only_replies_are_replayed() {
+        let mut assistant = empty_assistant("p", "m");
+        let empty = AgentMessage::Assistant(assistant.clone());
+        assistant.content.push(
+            serde_json::from_value(json!({
+                "type": "function_call", "id": "c1", "function_id": "f", "arguments": {}
+            }))
+            .unwrap(),
+        );
+        let entries = [
+            msg("question", user("go")),
+            msg("empty", empty),
+            msg("call", AgentMessage::Assistant(assistant)),
+            msg("result", result("done")),
+            msg("whitespace", reply(" \n\t")),
+            msg("followup", user("continue")),
+        ];
+        assert_eq!(
+            ids(&build(&entries, 0, None, None)),
+            ["question", "call", "result", "followup"]
+        );
     }
 
     #[test]

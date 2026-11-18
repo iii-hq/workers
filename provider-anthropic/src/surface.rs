@@ -22,17 +22,14 @@ pub const ABORT_DESC: &str = "Cancel the in-flight upstream stream for a request
      (router::abort fan-out), stopping billed generation immediately.";
 
 pub const REFRESH_MODELS_ID: &str = "provider::anthropic::refresh_models";
-pub const REFRESH_MODELS_DESC: &str =
-    "Refresh the Anthropic catalog slice from the upstream models \
+pub const REFRESH_MODELS_DESC: &str = "Refresh the Anthropic catalog slice from the upstream models \
      endpoint and reconcile it through the router; returns the model count written.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::anthropic::on_router_ready";
-pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
+pub const ON_ROUTER_READY_DESC: &str = "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const COUNT_TOKENS_ID: &str = "provider::anthropic::count_tokens";
-pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} via the upstream \
+pub const COUNT_TOKENS_DESC: &str = "Count prompt tokens for {model, system_prompt?, tools?, messages} via the upstream \
      count_tokens metering endpoint; never runs the model and costs nothing.";
 
 /// One function's complete agent-facing wire surface: id, registration

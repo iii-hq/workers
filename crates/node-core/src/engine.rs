@@ -214,7 +214,7 @@ pub fn hook_outcome(result: CallResult) -> Result<(), HookRejection> {
             return Err(HookRejection {
                 code: OBSERVE_REJECTED.to_string(),
                 message: cap_message(message),
-            })
+            });
         }
     };
     let Some(rejected) = value.get("rejected").filter(|r| r.is_object()) else {
@@ -1079,11 +1079,12 @@ mod tests {
     #[tokio::test]
     async fn the_fake_calls_through_an_observer() {
         let fake = FakeEngine::new();
-        assert!(fake
-            .call_observer("obs-1".into(), json!({}), 1_000, None)
-            .await
-            .unwrap_err()
-            .contains("OBSERVER_NOT_FOUND"));
+        assert!(
+            fake.call_observer("obs-1".into(), json!({}), 1_000, None)
+                .await
+                .unwrap_err()
+                .contains("OBSERVER_NOT_FOUND")
+        );
         fake.with_observer_response("obs-1", Ok(json!({ "status_code": 200 })));
         assert_eq!(
             fake.call_observer("obs-1".into(), json!({ "path": "/" }), 1_000, None)

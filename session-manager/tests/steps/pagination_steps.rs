@@ -4,7 +4,7 @@
 //! back to the root to compare it with `session::messages`.
 
 use cucumber::{given, then, when};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common::world::SessionWorld;
 

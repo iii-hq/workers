@@ -2,8 +2,8 @@ use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Child;
 use tokio::sync::Mutex;
@@ -280,10 +280,10 @@ pub async fn remove_old(retention_secs: u64) {
         if !h.finalized {
             continue;
         }
-        if let Some(fin) = h.record.finished_at_ms {
-            if now.saturating_sub(fin) > threshold_ms {
-                to_remove.push((id, handle.clone()));
-            }
+        if let Some(fin) = h.record.finished_at_ms
+            && now.saturating_sub(fin) > threshold_ms
+        {
+            to_remove.push((id, handle.clone()));
         }
     }
     if !to_remove.is_empty() {
@@ -347,12 +347,10 @@ pub async fn kill_running_host_jobs() -> usize {
         let h = handle.lock().await;
         let is_running_host = h.record.status == JobStatus::Running && h.host_pid.is_some();
         drop(h);
-        if is_running_host {
-            if let Some(notify) = kill_signal_for(id) {
-                notify.notify_one();
-                requested.push(id.clone());
-                tracing::info!(job_id = %id, "requested shutdown kill of running host job");
-            }
+        if is_running_host && let Some(notify) = kill_signal_for(id) {
+            notify.notify_one();
+            requested.push(id.clone());
+            tracing::info!(job_id = %id, "requested shutdown kill of running host job");
         }
     }
     if requested.is_empty() {
@@ -363,10 +361,10 @@ pub async fn kill_running_host_jobs() -> usize {
     loop {
         let mut still_running = 0usize;
         for id in &requested {
-            if let Some(h) = get(id).await {
-                if h.lock().await.record.status == JobStatus::Running {
-                    still_running += 1;
-                }
+            if let Some(h) = get(id).await
+                && h.lock().await.record.status == JobStatus::Running
+            {
+                still_running += 1;
             }
         }
         if still_running == 0 || std::time::Instant::now() >= deadline {

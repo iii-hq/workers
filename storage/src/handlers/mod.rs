@@ -106,7 +106,7 @@ impl AppState {
 /// that take their payload as JSON and parse it with [`parse_request`].
 pub fn schema_of<T: schemars::JsonSchema>() -> serde_json::Value {
     serde_json::to_value(
-        schemars::gen::SchemaSettings::draft07()
+        schemars::r#gen::SchemaSettings::draft07()
             .into_generator()
             .into_root_schema_for::<T>(),
     )

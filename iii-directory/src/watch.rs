@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::fs_source::{classify_rel_path, SourceKind};
+use crate::fs_source::{SourceKind, classify_rel_path};
 use crate::sources::take_self_write;
 
 /// Coalescing window: every event inside it folds into one fire per kind.

@@ -7,18 +7,18 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::WebConfig;
 use crate::content::{self, ContentOpts};
 use crate::convert::{
-    accept_header_for, extract_text, html_to_markdown, is_image_mime, is_viewable_image_mime,
-    max_tag_depth, ACCEPT_LANGUAGE, BROWSER_USER_AGENT, MAX_NESTING_DEPTH,
+    ACCEPT_LANGUAGE, BROWSER_USER_AGENT, MAX_NESTING_DEPTH, accept_header_for, extract_text,
+    html_to_markdown, is_image_mime, is_viewable_image_mime, max_tag_depth,
 };
 use crate::schemas::{FetchPayload, PageFormat, ResponseFormat};
-use crate::ssrf::{check_target, parse_target, SsrfPolicy};
+use crate::ssrf::{SsrfPolicy, check_target, parse_target};
 
 const DENY_ON_REDIRECT: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
@@ -198,10 +198,11 @@ async fn perform_request(
     for (k, v) in without_host(headers) {
         req = req.header(k, v);
     }
-    if let Some(b) = body {
-        if method != "GET" && method != "HEAD" {
-            req = req.body(b.to_string());
-        }
+    if let Some(b) = body
+        && method != "GET"
+        && method != "HEAD"
+    {
+        req = req.body(b.to_string());
     }
 
     let resp = match req.send().await {
@@ -312,32 +313,34 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
 
         // Cloudflare cf-mitigated:challenge: retry the SAME hop once with the
         // honest UA. Only when we injected the browser UA, GET/HEAD, 403+challenge.
-        if browser_ua_injected && (method == "GET" || method == "HEAD") {
-            if let Outcome::Response(r) = &outcome {
-                if r.status == 403
-                    && r.headers.get("cf-mitigated").map(|s| s.as_str()) == Some("challenge")
-                {
-                    let mut retry_headers = current_headers.clone();
-                    retry_headers.insert("user-agent".to_string(), cfg.user_agent.clone());
-                    outcome = perform_request(
-                        &parsed,
-                        socket,
-                        &method,
-                        &retry_headers,
-                        effective_body.as_deref(),
-                        timeout,
-                        max_bytes,
-                    )
-                    .await;
-                }
-            }
+        if browser_ua_injected
+            && (method == "GET" || method == "HEAD")
+            && let Outcome::Response(r) = &outcome
+            && r.status == 403
+            && r.headers.get("cf-mitigated").map(|s| s.as_str()) == Some("challenge")
+        {
+            let mut retry_headers = current_headers.clone();
+            retry_headers.insert("user-agent".to_string(), cfg.user_agent.clone());
+            outcome = perform_request(
+                &parsed,
+                socket,
+                &method,
+                &retry_headers,
+                effective_body.as_deref(),
+                timeout,
+                max_bytes,
+            )
+            .await;
         }
 
         let resp = match outcome {
             Outcome::Timeout => {
                 return error_envelope(
                     "timeout",
-                    format!("request timed out after {}ms (raise timeout_ms or shrink response with smaller max_bytes)", timeout.as_millis()),
+                    format!(
+                        "request timed out after {}ms (raise timeout_ms or shrink response with smaller max_bytes)",
+                        timeout.as_millis()
+                    ),
                 );
             }
             Outcome::Transport(m) => return error_envelope("transport_error", m),
@@ -345,30 +348,31 @@ pub async fn execute_fetch(payload: FetchPayload, cfg: &WebConfig) -> Value {
         };
 
         // Redirect handling.
-        if follow_redirects && (300..400).contains(&resp.status) {
-            if let Some(location) = resp.headers.get("location") {
-                let next = match parsed.url.join(location) {
-                    Ok(u) => u,
-                    Err(_) => {
-                        return error_envelope(
-                            "transport_error",
-                            format!("redirect target is not a valid URL: {location}"),
-                        );
-                    }
-                };
-                if hop == cfg.max_redirects {
+        if follow_redirects
+            && (300..400).contains(&resp.status)
+            && let Some(location) = resp.headers.get("location")
+        {
+            let next = match parsed.url.join(location) {
+                Ok(u) => u,
+                Err(_) => {
                     return error_envelope(
-                        "too_many_redirects",
-                        format!("exceeded max_redirects ({})", cfg.max_redirects),
+                        "transport_error",
+                        format!("redirect target is not a valid URL: {location}"),
                     );
                 }
-                redirect_chain.push(current_url.clone());
-                current_headers = strip_cross_origin_auth(current_headers, &parsed.url, &next);
-                current_url = next.to_string();
-                continue;
+            };
+            if hop == cfg.max_redirects {
+                return error_envelope(
+                    "too_many_redirects",
+                    format!("exceeded max_redirects ({})", cfg.max_redirects),
+                );
             }
-            // 3xx without Location: fall through and return the response.
+            redirect_chain.push(current_url.clone());
+            current_headers = strip_cross_origin_auth(current_headers, &parsed.url, &next);
+            current_url = next.to_string();
+            continue;
         }
+        // 3xx without Location: fall through and return the response.
 
         let content_opts = page_format.map(|f| build_content_opts(&payload, f));
         return shape_response(

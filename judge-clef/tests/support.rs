@@ -1,7 +1,7 @@
 //! Test helpers: the committed tiny checkpoint (a random clef GGUF, n_embd 32,
 //! with a byte vocabulary, and its byte-level tokenizer).
 #![allow(dead_code)]
-use judge_clef::{download, engine, ClefClient};
+use judge_clef::{ClefClient, download, engine};
 use std::path::PathBuf;
 
 pub fn tiny_dir() -> PathBuf {

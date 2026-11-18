@@ -13,7 +13,7 @@
 //! conditions.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bindings::Binding;
 use crate::deps::Deps;
@@ -156,14 +156,14 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
                         reason.unwrap_or_else(|| "no reason given".into())
                     ),
                     false,
-                ))
+                ));
             }
             Err(e) => {
                 return Err(Skip::new(
                     "condition-error",
                     format!("`{}`: {e}", condition.function_id),
                     false,
-                ))
+                ));
             }
         }
     }

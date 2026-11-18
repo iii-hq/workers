@@ -1,4 +1,4 @@
-use judge_decider::{configuration, DeciderConfig};
+use judge_decider::{DeciderConfig, configuration};
 use serde_json::json;
 
 #[test]

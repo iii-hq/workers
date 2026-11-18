@@ -141,7 +141,7 @@ describe('xAI discovery feedback in the existing picker', () => {
 
   it('distinguishes truly empty discovery and transient stale catalog', async () => {
     await render([xai({ outcome: 'empty', stale: false, checked_at_ms: 3 })])
-    expect(container.textContent).toContain('The lookup completed successfully')
+    expect(container.textContent).toContain('The lookup finished')
     expect(container.textContent).not.toContain('No models with this key')
     await render([
       xai({ outcome: 'unavailable', stale: true, checked_at_ms: 4 }),

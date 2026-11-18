@@ -55,10 +55,10 @@ export function AnsiOutput({ stdout, stderr, className }: AnsiOutputProps) {
 }
 
 /* Single-pass strip of CSI/OSC escape sequences. Keeps the visible
-   text intact (newlines, tabs) so monospace alignment in tools like
+ text intact (newlines, tabs) so monospace alignment in tools like
    `ls -l` / `cargo test` survives. The two control-char ranges are
-   intentional: 0x1B is the ANSI ESC introducer (CSI/OSC) and 0x07 is
-   the BEL terminator for OSC sequences. */
+ intentional: 0x1B is the ANSI ESC introducer (CSI/OSC) and 0x07 is
+ the BEL terminator for OSC sequences. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI escape sequences.
 const CSI_REGEX = /\x1b\[[0-9;?]*[ -/]*[@-~]/g
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI OSC (ESC ] … BEL) sequences.

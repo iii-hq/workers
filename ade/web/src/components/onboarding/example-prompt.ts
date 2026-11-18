@@ -73,7 +73,12 @@ export function openExamplePrompt(
       api.setThinkingLevel(id, pick.effort)
     }
   }
-  if (agent && workingDir !== undefined) sendDraftWhenReady(id, prompt.prompt)
+  // The click WAS the decision to send: the prompt goes once the chat can
+  // send, under the named profile when the directory serves it and under
+  // the chat's default profile when it does not (a fresh stack with no kits
+  // yet). Only an unfinished folder lookup holds it, so the chat's own
+  // lookup can set the folder first.
+  if (workingDir !== undefined) sendDraftWhenReady(id, prompt.prompt)
   api.openConversation(id)
   return id
 }

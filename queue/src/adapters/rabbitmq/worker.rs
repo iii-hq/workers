@@ -16,9 +16,9 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use lapin::{message::Delivery, options::*, Channel};
+use lapin::{Channel, message::Delivery, options::*};
 use tokio::{
-    sync::{oneshot, Semaphore},
+    sync::{Semaphore, oneshot},
     task::JoinSet,
 };
 

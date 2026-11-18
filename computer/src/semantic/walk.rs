@@ -149,10 +149,10 @@ impl<'a> Walk<'a> {
             if !parent.contains_key(&p) {
                 break; // `p` is the walk root
             }
-            if let Some(data) = nodes.get(&p) {
-                if data.name.as_deref().is_some_and(|s| !s.trim().is_empty()) {
-                    out.push(data.clone());
-                }
+            if let Some(data) = nodes.get(&p)
+                && data.name.as_deref().is_some_and(|s| !s.trim().is_empty())
+            {
+                out.push(data.clone());
             }
             cur = p;
         }

@@ -13,16 +13,16 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::HarnessError;
 use crate::trace_tags::run_hidden;
 use crate::types::message::AgentMessage;
-use crate::types::turn::{IdemRecord, TurnRecord, TurnStatus};
+use crate::types::turn::{IdemRecord, TurnRecord};
 
 pub const TURN_SCOPE: &str = "harness_turn";
 pub const IDEM_SCOPE: &str = "harness_idem";
@@ -282,10 +282,10 @@ const STORED_REFS: [(&str, &str, &str); 2] = [
 
 fn refs_to_stored(record: &mut Value) {
     for (at, text, slot) in STORED_REFS {
-        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
-            if let Some(digest) = fields.remove(slot) {
-                fields.insert(text.to_owned(), json!({ "$ref": digest }));
-            }
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut)
+            && let Some(digest) = fields.remove(slot)
+        {
+            fields.insert(text.to_owned(), json!({ "$ref": digest }));
         }
     }
 }
@@ -295,12 +295,12 @@ fn refs_to_stored(record: &mut Value) {
 /// fails ([`read_listed_turn`] still needs its refs).
 fn parse_stored_turn(record: &mut Value) -> serde_json::Result<Option<TurnRecord>> {
     for (at, text, slot) in STORED_REFS {
-        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut) {
-            if let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref")) {
-                let digest = digest.take();
-                fields.remove(text);
-                fields.insert(slot.to_owned(), digest);
-            }
+        if let Some(fields) = record.pointer_mut(at).and_then(Value::as_object_mut)
+            && let Some(digest) = fields.get_mut(text).and_then(|t| t.get_mut("$ref"))
+        {
+            let digest = digest.take();
+            fields.remove(text);
+            fields.insert(slot.to_owned(), digest);
         }
     }
     Option::<TurnRecord>::deserialize(&*record)
@@ -491,6 +491,14 @@ async fn load_prompt_body(
     Ok(body)
 }
 
+/// Whether a [`hydrate`] error says a body is gone for good (absent, or not the
+/// text its digest names) rather than a failed store read a retry can still
+/// load. String-matched for the same reason as [`is_timeout`].
+pub(crate) fn is_lost_prompt_body(error: &HarnessError) -> bool {
+    let message = error.to_string();
+    message.contains("missing prompt body") || message.contains("does not match its digest")
+}
+
 /// Whether a state error is the caller-side invocation timeout (the SDK's
 /// wording, carried through [`state_set`]'s error mapping). String-matched
 /// because `HarnessError::State` flattens the SDK error to text.
@@ -572,14 +580,14 @@ async fn read_listed_turn(
 /// `state::get` is a root trace carrying the whole record, so re-reading every
 /// session ever run each pass flooded the trace store.
 ///
-/// `view` maps each turn key to whether its record was last seen `Running`
-/// (an orphan candidate). One `state::list_keys`, then a read of each key
-/// that is new to the view (an empty view reads them all: the first pass
-/// after boot), that this process wrote or deleted since the last pass, or
-/// that was last seen `Running`. Keys gone from `list_keys` leave the view.
-/// Returns the records read, which include every `Running` one. Callers
-/// serialize passes over one view (a stale pass must not overwrite a newer
-/// one's entries).
+/// `view` maps each turn key to whether its record was last seen awaiting a
+/// step ([`TurnRecord::awaits_step`], an orphan candidate). One
+/// `state::list_keys`, then a read of each key that is new to the view (an
+/// empty view reads them all: the first pass after boot), that this process
+/// wrote or deleted since the last pass, or that was last seen awaiting a
+/// step. Keys gone from `list_keys` leave the view. Returns the records read,
+/// which include every one awaiting a step. Callers serialize passes over one
+/// view (a stale pass must not overwrite a newer one's entries).
 ///
 /// Limitation: an EXISTING key rewritten behind this process's writes (by a
 /// second harness process, a state-store rollback, a console edit) is seen
@@ -604,10 +612,7 @@ pub async fn read_changed_turns(
                 continue;
             }
             let record = read_listed_turn(iii, &key, timeout_ms, &mut BTreeSet::new()).await?;
-            let running = record
-                .as_ref()
-                .is_some_and(|r| r.status == TurnStatus::Running);
-            view.insert(key, running);
+            view.insert(key, record.as_ref().is_some_and(TurnRecord::awaits_step));
             records.extend(record);
         }
         Ok(records)
@@ -911,6 +916,13 @@ pub struct QueuedMessage {
     pub entry_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Value>,
+    /// How the message reached the session: `direct` is a person (or a
+    /// client acting as one), `notification` an observer or system notice,
+    /// `invoked-agent` a sub-agent's opening task. Absent on rows parked by
+    /// a harness that predates the field. The console hides every row that
+    /// is not `direct` from the person's queued-messages strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<crate::functions::send::DeliveryChannel>,
     pub queued_at: i64,
 }
 
@@ -1113,14 +1125,16 @@ mod tests {
 
     /// The orphan redrive reads only what changed: every key on the first
     /// pass, then keys new to the view, keys this process wrote or deleted, and
-    /// keys last seen `Running`. A pass that fails re-marks what it drained,
-    /// and a write is marked after it lands.
+    /// keys last seen awaiting a step. A pass that fails re-marks what it
+    /// drained, and a write is marked after it lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_changed_turns_reads_only_what_changed() {
         use futures_util::{SinkExt, StreamExt};
         use std::sync::{Arc, Mutex};
         use tokio_tungstenite::tungstenite::Message;
 
+        // The orphan redrive's passes drain the same marks: one at a time.
+        let _redrive = crate::inflight::TURN_VIEW.lock().await;
         fn turn(id: &str, status: &str) -> Value {
             json!({ "turn_id": "t", "session_id": id, "status": status, "step": 0,
                 "turn_count": 0, "depth": 0, "options": { "model": "m", "max_turns": 16 },
@@ -1261,6 +1275,15 @@ mod tests {
         *hang.lock().unwrap() = None;
         assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_c"]);
         assert_eq!(view.get("rv_c"), Some(&true));
+        // A finished turn that still promises a reseed awaits its step too:
+        // re-read every pass.
+        let mut promised = record("rv_c", "completed");
+        promised.continues = true;
+        put_turn(&iii, &promised, 2_000).await.unwrap();
+        for _ in 0..2 {
+            assert_eq!(pass(&iii, &mut view, &calls).await, ["rv_c"]);
+            assert_eq!(view.get("rv_c"), Some(&true));
+        }
 
         iii.shutdown();
         server.abort();
@@ -1290,6 +1313,7 @@ mod tests {
                 message: AgentMessage::user_text("hi"),
                 entry_id: format!("e_{id}"),
                 origin: None,
+                channel: None,
                 queued_at: at,
             }
         }
@@ -1623,7 +1647,9 @@ mod tests {
             (TURN_SCOPE.into(), "mb_1".into()),
             serde_json::to_value(&record).unwrap(),
         );
-        let error = get_turn(&iii, "mb_1", 2_000).await.unwrap_err().to_string();
+        let error = get_turn(&iii, "mb_1", 2_000).await.unwrap_err();
+        assert!(is_lost_prompt_body(&error), "{error}");
+        let error = error.to_string();
         assert!(
             error.contains("missing prompt body sha256:missing_body_is_an_error for mb_1"),
             "{error}"
@@ -1649,8 +1675,12 @@ mod tests {
             (PROMPT_SCOPE.into(), digest.clone()),
             json!({ "body": "a tampered prompt", "created_at": 1 }),
         );
-        let error = get_turn(&iii, "bd_1", 2_000).await.unwrap_err().to_string();
-        assert!(error.contains("does not match its digest"), "{error}");
+        let error = get_turn(&iii, "bd_1", 2_000).await.unwrap_err();
+        assert!(is_lost_prompt_body(&error), "{error}");
+        assert!(
+            error.to_string().contains("does not match its digest"),
+            "{error}"
+        );
         store.lock().unwrap().insert(
             (PROMPT_SCOPE.into(), digest.clone()),
             json!({ "body": prompt, "created_at": 1 }),

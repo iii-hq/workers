@@ -11,10 +11,10 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
-use harness::timer::{TimerBus, MAX_TIMER_MS, ON_TIMER_FN};
-use iii_sdk::{register_worker, CallRequest, InitOptions};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use harness::timer::{MAX_TIMER_MS, ON_TIMER_FN, TimerBus};
+use iii_sdk::{CallRequest, InitOptions, register_worker};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 mod support;
@@ -345,6 +345,7 @@ async fn a_binding_observer_carries_its_id_pointer_and_expiry_backstop() {
         capability: None,
         dedup_key: None,
         fires: 0,
+        claimed_at: None,
         created_at: 0,
     };
     harness::bindings::observe_binding(&engine.deps, &binding).expect("a binding with a source");

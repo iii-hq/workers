@@ -33,7 +33,7 @@ export function FunctionInfoView({
 
   if (running || !details) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
           <StatusPill label="loading…" variant="default" />
           {reqLabel ? (
@@ -53,7 +53,7 @@ export function FunctionInfoView({
   }
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       {details.length > 1 ? (
         <MetaRow>
           <StatusPill label="functions" variant="accent" />
@@ -112,17 +112,17 @@ function FunctionDetailBlock({
         </MetaRow>
       ) : null}
       <ActionLine icon={<SquareFunction />} tone="accent">
-        <span className="font-mono text-[13px] text-accent break-all">
+        <span className="font-mono text-body text-accent break-all">
           {detail.function_id}
         </span>
         {!summaryRow ? (
-          <span className="ml-2 font-mono text-[11px] text-ink-faint">
+          <span className="ml-2 font-mono text-meta text-ink-faint">
             · {detail.worker_name}
           </span>
         ) : null}
       </ActionLine>
       {detail.description ? (
-        <div className="px-3 py-2 border-b border-rule-2 font-mono text-[12px] text-ink-faint leading-[1.55]">
+        <div className="px-3 py-2 border-b border-border font-mono text-xs text-ink-faint leading-[1.55]">
           {detail.description}
         </div>
       ) : null}
@@ -156,7 +156,7 @@ export function SchemaSection({
   const [open, setOpen] = useState(false)
   if (schema === undefined || schema === null) {
     return (
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
+      <div className="px-3 py-1.5 border-b border-border bg-paper-2 iii-ui-eyebrow">
         {label} · none
       </div>
     )
@@ -164,7 +164,7 @@ export function SchemaSection({
   const isAny = treatEmptyAsAny && isAnySchema(schema)
   const pretty = tryStringifyJson(schema)
   return (
-    <div className="border-b border-rule-2 bg-paper-2">
+    <div className="border-b border-border bg-paper-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -184,7 +184,7 @@ export function SchemaSection({
           <span
             aria-hidden
             className={cn(
-              'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-[11px]',
+              'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-meta',
               open && 'rotate-90',
             )}
           >
@@ -197,7 +197,7 @@ export function SchemaSection({
           code={pretty}
           language="json"
           wrap
-          className="border-t border-rule-2 text-[11.5px] leading-[1.5]"
+          className="border-t border-border text-[11.5px] leading-[1.5]"
         />
       ) : null}
     </div>

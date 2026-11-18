@@ -30,7 +30,7 @@ use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,12 @@ pub struct RbacConfig {
     /// exposed if **any** filter matches.
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
+    /// Endpoints of the engine's worker port the proxy serves (`/`, `/otel`,
+    /// `/ws/channels/*`); one is served if **any** rule matches it. Unset
+    /// serves `/` only, as earlier versions did (minus channels), so an
+    /// upgrade keeps workers connected; an empty list serves nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_endpoints: Option<Vec<crate::endpoints::EndpointFilter>>,
     /// Called before a function is registered, with its `function_id`,
     /// `description`, `metadata`, `namespace`, `private`, `observable`,
     /// `args_format` (when set) and the session's `context`. An object answer
@@ -64,6 +70,13 @@ pub struct RbacConfig {
     /// `filters` and `metadata`; anything else denies (`FORBIDDEN`).
     #[serde(default)]
     pub on_observer_registration_function_id: Option<String>,
+}
+
+impl RbacConfig {
+    /// The endpoint rules in force ([`crate::endpoints::effective_endpoints`]).
+    pub fn endpoints(&self) -> Vec<crate::endpoints::EndpointFilter> {
+        crate::endpoints::effective_endpoints(self.expose_endpoints.as_deref())
+    }
 }
 
 /// `rbac` keys that configuration entries stored before 0.26 may set, with
@@ -163,10 +176,11 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
         }
     }
 
-    if let Some(last) = parts.last() {
-        if !last.is_empty() && !value.ends_with(last) {
-            return false;
-        }
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+        && !value.ends_with(last)
+    {
+        return false;
     }
 
     true
@@ -293,23 +307,22 @@ impl FunctionFilter {
 }
 
 /// VENDORED from rbac_config.rs.
-fn parse_match_pattern(s: &str) -> Option<String> {
+pub(crate) fn parse_match_pattern(s: &str) -> Option<String> {
+    // strip_prefix then strip_suffix: the two cannot share a quote, so
+    // `match(")` is no pattern rather than a panicking slice.
     let trimmed = s.trim();
-    if (trimmed.starts_with("match(\"") && trimmed.ends_with("\")"))
-        || (trimmed.starts_with("match('") && trimmed.ends_with("')"))
-    {
-        Some(trimmed[7..trimmed.len() - 2].to_string())
-    } else {
-        None
-    }
+    [("match(\"", "\")"), ("match('", "')")]
+        .iter()
+        .find_map(|(open, close)| trimmed.strip_prefix(open)?.strip_suffix(close))
+        .map(str::to_string)
 }
 
 /// VENDORED from rbac_config.rs.
 fn parse_metadata_value(value: Value) -> MetadataValue {
-    if let Some(s) = value.as_str() {
-        if let Some(pattern) = parse_match_pattern(s) {
-            return MetadataValue::Wildcard(WildcardPattern::new(&pattern));
-        }
+    if let Some(s) = value.as_str()
+        && let Some(pattern) = parse_match_pattern(s)
+    {
+        return MetadataValue::Wildcard(WildcardPattern::new(&pattern));
     }
     MetadataValue::Exact(value)
 }
@@ -610,6 +623,9 @@ pub struct ProxySession {
     pub context: Value,
     /// Private namespace prefix for this session's own registrations.
     pub function_registration_prefix: Option<String>,
+    /// Worker names this session may declare unchanged, matched exactly
+    /// ([`ProxySession::proxied_worker_name`]).
+    pub worker_names: Vec<String>,
 }
 
 impl ProxySession {
@@ -626,6 +642,7 @@ impl ProxySession {
             allow_function_registration: true,
             context: json!({}),
             function_registration_prefix: None,
+            worker_names: vec![],
         }
     }
 
@@ -649,7 +666,20 @@ impl ProxySession {
     /// session declaring the same name neither shuts it out nor takes its
     /// suspended observers. The `rbac-proxy:` start keeps proxied workers off
     /// the names of workers connected to the engine directly.
+    ///
+    /// A name the auth function listed in `worker_names` is the exception:
+    /// it reaches the engine as declared, so a supervisor that waits for the
+    /// worker by name (compose) sees it. One live session at a time holds a
+    /// granted name: another session declaring it meanwhile gets its own
+    /// prefixed name, so two sessions never share one worker identity (or
+    /// its suspended observers) through the proxy. A worker connected to the
+    /// engine directly under the same name is the operator's to avoid.
     pub fn proxied_worker_name(&self, declared: &str) -> String {
+        if self.worker_names.iter().any(|granted| granted == declared)
+            && claim_worker_name(declared, self.session_id)
+        {
+            return declared.to_string();
+        }
         match &self.function_registration_prefix {
             Some(prefix) => format!("{WORKER_NAME_PREFIX}{prefix}::{declared}"),
             None => format!("{WORKER_NAME_PREFIX}{}:{declared}", self.session_id),
@@ -660,6 +690,39 @@ impl ProxySession {
 /// Start of every worker name a proxied connection declares
 /// ([`ProxySession::proxied_worker_name`]).
 pub const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
+
+/// Granted worker names in use, by the session holding each.
+static GRANTED_NAMES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Uuid>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Take `name` for `session`; `false` when another live session holds it.
+fn claim_worker_name(name: &str, session: Uuid) -> bool {
+    let mut held = GRANTED_NAMES.lock().unwrap();
+    match held.get(name) {
+        Some(holder) => *holder == session,
+        None => {
+            held.insert(name.to_string(), session);
+            true
+        }
+    }
+}
+
+/// Frees the session's granted names when dropped (its connection ended).
+pub struct WorkerNamesGuard(pub Uuid);
+
+impl Drop for WorkerNamesGuard {
+    fn drop(&mut self) {
+        release_worker_names(self.0);
+    }
+}
+
+/// Free every granted name `session` holds; called when its connection ends.
+pub fn release_worker_names(session: Uuid) {
+    GRANTED_NAMES
+        .lock()
+        .unwrap()
+        .retain(|_, holder| *holder != session);
+}
 
 // ---------------------------------------------------------------------------
 // AuthResult — VENDORED defaults from rbac_session.rs (`AuthResult`).
@@ -687,6 +750,10 @@ pub struct AuthResult {
     pub context: Value,
     #[serde(default)]
     pub function_registration_prefix: Option<String>,
+    /// Worker names the session may declare unchanged. Not in the engine's
+    /// `AuthResult`: the engine never renames a worker.
+    #[serde(default)]
+    pub worker_names: Vec<String>,
 }
 
 impl AuthResult {
@@ -700,8 +767,24 @@ impl AuthResult {
             allow_function_registration: self.allow_function_registration,
             context: self.context,
             function_registration_prefix: self.function_registration_prefix,
+            worker_names: granted_worker_names(self.worker_names),
         }
     }
+}
+
+/// The granted names a session may use: never one under `rbac-proxy:`, the
+/// names the proxy gives sessions (another tenant's worker among them).
+fn granted_worker_names(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| {
+            let reserved = name.starts_with(WORKER_NAME_PREFIX);
+            if reserved {
+                tracing::warn!(name = %name, "auth function granted a reserved worker name; ignored");
+            }
+            !reserved
+        })
+        .collect()
 }
 
 /// Auth result fields that auth functions written before 0.26 may return;
@@ -752,6 +835,7 @@ pub async fn resolve_session(
     headers: HashMap<String, String>,
     query_params: HashMap<String, Vec<String>>,
     ip_address: String,
+    endpoint: &str,
 ) -> Result<ProxySession, AuthRejection> {
     let Some(auth_fn) = rbac.and_then(|c| c.auth_function_id.as_deref()) else {
         // No auth function: refuse (unlike the engine's permissive default).
@@ -763,10 +847,13 @@ pub async fn resolve_session(
         });
     };
 
+    // `endpoint` ("/" or "/otel") lets the auth function grant an endpoint
+    // per credential, for example /otel to trusted tokens only.
     let input = json!({
         "headers": headers,
         "query_params": query_params,
         "ip_address": ip_address,
+        "endpoint": endpoint,
     });
 
     let result = iii.call(CallRequest::new(auth_fn, input)).await;
@@ -839,6 +926,32 @@ pub fn forbidden_message(function_id: &str, remediation: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_malformed_match_rule_is_a_config_error_not_a_panic() {
+        for bad in ["match(\")", "match(')"] {
+            let endpoints =
+                serde_json::from_value::<RbacConfig>(json!({ "expose_endpoints": [bad] }));
+            assert!(endpoints.is_err(), "expose_endpoints {bad}");
+            let functions =
+                serde_json::from_value::<RbacConfig>(json!({ "expose_functions": [bad] }));
+            assert!(functions.is_err(), "expose_functions {bad}");
+        }
+    }
+
+    #[test]
+    fn a_match_rule_whose_quotes_overlap_is_not_a_pattern() {
+        // `match(")` passes both the prefix and the suffix check on one
+        // shared quote; slicing it used to panic during deserialization.
+        assert_eq!(parse_match_pattern("match(\")"), None);
+        assert_eq!(parse_match_pattern("match(')"), None);
+        assert_eq!(parse_match_pattern("match(\"\")"), Some(String::new()));
+        assert_eq!(parse_match_pattern("match('/otel')"), Some("/otel".into()));
+        assert_eq!(
+            parse_match_pattern(" match(\"/otel\") "),
+            Some("/otel".into())
+        );
+    }
 
     // --- Wildcard parity fixtures (mirrors rbac_config.rs unit tests) ------
 
@@ -1035,7 +1148,7 @@ mod tests {
                   public: true
                   name: match("*public*")
         "#;
-        let parsed: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let parsed: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(parsed.auth_function_id.as_deref(), Some("my-project::auth"));
         assert_eq!(parsed.expose_functions.len(), 3);
 
@@ -1063,6 +1176,72 @@ mod tests {
         assert!(r.allow_function_registration); // default true
         assert_eq!(r.context, json!({}));
         assert!(r.function_registration_prefix.is_none());
+        assert!(r.worker_names.is_empty());
+    }
+
+    #[test]
+    fn auth_result_reads_granted_worker_names_into_the_session() {
+        let r: AuthResult =
+            serde_json::from_value(json!({ "worker_names": ["mcp", "mcp-auth"] })).unwrap();
+        assert_eq!(r.worker_names, vec!["mcp", "mcp-auth"]);
+        let s = r.into_session("1.2.3.4".to_string());
+        assert_eq!(s.worker_names, vec!["mcp", "mcp-auth"]);
+    }
+
+    fn granted(prefix: Option<&str>, names: &[&str]) -> ProxySession {
+        ProxySession {
+            function_registration_prefix: prefix.map(str::to_string),
+            worker_names: names.iter().map(|n| n.to_string()).collect(),
+            ..ProxySession::permissive("1.2.3.4".to_string())
+        }
+    }
+
+    #[test]
+    fn a_granted_worker_name_reaches_the_engine_as_declared() {
+        for prefix in [None, Some("tenant1")] {
+            let s = granted(prefix, &["mcp-declared"]);
+            assert_eq!(s.proxied_worker_name("mcp-declared"), "mcp-declared");
+            release_worker_names(s.session_id);
+        }
+    }
+
+    #[test]
+    fn a_name_the_auth_function_did_not_grant_is_still_pinned() {
+        let s = granted(None, &["mcp"]);
+        assert_eq!(
+            s.proxied_worker_name("queue"),
+            format!("rbac-proxy:{}:queue", s.session_id)
+        );
+        assert_eq!(
+            granted(Some("tenant1"), &["mcp"]).proxied_worker_name("queue"),
+            "rbac-proxy:tenant1::queue"
+        );
+    }
+
+    #[test]
+    fn granted_names_match_exactly() {
+        // No patterns, no case folding: a grant names one worker.
+        let s = granted(None, &["mcp"]);
+        for declared in ["MCP", "mcp ", "mcp-auth", "m", ""] {
+            assert!(
+                s.proxied_worker_name(declared)
+                    .starts_with(WORKER_NAME_PREFIX)
+            );
+        }
+        assert!(
+            granted(None, &["*"])
+                .proxied_worker_name("mcp")
+                .starts_with(WORKER_NAME_PREFIX)
+        );
+    }
+
+    #[test]
+    fn no_grant_is_the_permissive_default() {
+        assert!(
+            ProxySession::permissive("1.2.3.4".to_string())
+                .worker_names
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1075,6 +1254,7 @@ mod tests {
                 HashMap::new(),
                 HashMap::new(),
                 "ip".into(),
+                "/",
             )
             .await
             .unwrap_err();
@@ -1305,7 +1485,7 @@ mod tests {
                   public: true
                 namespace: billing
         "#;
-        let c: RbacConfig = serde_yaml::from_str(yaml).unwrap();
+        let c: RbacConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let none = HashMap::new();
         assert!(allowed_in("orders", "api::x", &c, &none, &[], &[]));
         assert!(!allowed_in(
@@ -1331,14 +1511,18 @@ mod tests {
     #[test]
     fn function_filter_rejects_unknown_keys_and_ambiguous_maps() {
         // A typo must not silently widen or narrow the rule.
-        assert!(serde_json::from_value::<FunctionFilter>(
-            json!({ "match": "api::*", "namesapce": "orders" })
-        )
-        .is_err());
-        assert!(serde_json::from_value::<FunctionFilter>(
-            json!({ "match": "api::*", "metadata": { "public": true } })
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<FunctionFilter>(
+                json!({ "match": "api::*", "namesapce": "orders" })
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<FunctionFilter>(
+                json!({ "match": "api::*", "metadata": { "public": true } })
+            )
+            .is_err()
+        );
         assert!(serde_json::from_value::<FunctionFilter>(json!({})).is_err());
     }
 
@@ -1381,5 +1565,35 @@ mod tests {
             c.on_observer_registration_function_id.as_deref(),
             Some("p::on-observe")
         );
+    }
+
+    #[test]
+    fn a_grant_cannot_name_a_proxied_worker() {
+        let r: AuthResult = serde_json::from_value(json!({
+            "worker_names": ["mcp-server", "rbac-proxy:tenant2::queue", "rbac-proxy:x"]
+        }))
+        .unwrap();
+        assert_eq!(r.into_session("ip".into()).worker_names, vec!["mcp-server"]);
+    }
+
+    #[test]
+    fn one_live_session_at_a_time_holds_a_granted_name() {
+        let grant = |prefix: &str| ProxySession {
+            worker_names: vec!["granted-once".to_string()],
+            function_registration_prefix: Some(prefix.to_string()),
+            ..ProxySession::permissive("ip".into())
+        };
+        let (a, b) = (grant("tenant1"), grant("tenant2"));
+        assert_eq!(a.proxied_worker_name("granted-once"), "granted-once");
+        // Declaring it again keeps it.
+        assert_eq!(a.proxied_worker_name("granted-once"), "granted-once");
+        // Another session gets its own prefixed name while `a` holds it.
+        assert_eq!(
+            b.proxied_worker_name("granted-once"),
+            "rbac-proxy:tenant2::granted-once"
+        );
+        release_worker_names(a.session_id);
+        assert_eq!(b.proxied_worker_name("granted-once"), "granted-once");
+        release_worker_names(b.session_id);
     }
 }

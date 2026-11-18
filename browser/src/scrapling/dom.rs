@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
-use xmloxide::html::{parse_html_with_options, HtmlParseOptions};
+use xmloxide::html::{HtmlParseOptions, parse_html_with_options};
 use xmloxide::serial::html::serialize_html_subtree;
 use xmloxide::tree::NodeKind;
 use xmloxide::{Document, NodeId};
@@ -477,7 +477,9 @@ mod tests {
 
     #[test]
     fn blank_text_uses_libxmls_legacy_content_model() {
-        let doc = parse("<main>  <h1>a</h1>  <p>b</p>  <h2>c</h2>  <table><tr><td>d</td></tr></table>  <p>e</p></main>");
+        let doc = parse(
+            "<main>  <h1>a</h1>  <p>b</p>  <h2>c</h2>  <table><tr><td>d</td></tr></table>  <p>e</p></main>",
+        );
         let runs: Vec<_> = merged_text_children(first(&doc, "main"))
             .into_iter()
             .map(|(_, value)| value)

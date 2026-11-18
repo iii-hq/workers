@@ -20,7 +20,7 @@ pub(crate) mod counting;
 mod fs;
 
 pub use bridge::BridgeStore;
-pub use fs::{decode_session_id, encode_session_id, FsStore};
+pub use fs::{FsStore, decode_session_id, encode_session_id};
 
 use async_trait::async_trait;
 

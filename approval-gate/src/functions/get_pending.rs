@@ -4,7 +4,7 @@
 use super::Deps;
 use crate::error::ApprovalError;
 use crate::pending;
-use crate::types::{validate_id, GetPendingRequest, GetPendingResponse};
+use crate::types::{GetPendingRequest, GetPendingResponse, validate_id};
 
 pub async fn handle(
     deps: &Deps,
@@ -24,7 +24,7 @@ mod tests {
 
     use super::*;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{state_set, with_stack, BootOpts};
+    use crate::testkit::{BootOpts, state_set, with_stack};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn returns_null_for_unknown_and_the_record_when_live() {

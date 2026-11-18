@@ -1,14 +1,14 @@
 //! POST /v1/chat/completions (stream:true) → SSE → mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
+use crate::PROVIDER_ID;
 use crate::errors::classify;
 use crate::session::{AuthManager, CredentialSource};
-use crate::sse::{build_final, build_partial, handle_chunk, synthetic_error_event, PartialState};
-use crate::PROVIDER_ID;
+use crate::sse::{PartialState, build_final, build_partial, handle_chunk, synthetic_error_event};
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
+    error_chain, flush_tail, truncated_stream_error,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -79,68 +79,67 @@ async fn run_upstream(
 
     // This branch runs before Start or any content is emitted. A 401 after
     // streaming starts is terminal and is never replayed.
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        if let Some(auth) = auth {
-            let rejected = args
-                .headers
-                .iter()
-                .find(|(k, _)| *k == "authorization")
-                .and_then(|(_, v)| v.strip_prefix("Bearer "));
-            if let Some(rejected) = rejected {
-                match auth.resolve(Some(rejected)).await {
-                    Ok(Some(fresh)) if fresh.source == CredentialSource::Managed => {
-                        let account = fresh.value.get("account_id").and_then(Value::as_str);
-                        let original_account = args
-                            .headers
-                            .iter()
-                            .find(|(k, _)| *k == "chatgpt-account-id")
-                            .map(|(_, v)| v.as_str());
-                        if account != original_account {
-                            let _ = tx
-                                .send(synthetic_error_event(
-                                    "Codex account changed. Send the request again.",
-                                    &args.model,
-                                    ErrorKind::AuthExpired,
-                                ))
-                                .await;
-                            return;
-                        }
-                        if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str)
-                        {
-                            let mut retry = client.post(&args.api_url);
-                            for (name, value) in &args.headers {
-                                if *name != "authorization" {
-                                    retry = retry.header(*name, value);
-                                }
-                            }
-                            drop(resp);
-                            resp = match retry.bearer_auth(token).json(&args.body).send().await {
-                                Ok(response) => response,
-                                Err(_) => {
-                                    let _ = tx
-                                        .send(synthetic_error_event(
-                                            "Codex request failed after renewing the session.",
-                                            &args.model,
-                                            ErrorKind::Transient,
-                                        ))
-                                        .await;
-                                    return;
-                                }
-                            };
-                        }
-                    }
-                    Err(e) => {
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+        && let Some(auth) = auth
+    {
+        let rejected = args
+            .headers
+            .iter()
+            .find(|(k, _)| *k == "authorization")
+            .and_then(|(_, v)| v.strip_prefix("Bearer "));
+        if let Some(rejected) = rejected {
+            match auth.resolve(Some(rejected)).await {
+                Ok(Some(fresh)) if fresh.source == CredentialSource::Managed => {
+                    let account = fresh.value.get("account_id").and_then(Value::as_str);
+                    let original_account = args
+                        .headers
+                        .iter()
+                        .find(|(k, _)| *k == "chatgpt-account-id")
+                        .map(|(_, v)| v.as_str());
+                    if account != original_account {
                         let _ = tx
                             .send(synthetic_error_event(
-                                &e.message,
+                                "Codex account changed. Send the request again.",
                                 &args.model,
-                                e.error_kind(),
+                                ErrorKind::AuthExpired,
                             ))
                             .await;
                         return;
                     }
-                    _ => {}
+                    if let Some(token) = fresh.value.get("access_token").and_then(Value::as_str) {
+                        let mut retry = client.post(&args.api_url);
+                        for (name, value) in &args.headers {
+                            if *name != "authorization" {
+                                retry = retry.header(*name, value);
+                            }
+                        }
+                        drop(resp);
+                        resp = match retry.bearer_auth(token).json(&args.body).send().await {
+                            Ok(response) => response,
+                            Err(_) => {
+                                let _ = tx
+                                    .send(synthetic_error_event(
+                                        "Codex request failed after renewing the session.",
+                                        &args.model,
+                                        ErrorKind::Transient,
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        };
+                    }
                 }
+                Err(e) => {
+                    let _ = tx
+                        .send(synthetic_error_event(
+                            &e.message,
+                            &args.model,
+                            e.error_kind(),
+                        ))
+                        .await;
+                    return;
+                }
+                _ => {}
             }
         }
     }
@@ -207,10 +206,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -326,6 +325,7 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+                assert!(error.content.is_empty());
             }
             other => panic!("want error, got {other:?}"),
         }
@@ -423,6 +423,28 @@ mod tests {
             Some(AssistantMessageEvent::Error { error }) => error,
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_read_error_preserves_already_streamed_text() {
+        // The body ends before the declared length, after a complete SSE event.
+        let url = stub(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 500\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(
+            error
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("stream read failed")
+        );
+        assert!(
+            matches!(&error.content[..], [llm_router::types::content::ContentBlock::Text { text }] if text == "Hello")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

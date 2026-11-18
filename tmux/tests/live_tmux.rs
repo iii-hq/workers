@@ -7,13 +7,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use iii_sdk::{scope, Caller, InvocationCtx};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use iii_sdk::{Caller, InvocationCtx, scope};
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
-use tmux::functions::{self, panes, sessions, windows, Ctx, EmptyInput};
+use tmux::functions::{self, Ctx, EmptyInput, panes, sessions, windows};
 use tmux::model::AgentState;
 use tmux::terminal::protocol::{
     OpenRequest, OutputEvent, ReplayRequest, SwitchRequest, TerminalRef, WriteRequest,
@@ -1111,12 +1111,13 @@ async fn console_terminal_is_a_live_tmux_client() {
             .then_some(())
     })
     .await;
-    assert!(sink
-        .0
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|event| event.terminal_id == opened.terminal_id));
+    assert!(
+        sink.0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| event.terminal_id == opened.terminal_id)
+    );
 
     // Another caller cannot drive it.
     let foreign = manager
@@ -1199,13 +1200,15 @@ async fn console_terminal_is_a_live_tmux_client() {
     let snapshot = collector.overview().await.sessions;
     assert_eq!(snapshot.sessions.len(), 2);
     assert!(snapshot.sessions.iter().all(|s| s.attached == 0));
-    assert!(manager
-        .write(WriteRequest {
-            terminal: reference,
-            data: BASE64.encode("x")
-        })
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write(WriteRequest {
+                terminal: reference,
+                data: BASE64.encode("x")
+            })
+            .await
+            .is_err()
+    );
 
     // A terminal nobody heartbeats is detached by the reaper.
     let idle = manager
@@ -1530,10 +1533,12 @@ async fn uploads_are_saved_for_the_terminal_that_asks() {
     linked.close(there).await.unwrap();
 
     manager.close(reference.clone()).await.unwrap();
-    assert!(upload(reference, "a.txt", None, b"a")
-        .await
-        .unwrap_err()
-        .contains("not found"));
+    assert!(
+        upload(reference, "a.txt", None, b"a")
+            .await
+            .unwrap_err()
+            .contains("not found")
+    );
 }
 
 #[tokio::test]
@@ -1985,4 +1990,70 @@ impl World {
         }
         .into_shared()
     }
+}
+
+#[tokio::test]
+async fn session_output_survives_a_clean_service_environment() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let server = Server {
+        socket: format!("iii-tmux-test-{}", uuid::Uuid::new_v4().simple()),
+    };
+    let tmux = tmux::tmux_cli::Tmux {
+        path: "tmux".into(),
+        socket: tmux::tmux_cli::Socket::Name(server.socket.clone()),
+        timeout: Duration::from_secs(5),
+        version: String::new(),
+    };
+    let output = tmux
+        .command()
+        .env_clear()
+        .env(
+            "TMUX_TMPDIR",
+            std::env::var_os("TMUX_TMPDIR").unwrap_or_else(|| "/tmp".into()),
+        )
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "service-fixture",
+            "-P",
+            "-F",
+            &format!("{}\n#{{socket_path}}\n#{{pid}}", sessions::created_format()),
+            "sleep 30",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let mut lines = stdout.lines();
+    let created = sessions::parse_created(lines.next().unwrap()).unwrap();
+    let socket_path = lines.next().unwrap();
+    let pid: i32 = lines.next().unwrap().parse().unwrap();
+    assert_eq!(created.session, "service-fixture");
+    assert!(created.session_id.starts_with('$'));
+    assert!(created.pane_id.starts_with('%'));
+    drop(server);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    // SAFETY: signal zero checks only the existence of our fixture's server.
+    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // SAFETY: the PID came from the private tmux server started above.
+    let server_left = unsafe { libc::kill(pid, 0) } == 0;
+    let socket_left = std::path::Path::new(socket_path).exists();
+    if server_left || socket_left {
+        let _ = std::process::Command::new("tmux")
+            .args(["-S", socket_path, "kill-server"])
+            .env_remove("TMUX")
+            .output();
+        let _ = std::fs::remove_file(socket_path);
+    }
+    assert!(!server_left, "teardown left the owned tmux server running");
+    assert!(!socket_left, "teardown left the owned tmux socket");
 }

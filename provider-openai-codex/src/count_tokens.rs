@@ -12,7 +12,7 @@
 use base64::Engine as _;
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::tiktoken_count::{
-    encoder_for, ESTIMATOR_TIKTOKEN, TOKENS_PER_MESSAGE, TOKENS_REPLY_PRIMING,
+    ESTIMATOR_TIKTOKEN, TOKENS_PER_MESSAGE, TOKENS_REPLY_PRIMING, encoder_for,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
@@ -207,7 +207,7 @@ mod tests {
         AssistantMessage, AssistantRoleTag, FunctionResultMessage, FunctionResultRoleTag,
         UserMessage, UserRoleTag,
     };
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn user_blocks(content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::User(UserMessage {

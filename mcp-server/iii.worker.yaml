@@ -1,0 +1,19 @@
+iii: v1
+name: mcp-server
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+license: Apache-2.0
+bin: mcp-server
+tags: [mcp, model-context-protocol, bridge, http, agents]
+description: MCP 2025-06-18 Streamable HTTP server for the iii engine — iii_call / iii_observe gateway tools, per-session observers, skills from iii-directory. Runs behind rbac-proxy.
+
+dependencies:
+  # Serves POST/DELETE <api_path> through the http worker's http::on-request.
+  http: "latest"
+  # The MCP server refuses to start unless its engine connection goes through
+  # rbac-proxy (or III_MCP_DANGEROUSLY_RUN_WITHOUT_RBAC=true).
+  rbac-proxy: "latest"
+  # iii_secret_store writes credentials to the secrets vault.
+  secrets: "latest"

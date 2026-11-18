@@ -10,13 +10,11 @@ use crate::events::EventKind;
 use crate::models::{self, Progress, ProgressSink};
 
 pub const LIST_ID: &str = "voice::models::list";
-pub const LIST_DESC: &str =
-    "List the speech models the local backend can run, which one is active, \
+pub const LIST_DESC: &str = "List the speech models the local backend can run, which one is active, \
                              and whether each is installed under models_dir.";
 
 pub const DOWNLOAD_ID: &str = "voice::models::download";
-pub const DOWNLOAD_DESC: &str =
-    "Download a local speech model (the active one when id is omitted), \
+pub const DOWNLOAD_DESC: &str = "Download a local speech model (the active one when id is omitted), \
                                  verifying every file's checksum. Progress arrives as calls of \
                                  voice::on-model-progress.";
 
@@ -113,8 +111,7 @@ pub fn progress_sink(state: &AppState) -> ProgressSink {
 }
 
 pub const REMOVE_ID: &str = "voice::models::remove";
-pub const REMOVE_DESC: &str =
-    "Delete a downloaded local model from models_dir. Configured ONNX transcription \
+pub const REMOVE_DESC: &str = "Delete a downloaded local model from models_dir. Configured ONNX transcription \
      models may download on use; Whisper and Piper models require an explicit download.";
 
 #[derive(Debug, Deserialize, JsonSchema)]

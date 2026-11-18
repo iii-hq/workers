@@ -31,10 +31,10 @@
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: 2.75rem;
+  min-height: 2.25rem;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.625rem 0.75rem;
+  padding: 0.375rem 0.75rem;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1008,12 +1008,14 @@ a.iii-ui-tree-item {
 }
 
 .iii-ui-tab[data-state="active"],
+.iii-ui-tab[data-active],
 .iii-ui-tab[data-selected="true"],
 .iii-ui-tab[aria-selected="true"] {
   color: var(--color-ink);
 }
 
 .iii-ui-tab[data-state="active"]::after,
+.iii-ui-tab[data-active]::after,
 .iii-ui-tab[data-selected="true"]::after,
 .iii-ui-tab[aria-selected="true"]::after {
   transform: scaleX(1);
@@ -1556,7 +1558,8 @@ a.iii-ui-tree-item {
     var(--motion-ease-enter) both;
 }
 
-.iii-ui-motion-panel[data-state="closed"] {
+.iii-ui-motion-panel[data-state="closed"],
+.iii-ui-motion-panel[data-ending-style] {
   animation-name: iii-ui-panel-exit;
   animation-timing-function: var(--motion-ease-exit);
 }
@@ -1566,28 +1569,24 @@ a.iii-ui-tree-item {
     var(--motion-ease-enter) both;
 }
 
-.iii-ui-motion-overlay[data-state="closed"] {
+.iii-ui-motion-overlay[data-state="closed"],
+.iii-ui-motion-overlay[data-ending-style] {
   animation-name: iii-ui-overlay-exit;
   animation-timing-function: var(--motion-ease-exit);
 }
 
 /* Compact menus share a directional scale/fade instead of the generic
-   overlay fade. Radix keeps content mounted while the closed animation runs,
+   overlay fade. Base UI keeps the popup mounted while the exit animation runs,
    so both the entrance and exit remain visible without consumer timers. */
 .iii-ui-motion-dropdown {
-  transform-origin: var(
-    --radix-select-content-transform-origin,
-    var(
-      --radix-dropdown-menu-content-transform-origin,
-      var(--radix-popover-content-transform-origin, top center)
-    )
-  );
+  transform-origin: var(--transform-origin, top center);
   animation: iii-ui-dropdown-enter var(--duration-fast) var(--ease-smooth-out)
     both;
   will-change: transform, opacity;
 }
 
-.iii-ui-motion-dropdown[data-state="closed"] {
+.iii-ui-motion-dropdown[data-state="closed"],
+.iii-ui-motion-dropdown[data-ending-style] {
   pointer-events: none;
   animation: iii-ui-dropdown-exit var(--duration-quick) var(--ease-smooth-out)
     both;
@@ -1601,7 +1600,8 @@ a.iii-ui-tree-item {
   will-change: transform, opacity, filter;
 }
 
-.iii-ui-motion-sheet[data-state="closed"] {
+.iii-ui-motion-sheet[data-state="closed"],
+.iii-ui-motion-sheet[data-ending-style] {
   pointer-events: none;
   animation: iii-ui-sheet-exit var(--duration-medium) var(--ease-smooth-out)
     both;
@@ -1613,7 +1613,8 @@ a.iii-ui-tree-item {
   will-change: opacity;
 }
 
-.iii-ui-motion-sheet-overlay[data-state="closed"] {
+.iii-ui-motion-sheet-overlay[data-state="closed"],
+.iii-ui-motion-sheet-overlay[data-ending-style] {
   pointer-events: none;
   animation: iii-ui-sheet-overlay-exit var(--duration-medium)
     var(--ease-smooth-out) both;

@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tmux::accounts::Accounts;
 use tmux::accounts::credentials::FileStore;
 use tmux::accounts::login::Runner;
 use tmux::accounts::paths::ClaudePaths;
-use tmux::accounts::Accounts;
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
@@ -307,9 +307,11 @@ async fn a_code_signs_an_account_in_on_its_folder() {
         "{}",
         started.url
     );
-    assert!(started
-        .url
-        .contains("redirect_uri=https%3A%2F%2Fplatform.claude.com"));
+    assert!(
+        started
+            .url
+            .contains("redirect_uri=https%3A%2F%2Fplatform.claude.com")
+    );
     // The account's email fills the page.
     assert_eq!(started.email.as_deref(), Some("you@home.dev"));
     assert!(started.url.contains("login_hint=you%40home.dev"));

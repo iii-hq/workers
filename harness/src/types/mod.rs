@@ -13,8 +13,8 @@ pub mod turn;
 pub use content::ContentBlock;
 pub use event::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 pub use message::{
-    empty_assistant, AgentMessage, AssistantMessage, AssistantRoleTag, CustomMessage,
-    CustomRoleTag, FunctionResultMessage, FunctionResultRoleTag, UserMessage, UserRoleTag,
+    AgentMessage, AssistantMessage, AssistantRoleTag, CustomMessage, CustomRoleTag,
+    FunctionResultMessage, FunctionResultRoleTag, UserMessage, UserRoleTag, empty_assistant,
 };
 pub use model::{AgentFunction, Model, Pricing, ReasoningEffort, ThinkingLevel};
 pub use output::OutputContract;

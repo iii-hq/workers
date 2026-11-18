@@ -1,222 +1,229 @@
-import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
-import { Check, ChevronRight } from 'lucide-react'
-import type * as React from 'react'
-import { PortalScope } from '@/lib/ui-scope'
-import { cn } from '@/lib/utils'
-
 /**
- * Radix dropdown-menu adapted to the console design system — the shadcn
- * dropdown-menu anatomy (Root / Trigger / Content / Group / Label /
- * CheckboxItem / Separator, plus Sub / RadioGroup below) restyled with the
- * house tokens (Inter, 14px rows, * text and ink/bg/rule), mirroring how `Select.tsx` adapts radix-select.
+ * The console's first dropdown-menu API (Radix-shaped: `asChild` on the
+ * trigger, `onSelect` on items, an `indicator` / `box` on checkbox rows),
+ * kept as a thin layer over the shadcn (Base UI) dropdown menu so worker
+ * UIs that import these parts from `@iii-dev/console-ui` get the same
+ * sheet, rows and motion as the console. New console code reaches for
+ * `components/shadcn/dropdown-menu` directly.
  *
- * Behavior (open on click, typeahead, arrow keys, Escape) is Radix's;
- * consumers that want hover-expansion control `open` themselves (see
- * `SpanFilterMenu`).
+ * Behavior (open on click, typeahead, arrow keys, Escape) is Base UI's. A
+ * row that must keep the menu open (a multi-select toggle) passes
+ * `closeOnClick={false}`; the Radix `onSelect={(e) => e.preventDefault()}`
+ * idiom has no effect here.
  */
 
-export const DropdownMenu = DropdownMenuPrimitive.Root
-export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
-export const DropdownMenuGroup = DropdownMenuPrimitive.Group
+import { Check } from 'lucide-react'
+import {
+  type ComponentProps,
+  isValidElement,
+  type MouseEvent,
+  type ReactElement,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react'
+import {
+  DropdownMenu as BaseDropdownMenu,
+  DropdownMenuCheckboxItem as BaseDropdownMenuCheckboxItem,
+  DropdownMenuContent as BaseDropdownMenuContent,
+  DropdownMenuGroup as BaseDropdownMenuGroup,
+  DropdownMenuItem as BaseDropdownMenuItem,
+  DropdownMenuLabel as BaseDropdownMenuLabel,
+  DropdownMenuRadioGroup as BaseDropdownMenuRadioGroup,
+  DropdownMenuRadioItem as BaseDropdownMenuRadioItem,
+  DropdownMenuSeparator as BaseDropdownMenuSeparator,
+  DropdownMenuSub as BaseDropdownMenuSub,
+  DropdownMenuSubContent as BaseDropdownMenuSubContent,
+  DropdownMenuSubTrigger as BaseDropdownMenuSubTrigger,
+  DropdownMenuTrigger as BaseDropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { cn } from '@/lib/utils'
 
+export const DropdownMenu = BaseDropdownMenu
+export const DropdownMenuGroup = BaseDropdownMenuGroup
+export const DropdownMenuSub = BaseDropdownMenuSub
+export const DropdownMenuRadioGroup = BaseDropdownMenuRadioGroup
+export const DropdownMenuSeparator = BaseDropdownMenuSeparator
+export const DropdownMenuSubTrigger = BaseDropdownMenuSubTrigger
+
+export interface DropdownMenuTriggerProps
+  extends ComponentProps<typeof BaseDropdownMenuTrigger> {
+  /** Radix: the single child element is the trigger (Base UI `render`). */
+  asChild?: boolean
+  children?: ReactNode
+}
+
+export function DropdownMenuTrigger({
+  asChild,
+  children,
+  ...props
+}: DropdownMenuTriggerProps) {
+  if (asChild && isValidElement(children)) {
+    // Base UI expects the trigger to render a native <button> unless told
+    // otherwise. A Radix-style `asChild` span or div (the IDE's invisible
+    // right-click anchor) logged "expected a native <button>" on every open,
+    // so a plain non-button element says so itself. A component child keeps
+    // the default: what it renders is its own business.
+    const nativeButton =
+      props.nativeButton ??
+      (typeof children.type === 'string'
+        ? children.type === 'button'
+        : undefined)
+    return (
+      <BaseDropdownMenuTrigger
+        {...props}
+        {...(nativeButton === undefined ? {} : { nativeButton })}
+        render={children as ReactElement<Record<string, unknown>>}
+      />
+    )
+  }
+  return (
+    <BaseDropdownMenuTrigger {...props}>{children}</BaseDropdownMenuTrigger>
+  )
+}
+
+export interface DropdownMenuContentProps
+  extends ComponentProps<typeof BaseDropdownMenuContent> {
+  /** Radix name; Base UI keeps the sheet inside the viewport on its own. */
+  collisionPadding?: number
+}
+
+/** The sheet: `min-w-[10rem]`, as the first API sized it. */
 export function DropdownMenuContent({
   className,
-  sideOffset = 4,
+  collisionPadding: _collisionPadding,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: DropdownMenuContentProps) {
   return (
-    <DropdownMenuPrimitive.Portal>
-      <PortalScope>
-        <DropdownMenuPrimitive.Content
-          sideOffset={sideOffset}
-          collisionPadding={8}
-          className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-popover p-1 font-inter text-sm text-ink shadow-floating ring-1 ring-popover-edge',
-            className,
-          )}
-          {...props}
-        />
-      </PortalScope>
-    </DropdownMenuPrimitive.Portal>
+    <BaseDropdownMenuContent
+      className={cn('min-w-[10rem] text-sm', className)}
+      {...props}
+    />
   )
 }
 
 export function DropdownMenuLabel({
   className,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Label>) {
-  return (
-    <DropdownMenuPrimitive.Label
-      className={cn(
-        'px-2 pt-1.5 pb-1 text-xs font-medium text-ink-faint',
-        className,
-      )}
-      {...props}
-    />
-  )
+}: ComponentProps<typeof BaseDropdownMenuLabel>) {
+  return <BaseDropdownMenuLabel className={cn('px-2', className)} {...props} />
+}
+
+type SelectHandler = (event: SyntheticEvent<HTMLDivElement>) => void
+
+/** Radix `onSelect` becomes Base UI's `onClick`; both may be given. */
+function withSelect<P extends { onClick?: unknown }>(
+  onSelect: SelectHandler | undefined,
+  props: P,
+): P {
+  if (!onSelect) return props
+  const onClick = props.onClick as SelectHandler | undefined
+  return {
+    ...props,
+    onClick: (event: MouseEvent<HTMLDivElement>) => {
+      onClick?.(event)
+      onSelect(event)
+    },
+  }
+}
+
+export interface DropdownMenuItemProps
+  extends Omit<ComponentProps<typeof BaseDropdownMenuItem>, 'onSelect'> {
+  /** Radix name for the row's activation; Base UI's `onClick`. */
+  onSelect?: SelectHandler
 }
 
 export function DropdownMenuItem({
   className,
+  onSelect,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Item>) {
+}: DropdownMenuItemProps) {
   return (
-    <DropdownMenuPrimitive.Item
-      className={cn(
-        'relative flex cursor-pointer items-center gap-2 rounded-xs px-2 py-1.5 outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
-        className,
-      )}
-      {...props}
+    <BaseDropdownMenuItem
+      className={cn('cursor-pointer gap-2 px-2', className)}
+      {...withSelect(onSelect, props)}
     />
   )
 }
 
-/* A choice row (checkbox or radio): the check sits in the left gutter, the
-   label starts at pl-7 so checked and unchecked rows align. */
-const choiceItemClass = cn(
-  'relative flex cursor-pointer items-center rounded-xs py-1.5 pr-2 pl-7 outline-none select-none',
-  'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-  'data-[state=checked]:text-ink',
-  'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
-)
-
-export function DropdownMenuCheckboxItem({
-  className,
-  children,
-  indicator,
-  box = false,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem> & {
+export interface DropdownMenuCheckboxItemProps
+  extends Omit<
+    ComponentProps<typeof BaseDropdownMenuCheckboxItem>,
+    'onSelect'
+  > {
+  onSelect?: SelectHandler
   /** Checked-state icon (a Lucide icon, per the design system); defaults to a checkmark. */
-  indicator?: React.ReactNode
+  indicator?: ReactNode
   /**
    * Draw the box too, empty while off (the shared Checkbox look): for a
    * setting that stays on, where a lone check mark leaves "off" looking
    * like a plain action.
    */
   box?: boolean
-}) {
+}
+
+/** A toggle row: the mark sits at the end of the row (shadcn), or in a box
+ in the left gutter with `box`. */
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  onSelect,
+  indicator,
+  box = false,
+  ...props
+}: DropdownMenuCheckboxItemProps) {
   const mark = indicator ?? (
     <Check aria-hidden className="size-4" strokeWidth={2.5} />
   )
   return (
-    <DropdownMenuPrimitive.CheckboxItem
-      className={cn(choiceItemClass, box && 'group/check pl-8', className)}
-      {...props}
+    <BaseDropdownMenuCheckboxItem
+      className={cn(
+        'cursor-pointer',
+        box &&
+          'group/check pl-8 [&>[data-slot=dropdown-menu-checkbox-item-indicator]]:hidden',
+        className,
+      )}
+      {...withSelect(onSelect, props)}
     >
       {box ? (
         <span
           aria-hidden
           data-menu-checkbox=""
-          className="absolute top-1/2 left-2 flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm border border-edge bg-surface text-accent-fg group-data-[state=checked]/check:border-accent group-data-[state=checked]/check:bg-accent"
+          className="absolute top-1/2 left-2 flex size-[18px] -translate-y-1/2 items-center justify-center rounded-sm border border-muted-foreground/60 bg-muted text-primary-foreground group-data-checked/check:border-primary group-data-checked/check:bg-primary [&>svg]:hidden group-data-checked/check:[&>svg]:block"
         >
-          <DropdownMenuPrimitive.ItemIndicator>
-            {mark}
-          </DropdownMenuPrimitive.ItemIndicator>
-        </span>
-      ) : (
-        <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
           {mark}
-        </DropdownMenuPrimitive.ItemIndicator>
-      )}
+        </span>
+      ) : null}
       {children}
-    </DropdownMenuPrimitive.CheckboxItem>
+    </BaseDropdownMenuCheckboxItem>
   )
 }
 
-export function DropdownMenuSeparator({
+export interface DropdownMenuRadioItemProps
+  extends Omit<ComponentProps<typeof BaseDropdownMenuRadioItem>, 'onSelect'> {
+  onSelect?: SelectHandler
+}
+
+export function DropdownMenuRadioItem({
   className,
+  onSelect,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
+}: DropdownMenuRadioItemProps) {
   return (
-    <DropdownMenuPrimitive.Separator
-      /* Softer than the panel edge: a 5% ink hairline is enough to part two
-         blocks inside a raised surface without reading as a rule. */
-      className={cn('-mx-1 my-1 h-px bg-ink/5', className)}
-      {...props}
+    <BaseDropdownMenuRadioItem
+      className={cn('cursor-pointer', className)}
+      {...withSelect(onSelect, props)}
     />
-  )
-}
-
-/*
- * Nested menus and single-choice groups — the rest of the shadcn anatomy
- * (Sub / SubTrigger / SubContent / RadioGroup / RadioItem), styled like the
- * parts above so a row that pushes into a submenu reads as one more item.
- */
-
-export const DropdownMenuSub = DropdownMenuPrimitive.Sub
-export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup
-
-export function DropdownMenuSubTrigger({
-  className,
-  children,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.SubTrigger>) {
-  return (
-    <DropdownMenuPrimitive.SubTrigger
-      className={cn(
-        'relative flex cursor-pointer items-center rounded-xs px-2 py-1.5 outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=open]:bg-surface-hover data-[state=open]:text-ink',
-        'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
-        className,
-      )}
-      {...props}
-    >
-      {children}
-      {/* The tree row's disclosure caret, verbatim: a 16px glyph centred in a
-          20px control box, hugging the text it discloses at 2px. No flex gap
-          here — children space themselves, the caret always sits tight. */}
-      <ChevronRight
-        aria-hidden
-        className="ml-0.5 size-5 shrink-0 p-0.5 text-ink-faint"
-      />
-    </DropdownMenuPrimitive.SubTrigger>
   )
 }
 
 export function DropdownMenuSubContent({
   className,
-  sideOffset = 2,
-  alignOffset = -4,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+}: ComponentProps<typeof BaseDropdownMenuSubContent>) {
   return (
-    <DropdownMenuPrimitive.Portal>
-      <PortalScope>
-        <DropdownMenuPrimitive.SubContent
-          sideOffset={sideOffset}
-          /* -4 lines the first item up with the row that opened it: the
-             content's own padding would otherwise push it one step down. */
-          alignOffset={alignOffset}
-          collisionPadding={8}
-          className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-popover p-1 font-inter text-sm text-ink shadow-floating ring-1 ring-popover-edge',
-            className,
-          )}
-          {...props}
-        />
-      </PortalScope>
-    </DropdownMenuPrimitive.Portal>
-  )
-}
-
-export function DropdownMenuRadioItem({
-  className,
-  children,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
-  return (
-    <DropdownMenuPrimitive.RadioItem
-      className={cn(choiceItemClass, className)}
+    <BaseDropdownMenuSubContent
+      className={cn('min-w-[10rem] text-sm', className)}
       {...props}
-    >
-      <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
-        <Check aria-hidden className="size-4" strokeWidth={2.5} />
-      </DropdownMenuPrimitive.ItemIndicator>
-      {children}
-    </DropdownMenuPrimitive.RadioItem>
+    />
   )
 }

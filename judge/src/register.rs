@@ -6,14 +6,14 @@
 //! ownership semantics, and enforces the shared response contract on whatever
 //! the provider returns.
 use crate::configuration::SharedConfig;
-use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction, errors::Error};
 use judge_contract::{
-    provider_function_id, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
-    ModelsRequest, ModelsResponse, Stats, CANCEL_FUNCTION_ID, FUNCTION_ID,
-    MAX_PROVIDER_REQUEST_ID_BYTES, MODELS_FUNCTION_ID,
+    CANCEL_FUNCTION_ID, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, FUNCTION_ID,
+    MAX_PROVIDER_REQUEST_ID_BYTES, MODELS_FUNCTION_ID, ModelsRequest, ModelsResponse, Stats,
+    provider_function_id,
 };
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const DEFAULT_PROVIDER: &str = "typesafe";
@@ -225,8 +225,8 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::baggage::BaggageExt;
     use opentelemetry::KeyValue;
+    use opentelemetry::baggage::BaggageExt;
 
     #[test]
     fn request_then_session_then_hub_default() {

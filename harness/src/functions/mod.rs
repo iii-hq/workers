@@ -3,6 +3,7 @@
 //! `pub async fn handle(deps, req)` the registration closure wraps; tests call
 //! the same `handle` functions directly (SOP §7).
 
+pub mod ask_settle;
 pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
@@ -31,47 +32,43 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
 
 pub const SEND_ID: &str = "harness::send";
-pub const SEND_DESC: &str =
-    "Entry point: ensure the session, persist the incoming message, and kick off a turn; returns \
+pub const SEND_DESC: &str = "Entry point: ensure the session, persist the incoming message, and kick off a turn; returns \
      fast (or merges into a running turn).";
 
 pub const COMPACT_ID: &str = "harness::compact";
-pub const COMPACT_DESC: &str =
-    "Compact a session's conversation now and wait for the outcome: summarise its older \
+pub const COMPACT_DESC: &str = "Compact a session's conversation now and wait for the outcome: summarise its older \
      history with the session's (or the named) model, keep the recent tail verbatim, and tell \
      every client watching the session. `/compact` through harness::send starts the same \
      compaction without waiting.";
 
 pub const SPAWN_ID: &str = "harness::spawn";
-pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent in a child session (never an observer target) and return \
+pub const SPAWN_DESC: &str = "Spawn a sub-agent in a child session (never an observer target) and return \
      { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
      through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
      options.orchestrator is true.";
 
 pub const ASK_ID: &str = "harness::ask";
-pub const ASK_DESC: &str =
-    "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
+pub const ASK_DESC: &str = "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
      the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
      as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
-     message, so do not repeat the questions in text. Not available to sub-agents or \
-     structured-output turns.";
+     message (one `Header: answer` line per question; a skipped question reads `(skipped)`, and \
+     a dismissed card sends a notice instead of answers), so do not repeat the questions in \
+     text. Not available to sub-agents or structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
     "Internal durable loop step (enqueued onto the harness-turn queue); not called directly.";
 
 pub const FUNCTION_CALL_ID: &str = "harness::function::call";
-pub const FUNCTION_CALL_DESC: &str =
-    "Internal: invoke one iii function (unwrapped from agent_call), enforce the dispatch \
+pub const FUNCTION_CALL_DESC: &str = "Internal: invoke one iii function (unwrapped from agent_call), enforce the dispatch \
      policy, and capture the normalised result — or report it pending.";
 
 pub const FUNCTION_RESOLVE_ID: &str = "harness::function::resolve";
@@ -83,12 +80,10 @@ pub const STOP_DESC: &str =
     "Request cancellation of an in-flight turn (cascades to spawned children).";
 
 pub const STATUS_ID: &str = "harness::status";
-pub const STATUS_DESC: &str =
-    "Read a session's current turn. Returns a lean summary by default; pass verbose: true for the \
+pub const STATUS_DESC: &str = "Read a session's current turn. Returns a lean summary by default; pass verbose: true for the \
      full runtime report and untruncated result.";
 pub const CONTEXT_POLICY_ID: &str = "harness::context-policy";
-pub const CONTEXT_POLICY_DESC: &str =
-    "Return the Harness context-pruning policy for a destination model without making a model request.";
+pub const CONTEXT_POLICY_DESC: &str = "Return the Harness context-pruning policy for a destination model without making a model request.";
 
 pub const SYSTEM_PROMPT_ID: &str = "harness::system-prompt::get";
 pub const SYSTEM_PROMPT_DESC: &str =
@@ -99,8 +94,7 @@ pub const SESSION_TREE_DESC: &str =
     "Read the durable root-and-descendant session tree for one harness run.";
 
 pub const METRICS_ID: &str = "harness::metrics";
-pub const METRICS_DESC: &str =
-    "Aggregate durable model usage, function outcomes, and available trace/span observability \
+pub const METRICS_DESC: &str = "Aggregate durable model usage, function outcomes, and available trace/span observability \
      for the session tree `root_session_id` belongs to (`session_id` is accepted as an alias, \
      and a sub-agent id is resolved to its root). `complete` is true only after every session \
      in the durable tree has reached a terminal turn. Pass `omit_context: true` when you only \
@@ -111,12 +105,10 @@ pub const TEARDOWN_DESC: &str =
     "Internal control-plane: remove the observers a root harness session tree created.";
 
 pub const UNQUEUE_ID: &str = "harness::unqueue";
-pub const UNQUEUE_DESC: &str =
-    "Internal control-plane: remove a still-parked queued message by entry_id (the console's edit-queued path).";
+pub const UNQUEUE_DESC: &str = "Internal control-plane: remove a still-parked queued message by entry_id (the console's edit-queued path).";
 
 pub const EDIT_QUEUED_ID: &str = "harness::edit_queued";
-pub const EDIT_QUEUED_DESC: &str =
-    "Internal control-plane: edit a still-parked queued message in place by entry_id, preserving its queue position.";
+pub const EDIT_QUEUED_DESC: &str = "Internal control-plane: edit a still-parked queued message in place by entry_id, preserving its queue position.";
 
 pub const FILESYSTEM_GRANT_ID: &str = "harness::filesystem::grant";
 pub const FILESYSTEM_GRANT_DESC: &str =
@@ -292,7 +284,13 @@ fn register_with_metadata_meta<Req, Resp, F, Fut>(
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    register_internal(iii, deps, delete_session_tree::DELETE_ID, "Durably cancel and delete only the selected session subtree; returns an operation snapshot.", |d, r| async move { delete_session_tree::handle(&d, r).await });
+    register_internal(
+        iii,
+        deps,
+        delete_session_tree::DELETE_ID,
+        "Durably cancel and delete only the selected session subtree; returns an operation snapshot.",
+        |d, r| async move { delete_session_tree::handle(&d, r).await },
+    );
     register_internal(
         iii,
         deps,
@@ -431,6 +429,21 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         EDIT_QUEUED_ID,
         EDIT_QUEUED_DESC,
         |d, r| async move { send::edit_queued(&d, r).await },
+    );
+    // The console's ask card records (and reads back) what became of each card.
+    register_internal(
+        iii,
+        deps,
+        ask_settle::SETTLE_ID,
+        ask_settle::SETTLE_DESC,
+        |d, r| async move { ask_settle::settle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        ask_settle::SETTLEMENTS_ID,
+        ask_settle::SETTLEMENTS_DESC,
+        |d, r| async move { ask_settle::settlements(&d, r).await },
     );
 
     // Internal filesystem grant controls — registered for trusted callers, kept

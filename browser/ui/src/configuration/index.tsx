@@ -14,6 +14,7 @@ import {
   IconButton,
   Input,
   type JsonValue,
+  Select,
   SettingsList,
   SettingsRow,
   SettingsSection,
@@ -85,7 +86,7 @@ const DEFAULTS = {
   inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
   frame_density: 2,
-  live_view_quality: 85,
+  live_view_quality: 70,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
   allow_history_access: true,
@@ -618,22 +619,17 @@ function SelectField({
           onUseLiteral={() => onChange(replacement)}
         />
       ) : (
-        <select
+        <Select
           id={id}
           name={name}
           data-field={name}
           className="br-cfg-select"
           value={value}
+          options={[...options]}
           aria-invalid={Boolean(error)}
           aria-describedby={errorId}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={onChange}
+        />
       )}
     </Field>
   )

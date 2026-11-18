@@ -168,7 +168,22 @@
               "null"
             ]
           },
+          "correction_reason": {
+            "description": "Set on a record written by `memory::correct`: why the old text was replaced, quoting the source conversation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "entry_id": {
+            "description": "The last entry of the run the memory was extracted from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_entry_id": {
+            "description": "The first entry of that run: with `entry_id` it bounds the span of transcript the memory came from. Absent on records written before spans were kept.",
             "type": [
               "string",
               "null"

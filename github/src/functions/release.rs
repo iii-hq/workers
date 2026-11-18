@@ -12,8 +12,7 @@ pub const LIST_JSON: &str = "tagName,name,isDraft,isLatest,isPrerelease,createdA
 
 pub const VIEW_ID: &str = "github::release::view";
 pub const VIEW_DESC: &str = "View one release by tag, including its notes and attached assets.";
-pub const VIEW_JSON: &str =
-    "tagName,name,body,isDraft,isPrerelease,author,assets,targetCommitish,url,createdAt,publishedAt";
+pub const VIEW_JSON: &str = "tagName,name,body,isDraft,isPrerelease,author,assets,targetCommitish,url,createdAt,publishedAt";
 
 pub const CREATE_ID: &str = "github::release::create";
 pub const CREATE_DESC: &str = "Create a GitHub release for a tag, optionally as a draft or prerelease. generate_notes autogenerates notes from merged PRs.";

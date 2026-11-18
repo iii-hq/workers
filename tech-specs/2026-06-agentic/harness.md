@@ -923,12 +923,12 @@ Failure handling: an unexpected throw marks the turn `failed`, appends a `custom
 (`custom_type: "error"`) entry so the UI sees the reason, sets `session::set-status error` with a
 short `reason`, and emits [`harness::turn_completed`](#trigger-types-emitted)
 (`status: "failed"`) — resolving the parent's pending call with `is_error: true` when the turn is a
-sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). A mid-stream transient provider failure
-preserves its partial assistant output and may run a bounded recovery generation from that
-transcript (`max_transient_resumes`, default 1). This is not a transport retry: llm-router remains
-the only owner of provider request retries, and only before the first frame is forwarded. After
-the recovery budget is exhausted, the failed event carries the partial as `result` alongside
-`reason`; consumers must not interpret it as success.
+sub-agent (see [Sub-agents](#sub-agents-harnessspawn)). When the router reports a retryable failure, the harness may start another
+generation in the same turn (`max_transient_resumes`, default 3, subject to `max_turns`).
+The next generation uses the conversation and completed function results. If the interrupted
+generation produced partial output, the harness preserves it and prompts the model to resume.
+The router handles transport retries before forwarding its first frame. If recovery is
+exhausted, the failed event includes any preserved partial as `result` alongside `reason`.
 
 ### `harness::function::trigger`
 

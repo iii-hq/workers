@@ -9,24 +9,27 @@
 //! CatalogCache), the live-connection gauge, and the actually-bound address
 //! (the source of truth `rbac-proxy::status` reports).
 
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
-use axum::extract::ConnectInfo;
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
+use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::http::{HeaderMap, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::{Extension, Router};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::configuration::ConfigCell;
+use crate::endpoints::{self, Endpoint};
 use crate::engine_overrides::CatalogCache;
 use crate::{channels, proxy};
 
@@ -62,15 +65,77 @@ impl ProxyState {
 
 /// Build the router. Exposed for tests so they can drive it without a socket.
 pub fn router(state: ProxyState) -> Router {
-    Router::new()
-        .route("/", get(proxy::ws_upgrade))
-        .route("/ws/channels/{channel_id}", get(channels::channel_bridge))
-        .fallback(not_found)
-        .with_state(state)
+    Router::new().fallback(endpoint).with_state(state)
 }
 
-async fn not_found() -> (StatusCode, &'static str) {
-    (StatusCode::NOT_FOUND, "not found")
+/// Every request: a 404 unless it is one of the engine's endpoints
+/// ([`Endpoint::of`]) and `rbac.expose_endpoints` exposes it, then handled
+/// as that endpoint. The 404 says nothing more: what is exposed, and how to
+/// expose more, is for the operator's log, not for whoever is probing. Rules
+/// are read per request, so a configuration change applies to the next
+/// connection.
+async fn endpoint(
+    State(state): State<ProxyState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    uri: Uri,
+    headers: HeaderMap,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Response {
+    let path = uri.path().to_string();
+    let Some(kind) = Endpoint::of(&path) else {
+        return not_found();
+    };
+    let cfg = state.config.read().await.clone();
+    if !endpoints::endpoint_exposed(&cfg.rbac.endpoints(), &path) {
+        let hint = endpoints::not_exposed_hint(&path);
+        if endpoints::REFUSALS.first(&kind) {
+            tracing::info!(%hint, "refused an unexposed endpoint (logged once per endpoint kind until the next reload)");
+        } else {
+            tracing::debug!(%hint, "refused an unexposed endpoint");
+        }
+        return not_found();
+    }
+    let Ok(ws) = ws else {
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            "this endpoint takes a WebSocket upgrade",
+        )
+            .into_response();
+    };
+    match kind {
+        Endpoint::Worker => {
+            ws.on_upgrade(move |socket| proxy::handle_connection(socket, state, peer, uri, headers))
+        }
+        Endpoint::Channel(_) => {
+            let query = uri.query().map(str::to_string);
+            ws.on_upgrade(move |socket| {
+                channels::channel(socket, state, cfg.engine_url.clone(), path, query)
+            })
+        }
+        Endpoint::Telemetry => {
+            // Authenticated before the upgrade: a refusal is an HTTP status,
+            // which an SDK backs off from, not a 101 and an error frame,
+            // which resets its reconnect backoff.
+            if let Err(rej) = crate::rbac::resolve_session(
+                &state.iii,
+                Some(&cfg.rbac),
+                proxy::headers_to_map(&headers),
+                proxy::query_to_multi_map(uri.query()),
+                peer.ip().to_string(),
+                &path,
+            )
+            .await
+            {
+                tracing::info!(code = %rej.code, reason = %rej.message, "refused /otel");
+                return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+            }
+            ws.on_upgrade(move |socket| proxy::telemetry_relay(socket, state, uri))
+        }
+    }
+}
+
+fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
 /// A rebindable public listener. Holds the shutdown trigger for the currently
@@ -122,7 +187,11 @@ impl ServerHandle {
                             *cur = Some(spawn_server(listener, self.state.clone()));
                             *self.state.bound.write().await = previous;
                         }
-                        Err(rollback) => return Err(format!("replacement failed: {error:#}; restoring previous listener failed: {rollback:#}")),
+                        Err(rollback) => {
+                            return Err(format!(
+                                "replacement failed: {error:#}; restoring previous listener failed: {rollback:#}"
+                            ));
+                        }
                     }
                 }
                 return Err(format!("binding {host}:{port}: {error:#}"));
@@ -327,6 +396,133 @@ mod tests {
         (serve_with_deadline(listener, state(), header_timeout), addr)
     }
 
+    async fn serve_exposing(patterns: Option<&[&str]>) -> (RunningServer, SocketAddr) {
+        let mut cfg = WorkerConfig::default();
+        cfg.rbac.expose_endpoints = patterns.map(|patterns| {
+            serde_json::from_value(serde_json::json!(
+                patterns
+                    .iter()
+                    .map(|p| format!("match(\"{p}\")"))
+                    .collect::<Vec<_>>()
+            ))
+            .unwrap()
+        });
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = ProxyState::new(cell, iii);
+        (
+            serve_with_deadline(listener, state, Duration::from_secs(10)),
+            addr,
+        )
+    }
+
+    /// The response head and body to a GET of `path`, as a WebSocket upgrade
+    /// or a plain request.
+    async fn get(addr: SocketAddr, path: &str, upgrade: bool) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let upgrade_headers = if upgrade {
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+        } else {
+            "Connection: close\r\n"
+        };
+        s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{upgrade_headers}\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    #[tokio::test]
+    async fn no_endpoint_is_served_from_an_empty_list() {
+        let (tx, addr) = serve_exposing(Some(&[])).await;
+        for path in ["/", "/otel", "/ws/channels/abc", "/nope"] {
+            for upgrade in [true, false] {
+                let res = get(addr, path, upgrade).await;
+                assert!(res.starts_with("HTTP/1.1 404"), "{path}: {res}");
+            }
+        }
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_refusal_names_neither_the_product_nor_the_setting() {
+        let (tx, addr) = serve_exposing(Some(&["/"])).await;
+        for path in ["/admin", "/.env", "/otel"] {
+            let res = get(addr, path, false).await;
+            assert!(res.starts_with("HTTP/1.1 404"), "{path}: {res}");
+            for leak in ["rbac", "expose_endpoints", path] {
+                assert!(
+                    !res.split("\r\n\r\n").nth(1).unwrap_or("").contains(leak),
+                    "{path} leaks {leak}: {res}"
+                );
+            }
+        }
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_missing_key_serves_only_the_worker_endpoint() {
+        let (tx, addr) = serve_exposing(None).await;
+        assert!(get(addr, "/", true).await.starts_with("HTTP/1.1 101"));
+        assert!(get(addr, "/otel", true).await.starts_with("HTTP/1.1 404"));
+        assert!(
+            get(addr, "/ws/channels/abc", true)
+                .await
+                .starts_with("HTTP/1.1 404")
+        );
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn exposed_endpoints_upgrade_and_unknown_paths_never_do() {
+        let (tx, addr) = serve_exposing(Some(&["/", "/ws/channels/*", "*"])).await;
+        for path in ["/", "/ws/channels/abc"] {
+            let res = get(addr, path, true).await;
+            assert!(res.starts_with("HTTP/1.1 101"), "{path}: {res}");
+        }
+        // `*` matches them, but they are not engine endpoints.
+        for path in [
+            "/nope",
+            "/ws/channels/a/b",
+            "/ws/channels/..",
+            "/otel/v2",
+            "//",
+        ] {
+            let res = get(addr, path, true).await;
+            assert!(res.starts_with("HTTP/1.1 404"), "{path}: {res}");
+        }
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn otel_authenticates_before_the_upgrade() {
+        // No auth function: refused. The refusal is an HTTP status, never a
+        // 101 followed by an error frame, so an SDK backs off.
+        let (tx, addr) = serve_exposing(Some(&["/otel"])).await;
+        let res = get(addr, "/otel", true).await;
+        assert!(res.starts_with("HTTP/1.1 401"), "{res}");
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_exposed_endpoint_still_needs_a_websocket() {
+        let (tx, addr) = serve_exposing(Some(&["/"])).await;
+        let res = get(addr, "/", false).await;
+        assert!(res.starts_with("HTTP/1.1 426"), "{res}");
+        tx.stop().await;
+    }
+
     #[tokio::test]
     async fn stalled_headers_are_cut_off() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -353,10 +549,13 @@ mod tests {
             "ws://127.0.0.1:1",
             iii_sdk::InitOptions::default(),
         ));
-        let config = WorkerConfig {
+        let mut config = WorkerConfig {
             engine_url: "ws://127.0.0.1:1".to_string(),
             ..WorkerConfig::default()
         };
+        // Nothing is served until exposed.
+        config.rbac.expose_endpoints =
+            Some(serde_json::from_value(serde_json::json!(["match(\"/ws/channels/*\")"])).unwrap());
         let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -446,5 +645,112 @@ mod tests {
         assert_eq!(before, after, "bound addr unchanged on failed rebind");
 
         h.shutdown().await;
+    }
+
+    /// A WebSocket "engine" that echoes every frame, for relay tests.
+    async fn echo_engine() -> SocketAddr {
+        use futures_util::{SinkExt, StreamExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else {
+                        return;
+                    };
+                    while let Some(Ok(m)) = ws.next().await {
+                        if m.is_close() || ws.send(m).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    async fn relay_fixture() -> (RunningServer, SocketAddr, ProxyState, ConfigCell) {
+        let engine = echo_engine().await;
+        let mut config = WorkerConfig {
+            engine_url: format!("ws://{engine}"),
+            ..WorkerConfig::default()
+        };
+        config.rbac.expose_endpoints =
+            Some(serde_json::from_value(serde_json::json!(["match(\"/ws/channels/*\")"])).unwrap());
+        let iii = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:1",
+            iii_sdk::InitOptions::default(),
+        ));
+        let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
+        let state = ProxyState::new(cell.clone(), iii);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tx = serve_with_deadline(listener, state.clone(), Duration::from_secs(10));
+        (tx, addr, state, cell)
+    }
+
+    async fn eventually(mut check: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if check() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn relayed_sockets_count_as_active_connections() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let (tx, addr, state, _cell) = relay_fixture().await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/channels/c1"))
+            .await
+            .unwrap();
+        ws.send(Message::Text("ping".into())).await.unwrap();
+        let echoed = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap();
+        assert_eq!(echoed.unwrap().unwrap(), Message::Text("ping".into()));
+        assert_eq!(state.active.load(Ordering::Relaxed), 1);
+        ws.close(None).await.unwrap();
+        assert!(eventually(|| state.active.load(Ordering::Relaxed) == 0).await);
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_stops_exposing_a_path_closes_its_relays() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let (tx, addr, state, cell) = relay_fixture().await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/channels/c1"))
+            .await
+            .unwrap();
+        ws.send(Message::Text("ping".into())).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap();
+
+        // A reload that keeps the path exposed leaves the relay alone.
+        let same = (**cell.read().await).clone();
+        crate::configuration::apply_config(&cell, same).await;
+        ws.send(Message::Text("still".into())).await.unwrap();
+        let echoed = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap();
+        assert_eq!(echoed.unwrap().unwrap(), Message::Text("still".into()));
+
+        let mut closed = (**cell.read().await).clone();
+        closed.rbac.expose_endpoints = Some(vec![]);
+        crate::configuration::apply_config(&cell, closed).await;
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("closed before the timeout");
+        let Some(Ok(Message::Close(Some(close)))) = frame else {
+            panic!("expected a close frame, got {frame:?}");
+        };
+        assert_eq!(u16::from(close.code), 1008);
+        assert!(eventually(|| state.active.load(Ordering::Relaxed) == 0).await);
+        tx.stop().await;
     }
 }

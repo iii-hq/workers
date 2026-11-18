@@ -49,16 +49,16 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
 use async_trait::async_trait;
-use lapin::{message::Delivery, options::*, Channel, Connection, ConnectionProperties};
+use lapin::{Channel, Connection, ConnectionProperties, message::Delivery, options::*};
 use serde_json::Value;
 use tokio::{
-    sync::{oneshot, watch, Mutex, RwLock},
+    sync::{Mutex, RwLock, oneshot, watch},
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -72,7 +72,7 @@ use super::naming::{FnQueueNames, RabbitNames};
 use super::publisher::Publisher;
 use super::retry::RetryHandler;
 use super::topology::TopologyManager;
-use super::types::{priority_from_data, Job, QueueMode, RabbitMQConfig};
+use super::types::{Job, QueueMode, RabbitMQConfig, priority_from_data};
 use super::worker::Worker;
 
 /// How often [`RabbitMQAdapter::connection_lost`] re-checks the connection
@@ -1157,14 +1157,12 @@ impl QueueAdapter for RabbitMQAdapter {
             if task_cancelled
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
-            {
-                if let Err(err) = channel
+                && let Err(err) = channel
                     .basic_cancel(&task_consumer_tag, BasicCancelOptions::default())
                     .await
-                {
-                    task_cancelled.store(false, Ordering::Release);
-                    tracing::warn!(queue = %task_queue_name, error = %err, "failed to cancel RabbitMQ function queue consumer");
-                }
+            {
+                task_cancelled.store(false, Ordering::Release);
+                tracing::warn!(queue = %task_queue_name, error = %err, "failed to cancel RabbitMQ function queue consumer");
             }
             if let Err(err) = requeue_rabbitmq_deliveries(&delivery_map, Some(consumer_id)).await {
                 tracing::error!(queue = %task_queue_name, error = %err, "failed to requeue RabbitMQ function queue deliveries after consumer stopped");
@@ -1210,32 +1208,29 @@ impl QueueAdapter for RabbitMQAdapter {
                 .cancelled
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
-            {
-                if let Err(err) = self
+                && let Err(err) = self
                     .channel
                     .basic_cancel(&handle.consumer_tag, BasicCancelOptions::default())
                     .await
                     .map_err(|err| err.to_string())
                     .or_else(|err| if connected { Err(err) } else { Ok(()) })
-                {
-                    handle.cancelled.store(false, Ordering::Release);
-                    errors.push(format!(
-                        "failed to cancel RabbitMQ function queue consumer '{}': {err}",
-                        handle.consumer_tag
-                    ));
-                }
+            {
+                handle.cancelled.store(false, Ordering::Release);
+                errors.push(format!(
+                    "failed to cancel RabbitMQ function queue consumer '{}': {err}",
+                    handle.consumer_tag
+                ));
             }
             handle.task.abort();
         }
 
         for handle in matching {
             let _ = handle.task.await;
-            if connected {
-                if let Err(err) =
+            if connected
+                && let Err(err) =
                     requeue_rabbitmq_deliveries(&self.delivery_map, Some(handle.consumer_id)).await
-                {
-                    errors.push(err.to_string());
-                }
+            {
+                errors.push(err.to_string());
             }
         }
         if errors.is_empty() {

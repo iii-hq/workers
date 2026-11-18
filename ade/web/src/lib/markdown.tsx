@@ -62,22 +62,22 @@ interface MarkdownProps {
 
 /* Matches `@fn(<id>)` (id excludes whitespace and `)`), `#file(<path>)`
    (path excludes `)` — file names may carry spaces) or a `/skill:<id>`
-   invocation (the composer's own token shape, see `slash-commands`).
-   Tolerates trailing punctuation outside the parens / after the id. The
-   pattern is intentionally defensive: we never accept arbitrary content
-   inside the parens, so the pill can't be smuggled into otherwise-safe
-   markdown. */
+ invocation (the composer's own token shape, see `slash-commands`).
+ Tolerates trailing punctuation outside the parens / after the id. The
+ pattern is intentionally defensive: we never accept arbitrary content
+ inside the parens, so the pill can't be smuggled into otherwise-safe
+ markdown. */
 const MENTION_RE = new RegExp(
   String.raw`@fn\(([^)\s]+)\)|#file\(([^)]+)\)|${SKILL_TOKEN_SOURCE}`,
   'g',
 )
 
 /* Inline rehype plugin: walks the hast tree and splits any `text` node that
-   contains `@fn(<id>)`, `#file(<path>)` or `/skill:<id>` into a mix of
-   leftover text + a marker `span` element carrying the mention payload. The
-   actual pill rendering happens in the `span` component override below.
-   Code / pre subtrees stay verbatim; anchors are skipped to avoid nesting
-   interactive mentions inside links. */
+ contains `@fn(<id>)`, `#file(<path>)` or `/skill:<id>` into a mix of
+ leftover text + a marker `span` element carrying the mention payload. The
+ actual pill rendering happens in the `span` component override below.
+ Code / pre subtrees stay verbatim; anchors are skipped to avoid nesting
+ interactive mentions inside links. */
 /** Transform prose mentions into pills while leaving literal code and link labels intact. */
 function rehypeFnMention() {
   return (tree: Root) => walk(tree)
@@ -107,9 +107,9 @@ function walk(node: Root | Element): void {
 }
 
 /* hast's `className` lands as either `string[]` or a space-joined `string`,
-   depending on how it was parsed. Extract the fence language from either shape.
+ depending on how it was parsed. Extract the fence language from either shape.
    (Typed `unknown` on purpose: current @types/hast declares only the array
-   shape, but the string shape still occurs at runtime.) */
+ shape, but the string shape still occurs at runtime.) */
 function codeLanguage(node: Element): string | undefined {
   const cls: unknown = node.properties?.className
   const classes = Array.isArray(cls)
@@ -143,10 +143,10 @@ function builtinMentionSpans(value: string): MentionSpan[] {
   }
   const spans: MentionSpan[] = []
   /* matchAll iterates with stateless semantics on a /g regex, so we don't
-     have to babysit MENTION_RE.lastIndex between calls. */
+ have to babysit MENTION_RE.lastIndex between calls. */
   for (const m of value.matchAll(MENTION_RE)) {
     /* Group 1 = `@fn` id, group 2 = `#file` path, group 3 = skill id (the
-       alternation makes exactly one of them defined per match). */
+ alternation makes exactly one of them defined per match). */
     const className =
       m[1] !== undefined
         ? 'fn-mention'
@@ -168,9 +168,9 @@ function builtinMentionSpans(value: string): MentionSpan[] {
 }
 
 /* Worker-defined mentions: `@<provider>(id="<id>")`. Markdown has already
-   applied its backslash escapes by now, so an id holding a quote or a
-   backslash (never the case for the uuids and keys providers use) does not
-   render as a pill here; the composer and the agent read the raw text. */
+ applied its backslash escapes by now, so an id holding a quote or a
+ backslash (never the case for the uuids and keys providers use) does not
+ render as a pill here; the composer and the agent read the raw text. */
 function workerMentionSpans(value: string): MentionSpan[] {
   return findMentions(value).map((m) => ({
     index: m.index,
@@ -256,7 +256,7 @@ function FileReferenceButton({
         <span
           id={id}
           role="alert"
-          className="ml-2 break-words text-[12px] text-alert"
+          className="ml-2 break-words text-xs text-alert"
         >
           {error}
         </span>
@@ -282,7 +282,7 @@ function MarkdownLink({
         problem={problem}
         className={cn(
           linkClassName,
-          'cursor-pointer text-left break-words focus-visible:outline-2 focus-visible:outline-rule-focus',
+          'cursor-pointer text-left break-words focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring',
           className,
         )}
         title={
@@ -310,7 +310,7 @@ function MarkdownLink({
 }
 
 const INLINE_CODE_CLASS =
-  'font-code text-[12.5px] rounded-md border border-rule-2 bg-paper-2 text-ink px-1 py-0.5'
+  'font-code text-[12.5px] rounded-md border border-border bg-paper-2 text-ink px-1 py-0.5'
 
 /** A file's language mark (Material, as the IDE tree draws it), 16px. */
 function InlineFileMark({ icon }: { icon: string }) {
@@ -405,7 +405,7 @@ function MarkdownFileMention({ path, range }: FileMentionRef) {
   return (
     <FileReferenceButton
       reference={{ path, range }}
-      className="inline-flex align-middle cursor-pointer rounded-xs hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-rule-focus"
+      className="inline-flex align-middle cursor-pointer rounded-xs hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
       title={`open ${path} in the IDE (current file on disk)`}
     >
       {pill}
@@ -531,7 +531,7 @@ const components: Components = {
   h2: ({ className, ...rest }) => (
     <h2
       className={cn(
-        'chat-prose-h2 font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink mt-6 mb-2 first:mt-0',
+        'chat-prose-h2 font-mono text-base font-semibold tracking-[-0.01em] text-ink mt-6 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -540,7 +540,7 @@ const components: Components = {
   h3: ({ className, ...rest }) => (
     <h3
       className={cn(
-        'chat-prose-h3 font-mono text-[14px] font-semibold text-ink mt-5 mb-2 first:mt-0',
+        'chat-prose-h3 font-mono text-sm font-semibold text-ink mt-5 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -549,7 +549,7 @@ const components: Components = {
   h4: ({ className, ...rest }) => (
     <h4
       className={cn(
-        'chat-prose-h4 font-mono text-[13px] font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
+        'chat-prose-h4 font-mono text-body font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -558,7 +558,7 @@ const components: Components = {
   p: ({ className, ...rest }) => (
     <p
       className={cn(
-        'font-mono text-[14px] leading-[1.7] text-ink my-3 first:mt-0 last:mb-0',
+        'font-mono text-sm leading-[1.7] text-ink my-3 first:mt-0 last:mb-0',
         className,
       )}
       {...rest}
@@ -567,7 +567,7 @@ const components: Components = {
   ul: ({ className, ...rest }) => (
     <ul
       className={cn(
-        'font-mono text-[14px] leading-[1.7] text-ink my-3 pl-5 list-disc marker:text-ink-faint',
+        'font-mono text-sm leading-[1.7] text-ink my-3 pl-5 list-disc marker:text-ink-faint',
         className,
       )}
       {...rest}
@@ -576,7 +576,7 @@ const components: Components = {
   ol: ({ className, ...rest }) => (
     <ol
       className={cn(
-        'font-mono text-[14px] leading-[1.7] text-ink my-3 pl-5 list-decimal marker:text-ink-faint tabular-nums',
+        'font-mono text-sm leading-[1.7] text-ink my-3 pl-5 list-decimal marker:text-ink-faint tabular-nums',
         className,
       )}
       {...rest}
@@ -616,8 +616,8 @@ const components: Components = {
   ),
   code: ({ className, children, ...rest }) => {
     /* react-markdown v9+: inline vs block is distinguished by parent (pre) -
-       inline if no surrounding pre is present. We rely on the `pre` renderer
-       to drop the wrapper styling on block code, and style inline here. */
+ inline if no surrounding pre is present. We rely on the `pre` renderer
+ to drop the wrapper styling on block code, and style inline here. */
     const isBlock = typeof className === 'string' && /language-/.test(className)
     if (isBlock) {
       return (
@@ -661,7 +661,7 @@ const components: Components = {
     return (
       <pre
         className={cn(
-          'rounded-xl border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
+          'rounded-xl border border-border bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
           className,
         )}
         {...rest}
@@ -735,7 +735,48 @@ const urlTransform: UrlTransform = (url, key) =>
   key === 'href' && (parseMarkdownFileLink(url) || markdownFileLinkError(url))
     ? url
     : defaultUrlTransform(url)
-const remarkPlugins = [remarkGfm]
+/**
+ * Keep the numbers an ordered list was written with. CommonMark only keeps
+ * the first item's number and counts on from it, so "3." then "6." came out
+ * as 3 and 4. Each item gets the `value` its source line starts with; the
+ * browser shows it and counts on from it, as a numbered list should.
+ */
+function remarkListValues() {
+  return (tree: { children?: unknown[] }, file: { value?: unknown }) => {
+    const source = typeof file.value === 'string' ? file.value : ''
+    const walk = (node: Record<string, unknown>) => {
+      if (
+        node.type === 'list' &&
+        node.ordered === true &&
+        Array.isArray(node.children)
+      ) {
+        for (const item of node.children as Record<string, unknown>[]) {
+          const start = (
+            item.position as { start?: { offset?: number } } | undefined
+          )?.start?.offset
+          if (typeof start !== 'number') continue
+          const match = /^\s*(\d{1,9})[.)]/.exec(
+            source.slice(start, start + 16),
+          )
+          if (!match) continue
+          const data = (item.data ?? {}) as Record<string, unknown>
+          const props = (data.hProperties ?? {}) as Record<string, unknown>
+          item.data = {
+            ...data,
+            hProperties: { ...props, value: Number(match[1]) },
+          }
+        }
+      }
+      if (Array.isArray(node.children)) {
+        for (const child of node.children)
+          walk(child as Record<string, unknown>)
+      }
+    }
+    walk(tree as Record<string, unknown>)
+  }
+}
+
+const remarkPlugins = [remarkGfm, remarkListValues]
 const rehypePlugins = [rehypeFnMention]
 
 /** Parsed replies kept between renders and mounts; the oldest leave first. */

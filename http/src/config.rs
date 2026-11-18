@@ -133,13 +133,13 @@ impl RestApiConfig {
         // Nested types (CorsConfig, MiddlewareConfig) are emitted as `$ref`s into
         // `#/definitions`; without carrying the definitions the schema has
         // dangling refs and `configuration::register` rejects it as invalid.
-        if let Some(obj) = schema.as_object_mut() {
-            if !root.definitions.is_empty() {
-                obj.insert(
-                    "definitions".into(),
-                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
-                );
-            }
+        if let Some(obj) = schema.as_object_mut()
+            && !root.definitions.is_empty()
+        {
+            obj.insert(
+                "definitions".into(),
+                serde_json::to_value(&root.definitions).expect("definitions serialize"),
+            );
         }
         schema
     }
@@ -211,14 +211,14 @@ mod tests {
             enabled.webhook_listener,
             Some(WebhookListenerConfig::default())
         );
-        assert!(RestApiConfig::from_json(
-            &serde_json::json!({"webhook_listener": {"port": 65536}})
-        )
-        .is_err());
-        assert!(RestApiConfig::from_json(
-            &serde_json::json!({"webhook_listener": {"hots": "bad"}})
-        )
-        .is_err());
+        assert!(
+            RestApiConfig::from_json(&serde_json::json!({"webhook_listener": {"port": 65536}}))
+                .is_err()
+        );
+        assert!(
+            RestApiConfig::from_json(&serde_json::json!({"webhook_listener": {"hots": "bad"}}))
+                .is_err()
+        );
         let schema = RestApiConfig::json_schema();
         assert_eq!(
             schema["properties"]["webhook_listener"]["default"],
@@ -396,7 +396,7 @@ mod tests {
     }
 
     // =========================================================================
-    // YAML deserialization (via serde_yaml)
+    // YAML deserialization (via serde_yaml_ng)
     // =========================================================================
 
     #[test]
@@ -414,7 +414,7 @@ cors:
     - "POST"
     - "PUT"
 "#;
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.port, 4000);
         assert_eq!(config.host, "192.168.1.1");
         assert_eq!(config.default_timeout, 60000);
@@ -427,7 +427,7 @@ cors:
     #[test]
     fn rest_api_config_from_yaml_defaults() {
         let yaml = "{}";
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.port, 3111);
         assert_eq!(config.host, "0.0.0.0");
     }
@@ -482,7 +482,7 @@ middleware:
     phase: "preHandler"
     priority: 2
 "#;
-        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: RestApiConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.middleware.len(), 2);
         assert_eq!(config.middleware[0].function_id, "fn::rate_limiter");
         assert_eq!(config.middleware[0].priority, 1);

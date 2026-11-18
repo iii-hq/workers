@@ -7,7 +7,7 @@
 use xa11y_core::selector::{MatchOp, RoleMatch};
 use xa11y_core::{Role, SelectorGroup};
 
-use super::{Code, SemanticError, MAX_SELECTOR_BYTES};
+use super::{Code, MAX_SELECTOR_BYTES, SemanticError};
 
 /// Attribute names a selector may filter on: xa11y's normalized names minus
 /// `stable_id` and `bounds` (never shown to the agent).

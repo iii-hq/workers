@@ -11,7 +11,7 @@ use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::json;
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 
 #[derive(Debug, Clone)]
 pub struct TestOutcome {

@@ -15,9 +15,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use iii_sdk::{register_worker, CallRequest, InitOptions, ObserverState, RegisterFunction, Source};
-use serde_json::{json, Value};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use iii_sdk::{CallRequest, InitOptions, ObserverState, RegisterFunction, Source, register_worker};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 struct Harness {
@@ -286,10 +286,10 @@ async fn multipart_controls_contract() {
     use sha2::{Digest, Sha256};
     use std::{collections::HashMap, sync::Arc};
     use storage::backend::{
-        s3::{S3Backend, S3BackendOpts, S3StaticCreds},
         Backend,
+        s3::{S3Backend, S3BackendOpts, S3StaticCreds},
     };
-    use storage::handlers::{head_object, multipart, AppState};
+    use storage::handlers::{AppState, head_object, multipart};
     let endpoint = std::env::var("S3_TEST_ENDPOINT").unwrap();
     let bucket = std::env::var("S3_TEST_BUCKET").unwrap();
     let region = std::env::var("S3_TEST_REGION").unwrap();

@@ -69,13 +69,13 @@ export function CommandCard({
           className="size-4 shrink-0 text-ink-faint"
           aria-hidden
         />
-        <span className="font-inter text-[13px] font-medium text-ink">
+        <span className="font-inter text-body font-medium text-ink">
           {label}
         </span>
         {/* A failed copy says so in the card, not only in a tooltip (which
-            touch never shows), so the reader knows to select it by hand. */}
+ touch never shows), so the reader knows to select it by hand. */}
         {copyState === 'failed' ? (
-          <span className="ml-auto font-inter text-[13px] text-warn">
+          <span className="ml-auto font-inter text-body text-warn">
             Couldn't copy, select the command instead
           </span>
         ) : null}
@@ -113,7 +113,7 @@ export function CommandCard({
           </Button>
         </Hint>
       </div>
-      <div className="px-4 py-3.5 font-mono text-[13px] leading-[1.6]">
+      <div className="px-4 py-3.5 font-mono text-body leading-[1.6]">
         <div className="flex gap-2.5">
           <span aria-hidden className="select-none text-ink-ghost">
             $

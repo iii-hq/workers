@@ -5,6 +5,6 @@ pub mod mentions;
 pub mod register;
 pub use config::JudgeConfig;
 pub use configuration::SharedConfig;
-pub use register::{register, validate_provider, DEFAULT_PROVIDER};
+pub use register::{DEFAULT_PROVIDER, register, validate_provider};
 #[cfg(feature = "console-ui")]
 pub mod ui;

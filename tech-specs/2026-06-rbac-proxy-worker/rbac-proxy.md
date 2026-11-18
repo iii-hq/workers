@@ -145,6 +145,7 @@ pub struct WorkerConfig {
 pub struct RbacConfig {
     #[serde(default)] pub auth_function_id: Option<String>,
     #[serde(default)] pub expose_functions: Vec<FunctionFilter>,   // match("...") | { metadata: {...} }
+    #[serde(default)] pub expose_endpoints: Option<Vec<EndpointFilter>>, // "/", "/otel", "/ws/channels/*"; unset = "/" only
     #[serde(default)] pub on_function_registration_function_id: Option<String>,
     #[serde(default)] pub on_observer_registration_function_id: Option<String>,
 }

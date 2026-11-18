@@ -8,6 +8,7 @@ import {
   isCallSettled,
   observerFiredSummary,
   prependTranscript,
+  queuedRowText,
   splitReactionTask,
   transcriptToMessages,
 } from './entry-mapper'
@@ -2261,5 +2262,42 @@ describe('prependTranscript', () => {
     const tail = transcriptToMessages([userItem('e_u1', 'one')])
     expect(prependTranscript(tail, [])).toBe(tail)
     expect(prependTranscript(tail, [userItem('e_u1', 'one')])).toBe(tail)
+  })
+})
+
+describe('queuedRowText', () => {
+  it('shows a queued notification by its label, not its raw event', () => {
+    expect(
+      queuedRowText({
+        id: 'e_fire_sub_1_1',
+        text: '[notification] workflow r_1: {"run_id":"r_1","status":"completed"}',
+      }),
+    ).toBe('Notification · workflow r_1')
+    expect(
+      queuedRowText({
+        id: 'e_expire_sub_1',
+        text: '[notification] wake expired unfired: workflow::on-run-completed (binding sub_1)',
+      }),
+    ).toBe('Notification · wake expired unfired')
+    // Unlabeled: a colon inside the JSON is not a label.
+    expect(
+      queuedRowText({
+        id: 'e_fire_sub_1_2',
+        text: '[notification] {"a": "b: c"}',
+      }),
+    ).toBe('Notification')
+    // A notification id outside the prefix list is known by its origin.
+    expect(
+      queuedRowText({
+        id: 'e_untranslated_sub_1',
+        text: '[notification] binding sub_1 (was watching x::y) was RETIRED: gone',
+        origin: { notification: true, binding: 'sub_1' },
+      }),
+    ).toBe('Notification · binding sub_1 (was watching x::y) was RETIRED')
+  })
+
+  it('leaves a queued user message unchanged', () => {
+    const text = '[notification] typed: by hand'
+    expect(queuedRowText({ id: 'e_idem_k1', text })).toBe(text)
   })
 })

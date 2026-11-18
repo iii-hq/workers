@@ -1,8 +1,8 @@
-use judge_laya::{configuration, LayaConfig};
+use judge_laya::{LayaConfig, configuration};
 use serde_json::json;
 
 #[test]
-fn config_validates_model_revision_and_limits() {
+fn config_validates_model_and_limits() {
     let defaults = LayaConfig::default().to_json();
     assert_eq!(defaults["model"], "laya");
     assert_eq!(defaults["batch_questions"], 16);
@@ -21,22 +21,23 @@ fn config_validates_model_revision_and_limits() {
     .unwrap();
     let routing = routed.routing();
     assert!(routing.auto_route && routing.auto_task_detection && routing.choice_tournament);
-    let ok = LayaConfig::from_json(
-        &json!({"model": "laya-multilingual", "revision": "abc123", "batch_questions": 4}),
-    )
-    .unwrap();
+    let ok = LayaConfig::from_json(&json!({"model": "laya-multilingual", "batch_questions": 4}))
+        .unwrap();
     assert_eq!(ok.limits().batch_questions, 4);
+    // A preload entry equal to `model` is already loaded: accepted and skipped.
+    let laya = LayaConfig::from_json(&json!({"model": "laya", "preload": ["laya"]})).unwrap();
+    assert_eq!(laya.checkpoints(), ["laya"]);
+    let both = LayaConfig::from_json(&json!({"preload": ["laya-multilingual", "laya"]})).unwrap();
+    assert_eq!(both.checkpoints(), ["laya", "laya-multilingual"]);
     for bad in [
         json!({"model": "jev"}),
-        json!({"revision": " "}),
-        json!({"revision": "../x"}),
+        json!({"revision": "abc123"}),
         json!({"batch_questions": 0}),
         json!({"threads": 0}),
         json!({"threads": 257}),
         json!({"batch_questions": 257}),
         json!({"max_timeout_ms": 0}),
         json!({"api_key": "test-marker"}),
-        json!({"preload": ["laya"]}),
         json!({"preload": ["laya-multilingual", "laya-multilingual"]}),
         json!({"preload": ["jev"]}),
         json!({"shortlist_k": 20}),

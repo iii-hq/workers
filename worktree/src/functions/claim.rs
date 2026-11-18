@@ -3,12 +3,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{codes, WError};
+use crate::error::{WError, codes};
 use crate::events::{ClaimedEvent, EventKind};
-use crate::functions::create::require_record;
 use crate::functions::Deps;
+use crate::functions::create::require_record;
 use crate::state;
-use crate::types::{now_ms, Lifecycle};
+use crate::types::{Lifecycle, now_ms};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {
@@ -51,16 +51,17 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     record = require_record(deps, &req.worktree_id).await?;
 
     let previous = record.session_id.clone();
-    if let Some(owner) = &previous {
-        if owner != &req.session_id && !req.force {
-            return Err(WError::new(
-                codes::ALREADY_CLAIMED,
-                format!(
-                    "worktree {} is claimed by session {owner:?}; pass force to take over",
-                    record.worktree_id
-                ),
-            ));
-        }
+    if let Some(owner) = &previous
+        && owner != &req.session_id
+        && !req.force
+    {
+        return Err(WError::new(
+            codes::ALREADY_CLAIMED,
+            format!(
+                "worktree {} is claimed by session {owner:?}; pass force to take over",
+                record.worktree_id
+            ),
+        ));
     }
 
     let previous_session_id = previous.filter(|p| p != &req.session_id);

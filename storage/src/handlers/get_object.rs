@@ -1,10 +1,10 @@
 //! `storage::getObject` — read an object, or a byte range of one, inline.
 
-use super::{err_to_str, validate_key, AppState, INLINE_BODY_CAP};
+use super::{AppState, INLINE_BODY_CAP, err_to_str, validate_key};
 use crate::backend::{ByteRange, GetReq as BackendGetReq};
 use crate::error::backend_error_to_storage;
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -193,7 +193,7 @@ mod tests {
                 - metadata:
                     public: true
         "#;
-        let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let back = WorkerConfig::from_json(&cfg.to_json()).unwrap();
         assert_eq!(cfg, back);
     }
@@ -233,11 +233,13 @@ mod tests {
         }
         let cfg = WorkerConfig::from_json(&stored).unwrap();
         assert_eq!(cfg.rbac.auth_function_id.as_deref(), Some("p::auth"));
-        assert!(!cfg.to_json()["rbac"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .any(|k| rbac::REMOVED_KEYS.iter().any(|(removed, _)| removed == k)));
+        assert!(
+            !cfg.to_json()["rbac"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|k| rbac::REMOVED_KEYS.iter().any(|(removed, _)| removed == k))
+        );
 
         // The schema still accepts them, as deprecated.
         let schema = WorkerConfig::json_schema();
@@ -247,6 +249,21 @@ mod tests {
                 true
             );
         }
+    }
+
+    #[test]
+    fn expose_endpoints_is_optional_and_in_the_schema() {
+        assert!(WorkerConfig::default().rbac.expose_endpoints.is_none());
+        let cfg: WorkerConfig = serde_yaml_ng::from_str(
+            "rbac:\n  expose_endpoints:\n    - match(\"/\")\n    - match(\"/otel\")\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.rbac.expose_endpoints.as_ref().map(Vec::len), Some(2));
+        let schema = WorkerConfig::json_schema();
+        let prop = &schema["definitions"]["RbacConfig"]["properties"]["expose_endpoints"];
+        assert!(prop.to_string().contains("\"array\""), "{prop}");
+        // The default leaves it out, which serves `/`.
+        assert!(schema["example"]["rbac"].get("expose_endpoints").is_none());
     }
 
     #[test]

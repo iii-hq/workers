@@ -767,10 +767,7 @@ export function entrySegments(
         ]
       }
       const isNotif =
-        origin?.notification === true ||
-        /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
-          item.entry_id,
-        )
+        origin?.notification === true || isNotificationEntryId(item.entry_id)
       const observerId = isNotif
         ? notificationBindingId(item.entry_id, origin?.binding)
         : undefined
@@ -908,6 +905,35 @@ export function notificationBindingId(
     }
   }
   return undefined
+}
+
+/** The deterministic entry id of a Harness-injected notification. */
+export function isNotificationEntryId(entryId: string): boolean {
+  return /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
+    entryId,
+  )
+}
+
+/**
+ * A server-queued row's text in the queued strip. A queued notification shows
+ * `Notification · <label>` (the text between `[notification] ` and the first
+ * `: `), not its raw event JSON; any other row keeps its text.
+ */
+export function queuedRowText(row: {
+  id: string
+  text: string
+  origin?: unknown
+}): string {
+  const notification =
+    (row.origin as { notification?: unknown } | undefined)?.notification ===
+      true || isNotificationEntryId(row.id)
+  if (!notification) return row.text || '(notification)'
+  const body = row.text.replace(/^\[notification\]\s*/, '')
+  const cut = body.indexOf(': ')
+  // An unlabeled event starts with its JSON; a colon inside it is no label.
+  return cut > 0 && !/^[{["]/.test(body)
+    ? `Notification · ${body.slice(0, cut)}`
+    : 'Notification'
 }
 
 /**

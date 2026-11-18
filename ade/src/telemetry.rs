@@ -12,7 +12,7 @@
 //! `engine/src/workers/telemetry/environment.rs`) but cannot see its config.
 
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 const SETTINGS_FN: &str = "iii-telemetry::settings";
@@ -119,7 +119,7 @@ fn opted_out(env: &impl Fn(&str) -> Option<String>, iii_dir: &Path) -> bool {
 
 /// `identity.device_id` from the engine's `telemetry.yaml`.
 fn device_id(yaml: &str) -> Option<String> {
-    let doc: serde_yaml::Value = serde_yaml::from_str(yaml).ok()?;
+    let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).ok()?;
     doc.get("identity")?
         .get("device_id")?
         .as_str()

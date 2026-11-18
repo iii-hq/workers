@@ -16,7 +16,7 @@ interface PipeViewProps {
 }
 
 /** Single-line payload summary under each step; empty payloads render
-    nothing (the raw json tab keeps the full call). */
+ nothing (the raw json tab keeps the full call). */
 function compactPayload(payload: unknown): string | null {
   if (payload == null) return null
   if (
@@ -43,8 +43,8 @@ function StepFunctionLabel({ functionId }: { functionId: string }) {
 }
 
 /** The numbered step route of a pipe — one row per step: function id,
-    optional `into` chip, payload one-liner, and (when receipts exist) the
-    per-step threaded size, for the `fp::pipe` call card. */
+ optional `into` chip, payload one-liner, and (when receipts exist) the
+ per-step threaded size, for the `fp::pipe` call card. */
 export function PipeStepList({
   through,
   receipts,
@@ -53,7 +53,7 @@ export function PipeStepList({
   receipts?: { chars: number }[] | null
 }) {
   return (
-    <ul className="divide-y divide-rule-2">
+    <ul className="divide-y divide-border">
       {through.map((step, i) => {
         const receipt = receipts?.[i]
         const payload = compactPayload(step.payload)
@@ -71,13 +71,13 @@ export function PipeStepList({
               </span>
               {step.into ? <FilterChip label="into" value={step.into} /> : null}
               {receipt?.chars != null ? (
-                <span className="ml-auto shrink-0 text-[11px] text-ink-faint">
+                <span className="ml-auto shrink-0 text-meta text-ink-faint">
                   → {receipt.chars.toLocaleString()} chars
                 </span>
               ) : null}
             </div>
             {payload ? (
-              <div className="mt-0.5 break-all pl-6 text-[11px] leading-[1.5] text-ink-faint line-clamp-2">
+              <div className="mt-0.5 break-all pl-6 text-meta leading-[1.5] text-ink-faint line-clamp-2">
                 {payload}
               </div>
             ) : null}
@@ -89,7 +89,7 @@ export function PipeStepList({
 }
 
 /** `fp::pipe` — the step route with per-step receipt sizes, then the
-    final value preview. The threaded values themselves never reach the chat
+ final value preview. The threaded values themselves never reach the chat
     (that is the point of the pipe), so there is no value pane. */
 export function PipeView({ input, output, running }: PipeViewProps) {
   const req = safeParseRequest(pipeRequestSchema, input)
@@ -103,10 +103,10 @@ export function PipeView({ input, output, running }: PipeViewProps) {
     : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         {/* only claim ok once receipts exist — approval previews render
-            this view before the pipe has run */}
+ this view before the pipe has run */}
         <StatusPill
           label={running ? 'piping…' : receipts ? 'pipe ok' : 'pipe'}
           variant={!running && receipts ? 'accent' : 'default'}
@@ -119,8 +119,8 @@ export function PipeView({ input, output, running }: PipeViewProps) {
           />
         ) : null}
         {/* The harness-stamped scope shell/coder steps run under — an
-            approver must see where relative paths anchor, since this view
-            replaces the raw request pane. */}
+ approver must see where relative paths anchor, since this view
+ replaces the raw request pane. */}
         {req.fs_scope?.root ? (
           <>
             <FilterChip label="scope" value={req.fs_scope.root} />

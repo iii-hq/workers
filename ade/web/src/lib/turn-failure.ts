@@ -300,7 +300,7 @@ function copyFor(
       }
     case 'internal':
       return {
-        title: 'Something went wrong in iii',
+        title: 'iii failed while running this turn',
         ownership:
           'iii hit an error while running this turn. It isn’t caused by your provider or your message.',
         actions: [

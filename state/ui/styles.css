@@ -103,12 +103,28 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 6px 12px;
+  padding: 6px 8px 12px;
 }
 
-/* entry rows: scope / key names are identifiers */
+/* entry rows: scope / key names are identifiers. Compact 32px rows with a
+   quiet glyph, the way the console's own navigation columns read. */
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list {
+  gap: 2px;
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item {
+  min-height: 32px;
+  gap: 8px;
+  padding: 4px 8px;
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item__icon {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="state"] .state-ui-col-scroll .iii-ui-list-item[data-selected="true"] .iii-ui-list-item__icon {
+  color: var(--color-ink-faint);
+}
 [data-iii-ui="state"] .state-ui-name {
   font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
   word-break: break-all;
 }
 /* Live-arrived rows flash with an accent wash that fades out. */
@@ -320,4 +336,39 @@
 }
 [data-iii-ui="state"] .state-ui-config-number {
   max-width: 180px;
+}
+
+/* ── new key / new scope dialog (NewEntryDialog) ─────────────────────── */
+
+[data-iii-ui="state"] .state-ui-dialog {
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+[data-iii-ui="state"] .state-ui-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+[data-iii-ui="state"] .state-ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="state"] .state-ui-field-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="state"] .state-ui-field-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-alert-strong);
+}
+/* Scope and key names and the JSON value are machine values: mono. */
+[data-iii-ui="state"] .state-ui-input-mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+[data-iii-ui="state"] .state-ui-input-mono:read-only {
+  color: var(--color-ink-faint);
 }

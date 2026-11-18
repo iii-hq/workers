@@ -37,14 +37,14 @@ export function MentionRow({ icon, name, detail, quiet }: MentionRowProps) {
       </span>
       <span
         className={cn(
-          'min-w-0 max-w-[70%] shrink truncate font-mono text-[12px] font-semibold text-ink',
+          'min-w-0 max-w-[70%] shrink truncate font-mono text-xs font-semibold text-ink',
           quiet && 'text-ink-faint',
         )}
       >
         {name}
       </span>
       {detail ? (
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate font-mono text-meta text-ink-faint">
           {detail}
         </span>
       ) : null}
@@ -54,9 +54,7 @@ export function MentionRow({ icon, name, detail, quiet }: MentionRowProps) {
 
 /** The `ƒ` mark every function surface uses. */
 export function FunctionGlyph() {
-  return (
-    <span className="font-semibold italic leading-none text-[13px]">ƒ</span>
-  )
+  return <span className="font-semibold italic leading-none text-body">ƒ</span>
 }
 
 /** File or folder outline, the same one the inserted pill shows. */
@@ -78,10 +76,10 @@ export function ProviderRow({ provider }: { provider: MentionProvider }) {
           className="size-4"
         />
       </span>
-      <span className="min-w-0 shrink truncate font-mono text-[12px] font-semibold text-ink">
+      <span className="min-w-0 shrink truncate font-mono text-xs font-semibold text-ink">
         @{provider.name}
       </span>
-      <span className="min-w-0 flex-1 truncate font-sans text-[11px] text-ink-faint">
+      <span className="min-w-0 flex-1 truncate font-sans text-meta text-ink-faint">
         {provider.label}
       </span>
       <Kbd className="shrink-0">tab</Kbd>
@@ -110,15 +108,15 @@ export function EntityRow({
         />
       </span>
       {item.hint ? (
-        <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+        <span className="shrink-0 font-mono text-meta text-ink-faint">
           {item.hint}
         </span>
       ) : null}
-      <span className="min-w-0 max-w-[60%] shrink truncate font-sans text-[12px] font-medium text-ink">
+      <span className="min-w-0 max-w-[60%] shrink truncate font-sans text-xs font-medium text-ink">
         {item.label}
       </span>
       {item.description ? (
-        <span className="min-w-0 flex-1 truncate font-sans text-[11px] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate font-sans text-meta text-ink-faint">
           {item.description}
         </span>
       ) : null}
@@ -136,7 +134,7 @@ export function ProviderMoreRow({ provider }: { provider: MentionProvider }) {
       >
         <ChevronRight className="size-4" />
       </span>
-      <span className="min-w-0 flex-1 truncate font-sans text-[11px] font-medium text-ink-faint">
+      <span className="min-w-0 flex-1 truncate font-sans text-meta font-medium text-ink-faint">
         more {provider.label.toLowerCase()}
       </span>
       <Kbd className="shrink-0">tab</Kbd>
@@ -154,10 +152,10 @@ export function MoreRow({ remaining }: { remaining: number }) {
       >
         <ChevronDown className="size-4" />
       </span>
-      <span className="min-w-0 truncate font-mono text-[11px] font-semibold text-ink-faint">
+      <span className="min-w-0 truncate font-mono text-meta font-semibold text-ink-faint">
         show more
       </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-ghost tabular-nums">
+      <span className="min-w-0 flex-1 truncate font-mono text-meta text-ink-ghost tabular-nums">
         {remaining} left
       </span>
     </>

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  ALL_WORKERS,
   availableActions,
   bulkActions,
   bulkOutcome,
@@ -9,8 +10,11 @@ import {
   ignoreSummary,
   sessionAffordance,
   sinceMs,
+  serviceOf,
   sparklineBars,
+  stableOrder,
   triageFact,
+  workerFilter,
 } from './present.js'
 
 test('a running first pass offers stopping, not relabelling', () => {
@@ -236,4 +240,31 @@ test('a triage says what the group is and who said so', () => {
   )
   assert.equal(triageFact({ kind: 'transient', confidence: 1, source: 'rule', at_ms: 0 }, now).rest, 'by rule · 10m ago')
   assert.equal(triageFact(undefined, now).lead, 'pending')
+})
+
+test('rows keep their place while the list is in use, with their fresh data', () => {
+  const before = ['a', 'b', 'c']
+  // The refresh re-sorted by last seen: c jumped to the top, b left, d is new.
+  const rows = [
+    { id: 'c', count: 9 },
+    { id: 'd', count: 1 },
+    { id: 'a', count: 2 },
+  ]
+  assert.deepEqual(stableOrder(before, rows), [
+    { id: 'a', count: 2 },
+    { id: 'c', count: 9 },
+    { id: 'd', count: 1 },
+  ])
+  // Nothing seen yet: the server's order.
+  assert.deepEqual(stableOrder([], rows).map((row) => row.id), ['c', 'd', 'a'])
+})
+
+test('"All workers" is a real, chosen option, so the trigger and the list show it as picked', () => {
+  const all = workerFilter('', ['iii', 'compose'])
+  assert.equal(all.value, ALL_WORKERS)
+  assert.deepEqual(all.options[0], { value: ALL_WORKERS, label: 'All workers' })
+  assert.deepEqual(all.options.map((option) => option.value), [ALL_WORKERS, 'iii', 'compose'])
+  assert.equal(workerFilter('iii', ['iii']).value, 'iii')
+  assert.equal(serviceOf(ALL_WORKERS), '')
+  assert.equal(serviceOf('iii'), 'iii')
 })

@@ -1,6 +1,6 @@
 use judge_contract::*;
 const DEFAULT_MODEL: &str = "jev-latest";
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn mixed_questions_accept_structured_partial_null_and_omitted_descriptions() {
@@ -81,10 +81,10 @@ fn all_documented_description_forms_and_partial_noul_criteria_reach_upstream() {
 #[test]
 fn invalid_description_shapes_cardinalities_and_unknown_fields_are_rejected() {
     for instructions in [json!(true), json!(42)] {
-        assert!(serde_json::from_value::<Question>(
-            json!({"type":"noul","instructions":instructions})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<Question>(json!({"type":"noul","instructions":instructions}))
+                .is_err()
+        );
     }
     for count in [0, 256] {
         let criteria: serde_json::Map<String, Value> =
@@ -113,10 +113,12 @@ fn invalid_description_shapes_cardinalities_and_unknown_fields_are_rejected() {
         ))
         .unwrap();
     }
-    assert!(serde_json::from_value::<Question>(
-        json!({"type":"noul","endpoint":"http://example.invalid"})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<Question>(
+            json!({"type":"noul","endpoint":"http://example.invalid"})
+        )
+        .is_err()
+    );
     assert_eq!(
         validate_request(&request(json!({"type":"noul","criteria":{"maybe":null}}))),
         Err(ErrorCode::InvalidRequest)
@@ -219,10 +221,12 @@ fn duplicate_answer_distribution_and_legend_keys_are_rejected() {
     ] {
         assert!(serde_json::from_str::<Answer>(text).is_err());
     }
-    assert!(serde_json::from_str::<EvaluationResult>(
-        r#"{"answers":{"q":{"type":"noul","noul":0},"q":{"type":"noul","noul":1}}}"#
-    )
-    .is_err());
+    assert!(
+        serde_json::from_str::<EvaluationResult>(
+            r#"{"answers":{"q":{"type":"noul","noul":0},"q":{"type":"noul","noul":1}}}"#
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -247,10 +251,10 @@ fn model_listing_has_defaults_strict_request_and_typed_error() {
 
 #[test]
 fn score_levels_reject_null_as_confirmed_by_provider_and_sdk_schema() {
-    assert!(serde_json::from_value::<Question>(
-        json!({"type":"score","criteria":[null,"blocking"]})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<Question>(json!({"type":"score","criteria":[null,"blocking"]}))
+            .is_err()
+    );
 }
 
 #[test]

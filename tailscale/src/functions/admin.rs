@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{bool_at, register_fn, run_json, run_text, spec, string_at, EmptyInput, FunctionSpec};
+use super::{EmptyInput, FunctionSpec, bool_at, register_fn, run_json, run_text, spec, string_at};
 use crate::config::{SharedConfig, WorkerConfig};
 
 pub const LOCK_STATUS_ID: &str = "tailscale::lock::status";

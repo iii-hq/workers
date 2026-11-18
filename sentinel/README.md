@@ -4,8 +4,10 @@
 request_id: string, hypothesis?: string}`. Select 2–5 distinct IDs; identifiers
 and request_id are nonblank and at most 128 UTF-8 bytes; hypothesis is at most
 2000 bytes. Responses contain investigation_id, session_id, canonical group_ids,
-profile_id, existing and optional first_pass_turn_id. Reuse request_id for a
-retry of the same intent. Different intent under that ID is invalid_request.
+profile_id, existing and optional first_pass_turn_id: the turn the pass started
+with. The pass ends when its session has nothing in flight, so a turn the
+session continued in is still the pass. Reuse request_id for a retry of the
+same intent. Different intent under that ID is invalid_request.
 Active membership conflicts return invalid_request with investigation_overlap;
 no partial investigation is started. A failed send leaves a durable failed row;
 retrying its request returns that same record, not another model invocation.

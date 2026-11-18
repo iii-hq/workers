@@ -1,4 +1,4 @@
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -207,12 +207,12 @@ pub fn result_from_output(
     output: ActionHarnessOutputV1,
 ) -> Result<SecurityActionResultV1, SecurityScanError> {
     let url = sanitize_github_artifact_url(&output.url, action, github_full_name)?;
-    if let Some(sha) = output.commit_sha.as_deref() {
-        if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(SecurityScanError::InvalidRequest(
-                "action commit SHA must be a 40-character Git commit".into(),
-            ));
-        }
+    if let Some(sha) = output.commit_sha.as_deref()
+        && (sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(SecurityScanError::InvalidRequest(
+            "action commit SHA must be a 40-character Git commit".into(),
+        ));
     }
     if action == SecurityActionKindV1::FixPr && output.draft != Some(true) {
         return Err(SecurityScanError::InvalidRequest(

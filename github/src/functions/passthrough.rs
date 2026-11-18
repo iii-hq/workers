@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{argv, expect_ok, push_opt, ValueResponse, OK};
+use super::{OK, ValueResponse, argv, expect_ok, push_opt};
 use crate::configuration::ConfigCell;
 use crate::events::{self, CalledEmitter};
 use crate::gh;

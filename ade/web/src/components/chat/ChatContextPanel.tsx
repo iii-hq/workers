@@ -131,22 +131,36 @@ import {
   type SubagentVisualStatus,
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
+import { useContextWorkflow } from './ContextWorkflow'
 import {
   ObserverDetailDialog,
   ObserverStatus,
   observerTrigger,
 } from './ObserverDetailDialog'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
+import {
+  nodeLabel,
+  nodeLine,
+  nodeMark,
+  runFacts,
+  runMark,
+  soleFacts,
+  soleNode,
+  type WorkflowMark,
+  type WorkflowRunView,
+} from './workflow/run-view'
 
 /**
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class
  * sets its own colour unlayered, so a colour utility on it would lose.
  */
-const deltaClassName = 'font-mono text-[11px] leading-4 tabular-nums'
+const deltaClassName = 'font-mono text-meta leading-4 tabular-nums'
 
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
 const SECTION_CAP = 3
+/** A run lists this many nodes before "Show N more". */
+const WORKFLOW_NODE_CAP = 8
 /** One row of the four-across strip: three pictures and a "+N". */
 const IMAGE_CAP = 3
 
@@ -403,13 +417,15 @@ export function ChatContextPanel({
       conversations,
       conversation.id,
     )
-    return descendants
-      .map(({ conversation: child }) => ({
-        child,
-        status: deriveSubagentVisualStatus(child, connectionState),
-        appearance: resolveSubagentAppearance(child),
-      }))
-      .sort((a, b) => subagentRank(a.status) - subagentRank(b.status))
+    return descendants.map(({ conversation: child }) => ({
+      child,
+      status: deriveSubagentVisualStatus(child, connectionState),
+      appearance: resolveSubagentAppearance(child),
+    }))
+    // Tree order, not status order: a row sorted by status jumps the moment
+    // its status changes, which is exactly when the person clicked it (the
+    // chat opening loads it, and "disconnected" becomes "completed"). The
+    // dot carries the status; the row stays where it was.
   }, [conversations, conversation.id, connectionState])
   const activeCount = subagents.filter(
     (s) => subagentRank(s.status) === 0,
@@ -492,6 +508,9 @@ export function ChatContextPanel({
     return { rows: [...liveObservers, ...others], eventsOf, ended, live }
   }, [observerEvents, liveObservers, observers, observersListed])
   const [openObserverId, setOpenObserverId] = useState<string | null>(null)
+  // The sub-agent whose chat this panel opened last: its row keeps the
+  // selected wash, so the person sees which one they are looking at.
+  const [openSubagentId, setOpenSubagentId] = useState<string | null>(null)
   const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
   const [confirmObserver, setConfirmObserver] =
     useState<SessionObserverInfo | null>(null)
@@ -532,6 +551,24 @@ export function ChatContextPanel({
   const order = useContextSections()
   const hiddenSections = useHiddenSections()
   const workerSections = useExtContextSections()
+  const foldedGroups = useFoldedGroups()
+  const nodeSessions = useMemo(
+    () => subagents.map(({ child }) => child),
+    [subagents],
+  )
+  const workflow = useContextWorkflow({
+    messages: conversation.messages,
+    sessions: nodeSessions,
+    active,
+    shown: !hiddenSections.has('workflow'),
+    open: !foldedGroups.has('workflow'),
+    status: conversation.status,
+  })
+  const workflowRows = capRows(workflow.runs, SECTION_CAP, !!expanded.workflow)
+  const runsWith = (status: string) =>
+    workflow.runs.filter((run) => run.status === status).length
+  const liveRuns = workflow.runs.filter((run) => run.live).length
+  const failedRuns = runsWith('failed')
   const { announcement, announce } = useLiveAnnouncer()
   const onMove = (id: string, target: ReorderTarget) => {
     moveSection(
@@ -872,7 +909,7 @@ export function ChatContextPanel({
                   type="button"
                   aria-label={`Show ${imageRows.hidden} more images`}
                   onClick={() => toggle('images')}
-                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   +{imageRows.hidden}
                 </button>
@@ -905,6 +942,68 @@ export function ChatContextPanel({
           />
         </Section>
       ) : null,
+    workflow:
+      workflow.runs.length > 0 ? (
+        <Section
+          id="workflow"
+          label="Workflow"
+          count={workflow.runs.length}
+          extra={
+            liveRuns > 0 ? (
+              <span className="flex items-center gap-1.5 text-[11px] font-normal text-ink">
+                <StatusDot tone="accent" pulse />
+                {liveRuns} running
+              </span>
+            ) : null
+          }
+          brief={
+            <>
+              {failedRuns > 0 ? <StatusDot tone="alert" /> : null}
+              <span className={cn('truncate', failedRuns > 0 && 'text-ink')}>
+                {plural([
+                  [failedRuns, 'failed', 'failed'],
+                  [runsWith('cancelled'), 'cancelled', 'cancelled'],
+                  [runsWith('completed'), 'completed', 'completed'],
+                ])}
+              </span>
+            </>
+          }
+        >
+          {workflowRows.shown.map((run, index) => {
+            const runKey = `workflow-run:${run.runId}`
+            const nodesKey = `workflow-nodes:${run.runId}`
+            const open =
+              expanded[runKey] ??
+              (run.live || run.status === 'failed' || index === 0)
+            return (
+              <WorkflowRunItem
+                key={run.runId}
+                run={run}
+                open={open}
+                onToggle={() =>
+                  setExpanded((current) => ({ ...current, [runKey]: !open }))
+                }
+                allNodes={!!expanded[nodesKey]}
+                onToggleNodes={() => toggle(nodesKey)}
+                onOpenNode={onOpenConversation}
+              />
+            )
+          })}
+          <ShowMore
+            hidden={workflowRows.hidden}
+            expanded={!!expanded.workflow}
+            total={workflow.runs.length}
+            cap={SECTION_CAP}
+            onToggle={() => toggle('workflow')}
+          />
+          {workflow.earlier > 0 ? (
+            <p className="px-3 py-1 text-[11px] leading-4 text-ink-faint">
+              {workflow.earlier} earlier{' '}
+              {workflow.earlier === 1 ? 'run' : 'runs'} not listed
+            </p>
+          ) : null}
+        </Section>
+      ) : null,
     subagents:
       subagents.length > 0 ? (
         <Section
@@ -913,7 +1012,7 @@ export function ChatContextPanel({
           count={subagents.length}
           extra={
             activeCount > 0 ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-normal text-ink">
+              <span className="flex items-center gap-1.5 text-meta font-normal text-ink">
                 <StatusDot tone="accent" pulse />
                 {activeCount} active
               </span>
@@ -930,7 +1029,11 @@ export function ChatContextPanel({
                 label={appearance.name}
                 title={child.title}
                 ariaLabel={`Open ${appearance.name} in a new panel (${status})`}
-                onActivate={() => onOpenConversation(child.id)}
+                aria-current={openSubagentId === child.id ? 'true' : undefined}
+                onActivate={() => {
+                  setOpenSubagentId(child.id)
+                  onOpenConversation(child.id)
+                }}
                 meta={<SubagentStatus status={status} at={child.updatedAt} />}
               />
             )
@@ -994,6 +1097,9 @@ export function ChatContextPanel({
                   </span>
                 }
                 onActivate={() => setOpenObserverId(observer.id)}
+                aria-current={
+                  openObserverId === observer.id ? 'true' : undefined
+                }
                 ariaLabel={`Show ${label}`}
                 meta={<ObserverStatus ended={ended} />}
                 actions={
@@ -1165,10 +1271,14 @@ function SubagentStatus({
   status: SubagentVisualStatus
   at: number
 }) {
+  // An ended child is not a success claim and not live: the sub-agent card
+  // in the chat says "Ended" with no green anywhere (SpawnView's
+  // SUBAGENT_STATUS_COPY), so the row's dot is the quiet ghost, not the
+  // green that reads as "active".
   if (status === 'completed') {
     return (
       <>
-        <StatusDot tone="ok" />
+        <StatusDot tone="ghost" />
         <span className={uiClasses.treeItemMeta}>{formatRelative(at)}</span>
       </>
     )
@@ -1184,7 +1294,175 @@ function SubagentStatus({
   return (
     <>
       <StatusDot tone={tone} pulse={status === 'working'} />
-      <span className="text-[11px] leading-4 text-ink">{status}</span>
+      <span className="text-meta leading-4 text-ink">{status}</span>
+    </>
+  )
+}
+
+/** The dot and word at a workflow row's end, as a sub-agent row has them. */
+function WorkflowStatus({ mark }: { mark: WorkflowMark }) {
+  const quiet = mark.tone === 'ok' || mark.tone === 'ghost'
+  return (
+    <>
+      <StatusDot tone={mark.tone} pulse={mark.pulse} />
+      {mark.text ? (
+        <span
+          className={
+            quiet ? uiClasses.treeItemMeta : 'text-[11px] leading-4 text-ink'
+          }
+        >
+          {mark.text}
+        </span>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * One run. A run of one node is that node's row and opens its session; a
+ * larger run is a row that folds its nodes, in the order they ran.
+ */
+function WorkflowRunItem({
+  run,
+  open,
+  onToggle,
+  allNodes,
+  onToggleNodes,
+  onOpenNode,
+}: {
+  run: WorkflowRunView
+  open: boolean
+  onToggle: () => void
+  allNodes: boolean
+  onToggleNodes: () => void
+  onOpenNode: (sessionId: string) => void
+}) {
+  const now = Date.now()
+  const Agent = SUBAGENT_ICON_COMPONENTS.agent
+  const sole = soleNode(run)
+  if (sole) {
+    const sessionId = sole.sessionId
+    const error = sole.error ?? run.error
+    return (
+      <Row
+        icon={<Agent aria-hidden />}
+        label={run.title}
+        title={[run.title, sole.profile, run.runId, error]
+          .filter(Boolean)
+          .join(' · ')}
+        ariaLabel={
+          sessionId
+            ? `Open ${run.title} in a new panel (${run.status})`
+            : `${run.title} (${run.status})`
+        }
+        disabled={!sessionId}
+        onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
+        description={
+          error ? (
+            <span className="truncate text-alert">{error}</span>
+          ) : (
+            <span className="truncate">{soleFacts(run, sole)}</span>
+          )
+        }
+        meta={
+          <WorkflowStatus
+            mark={run.live ? nodeMark(sole, now) : runMark(run, now)}
+          />
+        }
+      />
+    )
+  }
+  const nodes = run.phases.flatMap((phase) => phase.nodes)
+  const rows = capRows(nodes, WORKFLOW_NODE_CAP, allNodes)
+  return (
+    <>
+      <Row
+        icon={
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              'motion-safe:transition-transform',
+              open && 'rotate-90',
+            )}
+          />
+        }
+        label={run.title}
+        title={[run.title, run.runId, run.error].filter(Boolean).join(' · ')}
+        ariaLabel={`${run.title} (${run.status})`}
+        aria-expanded={open}
+        onActivate={onToggle}
+        description={
+          run.error ? (
+            <span className="truncate text-alert">{run.error}</span>
+          ) : (
+            <span className="truncate">{runFacts(run)}</span>
+          )
+        }
+        meta={<WorkflowStatus mark={runMark(run, now)} />}
+      />
+      {open ? (
+        <>
+          {rows.shown.map((node) => {
+            const label = nodeLabel(run, node)
+            const name = node.suffix ? `${label} ${node.suffix}` : label
+            const sessionId = node.sessionId
+            return (
+              <Row
+                key={node.uid}
+                style={NESTED_ROW}
+                icon={<Agent aria-hidden />}
+                // Passes and items share the label, so their suffix stays out of its ellipsis.
+                label={
+                  node.suffix ? (
+                    <span className="flex min-w-0 items-baseline">
+                      <span className="truncate">{label}</span>
+                      <span className="ml-2 shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
+                        {node.suffix}
+                      </span>
+                    </span>
+                  ) : (
+                    label
+                  )
+                }
+                title={[node.label, node.profile, node.uid, node.error]
+                  .filter(Boolean)
+                  .join(' · ')}
+                ariaLabel={
+                  sessionId
+                    ? `Open ${name} in a new panel (${node.state})`
+                    : `${name} (${node.state})`
+                }
+                disabled={!sessionId}
+                onActivate={sessionId ? () => onOpenNode(sessionId) : undefined}
+                description={
+                  node.error ? (
+                    <span className="truncate text-alert">{node.error}</span>
+                  ) : (
+                    <span className="truncate">
+                      {nodeLine(run, node) || node.uid}
+                    </span>
+                  )
+                }
+                meta={<WorkflowStatus mark={nodeMark(node, now)} />}
+              />
+            )
+          })}
+          <ShowMore
+            style={NESTED_ROW}
+            hidden={rows.hidden}
+            expanded={allNodes}
+            total={nodes.length}
+            cap={WORKFLOW_NODE_CAP}
+            onToggle={onToggleNodes}
+          />
+          {run.phases.length > 0 && run.unlisted > 0 ? (
+            <p className="py-1 pr-3 pl-6 text-[11px] leading-4 text-ink-faint">
+              {run.unlisted} more {run.unlisted === 1 ? 'node' : 'nodes'} not
+              listed
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </>
   )
 }
@@ -1340,7 +1618,7 @@ function PullRequestMenu({
   const ids = useId()
   const reason = (key: string, text: string | null) =>
     text ? (
-      <span id={`${ids}-${key}`} className="ml-auto pl-3 text-[11px]">
+      <span id={`${ids}-${key}`} className="ml-auto pl-3 text-meta">
         {text}
       </span>
     ) : null
@@ -1485,7 +1763,7 @@ function Section({
       data-reorder-item={id}
       hidden={hidden}
       className={cn(
-        'group/section flex shrink-0 flex-col rounded-xl border border-card-edge bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+        'group/section flex shrink-0 flex-col rounded-xl border border-card-edge bg-card data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-ring/50',
         open && 'pb-1',
       )}
     >
@@ -1496,7 +1774,7 @@ function Section({
           onClick={() => toggleGroup(id)}
           className={cn(
             uiClasses.listGroupLabel,
-            'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
+            'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
             // Folded, the header is the whole card: room to read and to hit.
             // Important: the recipe's padding is unlayered and would win.
             !open && 'py-2.5!',
@@ -1504,16 +1782,16 @@ function Section({
         >
           <span className="shrink-0">{label}</span>
           {source ? (
-            <span className="shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
+            <span className="shrink-0 font-mono text-meta font-normal text-ink-ghost">
               {source}
             </span>
           ) : null}
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-[11px] font-normal whitespace-nowrap">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-meta font-normal whitespace-nowrap">
             {open ? null : brief}
           </span>
           {extra}
           {count !== undefined ? (
-            <span className="font-mono text-[11px] font-normal text-ink-ghost tabular-nums">
+            <span className="font-mono text-meta font-normal text-ink-ghost tabular-nums">
               {count}
             </span>
           ) : null}
@@ -1534,7 +1812,16 @@ function Section({
         ) : null}
       </div>
       {open || keepMounted ? (
-        <div hidden={!open} className={uiClasses.tree}>
+        // Rows sit 6px in from the card's edge, so a hover or selected wash
+        // never touches its border; the inset tokens give the 6px back, so
+        // the text still lines up with the header above it.
+        <div
+          hidden={!open}
+          className={cn(
+            uiClasses.tree,
+            'mx-1.5 [--iii-ui-tree-inset:4px] [--iii-ui-tree-trailing:6px]',
+          )}
+        >
           {children}
         </div>
       ) : null}
@@ -1611,6 +1898,8 @@ interface RowProps
 
 /** A two-line row keeps the recipe's padding and grows to the list height. */
 const TWO_LINE_ROW = { '--iii-ui-tree-row': '2.75rem' } as CSSProperties
+/** A row one level in: a run's nodes. */
+const NESTED_ROW = { '--iii-ui-tree-depth': 1 } as CSSProperties
 
 /**
  * One tree row. Without actions it is the button itself (and can be a menu
@@ -1633,6 +1922,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
     onActivate,
     onClick,
     className,
+    style,
     ...rest
   },
   ref,
@@ -1647,7 +1937,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
     >
       {label}
       {suffix ? (
-        <span className="ml-2 font-mono text-[11px] font-normal text-ink-ghost">
+        <span className="ml-2 font-mono text-meta font-normal text-ink-ghost">
           {suffix}
         </span>
       ) : null}
@@ -1661,7 +1951,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
       {description ? (
         <span className="flex min-w-0 flex-1 flex-col">
           {labelNode}
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] font-normal text-ink-faint">
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-meta font-normal text-ink-faint">
             {description}
           </span>
         </span>
@@ -1682,7 +1972,7 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
         title={title}
         aria-label={ariaLabel}
         className={cn(uiClasses.treeItem, className)}
-        style={description ? TWO_LINE_ROW : undefined}
+        style={description ? { ...TWO_LINE_ROW, ...style } : style}
         onClick={activate}
         {...rest}
       >
@@ -1698,14 +1988,14 @@ const Row = forwardRef<HTMLButtonElement, RowProps>(function Row(
   return (
     <div
       className={cn(uiClasses.treeItem, className)}
-      style={description ? TWO_LINE_ROW : undefined}
+      style={description ? { ...TWO_LINE_ROW, ...style } : style}
     >
       <button
         ref={ref}
         type="button"
         title={title}
         aria-label={ariaLabel}
-        className="flex min-w-0 flex-1 items-center self-stretch rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+        className="flex min-w-0 flex-1 items-center self-stretch rounded-sm text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         onClick={activate}
         {...rest}
       >
@@ -1743,12 +2033,14 @@ function ShowMore({
   total,
   cap,
   onToggle,
+  style,
 }: {
   hidden: number
   expanded: boolean
   total: number
   cap: number
   onToggle: () => void
+  style?: CSSProperties
 }) {
   // "Show less" only once something was actually folded away.
   if (hidden === 0 && !(expanded && total > cap + 1)) return null
@@ -1756,6 +2048,7 @@ function ShowMore({
     <button
       type="button"
       className={uiClasses.treeItem}
+      style={style}
       aria-expanded={expanded}
       onClick={onToggle}
     >
@@ -1867,7 +2160,11 @@ function ImageTile({
         className="flex size-full items-center justify-center"
       >
         {src ? (
-          <img src={src} alt="" className="size-full object-cover" />
+          <img
+            src={src}
+            alt=""
+            className="size-full object-cover outline -outline-offset-1 outline-black/10 dark:outline-white/10"
+          />
         ) : (
           <ImageIcon aria-hidden className="size-4 text-ink-faint" />
         )}

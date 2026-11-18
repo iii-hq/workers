@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
 
@@ -16,12 +16,12 @@ use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
 use crate::functions::search_index::{
-    canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
+    Bm25Index, ToolSchema, canonical_tools, compact_query, excluded_from_search, tool_fingerprint,
 };
 use crate::functions::search_judge::{
-    JudgeCorpus, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch, JUDGE_SHORTLIST,
+    JUDGE_SHORTLIST, JudgeCorpus, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch,
 };
-use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
+use crate::functions::search_semantic::{SemanticSearch, weighted_rrf};
 use crate::surface::search_catalog as catalog;
 
 #[cfg(test)]
@@ -259,10 +259,10 @@ impl SessionRegistry {
 
     fn session_record(&mut self, session_id: &str, fingerprint: &str) -> &mut SessionRecord {
         if !self.sessions.contains_key(session_id) {
-            if self.order.len() >= SESSIONS_CAP {
-                if let Some(evicted) = self.order.pop_front() {
-                    self.sessions.remove(&evicted);
-                }
+            if self.order.len() >= SESSIONS_CAP
+                && let Some(evicted) = self.order.pop_front()
+            {
+                self.sessions.remove(&evicted);
             }
             self.order.push_back(session_id.to_string());
         }
@@ -326,8 +326,7 @@ session: choose the smallest candidate set from `workers`, fetch their contracts
 engine::functions::info call before first use, and search again only for unmet external \
 capabilities.";
 
-const SEARCH_REFINE_GUIDANCE: &str =
-    "No functions matched these capabilities. When the need is to BUILD something no function \
+const SEARCH_REFINE_GUIDANCE: &str = "No functions matched these capabilities. When the need is to BUILD something no function \
 covers — authoring a worker, registering a new engine function, running custom code — the \
 how-to lives in the shipped skills, not in a function: call directory::skills::list, then \
 directory::skills::get { id: \"<id>\" } for the matching how-to, and follow it. Otherwise, at \
@@ -2032,15 +2031,14 @@ async fn installed_search(
         }
     }
     if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.judge_complete {
-        if deps.semantic.is_production_minilm() {
-            if let Some(outcome) =
+        if deps.semantic.is_production_minilm()
+            && let Some(outcome) =
                 production_minilm_rankings(&deps.semantic, fingerprint, tools, queries, &lexical)
                     .await
-            {
-                result.rankings = outcome.rankings;
-                result.hybrid_complete = outcome.complete;
-                result.effective_mode = FunctionSearchMode::Hybrid;
-            }
+        {
+            result.rankings = outcome.rankings;
+            result.hybrid_complete = outcome.complete;
+            result.effective_mode = FunctionSearchMode::Hybrid;
         }
         tracing::debug!(complete = result.hybrid_complete, %fingerprint,
             repository = deps.semantic.model_repository(),
@@ -2857,9 +2855,11 @@ mod tests {
         let within_gap = PRODUCTION_RERANK_GAP as usize + 1;
         assert_eq!(ordered.len(), within_gap, "{ordered_ids:?}");
         let survivors = &head[PRODUCTION_RERANK_DEPTH - within_gap..];
-        assert!(ordered_ids
-            .iter()
-            .all(|id| survivors.iter().any(|h| h == id)));
+        assert!(
+            ordered_ids
+                .iter()
+                .all(|id| survivors.iter().any(|h| h == id))
+        );
         // A total inversion at equal weights ties retrieval against the
         // reranker; retrieval order breaks the tie, so the best-ranked
         // survivor stays first and the reranker's favourite lands second.
@@ -3265,9 +3265,11 @@ mod tests {
             response.installable
         );
         assert!(server.received_requests().await.unwrap().is_empty());
-        assert!(response
-            .guidance
-            .contains("Always write every `capabilities` entry in English"));
+        assert!(
+            response
+                .guidance
+                .contains("Always write every `capabilities` entry in English")
+        );
     }
 
     #[tokio::test]
@@ -3293,12 +3295,16 @@ mod tests {
             "{}",
             response.guidance
         );
-        assert!(response
-            .guidance
-            .contains("Always write every `capabilities` entry in English"));
-        assert!(response
-            .guidance
-            .contains("Keep user-facing text in the session's response language"));
+        assert!(
+            response
+                .guidance
+                .contains("Always write every `capabilities` entry in English")
+        );
+        assert!(
+            response
+                .guidance
+                .contains("Keep user-facing text in the session's response language")
+        );
         assert!(!response.guidance.contains("Arm a one-shot operation wake"));
     }
 
@@ -3340,19 +3346,25 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(repeated
-            .workers
-            .iter()
-            .flat_map(|w| &w.functions)
-            .all(|f| f.function_id != "compose::add"));
-        assert!(repeated
-            .guidance
-            .contains("Already provided earlier in this session"));
+        assert!(
+            repeated
+                .workers
+                .iter()
+                .flat_map(|w| &w.functions)
+                .all(|f| f.function_id != "compose::add")
+        );
+        assert!(
+            repeated
+                .guidance
+                .contains("Already provided earlier in this session")
+        );
         // The full workflow goes out once per session; the repeat carries a
         // pointer to it.
-        assert!(first
-            .guidance
-            .contains("When the user names a registry worker"));
+        assert!(
+            first
+                .guidance
+                .contains("When the user names a registry worker")
+        );
         assert!(first.guidance.contains("If the user only asked to install"));
         assert_eq!(
             first
@@ -3361,17 +3373,23 @@ mod tests {
                 .count(),
             1
         );
-        assert!(repeated
-            .guidance
-            .contains("follow the workflow given earlier in this session"));
-        assert!(!repeated
-            .guidance
-            .contains("When the user names a registry worker"));
+        assert!(
+            repeated
+                .guidance
+                .contains("follow the workflow given earlier in this session")
+        );
+        assert!(
+            !repeated
+                .guidance
+                .contains("When the user names a registry worker")
+        );
         for response in [first, repeated] {
             assert!(response.installable.is_empty());
-            assert!(response
-                .guidance
-                .contains("Keep user-facing text in the session's response language"));
+            assert!(
+                response
+                    .guidance
+                    .contains("Keep user-facing text in the session's response language")
+            );
         }
     }
 
@@ -3458,12 +3476,16 @@ mod tests {
             .find("An explicit installation request follows the installation workflow below")
             .expect("mixed guidance gates the installation route");
         assert!(installed_route < install_route);
-        assert!(response
-            .guidance
-            .contains("absent from both `workers` and `installable`"));
-        assert!(response
-            .guidance
-            .contains("Do not pass an `installable` function ID to engine::functions::info"));
+        assert!(
+            response
+                .guidance
+                .contains("absent from both `workers` and `installable`")
+        );
+        assert!(
+            response
+                .guidance
+                .contains("Do not pass an `installable` function ID to engine::functions::info")
+        );
         let install_schema = response
             .guidance
             .find("Before compose::add, fetch engine::functions::info")
@@ -3509,8 +3531,10 @@ mod tests {
             assert!(lookup.version.is_none());
             assert!(lookup.tag.is_none());
             assert!(guidance.contains("preserve that exact package name"));
-            assert!(guidance
-                .contains("If that package or requested version is absent, report it and stop"));
+            assert!(
+                guidance
+                    .contains("If that package or requested version is absent, report it and stop")
+            );
             assert!(guidance.contains("Keep user-facing text in the session's response language"));
             assert_eq!(guidance.matches("Arm a one-shot operation wake").count(), 1);
             assert!(!guidance.contains("compose::schema"));
@@ -3593,9 +3617,11 @@ mod tests {
             "{}",
             response.guidance
         );
-        assert!(response
-            .guidance
-            .contains("Always write every `capabilities` entry in English"));
+        assert!(
+            response
+                .guidance
+                .contains("Always write every `capabilities` entry in English")
+        );
     }
 
     #[tokio::test]

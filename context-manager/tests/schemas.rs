@@ -14,7 +14,7 @@
 
 mod support;
 
-use context_manager::functions::{catalog, FunctionSpec};
+use context_manager::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

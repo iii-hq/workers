@@ -13,7 +13,7 @@ export type ShellPanelContext =
   | { type: 'agent-terminal'; cwd: string; command: string }
   /** Browse `cwd` with the source-control view showing its changes. */
   | { type: 'source-control'; cwd: string }
-  /** Open the New worker dialog (the palette's "New worker…"). */
+  /** Open the New worker dialog (the palette's "New worker"). */
   | { type: 'new-worker' }
 
 function asRecord(value: JsonValue): Record<string, JsonValue> | null {

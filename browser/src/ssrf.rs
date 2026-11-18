@@ -151,10 +151,10 @@ fn check_ipv6(addr: Ipv6Addr, policy: &SsrfPolicy) -> Option<&'static str> {
     if addr == Ipv6Addr::UNSPECIFIED {
         return Some("unspecified");
     }
-    if let Some(v4) = embedded_ipv4(&addr) {
-        if let Some(label) = check_ipv4(v4, policy) {
-            return Some(label);
-        }
+    if let Some(v4) = embedded_ipv4(&addr)
+        && let Some(label) = check_ipv4(v4, policy)
+    {
+        return Some(label);
     }
     for (net, label) in v6_blocklist() {
         if net.contains(&addr) {
@@ -324,12 +324,12 @@ mod tests {
         assert!(blocked("64:ff9b::a00:1", true).is_some()); // 10.0.0.1
         assert!(blocked("64:ff9b::a9fe:a9fe", true).is_some()); // 169.254.169.254
         assert!(blocked("64:ff9b::101:101", true).is_none()); // 1.1.1.1
-                                                              // Local-use NAT64: fail closed regardless of embed.
+        // Local-use NAT64: fail closed regardless of embed.
         assert!(blocked("64:ff9b:1::1", true).is_some());
         // 6to4: embedded v4 validated.
         assert!(blocked("2002:a00:1::", true).is_some()); // 10.0.0.1
         assert!(blocked("2002:101:101::", true).is_none()); // 1.1.1.1
-                                                            // Deprecated IPv4-compatible ::/96.
+        // Deprecated IPv4-compatible ::/96.
         assert!(blocked("::a9fe:a9fe", true).is_some());
     }
 

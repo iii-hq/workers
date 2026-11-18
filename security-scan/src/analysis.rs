@@ -128,11 +128,11 @@ fn analysis_routing(run: &RunRecordV1, config: &AnalysisConfigV1) -> (String, Op
     } else {
         config.provider.clone()
     };
-    if provider.is_none() {
-        if let Some((catalog_provider, catalog_id)) = split_catalog_model(&model) {
-            model = catalog_id;
-            provider = Some(catalog_provider);
-        }
+    if provider.is_none()
+        && let Some((catalog_provider, catalog_id)) = split_catalog_model(&model)
+    {
+        model = catalog_id;
+        provider = Some(catalog_provider);
     }
     (model, provider)
 }

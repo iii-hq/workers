@@ -4,10 +4,10 @@
 //! unit-testable without a live engine — the stream loop in `mod.rs` only does
 //! the reads/writes around `step`.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::events_types::GrokEvent;
-use crate::wire::{assistant_message, ContentBlock};
+use crate::wire::{ContentBlock, assistant_message};
 
 #[derive(Default)]
 pub struct TurnState {

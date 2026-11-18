@@ -27,14 +27,26 @@ function unwrapEnvelope(output: unknown): unknown {
   return output
 }
 
+/** Plurals the `s` rules get wrong, both ways (`children` is not `childrens`). */
+const IRREGULAR: Record<string, string> = {
+  child: 'children',
+  person: 'people',
+}
+const IRREGULAR_SINGULAR = Object.fromEntries(
+  Object.entries(IRREGULAR).map(([one, many]) => [many, one]),
+)
+
 /** `files` → `file`, `matches` → `match`, `entries` → `entry`. */
 function singular(noun: string): string {
+  if (noun in IRREGULAR_SINGULAR) return IRREGULAR_SINGULAR[noun]
+  if (noun in IRREGULAR) return noun
   if (/ies$/.test(noun)) return noun.replace(/ies$/, 'y')
   if (/(ch|sh|ss|x)es$/.test(noun)) return noun.replace(/es$/, '')
   return noun.replace(/s$/, '')
 }
 
 function plural(noun: string): string {
+  if (noun in IRREGULAR) return IRREGULAR[noun]
   if (/[^aeiou]y$/.test(noun)) return noun.replace(/y$/, 'ies')
   if (/(ch|sh|ss|x)$/.test(noun)) return `${noun}es`
   return `${noun}s`
@@ -43,6 +55,9 @@ function plural(noun: string): string {
 function pluralize(n: number, noun: string): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? noun : plural(noun)}`
 }
+
+/** Lists a status report carries beside its state, never its answer. */
+const SIDE_LISTS = new Set(['children'])
 
 /**
  * A short count the reader can scan without opening the row: `4 results`
@@ -62,6 +77,22 @@ export function resultSummary(output: unknown): string | null {
   if (typeof exit === 'number') return `exit ${exit}`
 
   const arrays = Object.entries(record).filter(([, v]) => Array.isArray(v))
+
+  // A status report (`harness::status` and the like): its one list is a
+  // side field (a child session's own `children`), not the answer, so
+  // counting it misleads ("0 children" for a sub-agent that exists). The
+  // state is what the row should say. A result that carries its own subject
+  // list keeps the count: `harness::ask` returns `questions` with the status
+  // it had when asked (`awaiting_answer`), which a later answer or dismissal
+  // would contradict, while "2 questions" stays true.
+  if (
+    typeof record.status === 'string' &&
+    arrays.every(([key]) => SIDE_LISTS.has(key))
+  ) {
+    const status = record.status.trim()
+    return status && status.length <= 24 ? status.replace(/_/g, ' ') : null
+  }
+
   if (arrays.length === 1) {
     const [key, list] = arrays[0] as [string, unknown[]]
     return pluralize(list.length, singular(key.replace(/_/g, ' ')))

@@ -52,12 +52,11 @@ impl Estimator for HeuristicEstimator {
 
     fn message(&self, message: &AgentMessage) -> u64 {
         let mut wire_view = message.clone();
-        if let AgentMessage::FunctionResult { details, .. } = &mut wire_view {
-            if !details.is_null()
-                && details.get("status").and_then(serde_json::Value::as_str) != Some("denied")
-            {
-                *details = serde_json::Value::Null;
-            }
+        if let AgentMessage::FunctionResult { details, .. } = &mut wire_view
+            && !details.is_null()
+            && details.get("status").and_then(serde_json::Value::as_str) != Some("denied")
+        {
+            *details = serde_json::Value::Null;
         }
 
         let image_count = clear_image_payloads(wire_view.content_mut());

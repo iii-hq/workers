@@ -40,7 +40,7 @@ class SlashCommandOption extends MenuOption {
 
 interface SlashCommandsPluginProps {
   /** True while the menu shows options, so the composer's Enter and arrow
-      handlers yield those keys to the typeahead. */
+ handlers yield those keys to the typeahead. */
   menuOpenRef?: React.RefObject<boolean>
   /** The composer card the menu aligns to. */
   frameRef?: RefObject<HTMLElement | null>
@@ -48,9 +48,9 @@ interface SlashCommandsPluginProps {
 
 /* `/` after a start-of-line, whitespace or `(` — the same boundary as `@`
    — so a command can be picked mid-sentence while "either/or" never fires.
-   The query is a plain slug or the `/skill:<id>` form (ids are
+ The query is a plain slug or the `/skill:<id>` form (ids are
    `/`-separated paths); a bare second `/` ("/home/…") disarms the palette
-   at once instead of shadowing a typed path. */
+ at once instead of shadowing a typed path. */
 const SLASH_PATTERN = /(^|\s|\()(\/(skill:[\w./-]*|[\w-]*))$/
 
 export function slashTriggerFn(text: string, _editor: LexicalEditor) {
@@ -70,8 +70,8 @@ export function SlashCommandsPlugin({
   const [query, setQuery] = useState<string | null>(null)
 
   /* Directory-backed skills, refetched on EVERY open and published to the
-     module registry that gates submit-time expansion. A failed or absent
-     directory worker degrades to built-ins only. */
+ module registry that gates submit-time expansion. A failed or absent
+ directory worker degrades to built-ins only. */
   const [dynamic, setDynamic] = useState<SlashCommand[] | null>(null)
   const loadingRef = useRef(false)
   const loadDynamic = useCallback(async () => {
@@ -102,12 +102,12 @@ export function SlashCommandsPlugin({
   )
 
   /* The trigger fires on any `/slug`, so the typeahead counts as open on
-     text that matches nothing ("hello /foo"). Only a menu that actually
-     shows options may claim Enter — otherwise the message could never be
-     sent — so the flag follows the option count, not the trigger. A list
-     that fills in after the fetch lands flips it on without a keystroke.
-     Written only while this menu is open, so a fetch landing late never
-     clears another menu's claim. */
+ text that matches nothing ("hello /foo"). Only a menu that actually
+ shows options may claim Enter — otherwise the message could never be
+ sent — so the flag follows the option count, not the trigger. A list
+ that fills in after the fetch lands flips it on without a keystroke.
+ Written only while this menu is open, so a fetch landing late never
+ clears another menu's claim. */
   const openRef = useRef(false)
   useEffect(() => {
     if (menuOpenRef && openRef.current) {
@@ -116,8 +116,8 @@ export function SlashCommandsPlugin({
   }, [options, menuOpenRef])
 
   /* The typeahead plugin wraps this callback in editor.update() and passes us
-     the TextNode currently holding "/<query>". We replace it with the command
-     pill and append a trailing space so the caret lands cleanly after it. */
+ the TextNode currently holding "/<query>". We replace it with the command
+ pill and append a trailing space so the caret lands cleanly after it. */
   const onSelectOption = useCallback(
     (
       option: SlashCommandOption,

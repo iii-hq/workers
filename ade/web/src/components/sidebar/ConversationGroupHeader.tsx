@@ -57,7 +57,7 @@ export function ConversationGroupHeader({
       title={title}
       onClick={onToggle}
       className={cn(
-        'conversation-group-header iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
+        'conversation-group-header iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-inter font-medium text-ink-ghost transition-colors hover:bg-surface-hover hover:text-ink-faint focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-1 focus-visible:ring-ring/50',
         narrow ? 'min-h-11 text-sm' : 'min-h-8 text-sm',
       )}
     >
@@ -98,7 +98,7 @@ function ProjectHeader({
   return (
     <div
       className={cn(
-        'conversation-project-header group/project mt-3 flex w-full min-w-0 items-center gap-1 rounded-xl pr-1',
+        'conversation-project-header group/project mt-3 flex w-full min-w-0 items-center gap-1 rounded-sm pr-1',
         narrow ? 'min-h-12' : 'min-h-9',
       )}
     >
@@ -107,7 +107,7 @@ function ProjectHeader({
         aria-expanded={!collapsed}
         title={title}
         onClick={onToggle}
-        className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-xl border-0 bg-transparent pl-2.5 text-left font-inter focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55"
+        className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch rounded-sm border-0 bg-transparent pl-2.5 text-left font-inter focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-1 focus-visible:ring-ring/50"
       >
         <ProjectIcon
           aria-hidden
@@ -136,7 +136,7 @@ function ProjectHeader({
             onClick={onCreate}
             aria-label={`New chat in ${label}`}
             className={cn(
-              'conversation-project-new flex shrink-0 items-center justify-center rounded-lg text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-ink/55',
+              'conversation-project-new flex shrink-0 items-center justify-center rounded-sm text-ink-faint transition-[opacity,color,background-color] duration-[var(--motion-duration-control)] hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
               narrow ? 'size-11' : 'size-7',
             )}
           >

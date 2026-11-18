@@ -1,77 +1,101 @@
-//! MOT-4776: keepalives followed by a startup timeout must expose a durable
-//! failure immediately, with no fabricated partial or automatic resume.
+//! A retryable startup failure after tool execution resumes the same turn.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{
+    ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
+};
 use crate::fixtures::ScenarioFixture;
 use crate::types::frames::ErrorKind;
 
-const MESSAGE: &str = "Exercise a provider that never starts generating.";
-const ERROR: &str = "DeepSeek model deepseek-flash did not start generating within 120000ms. The request may be queued upstream. Try again or choose another model.";
-const SUMMARY: &str = "The provider temporarily failed while generating a response.";
+const MESSAGE: &str = "Record the value once and confirm it.";
+const ERROR: &str = "DeepSeek model deepseek-flash did not start generating within 120000ms.";
+const CALL_ID: &str = "call-before-timeout";
 
 pub(super) fn scenario() -> ScenarioFixture {
+    let model = Model::scripted("deepseek-flash");
+    let record = ControlledFunction::new("{{run_id}}::record", "Record the value.")
+        .request_schema(json!({ "type": "object", "properties": {} }))
+        .returns_text("recorded");
+    let request = || {
+        Request::new()
+            .turn_request()
+            .system_prompt_sha256("{{system_prompt_sha256}}")
+            .tools_exact([record.tool()])
+    };
+    let after_call = || {
+        request().messages_exact([
+            Message::user(MESSAGE),
+            Message::function_call(CALL_ID, &record, json!({}), &model, 8, 4),
+            Message::function_result(CALL_ID, &record, "recorded"),
+        ])
+    };
+
     Scenario::new(
         "INT-029",
         "provider-startup-timeout",
-        "A provider startup timeout persists one visible failure without resuming an empty response.",
+        "The turn retries a transient startup failure with the completed function result.",
         ScenarioDriver::Direct,
-        Model::scripted("deepseek-flash"),
+        model.clone(),
     )
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-029")
-            .without_functions(),
+            .allow_function(&record),
     )
-    .terminal_turn_statuses(["failed"])
+    .function(record.clone())
     .generation(
         Generation::new(1)
-            .expect(
-                Request::new()
-                    .turn_request()
-                    .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_exact([Message::user(MESSAGE)])
-                    .without_tools(),
-            )
+            .expect(request().messages_exact([Message::user(MESSAGE)]))
+            .respond(Response::function_call(CALL_ID, &record, json!({}), 8, 4)),
+    )
+    .generation(
+        Generation::new(2)
+            .expect(after_call())
             .respond(Response::startup_error(ERROR, ErrorKind::Transient)),
     )
+    .generation(
+        Generation::new(3)
+            .expect(after_call())
+            .respond(Response::text("Recorded once.", 18, 2)),
+    )
     .verify(|run| {
-        run.expect_assistant_texts(std::iter::empty::<&str>())?;
-        run.expect_message_counts(1, 1, 0)?;
+        run.expect_assistant_texts(["Recorded once."])?;
+        run.expect_function_calls("record", 1)?;
+        run.expect_message_counts(1, 3, 1)?;
         run.expect_no_duplicate_messages()?;
+        anyhow::ensure!(run.status["transient_resumes"] == 1, "{}", run.status);
+        let recovery = run
+            .transcript
+            .iter()
+            .filter_map(|item| {
+                (item.pointer("/custom/custom_type")?.as_str()? == "recovery")
+                    .then_some(&item["custom"]["data"])
+            })
+            .collect::<Vec<_>>();
         anyhow::ensure!(
-            run.status.get("result_error").and_then(Value::as_str) == Some(SUMMARY),
-            "startup failure did not expose a stable public summary: {}", run.status
+            recovery
+                .iter()
+                .filter_map(|data| data["status"].as_str())
+                .collect::<Vec<_>>()
+                == ["recovering", "recovered"],
+            "unexpected recovery events: {recovery:?}"
         );
         anyhow::ensure!(
-            run.status.get("partial_result_available").and_then(Value::as_bool) == Some(false)
-                && run.status.get("transient_resumes").and_then(Value::as_u64) == Some(0),
-            "startup failure must not fabricate a partial or resume: {}", run.status
-        );
-        let errors = run.transcript.iter().filter_map(|item| {
-            let custom = item.get("custom")?;
-            (custom.get("custom_type").and_then(Value::as_str) == Some("error"))
-                .then_some(&custom["data"])
-        }).collect::<Vec<_>>();
-        anyhow::ensure!(errors.len() == 1, "expected one durable failure: {:?}", run.transcript);
-        let data = errors[0];
-        anyhow::ensure!(
-            data.get("summary").and_then(Value::as_str) == Some(SUMMARY)
-                && data.get("detail").and_then(Value::as_str).is_some_and(|detail| detail.contains(ERROR))
-                && data.get("class").and_then(Value::as_str) == Some("llm.transient")
-                && data.get("retryable").and_then(Value::as_bool) == Some(true)
-                && data.get("partial_result_available").and_then(Value::as_bool) == Some(false),
-            "durable failure lost its diagnostics or manual retry option: {data}"
+            recovery[0]["partial_result_available"] == false
+                && recovery[0]["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains(ERROR)),
+            "unexpected startup diagnostics: {}",
+            recovery[0]
         );
         anyhow::ensure!(
-            !run.transcript.iter().any(|item| item.pointer("/custom/custom_type").and_then(Value::as_str) == Some("recovery")),
-            "there is no partial response to resume"
-        );
-        anyhow::ensure!(
-            run.router_evidence.get("calls").and_then(Value::as_array).is_some_and(|calls| calls.len() == 1),
-            "startup failure was retried: {}", run.router_evidence
+            !run.transcript.iter().any(|item| item
+                .pointer("/custom/custom_type")
+                .and_then(Value::as_str)
+                == Some("error")),
+            "a recovered turn recorded a terminal error"
         );
         Ok(())
     })

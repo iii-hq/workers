@@ -67,7 +67,7 @@ interface ChatSettingsSheetProps {
   /** A phone composer has no attach button of its own: it lives here. */
   onAttachFiles?: () => void
   /** Attaching follows the editor, not the turn options: a queued message
-      can still take files mid-stream. Defaults to `disabled`. */
+ can still take files mid-stream. Defaults to `disabled`. */
   attachDisabled?: boolean
 }
 
@@ -88,7 +88,7 @@ function SettingsSection({
     <section aria-labelledby={id} className={className}>
       <h3
         id={id}
-        className="mb-2 px-1 font-sans text-[11px] font-medium text-ink-ghost"
+        className="mb-2 px-1 font-sans text-meta font-medium text-ink-ghost"
       >
         {label}
       </h3>
@@ -188,7 +188,7 @@ export function ChatSettingsSheet({
                 label={modelPresentation.label}
                 value={
                   modelPresentation.provider ? (
-                    <span className="rounded-full bg-surface-active px-2 py-0.5 text-[11px] font-medium">
+                    <span className="rounded-full bg-surface-active px-2 py-0.5 text-meta font-medium">
                       {modelPresentation.provider}
                     </span>
                   ) : undefined

@@ -3,14 +3,16 @@
  * UI floats over the workspace as an overlay (a page on consoles without
  * the overlay slot), and the worker's `Open learn-iii` command is what
  * shows it either way. Accepting the tour from the wizard adds that worker
- * when it is not running yet — quietly, since it is how the tour is
- * delivered rather than a choice in setup — and waits for its command.
+ * when it is not running yet, and waits for its command. Adding it changes
+ * the project (its worker-compose.yaml gains the worker and whatever it
+ * needs), so the wizard says so while it happens: `prepareTour` reports
+ * each move.
  */
 
 import { getPageCommands, subscribePageCommands } from '@/lib/page-commands'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { getExtPage, whenExtPage } from '@/lib/ui-slots'
-import { addWorkersWithProgress } from './api'
+import { addWorkersWithProgress, type StepProgress } from './api'
 import { TOUR_PAGE, TOUR_WORKER } from './catalog'
 
 /**
@@ -45,10 +47,24 @@ function whenTourCommand(timeoutMs: number): Promise<boolean> {
   })
 }
 
+/** What getting the tour ready is doing, for the wizard to say. */
+export interface TourProgress {
+  /** The registry worker being added; absent once it only loads. */
+  adding?: string
+  /** The add's latest step, as Compose reports it. */
+  note?: string
+}
+
 /** Make the tour available to open. Throws a readable error. */
-export async function prepareTour(): Promise<void> {
+export async function prepareTour(
+  onProgress: (progress: TourProgress) => void = () => undefined,
+): Promise<void> {
   if (tourCommand() || getExtPage(TOUR_PAGE)) return
-  await addWorkersWithProgress([TOUR_WORKER], () => undefined)
+  onProgress({ adding: TOUR_WORKER })
+  await addWorkersWithProgress([TOUR_WORKER], (progress: StepProgress) =>
+    onProgress({ adding: TOUR_WORKER, note: progress.note }),
+  )
+  onProgress({})
   // A worker older than the overlay registers its page and the command
   // together; either one landing means the script has loaded.
   await Promise.race([

@@ -9,8 +9,8 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::Connection;
+use rusqlite::types::{Value as SqlValue, ValueRef};
 use sentinel::{Db, NamedRow, SentinelError, Statement, StepResult};
 use serde_json::{Number, Value};
 use tokio::sync::Mutex;

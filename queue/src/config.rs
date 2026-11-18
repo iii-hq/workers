@@ -182,22 +182,24 @@ mod tests {
 
     #[test]
     fn deserializes_adapter_entry() {
-        let c: QueueConfig =
-            serde_yaml::from_str("{adapter: {name: file_based, config: {path: './data/queue'}}}")
-                .unwrap();
+        let c: QueueConfig = serde_yaml_ng::from_str(
+            "{adapter: {name: file_based, config: {path: './data/queue'}}}",
+        )
+        .unwrap();
         assert_eq!(c.effective_adapter_name(), "file_based");
         assert_eq!(c.adapter.unwrap().config.unwrap()["path"], "./data/queue");
     }
 
     #[test]
     fn rejects_unknown_fields() {
-        let r: Result<QueueConfig, _> = serde_yaml::from_str("{adapter: {name: builtin}, wat: 1}");
+        let r: Result<QueueConfig, _> =
+            serde_yaml_ng::from_str("{adapter: {name: builtin}, wat: 1}");
         assert!(r.is_err(), "deny_unknown_fields must reject 'wat'");
     }
 
     #[test]
     fn json_roundtrip() {
-        let c: QueueConfig = serde_yaml::from_str("{adapter: {name: file_based}}").unwrap();
+        let c: QueueConfig = serde_yaml_ng::from_str("{adapter: {name: file_based}}").unwrap();
         let back = QueueConfig::from_json(&c.to_json()).unwrap();
         assert_eq!(back.effective_adapter_name(), "file_based");
     }
@@ -249,15 +251,17 @@ mod tests {
     #[test]
     fn run_jobs_in_defaults_to_enqueuer_and_worker_needs_rabbitmq() {
         assert_eq!(QueueConfig::default().run_jobs_in, RunJobsIn::Enqueuer);
-        assert!(QueueConfig::default()
-            .to_json()
-            .get("run_jobs_in")
-            .is_none());
+        assert!(
+            QueueConfig::default()
+                .to_json()
+                .get("run_jobs_in")
+                .is_none()
+        );
         let c: QueueConfig =
-            serde_yaml::from_str("{adapter: {name: rabbitmq}, run_jobs_in: worker}").unwrap();
+            serde_yaml_ng::from_str("{adapter: {name: rabbitmq}, run_jobs_in: worker}").unwrap();
         assert_eq!(c.run_jobs_in, RunJobsIn::Worker);
         assert_eq!(QueueConfig::from_json(&c.to_json()).unwrap(), c);
-        let builtin: QueueConfig = serde_yaml::from_str("{run_jobs_in: worker}").unwrap();
+        let builtin: QueueConfig = serde_yaml_ng::from_str("{run_jobs_in: worker}").unwrap();
         assert!(
             builtin.validate().is_err(),
             "only a shared broker can give a job back"
@@ -266,7 +270,7 @@ mod tests {
 
     #[test]
     fn subscriber_retention_defaults_to_the_engine_grace_period() {
-        let defaults: QueueConfig = serde_yaml::from_str("{}").unwrap();
+        let defaults: QueueConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(defaults, QueueConfig::default());
         assert_eq!(defaults.subscriber_retention_ms, 30_000);
         assert_eq!(defaults.subscriber_retention(), Duration::from_secs(30));
@@ -279,7 +283,7 @@ mod tests {
             30_000
         );
 
-        let none: QueueConfig = serde_yaml::from_str("{subscriber_retention_ms: 0}").unwrap();
+        let none: QueueConfig = serde_yaml_ng::from_str("{subscriber_retention_ms: 0}").unwrap();
         none.validate().unwrap();
         assert_eq!(none.subscriber_retention(), Duration::ZERO);
         assert_eq!(QueueConfig::from_json(&none.to_json()).unwrap(), none);
@@ -302,7 +306,7 @@ mod tests {
 
     #[test]
     fn named_queue_config_roundtrips() {
-        let c: QueueConfig = serde_yaml::from_str(
+        let c: QueueConfig = serde_yaml_ng::from_str(
             "queue_configs:\n  harness-turn:\n    type: fifo\n    message_group_field: session_id\n",
         )
         .unwrap();

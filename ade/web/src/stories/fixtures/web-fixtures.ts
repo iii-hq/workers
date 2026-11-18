@@ -246,7 +246,7 @@ export const webFetchInvalidUrlError = base(
 /** Fail-closed dispatch-policy denial — the agent's allow-list omits web::fetch.
  * The harness rejects the call before it runs; renders as the actionable
  * DispatchDeniedView (not the raw "invocation failed" string). This is the #1
- * workflow-node failure: a node authored without `agent.functions: ["web::fetch"]`. */
+ * workflow-node failure: a node authored without `functions: ["web::fetch"]`. */
 export const webFetchDispatchDenied = base(
   'web-fetch-err-dispatch-denied',
   'web::fetch',

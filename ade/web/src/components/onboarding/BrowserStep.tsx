@@ -169,13 +169,13 @@ export function BrowserStep({
       ) : readFailed ? (
         <p
           role="alert"
-          className="rounded-xl bg-surface px-4 py-3 font-sans text-[14px] text-ink"
+          className="rounded-xl bg-surface px-4 py-3 font-sans text-sm text-ink"
         >
           The browser worker did not say whether it has Chromium:{' '}
           {snapshot.browserError}
         </p>
       ) : workerAbsent ? (
-        <p className="rounded-xl bg-surface px-4 py-3 font-sans text-[14px] text-ink">
+        <p className="rounded-xl bg-surface px-4 py-3 font-sans text-sm text-ink">
           This project doesn't run the browser worker, so there is nothing to
           set up here.
         </p>
@@ -191,7 +191,7 @@ export function BrowserStep({
       ) : canInstall && state ? (
         <DownloadPanel state={state} />
       ) : state ? (
-        <p className="rounded-xl bg-surface px-4 py-3 text-pretty font-sans text-[14px] leading-relaxed text-ink">
+        <p className="rounded-xl bg-surface px-4 py-3 text-pretty font-sans text-sm leading-relaxed text-ink">
           {state.installReason ??
             'Setup cannot download Chromium on this system.'}{' '}
           Install it with the command below, then check again.
@@ -230,10 +230,10 @@ function DownloadPanel({ state }: { state: ChromiumState }) {
         <AppWindow className="size-4" aria-hidden />
       </span>
       <span className="flex min-w-0 flex-col gap-1">
-        <h3 className="font-sans text-[14px] font-semibold text-ink">
+        <h3 className="font-sans text-sm font-semibold text-ink">
           Download Chromium, just for agents
         </h3>
-        <p className="text-pretty font-sans text-[13px] leading-relaxed text-ink">
+        <p className="text-pretty font-sans text-body leading-relaxed text-ink">
           About {state.approxDownloadMb} MB, downloaded once for this machine.
           It leaves any Chrome you install yourself untouched.
         </p>
@@ -261,12 +261,12 @@ function ProgressPanel({
       <div className="flex items-baseline justify-between gap-3">
         <span
           role="status"
-          className="min-w-0 font-sans text-[14px] font-medium text-ink"
+          className="min-w-0 font-sans text-sm font-medium text-ink"
         >
           {line}
         </span>
         {percent !== undefined ? (
-          <span className="shrink-0 font-mono text-[12px] tabular-nums text-ink">
+          <span className="shrink-0 font-mono text-xs tabular-nums text-ink">
             {percent}%
           </span>
         ) : null}
@@ -288,7 +288,7 @@ function ProgressPanel({
           style={{ width: `${percent ?? 100}%` }}
         />
       </span>
-      <p className="font-sans text-[13px] leading-relaxed text-ink">
+      <p className="font-sans text-body leading-relaxed text-ink">
         {progress?.bytes_total
           ? `${megabytes(progress.bytes_total)} in all`
           : `About ${state?.approxDownloadMb ?? 200} MB in all`}
@@ -311,18 +311,18 @@ function FailurePanel({
     >
       <CircleAlert className="mt-0.5 size-4 shrink-0 text-alert" aria-hidden />
       <span className="flex min-w-0 flex-col gap-1">
-        <span className="font-sans text-[14px] font-medium text-alert-strong">
+        <span className="font-sans text-sm font-medium text-alert-strong">
           Chromium could not be downloaded
         </span>
-        <span className="break-words font-sans text-[13px] leading-relaxed text-ink">
+        <span className="break-words font-sans text-body leading-relaxed text-ink">
           {failure.error}
         </span>
         {failure.hint ? (
-          <span className="break-words font-sans text-[13px] leading-relaxed text-ink">
+          <span className="break-words font-sans text-body leading-relaxed text-ink">
             {failure.hint}
           </span>
         ) : null}
-        <span className="font-sans text-[13px] text-ink">
+        <span className="font-sans text-body text-ink">
           Retry the download, or install it yourself below.
         </span>
       </span>
@@ -340,7 +340,7 @@ function ReadyPanel({
   const name = 'Chromium'
   if (state.engine === 'lightpanda' && !state.found) {
     return (
-      <p className="rounded-xl bg-ok-muted px-4 py-3 font-sans text-[14px] text-ink">
+      <p className="rounded-xl bg-ok-muted px-4 py-3 font-sans text-sm text-ink">
         The browser worker runs Lightpanda, which needs no Chromium.
       </p>
     )
@@ -354,10 +354,10 @@ function ReadyPanel({
         <Check className="size-4" aria-hidden />
       </span>
       <span className="flex min-w-0 flex-col gap-1">
-        <span className="font-sans text-[14px] font-medium text-ink">
+        <span className="font-sans text-sm font-medium text-ink">
           {installedHere ? `${name} is ready` : `${name} is already here`}
         </span>
-        <span className="font-sans text-[13px] leading-relaxed text-ink">
+        <span className="font-sans text-body leading-relaxed text-ink">
           Agents can open the pages they build and check that they work.
         </span>
       </span>
@@ -388,24 +388,22 @@ function ManualInstall({
       className="group rounded-xl bg-surface px-4 py-3"
       open={open || undefined}
     >
-      <summary className="cursor-pointer font-sans text-[14px] font-medium text-ink">
+      <summary className="cursor-pointer font-sans text-sm font-medium text-ink">
         I'd rather install it myself
       </summary>
       <div className="mt-3 flex flex-col gap-2">
-        <p className="font-sans text-[13px] text-ink">
-          On {manual.system}, run:
-        </p>
+        <p className="font-sans text-body text-ink">On {manual.system}, run:</p>
         <div className="flex items-center gap-2 rounded-sm bg-bg px-3 py-2">
-          <code className="min-w-0 flex-1 break-all font-mono text-[13px] text-ink">
+          <code className="min-w-0 flex-1 break-all font-mono text-body text-ink">
             {manual.command}
           </code>
           <CopyMessageButton text={manual.command} label="copy command" />
         </div>
-        <p className="font-sans text-[13px] leading-relaxed text-ink">
+        <p className="font-sans text-body leading-relaxed text-ink">
           {manual.alternative} The browser worker finds it by itself.
         </p>
         {stillMissing ? (
-          <p role="status" className="font-sans text-[13px] text-alert-strong">
+          <p role="status" className="font-sans text-body text-alert-strong">
             Still no Chromium. Once the install finishes, check again.
           </p>
         ) : null}

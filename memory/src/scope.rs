@@ -20,14 +20,14 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use iii_sdk::protocol::CallRequest;
+use serde_json::{Value, json};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::store::validate_name;
-use crate::types::{now_ms, Memory};
+use crate::types::{Memory, now_ms};
 
 /// Parent hops followed before giving up on a sub-agent chain.
 const MAX_PARENT_DEPTH: usize = 8;
@@ -449,14 +449,14 @@ type TurnBanks = HashMap<String, (Option<Resolved>, u64)>;
 static TURN_BANKS: LazyLock<Mutex<TurnBanks>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_in(turns: &mut TurnBanks, turn_id: &str, bank: Option<Resolved>, now_ms: u64) {
-    if turns.len() >= TURN_BANKS_CAP && !turns.contains_key(turn_id) {
-        if let Some(oldest) = turns
+    if turns.len() >= TURN_BANKS_CAP
+        && !turns.contains_key(turn_id)
+        && let Some(oldest) = turns
             .iter()
             .min_by_key(|(_, (_, used))| *used)
             .map(|(id, _)| id.clone())
-        {
-            turns.remove(&oldest);
-        }
+    {
+        turns.remove(&oldest);
     }
     turns.insert(turn_id.to_string(), (bank, now_ms));
 }

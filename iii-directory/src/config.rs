@@ -610,7 +610,7 @@ impl SkillsConfig {
     /// `configuration::register`; the configuration worker env-expands
     /// `${VAR}` on read, so no local expansion is done here.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
-        serde_yaml::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(yaml).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file from disk.
@@ -649,7 +649,7 @@ pub struct Topology {
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let cfg: SkillsConfig = serde_yaml::from_str(&contents)?;
+    let cfg: SkillsConfig = serde_yaml_ng::from_str(&contents)?;
     Ok(cfg)
 }
 
@@ -713,7 +713,7 @@ mod tests {
             });
             for cfg in [
                 SkillsConfig::from_json(&value).unwrap(),
-                SkillsConfig::from_yaml(&serde_yaml::to_string(&value).unwrap()).unwrap(),
+                SkillsConfig::from_yaml(&serde_yaml_ng::to_string(&value).unwrap()).unwrap(),
             ] {
                 let serialized = cfg.to_json();
                 assert_eq!(serialized["function_search_judge_timeout_ms"], timeout);
@@ -753,13 +753,13 @@ mod tests {
             for invalid in invalid.as_array().unwrap() {
                 // Validate even when Judge is not the selected mode.
                 let value = serde_json::json!({ field: invalid });
-                let yaml = serde_yaml::to_string(&value).unwrap();
+                let yaml = serde_yaml_ng::to_string(&value).unwrap();
                 assert!(
                     serde_json::from_value::<SkillsConfig>(value.clone()).is_err(),
                     "accepted JSON {value}"
                 );
                 assert!(
-                    serde_yaml::from_str::<SkillsConfig>(&yaml).is_err(),
+                    serde_yaml_ng::from_str::<SkillsConfig>(&yaml).is_err(),
                     "accepted YAML {yaml}"
                 );
                 assert!(SkillsConfig::from_json(&value).is_err());
@@ -768,9 +768,11 @@ mod tests {
         }
         for invalid in [".nan", ".inf", "-.inf"] {
             let yaml = format!("function_search_judge_min_relevance: {invalid}\n");
-            assert!(SkillsConfig::from_yaml(&yaml)
-                .unwrap_err()
-                .contains("function_search_judge_min_relevance"));
+            assert!(
+                SkillsConfig::from_yaml(&yaml)
+                    .unwrap_err()
+                    .contains("function_search_judge_min_relevance")
+            );
         }
     }
 
@@ -890,7 +892,7 @@ mod tests {
 
     #[test]
     fn defaults_from_empty_yaml() {
-        let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: SkillsConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert_eq!(cfg.function_search_mode, FunctionSearchMode::Judge);
         assert_eq!(
             cfg.function_search_model_path.as_deref(),
@@ -926,7 +928,7 @@ mod tests {
 
     #[test]
     fn impl_default_matches_yaml_defaults() {
-        let from_empty: SkillsConfig = serde_yaml::from_str("{}").unwrap();
+        let from_empty: SkillsConfig = serde_yaml_ng::from_str("{}").unwrap();
         let from_default = SkillsConfig::default();
         assert_eq!(from_empty.skills_folder, from_default.skills_folder);
         assert_eq!(
@@ -967,7 +969,7 @@ registry_cache_ttl_ms: 5000
 filter_unregistered: false
 auto_download: false
 ";
-        let cfg: SkillsConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: SkillsConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skills_folder, "./my-skills");
         assert_eq!(cfg.local_skills_folder, "./local-skills");
         assert_eq!(cfg.agents_folder, "./profiles");

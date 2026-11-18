@@ -1,7 +1,8 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { Check, Minus } from 'lucide-react'
 import * as React from 'react'
+import { Checkbox as BaseCheckbox } from '@/components/shadcn/checkbox'
 import { cn } from '@/lib/utils'
+import { changeEventFor } from './change-bridge'
 
 export interface CheckboxProps
   extends Omit<
@@ -16,37 +17,52 @@ export interface CheckboxProps
 }
 
 /**
- * A native checkbox with the shared 18 px box: `surface` fill, accent when
- * checked, `rule-focus` outline, `Minus` for indeterminate. Wrapping the
- * input in the label keeps the whole row clickable.
+ * The shadcn (Base UI) checkbox under the first console API: a wrapping
+ * label keeps the whole row clickable, and `onChange` still receives a
+ * change event whose `currentTarget.checked` is the new state (the
+ * `change-bridge`), so worker UIs need no change.
  */
 export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
-  ({ className, label, indeterminate, ...props }, ref) => {
-    const inner = React.useRef<HTMLInputElement>(null)
-    React.useImperativeHandle(ref, () => inner.current as HTMLInputElement)
-    React.useEffect(() => {
-      if (inner.current) inner.current.indeterminate = Boolean(indeterminate)
-    }, [indeterminate])
+  (
+    {
+      className,
+      label,
+      indeterminate,
+      checked,
+      defaultChecked,
+      disabled,
+      required,
+      readOnly,
+      name,
+      value,
+      id,
+      onChange,
+      ...rest
+    },
+    ref,
+  ) => {
+    const input = React.useRef<HTMLInputElement | null>(null)
+    React.useImperativeHandle(ref, () => input.current as HTMLInputElement)
     return (
+      // biome-ignore lint/a11y/noLabelWithoutControl: the Base UI checkbox renders its own hidden <input> inside this label
       <label className={cn(uiClasses.checkbox, className)}>
-        <span className={uiClasses.checkboxControl}>
-          <input
-            ref={inner}
-            type="checkbox"
-            className={uiClasses.checkboxInput}
-            {...props}
-          />
-          <Check
-            aria-hidden
-            className={uiClasses.checkboxMark}
-            data-mark="check"
-          />
-          <Minus
-            aria-hidden
-            className={uiClasses.checkboxMark}
-            data-mark="dash"
-          />
-        </span>
+        <BaseCheckbox
+          {...(rest as Record<string, unknown>)}
+          id={id}
+          name={name}
+          value={typeof value === 'string' ? value : undefined}
+          checked={checked}
+          defaultChecked={defaultChecked}
+          indeterminate={indeterminate}
+          disabled={disabled}
+          required={required}
+          readOnly={readOnly}
+          inputRef={input}
+          className="shrink-0"
+          onCheckedChange={(next, details) =>
+            onChange?.(changeEventFor(input.current, next, details.event))
+          }
+        />
         {label != null ? (
           <span className={uiClasses.checkboxLabel}>{label}</span>
         ) : null}

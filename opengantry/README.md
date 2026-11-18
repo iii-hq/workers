@@ -134,6 +134,10 @@ workers:
       middleware_function_id: gantry::middleware
       rbac:
         auth_function_id: session::auth
+        expose_endpoints:            # without it, only `/` is served
+          - match("/")
+          - match("/ws/channels/*")
+          - match("/otel")
         on_function_registration_function_id: gantry::on-function-registration
         on_observer_registration_function_id: gantry::on-observer-registration
   - name: iii-worker-manager

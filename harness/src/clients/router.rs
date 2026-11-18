@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
+use iii_sdk::IIIClient;
 use iii_sdk::helpers::create_channel;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tokio::sync::{watch, Notify};
+use tokio::sync::{Notify, watch};
 
 #[path = "generation_capture.rs"]
 pub(crate) mod generation_capture;
@@ -28,7 +28,7 @@ use crate::error::HarnessError;
 use crate::types::event::{
     AssistantMessageEvent, ErrorKind, FunctionCallArgumentsPreview, StopReason,
 };
-use crate::types::message::{empty_assistant, AssistantMessage};
+use crate::types::message::{AssistantMessage, empty_assistant};
 use crate::types::model::{AgentFunction, Model, ProviderDefaults, ThinkingLevel};
 
 /// Remove every attachment reference from a router-bound message list (wire
@@ -569,14 +569,15 @@ impl RouterClient {
                         }
                     }
                     tracker.apply(&other);
-                    if other.is_content() && last_emit.elapsed() >= coalesce {
-                        if let Some(cum) = tracker.current() {
-                            match enrich_streaming_args(&cum, &args_acc) {
-                                Some(enriched) => sink.on_update(&enriched).await,
-                                None => sink.on_update(&cum).await,
-                            }
-                            last_emit = Instant::now();
+                    if other.is_content()
+                        && last_emit.elapsed() >= coalesce
+                        && let Some(cum) = tracker.current()
+                    {
+                        match enrich_streaming_args(&cum, &args_acc) {
+                            Some(enriched) => sink.on_update(&enriched).await,
+                            None => sink.on_update(&cum).await,
                         }
+                        last_emit = Instant::now();
                     }
                 }
             }
@@ -634,11 +635,11 @@ impl RouterClient {
         // Error terminal frames can carry raw provider/transport text. Once the
         // held-open chat response arrives, its ErrorShape message is the public
         // copy; retain the terminal text only on ChatError.detail.
-        if let Some(error) = &response_error {
-            if message.stop_reason == StopReason::Error {
-                message.error_message = Some(error.message.clone());
-                message.error_kind = error.kind.or(message.error_kind);
-            }
+        if let Some(error) = &response_error
+            && message.stop_reason == StopReason::Error
+        {
+            message.error_message = Some(error.message.clone());
+            message.error_kind = error.kind.or(message.error_kind);
         }
 
         let stop_reason = Some(message.stop_reason);
@@ -1100,7 +1101,7 @@ fn utf8_tail(s: &str, max: usize) -> &str {
 #[cfg(test)]
 mod attachment_strip_tests {
     use super::*;
-    use crate::types::content::{ContentBlock, ATTACHMENT_PLACEHOLDER};
+    use crate::types::content::{ATTACHMENT_PLACEHOLDER, ContentBlock};
     use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
     use serde_json::json;
 
@@ -1311,10 +1312,12 @@ mod error_contract_tests {
 
         assert_eq!(parsed.code.as_deref(), Some("router/ambiguous_model"));
         assert_eq!(parsed.message, "Choose a provider for this model.");
-        assert!(parsed
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("router/ambiguous_model")));
+        assert!(
+            parsed
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("router/ambiguous_model"))
+        );
     }
 
     #[test]

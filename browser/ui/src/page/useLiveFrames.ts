@@ -31,10 +31,56 @@ import { useBrowserSessionEvent } from '../lib/events'
 const VIEWER_LEASE_MS = 20_000
 const VIEWER_RENEW_MS = 8_000
 
-/** Frame pixels per CSS pixel this screen draws: the frames' target. */
+/** Frame pixels per CSS pixel this screen draws: the frames' target. Capped
+ * at 2: a 3× frame is more than twice the bytes to ship and decode per
+ * frame, for sharpness no one can see at live-view sizes. */
 function screenScale(): number {
   const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
-  return Math.min(3, Math.max(1, dpr))
+  return Math.min(2, Math.max(1, dpr))
+}
+
+/**
+ * Decode a frame off the React render path, newest wins. Setting a fresh
+ * data URL on the `<img>` made the browser decode the JPEG on the main
+ * thread at paint time, once per frame, and a burst of frames queued those
+ * decodes behind each other: that is the lag. Here one decode runs at a
+ * time, a frame that arrives while one is in flight replaces the waiting
+ * one (never queues behind it), and the image only reaches React once its
+ * pixels are ready, so the swap is free.
+ */
+function makeDecoder(apply: (frame: LiveFrame) => void) {
+  let busy = false
+  let pending: LiveFrame | null = null
+  let closed = false
+  const run = async (frame: LiveFrame) => {
+    busy = true
+    try {
+      if (typeof Image !== 'undefined') {
+        const img = new Image()
+        img.src = frame.dataUrl
+        await img.decode()
+      }
+    } catch {
+      // An undecodable frame is still handed over: the <img> shows what it can.
+    }
+    busy = false
+    if (closed) return
+    apply(frame)
+    const next = pending
+    pending = null
+    if (next) void run(next)
+  }
+  return {
+    push(frame: LiveFrame) {
+      if (closed) return
+      if (busy) pending = frame
+      else void run(frame)
+    },
+    close() {
+      closed = true
+      pending = null
+    },
+  }
 }
 
 export interface LiveFrame {
@@ -70,6 +116,13 @@ export function useLiveFrames(
   const [error, setError] = useState<string | null>(null)
   // Newest applied frame seq, so an out-of-order stream push is ignored.
   const lastSeqRef = useRef(0)
+  // Frames reach `setFrame` through one decoder per mounted hook.
+  const decoderRef = useRef<ReturnType<typeof makeDecoder> | null>(null)
+  if (decoderRef.current === null) decoderRef.current = makeDecoder(setFrame)
+  useEffect(() => {
+    const decoder = decoderRef.current
+    return () => decoder?.close()
+  }, [])
   // The tab whose screencast would not start (an engine without one):
   // screenshots stand in, re-taken on its navigation/update events.
   const [stillsFor, setStillsFor] = useState<string | null>(null)
@@ -87,6 +140,8 @@ export function useLiveFrames(
   // The stale image never bleeds into a newly selected session.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on session change only
   useEffect(() => {
+    decoderRef.current?.close()
+    decoderRef.current = makeDecoder(setFrame)
     setFrame(null)
     setError(null)
     lastSeqRef.current = 0
@@ -133,7 +188,7 @@ export function useLiveFrames(
       if (cancelled || !seed?.frame) return
       if (seed.frame_seq > lastSeqRef.current) {
         lastSeqRef.current = seed.frame_seq
-        setFrame({
+        decoderRef.current?.push({
           dataUrl: `data:image/jpeg;base64,${seed.frame}`,
           width: seed.width,
           height: seed.height,
@@ -204,7 +259,7 @@ export function useLiveFrames(
       const f = parseFrameEvent(payload)
       if (!f || f.session_id !== sessionId || f.frame_seq <= lastSeqRef.current) return
       lastSeqRef.current = f.frame_seq
-      setFrame({
+      decoderRef.current?.push({
         dataUrl: `data:image/jpeg;base64,${f.frame}`,
         width: f.width,
         height: f.height,
@@ -222,7 +277,7 @@ export function useLiveFrames(
       .then((seed) => {
         if (cancelled || !seed?.frame || seed.frame_seq <= lastSeqRef.current) return
         lastSeqRef.current = seed.frame_seq
-        setFrame({
+        decoderRef.current?.push({
           dataUrl: `data:image/jpeg;base64,${seed.frame}`,
           width: seed.width,
           height: seed.height,

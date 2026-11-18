@@ -1,11 +1,11 @@
 //! Its own test binary: tracing's callsite interest is process-wide, so a
 //! capturing subscriber misses these events while other tests run alongside.
 use judge_contract::{ErrorCode, RequestOptions};
-use judge_provider::transport::{send_http, ExecutionLimits, RetryPolicy};
+use judge_provider::transport::{ExecutionLimits, RetryPolicy, send_http};
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };

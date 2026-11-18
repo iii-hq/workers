@@ -52,9 +52,52 @@ describe('Stepper', () => {
       />,
     )
     expect(html).not.toContain('<button')
-    // Arriving at the last step completes it: it is current and done.
-    expect(html).toMatch(/aria-current="step"[\s\S]*Ready<[^>]*>, completed/)
-    expect(html.match(/, completed/g)).toHaveLength(4)
+  })
+
+  // QA 2026-11-16 F7: on the last step every dot, the current one included,
+  // showed a check. The current step is current, not done.
+  it('marks the last step current, not done, while it is on screen', () => {
+    const html = renderToStaticMarkup(
+      <Stepper
+        steps={STEPS}
+        current="ready"
+        reachable={new Set()}
+        onSelect={noop}
+      />,
+    )
+    expect(html).toMatch(/aria-current="step"[\s\S]*Ready<[^>]*>, current step/)
+    expect(html).not.toMatch(/Ready<[^>]*>, completed/)
+    expect(html.match(/, completed/g)).toHaveLength(3)
+  })
+
+  // QA 2026-11-16 F7: the current step's inline title came and went with
+  // the step, so every dot moved along the row; on a phone it cut "Judge"
+  // to "J…". Every inline title folds alike, and a caption names the step.
+  it('folds every horizontal title alike and names the current step under the dots', () => {
+    for (const current of ['welcome', 'ready'] as const) {
+      const html = renderToStaticMarkup(
+        <Stepper
+          steps={STEPS}
+          current={current}
+          reachable={new Set()}
+          onSelect={noop}
+        />,
+      )
+      expect(
+        html.match(/sr-only @md:not-sr-only @md:flex/g) ?? [],
+      ).toHaveLength(STEPS.length)
+    }
+    const html = renderToStaticMarkup(
+      <Stepper
+        steps={STEPS}
+        current="judge"
+        reachable={new Set()}
+        onSelect={noop}
+      />,
+    )
+    expect(html).toMatch(
+      /data-stepper-caption[^>]*>Step 3 of 4 · <span[^>]*>Judge<\/span>/,
+    )
   })
 
   it('keeps every horizontal step named for screen readers when labels fold', () => {

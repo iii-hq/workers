@@ -126,9 +126,9 @@ export function branchActions(ref: BranchRef, ctx: BranchContext): BranchAction[
   }
 
   add('update', 'Update', 4, { disabled: ctx.upstream === null ? `${name} tracks no remote branch` : undefined })
-  add('push', 'Push…', 4)
+  add('push', 'Push', 4)
   if (ctx.upstream !== null) add('tracked', `Tracked Branch '${ctx.upstream}'`, 5)
-  add('rename', 'Rename…', 6, {
+  add('rename', 'Rename', 6, {
     disabled: name === ctx.defaultBranch ? `${name} is the default branch; it keeps its name` : undefined,
   })
   if (ctx.worktree !== null) {

@@ -7,9 +7,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, InitOptions, register_worker};
 use serde_json::json;
 use tokio::sync::OnceCell;
 

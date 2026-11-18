@@ -1004,7 +1004,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "async-trait",
  "clap",
@@ -1309,7 +1309,7 @@ dependencies = [
 
 [[package]]
 name = "provider-opencode-go"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures",

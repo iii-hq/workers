@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   canCreateTab,
+  createTabOrNotice,
   DEFAULT_TAB_LIMIT,
   MAX_TAB_LIMIT,
   MIN_TAB_LIMIT,
+  onTabLimitNotice,
   parseTabLimit,
   tabLimitReachedTitle,
 } from './tab-limit'
@@ -57,5 +59,22 @@ describe('tabLimitReachedTitle', () => {
     expect(title).toContain('12')
     expect(title).toMatch(/close a tab/i)
     expect(title).toMatch(/configuration/i)
+  })
+})
+
+// QA 2026-11-16 F1: ⌃T at the limit did nothing and said nothing.
+describe('createTabOrNotice', () => {
+  it('opens a workspace under the limit, and says why not at it', () => {
+    const heard = vi.fn()
+    const stop = onTabLimitNotice(heard)
+    const createTab = vi.fn()
+    expect(createTabOrNotice({ canCreateTab: true, createTab })).toBe(true)
+    expect(createTab).toHaveBeenCalledWith({ columns: 1 })
+    expect(heard).not.toHaveBeenCalled()
+    createTab.mockClear()
+    expect(createTabOrNotice({ canCreateTab: false, createTab })).toBe(false)
+    expect(createTab).not.toHaveBeenCalled()
+    expect(heard).toHaveBeenCalledTimes(1)
+    stop()
   })
 })

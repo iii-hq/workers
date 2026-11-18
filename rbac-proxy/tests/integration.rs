@@ -25,8 +25,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, register_worker};
+use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -90,6 +90,9 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
     false
 }
 
+/// Every `endpoint` the auth function was asked about.
+static AUTH_ENDPOINTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Register the auth function and target functions on the engine's internal
 /// listener (the proxy fronts these from its own port).
 fn register_support(engine_ws: &str) -> IIIClient {
@@ -113,7 +116,17 @@ fn register_support(engine_ws: &str) -> IIIClient {
     support.register_function(
         "test::auth",
         RegisterFunction::new_async(|input: Value| async move {
+            if let Some(endpoint) = input["endpoint"].as_str() {
+                AUTH_ENDPOINTS.lock().unwrap().push(endpoint.to_string());
+            }
             let mut session = json!({ "context": { "tenant": "itest" } });
+            if input["headers"]["authorization"] == "Bearer reject" {
+                return Err(Error::Remote {
+                    code: "UNAUTHORIZED".to_string(),
+                    message: "rejected by test::auth".to_string(),
+                    stacktrace: None,
+                });
+            }
             if input["headers"]["authorization"] == "Bearer narrow" {
                 session["forbidden_functions"] = json!(["api::echo"]);
             }
@@ -166,7 +179,9 @@ async fn boot() -> Option<Harness> {
         &seed_path,
         format!(
             "host: 127.0.0.1\nport: {proxy_port}\nengine_url: {engine_ws}\n\
-             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
+             rbac:\n  auth_function_id: test::auth\n  \
+             expose_endpoints:\n    - match(\"/\")\n    - match(\"/ws/channels/*\")\n    - match(\"/otel\")\n  \
+             expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
         ),
     )
     .expect("write integration configuration");
@@ -592,6 +607,71 @@ async fn end_to_end_child() {
         let _ = first.close(None).await;
         let _ = second.close(None).await;
     }
+
+    // (k) /otel is authenticated before the upgrade by the same auth function
+    // as `/`, which is told the endpoint, then relayed to the engine.
+    {
+        let url = format!("ws://127.0.0.1:{proxy_port}/otel");
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                url.as_str(),
+            )
+            .expect("request");
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer reject".parse().unwrap());
+        match tokio_tungstenite::connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 401, "a refused /otel is an HTTP status");
+            }
+            other => panic!("expected a 401 before the upgrade, got {other:?}"),
+        }
+
+        let mut otel = raw_client_at(proxy_port, "/otel", "Bearer test-token").await;
+        assert!(
+            AUTH_ENDPOINTS.lock().unwrap().iter().any(|e| e == "/otel"),
+            "the auth function was told the endpoint"
+        );
+        // A log frame as the SDKs send it: `LOGS` + OTLP JSON.
+        let mut frame = b"LOGS".to_vec();
+        frame.extend_from_slice(
+            json!({ "resourceLogs": [{
+                "resource": { "attributes": [{ "key": "service.name",
+                    "value": { "stringValue": "rbac-proxy-itest" } }] },
+                "scopeLogs": [{ "logRecords": [{ "severityText": "INFO",
+                    "body": { "stringValue": "relayed through rbac-proxy" } }] }]
+            }]})
+            .to_string()
+            .as_bytes(),
+        );
+        otel.send(Message::Binary(frame.into()))
+            .await
+            .expect("an accepted /otel connection takes binary frames");
+        // The relay stays open: anything but silence (a close, EOF, an error,
+        // a frame) means it did not relay.
+        let quiet = timeout(Duration::from_millis(500), otel.next()).await;
+        assert!(
+            quiet.is_err(),
+            "the /otel relay did not stay open: {quiet:?}"
+        );
+        let _ = otel.close(None).await;
+    }
+
+    // (l) A path that is not an engine endpoint is a bare 404 before the
+    // upgrade, and so is one no rule exposes.
+    for path in ["/nope", "/ws/channels/a/b"] {
+        let url = format!("ws://127.0.0.1:{proxy_port}{path}");
+        match tokio_tungstenite::connect_async(url.as_str()).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 404, "{path}");
+            }
+            other => panic!("expected a 404 for {path}, got {other:?}"),
+        }
+    }
+    assert!(
+        AUTH_ENDPOINTS.lock().unwrap().iter().any(|e| e == "/"),
+        "the auth function was told the endpoint for `/` too"
+    );
 }
 
 type RawClient =
@@ -602,7 +682,11 @@ async fn raw_client(proxy_port: u16) -> RawClient {
 }
 
 async fn raw_client_with(proxy_port: u16, authorization: &str) -> RawClient {
-    let url = format!("ws://127.0.0.1:{proxy_port}/");
+    raw_client_at(proxy_port, "/", authorization).await
+}
+
+async fn raw_client_at(proxy_port: u16, path: &str, authorization: &str) -> RawClient {
+    let url = format!("ws://127.0.0.1:{proxy_port}{path}");
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             url.as_str(),
@@ -624,12 +708,11 @@ async fn request(ws: &mut RawClient, frame: Value, pick: impl Fn(&Value) -> bool
         .expect("send frame");
     timeout(Duration::from_secs(5), async {
         while let Some(Ok(msg)) = ws.next().await {
-            if let Message::Text(t) = msg {
-                if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                    if pick(&v) {
-                        return v;
-                    }
-                }
+            if let Message::Text(t) = msg
+                && let Ok(v) = serde_json::from_str::<Value>(t.as_str())
+                && pick(&v)
+            {
+                return v;
             }
         }
         panic!("connection closed before the reply");

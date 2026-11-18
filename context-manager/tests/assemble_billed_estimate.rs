@@ -12,14 +12,14 @@
 #[allow(dead_code)]
 mod fakes;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use context_manager::config::WorkerConfig;
 use context_manager::functions::assemble;
-use context_manager::ports::{lease_cell, Deps};
+use context_manager::ports::{Deps, lease_cell};
 use fakes::{FakeClock, FakeModelResolver, FakeSummarizer, InMemoryLeaseStore};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 /// deepseek-flash: (1,000,000 - 384,000) - 488,000 reserved = 128,000 usable.

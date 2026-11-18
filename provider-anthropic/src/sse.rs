@@ -4,8 +4,8 @@
 //! thinking blocks in their original position relative to tool_use).
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
-use crate::{now_ms, PROVIDER_ID};
-use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
+use crate::{PROVIDER_ID, now_ms};
+use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -116,27 +116,27 @@ fn push_block_content(
 ) {
     match kind {
         BlockKind::Thinking => {
-            if let Some(th) = state.thinking_blocks.get(idx) {
-                if !th.text.is_empty() || th.signature.is_some() {
-                    out.push(ContentBlock::Thinking {
-                        text: th.text.clone(),
-                        signature: th.signature.clone(),
-                    });
-                }
+            if let Some(th) = state.thinking_blocks.get(idx)
+                && (!th.text.is_empty() || th.signature.is_some())
+            {
+                out.push(ContentBlock::Thinking {
+                    text: th.text.clone(),
+                    signature: th.signature.clone(),
+                });
             }
         }
         BlockKind::RedactedThinking => {
-            if let Some(data) = state.redacted_blocks.get(idx) {
-                if !data.is_empty() {
-                    out.push(ContentBlock::RedactedThinking { data: data.clone() });
-                }
+            if let Some(data) = state.redacted_blocks.get(idx)
+                && !data.is_empty()
+            {
+                out.push(ContentBlock::RedactedThinking { data: data.clone() });
             }
         }
         BlockKind::Text => {
-            if let Some(t) = state.text_blocks.get(idx) {
-                if !t.is_empty() {
-                    out.push(ContentBlock::Text { text: t.clone() });
-                }
+            if let Some(t) = state.text_blocks.get(idx)
+                && !t.is_empty()
+            {
+                out.push(ContentBlock::Text { text: t.clone() });
             }
         }
         BlockKind::ToolUse => {
@@ -281,14 +281,7 @@ pub fn synthetic_error_event_from_state(
     model: &str,
     kind: ErrorKind,
 ) -> AssistantMessageEvent {
-    let mut error = build_partial(state, model);
-    error.content.push(ContentBlock::Text {
-        text: message.to_string(),
-    });
-    error.stop_reason = StopReason::Error;
-    error.error_message = Some(message.to_string());
-    error.error_kind = Some(kind);
-    AssistantMessageEvent::Error { error }
+    AssistantMessageEvent::error(build_partial(state, model), kind, message)
 }
 
 fn wire_index(parsed: &Value) -> Option<usize> {
@@ -856,9 +849,11 @@ mod tests {
             }
             other => panic!("want function_call, got {other:?}"),
         }
-        assert!(!events
-            .iter()
-            .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. })));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AssistantMessageEvent::TextEnd { .. }))
+        );
     }
 
     #[test]

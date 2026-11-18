@@ -44,12 +44,12 @@ export function CreateFileView({
   const parentsAny = req.files.some((f) => f.parents !== false)
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="files">{req.files.length}</Chip>
         {parentsAny ? <Chip label="parents">true</Chip> : null}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · writing…
           </span>
         ) : null}
@@ -65,11 +65,11 @@ export function CreateFileView({
           return (
             <div
               key={file.path}
-              className="border-b border-rule-2 last:border-b-0 px-3 py-2 flex flex-wrap items-center gap-2 font-mono text-[12px]"
+              className="border-b border-border last:border-b-0 px-3 py-2 flex flex-wrap items-center gap-2 font-mono text-xs"
             >
               <span className="text-ink">{result.path}</span>
               {unresolved ? (
-                <span className="text-ink-ghost text-[11px]">· unresolved</span>
+                <span className="text-ink-ghost text-meta">· unresolved</span>
               ) : null}
               {result.error ? (
                 <Hint label={result.error.message}>
@@ -88,11 +88,9 @@ export function CreateFileView({
         if (result?.success) {
           return (
             <div key={file.path}>
-              <div className="bg-paper-2 border-b border-rule-2 px-3 py-1.5 flex flex-wrap items-center gap-1.5">
+              <div className="bg-paper-2 border-b border-border px-3 py-1.5 flex flex-wrap items-center gap-1.5">
                 <Chip label="wrote">{formatBytes(result.bytes_written)}</Chip>
-                <span className="font-mono text-[12px] text-ink">
-                  {file.path}
-                </span>
+                <span className="font-mono text-xs text-ink">{file.path}</span>
                 <OpenInEditorButton path={result.path} />
               </div>
               {file.overwrite ? (

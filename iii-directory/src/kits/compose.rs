@@ -17,7 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A worker the compose file declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub fn declared_workers(compose_file: &Path) -> BTreeMap<String, DeclaredWorker>
     let Ok(text) = std::fs::read_to_string(compose_file) else {
         return out;
     };
-    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+    let Ok(doc) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text) else {
         return out;
     };
     let lock = read_compose_lock(&compose_file.with_extension("lock"));
@@ -55,8 +55,8 @@ pub fn declared_workers(compose_file: &Path) -> BTreeMap<String, DeclaredWorker>
             .and_then(|w| w.as_str())
             .unwrap_or(key);
         let selector = container.get("version").and_then(|v| match v {
-            serde_yaml::Value::String(s) => Some(s.clone()),
-            serde_yaml::Value::Number(n) => Some(n.to_string()),
+            serde_yaml_ng::Value::String(s) => Some(s.clone()),
+            serde_yaml_ng::Value::Number(n) => Some(n.to_string()),
             _ => None,
         });
         let (package, path) = parse_worker_source(worker, key);
@@ -98,7 +98,7 @@ fn read_compose_lock(path: &Path) -> BTreeMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return out;
     };
-    let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+    let Ok(doc) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text) else {
         return out;
     };
     if let Some(containers) = doc.get("containers").and_then(|c| c.as_mapping()) {

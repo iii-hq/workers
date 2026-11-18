@@ -83,7 +83,9 @@ behavior is specified in
    the E2E does not answer, the list and that instruction are omitted and the
    analysis goes on. The backend drops any suggestion
    that cites an entry absent from the evidence shown, cites code that does
-   not exist, or has an incomplete E2E plan, and records why.
+   not exist, or has an incomplete E2E plan, and records why. A message that
+   reaches the monitor's session while it runs continues it in a new turn,
+   and the investigation ends on the session's settled turn.
 7. **Result.** `completed` means the monitor finished, with or without
    suggestions. It is never a validated improvement.
 

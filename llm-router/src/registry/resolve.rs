@@ -18,13 +18,13 @@ use crate::types::router::{
     UpdateCredentialRequest, UpdateCredentialResponse,
 };
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
-use serde_json::{json, Value};
+use iii_sdk::{IIIClient, errors::Error};
+use serde_json::{Value, json};
 
-use crate::config::entry::{read_entry_value, write_entry_value, EntryWriteLock};
-use crate::config::state::{apply_config, snapshot, ConfigCell, ConfigSnapshot};
+use crate::config::entry::{EntryWriteLock, read_entry_value, write_entry_value};
+use crate::config::state::{ConfigCell, ConfigSnapshot, apply_config, snapshot};
 use crate::registry::store::RegistryStore;
-use crate::secrets::{parse_ref, SecretCache, SecretError};
+use crate::secrets::{SecretCache, SecretError, parse_ref};
 
 /// What a provider slice stores as its credential, first match wins.
 #[derive(Debug, PartialEq)]
@@ -47,10 +47,10 @@ pub fn slice_credential(slice: &Value) -> SliceCredential {
     if let Ok(credential) = serde_json::from_value::<Credential>(
         slice.get("credential").cloned().unwrap_or(Value::Null),
     ) {
-        if let Credential::ApiKey { key } = &credential {
-            if let Some(reference) = reference(key) {
-                return reference;
-            }
+        if let Credential::ApiKey { key } = &credential
+            && let Some(reference) = reference(key)
+        {
+            return reference;
         }
         return SliceCredential::Stored(credential);
     }
@@ -264,9 +264,9 @@ pub fn make_provider_resolve(
     registry: Arc<RegistryStore>,
     secrets: Arc<SecretCache>,
 ) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveOutput, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: ProviderResolveRequest| {
         let (config, registry, secrets, entry_lock) = (
             config.clone(),
@@ -303,9 +303,9 @@ pub fn make_update_credential(
     config: ConfigCell,
     entry_lock: EntryWriteLock,
 ) -> impl Fn(UpdateCredentialRequest) -> BoxFuture<'static, Result<UpdateCredentialResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |req: UpdateCredentialRequest| {
         let (iii, registry, config, entry_lock) = (
             iii.clone(),
@@ -401,7 +401,8 @@ mod tests {
     async fn stored_credential_then_literal_key_then_env_then_none() {
         let fake = FakeSecrets::default();
         let env = "LLM_ROUTER_UNIT_PRECEDENCE_KEY";
-        std::env::set_var(env, "sk-env");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(env, "sk-env") };
 
         let out = resolve(
             json!({ "credential": { "type": "oauth", "access_token": "at" }, "api_key": "sk-literal" }),
@@ -426,7 +427,8 @@ mod tests {
         assert_eq!(out.resolved.source, CredentialSource::Env);
         assert_eq!(out.status.credential_source, Some(CredentialOrigin::Env));
 
-        std::env::remove_var(env);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var(env) };
         let out = resolve(json!({}), Some(env), &fake).await;
         assert!(!out.resolved.configured);
         assert_eq!(out.resolved.source, CredentialSource::None);
@@ -482,7 +484,8 @@ mod tests {
     #[tokio::test]
     async fn an_unresolvable_reference_is_not_configured_and_never_falls_back_to_env() {
         let env = "LLM_ROUTER_UNIT_REF_FALLBACK_KEY";
-        std::env::set_var(env, "sk-env-must-not-win");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(env, "sk-env-must-not-win") };
         let cases = [
             (
                 Err(SecretError::NotFound),
@@ -517,14 +520,16 @@ mod tests {
             let error = out.status.credential_error.expect("actionable error");
             assert!(error.starts_with(expected), "{error}");
         }
-        std::env::remove_var(env);
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var(env) };
     }
 
     #[tokio::test]
     async fn an_env_reference_resolves_through_the_secrets_worker() {
         // The router's own variable of the same name never stands in for it.
         let env = "LLM_ROUTER_UNIT_ENV_REF_KEY";
-        std::env::set_var(env, "sk-router-process-env");
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::set_var(env, "sk-router-process-env") };
         let fake = FakeSecrets::default();
         fake.set("env://LLM_ROUTER_UNIT_ENV_REF_KEY", Ok("sk-from-dotenv"));
         let out = resolve(
@@ -555,12 +560,14 @@ mod tests {
         .await;
         assert!(!out.resolved.configured);
         assert_eq!(out.resolved.credential, None);
-        assert!(out
-            .status
-            .credential_error
-            .unwrap()
-            .starts_with("environment variable LLM_ROUTER_UNIT_ENV_REF_KEY is not set"));
-        std::env::remove_var(env);
+        assert!(
+            out.status
+                .credential_error
+                .unwrap()
+                .starts_with("environment variable LLM_ROUTER_UNIT_ENV_REF_KEY is not set")
+        );
+        // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+        unsafe { std::env::remove_var(env) };
     }
 
     #[tokio::test]
@@ -660,10 +667,12 @@ mod tests {
             unresolved_reference(&config, "absent", &secrets).await,
             None
         );
-        assert!(unresolved_reference(&config, "gone", &secrets)
-            .await
-            .unwrap()
-            .starts_with("secret GONE not found"));
+        assert!(
+            unresolved_reference(&config, "gone", &secrets)
+                .await
+                .unwrap()
+                .starts_with("secret GONE not found")
+        );
     }
 
     #[tokio::test]

@@ -680,11 +680,12 @@ mod tests {
         assert!(detail.author.verified);
         assert_eq!(detail.agents[0].model.as_deref(), Some("opus"));
         assert_eq!(detail.workers[0].resolved.as_deref(), Some("1.6.1"));
-        assert!(reg
-            .detail("acme/missing", "latest")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            reg.detail("acme/missing", "latest")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -720,11 +721,12 @@ mod tests {
             .mount(&server)
             .await;
         let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.26.0".into()));
-        assert!(reg
-            .detail("acme/missing", "latest")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            reg.detail("acme/missing", "latest")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

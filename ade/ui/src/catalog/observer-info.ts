@@ -35,23 +35,23 @@ export interface DeliveryFact {
  * what is captured, and the policy.
  */
 export function observerDeliveryFacts(observer: ObserverInfo): DeliveryFact[] {
-  const facts: DeliveryFact[] = [{ label: 'fires on', value: observer.outcomes.join(', ') }]
-  if (observer.deliver !== 'envelope') facts.push({ label: 'deliver', value: observer.deliver })
+  const facts: DeliveryFact[] = [{ label: 'Fires on', value: observer.outcomes.join(', ') }]
+  if (observer.deliver !== 'envelope') facts.push({ label: 'Deliver', value: observer.deliver })
   facts.push(
     {
-      label: 'capture',
+      label: 'Capture',
       value: observer.capture.length ? observer.capture.join(', ') : 'nothing',
     },
     {
-      label: 'max fires',
+      label: 'Max fires',
       value: observer.max_fires !== undefined ? String(observer.max_fires) : 'unlimited',
     },
     {
-      label: 'expires in',
+      label: 'Expires in',
       value: observer.expires_in_ms !== undefined ? `${observer.expires_in_ms} ms` : 'never',
     },
     {
-      label: 'max in flight',
+      label: 'Max in flight',
       value:
         observer.max_in_flight !== undefined ? String(observer.max_in_flight) : 'engine default',
     },

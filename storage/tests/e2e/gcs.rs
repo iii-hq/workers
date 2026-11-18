@@ -1,7 +1,7 @@
 //! Real GCS round-trip. Gated on GOOGLE_APPLICATION_CREDENTIALS + GCS_TEST_BUCKET.
 
 use std::collections::HashMap;
-use storage::backend::{factory, GetReq, PutReq};
+use storage::backend::{GetReq, PutReq, factory};
 use storage::config::{BucketConfig, GcsBucketConfig, ProvidersConfig};
 
 #[tokio::test]

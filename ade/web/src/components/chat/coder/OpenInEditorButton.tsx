@@ -63,11 +63,9 @@ export function OpenInEditorButton({
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          onSelect={(event) => {
-            // Keep the menu open so the "copied" flip is visible.
-            event.preventDefault()
-            copyPath()
-          }}
+          // Keep the menu open so the "copied" flip is visible.
+          closeOnClick={false}
+          onSelect={() => copyPath()}
         >
           {copied ? 'copied' : 'copy path'}
         </DropdownMenuItem>

@@ -112,7 +112,7 @@ export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuI
     },
     {
       id: 'rollback',
-      label: 'Rollback…',
+      label: 'Rollback',
       icon: <Undo2 aria-hidden />,
       group: 'commit',
       blocked: tracked.length === 0 ? 'unversioned files have nothing to roll back' : busy,
@@ -154,7 +154,7 @@ export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuI
     },
     {
       id: 'delete',
-      label: 'Delete…',
+      label: 'Delete',
       icon: <Trash2 aria-hidden />,
       group: 'files',
       danger: true,
@@ -194,7 +194,7 @@ export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuI
     },
     {
       id: 'stash',
-      label: 'Stash changes…',
+      label: 'Stash changes',
       icon: <Archive aria-hidden />,
       group: 'patch',
       blocked: busy,
@@ -211,7 +211,7 @@ export function changeMenu(row: ChangeRow, ctx: ChangeMenuContext): ContextMenuI
       items: [
         {
           id: 'compare',
-          label: 'Compare with…',
+          label: 'Compare with',
           icon: <GitCompareArrows aria-hidden />,
           applies: file !== null,
           blocked: file?.status === 'untracked' || file?.status === 'added' ? 'it has no committed version' : null,
@@ -270,7 +270,7 @@ export function stashMenu(stash: GitStash, ctx: StashMenuContext): ContextMenuIt
       },
       {
         id: 'unstash',
-        label: 'Unstash…',
+        label: 'Unstash',
         icon: <PackageOpen aria-hidden />,
         group: 'apply',
         blocked: busy,
@@ -278,7 +278,7 @@ export function stashMenu(stash: GitStash, ctx: StashMenuContext): ContextMenuIt
       },
       {
         id: 'drop',
-        label: 'Drop…',
+        label: 'Drop',
         icon: <Trash2 aria-hidden />,
         group: 'remove',
         danger: true,
@@ -287,7 +287,7 @@ export function stashMenu(stash: GitStash, ctx: StashMenuContext): ContextMenuIt
       },
       {
         id: 'clear',
-        label: 'Clear…',
+        label: 'Clear',
         icon: <Eraser aria-hidden />,
         group: 'remove',
         danger: true,

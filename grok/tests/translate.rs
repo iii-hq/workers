@@ -9,8 +9,8 @@ use std::sync::Mutex;
 
 use grok::agent_feed::{Feed, FeedPayload, Feeds};
 use grok::grok::events_types::GrokEvent;
-use grok::grok::translate::{step, TurnState};
-use serde_json::{json, Value};
+use grok::grok::translate::{TurnState, step};
+use serde_json::{Value, json};
 
 fn run(events: &[Value]) -> (TurnState, Vec<Value>) {
     let mut state = TurnState::new("grok-4.20-0309-non-reasoning".into());

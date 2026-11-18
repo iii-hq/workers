@@ -2,18 +2,18 @@
 //! at a time in arrival order, each on its own thread so the executor never
 //! waits on llama.cpp.
 use crate::encode::Encoded;
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use iii_llama_native::Model;
 pub use iii_llama_runtime::Stop;
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 /// Run `work` on a thread of its own. Not tokio's blocking pool: handlers run
 /// on the SDK's connection runtime, and the SDK's shutdown joins that thread,

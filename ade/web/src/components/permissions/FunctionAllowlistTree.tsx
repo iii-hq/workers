@@ -138,7 +138,7 @@ export function FunctionAllowlistTree({
 
   if (tree.length === 0) {
     return (
-      <p className="font-mono text-[12px] text-ink-faint p-4 text-center">
+      <p className="font-mono text-xs text-ink-faint p-4 text-center">
         {emptyHint}
       </p>
     )
@@ -248,14 +248,14 @@ function TreeBranch({
         <span className="flex-1 min-w-0 truncate text-ink">
           {node.segment}
           {entry && !isAutoAcceptable(entry.id) ? (
-            <span className="ml-2 text-alert text-[11px]">
+            <span className="ml-2 text-alert text-meta">
               · potentially destructive
             </span>
           ) : null}
         </span>
 
         {hasChildren ? (
-          <span className="font-mono text-[11px] text-ink-faint tabular-nums shrink-0">
+          <span className="font-mono text-meta text-ink-faint tabular-nums shrink-0">
             {counts.allowed}/{counts.total}
           </span>
         ) : null}
@@ -308,7 +308,7 @@ function Tristate({ state, onClick, 'aria-label': label }: TristateProps) {
         state === 'mixed' && 'bg-ink-ghost text-bg',
       )}
     >
-      <span aria-hidden className="text-[11px] leading-none">
+      <span aria-hidden className="text-meta leading-none">
         {state === 'checked' ? '✓' : state === 'mixed' ? '–' : ''}
       </span>
     </button>

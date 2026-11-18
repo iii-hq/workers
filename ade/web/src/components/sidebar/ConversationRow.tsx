@@ -35,16 +35,16 @@ import { MarqueeLabel } from './MarqueeLabel'
 import { RenameConversationDialog } from './RenameConversationDialog'
 
 /* The menu trigger is the one action that survives on touch, so it carries
-   the 48px coarse-pointer target the tree recipe is built around. */
+ the 48px coarse-pointer target the tree recipe is built around. */
 const menuActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
 /* The pin shortcut is a hover affordance for a pointer; touch reaches Pin
-   through the menu, so the shortcut drops off coarse pointers. A pinned
-   chat's pin stays on show in the same place, hovered or not. */
+ through the menu, so the shortcut drops off coarse pointers. A pinned
+ chat's pin stays on show in the same place, hovered or not. */
 const pinActionClassName = `${uiClasses.treeItemAction} conversation-row__pin`
 
 /* Menu rows on the console's popover canon: Inter 14px, 36px tall, an
-   icon then its label, generous inset so the list breathes. */
+ icon then its label, generous inset so the list breathes. */
 const MENU_ITEM_CLASS = 'gap-2.5 rounded-lg px-2.5 py-2 text-sm'
 
 interface ConversationRowProps {
@@ -240,9 +240,9 @@ export function ConversationRow({
         </span>
       ) : null}
       {/* The live state leads the title, where the eye starts reading the
-          row: a pulsing dot while the agent works, an amber one while it
-          waits on the reader's answer to its question, red on error, and a
-          hollow ring while a sub-agent is inactive. */}
+ row: a pulsing dot while the agent works, an amber one while it
+ waits on the reader's answer to its question, red on error, and a
+ hollow ring while a sub-agent is inactive. */}
       {conversation.status === 'working' ? (
         <span className="conversation-row__status">
           <StatusDot tone="accent" pulse title="working" />
@@ -277,15 +277,15 @@ export function ConversationRow({
         </span>
       ) : null}
       {/* A long title fades at its right edge and slides into view while the
-          row is hovered (MarqueeLabel), so the whole name is readable
-          without widening the sidebar. */}
+ row is hovered (MarqueeLabel), so the whole name is readable
+ without widening the sidebar. */}
       <MarqueeLabel className={uiClasses.treeItemLabel}>
         {conversation.title}
       </MarqueeLabel>
       {/* The trailing edge keeps every control where it was: the pin has its
-          own place (on show while pinned, on hover otherwise), and the time
-          and the ⋯ share one cell at the far right, the ⋯ taking the time's
-          place on hover. Nothing slides under the pointer. */}
+ own place (on show while pinned, on hover otherwise), and the time
+ and the ⋯ share one cell at the far right, the ⋯ taking the time's
+ place on hover. Nothing slides under the pointer. */}
       <span className="conversation-row__trailing">
         {kindTag ? (
           <span
@@ -399,7 +399,7 @@ export function ConversationRow({
         </span>
       </span>
       {/* Last in the row, after the trailing cluster, so nothing that
-          appears on hover can slide into the caret's place. */}
+ appears on hover can slide into the caret's place. */}
       {hasChildren ? (
         <button
           type="button"

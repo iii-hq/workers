@@ -7,6 +7,11 @@ import {
   SettingsRow,
   SettingsSection,
 } from './Settings'
+import { Switch } from './Switch'
+
+/** Attribute text as React serialises it, back to the class names. */
+const decode = (text: string) =>
+  text.replaceAll('&gt;', '>').replaceAll('&lt;', '<').replaceAll('&amp;', '&')
 
 describe('settings primitives', () => {
   it('labels the section and exposes list semantics', () => {
@@ -75,7 +80,9 @@ describe('settings primitives', () => {
       </SettingsList>,
     )
 
-    expect(html).toContain('<label for="pool-size">Maximum connections</label>')
+    expect(html).toMatch(
+      /<label [^>]*for="pool-size"[^>]*>Maximum connections<\/label>/,
+    )
     expect(html).toContain('name="databases.primary.pool.max"')
     expect(html).toContain('data-field="databases.primary.pool.max"')
     expect(html).toContain('data-settings-field-control="true"')
@@ -100,5 +107,63 @@ describe('settings primitives', () => {
 
     expect(html).toContain('@[30rem]:w-auto')
     expect(html).toContain('data-layout="inline"')
+  })
+
+  // QA 2026-11-16 F9: Judge's "Keep every local provider loaded" took the
+  // default 320px control width and drew a long pill with the knob at its
+  // left end. A switch keeps its own size whatever `controlSize` is.
+  it('never stretches a switch to the field width', () => {
+    const html = renderToStaticMarkup(
+      <SettingsField
+        id="preload"
+        label="Keep every local provider loaded"
+        renderControl={(controlProps) => (
+          <Switch {...controlProps} checked={false} onChange={() => {}} />
+        )}
+      />,
+    )
+    const wrapper = html.match(
+      /<div data-settings-field-control="true" class="([^"]+)"/,
+    )?.[1]
+    expect(wrapper).toBeDefined()
+    const classes = decode(wrapper ?? '').split(' ')
+    // Stretched only when it is not a switch, and the slot fits it.
+    expect(classes).not.toContain('[&>*]:w-full')
+    expect(
+      classes.some(
+        (name) => name.includes(':not(') && name.includes('[role=switch]'),
+      ),
+    ).toBe(true)
+    expect(
+      classes.some(
+        (name) => name.startsWith('has-[>') && name.endsWith(':w-auto'),
+      ),
+    ).toBe(true)
+    expect(html).toContain('role="switch"')
+  })
+
+  // QA 2026-11-16 F10: worker forms built on SettingsField read at 14/12px
+  // beside General's 16/14px rows: the field set its own label and
+  // description sizes instead of taking the row recipe's.
+  it('lets the row recipe set the label and description size', () => {
+    const html = renderToStaticMarkup(
+      <SettingsField
+        id="prefix"
+        label="Ticket key prefix"
+        description="Prefix for the human-readable key."
+        renderControl={(controlProps) => (
+          <Input value="KAN" onChange={() => {}} {...controlProps} />
+        )}
+      />,
+    )
+    const label = html.match(/<label [^>]*class="([^"]+)"/)?.[1] ?? ''
+    const description =
+      html.match(/data-slot="field-description"[^>]*class="([^"]+)"/)?.[1] ??
+      html.match(/class="([^"]+)"[^>]*data-slot="field-description"/)?.[1] ??
+      ''
+    for (const classes of [label, description]) {
+      expect(classes.split(' ')).toContain('text-[length:inherit]')
+      expect(classes).not.toMatch(/(^| )text-(xs|sm)( |$)/)
+    }
   })
 })

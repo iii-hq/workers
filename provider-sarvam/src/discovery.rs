@@ -5,8 +5,8 @@
 //! unusable rows.
 use crate::{curated, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 
 /// The refresh flow; returns the reconciled slice size.
@@ -28,9 +28,9 @@ pub async fn refresh_models(iii: &IIIClient) -> Result<usize, Error> {
 pub fn make_refresh_models(
     iii: IIIClient,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let iii = iii.clone();
         Box::pin(async move {

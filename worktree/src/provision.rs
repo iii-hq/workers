@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{compile_globs, ProvisionConfig};
+use crate::config::{ProvisionConfig, compile_globs};
 use crate::error::WError;
 use crate::git::run_git_ok;
 
@@ -226,10 +226,10 @@ pub async fn copy_ignored(
                 );
                 break;
             }
-            if let Some(parent) = dst.parent() {
-                if std::fs::create_dir_all(parent).is_err() {
-                    continue;
-                }
+            if let Some(parent) = dst.parent()
+                && std::fs::create_dir_all(parent).is_err()
+            {
+                continue;
             }
             if copy_entry_with("cp", mode, &src, &dst) {
                 summary.copied += 1;

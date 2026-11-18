@@ -17,8 +17,8 @@
 
 use serde_json::json;
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 const ID: &str = "INT-035";
@@ -200,10 +200,12 @@ mod tests {
         assert!(
             fixture.probe_actions[2].payload["custom"]["data"]["tail_start_entry_id"].is_null()
         );
-        assert!(regex::Regex::new(&summary_pattern(FOREIGN_SUMMARY))
-            .unwrap()
-            .is_match(&format!(
-                "base prompt\n\n# Conversation summary\n\n{FOREIGN_SUMMARY}"
-            )));
+        assert!(
+            regex::Regex::new(&summary_pattern(FOREIGN_SUMMARY))
+                .unwrap()
+                .is_match(&format!(
+                    "base prompt\n\n# Conversation summary\n\n{FOREIGN_SUMMARY}"
+                ))
+        );
     }
 }

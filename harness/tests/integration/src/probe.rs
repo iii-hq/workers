@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{Capture, ObserverHandle, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::client::Client;
 use crate::deadline::Deadline;

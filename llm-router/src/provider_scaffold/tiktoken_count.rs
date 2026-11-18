@@ -12,7 +12,7 @@
 //! counter so the two cannot drift apart. `provider-openai-codex` takes only
 //! the encoder and counts the Responses items its own wire mappers build.
 
-use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton, CoreBPE};
+use tiktoken_rs::{CoreBPE, cl100k_base_singleton, o200k_base_singleton};
 
 use crate::provider_scaffold::chat_framing::count_framed_chat;
 use crate::types::messages::AgentMessage;

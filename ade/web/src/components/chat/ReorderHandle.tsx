@@ -107,7 +107,7 @@ export function ReorderHandle({
       onPointerCancel={onPointerEnd}
       onKeyDown={onKeyDown}
       className={cn(
-        'flex shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus active:cursor-grabbing',
+        'flex shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing',
         className,
       )}
     >

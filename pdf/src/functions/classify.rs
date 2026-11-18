@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::WorkerConfig;
-use crate::source::{describe_error, PdfSource};
+use crate::source::{PdfSource, describe_error};
 
 pub const ID: &str = "pdf::classify";
 pub const DESC: &str = "Classify a PDF as text-based, scanned, image-based or mixed, and report \

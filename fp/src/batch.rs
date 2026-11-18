@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
-use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use iii_sdk::IIIClient;
+use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 
 use crate::pipe;
 use crate::util;
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn validates_count_nesting_and_warns_past_the_limit() {
         assert!(validate(&parse(json!({ "calls": [] }))).is_err());
-        for nested in [BATCH_ID, pipe::PIPE_ID, "harness::send"] {
+        for nested in [BATCH_ID, pipe::PIPE_ID, "harness::send", "workflow::start"] {
             assert!(
                 validate(&parse(json!({ "calls": [{ "function": nested }] }))).is_err(),
                 "{nested}"
@@ -468,9 +468,11 @@ mod tests {
         let twelve: Vec<Value> = (0..12)
             .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } }))
             .collect();
-        assert!(validate(&parse(json!({ "calls": twelve })))
-            .unwrap()
-            .is_empty());
+        assert!(
+            validate(&parse(json!({ "calls": twelve })))
+                .unwrap()
+                .is_empty()
+        );
         let thirteen: Vec<Value> = (0..13)
             .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } }))
             .collect();
@@ -483,10 +485,12 @@ mod tests {
                 .is_empty()
         );
         // Scoped calls need the harness stamp.
-        assert!(validate(&parse(
-            json!({ "calls": [{ "function": "coder::read-file" }] })
-        ))
-        .is_err());
+        assert!(
+            validate(&parse(
+                json!({ "calls": [{ "function": "coder::read-file" }] })
+            ))
+            .is_err()
+        );
     }
 
     #[test]

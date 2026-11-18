@@ -120,8 +120,8 @@ WebP or JPEG to keep them small; the Registry serves the files as uploaded.
    it, so a changed image is a changed descriptor.
 2. **Build** ([`build.yml`](../../.github/workflows/build.yml)): `assemble`
    copies each image from the source SHA into the prepared release, checked
-   byte for byte against the descriptor; `upload` puts it on the shared
-   `build-<source_sha>` prerelease as `<worker>-screenshot-<name>` with the
+   byte for byte against the descriptor; `upload` puts it on the worker's
+   `build-<worker>-<source_sha>` prerelease as `<worker>-screenshot-<name>` with the
    same rule as the archives (identical bytes are skipped, different bytes fail);
    `manifest` checks the bytes again and writes them into `manifest.json`:
 
@@ -130,7 +130,7 @@ WebP or JPEG to keep them small; the Registry serves the files as uploaded.
      { "name": "android-1.webp", "release_asset": "kanban-screenshot-android-1.webp",
        "platform": "android", "caption": "The board, one lane at a time",
        "sha256": "<64 hex>", "size": 123456, "width": 1080, "height": 2424,
-       "url": "https://github.com/iii-hq/workers/releases/download/build-<source_sha>/kanban-screenshot-android-1.webp" }
+       "url": "https://github.com/iii-hq/workers/releases/download/build-kanban-<source_sha>/kanban-screenshot-android-1.webp" }
    ]
    ```
 

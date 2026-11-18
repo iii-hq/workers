@@ -15,7 +15,8 @@
  * The chip answers to the PANE, not the viewport: under a 30rem-wide chat
  * pane (a phone, or a narrow split) the caret hides (styles.css,
  * `@container`); the ring and the counts stay, since they are the part you
- * act on.
+ * act on. Under 24rem the counts give way to the chat's title as well, and
+ * the ring stands alone (the button's label still says everything).
  */
 
 import {

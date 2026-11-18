@@ -8,11 +8,11 @@ import { cn } from '@/lib/utils'
  * Tailwind utility placed beside it. Keep the three in step.
  */
 export const eyebrowClassName =
-  'font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint'
+  'font-mono text-meta font-medium uppercase tracking-[0.06em] text-ink-faint'
 
 /** The wide-tracked section eyebrow (`label-caps-md`): same size, 0.14em. */
 export const eyebrowLgClassName =
-  'font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-faint'
+  'font-mono text-meta font-medium uppercase tracking-[0.14em] text-ink-faint'
 
 export interface EyebrowProps extends HTMLAttributes<HTMLElement> {
   as?: 'span' | 'div' | 'p' | 'h2' | 'h3' | 'h4' | 'header' | 'dt' | 'legend'

@@ -30,7 +30,7 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{with_stack, BootOpts};
+    use crate::testkit::{BootOpts, with_stack};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn add_is_idempotent_on_function_id() {

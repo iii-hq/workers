@@ -13,7 +13,7 @@ use crate::events::{EventKind, RemovedEvent};
 use crate::functions::Deps;
 use crate::git::{ops, validate_abs_path};
 use crate::state;
-use crate::types::{now_ms, Lifecycle};
+use crate::types::{Lifecycle, now_ms};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct Request {
@@ -79,10 +79,10 @@ pub async fn handle(deps: &Deps, req: Request) -> Result<Response, WError> {
     let mut targets = crate::functions::status::TargetCache::new();
 
     for record in state::list_records(deps.state.as_ref()).await? {
-        if let Some(repo_key) = &repo_key_filter {
-            if &record.repo_key != repo_key {
-                continue;
-            }
+        if let Some(repo_key) = &repo_key_filter
+            && &record.repo_key != repo_key
+        {
+            continue;
         }
         let _guard = deps.locks.guard(&record.repo_key).await;
 

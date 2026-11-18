@@ -11,8 +11,8 @@
 //! handler, leaving the [`crate::transaction::TxRegistry`] desynchronized
 //! from the connection's actual txn state.
 
-use super::tx_sql_guard::is_transaction_control_sql;
 use super::AppState;
+use super::tx_sql_guard::is_transaction_control_sql;
 use crate::driver;
 use crate::error::DbError;
 use crate::handle::PinnedConn;
@@ -22,7 +22,7 @@ use crate::transaction::driver_system;
 use crate::value::JsonParam;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxQueryReq {
@@ -140,7 +140,7 @@ pub async fn handle(state: &AppState, req: TxQueryReq) -> Result<QueryResp, Stri
 mod tests {
     use super::*;
     use crate::handlers::begin_transaction::tests::state;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn req(v: Value) -> TxQueryReq {
         serde_json::from_value(v).unwrap()

@@ -13,46 +13,47 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, Uri};
-use axum::response::Response;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame as TungCloseFrame;
 
 use crate::interceptor::{DownstreamAction, Interceptor, UpstreamAction};
 use crate::rbac;
 use crate::server::ProxyState;
 
-/// Axum handler for the worker-protocol route (`GET /`). Captures the upgrade
-/// request's headers, query, and peer address (for the auth function) before
-/// the upgrade, then hands the socket to [`handle_connection`].
-pub async fn ws_upgrade(
-    State(state): State<ProxyState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    uri: Uri,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_connection(socket, state, peer, uri, headers))
+/// Relay an authenticated `/otel` socket to the engine as is. The server
+/// authenticated it before the upgrade. Relayed telemetry is not attributed:
+/// the engine names it by the `service.name` inside it (see the README).
+pub async fn telemetry_relay(client: WebSocket, state: ProxyState, uri: Uri) {
+    let cfg = state.config.read().await.clone();
+    let target = crate::endpoints::upstream_url(&cfg.engine_url, uri.path(), uri.query());
+    crate::channels::relay(
+        client,
+        state,
+        uri.path().to_string(),
+        target,
+        "engine dial failed",
+    )
+    .await
 }
 
 /// Decrement the live-connection gauge when a connection ends.
-struct ActiveGuard(Arc<AtomicU32>);
+pub(crate) struct ActiveGuard(pub(crate) Arc<AtomicU32>);
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-async fn handle_connection(
+pub async fn handle_connection(
     client: WebSocket,
     state: ProxyState,
     peer: SocketAddr,
@@ -72,6 +73,7 @@ async fn handle_connection(
         headers_to_map(&headers),
         query_to_multi_map(uri.query()),
         ip,
+        "/",
     )
     .await
     {
@@ -108,6 +110,8 @@ async fn handle_connection(
 
     state.active.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(state.active.clone());
+    // The granted worker names this session holds go with the connection.
+    let _names = rbac::WorkerNamesGuard(session.session_id);
 
     // Out-of-band reply channel for spawned middleware results (see the
     // Interceptor's `reply_tx` — spawning avoids a head-of-line deadlock).
@@ -221,10 +225,10 @@ async fn handle_connection(
                     }
                 },
                 other => {
-                    if let Some(out) = client_frame_to_engine(other) {
-                        if a_engine_out.send(out).await.is_err() {
-                            break;
-                        }
+                    if let Some(out) = client_frame_to_engine(other)
+                        && a_engine_out.send(out).await.is_err()
+                    {
+                        break;
                     }
                 }
             }
@@ -251,14 +255,13 @@ async fn handle_connection(
                         UpstreamAction::ReplyThenForwardAll(reply, frames) => (Some(reply), frames),
                         UpstreamAction::Drop => (None, Vec::new()),
                     };
-                    if let Some(reply) = to_engine {
-                        if b_engine_out
+                    if let Some(reply) = to_engine
+                        && b_engine_out
                             .send(TungMessage::Text(reply.into()))
                             .await
                             .is_err()
-                        {
-                            break;
-                        }
+                    {
+                        break;
                     }
                     let mut sent = true;
                     for out in frames {
@@ -276,10 +279,10 @@ async fn handle_connection(
                     }
                 }
                 other => {
-                    if let Some(out) = tungstenite_to_axum(other) {
-                        if b_client_out.send(out).await.is_err() {
-                            break;
-                        }
+                    if let Some(out) = tungstenite_to_axum(other)
+                        && b_client_out.send(out).await.is_err()
+                    {
+                        break;
                     }
                 }
             }
@@ -328,7 +331,7 @@ async fn reject(client: WebSocket, code: &str, message: &str) {
 
 /// Build the `AuthInput.headers` map (`Record<string, string>`). Header names
 /// are already lowercased by axum; non-UTF-8 values are skipped.
-fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
+pub(crate) fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
     headers
         .iter()
         .filter_map(|(name, value)| {
@@ -342,7 +345,7 @@ fn headers_to_map(headers: &HeaderMap) -> HashMap<String, String> {
 
 /// Build the `AuthInput.query_params` map (`Record<string, string[]>`),
 /// preserving repeated keys, with values URL-decoded.
-fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
+pub(crate) fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     if let Some(q) = query {
         for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {

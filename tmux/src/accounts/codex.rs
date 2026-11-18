@@ -214,13 +214,12 @@ pub fn read(codex_home: &Path) -> Option<CodexUsage> {
         }
         let (found, read) = last_event(&path, budget.min(TAIL_LIMIT));
         budget = budget.saturating_sub(read);
-        if let Some(found) = found {
-            if best
+        if let Some(found) = found
+            && best
                 .as_ref()
                 .is_none_or(|best| found.as_of_ms > best.as_of_ms)
-            {
-                best = Some(found);
-            }
+        {
+            best = Some(found);
         }
     }
     best
@@ -261,10 +260,12 @@ mod tests {
         assert_eq!(five.resets_at_ms, Some(1_767_225_600_000 + 600_000));
         assert_eq!(usage.week.as_ref().unwrap().used_percent, 9.5);
         assert!(usage.credits.is_none());
-        assert!(parse_event(
-            r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#
-        )
-        .is_none());
+        assert!(
+            parse_event(
+                r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":null}}"#
+            )
+            .is_none()
+        );
         assert!(parse_event(r#"{"timestamp":"2026-01-01T00:00:00Z","payload":{"type":"agent_message","rate_limits":{}}}"#).is_none());
     }
 

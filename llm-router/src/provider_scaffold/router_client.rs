@@ -6,7 +6,7 @@ use crate::types::model::Model;
 use crate::types::router::{CredentialSource, ProviderResolveResponse};
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The router's ready event: `RouterReadyEvent {}`, once per router start.
 const ON_READY_FN: &str = "router::on-ready";
@@ -135,7 +135,7 @@ pub fn apply_credential_env_fallback(
 
 #[cfg(test)]
 mod observe_tests {
-    use super::{observe_router_ready, router_ready_source, ON_READY_FN};
+    use super::{ON_READY_FN, observe_router_ready, router_ready_source};
     use crate::types::router::RouterReadyEvent;
     use iii_sdk::{Capture, IIIClient, ObserverState, Source};
     use serde_json::json;

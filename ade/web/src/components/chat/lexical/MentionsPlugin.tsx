@@ -74,15 +74,15 @@ class MentionOption extends MenuOption {
 }
 
 /* `@` after a start-of-line, whitespace or `(`, then anything that isn't
-   whitespace, another `@` or a paren. Unlike Lexical's basic matcher this
-   keeps `:`, `/`, `.` and `-` inside the query, because function ids
+ whitespace, another `@` or a paren. Unlike Lexical's basic matcher this
+ keeps `:`, `/`, `.` and `-` inside the query, because function ids
    (`shell::exec`) and paths (`src/a.ts`) are made of them. */
 const AT_PATTERN = /(^|\s|\()(@([^\s@()]{0,200}))$/
 
 /* `@<provider>:<text>` scopes the menu to one worker's mentions; the text
-   may hold spaces (titles do). A second colon (`@kanban::ticket::get`) is a
-   function id, never a scope. Whether a provider by that name exists is the
-   plugin's call — this only recognises the shape. */
+ may hold spaces (titles do). A second colon (`@kanban::ticket::get`) is a
+ function id, never a scope. Whether a provider by that name exists is the
+ plugin's call — this only recognises the shape. */
 const SCOPED_PATTERN =
   /(^|\s|\()(@([a-z][a-z0-9-]{0,39}:(?!:)[^\n@()]{0,120}))$/
 
@@ -98,7 +98,7 @@ export function atTriggerFn(text: string, _editor: LexicalEditor) {
 
 interface MentionsPluginProps {
   /** When set, true while the menu shows options, so the composer's Enter
-      and arrow handlers yield those keys to the typeahead. */
+ and arrow handlers yield those keys to the typeahead. */
   menuOpenRef?: React.MutableRefObject<boolean>
   functionEntries?: FunctionEntry[]
   /** Files under the conversation's working directory; absent = functions only. */
@@ -113,12 +113,12 @@ interface MentionsPluginProps {
  * The `@` typeahead.
  *
  * - `@text`: functions and files in one ranked list paged ten rows at a
- *   time (a "show more" row reveals the next page without closing the
- *   menu), plus the workers that define mentions — the ones whose name
- *   matches first, as sources to drill into, and from two characters on a
- *   group per worker with its best items.
+ *  time (a "show more" row reveals the next page without closing the
+ *  menu), plus the workers that define mentions — the ones whose name
+ *  matches first, as sources to drill into, and from two characters on a
+ *  group per worker with its best items.
  * - `@<worker>:text` (typed, or reached with Tab/Enter on a source): that
- *   worker's own search. Picking an item inserts `@<worker>(id="…")`.
+ *  worker's own search. Picking an item inserts `@<worker>(id="…")`.
  */
 export function MentionsPlugin({
   menuOpenRef,
@@ -192,12 +192,12 @@ export function MentionsPlugin({
   )
 
   /* The trigger fires on any `@query`, so the typeahead counts as open on
-     text that matches nothing ("thanks @bob"). Only a menu that shows
-     options may claim Enter, or the message could not be sent; a list that
-     fills in after a search lands claims it without a keystroke. A scoped
+ text that matches nothing ("thanks @bob"). Only a menu that shows
+ options may claim Enter, or the message could not be sent; a list that
+ fills in after a search lands claims it without a keystroke. A scoped
      `@worker:` menu always claims it: Enter there means "pick", never
      "send the half-typed search". Written only while this menu is open, so
-     it never clears another menu's claim. */
+ it never clears another menu's claim. */
   const openRef = useRef(false)
   useEffect(() => {
     if (menuOpenRef && openRef.current) {
@@ -206,10 +206,10 @@ export function MentionsPlugin({
   }, [options, scoped, menuOpenRef])
 
   /* The typeahead plugin wraps this callback in editor.update() and passes
-     the TextNode holding "@<query>" (shouldSplitNodeWithQuery is true inside
-     the plugin). An item becomes its pill plus a trailing space; a source
+ the TextNode holding "@<query>" (shouldSplitNodeWithQuery is true inside
+ the plugin). An item becomes its pill plus a trailing space; a source
      (or "more …") rewrites the query to `@<worker>:` and keeps the menu, as
-     the "show more" row keeps it to grow the list. */
+ the "show more" row keeps it to grow the list. */
   const onSelectOption = useCallback(
     (
       option: MentionOption,
@@ -284,8 +284,8 @@ export function MentionsPlugin({
       }}
       triggerFn={atTriggerFn}
       /* Run the typeahead's KEY_ENTER_COMMAND (and arrows/tab/escape) at NORMAL
-         so it consumes Enter before the composer's send, which listens at
-         the front of LOW. */
+ so it consumes Enter before the composer's send, which listens at
+ the front of LOW. */
       commandPriority={COMMAND_PRIORITY_NORMAL}
       menuRenderFn={(anchorElementRef, props) => {
         if (!anchorElementRef.current) return null
@@ -341,7 +341,7 @@ function MentionMenu({
   setHighlightedIndex,
 }: MentionMenuProps) {
   /* After "show more" the highlight moves onto the first revealed row, so
-     arrowing on continues down the list instead of jumping back up. */
+ arrowing on continues down the list instead of jumping back up. */
   useEffect(() => {
     const at = revealAtRef.current
     if (at === null) return

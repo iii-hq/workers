@@ -4,10 +4,10 @@
 //! credential gates the slice: no key, empty catalog, so pickers never show
 //! unusable rows.
 use crate::speech::{api_url_or_default, secret_of};
-use crate::{router_client, state, PROVIDER_ID};
+use crate::{PROVIDER_ID, router_client, state};
 use futures::future::BoxFuture;
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::types::model::{Model, SpeechModality, SpeechModel};
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde::Deserialize;
@@ -155,9 +155,9 @@ pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_req: RefreshModelsRequest| {
         let (iii, http) = (iii.clone(), http.clone());
         Box::pin(async move {
@@ -203,9 +203,11 @@ mod tests {
     #[test]
     fn the_static_slice_covers_both_families() {
         let models = static_models();
-        assert!(models
-            .iter()
-            .any(|m| m.id == "scribe_v1" && m.speech_modality() == Some(SpeechModality::Stt)));
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id == "scribe_v1" && m.speech_modality() == Some(SpeechModality::Stt))
+        );
         assert!(models.iter().any(|m| m.id == "eleven_multilingual_v2"
             && m.speech_modality() == Some(SpeechModality::Tts)));
         assert!(models.iter().all(|m| m.provider == PROVIDER_ID));
