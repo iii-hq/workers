@@ -208,7 +208,7 @@ pub struct TurnOptions {
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
     pub max_validation_retries: u32,
-    /// Mid-stream transient failures that may resume from the preserved
+    /// Retryable generation failures that may resume from the preserved
     /// transcript before this turn fails.
     #[serde(default = "default_max_transient_resumes")]
     pub max_transient_resumes: u32,

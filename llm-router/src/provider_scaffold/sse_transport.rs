@@ -2,7 +2,7 @@
 //! error-chain flattening, cross-chunk UTF-8 buffering, CRLF
 //! normalization, and `\n\n`-delimited block draining. Decoding the
 //! blocks into events stays provider-specific (the closure).
-use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
+use crate::types::events::{AssistantMessageEvent, ErrorKind};
 use crate::types::messages::AssistantMessage;
 use tokio::sync::mpsc;
 
@@ -247,7 +247,7 @@ pub fn classify_stream_end(
 
 /// The terminal error frame for a cut stream; keeps the partial, names the phase, logs no payload.
 pub fn truncated_stream_error(
-    mut partial: AssistantMessage,
+    partial: AssistantMessage,
     provider: &str,
     truncation: Truncation,
 ) -> AssistantMessageEvent {
@@ -264,10 +264,7 @@ pub fn truncated_stream_error(
         content_blocks = partial.content.len(),
         "provider stream truncated"
     );
-    partial.stop_reason = StopReason::Error;
-    partial.error_message = Some(message);
-    partial.error_kind = Some(ErrorKind::Transient);
-    AssistantMessageEvent::Error { error: partial }
+    AssistantMessageEvent::error(partial, ErrorKind::Transient, message)
 }
 
 /// True when `args_json` is not (yet) one complete JSON object.
@@ -284,6 +281,7 @@ pub fn arguments_incomplete(args_json: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::events::StopReason;
 
     struct View {
         terminator: bool,

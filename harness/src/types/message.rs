@@ -56,6 +56,14 @@ pub struct AssistantMessage {
     pub timestamp: i64,
 }
 
+impl AssistantMessage {
+    pub fn has_content(&self) -> bool {
+        self.content
+            .iter()
+            .any(|block| !matches!(block, ContentBlock::Text { text } if text.trim().is_empty()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FunctionResultMessage {
     pub role: FunctionResultRoleTag,

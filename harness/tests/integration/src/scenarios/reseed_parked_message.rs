@@ -30,7 +30,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         "reseed-parked-message",
         "A message parked during a turn's final step is delivered by a reseeded turn.",
         ScenarioDriver::Direct,
-        model.clone(),
+        model,
     )
     .send(Send::message(MESSAGE).idempotency_key("{{run_id}}:integration-003"))
     .terminal_turn_statuses(["failed", "completed"])
@@ -52,19 +52,14 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .generation(
         // The reseeded turn's own step 0 (`:0` pins a fresh turn id, not an
-        // advance of turn 1). Its context carries the original user message,
-        // the failed generation's empty assistant residue, and the parked
-        // follow-up delivered by the finalize drain.
+        // advance of turn 1). Only the original user message and the parked
+        // follow-up delivered by the finalize drain reach the model.
         Generation::new(2)
             .expect(
                 Request::new()
                     .turn_request_step(0)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_exact([
-                        Message::user(MESSAGE),
-                        Message::assistant_empty(&model),
-                        Message::user(PARKED),
-                    ])
+                    .messages_exact([Message::user(MESSAGE), Message::user(PARKED)])
                     .without_tools(),
             )
             .respond(Response::text(SECOND_TEXT, 12, 4)),

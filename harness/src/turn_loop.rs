@@ -1784,18 +1784,20 @@ async fn finish_step(
             .unwrap_or(&generation_error.message)
             .to_string();
         preserve_assistant_partial(&mut record.result, &outcome.message);
-        // Recovery continues a partial response. Retrying a failed startup is
-        // the router's responsibility; there is no response to resume here.
-        if assistant_partial_result(&outcome.message).is_some()
-            && transient_resume_allowed(
-                failure.retryable.then_some(ErrorKind::Transient),
-                record.transient_resumes,
-                record.options.max_transient_resumes,
-                record.turn_count,
-                record.options.max_turns,
-            )
-        {
+        if transient_resume_allowed(
+            failure.retryable,
+            record.transient_resumes,
+            record.options.max_transient_resumes,
+            record.turn_count,
+            record.options.max_turns,
+        ) {
             let attempt = record.transient_resumes + 1;
+            let has_partial = outcome.message.has_content();
+            let action = if has_partial {
+                "Resuming from partial output"
+            } else {
+                "Retrying from the conversation"
+            };
             record_recovery_telemetry(&record, &detail, attempt);
             let _ = session
                 .append_custom(
@@ -1804,7 +1806,7 @@ async fn finish_step(
                     json!({
                         "status": "recovering",
                         "summary": format!(
-                            "Stream interrupted; preserved partial output and resuming ({attempt}/{}).",
+                            "{action} ({attempt}/{}).",
                             record.options.max_transient_resumes
                         ),
                         "reason": reason,
@@ -1819,32 +1821,31 @@ async fn finish_step(
                         "partial_result_available": record.result.is_some(),
                         "timestamp": AgentMessage::now_ms(),
                     }),
-                    &ids::transient_recovery_entry_id(
-                        &record.turn_id,
-                        attempt,
-                        "recovering",
-                    ),
+                    &ids::transient_recovery_entry_id(&record.turn_id, attempt, "recovering"),
                     Some(&origin(&record.turn_id)),
                 )
                 .await;
-            let nudge = AgentMessage::user_text(format!(
-                "The provider/router ended transiently after streaming the previous partial \
-                 response: {reason}. Resume from the transcript and return the complete deliverable, \
-                 incorporating the previous partial even if it was already nearly complete. Do not \
-                 repeat function calls that already have successful results."
-            ));
-            let _ = session
-                .append(
-                    &record.session_id,
-                    &nudge,
-                    Some(&ids::transient_resume_nudge_entry_id(
-                        &record.turn_id,
-                        attempt,
-                    )),
-                    None,
-                    Some(&origin(&record.turn_id)),
-                )
-                .await?;
+            // With no output, the transcript already ends at the input to retry.
+            if has_partial {
+                let nudge = AgentMessage::user_text(format!(
+                    "The provider/router ended transiently after streaming the previous partial \
+                     response: {reason}. Resume from the transcript and return the complete deliverable, \
+                     incorporating the previous partial even if it was already nearly complete. Do not \
+                     repeat function calls that already have successful results."
+                ));
+                let _ = session
+                    .append(
+                        &record.session_id,
+                        &nudge,
+                        Some(&ids::transient_resume_nudge_entry_id(
+                            &record.turn_id,
+                            attempt,
+                        )),
+                        None,
+                        Some(&origin(&record.turn_id)),
+                    )
+                    .await?;
+            }
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
@@ -3483,11 +3484,7 @@ fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureI
 /// into a successful turn result. Text stays ergonomic; non-text blocks retain
 /// their typed wire shape. Blank text alone is not a recoverable partial.
 fn assistant_partial_result(message: &AssistantMessage) -> Option<Value> {
-    if message
-        .content
-        .iter()
-        .all(|block| matches!(block, ContentBlock::Text { text } if text.trim().is_empty()))
-    {
+    if !message.has_content() {
         return None;
     }
     let text = ContentBlock::join_text(&message.content);
@@ -3505,15 +3502,13 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
 }
 
 fn transient_resume_allowed(
-    error_kind: Option<crate::types::event::ErrorKind>,
+    retryable: bool,
     resumes: u32,
     max_resumes: u32,
     turn_count: u32,
     max_turns: u32,
 ) -> bool {
-    error_kind.is_some_and(|kind| kind.is_retryable())
-        && resumes < max_resumes
-        && turn_count < max_turns
+    retryable && resumes < max_resumes && turn_count < max_turns
 }
 
 pub(crate) async fn finalize_cancelled(
@@ -6543,42 +6538,12 @@ mod tests {
     }
 
     #[test]
-    fn transient_resume_is_bounded_and_only_for_retryable_midstream_failures() {
-        assert!(transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(transient_resume_allowed(
-            Some(ErrorKind::RateLimited),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Permanent),
-            0,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            1,
-            1,
-            1,
-            16
-        ));
-        assert!(!transient_resume_allowed(
-            Some(ErrorKind::Transient),
-            0,
-            1,
-            16,
-            16
-        ));
+    fn transient_resume_requires_a_retryable_failure_and_remaining_budgets() {
+        assert!(transient_resume_allowed(true, 0, 1, 1, 16));
+        assert!(!transient_resume_allowed(false, 0, 1, 1, 16));
+        assert!(!transient_resume_allowed(true, 0, 0, 1, 16));
+        assert!(!transient_resume_allowed(true, 1, 1, 1, 16));
+        assert!(!transient_resume_allowed(true, 0, 1, 16, 16));
     }
 
     #[test]

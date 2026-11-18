@@ -134,10 +134,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
