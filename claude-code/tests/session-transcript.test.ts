@@ -8,7 +8,14 @@ import { type Config, loadConfig } from '../src/config.js';
 import { executeRun, RunPayloadSchema, register } from '../src/run.js';
 import { toSessionMessage } from '../src/session-link.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
-import { fullTurn, initMsg, resultMsg, scriptedQuery } from './_helpers/fake-query.js';
+import {
+  assistantMsg,
+  fullTurn,
+  initMsg,
+  resultMsg,
+  scriptedQuery,
+  toolResultMsg,
+} from './_helpers/fake-query.js';
 
 /**
  * A sub-agent's chat is read from session-manager (`session::messages`) by
@@ -79,17 +86,122 @@ describe('child session transcript', () => {
     });
   });
 
-  it('writes the transcript before the session reads done', async () => {
+  it('marks the session done only after the last append has completed', async () => {
     // The console opens a finished child on `done`; an empty read at that
-    // moment is the blank pane.
+    // moment is the blank pane. Hold the final append open: `done` must wait.
     const fake = fakeIii();
-    await run(fake, { prompt: 'x', session_id: 'child-2', parent_session_id: 'p-1' });
-    const lastAppend = fake.calls.findLastIndex((c) => c.function_id === 'session::append');
-    const done = fake.calls.findIndex(
-      (c) => c.function_id === 'session::set-status' && c.payload.status === 'done',
-    );
-    expect(lastAppend).toBeGreaterThan(-1);
-    expect(done).toBeGreaterThan(lastAppend);
+    const real = fake.iii.call.bind(fake.iii);
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let appends = 0;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      if (req.function_id === 'session::append' && ++appends === 3) {
+        const out = real(req as never);
+        await held;
+        return out;
+      }
+      return real(req as never);
+    };
+    const running = run(fake, { prompt: 'x', session_id: 'child-2', parent_session_id: 'p-1' });
+    const statusDone = () =>
+      fake.calls.some(
+        (c) => c.function_id === 'session::set-status' && c.payload.status === 'done',
+      );
+    await vi.waitFor(() => expect(appends).toBe(3));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(statusDone()).toBe(false);
+    release();
+    await running;
+    expect(statusDone()).toBe(true);
+  });
+
+  it('never writes into a session another agent owns, even when named as the parent link', async () => {
+    // session::ensure adopts an existing session without comparing owners, so
+    // a successful link is not proof the session is this worker's child.
+    const fake = fakeIii();
+    seedSession(fake, 'console-xyz', { surface: 'console' });
+    await run(fake, { prompt: 'x', session_id: 'console-xyz', parent_session_id: 'p-1' });
+    expect(appended(fake)).toEqual([]);
+    expect(fake.calls.some((c) => c.function_id === 'session::set-status')).toBe(false);
+  });
+
+  it('keeps the assistant messages when the terminal record save fails', async () => {
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      const value = req.payload?.value as { status?: string } | undefined;
+      if (req.function_id === 'state::set' && value?.status === 'done') {
+        throw new Error('store down');
+      }
+      return real(req as never);
+    };
+    await run(fake, {
+      prompt: 'x',
+      session_id: 'child-7',
+      parent_session_id: 'p-1',
+    }).catch(() => {});
+    const messages = appended(fake, 'child-7');
+    expect(JSON.stringify(messages)).toContain('running ls');
+    expect(messages[messages.length - 1]).toMatchObject({
+      role: 'assistant',
+      stop_reason: 'error',
+    });
+    const statuses = fake.calls
+      .filter((c) => c.function_id === 'session::set-status')
+      .map((c) => c.payload.status);
+    expect(statuses).toEqual(['working', 'error']);
+  });
+
+  it('stores the terminal stop reason on the last assistant message when the turn hits a cap', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      assistantMsg,
+      toolResultMsg,
+      { ...resultMsg, subtype: 'error_max_turns', is_error: true },
+    ];
+    await run(fake, { prompt: 'x', session_id: 'child-8', parent_session_id: 'p-1' }, turn);
+    const assistants = appended(fake, 'child-8').filter((m) => m.role === 'assistant');
+    expect(assistants[assistants.length - 1].stop_reason).toBe('length');
+  });
+
+  it('marks the session error when the SDK reports an error result', async () => {
+    const fake = fakeIii();
+    const turn = [
+      initMsg,
+      assistantMsg,
+      { ...resultMsg, subtype: 'error_during_execution', is_error: true },
+    ];
+    await run(fake, { prompt: 'x', session_id: 'child-9', parent_session_id: 'p-1' }, turn);
+    const statuses = fake.calls
+      .filter((c) => c.function_id === 'session::set-status')
+      .map((c) => c.payload.status);
+    expect(statuses).toEqual(['working', 'error']);
+  });
+
+  it('retries a failed ownership lookup before writing instead of dropping the turn', async () => {
+    const fake = fakeIii();
+    seedSession(fake, 'child-10', { agent: 'claude-code', parent_session_id: 'p-1' });
+    const real = fake.iii.call.bind(fake.iii);
+    let lookups = 0;
+    (fake.iii as { call: unknown }).call = async (req: { function_id: string }) => {
+      if (req.function_id === 'session::get' && ++lookups === 1) throw new Error('timeout');
+      return real(req as never);
+    };
+    await run(fake, { prompt: 'again', session_id: 'child-10' });
+    expect(appended(fake, 'child-10').map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'function_result',
+    ]);
   });
 
   it('stores usage in the session-manager shape so the transcript keeps its token counts', async () => {

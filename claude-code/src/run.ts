@@ -25,7 +25,7 @@ import {
 import { listSessions, loadSession, saveSession } from './state.js';
 import {
   appendTranscript,
-  isClaudeChildSession,
+  childSessionOwnership,
   linkChildSession,
   recordTaskOutcome,
   setSessionStatus,
@@ -248,28 +248,32 @@ export async function executeRun(
     // because `parent_session_id` only applies on creation, and that link is
     // what nests it in the console. A later turn on the same child (resumed
     // with its session id alone) stays a child.
-    const linked = payload.parent_session_id
-      ? await linkChildSession(iii, {
-          sessionId: session_id,
-          parentSessionId: payload.parent_session_id,
-          task: prompt,
-        })
-      : { linked: false, detail: '' };
-    const child = linked.linked || (await isClaudeChildSession(iii, session_id));
-    if (child) await setSessionStatus(iii, session_id, 'working');
+    if (payload.parent_session_id) {
+      await linkChildSession(iii, {
+        sessionId: session_id,
+        parentSessionId: payload.parent_session_id,
+        task: prompt,
+      });
+    }
+    // Ownership, not the link, decides: `session::ensure` adopts an existing
+    // session without comparing owners, so only a session this worker created
+    // is ever written to.
+    let ownership = await childSessionOwnership(iii, session_id);
+    if (ownership === 'child') await setSessionStatus(iii, session_id, 'working');
     // The feeds are a live tape: a window opened after the run has nothing to
     // replay from them, which is why a finished sub-agent rendered blank with
     // `message_count: 0`. A child's turn is therefore also written to
     // session-manager — whichever entrypoint (run, start, task) started it.
-    let produced: unknown[] = [];
-    const recording: Emit = child
-      ? async (sid, event) => {
-          await emit(sid, event);
-          if ((event as { type?: string }).type === 'agent_end') {
-            produced = (event as { messages?: unknown[] }).messages ?? [];
-          }
-        }
-      : emit;
+    // runReserved fills `transcript` as messages arrive, before any feed
+    // publication or record save, so neither failing can lose them.
+    const transcript: AgentMessage[] = [];
+    const persist = async (stop: string, status: 'done' | 'error', reason?: string) => {
+      if (ownership === 'unknown') ownership = await childSessionOwnership(iii, session_id);
+      if (ownership !== 'child') return;
+      // Transcript first, status second: the console opens a child on `done`.
+      await appendTranscript(iii, session_id, prompt, transcript, stop);
+      await setSessionStatus(iii, session_id, status, reason);
+    };
     // One turn, one traced scope. The identity keys are the harness's own, so
     // a headless Claude Code turn groups and labels itself in the console's
     // trace views like a native turn — and every call the turn makes inherits
@@ -282,22 +286,15 @@ export async function executeRun(
         kind: 'claude.run',
         message: prompt,
       },
-      () => runReserved(iii, cfg, recording, emitRaw, payload, session_id, prompt, handle),
+      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle, transcript),
     ).catch(async (err) => {
-      if (child) {
-        await appendTranscript(iii, session_id, prompt, [
-          ...produced,
-          makeAssistantMessage([{ type: 'text', text: String(err) }], '', null, 'error'),
-        ]);
-        await setSessionStatus(iii, session_id, 'error', String(err));
-      }
+      transcript.push(
+        makeAssistantMessage([{ type: 'text', text: String(err) }], '', null, 'error'),
+      );
+      await persist('error', 'error', String(err));
       throw err;
     });
-    // Transcript first, status second: the console opens a child on `done`.
-    if (child) {
-      await appendTranscript(iii, session_id, prompt, produced);
-      await setSessionStatus(iii, session_id, 'done');
-    }
+    await persist(String(result.stop_reason ?? 'end'), result.is_error === true ? 'error' : 'done');
     return result;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
@@ -313,6 +310,7 @@ async function runReserved(
   session_id: string,
   prompt: string,
   handle: LiveRun,
+  transcript: AgentMessage[] = [],
 ): Promise<Record<string, unknown>> {
   const prior = await loadSession(iii, session_id);
   const d = cfg.defaults;
@@ -382,7 +380,6 @@ async function runReserved(
   record.updated_at_ms = Date.now();
   await saveSession(iii, record);
 
-  const transcript: AgentMessage[] = [];
   const pendingResults: FunctionResultMessage[] = [];
   const calls: ToolCallIndex = new Map();
   let resultText = '';

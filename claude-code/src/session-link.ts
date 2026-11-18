@@ -142,21 +142,27 @@ export async function appendMessage(
 }
 
 /**
- * Is `sessionId` a child session this worker linked on an earlier turn? An
- * orchestrator resumes a child with `claude::start { session_id }` alone, and
- * that turn belongs in the same transcript. A session another agent owns (a
- * harness chat driving `claude::run` with its own id) is never written to.
+ * Who owns `sessionId` in session-manager. `child` is a session this worker
+ * created (`metadata.agent: 'claude-code'`) — a run with `parent_session_id`
+ * links one, and an orchestrator resumes it with `claude::start { session_id }`
+ * alone. `other` is a session another agent owns (a harness chat driving
+ * `claude::run` with its own id) or none at all: never written to. `unknown`
+ * is a failed lookup, which the caller asks again before writing rather than
+ * dropping the turn.
  */
-export async function isClaudeChildSession(iii: IIIClient, sessionId: string): Promise<boolean> {
+export type Ownership = 'child' | 'other' | 'unknown';
+
+export async function childSessionOwnership(iii: IIIClient, sessionId: string): Promise<Ownership> {
   try {
     const res = await iii.call<unknown, { meta?: { metadata?: Record<string, unknown> } } | null>({
       function_id: 'session::get',
       payload: { session_id: sessionId },
       timeoutMs: TIMEOUT_MS,
     });
-    return res?.meta?.metadata?.agent === 'claude-code';
-  } catch {
-    return false;
+    return res?.meta?.metadata?.agent === 'claude-code' ? 'child' : 'other';
+  } catch (err) {
+    console.warn(`claude-code: session::get failed for ${sessionId}: ${String(err)}`);
+    return 'unknown';
   }
 }
 
@@ -198,13 +204,17 @@ export function toSessionMessage(message: Record<string, unknown>): Record<strin
  * Write a finished turn into the child session: what was asked, then every
  * message the turn produced, in order. Called once per turn, before the
  * session reads `done` — the live view is the claude::on-agent-event feed,
- * this is what a window opened later replays.
+ * this is what a window opened later replays. `terminalStop` is how the turn
+ * ended (the SDK result subtype); it lands on the LAST assistant message only,
+ * so a turn that hit `error_max_turns` after an assistant reply does not read
+ * as a clean `end`. Earlier messages keep their own reason.
  */
 export async function appendTranscript(
   iii: IIIClient,
   sessionId: string,
   task: string,
   messages: unknown[],
+  terminalStop?: string,
 ): Promise<void> {
   const asked = {
     role: 'user',
@@ -212,8 +222,16 @@ export async function appendTranscript(
     timestamp: Date.now(),
   };
   if (!(await appendMessage(iii, sessionId, asked))) return;
-  for (const message of messages) {
-    const wire = toSessionMessage(message as Record<string, unknown>);
-    if (!(await appendMessage(iii, sessionId, wire))) return;
+  const records = messages as Array<Record<string, unknown>>;
+  let last = -1;
+  records.forEach((message, index) => {
+    if (message.role === 'assistant') last = index;
+  });
+  for (const [index, message] of records.entries()) {
+    const ended =
+      index === last && terminalStop && terminalStop !== 'end'
+        ? { ...message, stop_reason: terminalStop }
+        : message;
+    if (!(await appendMessage(iii, sessionId, toSessionMessage(ended)))) return;
   }
 }
