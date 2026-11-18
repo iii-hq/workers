@@ -1,6 +1,5 @@
-import uiClasses from '@iii-dev/console-ui/ui-classes'
 import type * as React from 'react'
-import { useRef } from 'react'
+import { ToggleGroup, ToggleGroupItem } from '@/components/shadcn/toggle-group'
 import { cn } from '@/lib/utils'
 import { Hint } from './Hint'
 import { TabIconSlot } from './TabIcon'
@@ -15,10 +14,9 @@ export interface SegmentedControlOption<T extends string> {
 }
 
 /**
- * `tabs` (default): semantic tablist for view switching (top nav).
- * `radio`: semantic radiogroup for persistent preferences (theme). Radio
- * matches the "one persistent choice" meaning better than tab, which
- * implies switching between panels.
+ * `tabs` (default): view switching (top nav), spaced pills.
+ * `radio`: one persistent preference (theme, a source), joined segments.
+ * Both are the shadcn toggle group: one pressed item, arrow keys move.
  */
 export type SegmentedControlVariant = 'tabs' | 'radio'
 
@@ -33,7 +31,7 @@ export interface SegmentedControlProps<T extends string> {
   variant?: SegmentedControlVariant
   /** Show only the semantic icon and expose each label through Tooltip. */
   iconOnly?: boolean
-  /** Accessible name for the group. Required for `variant="radio"`. */
+  /** Accessible name for the group. */
   'aria-label'?: string
 }
 
@@ -48,77 +46,38 @@ export function SegmentedControl<T extends string>({
   iconOnly = false,
   'aria-label': ariaLabel,
 }: SegmentedControlProps<T>) {
-  const groupRole = variant === 'radio' ? 'radiogroup' : 'tablist'
-  const itemRole = variant === 'radio' ? 'radio' : 'tab'
   const renderIconOnly = iconOnly && variant === 'tabs'
-  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
-
-  // Both tabs and radios are one keyboard stop. Arrow keys move and commit;
-  // Home/End jump to the edges. Radios additionally accept vertical arrows.
-  function handleKeyDown(
-    e: React.KeyboardEvent<HTMLButtonElement>,
-    idx: number,
-  ) {
-    let nextIdx: number | null = null
-    if (
-      e.key === 'ArrowRight' ||
-      (variant === 'radio' && e.key === 'ArrowDown')
-    ) {
-      nextIdx = (idx + 1) % options.length
-    } else if (
-      e.key === 'ArrowLeft' ||
-      (variant === 'radio' && e.key === 'ArrowUp')
-    ) {
-      nextIdx = (idx - 1 + options.length) % options.length
-    } else if (e.key === 'Home') {
-      nextIdx = 0
-    } else if (e.key === 'End') {
-      nextIdx = options.length - 1
-    }
-    if (nextIdx !== null) {
-      e.preventDefault()
-      onChange(options[nextIdx].value)
-      buttonRefs.current[nextIdx]?.focus()
-    }
-  }
-
+  const joined = variant === 'radio'
   return (
-    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: groupRole is always "tablist" or "radiogroup", both of which support aria-label; Biome can't resolve the dynamic role and falls back to the generic <div> role
-    <div
-      role={groupRole}
+    <ToggleGroup
       aria-label={ariaLabel}
+      value={[value]}
+      // One item is always pressed: releasing the pressed one changes nothing.
+      onValueChange={(next) => {
+        const picked = next.find((entry) => entry !== value) ?? next[0]
+        if (picked !== undefined && picked !== value) onChange(picked as T)
+      }}
+      variant={joined ? 'outline' : 'default'}
+      size="sm"
+      spacing={joined ? 0 : 2}
       data-variant={variant}
       data-icon-only={renderIconOnly || undefined}
-      className={cn(
-        variant === 'tabs' ? uiClasses.tabsList : uiClasses.segmentedControl,
-        className,
-      )}
+      className={cn(joined && 'bg-muted', className)}
     >
-      {options.map((opt, idx) => {
+      {options.map((opt) => {
         const active = opt.value === value
-        const ariaState =
-          variant === 'radio'
-            ? { 'aria-checked': active }
-            : { 'aria-selected': active }
         const accessibleLabel =
           opt.title ?? (typeof opt.label === 'string' ? opt.label : opt.value)
-        const button = (
-          <button
+        const item = (
+          <ToggleGroupItem
             key={opt.value}
-            type="button"
-            role={itemRole}
-            {...ariaState}
+            value={opt.value}
             aria-label={renderIconOnly ? accessibleLabel : undefined}
-            ref={(el) => {
-              buttonRefs.current[idx] = el
-            }}
-            tabIndex={active ? 0 : -1}
-            onClick={() => onChange(opt.value)}
-            onKeyDown={(e) => handleKeyDown(e, idx)}
             title={renderIconOnly ? undefined : opt.title}
             data-selected={active || undefined}
             className={cn(
-              variant === 'tabs' ? uiClasses.tab : uiClasses.segmentedItem,
+              'text-muted-foreground aria-pressed:text-foreground',
+              joined && 'aria-pressed:bg-background aria-pressed:shadow-sm',
               itemClassName,
               active && activeItemClassName,
             )}
@@ -127,16 +86,16 @@ export function SegmentedControl<T extends string>({
               <TabIconSlot icon={opt.icon} value={opt.value} />
             ) : null}
             {renderIconOnly ? null : <span>{opt.label}</span>}
-          </button>
+          </ToggleGroupItem>
         )
-        if (!renderIconOnly) return button
+        if (!renderIconOnly) return item
         return (
           <Hint key={opt.value} label={opt.label}>
-            {button}
+            {item}
           </Hint>
         )
       })}
-    </div>
+    </ToggleGroup>
   )
 }
 

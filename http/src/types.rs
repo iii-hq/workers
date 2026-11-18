@@ -11,7 +11,7 @@ use axum::{
 use iii_sdk::channel::StreamChannelRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// One HTTP request as the server received it: the input of
 /// `http::on-request` and its output (the handler returns its input). An
@@ -94,12 +94,19 @@ impl HttpResponse {
 
     /// Build an axum response, honoring user-set headers and choosing a body
     /// serialization based on Content-Type (string/bytes for non-JSON types,
-    /// JSON otherwise).
+    /// JSON otherwise). A status that must not carry content (see
+    /// [`forbids_content`]) is always sent with an empty body and no default
+    /// Content-Type, whatever the function returned as `body`.
     pub fn into_axum_response(self) -> Response {
         let status = StatusCode::from_u16(self.status_code).unwrap_or(StatusCode::OK);
         let user_content_type = self.header("content-type").map(|s| s.to_string());
 
         let (body_bytes, default_content_type) = match (&user_content_type, &self.body) {
+            // Serializing the body here would announce a `content-length`
+            // (`null` is 4 bytes, the default `{}` is 2) the client never
+            // receives: HTTP/1.1 clients tolerate it, HTTP/2 clients reject
+            // the stream with a protocol error.
+            _ if forbids_content(status) => (Vec::new(), None),
             (Some(_), Value::String(s)) => (s.clone().into_bytes(), None),
             (Some(_), Value::Null) => (Vec::new(), None),
             (Some(ct), other) if !ct.to_ascii_lowercase().contains("application/json") => {
@@ -129,16 +136,24 @@ impl HttpResponse {
                 }
             }
         }
-        if !content_type_set {
-            if let Some(ct) = default_content_type {
-                builder = builder.header("content-type", ct);
-            }
+        if !content_type_set && let Some(ct) = default_content_type {
+            builder = builder.header("content-type", ct);
         }
 
         builder
             .body(Body::from(body_bytes))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }
+}
+
+/// Whether a response with `status` must not carry content (RFC 9110): every
+/// 1xx, 204 No Content, 205 Reset Content and 304 Not Modified.
+fn forbids_content(status: StatusCode) -> bool {
+    status.is_informational()
+        || matches!(
+            status,
+            StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+        )
 }
 
 fn parse_header_line(line: &str) -> Option<(String, String)> {
@@ -338,6 +353,64 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("text/xml"),
         );
+    }
+
+    async fn body_bytes(resp: Response) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn into_axum_response_sends_no_content_for_bodyless_statuses() {
+        // #1717: a 204 returned with `body: null` and no Content-Type went out
+        // with `content-length: 4` (the serialized `null`), which HTTP/2
+        // clients reject as a protocol error.
+        for status in [204u16, 205, 304] {
+            for value in [
+                json!({ "status_code": status, "headers": {}, "body": null }),
+                json!({ "status_code": status }),
+                json!({ "status_code": status, "body": { "ignored": true } }),
+            ] {
+                let resp = HttpResponse::from_function_return(value.clone()).into_axum_response();
+                assert_eq!(resp.status().as_u16(), status, "{value}");
+                assert!(resp.headers().get("content-type").is_none(), "{value}");
+                assert!(resp.headers().get("content-length").is_none(), "{value}");
+                assert!(body_bytes(resp).await.is_empty(), "{value}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn into_axum_response_keeps_user_content_type_on_a_204() {
+        let value = json!({
+            "status_code": 204,
+            "headers": { "Content-Type": "application/json" },
+            "body": null,
+        });
+        let resp = HttpResponse::from_function_return(value).into_axum_response();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
+        assert!(body_bytes(resp).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn into_axum_response_still_serializes_a_null_body_on_a_200() {
+        let value = json!({ "status_code": 200, "body": null });
+        let resp = HttpResponse::from_function_return(value).into_axum_response();
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+        );
+        assert_eq!(body_bytes(resp).await, b"null");
     }
 
     // =========================================================================

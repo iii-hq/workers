@@ -226,7 +226,7 @@ describe('classifyTurnFailure', () => {
     })
     expect(presentation.owner).toBe('iii')
     expect(presentation.ownerLabel).toBe('iii issue')
-    expect(presentation.title).toBe('Something went wrong in iii')
+    expect(presentation.title).toBe('iii failed while running this turn')
   })
 })
 

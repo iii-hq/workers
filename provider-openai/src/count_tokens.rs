@@ -9,12 +9,12 @@
 //! not serve it, so the fallback is the local tiktoken estimate
 //! (`llm_router::provider_scaffold::tiktoken_count`).
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::provider_scaffold::endpoint_count::{post_count, ESTIMATOR_METERED};
+use llm_router::provider_scaffold::endpoint_count::{ESTIMATOR_METERED, post_count};
 use llm_router::provider_scaffold::tiktoken_count::{
-    count_chat_tokens, encoder_for, ESTIMATOR_TIKTOKEN,
+    ESTIMATOR_TIKTOKEN, count_chat_tokens, encoder_for,
 };
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::config::{config_from_resolve, ApiMode, OpenaiConfig};
-use crate::request::{build_body, build_chat_response_format, build_headers, BodyArgs};
+use crate::config::{ApiMode, OpenaiConfig, config_from_resolve};
+use crate::request::{BodyArgs, build_body, build_chat_response_format, build_headers};
 use crate::state;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -324,14 +324,16 @@ mod tests {
 
     #[tokio::test]
     async fn empty_messages_are_rejected() {
-        assert!(count(
-            &reqwest::Client::new(),
-            &ScaffoldCache::new(),
-            None,
-            request("gpt-5", vec![])
-        )
-        .await
-        .is_err());
+        assert!(
+            count(
+                &reqwest::Client::new(),
+                &ScaffoldCache::new(),
+                None,
+                request("gpt-5", vec![])
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[test]
@@ -397,9 +399,10 @@ mod tests {
         assert_eq!(resp.estimator, "metered");
         let raw = seen.await.unwrap();
         assert!(raw.starts_with("POST /v1/responses/input_tokens "), "{raw}");
-        assert!(raw
-            .to_ascii_lowercase()
-            .contains("authorization: bearer sk-test"));
+        assert!(
+            raw.to_ascii_lowercase()
+                .contains("authorization: bearer sk-test")
+        );
         let body: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
         assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
         assert!(body.get("stream").is_none());

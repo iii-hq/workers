@@ -129,7 +129,7 @@ function PinnedGrip({
         controls.start(event)
       }}
       onKeyDown={onKeyDown}
-      className="flex size-8 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus active:cursor-grabbing"
+      className="flex size-8 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing"
     >
       <GripVertical aria-hidden className="size-4" />
     </button>
@@ -449,9 +449,9 @@ export function PinnedModelMenu({
           className="pt-1.5 first:pt-0"
         >
           {/* The group label: the provider's mark and its own
-              name (`Anthropic`, `Claude Code (subscription)`),
-              so the same model family under two credentials
-              reads as two. */}
+ name (`Anthropic`, `Claude Code (subscription)`),
+ so the same model family under two credentials
+ reads as two. */}
           <div className="flex h-8 items-center justify-between gap-3 px-2">
             <h3 className="flex min-w-0 items-center gap-2 text-xs font-medium text-ink-faint">
               <ProviderIcon
@@ -467,7 +467,7 @@ export function PinnedModelMenu({
               <button
                 type="button"
                 onClick={() => onConfigureProvider(group.label)}
-                className="shrink-0 rounded-sm text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                className="shrink-0 rounded-sm text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 Configure
               </button>
@@ -487,7 +487,7 @@ export function PinnedModelMenu({
               type="button"
               disabled={disabled}
               onClick={() => onConfigureProvider(group.label)}
-              className="flex h-10 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+              className="flex h-10 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
             >
               <span className="min-w-0 flex-1 truncate">
                 Configure provider
@@ -679,12 +679,12 @@ export function PinnedModelMenu({
             )}
 
             {/* All models: the whole catalog, grouped by provider, folded
-                under the favorites so the menu stays short; a model is a
-                click away without leaving the menu. The wrapper is
+ under the favorites so the menu stays short; a model is a
+ click away without leaving the menu. The wrapper is
                 `display: contents` so the header is a direct child of the
-                scrolling list and can stick to either edge: at the bottom
-                while folded (visible even when the favorites overflow a
-                short menu), at the top while the catalog scrolls under it. */}
+ scrolling list and can stick to either edge: at the bottom
+ while folded (visible even when the favorites overflow a
+ short menu), at the top while the catalog scrolls under it. */}
             {showAllModels ? (
               <div
                 data-all-models={allModelsOpen ? 'open' : 'closed'}
@@ -697,7 +697,7 @@ export function PinnedModelMenu({
                   aria-controls="model-picker-all-models"
                   onClick={toggleAllModels}
                   className={cn(
-                    'sticky -top-1.5 -bottom-1.5 z-10 flex h-9 w-full shrink-0 items-center gap-2 bg-popover px-2 text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus',
+                    'sticky -top-1.5 -bottom-1.5 z-10 flex h-9 w-full shrink-0 items-center gap-2 bg-popover px-2 text-xs font-medium text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50',
                     !favoritesEmpty && 'mt-1 border-t border-edge',
                   )}
                 >
@@ -756,7 +756,7 @@ export function PinnedModelMenu({
             title="Pin up to five favorites and arrange them"
             disabled={disabled}
             onClick={onEdit}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+            className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
           >
             <LayoutGrid className="size-4" aria-hidden />
             Manage models
@@ -770,7 +770,7 @@ export function PinnedModelMenu({
             aria-label="Add a provider"
             disabled={disabled}
             onClick={onAddProvider}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+            className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
           >
             <Plus className="size-4" aria-hidden />
             Add provider

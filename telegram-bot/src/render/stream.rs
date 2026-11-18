@@ -9,11 +9,11 @@ use crate::config::{StreamTransport, WorkerConfig};
 use crate::deps::{Deps, RuntimeState, StreamSession};
 use crate::kv;
 use crate::preferences;
-use crate::render::chunk::{split_message, TELEGRAM_MAX_MESSAGE_LEN};
+use crate::render::chunk::{TELEGRAM_MAX_MESSAGE_LEN, split_message};
 use crate::render::format;
 use crate::render::throttle;
 use crate::render::verbosity::{
-    self, message_phase, render_answer_text, render_thinking_text, MessagePhase,
+    self, MessagePhase, message_phase, render_answer_text, render_thinking_text,
 };
 use crate::types::{AgentMessage, MessageUpdatedEvent};
 
@@ -743,10 +743,10 @@ async fn deliver_text(
         {
             return Ok(());
         }
-        if let Some(first) = chunks.first() {
-            if let Err(e) = edit_message_text_formatted(deps, chat_id, id, first).await {
-                tracing::warn!(error = %e, message_id = id, "editMessageText failed");
-            }
+        if let Some(first) = chunks.first()
+            && let Err(e) = edit_message_text_formatted(deps, chat_id, id, first).await
+        {
+            tracing::warn!(error = %e, message_id = id, "editMessageText failed");
         }
         for (i, chunk) in chunks.iter().skip(1).enumerate() {
             let chunk_idx = i as u32 + 1;
@@ -855,12 +855,11 @@ async fn finalize_draft_messages(
     let chunks = split_message(text, TELEGRAM_MAX_MESSAGE_LEN);
 
     if let Some(message_id) = session.message_id {
-        if let Some(first) = chunks.first() {
-            if let Err(e) =
+        if let Some(first) = chunks.first()
+            && let Err(e) =
                 edit_message_text_formatted(deps, session.chat_id, message_id, first).await
-            {
-                tracing::warn!(error = %e, message_id, "finalize draft editMessageText failed");
-            }
+        {
+            tracing::warn!(error = %e, message_id, "finalize draft editMessageText failed");
         }
         for (i, chunk) in chunks.iter().skip(1).enumerate() {
             let chunk_idx = i as u32 + 1;
@@ -1023,7 +1022,7 @@ fn merge_pending_into_session(
 /// id. DashMap iteration order is arbitrary, so this is what keeps multiple
 /// entries finalized in one turn from landing out of order in the chat.
 fn order_for_posting(mut pairs: Vec<(i64, (String, String))>) -> Vec<(String, String)> {
-    pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1 .1.cmp(&b.1 .1)));
+    pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.1.cmp(&b.1.1)));
     pairs.into_iter().map(|(_, key)| key).collect()
 }
 
@@ -1251,10 +1250,10 @@ fn draft_id_for_entry(cfg: &WorkerConfig, session_id: &str, entry_id: &str) -> i
 fn should_draft(deps: &Deps, session: &StreamSession, throttle_ms: u64) -> bool {
     let key = (session.chat_id, session.draft_id);
     let now = std::time::Instant::now();
-    if let Some(last) = deps.runtime.draft_times.get(&key) {
-        if now.duration_since(*last) < std::time::Duration::from_millis(throttle_ms) {
-            return false;
-        }
+    if let Some(last) = deps.runtime.draft_times.get(&key)
+        && now.duration_since(*last) < std::time::Duration::from_millis(throttle_ms)
+    {
+        return false;
     }
     deps.runtime.draft_times.insert(key, now);
     true
@@ -1750,11 +1749,13 @@ mod tests {
         await_create_slot(&runtime, 9, &(100, "z".into(), 0), 0).await;
         complete_create_slot(&runtime, 9, &(100, "z".into(), 0), 100, true);
         assert_eq!(*runtime.last_created_order.get(&9).unwrap(), 100);
-        assert!(runtime
-            .chat_create_order
-            .get(&9)
-            .map(|s| s.is_empty())
-            .unwrap_or(true));
+        assert!(
+            runtime
+                .chat_create_order
+                .get(&9)
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+        );
     }
 
     #[tokio::test]

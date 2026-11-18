@@ -25,98 +25,68 @@ function base(
 /* ---------------- a realistic join-heavy DAG ----------------
  * Mirrors the live adversarial-blog run: discover → select → 4 named critics
  * → synthesize (JOIN over all 4) → draft → 2 reviewers → final_rewrite (JOIN
- * over draft + both reviews). The two array-`from` joins are what the new
+ * over draft + both reviews). The two array-`reads` joins are what the
  * multi-input wiring exists for, so the DagSummary shows the `join` badge. */
-const blogDef = {
-  version: 1,
-  nodes: {
-    discover: {
-      agent: { model: 'claude-opus-4-8' },
-      input: {
-        from: 'run_input',
-        template: 'Find currently-viral SE articles.',
-      },
-    },
-    select: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: {
-        from: 'node:discover',
-        template: 'Pick the single best article.',
-      },
-      depends_on: ['discover'],
-    },
-    critic_skeptic: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: {
-        from: 'node:select',
-        template: 'Attack the argument as a skeptic.',
-      },
-      depends_on: ['select'],
-    },
-    critic_contract: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: {
-        from: 'node:select',
-        template: 'Attack from the contract angle.',
-      },
-      depends_on: ['select'],
-    },
-    critic_observability: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: { from: 'node:select', template: 'Attack on observability.' },
-      depends_on: ['select'],
-    },
-    critic_orchestration: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: { from: 'node:select', template: 'Attack on orchestration.' },
-      depends_on: ['select'],
-    },
-    synthesize: {
-      agent: { model: 'claude-opus-4-8' },
-      input: {
-        from: [
-          'node:critic_skeptic',
-          'node:critic_contract',
-          'node:critic_observability',
-          'node:critic_orchestration',
-        ],
-        template: 'Distill the strongest hardened argument.',
-      },
-      depends_on: [
-        'critic_skeptic',
-        'critic_contract',
-        'critic_observability',
-        'critic_orchestration',
-      ],
-    },
-    draft: {
-      agent: { model: 'claude-opus-4-8' },
-      input: { from: 'node:synthesize', template: 'Write the technical post.' },
-      depends_on: ['synthesize'],
-    },
-    review_slop: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: {
-        from: 'node:draft',
-        template: 'Hunt AI slop / marketing tells.',
-      },
-      depends_on: ['draft'],
-    },
-    review_technical: {
-      agent: { model: 'claude-sonnet-4-6' },
-      input: { from: 'node:draft', template: 'Check technical accuracy.' },
-      depends_on: ['draft'],
-    },
-    final_rewrite: {
-      agent: { model: 'claude-opus-4-8' },
-      input: {
-        from: ['node:draft', 'node:review_slop', 'node:review_technical'],
-        template: 'Apply every fix; make it read like an expert human.',
-      },
-      depends_on: ['draft', 'review_slop', 'review_technical'],
-    },
+const blogNodes = {
+  discover: {
+    model: 'claude-opus-4-8',
+    task: 'Find currently-viral SE articles.',
   },
-  output: { from: 'node:final_rewrite' },
+  select: {
+    model: 'claude-sonnet-4-6',
+    reads: 'discover',
+    task: 'Pick the single best article.',
+  },
+  critic_skeptic: {
+    model: 'claude-sonnet-4-6',
+    reads: 'select',
+    task: 'Attack the argument as a skeptic.',
+  },
+  critic_contract: {
+    model: 'claude-sonnet-4-6',
+    reads: 'select',
+    task: 'Attack from the contract angle.',
+  },
+  critic_observability: {
+    model: 'claude-sonnet-4-6',
+    reads: 'select',
+    task: 'Attack on observability.',
+  },
+  critic_orchestration: {
+    model: 'claude-sonnet-4-6',
+    reads: 'select',
+    task: 'Attack on orchestration.',
+  },
+  synthesize: {
+    model: 'claude-opus-4-8',
+    reads: [
+      'critic_skeptic',
+      'critic_contract',
+      'critic_observability',
+      'critic_orchestration',
+    ],
+    task: 'Distill the strongest hardened argument.',
+  },
+  draft: {
+    model: 'claude-opus-4-8',
+    reads: 'synthesize',
+    task: 'Write the technical post.',
+  },
+  review_slop: {
+    model: 'claude-sonnet-4-6',
+    reads: 'draft',
+    task: 'Hunt AI slop / marketing tells.',
+  },
+  review_technical: {
+    model: 'claude-sonnet-4-6',
+    reads: 'draft',
+    task: 'Check technical accuracy.',
+  },
+  final_rewrite: {
+    model: 'claude-opus-4-8',
+    reads: ['draft', 'review_slop', 'review_technical'],
+    task: 'Apply every fix; make it read like an expert human.',
+  },
 }
 
 const blogInput = {
@@ -144,7 +114,7 @@ export const workflowStartLaunched = base(
   'wf-start',
   'workflow::start',
   {
-    definition: blogDef,
+    nodes: blogNodes,
     input: blogInput,
     notify: { function_id: 'ade::wf-done' },
   },
@@ -154,7 +124,7 @@ export const workflowStartLaunched = base(
 export const workflowStartRunning = base(
   'wf-start-running',
   'workflow::start',
-  { definition: blogDef, input: blogInput },
+  { nodes: blogNodes, input: blogInput },
   undefined,
   { running: true },
 )
@@ -289,7 +259,9 @@ export const workflowStop = base(
   }),
 )
 
-/* ---------------- error: Rule 5 rejection at start ---------------- */
+/* ---------------- error: Rule 5 rejection at start ----------------
+ * A refusal of the old request shape, kept as a sample: the error view is
+ * drawn from the result, before the request is parsed. */
 
 export const workflowStartRejected = base(
   'wf-start-rejected',

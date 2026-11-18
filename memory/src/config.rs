@@ -61,13 +61,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_recall_budget_tokens")]
     pub recall_budget_tokens: u64,
 
-    /// Extract new memories after each completed turn (up to 4
-    /// `router::complete` calls, one per 24,000 chars of new messages, off
-    /// the hot path). Disable to run memory as a purely manual store: turns
-    /// that finish while it is off are stepped past, never read once it is
-    /// back on. Off, each finished turn still steps the extraction cursor
-    /// past itself (no model call; it pages the session's messages as a pass
-    /// does), so turning it back on never reads what was said meanwhile.
+    /// Extract new memories after each completed turn (a pass reads up to 4
+    /// runs of 24,000 bytes of new messages, off the hot path; a longer user
+    /// message takes up to 4 `router::complete` calls of its own). Disable to
+    /// run memory as a purely manual store: turns that finish while it is off
+    /// are stepped past, never read once it is back on. Off, each finished
+    /// turn still steps the extraction cursor past itself (no model call; it
+    /// pages the session's messages as a pass does), so turning it back on
+    /// never reads what was said meanwhile.
     #[serde(default = "default_true")]
     pub extraction_enabled: bool,
 
@@ -79,7 +80,7 @@ pub struct WorkerConfig {
     /// How many recent non-empty user/assistant messages a session's first
     /// extraction pass reads (no cursor yet), plus the turn's user message
     /// when they leave it out. Later passes read every message after the
-    /// cursor, unless a backlog takes more than 4 calls: then this window.
+    /// cursor.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 
@@ -106,6 +107,16 @@ pub struct WorkerConfig {
     /// visible marker.
     #[serde(default = "default_max_rule_chars")]
     pub max_rule_chars: usize,
+
+    /// Size the bank's `learned` rule may reach, in characters as injected.
+    /// A write that takes it past this moves its oldest lines back to memories
+    /// tagged `demoted-rule` (saved before the rule is rewritten), so one
+    /// bank's `learned` rule cannot grow without bound. A turn on a repository
+    /// bank also reads `default_bank`'s, and an agent's bank's if any, so
+    /// their learned rules together can still fill `max_rule_chars`. `0`
+    /// turns the cap off.
+    #[serde(default = "default_learned_max_chars")]
+    pub learned_max_chars: usize,
 
     /// Recency half-life in days for recall ranking: the age at which a
     /// memory's recency is neutral. Recency is a mild factor — a fresh memory
@@ -156,6 +167,9 @@ fn default_max_memories_per_turn() -> usize {
 fn default_max_rule_chars() -> usize {
     6_000
 }
+fn default_learned_max_chars() -> usize {
+    3_000
+}
 fn default_decay_half_life_days() -> u64 {
     60
 }
@@ -184,7 +198,7 @@ impl WorkerConfig {
     /// env-expanded by the configuration worker), then deserializing.
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     /// Read and parse a YAML seed file (env-expanded — see [`Self::from_yaml`]).
@@ -302,7 +316,28 @@ mod tests {
 
     #[test]
     fn env_expansion_applies_to_seed_yaml_only() {
-        std::env::set_var("MEMORY_TEST_DIR", "/tmp/mem-test");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::env_expansion_applies_to_seed_yaml_only");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("MEMORY_TEST_DIR", "/tmp/mem-test")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml("data_dir: ${MEMORY_TEST_DIR}").unwrap();
         assert_eq!(cfg.data_dir, "/tmp/mem-test");
     }

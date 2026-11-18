@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use ide::code::config::CoderConfig;
 use ide::code::functions::update_file::{
-    handle as update_handle, UpdateFileInput, UpdateFileSpec, UpdateOp,
+    UpdateFileInput, UpdateFileSpec, UpdateOp, handle as update_handle,
 };
 use ide::code::path::PathResolver;
 use tempfile::tempdir;

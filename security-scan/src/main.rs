@@ -5,10 +5,10 @@ use anyhow::Result;
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use security_scan::{
-    configuration, events, functions, manifest, IiiRuntime, RunStatusV1, SecurityScanExecutor,
-    SecurityScanService,
+    IiiRuntime, RunStatusV1, SecurityScanExecutor, SecurityScanService, configuration, events,
+    functions, manifest,
 };
 
 #[derive(Debug, Parser)]
@@ -207,10 +207,9 @@ async fn reconcile_runs(
                         run.status,
                         RunStatusV1::Completed | RunStatusV1::Failed | RunStatusV1::Cancelled
                     )
+                    && let Err(error) = executor.cleanup_terminal(&run).await
                 {
-                    if let Err(error) = executor.cleanup_terminal(&run).await {
-                        tracing::warn!(run_id = %run.run_id, %error, "checkout cleanup recovery failed");
-                    }
+                    tracing::warn!(run_id = %run.run_id, %error, "checkout cleanup recovery failed");
                 }
             }
         }

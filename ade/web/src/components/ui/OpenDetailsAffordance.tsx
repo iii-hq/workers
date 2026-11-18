@@ -7,8 +7,8 @@ import { cn } from '@/lib/utils'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /** Visual action label for a widget whose surrounding control owns the click.
-    Children replace the default "Open details" copy when the destination
-    is more specific (a sub-agent card opens the child's chat). */
+ Children replace the default "Open details" copy when the destination
+ is more specific (a sub-agent card opens the child's chat). */
 export type OpenDetailsAffordanceProps = React.HTMLAttributes<HTMLSpanElement>
 
 export function OpenDetailsAffordance({

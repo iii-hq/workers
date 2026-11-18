@@ -47,13 +47,13 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
 use crate::engine_overrides::{self, CatalogCache, OverrideOutcome};
-use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
+use crate::rbac::{self, DEFAULT_NAMESPACE, ProxySession};
 
 /// Worker → engine frame types the proxy forwards (after gating the ones it
 /// rewrites). Any other type is dropped.
@@ -639,24 +639,13 @@ impl Interceptor {
                 .await;
         };
 
-        // The observer registration hook (bare ids), with the engine's input;
+        // The hook gets compatible bare IDs plus canonical identities resolved
+        // from this connection's actual registrations in each namespace;
         // an object answer may rewrite the registration, anything else denies.
         if let Some(hook_id) = &self.config.rbac.on_observer_registration_function_id {
-            let args = match v.pointer("/source/args") {
-                None | Some(Value::Null) => json!({}),
-                Some(args) => args.clone(),
-            };
-            let input = json!({
-                "observer_id": id,
-                "function_id": source_id,
-                "namespace": source_ns,
-                "args": args,
-                "filters": non_null(v.pointer("/source/filters")),
-                "target_function_id": target_id,
-                "target_namespace": target_ns,
-                "metadata": non_null(v.get("metadata")),
-                "context": self.session.context,
-            });
+            let input = self
+                .observer_hook_input(&v, &id, &source_id, &source_ns, &target_id, &target_ns)
+                .await;
             let Some(answer) = self.call_hook(hook_id, input).await else {
                 return self
                     .refuse_observe(
@@ -745,6 +734,34 @@ impl Interceptor {
                 unobserved: false,
             });
         DownstreamAction::Forward(v.to_string())
+    }
+
+    async fn observer_hook_input(
+        &self,
+        v: &Value,
+        id: &str,
+        source_id: &str,
+        source_ns: &str,
+        target_id: &str,
+        target_ns: &str,
+    ) -> Value {
+        let args = match v.pointer("/source/args") {
+            None | Some(Value::Null) => json!({}),
+            Some(args) => args.clone(),
+        };
+        json!({
+            "observer_id": id,
+            "function_id": source_id,
+            "resolved_function_id": self.resolve_target(source_ns, source_id).await,
+            "namespace": source_ns,
+            "args": args,
+            "filters": non_null(v.pointer("/source/filters")),
+            "target_function_id": target_id,
+            "resolved_target_function_id": self.resolve_target(target_ns, target_id).await,
+            "target_namespace": target_ns,
+            "metadata": non_null(v.get("metadata")),
+            "context": self.session.context,
+        })
     }
 
     /// The engine's answer to a refused `observe`, `observeresult { state:
@@ -892,7 +909,7 @@ impl Interceptor {
             Some(Some(observer_id)) => {
                 return self
                     .on_observer_call(v, &observer_id, &function_id, inv_id)
-                    .await
+                    .await;
             }
             Some(None) => {
                 // Malformed: the engine reads it as absent. It is removed, so
@@ -1383,10 +1400,10 @@ impl Interceptor {
                 }
             }
             "observerstatechanged" => {
-                if v.get("state").and_then(Value::as_str) == Some("disposed") {
-                    if let Some(id) = v.get("id").and_then(Value::as_str) {
-                        self.observers.lock().await.created.remove(id);
-                    }
+                if v.get("state").and_then(Value::as_str) == Some("disposed")
+                    && let Some(id) = v.get("id").and_then(Value::as_str)
+                {
+                    self.observers.lock().await.created.remove(id);
                 }
                 UpstreamAction::Forward(v.to_string())
             }
@@ -1431,10 +1448,11 @@ impl Interceptor {
                 .get(observer_id)
                 .copied()
                 .unwrap_or(false);
-            if envelope && carries_its_envelope(&v) {
-                if let Some(data) = v.get_mut("data") {
-                    self.strip_field(data, "function_id");
-                }
+            if envelope
+                && carries_its_envelope(&v)
+                && let Some(data) = v.get_mut("data")
+            {
+                self.strip_field(data, "function_id");
             }
         }
 
@@ -1841,6 +1859,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observer_hook_resolves_only_actual_registrations_in_their_namespace() {
+        let i = interceptor(config_with(expose(&[]), None), session(Some("laptop")));
+        register(&i, "echo::event").await;
+        register(&i, "echo::received").await;
+        let v = json!({"source":{"args":{}}});
+        let own = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "echo::event",
+                "default",
+                "echo::received",
+                "default",
+            )
+            .await;
+        assert_eq!(own["function_id"], "echo::event");
+        assert_eq!(own["resolved_function_id"], "laptop::echo::event");
+        assert_eq!(own["resolved_target_function_id"], "laptop::echo::received");
+        let foreign = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "echo::event",
+                "foreign",
+                "echo::received",
+                "foreign",
+            )
+            .await;
+        assert_eq!(foreign["resolved_function_id"], "echo::event");
+        assert_eq!(foreign["resolved_target_function_id"], "echo::received");
+        let collision = i
+            .observer_hook_input(
+                &v,
+                "watch",
+                "hub::event",
+                "default",
+                "echo::received",
+                "default",
+            )
+            .await;
+        assert_eq!(collision["resolved_function_id"], "hub::event");
+    }
+
+    #[tokio::test]
     async fn denied_invoke_synthesizes_forbidden_with_echoed_id() {
         let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
         let frame = json!({
@@ -2002,19 +2064,21 @@ mod tests {
         assert_eq!(o["id"], "tenant1::cron::on-tick");
         assert_eq!(o["private"], true);
         assert_eq!(o["args_format"], frame["args_format"]);
-        assert!(i
-            .private_ids
-            .lock()
-            .await
-            .contains("tenant1::cron::on-tick"));
+        assert!(
+            i.private_ids
+                .lock()
+                .await
+                .contains("tenant1::cron::on-tick")
+        );
 
         // Registered again without `private`: no longer one of them.
         register(&i, "cron::on-tick").await;
-        assert!(!i
-            .private_ids
-            .lock()
-            .await
-            .contains("tenant1::cron::on-tick"));
+        assert!(
+            !i.private_ids
+                .lock()
+                .await
+                .contains("tenant1::cron::on-tick")
+        );
 
         let not_observable =
             json!({ "type": "registerfunction", "id": "vault::read", "observable": false });
@@ -2367,10 +2431,12 @@ mod tests {
             assert_eq!(r["id"], OBSERVER_ID);
             assert_eq!(r["state"], "error");
             assert_eq!(r["error"]["code"], "FORBIDDEN");
-            assert!(r["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("add to rbac.expose_functions"));
+            assert!(
+                r["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("add to rbac.expose_functions")
+            );
         }
     }
 

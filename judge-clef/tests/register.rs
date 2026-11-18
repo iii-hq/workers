@@ -2,9 +2,9 @@
 #[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
 mod fake_engine;
 mod support;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{InitOptions, register_worker};
 use judge_clef::{ClefClient, ClefConfig};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc, time::timeout};
 
@@ -74,9 +74,11 @@ async fn evaluate_registration_has_strict_schemas_and_answers_typed() {
         false
     );
     for field in ["api_key", "endpoint", "_caller_worker_id", "provider"] {
-        assert!(registration["request_format"]["properties"]
-            .get(field)
-            .is_none());
+        assert!(
+            registration["request_format"]["properties"]
+                .get(field)
+                .is_none()
+        );
     }
     assert_eq!(
         registration["response_format"]["oneOf"]
@@ -127,7 +129,7 @@ async fn models_and_cancel_are_registered_with_the_provider_ids() {
 fn provider_ids_follow_the_hub_convention() {
     use judge_clef::{CANCEL_ID, EVALUATE_ID, MODELS_ID, PROVIDER};
     use judge_contract::{
-        provider_function_id, CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID,
+        CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID, provider_function_id,
     };
     assert_eq!(provider_function_id(PROVIDER, FUNCTION_ID), EVALUATE_ID);
     assert_eq!(

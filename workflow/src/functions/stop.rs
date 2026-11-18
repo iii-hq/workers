@@ -1,5 +1,5 @@
 use crate::error::WorkflowError;
-use crate::functions::{start, Deps};
+use crate::functions::{Deps, start};
 use crate::types::RunStatus;
 use serde::{Deserialize, Serialize};
 

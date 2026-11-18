@@ -87,6 +87,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/ui/Dialog.tsx': { max: 3, reason: TOUCH },
   'components/ui/ImageViewer.tsx': { max: 5, reason: TOUCH },
   'components/ui/Input.tsx': { max: 2, reason: TOUCH },
+  'components/ui/SearchField.tsx': { max: 2, reason: TOUCH },
   'components/ui/OpenDetailsAffordance.tsx': { max: 5, reason: TOUCH },
   'components/ui/PageChrome.tsx': { max: 3, reason: TOUCH },
   'components/ui/RawValueInput.tsx': {
@@ -111,9 +112,9 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
 /** CSS files that may keep width media queries, with today's count. */
 const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
   'index.css': {
-    max: 3,
+    max: 4,
     reason:
-      'phone chrome: the one-line phone composer, 16px editor text, side-by-side panel motion',
+      'phone chrome: the one-line phone composer, 16px editor text, side-by-side panel motion, where the shell chrome ends for overlays',
   },
   'styles/ui-recipes.css': {
     max: 4,
@@ -123,6 +124,11 @@ const cssMediaAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/ReasoningEffortSlider.css': {
     max: 1,
     reason: 'phone chrome: one row in the popover, stacked in the phone sheet',
+  },
+  'pages/Workers/workers.css': {
+    max: 1,
+    reason:
+      'phone chrome: the header bar is 56px with 48px touch targets below 640px; a narrow desktop pane keeps 32px controls',
   },
 }
 
@@ -138,7 +144,10 @@ function walk(ext: string): string[] {
   const traces = readdirSync(tracesRoot, { recursive: true, encoding: 'utf8' })
     .filter((file) => !file.startsWith('ui/shadcn/'))
     .map((file) => relative(srcRoot, join(tracesRoot, file)))
-  return [...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }), ...traces]
+  return [
+    ...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }),
+    ...traces,
+  ]
     .filter((file) => file.endsWith(ext))
     .map((file) => relative(srcRoot, join(srcRoot, file)))
     .filter(

@@ -16,7 +16,7 @@ use sentinel::{
     ErrorSourceV1, IgnoreRequestV1, IgnoreRuleV1, OccurrenceWrite, RecordOutcome, Store,
     WorkerConfig,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const NOW: i64 = 1_790_000_000_000;
 const DAY: i64 = 86_400_000;

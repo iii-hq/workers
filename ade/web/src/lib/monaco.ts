@@ -52,7 +52,9 @@ self.MonacoEnvironment = {
 /** `--font-code` as the editor's host sees it: a surface may scope its own
     (the IDE sets Geist Mono under its wrapper), so read it off the host
     rather than the root. */
-export function codeFontFamily(host: Element = document.documentElement): string {
+export function codeFontFamily(
+  host: Element = document.documentElement,
+): string {
   const raw = getComputedStyle(host).getPropertyValue('--font-code').trim()
   return raw || FALLBACK_CODE
 }

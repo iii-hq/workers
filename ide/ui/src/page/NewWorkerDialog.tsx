@@ -1,4 +1,4 @@
-/* "New worker…": a template, a name and a parent folder go to
+/* "New worker": a template, a name and a parent folder go to
    coder::scaffold-worker as `<folder>/<name>`; by default the worker is then
    added to the stack (compose::add) and followed until it runs, else the
    result offers "Add to stack". The result shows the three steps, then the

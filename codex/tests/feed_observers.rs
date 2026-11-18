@@ -8,16 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codex::agent_feed::{
-    session_call, Feeds, MAX_OBSERVERS, MAX_SESSION_ID_CHARS, OBSERVER_LIMIT, ON_AGENT_EVENT_FN,
-    ON_RAW_EVENT_FN, SOURCE,
+    Feeds, MAX_OBSERVERS, MAX_SESSION_ID_CHARS, OBSERVER_LIMIT, ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN,
+    SOURCE, session_call,
 };
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle,
-    ObserverState, RegisterFunction, Source, WorkerIdentityMode,
+    CallRequest, Capture, Error, IIIClient, InitOptions, ObserverHandle, ObserverState,
+    RegisterFunction, Source, WorkerIdentityMode, register_worker,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(15);
 const EPOCH: &str = "epoch-feed-observers";

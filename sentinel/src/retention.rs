@@ -7,10 +7,10 @@
 //! comparing the failure before and after a release is the whole point of
 //! having kept anything at all.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::store::{Db, Store};
-use crate::{ids, SentinelError, WorkerConfig};
+use crate::{SentinelError, WorkerConfig, ids};
 
 const DAY_MS: i64 = 86_400_000;
 /// Moves kept per group. Not a setting: nobody tunes this, and a group with

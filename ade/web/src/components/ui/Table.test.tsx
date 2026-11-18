@@ -33,14 +33,17 @@ describe('Table', () => {
       </TableViewport>,
     )
 
-    expect(html).toContain('iii-ui-table-viewport custom-viewport')
-    expect(html).toContain('iii-ui-table-frame')
+    // The shadcn table parts, under the console's viewport and frame.
+    expect(html).toContain('data-slot="table-container"')
+    expect(html).toContain('custom-viewport')
+    expect(html).toContain('rounded-lg border border-border')
     expect(html).toContain('data-density="compact"')
     expect(html).toContain('data-interactive="true"')
     expect(html).toContain('data-selected="true"')
-    expect(html).toContain('<thead class="iii-ui-table__header">')
-    expect(html).toContain('<th class="iii-ui-table__head">Field</th>')
-    expect(html).toContain('<td class="iii-ui-table__cell">name</td>')
+    expect(html).toContain('data-state="selected"')
+    expect(html).toContain('data-slot="table-header"')
+    expect(html).toMatch(/<th [^>]*data-slot="table-head"[^>]*>Field<\/th>/)
+    expect(html).toMatch(/<td [^>]*data-slot="table-cell"[^>]*>name<\/td>/)
   })
 
   it('keeps the shared visual sans, natural-case, and horizontally divided', () => {

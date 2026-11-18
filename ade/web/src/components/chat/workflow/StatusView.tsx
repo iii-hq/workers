@@ -52,9 +52,9 @@ export function StatusView({ input, output, running }: StatusViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             reading run state…
           </span>
         </MetaRow>
@@ -65,7 +65,7 @@ export function StatusView({ input, output, running }: StatusViewProps) {
 
   if (!resp) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         {runId ? <RunIdRow runId={runId} /> : null}
         <GhostRow label="status payload could not be read" />
       </div>
@@ -79,7 +79,7 @@ export function StatusView({ input, output, running }: StatusViewProps) {
   )
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         {resp.status ? <RunStatusPill status={resp.status} /> : null}
         <Chip>
@@ -109,7 +109,7 @@ export function StatusView({ input, output, running }: StatusViewProps) {
       {nodeEntries.length === 0 ? (
         <GhostRow label="no nodes materialized yet" />
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="divide-y divide-border">
           {nodeEntries.map(([uid, state]) => (
             <NodeRow
               key={uid}
@@ -151,7 +151,7 @@ function NodeRow({
           {uid}
         </span>
         {error ? (
-          <div className="mt-0.5 font-mono text-[11px] text-warn break-words">
+          <div className="mt-0.5 font-mono text-meta text-warn break-words">
             {error}
           </div>
         ) : null}

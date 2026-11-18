@@ -19,17 +19,17 @@ use std::time::Duration;
 use database::config::{CaptureMode, WorkerConfig};
 use database::configuration;
 use database::handle::HandleRegistry;
-use database::handlers::{execute, AppState};
+use database::handlers::{AppState, execute};
 use database::row_changes::{self, NativeCapture, RowChangeBus};
 use database::transaction::TxRegistry;
 use iii_helpers::observability::Logger;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    register_worker, CallRequest, Capture, IIIClient, InitOptions, Observed, ObserverOptions,
-    ObserverState, RegisterFunction, Source,
+    CallRequest, Capture, IIIClient, InitOptions, Observed, ObserverOptions, ObserverState,
+    RegisterFunction, Source, register_worker,
 };
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, RwLock};
+use serde_json::{Value, json};
+use tokio::sync::{RwLock, mpsc};
 
 const WAIT: Duration = Duration::from_secs(10);
 const SILENCE: Duration = Duration::from_millis(600);

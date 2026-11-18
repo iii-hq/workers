@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError, WireError};
+use crate::code::error::{CoderError, WireError, err_to_string};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.
@@ -186,7 +186,7 @@ fn create_one(
                 change_id: None,
                 revision: None,
                 error: Some((&e).into()),
-            }
+            };
         }
     };
     let wire_path = abs.display().to_string();
@@ -259,12 +259,12 @@ fn try_create_one(
         validate_revision(expected)?;
     }
 
-    if spec.parents {
-        if let Some(parent) = abs.parent() {
-            // io_for_path names spec.path (caller-supplied, redaction-safe)
-            // rather than the derived parent directory.
-            std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
-        }
+    if spec.parents
+        && let Some(parent) = abs.parent()
+    {
+        // io_for_path names spec.path (caller-supplied, redaction-safe)
+        // rather than the derived parent directory.
+        std::fs::create_dir_all(parent).map_err(|e| CoderError::io_for_path(e, &spec.path))?;
     }
     let before = atomic_write(
         abs,

@@ -341,21 +341,20 @@ async fn start_compaction(
     })?;
     let prev = super::compact::compactable_session(deps, &session_id).await?;
     let cfg = deps.cfg().await;
-    if let Some(key) = &req.idempotency_key {
-        if let Some(existing) =
+    if let Some(key) = &req.idempotency_key
+        && let Some(existing) =
             crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
-        {
-            return Ok(SendResponse {
-                session_id: existing.session_id,
-                turn_id: existing.turn_id,
-                accepted: true,
-                merged: None,
-                queued: None,
-                deduplicated: Some(true),
-                reasoning: None,
-                compaction: None,
-            });
-        }
+    {
+        return Ok(SendResponse {
+            session_id: existing.session_id,
+            turn_id: existing.turn_id,
+            accepted: true,
+            merged: None,
+            queued: None,
+            deduplicated: Some(true),
+            reasoning: None,
+            compaction: None,
+        });
     }
     let (model, provider) = resolve_model_route(
         None,
@@ -999,6 +998,7 @@ async fn try_enqueue(
         message: d.message.clone(),
         entry_id: entry_id.clone(),
         origin: d.origin.cloned(),
+        channel: Some(d.channel),
         queued_at: AgentMessage::now_ms(),
     };
     let topology = deps.topology.lock().await;
@@ -1054,15 +1054,7 @@ async fn seed_or_merge_queued(
 ) -> Result<StartOutcome, HarnessError> {
     let mut outcome =
         with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
-            seed_or_merge(
-                deps,
-                cfg,
-                session_id,
-                options.clone(),
-                message_preview(d.message),
-                d.lineage,
-                d.skills_explicit,
-            )
+            seed_or_merge(deps, cfg, session_id, options.clone(), d)
         })
         .await?;
     outcome.queued = true;
@@ -1100,10 +1092,9 @@ impl TurnLineage {
             && self.parent.is_none()
             && self.display_parent_session_id.is_none()
             && self.dispatch_only_functions.is_empty()
+            && let Some(prior) = prior
         {
-            if let Some(prior) = prior {
-                return Self::continuing(prior);
-            }
+            return Self::continuing(prior);
         }
         self.clone()
     }
@@ -1123,17 +1114,20 @@ impl TurnLineage {
     }
 }
 
-/// One message on its way into a session: what to append, how to mark it, and
-/// the lineage the seeded turn inherits. Bundled so every seeding path takes
-/// the same shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How a message reached a session: `direct` from a person (or a client
+/// acting as one), `notification` from an observer or the system,
+/// `invoked-agent` as a sub-agent's opening task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum DeliveryChannel {
+pub enum DeliveryChannel {
     Direct,
     InvokedAgent,
     Notification,
 }
 
+/// One message on its way into a session: what to append, how to mark it, and
+/// the lineage the seeded turn inherits. Bundled so every seeding path takes
+/// the same shape.
 pub(crate) struct Delivery<'a> {
     pub channel: DeliveryChannel,
     pub continuation_entry_id: Option<&'a str>,
@@ -1227,7 +1221,6 @@ pub(crate) async fn deliver(
         ..d
     };
     record_recall_delivery(deps, session_id, &d).await?;
-    let preview = message_preview(d.message);
     if d.skills_explicit {
         return with_delivery_guard(
             &deps.locks,
@@ -1245,8 +1238,7 @@ pub(crate) async fn deliver(
                         session.append(session_id, d.message, d.entry_id, None, d.origin)
                     })
                     .await?;
-                let outcome =
-                    seed_or_merge(deps, cfg, session_id, options, preview, d.lineage, true).await?;
+                let outcome = seed_or_merge(deps, cfg, session_id, options, &d).await?;
                 Ok((outcome, appended))
             },
         )
@@ -1264,15 +1256,7 @@ pub(crate) async fn deliver(
     // An in-turn spawn targeting its own session already holds that
     // non-reentrant lock; every other target acquires it here.
     let outcome = with_delivery_guard(&deps.locks, session_id, d.caller_holds_session_lock, || {
-        seed_or_merge(
-            deps,
-            cfg,
-            session_id,
-            options,
-            preview,
-            d.lineage,
-            d.skills_explicit,
-        )
+        seed_or_merge(deps, cfg, session_id, options, &d)
     })
     .await?;
     Ok((outcome, appended))
@@ -1341,14 +1325,14 @@ fn resolve_model_route(
                  turn, but this session has none — name a `model` (or a `provider` \
                  that declares a default model)"
                     .into(),
-            ))
+            ));
         }
         (None, None, None) => {
             return Err(HarnessError::InvalidRequest(
                 "harness::send creating a NEW session requires `model`, or a `provider` \
                  that declares a default model (steering an existing session may omit both)"
                     .into(),
-            ))
+            ));
         }
     })
 }
@@ -1511,8 +1495,7 @@ fn send_functions<'a>(
 
 /// Refusal for a `skills` change on a session that has no skill context: a
 /// legacy session, or one started as a profile with `skills_index: false`.
-const NO_SKILL_CONTEXT: &str =
-    "cannot change `skills` on a legacy session or one whose agent profile \
+const NO_SKILL_CONTEXT: &str = "cannot change `skills` on a legacy session or one whose agent profile \
      sets `skills_index: false`; start a new session to use the names-only skill index";
 
 fn select_skill_context(
@@ -1740,10 +1723,9 @@ async fn seed_or_merge(
     cfg: &WorkerConfig,
     session_id: &str,
     mut options: TurnOptions,
-    message_preview: Option<String>,
-    lineage: &TurnLineage,
-    skills_explicit: bool,
+    d: &Delivery<'_>,
 ) -> Result<StartOutcome, HarnessError> {
+    let skills_explicit = d.skills_explicit;
     super::delete_session_tree::ensure_live(deps, session_id).await?;
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     apply_default_filesystem_root(
@@ -1760,9 +1742,16 @@ async fn seed_or_merge(
                 crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
             match recheck {
                 Some(mut r) if !r.status.is_terminal() => {
+                    // The merged turn takes a wake's fire: it reads the entry
+                    // at its next step, and predates the claim.
                     let changed = r.options.refresh_filesystem_root_from(&options)
                         | r.options.adopt_response_language_from(&options)
-                        | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?;
+                        | merge_explicit_skill_filter(&mut r.options, &options, skills_explicit)?
+                        | crate::bindings::note_took_wake(
+                            &mut r,
+                            d.entry_id.unwrap_or_default(),
+                            d.origin,
+                        );
                     if changed {
                         r.updated_at = AgentMessage::now_ms();
                         crate::state::put_turn(&deps.iii, &r, cfg.session_timeout_ms).await?;
@@ -1787,8 +1776,8 @@ async fn seed_or_merge(
                         session_id,
                         options,
                         Some(previous),
-                        message_preview,
-                        lineage,
+                        message_preview(d.message),
+                        d.lineage,
                     )
                     .await
                 }
@@ -1804,8 +1793,8 @@ async fn seed_or_merge(
                 session_id,
                 options,
                 previous.as_ref(),
-                message_preview,
-                lineage,
+                message_preview(d.message),
+                d.lineage,
             )
             .await
         }
@@ -1929,6 +1918,9 @@ pub(crate) async fn seed_new(
         message_preview,
         abort: false,
         exchange_finished: false,
+        continues: false,
+        owes_completion: false,
+        took_wakes: Vec::new(),
         watermark_entry_id: None,
         stream_request_id: None,
         options,
@@ -2072,10 +2064,10 @@ mod tests {
         assert_eq!(options.reasoning, Some(ReasoningPreset::Lowest));
         assert!(reasoning_fields_omitted(Some(&options)));
     }
+    use iii_helpers::observability::opentelemetry::Context;
     use iii_helpers::observability::opentelemetry::trace::{
         TraceContextExt, Tracer, TracerProvider,
     };
-    use iii_helpers::observability::opentelemetry::Context;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
 
@@ -2364,13 +2356,15 @@ mod tests {
         let _held = locks.guard("s_caller").await;
         let owns_target = caller_holds_target_session_lock("s_caller", Some("s_caller"), true);
         assert!(owns_target);
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            delivery_guard(&locks, "s_caller", owns_target),
-        )
-        .await
-        .expect("same-session delivery must not deadlock")
-        .is_none());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                delivery_guard(&locks, "s_caller", owns_target),
+            )
+            .await
+            .expect("same-session delivery must not deadlock")
+            .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2379,9 +2373,11 @@ mod tests {
         let _held = locks.guard("s_caller").await;
         let owns_target = caller_holds_target_session_lock("s_caller", Some("s_other"), true);
         assert!(!owns_target);
-        assert!(delivery_guard(&locks, "s_other", owns_target)
-            .await
-            .is_some());
+        assert!(
+            delivery_guard(&locks, "s_other", owns_target)
+                .await
+                .is_some()
+        );
         assert!(!caller_holds_target_session_lock(
             "s_caller",
             Some("s_caller"),
@@ -2528,6 +2524,7 @@ mod tests {
                 message: AgentMessage::user_text("hi"),
                 entry_id: entry.into(),
                 origin: None,
+                channel: None,
                 queued_at: 0,
             }
         }
@@ -2548,6 +2545,7 @@ mod tests {
             message: AgentMessage::user_text("old text"),
             entry_id: "e_idem_msg-1".into(),
             origin: Some(serde_json::json!({ "reaction": true })),
+            channel: Some(DeliveryChannel::Direct),
             queued_at: 4242,
         };
         let before = (
@@ -2656,6 +2654,9 @@ mod tests {
             message_preview: None,
             abort: false,
             exchange_finished: false,
+            continues: false,
+            owes_completion: false,
+            took_wakes: Vec::new(),
             watermark_entry_id: None,
             stream_request_id: None,
             options: options_with(None),

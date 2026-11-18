@@ -24,10 +24,10 @@
 
 use serde_json::json;
 
+use super::ScenarioDriver;
 use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
-use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const ENSURE: &str = "session::ensure";
@@ -320,9 +320,11 @@ mod tests {
         let expanded =
             expand_compiled_fixture(&fixture.compiled(), "ir123456789abc", "session-123").unwrap();
 
-        assert!(expanded
-            .system_prompt
-            .contains("harness::spawn, ir123456789abc::record, session::ensure"));
+        assert!(
+            expanded
+                .system_prompt
+                .contains("harness::spawn, ir123456789abc::record, session::ensure")
+        );
     }
 
     #[test]

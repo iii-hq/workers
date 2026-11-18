@@ -6,12 +6,12 @@
  * the reader's place.
  *
  * URL params:
- *   ?turns=100     turns in the transcript (each adds a few rows)
- *   ?more=1        report older history to load, so prepends can land
- *   ?headbatch=1   start the transcript on a batch, so a page can merge into it
- *   ?uniform=46    one prose row per turn, this many repeats tall (46 is about
- *                  800px, well over the estimate) and short every fifth turn
- *   ?sidebar=300   the real `ConversationSidebar` over this many chats instead
+ *   ?turns=100  turns in the transcript (each adds a few rows)
+ *   ?more=1  report older history to load, so prepends can land
+ *   ?headbatch=1  start the transcript on a batch, so a page can merge into it
+ *   ?uniform=46  one prose row per turn, this many repeats tall (46 is about
+ *  800px, well over the estimate) and short every fifth turn
+ *   ?sidebar=300  the real `ConversationSidebar` over this many chats instead
  */
 
 import { StrictMode, useEffect, useState } from 'react'

@@ -7,7 +7,7 @@
 
 mod support;
 
-use sandbox_code_runner::functions::{catalog, FunctionSpec};
+use sandbox_code_runner::functions::{FunctionSpec, catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))

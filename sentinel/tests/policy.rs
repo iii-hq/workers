@@ -6,7 +6,7 @@
 //! this worker later must not become reachable from inside an investigation
 //! just because nobody thought about it.
 
-use sentinel::functions::{catalog, INVESTIGATION_ALLOW, INVESTIGATION_DENY};
+use sentinel::functions::{INVESTIGATION_ALLOW, INVESTIGATION_DENY, catalog};
 
 fn denied(id: &str) -> bool {
     INVESTIGATION_DENY

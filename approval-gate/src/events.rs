@@ -21,15 +21,13 @@ use serde::Serialize;
 use crate::types::{PendingApprovalRecord, PendingCreatedEvent, PendingResolvedEvent};
 
 pub const ON_PENDING_CREATED_FN: &str = "approval::on-pending-created";
-pub const ON_PENDING_CREATED_DESC: &str =
-    "Called when a function call was held for human approval and its inbox record written. \
+pub const ON_PENDING_CREATED_DESC: &str = "Called when a function call was held for human approval and its inbox record written. \
      Event: PendingApprovalRecord with status \"pending\" (redacted args, session context). \
      No args; filter on input.session_id or input.session_metadata.<key>. Observe it from \
      notification workers.";
 
 pub const ON_PENDING_RESOLVED_FN: &str = "approval::on-pending-resolved";
-pub const ON_PENDING_RESOLVED_DESC: &str =
-    "Called when a pending approval left the inbox (outcome: allow | deny | aborted). \
+pub const ON_PENDING_RESOLVED_DESC: &str = "Called when a pending approval left the inbox (outcome: allow | deny | aborted). \
      Called exactly once per record; lets UIs clear badges. No args; filter on \
      input.session_id or input.session_metadata.<key>.";
 

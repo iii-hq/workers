@@ -5,6 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -35,10 +36,12 @@ export const Default: Story = {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        <DropdownMenuLabel>coder · 3 turns</DropdownMenuLabel>
-        <DropdownMenuItem>Rename</DropdownMenuItem>
-        <DropdownMenuItem>Duplicate</DropdownMenuItem>
-        <DropdownMenuItem disabled>Archive</DropdownMenuItem>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>coder · 3 turns</DropdownMenuLabel>
+          <DropdownMenuItem>Rename</DropdownMenuItem>
+          <DropdownMenuItem>Duplicate</DropdownMenuItem>
+          <DropdownMenuItem disabled>Archive</DropdownMenuItem>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem className="text-alert data-[highlighted]:text-alert">
           Delete

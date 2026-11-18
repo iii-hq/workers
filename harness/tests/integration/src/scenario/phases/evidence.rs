@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::client::{Client, DEFAULT_CALL_TIMEOUT_MS};
 use crate::deadline::Deadline;
@@ -70,6 +70,7 @@ impl ScenarioRunner<'_> {
             crate::trace_evidence::collect_available_for_sessions(
                 services.client(),
                 &session_ids,
+                active.harness_killed_at,
                 deadline,
             )
             .await
@@ -81,6 +82,7 @@ impl ScenarioRunner<'_> {
                 self.fixture.expected_terminal_turns,
                 self.fixture.expected_turn_statuses.len(),
                 active.trace_generation,
+                active.harness_killed_at,
                 deadline,
             )
             .await

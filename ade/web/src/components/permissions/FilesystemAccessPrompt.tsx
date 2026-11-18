@@ -53,13 +53,13 @@ export function FilesystemAccessPrompt({
   }
 
   return (
-    <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
+    <div className="border-t border-border px-3 py-2 flex flex-col gap-2">
       <div className="flex flex-col gap-1">
         <div
           // dir=rtl keeps the trailing (most-distinguishing) path segment
           // visible when truncated, matching the working-dir footer banner.
           dir="rtl"
-          className="truncate text-left font-mono text-[12px] text-ink bg-paper-2 px-2 py-1"
+          className="truncate text-left font-mono text-xs text-ink bg-paper-2 px-2 py-1"
           title={requestedRoot}
         >
           {requestedRoot}
@@ -67,16 +67,16 @@ export function FilesystemAccessPrompt({
         <p
           role="status"
           aria-live="polite"
-          className="font-mono text-[11px] text-ink-faint"
+          className="font-mono text-meta text-ink-faint"
         >
           the approved function reached this folder and paused before accessing
           it.
         </p>
-        <p className="font-mono text-[11px] text-ink-ghost">
+        <p className="font-mono text-meta text-ink-ghost">
           choose how long to allow access; the function resumes automatically.
         </p>
         {workingDir ? (
-          <p className="font-mono text-[11px] text-ink-ghost">
+          <p className="font-mono text-meta text-ink-ghost">
             workspace: {workingDir} is always allowed.
           </p>
         ) : null}
@@ -119,21 +119,21 @@ export function FilesystemAccessPrompt({
           {submitting === 'deny' ? 'denying…' : 'deny'}
         </Button>
         {submitting ? (
-          <span className="font-mono text-[12px] text-ink-faint">
+          <span className="font-mono text-xs text-ink-faint">
             access saved; resuming the function…
           </span>
         ) : null}
       </div>
 
       {submitError ? (
-        <div className="font-mono text-[12px] text-warn">{submitError}</div>
+        <div className="font-mono text-xs text-warn">{submitError}</div>
       ) : null}
 
       {onManage ? (
         <button
           type="button"
           onClick={onManage}
-          className="self-start font-mono text-[11px] text-ink-faint hover:text-ink hover:underline underline-offset-2"
+          className="self-start font-mono text-meta text-ink-faint hover:text-ink hover:underline underline-offset-2"
         >
           manage filesystem access…
         </button>

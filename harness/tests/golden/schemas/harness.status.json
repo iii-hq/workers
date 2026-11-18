@@ -531,6 +531,15 @@
         ],
         "type": "string"
       },
+      "DeliveryChannel": {
+        "description": "How a message reached a session: `direct` from a person (or a client acting as one), `notification` from an observer or the system, `invoked-agent` as a sub-agent's opening task.",
+        "enum": [
+          "direct",
+          "invoked-agent",
+          "notification"
+        ],
+        "type": "string"
+      },
       "ErrorKind": {
         "enum": [
           "auth_expired",
@@ -658,6 +667,17 @@
       "QueuedMessage": {
         "description": "One message parked while a step was streaming, waiting for the loop's drain to append it to the transcript (harness.md § Concurrency & steering).",
         "properties": {
+          "channel": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DeliveryChannel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the message reached the session: `direct` is a person (or a client acting as one), `notification` an observer or system notice, `invoked-agent` a sub-agent's opening task. Absent on rows parked by a harness that predates the field. The console hides every row that is not `direct` from the person's queued-messages strip."
+          },
           "entry_id": {
             "description": "Deterministic transcript entry id the drain appends under, so a redelivered drain is a no-op.",
             "type": "string"
@@ -804,7 +824,7 @@
           },
           "expects_wake": {
             "default": false,
-            "description": "The session owns an armed wake (a one-shot notify subscription): a completed turn here is NOT the run's outcome — a later turn in this session carries it. Mirrors the `terminal` flag on `harness::on-turn-completed` (`expects_wake == !terminal`). Pollers (e.g. workflow reconcile) must treat `completed && expects_wake` as still running.",
+            "description": "The session owns an armed wake (a one-shot notify subscription, claimed or not, until its delivery has seeded the woken turn), or its finished turn drained a queued message and is about to be reseeded: a completed turn here is NOT the run's outcome — a later turn in this session carries it. Mirrors the `terminal` flag on `harness::on-turn-completed` (`expects_wake == !terminal`). Pollers (e.g. workflow reconcile) must treat `completed && expects_wake` as still running.",
             "type": "boolean"
           },
           "max_transient_resumes": {

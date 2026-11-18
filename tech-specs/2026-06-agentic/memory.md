@@ -24,7 +24,11 @@ Two record kinds per bank, chosen by durability semantics:
   prefix a model reasoned under never changes); a later change reaches a running session as one
   appended `<memory update="rules">` message that overrides the frozen section. Guaranteed
   presence; use for what must always hold (writing style, coding conventions, answer format,
-  project constants). Bounded by `max_rule_chars` with a visible truncation marker.
+  project constants). Bounded by `max_rule_chars` with a visible truncation marker; the marker
+  counts the hidden lines and names `memory::rule::list {"bank":"<bank>"}` to read them. The
+  auto-managed `learned` rule is also capped by `learned_max_chars` (default 3000, measured as
+  injected; `0` turns the cap off): a write past it moves the oldest lines to memories tagged
+  `demoted-rule`, saved before the rule is rewritten, and the newest line always stays.
 - **Memories** (`memories.jsonl`) — one-line records recalled on demand, ranked against the current
   question. Append-only full-record log: fsync before RAM, last-wins replay by id, updates append
   revisions, deletes append tombstones. Content-fingerprinted ids (`fp` + FNV-1a of normalized
@@ -60,9 +64,12 @@ One LLM call per completed turn, off the hot path:
    (fingerprints keep retries idempotent).
 3. One `router::complete` call classifies each extracted item as a **memory** (durable information about
    the user/projects/world) or a **rule** (standing instruction about how the assistant should behave).
-   Memories are saved ADD-only; rule-kind items append to the bank's auto-managed `learned` rule,
-   fingerprint-deduped, capped per pass (`rule_learning_enabled` to disable). Hand-authored rules
-   are never touched by any automatic path.
+   Memories are saved ADD-only, each with its source: the session and the first and last entry of
+   the run it came from, so the span can be read again. Rule-kind items append to the bank's
+   auto-managed `learned` rule, fingerprint-deduped, capped per pass (`rule_learning_enabled` to disable). A rule the user
+   states again moves to the newest line. Past `learned_max_chars` the oldest lines are demoted
+   to memories, recalled like any other memory. Hand-authored rules are never touched by any
+   automatic path.
 
 Embeddings are derived data: `vectors.jsonl` sidecars carry the embedded text and the model
 `router::embed` reported for it. A text edit, a retirement, or a change of the reported model (a
@@ -88,7 +95,10 @@ Consumer-facing:
 - `memory::bank::create` / `memory::bank::list` / `memory::bank::delete` — named scopes; delete
   moves the folder to `.trash/` (recoverable).
 - `memory::rule::list` / `memory::rule::set` — the always-injected markdown rules; empty content
-  removes a rule (an empty set against a nonexistent bank is a no-op).
+  removes a rule (an empty set against a nonexistent bank is a no-op). `list` returns content
+  redacted, as it is injected. `set` takes an optional `expected`, the content as last read; the
+  write is refused with `rule_changed` (`invalid_input`) when the rule holds anything else by
+  then, and `""` means the rule must not exist yet.
 - `memory::tags` — distinct tags across a bank's live memories with counts. Tags are topical
   labels for filtering WITHIN a bank (set on save/update, suggested by extraction); `memory::list`
   and `memory::recall` accept a `tag` filter. Organization, not ranking.
@@ -108,6 +118,12 @@ Internal (agent-denied, see Security):
 - `memory::on-session-deleted` — extraction-cursor GC.
 - `memory::on-config-change` — configuration hot reload (store reopen on `data_dir` change,
   last-good on failure).
+- `memory::transcript` — the source lines of one memory, read from session-manager and redacted
+  and cut as extraction reads them; a missing or unreadable source is a `missing` reason, never
+  raw text. The reader for memory-consolidate's verify tier.
+- `memory::correct` — replace a memory its source contradicts: the new record (old provenance and
+  statement date, plus `correction_reason`) and the old record's tombstone in one append, guarded
+  by `expected_memory`. Pinned and edited records are never corrected.
 
 ## Triggers
 
@@ -160,9 +176,10 @@ search index is RAM-only, rebuilt at boot, so store and index cannot diverge. An
 
 Suggested defaults ship in `memory/iii-permissions.yaml`: agents get `memory::recall`,
 `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`;
-the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned
-surfaces (console, REST, CLI) by default — the always-injected rules shape every future turn's
-system prompt, so writing them is a privileged operation.
+the hook/pipeline internals, `memory::transcript` and `memory::correct` are denied, and bank/rule
+writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default — the
+always-injected rules shape every future turn's system prompt, so writing them is a privileged
+operation.
 
 ## The memory family
 
@@ -176,15 +193,27 @@ siblings over one on-disk contract, not a monolith with modes.
   semantics (last completed pass persisted in the state worker; a pass missed while down runs
   shortly after boot, via a backstop loop that also covers cron-less rigs): deterministic dedup of near-duplicate memories (normalized-text or token-set equality;
   one differing word never merges), survivor = pinned > corroboration > oldest. Strictly
-  supersede-only through `memory::supersede` + `memory::save`, never touches pinned records; every
-  change lands as a `memory::item-changed` event. `dry_run` plans without writing;
+  supersede-only through `memory::supersede` + `memory::save` (+ `memory::correct` for the verify
+  tier), never touches pinned records; every change lands as a `memory::item-changed` event. `dry_run` plans without writing;
   `max_supersedes_per_run` and `max_llm_calls_per_run` cap a pass. Promotion of corroborated clusters toward rules is its
   An optional LLM tier (`llm_assist_enabled`, off by default) runs after the deterministic pass:
   one `router::complete` judge per bank confirms which reorder groups really are equivalent
   (merged through the same seam) and promotes standing instructions observed
   `promote_corroboration_threshold`+ times into the bank's `learned` rule — append-only,
-  fingerprint-deduped, and the judge can only act on candidates it was offered. Installable,
-  stoppable, and removable without touching stored memory.
+  fingerprint-deduped, and the judge can only act on candidates it was offered. The judge sees
+  the `learned` lines in force and lists a candidate one of them already states as `covered`
+  instead of promoting it. Promoted and covered ids are kept in the state worker
+  (`promoted:{bank}`), so they are not offered again. The write carries `expected` and merges
+  again on `rule_changed`, up to three tries; an older memory worker ignores `expected`.
+  An opt-in verify tier (`verify_enabled`, off by default) runs last. It reads each note's source
+  through `memory::transcript` and asks one judge call per note whether the transcript
+  contradicts it. Inferred notes, agent-saved notes and earlier corrections go first, then plain
+  extracted notes, up to `verify_max_per_run` (20) per bank per pass, with a two-lane cursor in
+  the state worker. A correction is written through `memory::correct` only when the judge's quote
+  is in a user or assistant line and every number of the corrected text is in those lines'
+  message text or in the note itself (a resolved date may stay, a new number may not). Old records without a
+  span, reinforced notes and unreadable sources are skipped and counted, never retried.
+  Installable, stoppable, and removable without touching stored memory.
 
 The seam is the store's append-only contract: any sibling that mutates memory goes through the
 same `memory::*` functions and the same last-wins replay, so the family shares one durability
@@ -201,7 +230,8 @@ configuration (configuration worker).
 ## Boundaries
 
 - Not per-turn context compression (context-manager) and not a transcript store (session-manager);
-  every extracted memory carries provenance pointing back at its source session.
+  every extracted memory carries provenance pointing back at its source session and the first
+  and last entry of its span.
 - Consolidation (dedup/merge/promote across memories) belongs to the `memory-consolidate` sibling
   (see the family section) — this worker never grows a scheduler.
 - Extraction never rewrites or deletes existing records; pinned records are untouchable by every

@@ -1,5 +1,17 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
+import {
+  Pagination as BasePagination,
+  PaginationContent,
+  PaginationItem,
+} from '@/components/shadcn/pagination'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
 import { cn } from '@/lib/utils'
 
 interface PaginationProps {
@@ -13,6 +25,11 @@ interface PaginationProps {
   className?: string
 }
 
+/**
+ * Page controls on the shadcn pagination parts: the page-size select, the
+ * range shown, then previous / next around the page count. Every number is
+ * tabular so nothing shifts as the page changes.
+ */
 export function Pagination({
   currentPage,
   totalPages,
@@ -26,52 +43,62 @@ export function Pagination({
   const start = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1
   const end = Math.min(currentPage * pageSize, totalItems)
   return (
-    <div
+    <BasePagination
       className={cn(
-        'flex items-center justify-between gap-4 font-sans text-[12px] text-ink-faint',
+        'mx-0 w-auto justify-between gap-4 text-xs text-muted-foreground',
         className,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-medium">Show</span>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="rounded-sm border border-transparent bg-surface px-1.5 py-0.5 font-sans text-[12px] text-ink focus:border-rule-focus focus:outline-none"
+        <span className="text-meta font-medium">Show</span>
+        <Select
+          value={String(pageSize)}
+          onValueChange={(next) => {
+            if (next !== null) onPageSizeChange(Number(next))
+          }}
         >
-          {pageSizeOptions.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger size="sm" aria-label="Rows per page">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start" alignItemWithTrigger={false}>
+            {pageSizeOptions.map((opt) => (
+              <SelectItem key={opt} value={String(opt)}>
+                {opt}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
-      <div className="flex items-center gap-2 tabular-nums">
-        <span>
+      <PaginationContent className="gap-2 tabular-nums">
+        <PaginationItem>
           {start}–{end} of {totalItems}
-        </span>
-        <Button
-          variant="icon"
-          size="icon"
-          aria-label="previous page"
-          disabled={currentPage <= 1}
-          onClick={() => onPageChange(currentPage - 1)}
-        >
-          <ChevronLeft className="size-4" />
-        </Button>
-        <span className="text-[11px] font-medium">
+        </PaginationItem>
+        <PaginationItem>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Previous page"
+            disabled={currentPage <= 1}
+            onClick={() => onPageChange(currentPage - 1)}
+          >
+            <ChevronLeft className="size-4" />
+          </Button>
+        </PaginationItem>
+        <PaginationItem className="text-meta font-medium">
           page {currentPage} of {totalPages}
-        </span>
-        <Button
-          variant="icon"
-          size="icon"
-          aria-label="next page"
-          disabled={currentPage >= totalPages}
-          onClick={() => onPageChange(currentPage + 1)}
-        >
-          <ChevronRight className="size-4" />
-        </Button>
-      </div>
-    </div>
+        </PaginationItem>
+        <PaginationItem>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Next page"
+            disabled={currentPage >= totalPages}
+            onClick={() => onPageChange(currentPage + 1)}
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        </PaginationItem>
+      </PaginationContent>
+    </BasePagination>
   )
 }

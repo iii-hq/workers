@@ -174,7 +174,7 @@ const actionButtonClass = cn(
   'composer-action inline-flex size-11 shrink-0 items-center justify-center rounded-full sm:size-10',
   // Idle → armed eases the fill in; the press itself is the spring below.
   'transition-[background-color,color,box-shadow] duration-200 ease-out',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+  'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
   'disabled:pointer-events-none disabled:opacity-40',
 )
 
@@ -203,7 +203,7 @@ const actionPressSpring = {
 const stripToggleClass = cn(
   'ml-auto flex size-10 shrink-0 items-center justify-center rounded-full text-ink-faint sm:hidden',
   'hover:bg-surface-hover hover:text-ink',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+  'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
 )
 
 interface ComposerProps {
@@ -297,9 +297,12 @@ interface ComposerProps {
    */
   externalInput?: boolean
   /** This composer's address on the insert bus (`lib/composer-insert`):
-      with several chats open, an insert or a focus request reaches one
-      composer only. Generated when absent. */
+ with several chats open, an insert or a focus request reaches one
+ composer only. Generated when absent. */
   composerId?: string
+  /** The chat session this composer sends into: an insert addressed to that
+      session (`host.chat.compose({ sessionId })`) reaches this composer. */
+  sessionId?: string
   /** Shown at the top of the card, above attachments: a side chat's quote. */
   header?: ReactNode
   /**
@@ -433,6 +436,7 @@ export function Composer({
   autoFocus,
   externalInput = true,
   composerId: composerIdProp,
+  sessionId,
   header,
   compact = false,
   initialContent,
@@ -485,8 +489,8 @@ export function Composer({
   const lexicalEditorRef = useRef<LexicalEditor | null>(null)
   const textRef = useRef(initialContent ? '' : (initialText ?? ''))
   /* Boolean mirror of "the editor holds text": the action button swaps on
-     the empty↔non-empty transition, and state updates for an unchanged
-     boolean bail out — so plain typing still never re-renders the tree. */
+ the empty↔non-empty transition, and state updates for an unchanged
+ boolean bail out — so plain typing still never re-renders the tree. */
   const [hasText, setHasText] = useState(
     () => textRef.current.trim().length > 0,
   )
@@ -739,8 +743,8 @@ export function Composer({
   const composerId = composerIdProp ?? generatedComposerId
   // One of the chats outside text can be handed to while it is mounted.
   useEffect(
-    () => (externalInput ? registerComposer(composerId) : undefined),
-    [composerId, externalInput],
+    () => (externalInput ? registerComposer(composerId, sessionId) : undefined),
+    [composerId, externalInput, sessionId],
   )
   useEffect(
     () =>
@@ -760,6 +764,10 @@ export function Composer({
   // `onChange` below. Held in a ref because the insert and the change are two
   // separate turns of the event loop.
   const pendingSubmitRef = useRef(false)
+  // A send that arrived while a draft was being written: it goes on its own
+  // (the draft stays as it was), the moment the composer can send.
+  const heldSendsRef = useRef<string[]>([])
+  const [heldToken, setHeldToken] = useState(0)
   useEffect(() => {
     if (!externalInput) return
     const unfold = () => {
@@ -769,7 +777,16 @@ export function Composer({
     }
     const offFocus = onComposerFocusRequest(unfold, composerId)
     const offInsert = onComposerInsert((insert) => {
-      if (insert.submit) pendingSubmitRef.current = true
+      if (insert.submit) {
+        const drafting =
+          textRef.current.trim().length > 0 || attachmentsRef.current.length > 0
+        if (drafting) {
+          heldSendsRef.current.push(insert.text)
+          setHeldToken((t) => t + 1)
+          return
+        }
+        pendingSubmitRef.current = true
+      }
       unfold()
     }, composerId)
     return () => {
@@ -782,6 +799,14 @@ export function Composer({
     refocusAfterUnfoldRef.current = false
     requestComposerFocus(composerId)
   }, [collapsed, composerId])
+  // Sends held off a draft go, in order, as soon as the composer can send;
+  // the editor is never touched.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: heldToken marks a new held send
+  useEffect(() => {
+    if (submitDisabled || !model || heldSendsRef.current.length === 0) return
+    const texts = heldSendsRef.current.splice(0)
+    for (const text of texts) onSubmit({ text, attachments: [] })
+  }, [submitDisabled, model, onSubmit, heldToken])
   // A send that arrived while the composer could not send (a chat pane just
   // opened again, its session still loading) goes the moment it can.
   useEffect(() => {
@@ -968,7 +993,7 @@ export function Composer({
         className={cn(
           'composer-card relative',
           composerCardClass,
-          dragging && 'ring-2 ring-rule-focus',
+          dragging && 'ring-3 ring-ring/50',
         )}
       >
         {showWorkingDir && onWorkingDirChange ? (
@@ -983,7 +1008,7 @@ export function Composer({
               worktrees={worktreePicker}
               triggerAppearance="chip"
               popoverAlign="start"
-              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-neutral-200 [&>button]:bg-white [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-neutral-50 dark:[&>button]:border-neutral-900 dark:[&>button]:bg-transparent dark:[&>button:hover]:bg-neutral-900"
+              className="min-w-0 max-w-[55%] shrink-0 [&>button]:min-h-8 [&>button]:rounded-xl [&>button]:border [&>button]:border-border [&>button]:bg-background [&>button]:px-2.5 [&>button]:text-xs [&>button]:text-ink-faint [&>button:hover]:bg-muted dark:[&>button]:bg-transparent"
             />
             {projectControls}
             <Hint
@@ -1014,7 +1039,7 @@ export function Composer({
 
         <div id={cardId} hidden={cardHidden}>
           {dragging ? (
-            <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
+            <div className="flex items-center justify-center border-b border-border px-3 py-2 font-mono text-xs text-ink-faint">
               drop to attach
             </div>
           ) : null}
@@ -1031,7 +1056,7 @@ export function Composer({
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={() => setMobileSettingsOpen(true)}
                 aria-label="attach files, model and settings"
-                className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 <Plus className="size-5 shrink-0" aria-hidden />
               </button>
@@ -1047,14 +1072,14 @@ export function Composer({
               <div className="composer-editor-slot px-1 pt-1">{editor}</div>
 
               {/* Tapping a toolbar button must not take the caret: on a phone the
-              blur folds the card to one line and drops the keyboard, so the
-              tap would land on a surface that just moved. The pickers open on
-              click, which a cancelled pointerdown leaves alone. */}
+ blur folds the card to one line and drops the keyboard, so the
+ tap would land on a surface that just moved. The pickers open on
+ click, which a cancelled pointerdown leaves alone. */}
               {/* One row at every phone width, never wrapping. Leading: what
-              the message goes out with — the + menu (attach, model,
-              permissions, memory, folder), the agent and the model, which
-              truncates first. Trailing: mic and send together, where the
-              thumb lands. */}
+ the message goes out with — the + menu (attach, model,
+ permissions, memory, folder), the agent and the model, which
+ truncates first. Trailing: mic and send together, where the
+ thumb lands. */}
               <div
                 className="composer-mobile-toolbar flex min-w-0 flex-nowrap items-center gap-1 px-2 pb-2 sm:hidden"
                 onPointerDown={(event) => event.preventDefault()}
@@ -1063,7 +1088,7 @@ export function Composer({
                   type="button"
                   onClick={() => setMobileSettingsOpen(true)}
                   aria-label="attach files, model and settings"
-                  className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   <Plus className="size-5 shrink-0" aria-hidden />
                 </button>
@@ -1113,12 +1138,12 @@ export function Composer({
           ) : null}
 
           {/* Desktop toolbar: what the message goes out as on the left —
-            the model (with its provider), then the agent, memory and
-            permission pickers; what you do with it on the right — injected
-            actions, attach, and send, where the eye lands after typing. */}
+ the model (with its provider), then the agent, memory and
+ permission pickers; what you do with it on the right — injected
+ actions, attach, and send, where the eye lands after typing. */}
           {/* One row at every pane width: in a narrow pane (a side panel, a
-            split) the pickers shrink — the model name truncates, the agent
-            drops to its icon — and the send button stays in view. */}
+ split) the pickers shrink — the model name truncates, the agent
+ drops to its icon — and the send button stays in view. */}
           <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
             <div className="flex min-w-0 flex-1 items-center gap-1">
               <ModelPicker
@@ -1164,17 +1189,17 @@ export function Composer({
                 className={toolbarIconButtonClass}
               />
               {/* ONE action button. Mid-stream the slot shows Stop, but the moment
-                the composer holds queueable content (text or attachments) it
-                flips to send — the editor advertises "queue a message…", and the
-                click must queue it, not kill the turn. */}
+ the composer holds queueable content (text or attachments) it
+ flips to send — the editor advertises "queue a message…", and the
+ click must queue it, not kill the turn. */}
               {renderActionButton()}
             </div>
           </div>
         </div>
       </div>
       {/* The prompts stay mounted while a draft exists — faded and inert —
-        because the welcome stack is centred: unmounting them on the first
-        keystroke would shrink the stack and drop the composer mid-type. */}
+ because the welcome stack is centred: unmounting them on the first
+ keystroke would shrink the stack and drop the composer mid-type. */}
       {showSuggestions && !inputDisabled && !isStreaming && !cardHidden ? (
         <section
           className="composer-suggestions mt-4 flex flex-wrap justify-center gap-2"
@@ -1186,7 +1211,7 @@ export function Composer({
             <button
               key={label}
               type="button"
-              className="group/starter inline-flex h-9 items-center gap-2 rounded-full border border-neutral-200 bg-transparent pr-4 pl-3.5 font-inter text-sm text-ink-faint transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-neutral-300 hover:bg-neutral-100 hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus motion-safe:active:scale-96 dark:border-neutral-900 dark:hover:border-neutral-800 dark:hover:bg-neutral-900"
+              className="group/starter inline-flex h-9 items-center gap-2 rounded-full border border-border bg-transparent pr-4 pl-3.5 font-inter text-sm text-ink-faint transition-[background-color,border-color,color,scale] duration-150 ease-out hover:border-input hover:bg-muted hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring motion-safe:active:scale-96"
               onClick={() => {
                 if (textRef.current.trim()) return
                 const target = lexicalEditorRef.current

@@ -48,6 +48,7 @@ import {
   type SessionCronTask,
   type SystemCronObserver,
   sendToSession,
+  waitForSchedule,
 } from '../lib/api'
 import { nextCronRun } from '../lib/cron'
 import {
@@ -75,7 +76,13 @@ import {
 } from './status'
 
 type View = 'tasks' | 'observers'
-type Feedback = { tone: 'success' | 'warn' | 'alert'; message: string }
+type Feedback = {
+  tone: 'info' | 'success' | 'warn' | 'alert'
+  message: string
+  detail?: string
+  /** The chat to open from the banner: where a schedule is being made. */
+  sessionId?: string
+}
 type Inspector =
   | { kind: 'new' }
   | { kind: 'task'; task: SessionCronTask }
@@ -339,6 +346,40 @@ export function CronSchedulesPage({
     }
   }, [host, refreshTasks])
 
+  /** "Sent" is not "scheduled": follow the schedule session's turn and say
+      what came of it — the new row, or the agent's reason for not making it. */
+  const followSchedule = async (sessionId: string, request: number) => {
+    setFeedback({
+      tone: 'info',
+      message: 'Creating the schedule in its own chat. It appears here once the agent has added it.',
+      sessionId,
+    })
+    const outcome = await waitForSchedule(host, sessionId, {
+      cancelled: () => request !== sendRequest.current,
+    })
+    if (request !== sendRequest.current) return
+    if (outcome.status === 'created') {
+      setFeedback({
+        tone: 'success',
+        message: `Scheduled ${outcome.task.label ?? 'the task'}: ${cadenceLabel(outcome.task.expression).toLowerCase()}.`,
+      })
+      void refreshTasks()
+    } else if (outcome.status === 'failed') {
+      setFeedback({
+        tone: 'alert',
+        message: 'The schedule was not created.',
+        detail: outcome.reply,
+        sessionId,
+      })
+    } else {
+      setFeedback({
+        tone: 'warn',
+        message: 'The agent has not added the schedule yet. Open its chat to follow it.',
+        sessionId,
+      })
+    }
+  }
+
   const submitNaturalTask = async () => {
     const taskRequest = composer.trim()
     if (!taskRequest || sending) return
@@ -368,15 +409,21 @@ export function CronSchedulesPage({
         // that does not host session::on-created.
         awaitedSession.current = null
         openConversation(sessionId)
+        if (request !== sendRequest.current) return
+        setComposer('')
+        setReplacementTask(null)
+        setSending(false)
+        await followSchedule(sessionId, request)
+        return
       }
       if (request !== sendRequest.current) return
       setComposer('')
       setReplacementTask(null)
       setFeedback({
-        tone: 'success',
-        message: replacing
-          ? 'Safe replacement request sent. The old task is retired only after the new one is in place.'
-          : 'Request sent to Harness. This list updates when the task is created.',
+        tone: 'info',
+        message:
+          'Replacement sent to its chat. The old task is retired only after the new one is in place.',
+        sessionId: replacing.sessionId,
       })
     } catch (error) {
       if (request !== sendRequest.current) return
@@ -412,16 +459,14 @@ export function CronSchedulesPage({
         title: spec.label,
         instruction: manualSchedulePrompt(observation),
         model,
+        target: spec.delivery === 'call' ? spec.functionId : undefined,
       })
       awaitedSession.current = null
       openConversation(sessionId)
       if (request !== sendRequest.current) return
       closeInspector()
-      setFeedback({
-        tone: 'success',
-        message:
-          'Schedule request sent. Harness will add the task after the active turn completes the call.',
-      })
+      setSending(false)
+      await followSchedule(sessionId, request)
     } catch (error) {
       if (request !== sendRequest.current) return
       setFeedback({ tone: 'alert', message: errorMessage(error) })
@@ -518,7 +563,7 @@ export function CronSchedulesPage({
   }
 
   // A context from the palette source (a schedule by observer id) or the
-  // setup-time "New schedule…" command (`{ action: 'new' }`). A schedule is
+  // setup-time "New schedule" command (`{ action: 'new' }`). A schedule is
   // left unapplied until it shows up in `tasks` — the page can mount before
   // the first fetch resolves.
   const appliedContextRef = useRef(0)
@@ -752,6 +797,21 @@ export function CronSchedulesPage({
                 <StatusPanel
                   variant={feedback.tone}
                   headline={feedback.message}
+                  detail={feedback.detail}
+                  action={
+                    feedback.sessionId ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          feedback.sessionId &&
+                          openConversation(feedback.sessionId)
+                        }
+                      >
+                        Open chat
+                      </Button>
+                    ) : undefined
+                  }
                 />
               ) : null}
 

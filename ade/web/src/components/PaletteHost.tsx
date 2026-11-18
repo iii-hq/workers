@@ -40,7 +40,10 @@ import {
   checkChromiumMissing,
   useChromiumMissing,
 } from '@/lib/onboarding/chromium'
-import { requestOnboardingWizard } from '@/lib/onboarding/open'
+import {
+  requestOnboardingWizard,
+  SETUP_WIZARD_KEYWORDS,
+} from '@/lib/onboarding/open'
 import { usePageCommands } from '@/lib/page-commands'
 import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry } from '@/lib/palette/sources'
@@ -341,16 +344,7 @@ export function PaletteHost({
         kind: 'action',
         title: 'Set up models and keys',
         detail: 'Connect a provider, store API keys and set up Judge',
-        keywords: [
-          'harness',
-          'onboarding',
-          'provider',
-          'model',
-          'key',
-          'judge',
-          'wizard',
-          'welcome',
-        ],
+        keywords: [...SETUP_WIZARD_KEYWORDS],
         icon: Sparkles,
         run: () => requestOnboardingWizard(),
       },

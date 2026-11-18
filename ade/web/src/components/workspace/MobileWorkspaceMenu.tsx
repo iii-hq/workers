@@ -44,14 +44,14 @@ export function MobileWorkspaceMenu({
         >
           <div className="min-h-0 flex-1 overflow-y-auto px-3">
             {/* The same search the header opens, repeated here because this
-                sheet is where a phone goes looking for everything else. */}
+ sheet is where a phone goes looking for everything else. */}
             <button
               type="button"
               onClick={() => {
                 onOpenChange(false)
                 onOpenPalette()
               }}
-              className="mb-3 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              className="mb-3 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <Search className="size-5" aria-hidden />
               Search the ADE
@@ -79,7 +79,7 @@ export function MobileWorkspaceMenu({
                         onActivate(tab.id)
                         onOpenChange(false)
                       }}
-                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
+                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
                     >
                       <PanelsTopLeft
                         className={cn(
@@ -117,7 +117,7 @@ export function MobileWorkspaceMenu({
                         type="button"
                         onClick={() => onCloseTab(tab.id)}
                         aria-label={`Close ${tabLabel(tab, extPageTitles)}`}
-                        className="flex w-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-active hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus"
+                        className="flex w-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-active hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
                       >
                         <X className="size-4" aria-hidden />
                       </button>
@@ -140,7 +140,7 @@ export function MobileWorkspaceMenu({
                   ? undefined
                   : tabLimitReachedTitle(workspace.tabLimit)
               }
-              className="mt-2 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
+              className="mt-2 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
             >
               <Plus className="size-5 text-ink-faint" aria-hidden />
               {workspace.canCreateTab
@@ -149,14 +149,14 @@ export function MobileWorkspaceMenu({
             </button>
           </div>
 
-          <div className="mt-3 grid shrink-0 grid-cols-2 gap-2 border-t border-rule-2 px-3 pt-3">
+          <div className="mt-3 grid shrink-0 grid-cols-2 gap-2 border-t border-border px-3 pt-3">
             <button
               type="button"
               onClick={() => {
                 onOpenChange(false)
                 onOpenPalette()
               }}
-              className="flex min-h-12 items-center gap-2 rounded-sm px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              className="flex min-h-12 items-center gap-2 rounded-sm px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <Search className="size-5" aria-hidden />
               Search
@@ -169,7 +169,7 @@ export function MobileWorkspaceMenu({
                 onToggleSettings()
               }}
               className={cn(
-                'flex min-h-12 items-center gap-2 rounded-sm px-3 font-sans text-base hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+                'flex min-h-12 items-center gap-2 rounded-sm px-3 font-sans text-base hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
                 settingsOpen
                   ? 'bg-surface-selected text-ink'
                   : 'text-ink-faint',

@@ -179,11 +179,11 @@ impl FleetWatch {
     pub fn release(&self) {
         let mut watching = self.lock();
         watching.observers = watching.observers.saturating_sub(1);
-        if watching.observers == 0 {
-            if let Some(task) = watching.task.take() {
-                task.abort();
-                tracing::info!("fleet watcher stopped: {ON_EVENT_FN} has no observers");
-            }
+        if watching.observers == 0
+            && let Some(task) = watching.task.take()
+        {
+            task.abort();
+            tracing::info!("fleet watcher stopped: {ON_EVENT_FN} has no observers");
         }
     }
 

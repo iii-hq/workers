@@ -5,7 +5,7 @@
 use iii_sdk::{IIIClient, ObserverHandle, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const STAMP_SESSION_ID: &str = "a2ui::stamp-session";
 /// The harness hook point run before a called function.

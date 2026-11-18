@@ -84,7 +84,7 @@ export function SpawnView({ input, output, running }: SpawnViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
           <StatusPill label="spawning…" variant="default" />
           <SpawnChips req={req} />
@@ -98,7 +98,7 @@ export function SpawnView({ input, output, running }: SpawnViewProps) {
   }
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill label="spawned" variant="accent" />
         <SpawnChips req={req} />
@@ -301,7 +301,7 @@ export function SpawnActivityCard({
         </div>
       </div>
 
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-2 pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-border pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
         <SubagentStatus status={status} activityAge={activityAge} />
         {onOpen ? (
           <OpenDetailsAffordance className="group-hover/subagent:bg-surface-hover">
@@ -314,7 +314,7 @@ export function SpawnActivityCard({
   const className = cn(
     '@container w-full rounded-xl bg-card px-4 py-4 text-left ring-1 ring-card-edge sm:px-3 sm:py-3',
     onOpen &&
-      'group/subagent cursor-pointer transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+      'group/subagent cursor-pointer transition-colors hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50',
   )
 
   if (onOpen) {
@@ -439,13 +439,13 @@ function SubagentStatus({
 }
 
 /** Compact preview rendered while a `harness::spawn` call sits in the
-    approval gate: the policy chips are the point. Tolerates a clipped
+ approval gate: the policy chips are the point. Tolerates a clipped
     `arguments_excerpt` (every field optional). */
 export function SpawnPreview({ input }: { input: unknown }) {
   const req = safeParseRequest(spawnRequestSchema, input)
   if (!req) return null
   return (
-    <div className="border-b border-rule-2 bg-bg">
+    <div className="border-b border-border bg-bg">
       <MetaRow>
         <StatusPill label="permission to spawn" variant="warn" />
         <SpawnChips req={req} />
@@ -527,7 +527,7 @@ function SessionLink({ sessionId }: { sessionId: string }) {
 
 function PaneHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
+    <div className="bg-paper-2 px-3 py-1.5 border-b border-border iii-ui-eyebrow">
       {children}
     </div>
   )
@@ -547,7 +547,7 @@ function TaskPane({ task }: { task: SpawnRequest['task'] }) {
     <>
       <PaneHeader>Task</PaneHeader>
       {text ? (
-        <div className="px-3 py-2 border-b border-rule-2 bg-bg text-[13px] leading-[1.6]">
+        <div className="px-3 py-2 border-b border-border bg-bg text-body leading-[1.6]">
           <Markdown>{text}</Markdown>
         </div>
       ) : (
@@ -565,15 +565,13 @@ function ResultPane({ output }: { output: unknown }) {
         <PaneHeader>Spawned child</PaneHeader>
         <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="iii-ui-eyebrow mr-2">session</span>
-          <span className="font-mono text-[12px]">
+          <span className="font-mono text-xs">
             <SessionLink sessionId={direct.data.child_session_id} />
           </span>
         </ActionLine>
         <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="iii-ui-eyebrow mr-2">turn</span>
-          <span className="font-mono text-[12px]">
-            {direct.data.child_turn_id}
-          </span>
+          <span className="font-mono text-xs">{direct.data.child_turn_id}</span>
         </ActionLine>
       </>
     )
@@ -592,7 +590,7 @@ function ResultPane({ output }: { output: unknown }) {
     return (
       <>
         <PaneHeader>Child result</PaneHeader>
-        <div className="px-3 py-2 bg-bg text-[13px] leading-[1.6]">
+        <div className="px-3 py-2 bg-bg text-body leading-[1.6]">
           <Markdown>{output}</Markdown>
         </div>
       </>

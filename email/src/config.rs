@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -137,7 +137,7 @@ pub struct BootSignature {
 impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
-        serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
+        serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {
@@ -248,7 +248,28 @@ accounts:
 
     #[test]
     fn seed_yaml_expands_env_into_credentials() {
-        std::env::set_var("EMAIL_TEST_SMTP_PASSWORD", "re_secret");
+        const CHILD: &str = "III_EDITION_2024_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let test_name = format!("{module}::seed_yaml_expands_env_into_credentials");
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("EMAIL_TEST_SMTP_PASSWORD", "re_secret")
+                .output()
+                .expect("start isolated environment test");
+            assert!(
+                output.status.success(),
+                "isolated environment test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated test did not execute"
+            );
+            return;
+        }
         let cfg = WorkerConfig::from_yaml(SMTP_ACCOUNT).unwrap();
         let smtp = cfg.accounts["notifications"].smtp.as_ref().unwrap();
         assert!(smtp.starttls);

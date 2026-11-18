@@ -25,11 +25,11 @@ use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Capture, Error, IIIClient, InitOptions, Match,
-    ObserveRejection, Observer, ObserverOptions, RegisterFunction, Source,
+    Call, CallRequest, Capture, Error, IIIClient, InitOptions, Match, ObserveRejection, Observer,
+    ObserverOptions, RegisterFunction, Source, register_worker,
 };
-use memory::hooks::{extraction_observer_id, EXTRACTION_QUEUE, EXTRACT_JOB_FN, WORKER_NAME};
-use serde_json::{json, Value};
+use memory::hooks::{EXTRACT_JOB_FN, EXTRACTION_QUEUE, WORKER_NAME, extraction_observer_id};
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 const ON_MESSAGE: &str = "queue::on-message";

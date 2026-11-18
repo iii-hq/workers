@@ -16,7 +16,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use sandbox_code_runner::runner::{split_sentinel, Lang};
+use sandbox_code_runner::runner::{Lang, split_sentinel};
 
 const SENTINEL: &str = "0f7f37e2-golden-sentinel";
 
@@ -535,7 +535,9 @@ fn wait_bounded(mut child: std::process::Child, secs: u64) -> WrapperOutcome {
             None if std::time::Instant::now() > deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("guest process still alive after {secs}s — a leaked handle (SDK socket?) is keeping it up");
+                panic!(
+                    "guest process still alive after {secs}s — a leaked handle (SDK socket?) is keeping it up"
+                );
             }
             None => std::thread::sleep(Duration::from_millis(10)),
         }

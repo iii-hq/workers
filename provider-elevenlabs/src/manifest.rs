@@ -2,8 +2,7 @@
 //! (binary-worker.md § manifest; same shape as provider-zai/src/manifest.rs).
 use serde::Serialize;
 
-const DESCRIPTION: &str =
-    "ElevenLabs speech provider worker behind llm-router: speech to text with Scribe, text to speech with the Eleven voices.";
+const DESCRIPTION: &str = "ElevenLabs speech provider worker behind llm-router: speech to text with Scribe, text to speech with the Eleven voices.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

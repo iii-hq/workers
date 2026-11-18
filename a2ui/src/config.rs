@@ -143,7 +143,7 @@ impl WorkerConfig {
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let expanded = expand_env(yaml);
         let parsed: Self =
-            serde_yaml::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
+            serde_yaml_ng::from_str(&expanded).map_err(|e| format!("yaml parse: {e}"))?;
         parsed.validate()
     }
 
@@ -263,11 +263,13 @@ mod tests {
             WorkerConfig::from_json(&serde_json::json!({"max_components_per_surface": 0})).is_err()
         );
         assert!(WorkerConfig::from_json(&serde_json::json!({"repair_attempts": 4})).is_err());
-        assert!(WorkerConfig::from_json(&serde_json::json!({
-            "max_data_bytes": 8,
-            "max_surface_bytes": 4
-        }))
-        .is_err());
+        assert!(
+            WorkerConfig::from_json(&serde_json::json!({
+                "max_data_bytes": 8,
+                "max_surface_bytes": 4
+            }))
+            .is_err()
+        );
     }
 
     #[test]

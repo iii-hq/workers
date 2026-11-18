@@ -58,8 +58,9 @@ npx skills add iii-hq/iii --all
 
 [`kits/`](kits/) holds kits: agent profiles, skills and the workers they need,
 installed together through `iii-directory` (see [Kits](iii-directory/README.md#kits)).
-Current kit: [`deepwork`](kits/deepwork/), dynamic multi-agent workflows on the
-kanban board.
+Current kits: [`deepwork`](kits/deepwork/), dynamic multi-agent workflows on the
+kanban board, and the [`workflow` kit](kits/workflow/), the same ticket strategy
+with every wave run by the `workflow` worker.
 
 ## Modules
 
@@ -106,7 +107,7 @@ kanban board.
 | [`llm-router`](llm-router/) | Rust | One front door + provider protocol in front of every LLM provider — `router::chat`/`router::complete`/`router::embed`, provider registry + credentials, model catalog, and routing. See [`llm-router/README.md`](llm-router/README.md). |
 | [`mcp`](mcp/) | Rust | MCP 2025-06-18 Streamable HTTP bridge — exposes iii functions tagged `mcp.expose` as MCP tools. |
 | [`memory`](memory/) | Rust | Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity + semantic recall, pinning, supersede-never-delete history, and two live event functions (`memory::on-item-changed`, `memory::on-bank-changed`). Plain files on disk; observes the harness `harness::hook::on-pre-generate` hook point for injection and `harness::on-turn-completed` for background capture. |
-| [`memory-consolidate`](memory-consolidate/) | Rust | Scheduled hygiene sibling of `memory` — deterministic dedup of near-duplicate memories, supersede-only through the public memory functions, pinned untouchable, catch-up-on-boot scheduling. Removable without touching stored memory. |
+| [`memory-consolidate`](memory-consolidate/) | Rust | Scheduled hygiene for the memory worker: deterministic dedup of near-duplicate memories and an opt-in verify tier that checks notes against their source transcript; every write goes through memory's supersede and correct seams, pinned untouchable. Removable without touching stored memory. |
 | [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and observer, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`ade`](ade/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
 | [`provider-claude-code`](provider-claude-code/) | Rust | Claude Code (Pro/Max subscription) Messages API provider behind `llm-router` — `provider::claude-code::stream` using OAuth credentials from the auth-credentials vault or `~/.claude/.credentials.json`, namespaced `claude-code/*` catalog. Local/personal dev only (ToS caveat). |

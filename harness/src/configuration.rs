@@ -22,7 +22,7 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
@@ -284,11 +284,10 @@ fn migrate_stored_config(value: &mut Value) -> bool {
     if let Some(expose) = settings
         .get_mut("default_functions")
         .and_then(|policy| policy.get_mut("expose"))
+        && expose.as_str() == Some("agent_trigger")
     {
-        if expose.as_str() == Some("agent_trigger") {
-            *expose = json!("agent_call");
-            changed = true;
-        }
+        *expose = json!("agent_call");
+        changed = true;
     }
     changed
 }

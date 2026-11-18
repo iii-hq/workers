@@ -24,7 +24,7 @@ export function WorkersListView({
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <ListHeader
           count={0}
           noun="workers"
@@ -42,7 +42,7 @@ export function WorkersListView({
   if (!resp) return null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <ListHeader
         count={resp.workers.length}
         noun="workers"
@@ -53,7 +53,7 @@ export function WorkersListView({
           · no workers connected
         </div>
       ) : (
-        <ul className="divide-y divide-rule-2">
+        <ul className="divide-y divide-border">
           {resp.workers.map((w) => (
             <WorkerRow key={w.id} worker={w} />
           ))}
@@ -90,7 +90,7 @@ function WorkerRow({ worker }: { worker: WorkerSummary }) {
           </SmallChip>
         ) : null}
       </div>
-      <div className="flex items-baseline gap-2 flex-wrap font-mono text-[11px] text-ink-faint">
+      <div className="flex items-baseline gap-2 flex-wrap font-mono text-meta text-ink-faint">
         <span title={worker.id}>id: {shortenId(worker.id)}</span>
         {worker.version ? <span>· v{worker.version}</span> : null}
         <span>
@@ -107,7 +107,7 @@ function WorkerRow({ worker }: { worker: WorkerSummary }) {
         <span>· {formatConnectedFor(worker.connected_at_ms)}</span>
       </div>
       {worker.description ? (
-        <div className="font-mono text-[12px] text-ink-faint leading-[1.55]">
+        <div className="font-mono text-xs text-ink-faint leading-[1.55]">
           {worker.description}
         </div>
       ) : null}
@@ -118,9 +118,7 @@ function WorkerRow({ worker }: { worker: WorkerSummary }) {
 function StatusBadge({ status }: { status: string }) {
   const variant = statusToVariant(status)
   return (
-    <span
-      className={`font-mono text-[11px] rounded-sm px-1.5 py-0.5 ${variant}`}
-    >
+    <span className={`font-mono text-meta rounded-sm px-1.5 py-0.5 ${variant}`}>
       {status}
     </span>
   )
@@ -139,7 +137,7 @@ function statusToVariant(status: string): string {
 
 function SmallChip({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[11px] rounded-sm bg-paper-2 px-1.5 py-0.5">
+    <span className="font-mono text-meta rounded-sm bg-paper-2 px-1.5 py-0.5">
       {children}
     </span>
   )

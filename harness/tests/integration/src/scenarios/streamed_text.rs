@@ -1,7 +1,7 @@
 //! INT-001 — streamed text reaches durable completion.
 
-use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use crate::fixtures::ScenarioFixture;
 
 pub(super) fn scenario() -> ScenarioFixture {

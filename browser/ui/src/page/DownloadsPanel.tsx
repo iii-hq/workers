@@ -184,18 +184,51 @@ export function DownloadsPanel({
   )
 }
 
+/**
+ * The downloads in `list` that `seen` did not have. `seen` null means the
+ * tab's first list: what it already downloaded is history, not news.
+ */
+export function newDownloadGuids(
+  seen: ReadonlySet<string> | null,
+  list: readonly BrowserDownload[],
+): string[] {
+  if (seen === null) return []
+  return list.filter((d) => !seen.has(d.guid)).map((d) => d.guid)
+}
+
+/**
+ * How many downloads the tab has, live. `onNew` runs when one begins after
+ * the first list loaded (from the address bar or a link in the page), so the
+ * tab can show it the way a browser's download bubble does.
+ */
 export function useDownloadCount(
   host: Host,
   sessionId: string,
   enabled: boolean,
+  onNew?: (guids: string[]) => void,
 ): number {
   const [count, setCount] = useState(0)
+  const onNewRef = useRef(onNew)
+  onNewRef.current = onNew
+  const seenRef = useRef<ReadonlySet<string> | null>(null)
+  // Stale guard: a list for the previous session must not count as news in
+  // the next one.
+  const revisionRef = useRef(0)
   const refresh = useCallback(() => {
+    const revision = revisionRef.current
     void listBrowserDownloads(host.iii, sessionId)
-      .then((list) => setCount(list.length))
+      .then((list) => {
+        if (revision !== revisionRef.current) return
+        const fresh = newDownloadGuids(seenRef.current, list)
+        seenRef.current = new Set(list.map((d) => d.guid))
+        setCount(list.length)
+        if (fresh.length > 0) onNewRef.current?.(fresh)
+      })
       .catch(() => {})
   }, [host, sessionId])
   useEffect(() => {
+    revisionRef.current += 1
+    seenRef.current = null
     setCount(0)
     refresh()
   }, [refresh])

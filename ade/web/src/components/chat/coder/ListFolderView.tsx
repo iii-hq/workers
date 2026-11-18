@@ -44,8 +44,8 @@ export function ListFolderView({
     output != null ? safeParseResponse(listFolderResponseSchema, output) : null
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="path">{resp?.path ?? req.path ?? '.'}</Chip>
         {resp ? (
           <>
@@ -65,7 +65,7 @@ export function ListFolderView({
           </>
         )}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · listing…
           </span>
         ) : null}
@@ -88,7 +88,7 @@ export function ListFolderView({
       )}
 
       {resp?.has_more ? (
-        <div className="bg-paper-2 border-t border-rule-2 px-3 py-1.5">
+        <div className="bg-paper-2 border-t border-border px-3 py-1.5">
           <FooterPill tone="warn">More pages available</FooterPill>
         </div>
       ) : null}

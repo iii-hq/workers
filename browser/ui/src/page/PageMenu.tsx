@@ -1,8 +1,9 @@
 /**
  * The ⋮ menu beside the address bar: what a browser keeps behind its own
- * menu, scoped to this tab. The developer tools (console, network,
- * downloads, history) live here too — hidden until asked for, like a
- * browser's. Every row is also a page command, so ⌘K lists the same verbs
+ * menu, scoped to this tab. Downloads has its own row, as in a browser's
+ * menu (it opens the dock's Downloads pane). The developer tools (console,
+ * network, downloads, history) live here too — hidden until asked for,
+ * like a browser's. Every row is also a page command, so ⌘K lists the same verbs
  * with their keys; the menu is the mouse path.
  */
 
@@ -27,6 +28,7 @@ export interface PageMenuActions {
   zoomOut: () => void
   zoomReset: () => void
   toggleDevtools: () => void
+  showDownloads: () => void
   clearSiteData: () => void
   toggleDeviceToolbar: () => void
   importCookies: () => void
@@ -76,6 +78,7 @@ export function PageMenu({
         {row('New tab', 'newTab')}
         {row('New incognito tab', 'newIncognitoTab')}
         <DropdownMenuSeparator />
+        {row('Downloads', 'showDownloads')}
         {row('Find in page', 'findInPage')}
         {row('Print to PDF', 'printToPdf')}
         <DropdownMenuSeparator />

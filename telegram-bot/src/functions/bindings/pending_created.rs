@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 
 use crate::clients::telegram;
 use crate::deps::Deps;

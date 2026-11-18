@@ -34,7 +34,7 @@ use crate::events::{
     EmittableEvent, Emitter, EventKind, MessageAddedEvent, MessageUpdatedEvent,
     SessionDeletedEvent, SessionEvent,
 };
-use crate::service::{created_event, Clock, SystemClock};
+use crate::service::{Clock, SystemClock, created_event};
 use crate::store::SessionStore;
 use crate::types::{CustomPayload, JsonMap, SessionEntry, SessionMeta};
 
@@ -245,8 +245,8 @@ mod tests {
 
     use crate::events::recording::RecordingDeliverer;
     use crate::events::{ON_CREATED_FN, ON_MESSAGE_UPDATED_FN, STORE_ON_EVENTS_FN};
-    use crate::store::counting::CountingStore;
     use crate::store::FsStore;
+    use crate::store::counting::CountingStore;
     use crate::types::{AgentMessage, SessionKind, SessionStatus};
 
     fn meta(session_id: &str) -> SessionMeta {

@@ -3,7 +3,7 @@
 //! (one whose tool_uses all have downstream tool_results — an unstable
 //! anchor would be invalidated next turn).
 use llm_router::types::router::PromptSection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Below this many chars a prefix isn't worth a cache write.
 pub const CACHE_MIN_CHARS: usize = 4096;
@@ -86,10 +86,11 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Value {
     if !prompt.is_empty() {
         blocks.push(json!({ "type": "text", "text": prompt }));
     }
-    if enabled && (CLAUDE_CODE_SYSTEM.len() + prompt.len()) >= CACHE_MIN_CHARS {
-        if let Some(obj) = blocks.last_mut().and_then(Value::as_object_mut) {
-            obj.insert("cache_control".into(), ephemeral());
-        }
+    if enabled
+        && (CLAUDE_CODE_SYSTEM.len() + prompt.len()) >= CACHE_MIN_CHARS
+        && let Some(obj) = blocks.last_mut().and_then(Value::as_object_mut)
+    {
+        obj.insert("cache_control".into(), ephemeral());
     }
     Value::Array(blocks)
 }
@@ -150,11 +151,10 @@ pub fn apply_messages_cache_anchor(wire: &mut [Value], enabled: bool, ttl: Optio
                 .rev()
                 .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
         })
+        && let Some(obj) = block.as_object_mut()
     {
-        if let Some(obj) = block.as_object_mut() {
-            obj.insert("cache_control".into(), ephemeral_ttl(ttl));
-            return;
-        }
+        obj.insert("cache_control".into(), ephemeral_ttl(ttl));
+        return;
     }
     let Some(last_stable) = (0..wire.len())
         .rev()
@@ -234,9 +234,11 @@ mod tests {
             "ephemeral"
         );
         // disabled: no marker
-        assert!(build_system_blocks(&[section(&long, true)], false, None)[1]
-            .get("cache_control")
-            .is_none());
+        assert!(
+            build_system_blocks(&[section(&long, true)], false, None)[1]
+                .get("cache_control")
+                .is_none()
+        );
     }
 
     #[test]

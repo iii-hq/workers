@@ -240,7 +240,7 @@ function CallRow({
         <TableCell className="status-column">
           <StatusDot tone={call.ok ? 'ok' : 'alert'} />
           <span className="console-catalog-sr">
-            {call.ok ? 'succeeded' : 'failed'}
+            {call.ok ? 'Succeeded' : 'Failed'}
           </span>
         </TableCell>
         <TableCell className="mono" title={agoLabel(call.startedAtMs, now)}>

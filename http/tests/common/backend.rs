@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, ObserverHandle, RegisterFunction, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
@@ -286,6 +286,31 @@ pub async fn register_erroring_backend(iii: &Arc<IIIClient>, api_path: &str, htt
                 message: "backend exploded".to_string(),
                 stacktrace: None,
             })
+        }),
+    );
+
+    serve_route(
+        iii,
+        &function_id,
+        json!({ "path": api_path, "method": http_method }),
+    );
+}
+
+/// Register `test.fixed` serving a route; the function always returns
+/// `response` as is (status, headers and body).
+pub async fn register_fixed_backend(
+    iii: &Arc<IIIClient>,
+    api_path: &str,
+    http_method: &str,
+    response: Value,
+) {
+    let function_id = format!("test.fixed {http_method} {api_path}");
+
+    iii.register_function(
+        function_id.clone(),
+        RegisterFunction::new_async(move |_req: HttpRequest| {
+            let response = response.clone();
+            async move { Ok::<Value, Error>(response) }
         }),
     );
 

@@ -156,7 +156,10 @@ describe('Select mobile option activation', () => {
 
   it('preserves the clear option callback', async () => {
     const onClear = vi.fn()
-    const { trigger, onChange } = await mountSelect({ allowEmpty: true, onClear })
+    const { trigger, onChange } = await mountSelect({
+      allowEmpty: true,
+      onClear,
+    })
     const empty = document.querySelector<HTMLInputElement>(
       'input[type="radio"]',
     )!

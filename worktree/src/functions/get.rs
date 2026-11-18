@@ -6,9 +6,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::error::WError;
-use crate::functions::create::require_record;
-use crate::functions::status::{build_status, TargetCache};
 use crate::functions::Deps;
+use crate::functions::create::require_record;
+use crate::functions::status::{TargetCache, build_status};
 use crate::types::{Lifecycle, WorktreeInfo};
 
 #[derive(Debug, Deserialize, JsonSchema)]

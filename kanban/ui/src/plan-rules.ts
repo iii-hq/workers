@@ -1,7 +1,7 @@
 import type { Column, ColumnCounts, ProjectView, ReleaseView, TicketSummary } from './shared'
 
 /**
- * Pure rules of the Releases and Projects pages and of "Create from a label…":
+ * Pure rules of the Releases and Projects pages and of "Create from a label":
  * sorting, grouping, label families, the next release, dates. No React, so
  * they are checkable without a browser.
  * Check: `node plan.check.ts` from kanban/ui.

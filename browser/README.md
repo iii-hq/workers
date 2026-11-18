@@ -550,7 +550,7 @@ browser:
   inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
   screenshot_quality: 60    # JPEG quality 1-100 (screenshots)
   frame_density: 2          # 1-3: device pixels per CSS pixel the live view can stream; see below
-  live_view_quality: 85     # JPEG quality 1-100 of live-view frames
+  live_view_quality: 70     # JPEG quality 1-100 of live-view frames
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   default_origin_policy:    # omitted fields default to allow

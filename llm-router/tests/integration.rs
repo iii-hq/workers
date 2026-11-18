@@ -5,25 +5,25 @@
 //! **Self-skips** when no engine is available (storage-worker pattern):
 //! set `III_ENGINE_BIN=/path/to/iii` or have `iii` on PATH.
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Capture, IIIClient, Observer, ObserverOptions,
-    RegisterFunction, Source,
+    Call, CallRequest, Capture, IIIClient, Observer, ObserverOptions, RegisterFunction, Source,
+    register_worker,
 };
 use llm_router::channels::create_router_channel;
-use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
+use llm_router::config::entry::{ENTRY_ID, read_entry_value, register_entry, write_entry_value};
 use llm_router::events::RouterEvents;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ── engine bootstrap ── shared with every provider suite (they include this
 // same file by path); see tests/support/engine_fixture.rs for what it spawns
@@ -1357,7 +1357,8 @@ async fn registration_token_gates_takeover_resolve_and_reconcile() {
 async fn resolve_precedence_config_over_env_over_none() {
     let engine = engine_or_skip!();
     let env_var = "LLM_ROUTER_IT_RESOLVE_KEY";
-    std::env::remove_var(env_var);
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var(env_var) };
 
     let router_iii = register_worker(&engine.url, test_init_options());
     register_router(router_iii.clone())
@@ -1386,7 +1387,8 @@ async fn resolve_precedence_config_over_env_over_none() {
     assert_eq!(res["max_tokens"], 8192);
 
     // env fallback (the env var is read in the ROUTER's process — same process here)
-    std::env::set_var(env_var, "sk-env");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var(env_var, "sk-env") };
     let res = call(
         &provider.iii,
         "router::provider::resolve",
@@ -1415,7 +1417,8 @@ async fn resolve_precedence_config_over_env_over_none() {
     assert_eq!(res["source"], "config");
     assert_eq!(res["credential"]["key"], "sk-stored");
     assert_eq!(res["max_tokens"], 4096);
-    std::env::remove_var(env_var);
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var(env_var) };
 
     router_iii.shutdown();
 }
@@ -3395,7 +3398,8 @@ async fn wait_for_count(counter: &AtomicU64, above: u64, what: &str) {
 async fn secret_reference_resolves_late_and_follows_secret_changes() {
     let engine = engine_or_skip!();
     let env_var = "LLM_ROUTER_IT_SECRET_REF_ENV_KEY";
-    std::env::set_var(env_var, "sk-env-must-not-win");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var(env_var, "sk-env-must-not-win") };
 
     // The router boots BEFORE the secrets worker exists.
     let router_iii = register_worker(&engine.url, test_init_options());
@@ -3540,7 +3544,8 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
     );
     assert_eq!(provider.stream_calls.load(Ordering::SeqCst), streams_before);
 
-    std::env::remove_var(env_var);
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var(env_var) };
     consumer.shutdown();
     secrets.iii.shutdown();
     router_iii.shutdown();
@@ -3551,7 +3556,8 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
     let engine = engine_or_skip!();
     // The router's own variable of the same name never stands in for it.
     let env_var = "LLM_ROUTER_IT_ENV_REF_KEY";
-    std::env::set_var(env_var, "sk-router-env-must-not-win");
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::set_var(env_var, "sk-router-env-must-not-win") };
     let secrets = start_fake_secrets(&engine.url).await;
     let reference = format!("env://{env_var}");
     secrets.set(&reference, Ok("sk-from-dotenv"));
@@ -3623,7 +3629,8 @@ async fn env_reference_resolves_through_secrets_and_follows_env_edits() {
         "{res}"
     );
 
-    std::env::remove_var(env_var);
+    // SAFETY: test-only; nothing else reads or writes this variable while the test runs.
+    unsafe { std::env::remove_var(env_var) };
     secrets.iii.shutdown();
     router_iii.shutdown();
 }

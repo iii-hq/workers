@@ -16,8 +16,8 @@ import type { WorktreePickerOptions } from './DirectoryPicker'
  *   - `no-provider`     — harness present, no model configured -> configure CTA
  *   - `no-harness`      — harness worker missing -> install CTA + cli hint
  *   - `harness-stopped` — harness declared in compose but not running ->
- *                         start / update-and-start CTAs + cli hint (an add
- *                         would change nothing here)
+ *  start / update-and-start CTAs + cli hint (an add
+ *  would change nothing here)
  *   - `installing`      — the compose action (`action`) in flight -> live console
  *   - `install-failed`  — that action failed -> console + retry
  *

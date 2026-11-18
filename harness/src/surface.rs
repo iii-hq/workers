@@ -9,18 +9,22 @@
 use crate::ask::{AskRequest, AskResponse};
 use crate::compaction::Outcome as CompactOutcome;
 use crate::functions::{
+    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_CALL_ID, FUNCTION_RESOLVE_ID, METRICS_ID,
+    SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
+};
+use crate::functions::{
     compact::CompactRequest,
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_call::{FunctionCallRequest, FunctionCallResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
     observe::{
-        ObserveRequest, ObserveResponse, UnobserveRequest, UnobserveResponse, OBSERVE_ID,
-        UNOBSERVE_ID,
+        OBSERVE_ID, ObserveRequest, ObserveResponse, UNOBSERVE_ID, UnobserveRequest,
+        UnobserveResponse,
     },
     observers_list::{
-        ObserversDisposeRequest, ObserversDisposeResponse, ObserversListRequest,
-        ObserversListResponse, OBSERVERS_DISPOSE_ID, OBSERVERS_LIST_ID,
+        OBSERVERS_DISPOSE_ID, OBSERVERS_LIST_ID, ObserversDisposeRequest, ObserversDisposeResponse,
+        ObserversListRequest, ObserversListResponse,
     },
     send::{SendRequest, SendResponse},
     session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
@@ -28,10 +32,6 @@ use crate::functions::{
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
     system_prompt::{SystemPromptPreview, SystemPromptRequest},
-};
-use crate::functions::{
-    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_CALL_ID, FUNCTION_RESOLVE_ID, METRICS_ID,
-    SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 

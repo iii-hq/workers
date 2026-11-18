@@ -1,5 +1,13 @@
 import type * as React from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/shadcn/empty'
 import { cn } from '@/lib/utils'
 
 export interface EmptyStateAction {
@@ -21,6 +29,11 @@ interface EmptyStateProps {
   className?: string
 }
 
+/**
+ * What this place is and how to fill it: the shadcn `Empty` composition
+ * (icon tile, title, one or two lines, then the actions), or a compact
+ * tinted row inside a card or a list.
+ */
 export function EmptyState({
   icon: Icon,
   title,
@@ -35,11 +48,16 @@ export function EmptyState({
     <div
       className={cn(
         'flex flex-wrap gap-1.5',
-        compact ? 'mt-2' : 'mt-5 justify-center',
+        compact ? 'mt-2' : 'justify-center',
       )}
     >
-      {all.map((a) => (
-        <Button key={a.label} variant="secondary" size="sm" onClick={a.onClick}>
+      {all.map((a, index) => (
+        <Button
+          key={a.label}
+          variant={index === 0 && !compact ? 'default' : 'secondary'}
+          size="sm"
+          onClick={a.onClick}
+        >
           {a.label}
         </Button>
       ))}
@@ -49,42 +67,38 @@ export function EmptyState({
     return (
       <div
         className={cn(
-          'flex items-start gap-3 rounded-xl bg-surface px-3 py-2.5',
+          'flex items-start gap-3 rounded-lg bg-muted px-3 py-2.5',
           className,
         )}
       >
         {Icon ? (
-          <Icon aria-hidden className="mt-0.5 size-4 shrink-0 text-ink-faint" />
+          <Icon
+            aria-hidden
+            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+          />
         ) : null}
         <div className="min-w-0 flex-1">
-          <p className="font-sans text-[13px] font-semibold text-ink">
-            {title}
-          </p>
-          <p className="font-sans text-[12px] text-ink-faint">{description}</p>
+          <p className="text-body font-semibold text-foreground">{title}</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
           {buttons}
         </div>
       </div>
     )
   }
-  // The full state stands on the canvas, not in a card: a centred column of
-  // icon tile, title, one or two lines of copy, then the actions.
   return (
-    <div
-      className={cn(
-        'flex flex-col items-center px-6 py-10 text-center font-inter',
-        className,
-      )}
-    >
-      {Icon ? (
-        <div className="mb-4 flex size-10 items-center justify-center rounded-xl border border-transparent bg-card text-ink-faint shadow-[0_0_0_1px_var(--color-card-edge),0_1px_2px_rgb(0_0_0/0.06)]">
-          <Icon aria-hidden className="size-5" />
-        </div>
-      ) : null}
-      <p className="text-balance text-[14px] font-medium text-ink">{title}</p>
-      <p className="mt-1 max-w-[44ch] text-pretty text-[14px] leading-relaxed text-ink-faint">
-        {description}
-      </p>
-      {buttons}
-    </div>
+    <Empty className={cn('py-10 font-inter', className)}>
+      <EmptyHeader>
+        {Icon ? (
+          <EmptyMedia variant="icon">
+            <Icon aria-hidden className="size-4" />
+          </EmptyMedia>
+        ) : null}
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription className="max-w-[44ch] text-pretty">
+          {description}
+        </EmptyDescription>
+      </EmptyHeader>
+      {buttons ? <EmptyContent>{buttons}</EmptyContent> : null}
+    </Empty>
   )
 }

@@ -16,7 +16,7 @@ mod protocol;
 mod runtime;
 mod stub;
 
-pub use case::{ProtocolFamily, ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES};
+pub use case::{ANTHROPIC_MESSAGES, OPENAI_CHAT_COMPLETIONS, OPENAI_RESPONSES, ProtocolFamily};
 pub use stub::CapturedRequest;
 
 #[cfg(test)]
@@ -33,15 +33,56 @@ mod tests {
             !cases.is_empty(),
             "enable exactly one provider-* feature when running this contract"
         );
-        for case in cases {
+        // Each case gets an environment before its process (and Tokio's worker
+        // threads) starts. Mutating HOME inside the running async test is unsafe
+        // in edition 2024, even if no other Rust test uses it.
+        const CHILD: &str = "PROVIDER_CONTRACT_CHILD";
+        if let Ok(selected) = std::env::var(CHILD) {
+            #[cfg(feature = "provider-claude-code")]
+            if selected == "claude-first-boot" {
+                crate::contract::claude_code_first_boot_registration()
+                    .await
+                    .expect("claude-code first-boot registration failed");
+                return;
+            }
+            let index: usize = selected.parse().expect("provider case index");
+            let case = cases[index];
             if let Err(error) = run_contract(case).await {
                 panic!("{} contract failed: {error:#}", case.id);
             }
+            return;
+        }
+        for (index, case) in cases.iter().enumerate() {
+            run_isolated_contract(&index.to_string(), case.id);
         }
         #[cfg(feature = "provider-claude-code")]
-        if let Err(error) = crate::contract::claude_code_first_boot_registration().await {
-            panic!("claude-code first-boot registration failed: {error:#}");
+        run_isolated_contract("claude-first-boot", "claude-code");
+    }
+
+    fn run_isolated_contract(selected: &str, provider: &str) {
+        let home = tempfile::tempdir().expect("isolated provider home");
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "tests::provider_contract",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PROVIDER_CONTRACT_CHILD", selected)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join("codex"))
+            .env("CLAUDE_CONFIG_DIR", home.path().join("claude"))
+            .env("PROVIDER_READ_TIMEOUT_SECS", "5");
+        if provider == "command-code" {
+            command.env("CMD_ZDR", "0");
         }
+        let status = command.status().expect("run isolated provider contract");
+        assert!(
+            status.success(),
+            "{provider} contract child {selected} failed: {status}"
+        );
     }
 
     #[test]

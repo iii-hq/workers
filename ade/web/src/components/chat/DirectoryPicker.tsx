@@ -144,7 +144,7 @@ function ProjectRow({
   project: HarnessProject
   selected: boolean
   /** Faint trailing text: "default" for the pinned row, the parent folder
-      when two projects share a name. */
+ when two projects share a name. */
   hint?: string
   disabled: boolean
   renaming: boolean
@@ -173,13 +173,13 @@ function ProjectRow({
           aria-label={`name for ${project.path}`}
           value={draftName}
           onChange={(event) => onDraftNameChange(event.target.value)}
-          className="min-w-0 flex-1 rounded-sm bg-panel-raised px-2 py-1.5 font-inter text-base text-ink outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:py-1 md:text-sm"
+          className="min-w-0 flex-1 rounded-sm bg-panel-raised px-2 py-1.5 font-inter text-base text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:py-1 md:text-sm"
         />
         <button
           type="submit"
           disabled={disabled}
           aria-label={`save name for ${project.path}`}
-          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:size-7"
+          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 md:size-7"
         >
           <Save className="size-4 shrink-0" aria-hidden />
           <span
@@ -191,7 +191,7 @@ function ProjectRow({
           type="button"
           onClick={onCancelRename}
           aria-label="cancel rename"
-          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
+          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:size-7"
         >
           <X className="size-4 shrink-0" aria-hidden />
           <span
@@ -215,7 +215,7 @@ function ProjectRow({
         disabled={disabled}
         onClick={onSelect}
         aria-current={selected ? 'true' : undefined}
-        className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-8 md:gap-2 md:px-2 md:py-1"
+        className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 md:min-h-8 md:gap-2 md:px-2 md:py-1"
         title={project.path}
       >
         <FolderOpen
@@ -239,7 +239,7 @@ function ProjectRow({
         aria-label={`rename ${project.name}`}
         title="rename project"
         onClick={onBeginRename}
-        className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+        className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -253,7 +253,7 @@ function ProjectRow({
           aria-label={`forget ${project.name}`}
           title="forget this project"
           onClick={onForget}
-          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -585,12 +585,12 @@ export function DirectoryPicker({
             onClick={() => (open ? setOpen(false) : openPanel())}
             className={cn(
               triggerAppearance === 'inline'
-                ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-inter font-medium text-ink hover:border-ink hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50'
+                ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-inter font-medium text-ink hover:border-input hover:text-ink focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50'
                 : triggerAppearance === 'chip'
                   ? // A ghost dropdown button: the folder and name read as the
                     // dialog's scope, the caret says it is a choice.
                     'group/chip inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground disabled:opacity-50'
-                  : 'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 sm:h-9 sm:text-sm',
+                  : 'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 sm:h-9 sm:text-sm',
               externalError
                 ? 'text-warn'
                 : value
@@ -650,7 +650,7 @@ export function DirectoryPicker({
                 setError(null)
               }}
               className={cn(
-                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-7 md:py-1',
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-7 md:py-1',
                 view !== 'worktrees'
                   ? 'bg-panel-raised text-ink ring-1 ring-edge'
                   : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
@@ -664,7 +664,7 @@ export function DirectoryPicker({
               aria-selected={view === 'worktrees'}
               onClick={() => void enterWorktrees()}
               className={cn(
-                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-7 md:py-1',
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-7 md:py-1',
                 view === 'worktrees'
                   ? 'bg-panel-raised text-ink ring-1 ring-edge'
                   : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
@@ -676,10 +676,10 @@ export function DirectoryPicker({
         ) : null}
 
         {/* search — a boxed field on the mobile sheet, a bare line with a
-            magnifier on desktop where the popover itself is the box;
-            FolderBrowser brings its own */}
+ magnifier on desktop where the popover itself is the box;
+ FolderBrowser brings its own */}
         {view === 'browse' ? null : (
-          <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:rounded-none md:border-b md:border-rule-2 md:bg-transparent md:px-2 md:py-1 md:focus-within:ring-0">
+          <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-3 focus-within:ring-ring/50 md:mx-0 md:mb-1 md:min-h-8 md:rounded-none md:border-b md:border-border md:bg-transparent md:px-2 md:py-1 md:focus-within:ring-0">
             <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
             <input
               // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
@@ -738,7 +738,7 @@ export function DirectoryPicker({
                           ? `${wt.path} — land in progress; not retargetable`
                           : `${wt.path} — claim and use this worktree`
                     }
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5"
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5"
                   >
                     <GitBranch
                       className="size-4 shrink-0 text-ink-faint"
@@ -814,7 +814,7 @@ export function DirectoryPicker({
                 type="button"
                 disabled={validating !== null}
                 onClick={() => void validateAndSelect(query)}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-sm"
+                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-sm"
               >
                 <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                 <span className="truncate font-mono">Use {query.trim()}</span>
@@ -890,11 +890,11 @@ export function DirectoryPicker({
               </div>
             ) : null}
 
-            <div className="mt-1 border-t border-rule-2 pt-1">
+            <div className="mt-1 border-t border-border pt-1">
               <button
                 type="button"
                 onClick={addProject}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-inter text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-sm"
+                className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-inter text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-sm"
               >
                 <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
                 Add project

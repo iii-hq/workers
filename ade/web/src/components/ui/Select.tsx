@@ -1,10 +1,10 @@
-import * as SelectPrimitive from '@radix-ui/react-select'
-import { Check, ChevronDown, ChevronUp } from 'lucide-react'
+import { Select as SelectPrimitive } from '@base-ui/react/select'
+import { Check, ChevronDown } from 'lucide-react'
 import type * as React from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { SelectContent } from '@/components/shadcn/select'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import {
   BottomSheet,
@@ -153,14 +153,14 @@ export function Select<T extends string>({
   const selected = flatOptions.find((o) => o.value === value)
   // Feed Radix `""` when nothing matches so it shows the placeholder instead
   // of rendering the raw (possibly `undefined`) token.
-  const rootValue = selected ? (value as string) : ''
+  const rootValue = selected ? (value as string) : null
 
   const heading = sheetTitle ?? aria['aria-label'] ?? 'Select option'
   const chevronVisible = showChevron ?? appearance === 'default'
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-sm'
-      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none data-[state=open]:border-rule-focus data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-input focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-input sm:text-sm'
+      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',
     className,
   )
@@ -227,7 +227,7 @@ export function Select<T extends string>({
 
   const mobilePanel = (
     <SelectSheetPanel
-      value={rootValue}
+      value={rootValue ?? ''}
       options={options}
       groups={groups}
       allowEmpty={allowEmpty}
@@ -354,7 +354,7 @@ export function Select<T extends string>({
       ) : null}
       <SelectPrimitive.Root
         value={rootValue}
-        onValueChange={handleValueChange}
+        onValueChange={(next) => handleValueChange(next ?? '')}
         open={open}
         onOpenChange={handleOpenChange}
         disabled={disabled}
@@ -369,24 +369,22 @@ export function Select<T extends string>({
           aria-describedby={aria['aria-describedby']}
           className={triggerClassName}
         >
-          {/*
-           * Radix's `Select.Value` strips `className`/`style` from the span it
-           * renders, so truncation has to live on a wrapper we control. The
-           * wrapper is the flex item (`flex-1 min-w-0`) and owns the ellipsis;
-           * `white-space: nowrap` inherits into Radix's inline span, keeping the
-           * label on one line so the trigger stays at its fixed height.
-           */}
+          {/* The wrapper is the flex item (`flex-1 min-w-0`) and owns the
+ ellipsis, keeping the label on one line so the trigger stays at
+ its fixed height. */}
           <span className="min-w-0 flex-1 truncate text-left">
             <SelectPrimitive.Value placeholder={placeholder}>
               {selected?.label}
             </SelectPrimitive.Value>
           </span>
           {chevronVisible ? (
-            <SelectPrimitive.Icon asChild>
-              <span aria-hidden className="shrink-0 text-ink-faint">
-                <ChevronDown size={16} strokeWidth={1} />
-              </span>
-            </SelectPrimitive.Icon>
+            <SelectPrimitive.Icon
+              render={
+                <span aria-hidden className="shrink-0 text-ink-faint">
+                  <ChevronDown size={16} strokeWidth={1} />
+                </span>
+              }
+            />
           ) : (
             <span
               className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -395,66 +393,50 @@ export function Select<T extends string>({
           )}
         </SelectPrimitive.Trigger>
 
-        <SelectPrimitive.Portal>
-          <PortalScope>
-            <SelectPrimitive.Content
-              position="popper"
-              sideOffset={4}
-              collisionPadding={8}
-              collisionBoundary={panelBoundary ?? undefined}
-              className={cn(
-                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-popover font-inter text-base text-ink shadow-floating ring-1 ring-popover-edge sm:text-sm',
-              )}
-            >
-              <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-                <ChevronUp size={16} strokeWidth={1} aria-hidden="true" />
-              </SelectPrimitive.ScrollUpButton>
-              <SelectPrimitive.Viewport className="p-1 max-h-[min(60vh,var(--radix-select-content-available-height))]">
-                {allowEmpty ? (
-                  <SelectItem
-                    value={EMPTY_VALUE}
-                    label={emptyLabel ?? 'None'}
-                  />
-                ) : null}
-                {groups
-                  ? groups.map((g) => (
-                      <SelectPrimitive.Group key={g.label}>
-                        {renderGroupHeader ? (
-                          renderGroupHeader(g)
-                        ) : (
-                          <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-xs font-medium text-ink-faint">
-                            {g.label}
-                          </SelectPrimitive.Label>
-                        )}
-                        {g.options.map((opt) => (
-                          <SelectItem
-                            key={opt.value}
-                            value={opt.value}
-                            label={opt.label}
-                            title={opt.title}
-                            description={opt.description}
-                            disabled={opt.disabled}
-                          />
-                        ))}
-                      </SelectPrimitive.Group>
-                    ))
-                  : (options ?? []).map((opt) => (
-                      <SelectItem
-                        key={opt.value}
-                        value={opt.value}
-                        label={opt.label}
-                        title={opt.title}
-                        description={opt.description}
-                        disabled={opt.disabled}
-                      />
-                    ))}
-              </SelectPrimitive.Viewport>
-              <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-                <ChevronDown size={16} strokeWidth={1} aria-hidden="true" />
-              </SelectPrimitive.ScrollDownButton>
-            </SelectPrimitive.Content>
-          </PortalScope>
-        </SelectPrimitive.Portal>
+        {/* The shadcn (Base UI) list: portalled under the worker's scope,
+ aligned to the trigger, with the scroll arrows built in. */}
+        <SelectContent
+          align="start"
+          alignItemWithTrigger={false}
+          collisionBoundary={panelBoundary ?? undefined}
+          className="max-h-[min(60vh,var(--available-height))] text-base sm:text-sm"
+        >
+          {allowEmpty ? (
+            <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'None'} />
+          ) : null}
+          {groups
+            ? groups.map((g) => (
+                <SelectPrimitive.Group key={g.label}>
+                  {renderGroupHeader ? (
+                    renderGroupHeader(g)
+                  ) : (
+                    <SelectPrimitive.GroupLabel className="px-2 pt-2 pb-1 text-xs font-medium text-ink-faint">
+                      {g.label}
+                    </SelectPrimitive.GroupLabel>
+                  )}
+                  {g.options.map((opt) => (
+                    <SelectItem
+                      key={opt.value}
+                      value={opt.value}
+                      label={opt.label}
+                      title={opt.title}
+                      description={opt.description}
+                      disabled={opt.disabled}
+                    />
+                  ))}
+                </SelectPrimitive.Group>
+              ))
+            : (options ?? []).map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  value={opt.value}
+                  label={opt.label}
+                  title={opt.title}
+                  description={opt.description}
+                  disabled={opt.disabled}
+                />
+              ))}
+        </SelectContent>
       </SelectPrimitive.Root>
     </>
   )
@@ -501,7 +483,7 @@ function SelectSheetPanel<T extends string>({
           onChange(option.value)
         }}
         className={cn(
-          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
+          'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-ring/50',
           (disabled || option.disabled) &&
             'pointer-events-none cursor-default opacity-40',
         )}
@@ -589,14 +571,20 @@ function SelectItem({
       title={title}
       disabled={disabled}
       className={cn(
-        'relative flex min-h-12 cursor-pointer select-none items-center rounded-xs py-2 pr-3 pl-7 outline-none sm:min-h-0 sm:py-1.5',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=checked]:text-ink',
-        'data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',
+        // The check sits at the right, as in the shadcn item, so the text
+        // starts at the row's edge instead of behind a 28px empty column.
+        'relative flex min-h-12 cursor-pointer select-none items-center rounded-md py-2 pr-8 pl-2 outline-none sm:min-h-0 sm:py-1.5',
+        'data-highlighted:bg-muted data-highlighted:text-foreground',
+        'data-selected:text-foreground',
+        'data-disabled:pointer-events-none data-disabled:opacity-40',
       )}
     >
-      <SelectPrimitive.ItemIndicator className="absolute left-2 top-1/2 -translate-y-1/2 text-ink">
-        <span aria-hidden>✓</span>
+      <SelectPrimitive.ItemIndicator
+        render={
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-ink" />
+        }
+      >
+        <Check size={16} aria-hidden />
       </SelectPrimitive.ItemIndicator>
       <div className="min-w-0">
         <SelectPrimitive.ItemText>{label}</SelectPrimitive.ItemText>

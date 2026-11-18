@@ -1,5 +1,7 @@
 # Interface capture invokes no handler; the fresh state contains no leases.
 # Missing cloudflared is safe until acquire. Never install/download it here.
+# Stay on cloudflared: opentunnel would load TLS roots and create a key directory.
+provider: cloudflared
 targets:
   webhooks: http://127.0.0.1:3112
 cloudflared: /nonexistent/quick-tunnel-interface-capture-cloudflared

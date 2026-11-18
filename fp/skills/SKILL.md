@@ -44,7 +44,8 @@ for small values).
   and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`, model spend via
   `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
-  internals) — call those directly. Session reads (`session::get-attachment`,
+  internals) — call those directly. So is `workflow::start`, which needs the
+  caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
   `session::messages-tail`, …) and `state::*` stay allowed on purpose.
 - The first pipe step receives no threaded value — start with a producer
   (a fetch, `state::get`) or seed a leading transform via `payload.value`.

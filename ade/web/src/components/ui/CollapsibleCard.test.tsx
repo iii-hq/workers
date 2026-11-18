@@ -26,7 +26,7 @@ describe('CollapsibleCard', () => {
   it('renders a closed, accessible disclosure while preserving its content', () => {
     const html = renderCard(false)
     const controls = html.match(/aria-controls="([^"]+)"/)?.[1]
-    const contentId = html.match(/<section id="([^"]+)"/)?.[1]
+    const contentId = html.match(/<section[^>]*\bid="([^"]+)"/)?.[1]
 
     expect(html).toContain('iii-ui-card')
     expect(html).toContain('iii-ui-collapsible-card')

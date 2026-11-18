@@ -68,7 +68,7 @@
 //! that can break a turn is worse than no usage reporting.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use iii_sdk::protocol::CallRequest;
 

@@ -297,11 +297,9 @@ impl SecurityRuntime for IiiRuntime {
             .as_ref()
             .map(|harness| harness.session_id.as_str());
         let session_changed = previous_session != replacement_session;
-        if session_changed {
-            if let Some(session_id) = previous_session {
-                self.forget_action_session(session_id, &replacement.action_id)
-                    .await?;
-            }
+        if session_changed && let Some(session_id) = previous_session {
+            self.forget_action_session(session_id, &replacement.action_id)
+                .await?;
         }
         let inserted_replacement_session = if session_changed {
             match replacement_session {
@@ -334,17 +332,13 @@ impl SecurityRuntime for IiiRuntime {
         {
             Ok(outcome) => outcome,
             Err(error) => {
-                if inserted_replacement_session {
-                    if let Some(session_id) = replacement_session {
-                        self.forget_action_session(session_id, &replacement.action_id)
-                            .await?;
-                    }
+                if inserted_replacement_session && let Some(session_id) = replacement_session {
+                    self.forget_action_session(session_id, &replacement.action_id)
+                        .await?;
                 }
-                if session_changed {
-                    if let Some(session_id) = previous_session {
-                        self.remember_action_session(session_id, &replacement.action_id)
-                            .await?;
-                    }
+                if session_changed && let Some(session_id) = previous_session {
+                    self.remember_action_session(session_id, &replacement.action_id)
+                        .await?;
                 }
                 return Err(error);
             }
@@ -353,11 +347,9 @@ impl SecurityRuntime for IiiRuntime {
         if swapped {
             self.emit_action_update(&replacement).await;
         } else if session_changed {
-            if inserted_replacement_session {
-                if let Some(session_id) = replacement_session {
-                    self.forget_action_session(session_id, &replacement.action_id)
-                        .await?;
-                }
+            if inserted_replacement_session && let Some(session_id) = replacement_session {
+                self.forget_action_session(session_id, &replacement.action_id)
+                    .await?;
             }
             if let Some(session_id) = previous_session {
                 self.remember_action_session(session_id, &replacement.action_id)
@@ -418,9 +410,10 @@ impl SecurityRuntime for IiiRuntime {
         match self
             .call(
                 "harness::stop",
+                // The session's current turn: naming the first one stops nothing
+                // once the session went on in a reseeded turn.
                 json!({
                     "session_id": harness.session_id,
-                    "turn_id": harness.turn_id,
                     "quiet_deadlines": true,
                 }),
                 None,

@@ -115,10 +115,8 @@ impl Scheduler {
             job.observers.remove(observer_id);
             job.observers.is_empty()
         });
-        if now_empty {
-            if let Some(job) = jobs.by_expression.remove(&expression) {
-                job.handle.abort();
-            }
+        if now_empty && let Some(job) = jobs.by_expression.remove(&expression) {
+            job.handle.abort();
         }
     }
 

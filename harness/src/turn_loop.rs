@@ -10,7 +10,7 @@ use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{CallAction, IIIClient};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::call;
@@ -23,7 +23,7 @@ use crate::policy::{self, CallKind, CompiledPolicy};
 pub use crate::queue::TURN_QUEUE;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
-use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
+use crate::types::message::{AgentMessage, AssistantMessage, empty_assistant};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
@@ -388,19 +388,19 @@ async fn sync_skills(
     let catalog = deps.skills().await;
     let view =
         crate::skills::effective_view(&catalog, context.filter.as_deref(), policy, functions);
-    if record.skill_ack.is_none() {
-        if let Some(baseline) = context.baseline.as_deref() {
-            let generation = match &view {
-                crate::skills::EffectiveView::Available(view) => view.generation,
-                crate::skills::EffectiveView::Removed { generation } => *generation,
-                crate::skills::EffectiveView::Unavailable => catalog.generation,
-            };
-            record.skill_ack = Some(crate::types::turn::SkillAck {
-                generation,
-                fingerprint: Some(crate::skills::fingerprint(baseline)),
-                ids: crate::skills::listed_ids(baseline),
-            });
-        }
+    if record.skill_ack.is_none()
+        && let Some(baseline) = context.baseline.as_deref()
+    {
+        let generation = match &view {
+            crate::skills::EffectiveView::Available(view) => view.generation,
+            crate::skills::EffectiveView::Removed { generation } => *generation,
+            crate::skills::EffectiveView::Unavailable => catalog.generation,
+        };
+        record.skill_ack = Some(crate::types::turn::SkillAck {
+            generation,
+            fingerprint: Some(crate::skills::fingerprint(baseline)),
+            ids: crate::skills::listed_ids(baseline),
+        });
     }
 
     match crate::skills::plan_sync(record.skill_ack.as_ref(), record.skills_started, &view) {
@@ -461,6 +461,41 @@ pub async fn run_step(
     Box::pin(finish_step(deps, generated)).await
 }
 
+/// A redelivered step of a finished turn that still promised a reseed, or still owes its
+/// completion. Only this redelivery can still seed that turn, so a failed store read fails
+/// it for the queue to retry; only a prompt gone for good settles the exchange instead.
+async fn redeliver_finished(
+    deps: &Deps,
+    mut record: TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    let reseeded = if !record.continues {
+        // Only the completion is left of a settle or a stop that did not finish.
+        if record.abort {
+            Box::pin(end_stopped_exchange(deps, &mut record))
+                .await
+                .map(|_| ())
+        } else {
+            Box::pin(settle_unreseeded(deps, &mut record, timeout_ms)).await
+        }
+    } else {
+        match crate::state::hydrate(&deps.iii, &mut record, timeout_ms).await {
+            Ok(()) => Box::pin(reseed_after_finalize_drain(deps, &mut record)).await,
+            Err(error) if crate::state::is_lost_prompt_body(&error) => {
+                tracing::warn!(session_id = %record.session_id, %error, "could not reload a finished turn to seed the one it promised");
+                Box::pin(settle_unreseeded(deps, &mut record, timeout_ms)).await
+            }
+            Err(error) => Err(error),
+        }
+    };
+    if let Err(error) = reseeded {
+        // The queue's retries can run out: the orphan redrive follows up.
+        crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn generate_step(
     deps: &Deps,
     payload: TurnStepPayload,
@@ -492,6 +527,15 @@ async fn generate_step(
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
+        // The process died between the finalize write and its reseed: only
+        // this redelivery can still seed the turn that write promised, so a
+        // failed store read fails it for the queue to retry. Only a prompt
+        // that is gone for good settles the exchange instead.
+        if record.continues || record.owes_completion {
+            // Boxed out of line: inline, these finalize paths grow this frame past a default
+            // thread stack in debug builds.
+            Box::pin(redeliver_finished(deps, record, cfg.session_timeout_ms)).await?;
+        }
         return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
@@ -536,7 +580,15 @@ async fn generate_step(
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
     // at once (harness.md § Concurrency & steering).
-    drain_queued(deps, &session, &record.session_id).await?;
+    let mut drained = Vec::new();
+    let drain = drain_rows(deps, &session, &record.session_id, &mut drained).await;
+    // Stored now, even when the drain failed part-way: a step that fails next
+    // is finalized from the stored record. A re-drain may append one of these
+    // rows again (its delete failed); the append and the wake note are idempotent.
+    if note_took_wakes(&mut record, &drained) {
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    }
+    drain?;
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     // The reason is the live phase detail UIs render while the shimmer shows;
@@ -962,23 +1014,22 @@ async fn generate_step(
                 {
                     continue;
                 }
-                if let Some(source) = source {
-                    if let Some(digest) =
+                if let Some(source) = source
+                    && let Some(digest) =
                         witness::message_digest(&message).filter(|_| fresh_sources.len() < 2048)
-                    {
-                        fresh_sources.push(witness::SourceSlot {
-                            message_index: assembled.messages.len() + new_notices.len(),
-                            entry_id: ids::notice_entry_id(
-                                &record.turn_id,
-                                payload.step,
-                                persisted + new_notices.len(),
-                            ),
-                            message_sha256: digest,
-                            observer_id: source.observer_id,
-                            append_ordinal: source.append_ordinal,
-                            source: "fresh_memory".into(),
-                        });
-                    }
+                {
+                    fresh_sources.push(witness::SourceSlot {
+                        message_index: assembled.messages.len() + new_notices.len(),
+                        entry_id: ids::notice_entry_id(
+                            &record.turn_id,
+                            payload.step,
+                            persisted + new_notices.len(),
+                        ),
+                        message_sha256: digest,
+                        observer_id: source.observer_id,
+                        append_ordinal: source.append_ordinal,
+                        source: "fresh_memory".into(),
+                    });
                 }
                 new_notices.push((kind, message));
             }
@@ -1579,8 +1630,9 @@ async fn generate_step(
 
     // Re-acquire the lock before any further turn-record write, then refresh
     // the durable fields allowed to change while generation held no lock:
-    // abort and an explicit skill filter from a raced send. The frozen skill
-    // baseline remains the one used for this generation.
+    // abort, an explicit skill filter from a raced send, and a wake merged
+    // into this turn. The frozen skill baseline remains the one used for this
+    // generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
         crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
@@ -1592,6 +1644,15 @@ async fn generate_step(
             .as_ref()
             .and_then(|record| record.options.skill_context.as_ref()),
     );
+    for wake in durable_record
+        .iter()
+        .filter(|durable| durable.turn_id == record.turn_id)
+        .flat_map(|durable| &durable.took_wakes)
+    {
+        if !record.took_wakes.contains(wake) {
+            record.took_wakes.push(wake.clone());
+        }
+    }
 
     Ok(PreparedStep::Generated(Box::new(GeneratedStep {
         payload,
@@ -2517,19 +2578,32 @@ fn count_model_visible(rows: &[crate::state::QueuedMessage]) -> usize {
         .count()
 }
 
-/// Drain the session's message queue into the transcript in arrival order,
-/// returning how many drained rows were MODEL-VISIBLE. Idempotent: each row
-/// appends under its stored deterministic entry id, and rows are deleted only
-/// after the append lands — a redelivered step re-drains as a no-op and reports
-/// zero, since there is nothing left to drain.
+/// [`drain_rows`], returning how many drained rows were MODEL-VISIBLE.
+#[cfg(test)]
 pub(crate) async fn drain_queued(
     deps: &Deps,
     session: &SessionClient,
     session_id: &str,
 ) -> Result<usize, HarnessError> {
+    let mut rows = Vec::new();
+    drain_rows(deps, session, session_id, &mut rows).await?;
+    Ok(count_model_visible(&rows))
+}
+
+/// Drain the session's message queue into the transcript in arrival order,
+/// pushing each row onto `delivered` once it is in the transcript — on error
+/// it still holds the rows that reached the transcript before the failure.
+/// Idempotent: each row appends under its stored deterministic entry id, and
+/// rows are deleted only after the append lands — a redelivered step re-drains
+/// as a no-op and delivers nothing, since there is nothing left to drain.
+async fn drain_rows(
+    deps: &Deps,
+    session: &SessionClient,
+    session_id: &str,
+    delivered: &mut Vec<crate::state::QueuedMessage>,
+) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
     let rows = crate::state::list_queued(&deps.iii, session_id, cfg.session_timeout_ms).await?;
-    let model_visible = count_model_visible(&rows);
     for row in rows {
         session
             .append(
@@ -2540,9 +2614,19 @@ pub(crate) async fn drain_queued(
                 row.origin.as_ref(),
             )
             .await?;
-        crate::state::delete_queued(&deps.iii, session_id, &row.id, cfg.session_timeout_ms).await?;
+        let id = row.id.clone();
+        delivered.push(row);
+        crate::state::delete_queued(&deps.iii, session_id, &id, cfg.session_timeout_ms).await?;
     }
-    Ok(model_visible)
+    Ok(())
+}
+
+/// [`crate::bindings::note_took_wake`] for every row a drain delivered. True
+/// when one was new.
+fn note_took_wakes(record: &mut TurnRecord, rows: &[crate::state::QueuedMessage]) -> bool {
+    rows.iter().fold(false, |new, row| {
+        crate::bindings::note_took_wake(record, &row.entry_id, row.origin.as_ref()) | new
+    })
 }
 
 /// Finalize drain: a message that parked after the loop's last in-step queue
@@ -2552,11 +2636,18 @@ pub(crate) async fn drain_queued(
 /// reseed a parked notification sits unread with no turn to process it, which
 /// strands an autonomous run that ended its turn expecting the fire to wake it.
 /// Never blocks the finalise.
-async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_id: &str) -> bool {
-    match drain_queued(deps, session, session_id).await {
-        Ok(model_visible) => model_visible > 0,
+async fn drain_queued_best_effort(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+) -> bool {
+    let mut rows = Vec::new();
+    let drained = drain_rows(deps, session, &record.session_id, &mut rows).await;
+    note_took_wakes(record, &rows);
+    match drained {
+        Ok(()) => count_model_visible(&rows) > 0,
         Err(e) => {
-            tracing::warn!(session_id = %session_id, error = %e, "finalize queue drain failed");
+            tracing::warn!(session_id = %record.session_id, error = %e, "finalize queue drain failed");
             false
         }
     }
@@ -2574,7 +2665,10 @@ async fn drain_queued_best_effort(deps: &Deps, session: &SessionClient, session_
 /// finalize (queue at-least-once) drains nothing and does not double-seed; a
 /// concurrent external send racing the same slot is resolved by `run_step`'s
 /// stale-turn guard, exactly as two racing sends already are.
-async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
+async fn reseed_after_finalize_drain(
+    deps: &Deps,
+    record: &mut TurnRecord,
+) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
     // Carry the finalized turn's lineage onto the reseeded one: it is the same
     // session continuing, so its depth still counts against the spawn budget
@@ -2585,7 +2679,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         &cfg,
         &record.session_id,
         record.options.clone(),
-        Some(record),
+        Some(&*record),
         None,
         &lineage,
     )
@@ -2596,7 +2690,55 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
             error = %e,
             "reseed after finalize drain failed; a parked notification may be stranded",
         );
+        return settle_unreseeded(deps, record, cfg.session_timeout_ms).await;
     }
+    Ok(())
+}
+
+/// No reseeded turn replaces this record, so the terminal decision its
+/// finalize deferred is this turn's to make: drop `continues` and complete it
+/// again. Skipped once a reseeded record replaced it (a reseed whose first
+/// enqueue failed has finalized that turn itself). A failed read or write is
+/// the caller's to retry: the stored record still awaits a step, for the
+/// reseed or for this completion.
+async fn settle_unreseeded(
+    deps: &Deps,
+    record: &mut TurnRecord,
+    timeout_ms: u64,
+) -> Result<(), HarnessError> {
+    match crate::state::get_turn_unhydrated(&deps.iii, &record.session_id, timeout_ms).await? {
+        Some(current) if current.turn_id == record.turn_id => {}
+        _ => return Ok(()),
+    }
+    record.continues = false;
+    record.owes_completion = true;
+    let terminal = turn_is_terminal(deps, record).await;
+    let failed = record.status == TurnStatus::Failed;
+    if failed {
+        record.exchange_finished = terminal;
+    }
+    // Written before the completion: the orphan redrive reseeds a stored
+    // `continues`, which must not happen after a terminal completion.
+    crate::state::put_turn(&deps.iii, record, timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
+    let error = record.result_error.as_deref().filter(|_| failed);
+    deps.events
+        .emit_completed(
+            &record.session_id,
+            &record.turn_id,
+            if failed { "failed" } else { "completed" },
+            record.result.as_ref(),
+            error,
+            error,
+            record.parent.as_ref(),
+            record.display_parent_session_id.as_deref(),
+            terminal,
+            record.context_snapshot.as_ref(),
+        )
+        .await;
+    // A failed write leaves the marker: the completion can repeat, never be lost.
+    record.owes_completion = false;
+    crate::state::put_turn(&deps.iii, record, timeout_ms).await
 }
 
 /// Consume a `submit_result` call: validate its arguments against the
@@ -2809,14 +2951,14 @@ pub(crate) async fn advance(
 /// with its `turn_complete` watcher armed and completes non-terminally; the
 /// final compose turn (wake consumed, nothing re-armed) is terminal.
 /// Consumers finalize a logical exchange only on `terminal: true`.
-async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+async fn turn_is_terminal(deps: &Deps, record: &TurnRecord) -> bool {
     if matches!(
-        crate::functions::delete_session_tree::guard_owner(deps, session_id).await,
+        crate::functions::delete_session_tree::guard_owner(deps, &record.session_id).await,
         Ok(Some(_))
     ) {
         return true;
     }
-    !crate::bindings::session_expects_wake(deps, session_id).await
+    !crate::bindings::session_expects_wake(deps, record).await
 }
 
 /// After the terminal `Completed` write, a failed deletion-guard lookup must
@@ -2859,18 +3001,36 @@ async fn finalize_completed(
         ))
         .await;
     }
-    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
     record.result = result.clone();
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
     record.slim_finished();
+    record.continues = woke;
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
-    // One decision for the proof and the event: a wake can retire in between.
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
-    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
+    // Second sweep, right AFTER the terminal write, pairing with `try_enqueue`'s
+    // post-enqueue recheck: a send whose recheck still saw `Running` must have
+    // enqueued before the terminal write landed, so this sweep collects its
+    // row; a recheck that sees the terminal record seeds its own turn. Without
+    // it, a row enqueued between the first drain and the terminal write would
+    // strand — queued against a turn that will never drain again. It runs
+    // before the completion event so `terminal` and `continues` count its row.
+    let late = drain_queued_best_effort(deps, session, record).await;
+    if late && !woke {
+        record.continues = true;
+        // Best effort: failing the step here would skip the reseed below.
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(session_id = %record.session_id, %error, "could not mark the finished turn as continuing");
+        }
+    }
+    let woke = woke || late;
+    // One decision for the proof and the event: a wake can retire in between.
+    let terminal = !woke && turn_is_terminal(deps, record).await;
+    crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
@@ -2912,18 +3072,19 @@ async fn finalize_completed(
                 .await;
         }
     }
-    // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
-    // post-enqueue recheck: a send whose recheck still saw `Running` must have
-    // enqueued before the terminal write landed, so this sweep collects its
-    // row; a recheck that sees the terminal record seeds its own turn. Without
-    // it, a row enqueued between the first drain and the terminal write would
-    // strand — queued against a turn that will never drain again.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // A message parked during this turn's final step was just drained to the
     // transcript with no turn to react to it; seed one now (after the terminal
-    // write above, or it would clobber the fresh turn's slot).
+    // write above, or it would clobber the fresh turn's slot). It stays after
+    // the projection and the completion event: seeded earlier, the new turn's
+    // first step (on another instance) could write `working` and emit its
+    // `on-turn-started` before this turn's `done` and `on-turn-completed`.
     if woke {
-        reseed_after_finalize_drain(deps, record).await;
+        // Best effort: the turn is already final. The record keeps `continues`
+        // or the owed completion, so the orphan redrive retries a failed settle.
+        if let Err(error) = reseed_after_finalize_drain(deps, record).await {
+            tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+            crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+        }
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -3120,19 +3281,35 @@ async fn finalize_failed(
     public_message: &str,
     failure: FailureInfo<'_>,
 ) -> Result<TurnStepResult, HarnessError> {
-    let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     let presentation = failure_presentation(public_message, failure);
     let summary = presentation.summary;
     let detail = failure.detail.unwrap_or(public_message);
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
+    let mut terminal = !woke && turn_is_terminal(deps, record).await;
     record.status = TurnStatus::Failed;
     record.exchange_finished = terminal;
+    record.continues = woke;
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    // Second sweep, as in `finalize_completed`: right after the terminal write
+    // and before the proof and the event, so both count a row enqueued between
+    // the first drain and that write.
+    let late = drain_queued_best_effort(deps, session, record).await;
+    if late && !woke {
+        terminal = false;
+        record.exchange_finished = false;
+        record.continues = true;
+        // Best effort: failing the step here would skip the reseed below.
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(session_id = %record.session_id, %error, "could not mark the failed turn as continuing");
+        }
+    }
+    let woke = woke || late;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -3201,15 +3378,16 @@ async fn finalize_failed(
         )
         .await;
     }
-    // Second post-terminal sweep, as in `finalize_completed`: closes the
-    // enqueue-after-drain window against `try_enqueue`'s recheck.
-    let woke = woke || drain_queued_best_effort(deps, session, &record.session_id).await;
     // As in `finalize_completed`: a message that parked during the failing
     // turn's final step is genuine new input (a notification, a steer) and
     // deserves a turn, the same as an external send arriving at a failed
     // session. Gated on the drain, so it cannot loop on the failure itself.
     if woke {
-        reseed_after_finalize_drain(deps, record).await;
+        // Best effort, as in `finalize_completed`.
+        if let Err(error) = reseed_after_finalize_drain(deps, record).await {
+            tracing::warn!(session_id = %record.session_id, %error, "could not settle a finished turn whose reseed failed");
+            crate::inflight::suspect_unenqueued(&record.session_id, &record.turn_id, record.step);
+        }
     }
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
@@ -3347,9 +3525,9 @@ pub(crate) async fn finalize_cancelled(
     // Deliver any parked rows to the transcript but do NOT reseed: the user
     // stopped this turn, so a parked notification waits for the next explicit
     // send rather than auto-waking a turn they just cancelled.
-    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let _ = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
-    let terminal = turn_is_terminal(deps, &record.session_id).await;
+    let terminal = turn_is_terminal(deps, record).await;
     record.status = TurnStatus::Cancelled;
     record.exchange_finished = terminal;
     record.updated_at = AgentMessage::now_ms();
@@ -3380,7 +3558,7 @@ pub(crate) async fn finalize_cancelled(
     // Second post-terminal sweep (see `finalize_completed`): a row enqueued
     // between the first drain and the terminal write still reaches the
     // transcript. Still no reseed — the user cancelled.
-    let _ = drain_queued_best_effort(deps, session, &record.session_id).await;
+    let _ = drain_queued_best_effort(deps, session, record).await;
     Ok(TurnStepResult {
         session_id: record.session_id.clone(),
         status: TurnStatus::Cancelled,
@@ -3446,7 +3624,6 @@ async fn try_finish_stopped_exchange(
     turn_id: &str,
 ) -> Result<(), HarnessError> {
     let cfg = deps.cfg().await;
-    let session = deps.session().await;
     let _guard = deps.locks.guard(session_id).await;
     let Some(mut record) =
         crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms)
@@ -3459,25 +3636,43 @@ async fn try_finish_stopped_exchange(
     else {
         return Ok(());
     };
+    end_stopped_exchange(deps, &mut record).await.map(|_| ())
+}
+
+/// [`try_finish_stopped_exchange`] for a caller that holds the session lock and read
+/// `record`, finished and not yet `exchange_finished`, under it. False while a wake
+/// is left, with at most the owed-completion marker dropped: its going ends the
+/// exchange.
+pub(crate) async fn end_stopped_exchange(
+    deps: &Deps,
+    record: &mut TurnRecord,
+) -> Result<bool, HarnessError> {
+    let cfg = deps.cfg().await;
+    let session = deps.session().await;
     let now = AgentMessage::now_ms();
     let wake_left = deps
         .bindings()
         .await
-        .list_for_owner(session_id)
+        .list_for_owner(&record.session_id)
         .await?
         .iter()
         .any(|binding| crate::bindings::is_armed_wake(binding, now));
     if wake_left {
-        return Ok(());
+        // A stored marker would have the orphan redrive deliver the step every window.
+        if record.owes_completion {
+            record.owes_completion = false;
+            crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+        }
+        return Ok(false);
     }
     if record.status == TurnStatus::Completed {
         record.status = TurnStatus::Cancelled;
         record.updated_at = now;
-        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     }
     if record.status == TurnStatus::Cancelled {
-        append_stopped_notice(&session, &record).await;
-        crate::session_status::project(&session, &record).await;
+        append_stopped_notice(&session, record).await;
+        crate::session_status::project(&session, record).await;
     }
     let status = match record.status {
         TurnStatus::Failed => "failed",
@@ -3485,8 +3680,8 @@ async fn try_finish_stopped_exchange(
     };
     deps.events
         .emit_completed(
-            session_id,
-            turn_id,
+            &record.session_id,
+            &record.turn_id,
             status,
             None,
             record.result_error.as_deref(),
@@ -3498,9 +3693,10 @@ async fn try_finish_stopped_exchange(
         )
         .await;
     record.exchange_finished = true;
-    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    crate::hooks::recall::finish_extraction(deps, &record, true).await;
-    Ok(())
+    record.owes_completion = false;
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    crate::hooks::recall::finish_extraction(deps, record, true).await;
+    Ok(true)
 }
 
 const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -3795,10 +3991,8 @@ async fn has_user_after_watermark(
     let entries = session.messages(&record.session_id, true).await?;
     let mut after = false;
     for entry in entries {
-        if after {
-            if let Some(AgentMessage::User(_)) = &entry.message {
-                return Ok(true);
-            }
+        if after && let Some(AgentMessage::User(_)) = &entry.message {
+            return Ok(true);
         }
         if &entry.entry_id == watermark {
             after = true;
@@ -3923,35 +4117,35 @@ async fn assemble_context(
         }
     }
     let mut summary_persisted = false;
-    if out.applied.compacted {
-        if let Some(summary) = &out.applied.summary {
-            let tail_entry = out
-                .applied
-                .tail_start_index
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| candidate.get(i))
-                .map(|(id, _)| id.clone());
-            let data = json!({
-                "summary": summary,
-                "tail_start_entry_id": tail_entry,
-                "tokens_before": out.applied.tokens_before,
-                "summarized_head_tokens": out.applied.summarized_head_tokens,
-                "initial_token_count": out.applied.initial_token_count,
-                "assembled_token_count": out.token_count,
-                "usable_input_tokens": out.usable,
-                "effective_max_output_tokens": out.effective_max_output_tokens,
-            });
-            summary_persisted = session
-                .append_custom(
-                    &record.session_id,
-                    "compaction",
-                    data,
-                    &ids::compaction_entry_id(&record.turn_id, step),
-                    Some(&origin(&record.turn_id)),
-                )
-                .await
-                .is_ok();
-        }
+    if out.applied.compacted
+        && let Some(summary) = &out.applied.summary
+    {
+        let tail_entry = out
+            .applied
+            .tail_start_index
+            .and_then(|i| usize::try_from(i).ok())
+            .and_then(|i| candidate.get(i))
+            .map(|(id, _)| id.clone());
+        let data = json!({
+            "summary": summary,
+            "tail_start_entry_id": tail_entry,
+            "tokens_before": out.applied.tokens_before,
+            "summarized_head_tokens": out.applied.summarized_head_tokens,
+            "initial_token_count": out.applied.initial_token_count,
+            "assembled_token_count": out.token_count,
+            "usable_input_tokens": out.usable,
+            "effective_max_output_tokens": out.effective_max_output_tokens,
+        });
+        summary_persisted = session
+            .append_custom(
+                &record.session_id,
+                "compaction",
+                data,
+                &ids::compaction_entry_id(&record.turn_id, step),
+                Some(&origin(&record.turn_id)),
+            )
+            .await
+            .is_ok();
     }
 
     // The snapshot's "compacted" means the context carries a summary: this
@@ -3988,14 +4182,12 @@ async fn assemble_context(
                 .as_ref()
                 .map(|(entry, digest)| (*entry, digest.as_str())),
         );
-        if summary_persisted {
-            if let Some(summary) = &source_hints.summary {
-                witness::remember_summary(
-                    &record.session_id,
-                    &ids::compaction_entry_id(&record.turn_id, step),
-                    summary,
-                );
-            }
+        if summary_persisted && let Some(summary) = &source_hints.summary {
+            witness::remember_summary(
+                &record.session_id,
+                &ids::compaction_entry_id(&record.turn_id, step),
+                summary,
+            );
         }
     }
     if let Some(indices) = out
@@ -4505,10 +4697,10 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
         }
         if let Some(blocks) = m.get("content").and_then(Value::as_array) {
             for b in blocks {
-                if b.get("type").and_then(Value::as_str) == Some("function_result") {
-                    if let Some(id) = b.get("function_call_id").and_then(Value::as_str) {
-                        resolved.insert(id.to_string());
-                    }
+                if b.get("type").and_then(Value::as_str) == Some("function_result")
+                    && let Some(id) = b.get("function_call_id").and_then(Value::as_str)
+                {
+                    resolved.insert(id.to_string());
                 }
             }
         }
@@ -4518,24 +4710,24 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     let mut i = 0;
     while i < messages.len() {
         let mut missing: Vec<(String, String)> = Vec::new();
-        if messages[i].get("role").and_then(Value::as_str) == Some("assistant") {
-            if let Some(blocks) = messages[i].get("content").and_then(Value::as_array) {
-                for b in blocks {
-                    if b.get("type").and_then(Value::as_str) != Some("function_call") {
-                        continue;
-                    }
-                    let Some(id) = b.get("id").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    if resolved.contains(id) {
-                        continue;
-                    }
-                    let fid = b
-                        .get("function_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    missing.push((id.to_string(), fid.to_string()));
+        if messages[i].get("role").and_then(Value::as_str) == Some("assistant")
+            && let Some(blocks) = messages[i].get("content").and_then(Value::as_array)
+        {
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) != Some("function_call") {
+                    continue;
                 }
+                let Some(id) = b.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if resolved.contains(id) {
+                    continue;
+                }
+                let fid = b
+                    .get("function_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                missing.push((id.to_string(), fid.to_string()));
             }
         }
         let inserted = missing.len();
@@ -5051,8 +5243,8 @@ mod tests {
 
     #[test]
     fn compaction_anchor_resolves_where_the_window_opens() {
-        use super::{compaction_anchor, CompactionAnchor, LoadedEntry};
-        use serde_json::{json, Value};
+        use super::{CompactionAnchor, LoadedEntry, compaction_anchor};
+        use serde_json::{Value, json};
         let msg = |id: &str| -> LoadedEntry {
             serde_json::from_value(json!({ "entry_id": id, "message": {
                 "role": "user", "content": [{ "type": "text", "text": id }], "timestamp": 1
@@ -5583,7 +5775,9 @@ mod tests {
         );
         let lines: Vec<&str> = named.lines().collect();
         assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
-        assert!(lines[2].starts_with("Response language: English (from the user's first message)."));
+        assert!(
+            lines[2].starts_with("Response language: English (from the user's first message).")
+        );
         let unknown = super::runtime_context_aid(
             "s_1",
             Some("/home/sergio/app"),
@@ -6042,6 +6236,7 @@ mod tests {
             message,
             entry_id: "e".into(),
             origin: None,
+            channel: None,
             queued_at: 0,
         }
     }
@@ -6286,13 +6481,15 @@ mod tests {
         assert!(super::registry_notice(Some(&lagging), &current, &broad, &caught_up).is_none());
 
         let gone = snap(&[]);
-        assert!(super::registry_notice(
-            Some(&current),
-            &gone.permitted_digests(&broad),
-            &broad,
-            &gone
-        )
-        .is_some());
+        assert!(
+            super::registry_notice(
+                Some(&current),
+                &gone.permitted_digests(&broad),
+                &broad,
+                &gone
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -6312,9 +6509,11 @@ mod tests {
         // No policy / empty allow: dispatch is off entirely — say so.
         assert!(super::policy_aid(None).unwrap().contains("disabled"));
         let empty = FunctionPolicy::default();
-        assert!(super::policy_aid(Some(&empty))
-            .unwrap()
-            .contains("disabled"));
+        assert!(
+            super::policy_aid(Some(&empty))
+                .unwrap()
+                .contains("disabled")
+        );
         // A `*` allow is the full surface: the discovery doctrine applies, no aid.
         let full = FunctionPolicy {
             allow: vec!["*".into()],
@@ -6656,9 +6855,11 @@ mod tests {
                 );
             }
             let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
-            assert!(stale(Some(&missing), &snap(&live), &all)
-                .unwrap()
-                .contains("now available"));
+            assert!(
+                stale(Some(&missing), &snap(&live), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
             assert!(stale(Some(&missing), &snap(&live), &CompiledPolicy::from(None)).is_none());
         }
         for id in ["harness::observe", "harness::unobserve"] {
@@ -6688,9 +6889,11 @@ mod tests {
             assert!(changed.contains("changed:"));
             assert!(!changed.contains("no longer registered"));
             let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
-            assert!(stale(Some(&missing), &snap(&[]), &all)
-                .unwrap()
-                .contains("now available"));
+            assert!(
+                stale(Some(&missing), &snap(&[]), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
             let denied = CompiledPolicy::from(Some(&FunctionPolicy {
                 allow: vec!["*".into()],
                 deny: vec![id.into(), "engine::functions::info".into()],

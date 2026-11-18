@@ -4,7 +4,10 @@ import { changedLineSpan, insertedEnd } from './code-editor-quick-edit'
 describe('changedLineSpan', () => {
   it('finds the changed lines between shared top and bottom lines', () => {
     expect(changedLineSpan('a\nb\nc', 'a\nB\nc')).toEqual({ start: 1, end: 1 })
-    expect(changedLineSpan('a\nc', 'a\nb1\nb2\nc')).toEqual({ start: 1, end: 2 })
+    expect(changedLineSpan('a\nc', 'a\nb1\nb2\nc')).toEqual({
+      start: 1,
+      end: 2,
+    })
   })
 
   it('is null when nothing changed or lines were only removed', () => {

@@ -21,6 +21,7 @@ import {
 } from '@/lib/backend/projects'
 import {
   attachToComposer,
+  composerForSession,
   insertIntoComposer,
   mountedComposerCount,
   requestComposerFocus,
@@ -150,7 +151,7 @@ export function ScopedExtension({
 export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-sm bg-alert-muted px-2 py-0.5 font-mono text-[11px] text-alert"
+      className="inline-flex items-center gap-1 rounded-sm bg-alert-muted px-2 py-0.5 font-mono text-meta text-alert"
       title={error.message}
     >
       extension crashed · {path}
@@ -439,6 +440,22 @@ function makeHost(
         )
       },
       compose(draft) {
+        // Addressed to one chat (a card inside it): that chat's composer or
+        // nothing. Never the chat used last, which may be another session.
+        if (draft.sessionId !== undefined) {
+          const target = composerForSession(draft.sessionId)
+          if (target === null) return 'unavailable'
+          if (draft.files && draft.files.length > 0) attachToComposer(draft.files, target)
+          if (draft.text) {
+            insertIntoComposer(draft.text, {
+              inline: draft.inline === true,
+              submit: draft.submit === true,
+              composerId: target,
+            })
+          }
+          requestComposerFocus(target)
+          return 'composed'
+        }
         const open = mountedComposerCount()
         // Several chats and a caller that must not guess: nothing lands.
         if (draft.ifUnambiguous === true && open > 1) return 'ambiguous'

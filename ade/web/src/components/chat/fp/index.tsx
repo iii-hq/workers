@@ -19,9 +19,9 @@ import { UtilView } from './UtilView'
 export { isFpFunction } from './parsers'
 
 /** Route genuine `{ error: { kind: 'function_error' } }` envelopes to the
-    shared error view. Pipe/transform results carry arbitrary threaded JSON,
-    so skip the parser for `{ content, details }` success envelopes — a value
-    that happens to look like a denial must not be misread (mirrors state). */
+ shared error view. Pipe/transform results carry arbitrary threaded JSON,
+ so skip the parser for `{ content, details }` success envelopes — a value
+ that happens to look like a denial must not be misread (mirrors state). */
 function guardedErrorDisplay(rawOutput: unknown, running: boolean) {
   if (running || rawOutput == null) return null
   const isSuccessEnvelope =
@@ -78,8 +78,8 @@ function tryRender(message: FunctionCallMessage): React.ReactNode | null {
 }
 
 /** The pipe is approval-gated by default (its steps run with worker
-    authority), so the step list IS what an approver reviews — render it as
-    the preview. */
+ authority), so the step list IS what an approver reviews — render it as
+ the preview. */
 function tryRenderPreview(
   message: FunctionCallMessage,
 ): React.ReactNode | null {

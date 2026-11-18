@@ -37,6 +37,9 @@ pub struct Deps {
     pub deletion_events: crate::deletion_events::DeletionEvents,
     /// Sessions whose step executes in this process (orphan recovery).
     pub inflight: crate::inflight::InflightSteps,
+    /// Bindings, by id, whose delivery runs in this process from its claim to
+    /// its retirement; the binding pass leaves those records to the delivery.
+    pub deliveries: crate::inflight::InflightSteps,
     /// Harness-owned JSON project catalog, serialized across concurrent
     /// console requests while allowing its configured file path to hot-reload.
     pub projects: ProjectStore,
@@ -83,6 +86,7 @@ impl Deps {
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
             inflight: crate::inflight::InflightSteps::new(),
+            deliveries: crate::inflight::InflightSteps::new(),
             projects: ProjectStore::default(),
             observer_handles: crate::bindings::ObserverHandles::default(),
             observing_again: crate::bindings::ObservingAgain::default(),
@@ -115,6 +119,15 @@ impl Deps {
     /// Carries both the callable set (`.functions`) and its `.generation`.
     pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
         self.functions.read().await.clone()
+    }
+
+    /// True only when the registry snapshot is loaded and does not list
+    /// `function_id`, internal ids included. Optional workers (the approval
+    /// gate) are then skipped without a call: calling an unregistered function
+    /// is an engine error every time, which Sentinel reports as an issue. An
+    /// unseeded snapshot answers false, so the caller calls as before.
+    pub async fn function_known_absent(&self, function_id: &str) -> bool {
+        crate::discovery::known_absent(&*self.functions().await, function_id)
     }
 
     pub async fn skills(&self) -> Arc<SkillsSnapshot> {

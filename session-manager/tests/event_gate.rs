@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use session_manager::config::WorkerConfig;
 use session_manager::events::{EmittableEvent, EventKind, EventSink, SessionEvent};
-use session_manager::functions::{append, append_many, create, get_message, update_message, Deps};
+use session_manager::functions::{Deps, append, append_many, create, get_message, update_message};
 use session_manager::service::SessionService;
 use session_manager::store::FsStore;
 

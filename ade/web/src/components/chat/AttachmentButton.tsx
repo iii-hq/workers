@@ -35,7 +35,7 @@ export function AttachmentButton({
           aria-label="attach files"
           onClick={() => inputRef.current?.click()}
           className={cn(
-            'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
+            'inline-flex items-center justify-center p-1 text-ink-faint hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40',
             className,
           )}
         >

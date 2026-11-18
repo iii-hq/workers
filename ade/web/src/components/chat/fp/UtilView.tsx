@@ -29,7 +29,7 @@ function isEmptyValue(v: unknown): boolean {
 }
 
 /** `fp::*` — the seventeen lodash-style transforms (`FP_TRANSFORM_OPS`).
-    Op label + its params as chips, then the transformed value. */
+ Op label + its params as chips, then the transformed value. */
 export function UtilView({
   functionId,
   input,
@@ -46,7 +46,7 @@ export function UtilView({
   const empty = !running && isEmptyValue(value)
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill label={op} variant={running ? 'default' : 'accent'} />
         {req?.path != null ? (

@@ -50,6 +50,7 @@ No provider key or network access is required.
 | INT-040 | `call-argument-contract` | direct | through `agent_call`, a malformed call whose contract the model never fetched gets the compacted request schema in its diagnosis (no `engine::functions::info` step needed); after the model fetches the contract, the next diagnosis only points at it |
 | INT-041 | `stop-parked-quiet-deadline` | direct | a person's Stop (`quiet_deadlines`) on a parked session: its wake's deadline starts no turn and the exchange ends `terminal: true` |
 | INT-042 | `stop-parked-next-wake` | direct | an agent's stop on a parked session leaves it to end on its next wake, the deadline notice included |
+| INT-043 | `harness-crash-recovery` | direct | SIGKILL the harness while a controlled function is in flight and start a new harness process; the queue delivers the interrupted step again, the call closes as `interrupted`, and the turn completes inside the orphan redrive window |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
@@ -157,7 +158,7 @@ The fixture tests pin:
 
 - the streamed frame sequence and terminal response agreement;
 - function-call and function-result history for INT-002;
-- fault timing, held-response wiring, and restart deadlines for INT-010;
+- fault timing, held-response wiring, and restart deadlines for INT-010 and INT-043;
 - the Console-specific system-prompt and `agent_call` tool matchers;
 - serialization round trips and the authoritative `harness::send` schema.
 

@@ -1,7 +1,7 @@
 use llm_router::provider_scaffold::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 
 const ORPHAN_TOOL_PLACEHOLDER: &str =
@@ -321,16 +321,16 @@ pub fn anthropic_messages(messages: &[AgentMessage], warnings: &mut Vec<String>)
                     out.push(json!({ "role": "assistant", "content": content }));
                 }
                 for block in &assistant.content {
-                    if let ContentBlock::FunctionCall { id, .. } = block {
-                        if !resolved.contains(id) {
-                            pending.push(json!({
-                                "type": "tool_result",
-                                "tool_use_id": id,
-                                "content": ORPHAN_TOOL_PLACEHOLDER,
-                                "is_error": true,
-                            }));
-                            resolved.insert(id.clone());
-                        }
+                    if let ContentBlock::FunctionCall { id, .. } = block
+                        && !resolved.contains(id)
+                    {
+                        pending.push(json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": ORPHAN_TOOL_PLACEHOLDER,
+                            "is_error": true,
+                        }));
+                        resolved.insert(id.clone());
                     }
                 }
             }

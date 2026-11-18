@@ -46,7 +46,7 @@ clap = { version = "4", features = ["derive", "env"] }
 colored = "3.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 nix = { version = "0.31.3", features = ["fs", "signal", "process"] }

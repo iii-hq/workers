@@ -35,8 +35,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&LayaConfig>) -> Resu
         id: config_id(),
         form_id: DEFAULT_CONFIG_ID,
         name: "Judge laya",
-        description:
-            "laya provider for judge: checkpoint, batching and execution limits (runs in-process).",
+        description: "laya provider for judge: checkpoint, batching and execution limits (runs in-process).",
         schema: LayaConfig::json_schema(),
         default_value: LayaConfig::default().to_json(),
     };

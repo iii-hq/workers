@@ -185,9 +185,11 @@ mod tests {
             .map(|d| d.join(LIGHTPANDA_BINARY))
             .find(|p| p.is_file());
         assert_eq!(found, Some(bin));
-        assert!(missing_executable_issue(&cfg)
-            .enable_how
-            .contains("lightpanda-io/browser/releases"));
+        assert!(
+            missing_executable_issue(&cfg)
+                .enable_how
+                .contains("lightpanda-io/browser/releases")
+        );
         let chromium = missing_executable_issue(&WorkerConfig::default());
         assert!(chromium.what.starts_with(crate::chromium::MISSING_CODE));
         assert!(chromium.enable_how.contains("browser::chromium::install"));

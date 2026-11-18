@@ -39,8 +39,8 @@ export function SearchView({ input, output, running }: SearchViewProps) {
   const ignoreCase = !!req.ignore_case
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
+    <div className="border-t border-border bg-bg">
+      <div className="bg-paper-2 border-b border-border px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="query">{`"${req.query}"`}</Chip>
         <RequestChips req={req} />
         {resp ? (
@@ -52,14 +52,14 @@ export function SearchView({ input, output, running }: SearchViewProps) {
           <FooterPill tone="warn">Results truncated</FooterPill>
         ) : null}
         {running ? (
-          <span className="font-mono text-[11px] text-ink-ghost animate-pulse">
+          <span className="font-mono text-meta text-ink-ghost animate-pulse">
             · searching…
           </span>
         ) : null}
       </div>
 
       {resp?.truncated ? (
-        <div className="border-b border-rule-2 px-3 py-1.5 font-mono text-[11px] text-warn">
+        <div className="border-b border-border px-3 py-1.5 font-mono text-meta text-warn">
           results truncated — refine the query or add include_globs rather than
           paginating
         </div>
@@ -83,9 +83,9 @@ export function SearchView({ input, output, running }: SearchViewProps) {
                 isRegex={isRegex}
                 ignoreCase={ignoreCase}
                 /* Single rule between the two sections — the content
-                   section's last group drops its own border-b. */
+ section's last group drops its own border-b. */
                 className={
-                  groups.length > 0 ? 'border-t border-rule-2' : undefined
+                  groups.length > 0 ? 'border-t border-border' : undefined
                 }
               />
             ) : null}
@@ -101,7 +101,7 @@ export function SearchView({ input, output, running }: SearchViewProps) {
 }
 
 /** Request-derived honesty chips: every knob that narrowed (or widened)
-    what the agent actually searched. */
+ what the agent actually searched. */
 function RequestChips({ req }: { req: SearchRequest }) {
   const context = formatContextRequest(
     req.context_lines_before,
@@ -119,7 +119,7 @@ function RequestChips({ req }: { req: SearchRequest }) {
         <Chip label="exclude">{req.exclude_globs.join(' ')}</Chip>
       ) : null}
       {/* Walking into .git / node_modules / target is unusual enough to
-          warn-tint — results may include generated or vendored code. */}
+ warn-tint — results may include generated or vendored code. */}
       {req.use_default_excludes === false ? (
         <Chip className="bg-warn-muted text-warn">Default excludes off</Chip>
       ) : null}
@@ -135,7 +135,7 @@ function RequestChips({ req }: { req: SearchRequest }) {
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-paper-2 border-b border-rule-2 px-3 py-1 iii-ui-eyebrow">
+    <div className="bg-paper-2 border-b border-border px-3 py-1 iii-ui-eyebrow">
       {children}
     </div>
   )
@@ -154,16 +154,16 @@ function ContentSection({
   ignoreCase,
 }: { groups: ContentGroup[] } & HighlightOpts) {
   return (
-    <div className="font-mono text-[12px] leading-[1.55]">
+    <div className="font-mono text-xs leading-[1.55]">
       <SectionLabel>Content matches</SectionLabel>
       {groups.map((group) => (
         <div
           key={group.path}
-          className="border-b border-rule-2 last:border-b-0"
+          className="border-b border-border last:border-b-0"
         >
           <div className="px-3 pt-1.5 text-accent break-all">{group.path}</div>
           {/* 3-col grid: line | column | text — auto-sized gutters keep
-              line numbers aligned per file group. */}
+ line numbers aligned per file group. */}
           <div className="grid grid-cols-[auto_auto_1fr] px-3 pb-1.5">
             {buildGroupRows(group.matches).map((row) => (
               <MatchRowCells
@@ -235,12 +235,12 @@ function PathSection({
   className,
 }: { paths: PathMatch[]; className?: string } & HighlightOpts) {
   return (
-    <div className={cn('font-mono text-[12px] leading-[1.55]', className)}>
+    <div className={cn('font-mono text-xs leading-[1.55]', className)}>
       <SectionLabel>Path matches</SectionLabel>
       {paths.map((p) => (
         <div
           key={p.path}
-          className="border-b border-rule-2 last:border-b-0 px-3 py-1 text-accent break-all"
+          className="border-b border-border last:border-b-0 px-3 py-1 text-accent break-all"
         >
           {renderWithHighlight(p.path, query, { isRegex, ignoreCase })}
         </div>
@@ -257,7 +257,7 @@ export interface ContentGroup {
 }
 
 /** Group content matches by file, preserving wire (walk) order for both
-    files and the matches within each file. */
+ files and the matches within each file. */
 export function groupContentMatches(matches: ContentMatch[]): ContentGroup[] {
   const groups: ContentGroup[] = []
   const byPath = new Map<string, ContentGroup>()
@@ -331,7 +331,7 @@ export function buildGroupRows(matches: ContentMatch[]): MatchRow[] {
 }
 
 /** Header chip for requested context: `±2` when symmetric, else the
-    grep-flavoured `-B +A` parts that were actually asked for. */
+ grep-flavoured `-B +A` parts that were actually asked for. */
 export function formatContextRequest(
   before?: number | null,
   after?: number | null,
@@ -347,8 +347,8 @@ export function formatContextRequest(
 }
 
 /** Count pill text. Content hits are counted as "lines" on purpose —
-    the wire reports at most ONE match per line, so a line with five
-    hits is still a single ContentMatch. */
+ the wire reports at most ONE match per line, so a line with five
+ hits is still a single ContentMatch. */
 export function formatMatchCount(
   contentLines: number,
   pathHits: number,

@@ -272,6 +272,11 @@ iii.registerFunction(
       { type: 'merge', path: ['tours'], value: { [input.tour_id]: null } },
       { type: 'merge', value: { updated_at: at } },
     ])
+    // The chat the last run started goes with it: a turn finishing there
+    // must not complete the fresh run's first step.
+    await iii
+      .call({ function_id: 'state::delete', payload: { scope: STATE_SCOPE, key: 'chat_session' }, timeoutMs: STATE_TIMEOUT_MS })
+      .catch(() => undefined)
     return { reset: true }
   },
   {

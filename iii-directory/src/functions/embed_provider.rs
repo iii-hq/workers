@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::search_semantic::{embedding_model_id, EmbedError, SemanticSearch, MINILM_REPOSITORY};
+use super::search_semantic::{EmbedError, MINILM_REPOSITORY, SemanticSearch, embedding_model_id};
 
 pub const EMBED_ID: &str = "provider::minilm::embed";
 const EMBED_DESC: &str = "Batch text embeddings from the local MiniLM \

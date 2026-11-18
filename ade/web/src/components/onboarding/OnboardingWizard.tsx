@@ -139,6 +139,7 @@ export function OnboardingWizardHost() {
   const [prompts, setPrompts] = useState<ExamplePrompt[] | null>(null)
   const [agents, setAgents] = useState<AgentEntry[] | null>(null)
   const ctxRef = useRef(ctx)
+  const popupRef = useRef<HTMLDivElement>(null)
   ctxRef.current = ctx
   const [tour, setTour] = useState<TourState>({ kind: 'idle' })
   // The template's kits install in the background from the moment the
@@ -433,7 +434,11 @@ export function OnboardingWizardHost() {
   const startTour = useCallback(async () => {
     setTour({ kind: 'preparing' })
     try {
-      await prepareTour()
+      // Adding the tour's worker changes the project: the step says which
+      // worker, and how far the add has got, while it runs.
+      await prepareTour((progress) =>
+        setTour({ kind: 'preparing', ...progress }),
+      )
     } catch (error) {
       setTour({ kind: 'failed', error: readableError(error) })
       return
@@ -464,7 +469,7 @@ export function OnboardingWizardHost() {
   useEffect(() => {
     if (!open) return
     const frame = window.requestAnimationFrame(() =>
-      focusPrimary(content.current),
+      primaryAction(content.current)?.focus(),
     )
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
@@ -482,25 +487,23 @@ export function OnboardingWizardHost() {
           onOpenChange={(next) => {
             if (!next) close()
           }}
+          // Setup is a commitment: a click on the backdrop does not dismiss it.
+          disablePointerDismissal
         >
           <DialogContent
-            className="@container flex h-[min(720px,calc(100dvh-32px))] max-h-none w-[min(836px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
-            onOpenAutoFocus={(event) => {
-              // Land on the step's primary action, not the first button in it.
-              event.preventDefault()
-              focusPrimary(event.currentTarget)
-            }}
-            onPointerDownOutside={(event) => event.preventDefault()}
-            onInteractOutside={(event) => event.preventDefault()}
+            className=" flex h-[min(660px,calc(100dvh-32px))] max-h-none w-[min(1260px,calc(100vw-32px))] max-w-none flex-row overflow-hidden rounded-xl bg-dialog-surface p-0 font-sans text-sm font-normal leading-normal tracking-normal text-ink shadow-floating [&>button:last-child]:hidden"
+            ref={popupRef}
+            // Land on the step's primary action, not the first button in it.
+            initialFocus={() => primaryAction(popupRef.current)}
           >
             <DialogTitle className="sr-only">Set up the harness</DialogTitle>
             <DialogDescription className="sr-only">
               Connect a model provider and see what the harness can do.
             </DialogDescription>
-            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-neutral-100 bg-neutral-50 px-5 pt-5 pb-5 dark:border-neutral-800 dark:bg-neutral-900/50 @lg:flex">
+            <aside className="hidden w-[200px] shrink-0 flex-col border-r border-border bg-muted px-5 pt-5 pb-5 @lg:flex">
               <div
                 aria-hidden
-                className="flex h-6 items-center gap-2 text-[13px] font-medium leading-none text-ink"
+                className="flex h-6 items-center gap-2 text-body font-medium leading-none text-ink"
               >
                 <Wordmark className="size-4" />
                 Set up the harness
@@ -519,8 +522,8 @@ export function OnboardingWizardHost() {
               <div className="hidden h-12 shrink-0 items-start justify-end px-4 pt-4 @lg:flex">
                 <CloseButton />
               </div>
-              <header className="flex shrink-0 flex-col gap-3 border-b border-neutral-100 px-4 pt-3 pb-3.5 dark:border-neutral-800 @md:px-6 @lg:hidden">
-                <div className="flex h-8 items-center gap-2 text-[13px] font-medium leading-none text-ink">
+              <header className="flex shrink-0 flex-col gap-3 border-b border-border px-4 pt-3 pb-3.5 @md:px-6 @lg:hidden">
+                <div className="flex h-8 items-center gap-2 text-body font-medium leading-none text-ink">
                   <Wordmark className="size-4" aria-hidden />
                   <span aria-hidden>Set up the harness</span>
                   <CloseButton className="ml-auto" />
@@ -610,7 +613,7 @@ function CloseButton({ className }: { className?: string }) {
     <DialogClose
       aria-label="Close"
       className={cn(
-        'flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:text-neutral-400 dark:focus-visible:ring-offset-neutral-950',
+        'flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white',
         className,
       )}
     >
@@ -619,11 +622,11 @@ function CloseButton({ className }: { className?: string }) {
   )
 }
 
-/** Focus the step footer's primary action (the last enabled footer button). */
-function focusPrimary(root: EventTarget | HTMLElement | null) {
-  if (!(root instanceof HTMLElement)) return
+/** The step footer's primary action (the last enabled footer button). */
+function primaryAction(root: HTMLElement | null): HTMLElement | null {
+  if (!root) return null
   const buttons = root.querySelectorAll<HTMLButtonElement>(
     'footer button:not([disabled])',
   )
-  buttons[buttons.length - 1]?.focus()
+  return buttons[buttons.length - 1] ?? null
 }

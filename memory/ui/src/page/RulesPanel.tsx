@@ -11,6 +11,7 @@ import {
 import { Plus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { MemoryRule } from './memory-data'
+import { baseAfterSave } from './rule-merge'
 import { useDirtyDelta } from './widgets'
 
 /**
@@ -22,9 +23,17 @@ import { useDirtyDelta } from './widgets'
  * editors report into the page-level guard so navigating away asks first.
  */
 
+/** Writes a rule edited from `expected`; resolves to what the rule holds
+ * after the write, or null when it did not land. */
+type SetRule = (
+  name: string,
+  content: string,
+  expected: string,
+) => Promise<string | null>
+
 interface RulesPanelProps {
   rules: MemoryRule[]
-  onSet: (name: string, content: string) => Promise<boolean>
+  onSet: SetRule
   busy: boolean
   reportDirty: (delta: number) => void
 }
@@ -39,7 +48,7 @@ function RuleEditor({
 }: {
   name: string
   initial: string
-  onSet: (name: string, content: string) => Promise<boolean>
+  onSet: SetRule
   busy: boolean
   reportDirty: (delta: number) => void
   /** This is the rules panel's default focus target — see its own comment. */
@@ -53,15 +62,23 @@ function RuleEditor({
   // saved content — clearing it earlier would flash the stale text back.
   const [touched, setTouched] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // What the draft was edited from: sent as `expected`, so the worker
+  // refuses (and the save merges) when the rule changed on disk meanwhile.
+  const base = useRef(initial)
+  // The draft as last rendered, for save() to read once its write is back.
+  const latest = useRef(content)
+  latest.current = content
   useEffect(() => {
-    if (!touched) setContent(initial)
-    else if (content === initial) setTouched(false)
+    if (!touched) {
+      setContent(initial)
+      base.current = initial
+    } else if (content === initial) setTouched(false)
   }, [initial, touched, content])
 
   const dirty = content !== initial
   useDirtyDelta(dirty, reportDirty)
 
-  const save = () => {
+  const save = async () => {
     if (!dirty || busy) return
     // Emptied content means delete — that path gets the explicit
     // confirm, never a silent removal via save.
@@ -69,7 +86,12 @@ function RuleEditor({
       setConfirmDelete(true)
       return
     }
-    void onSet(name, content)
+    const sent = content
+    const saved = await onSet(name, sent, base.current)
+    if (saved === null) return
+    base.current = baseAfterSave(sent, latest.current, saved)
+    // The editor stays editable while saving: keep what was typed meanwhile.
+    setContent((now) => (now === sent ? saved : now))
   }
 
   return (
@@ -80,7 +102,12 @@ function RuleEditor({
           {dirty ? (
             <>
               <Badge variant="warn">Unsaved</Badge>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={save}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => void save()}
+              >
                 save
               </Button>
             </>
@@ -93,7 +120,12 @@ function RuleEditor({
                 disabled={busy}
                 className="mem-ui-danger"
                 onClick={() => {
-                  void onSet(name, '')
+                  // From `base`, not `initial`: a live refresh may hold lines
+                  // the user never saw. Refused, the editor re-seeds from
+                  // disk to show what changed.
+                  void onSet(name, '', base.current).then((saved) => {
+                    if (saved === null) setTouched(false)
+                  })
                   setConfirmDelete(false)
                 }}
               >
@@ -152,7 +184,7 @@ function RuleEditor({
             // reach here; ⌘S saves this rule in place.
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
               e.preventDefault()
-              save()
+              void save()
             }
           }}
         />
@@ -218,8 +250,10 @@ export function RulesPanel({
           if (busy) return
           const name = validName ? newName : suggestion
           if (!name) return
-          void onSet(name, `# ${name}\n`).then((ok) => {
-            if (ok) setNewName('')
+          // '' = must not exist yet: an existing rule of that name is
+          // refused instead of overwritten.
+          void onSet(name, `# ${name}\n`, '').then((saved) => {
+            if (saved !== null) setNewName('')
           })
         }}
       >

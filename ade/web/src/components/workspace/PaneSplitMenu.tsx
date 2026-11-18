@@ -20,7 +20,7 @@ import { usePaneActions } from '@/lib/pane-actions'
 import { useScreenOptions } from './use-screen-options'
 
 /** Below this header width the control steps aside: the page's own title
-    and read-outs need the room more (the keys still split the pane). */
+ and read-outs need the room more (the keys still split the pane). */
 const MIN_HEADER_WIDTH = 480
 
 /** Whether the header around `ref` has room for one more control. */

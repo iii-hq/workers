@@ -1,4 +1,12 @@
-import type { HTMLAttributes, ReactNode } from 'react'
+import { Fragment, type HTMLAttributes, type ReactNode } from 'react'
+import {
+  Breadcrumb as BaseBreadcrumb,
+  BreadcrumbItem as BaseBreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from '@/components/shadcn/breadcrumb'
 import { cn } from '@/lib/utils'
 
 export interface BreadcrumbItem {
@@ -21,15 +29,15 @@ export interface BreadcrumbProps
 }
 
 const segmentClassName =
-  'inline-flex h-5 min-w-0 items-center rounded-md px-1 font-mono text-[11px]'
+  'inline-flex h-5 min-w-0 items-center truncate rounded-md px-1 font-mono text-meta'
 
 /**
- * A horizontal path: root › … › current, in the mono voice, inside a
- * `Toolbar` or above a record. Ancestors are ghost buttons that navigate;
- * the last item is the current location (`aria-current="page"`) and is not
- * clickable. Overflow scrolls horizontally with the scrollbar hidden, so a
- * deep path never wraps the toolbar. Selection/emphasis stays neutral
- * (`ink`), never the accent.
+ * A horizontal path on the shadcn breadcrumb: root › … › current, in the
+ * mono voice, inside a `Toolbar` or above a record. Ancestors are buttons
+ * that navigate; the last item is the current location
+ * (`aria-current="page"`) and is not clickable. Overflow scrolls
+ * horizontally with the scrollbar hidden, so a deep path never wraps the
+ * toolbar.
  */
 export function Breadcrumb({
   items,
@@ -39,57 +47,58 @@ export function Breadcrumb({
   ...props
 }: BreadcrumbProps) {
   return (
-    <nav
+    <BaseBreadcrumb
       aria-label="Breadcrumb"
       className={cn(
-        'min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-ink-ghost [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+        'min-w-0 flex-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         className,
       )}
       {...props}
     >
-      <ol className="flex items-center gap-1">
+      <BreadcrumbList className="flex-nowrap gap-1 text-meta">
         {items.map((item, index) => {
           const isLast = index === items.length - 1
-          const isRoot = index === 0
-          const emphasis = isRoot && emphasizeRoot
+          const emphasis = index === 0 && emphasizeRoot
+          // The separator is a list item of its own, beside the segment
+          // (an <li> inside the item's <li> is invalid HTML; React logged it).
           return (
-            <li
-              key={item.key ?? index}
-              className="inline-flex min-w-0 items-center gap-1"
-            >
+            <Fragment key={item.key ?? index}>
               {index > 0 ? (
-                <span aria-hidden="true" className="text-ink-ghost">
+                <BreadcrumbSeparator className="text-ink-ghost">
                   {separator}
-                </span>
+                </BreadcrumbSeparator>
               ) : null}
-              {isLast || !item.onClick ? (
-                <span
-                  aria-current={isLast ? 'page' : undefined}
-                  className={cn(
-                    segmentClassName,
-                    'truncate',
-                    emphasis ? 'font-semibold text-ink' : 'text-ink',
-                  )}
-                >
-                  {item.label}
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={item.onClick}
-                  className={cn(
-                    segmentClassName,
-                    'truncate cursor-pointer border-0 bg-transparent hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-rule-focus focus-visible:-outline-offset-2',
-                    emphasis ? 'font-semibold text-ink' : 'text-ink-faint',
-                  )}
-                >
-                  {item.label}
-                </button>
-              )}
-            </li>
+              <BaseBreadcrumbItem className="min-w-0">
+                {isLast || !item.onClick ? (
+                  <BreadcrumbPage
+                    aria-current={isLast ? 'page' : undefined}
+                    className={cn(
+                      segmentClassName,
+                      'text-foreground',
+                      emphasis && 'font-semibold',
+                    )}
+                  >
+                    {item.label}
+                  </BreadcrumbPage>
+                ) : (
+                  <BreadcrumbLink
+                    render={<button type="button" onClick={item.onClick} />}
+                    className={cn(
+                      segmentClassName,
+                      'cursor-pointer border-0 bg-transparent hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+                      emphasis
+                        ? 'font-semibold text-foreground'
+                        : 'text-muted-foreground',
+                    )}
+                  >
+                    {item.label}
+                  </BreadcrumbLink>
+                )}
+              </BaseBreadcrumbItem>
+            </Fragment>
           )
         })}
-      </ol>
-    </nav>
+      </BreadcrumbList>
+    </BaseBreadcrumb>
   )
 }

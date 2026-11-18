@@ -66,11 +66,11 @@ export function WorkerMentionPill({
           : undefined
 
   const pillClass = cn(
-    'inline-flex min-w-0 max-w-[24rem] items-center gap-1 overflow-hidden px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle text-[13px] text-ink select-none transition-colors',
+    'inline-flex min-w-0 max-w-[24rem] items-center gap-1 overflow-hidden px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle text-body text-ink select-none transition-colors',
     selected ? 'bg-surface-selected' : 'bg-surface',
     (pillRef || clickable) && 'cursor-pointer',
     clickable &&
-      'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+      'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
   )
   const pillData = {
     'data-worker-mention': name,
@@ -83,7 +83,7 @@ export function WorkerMentionPill({
       {view ? (
         <>
           {view.hint ? (
-            <span className="shrink-0 font-mono text-[12px] leading-none text-ink-faint">
+            <span className="shrink-0 font-mono text-xs leading-none text-ink-faint">
               {view.hint}
             </span>
           ) : null}
@@ -94,7 +94,7 @@ export function WorkerMentionPill({
       ) : (
         <span
           className={cn(
-            'min-w-0 truncate font-mono text-[12px] leading-none text-ink-faint',
+            'min-w-0 truncate font-mono text-xs leading-none text-ink-faint',
             missing && 'line-through',
           )}
         >
@@ -105,8 +105,8 @@ export function WorkerMentionPill({
   )
 
   /* In a rendered message the pill is a button onto its target; in the
-     composer a click selects it (the decorator owns that), so it stays a
-     plain inline element there. */
+ composer a click selects it (the decorator owns that), so it stays a
+ plain inline element there. */
   const pill = clickable ? (
     <button
       {...pillData}

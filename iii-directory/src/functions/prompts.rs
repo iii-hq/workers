@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::fs_source;
-use crate::functions::error::{not_found_message, NextAction};
+use crate::functions::error::{NextAction, not_found_message};
 
 const NAME_MAX_LEN: usize = 64;
 const SYSTEM_PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(

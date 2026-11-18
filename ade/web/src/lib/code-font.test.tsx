@@ -13,7 +13,7 @@ describe('code font boundaries', () => {
       </Markdown>,
     )
 
-    expect(html).toContain('font-mono text-[14px]')
+    expect(html).toContain('font-mono text-sm')
     expect(html).toContain('font-code text-[12.5px]')
   })
 

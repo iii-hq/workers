@@ -694,9 +694,11 @@
     flex: none;
     flex-direction: column;
     width: auto;
-    gap: 2px;
-    padding: 0;
+    gap: 4px;
+    padding: 8px 6px;
   }
+  .shui-activity-bar.vertical .shui-activity-item,
+  .shui-activity-bar.vertical .shui-activity-more { width: 32px; height: 32px; }
   /* Each view is a shadcn Toggle; the strip only sizes it. The pressed one
      sits on the neutral selected fill in ink, the others are faint until
      hovered: the same selection every list in the console uses. */
@@ -741,7 +743,7 @@
     min-width: 16px;
     height: 16px;
     padding: 0 4px;
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
     outline: 2px solid var(--shui-explorer-bg, var(--color-bg));
     background: var(--color-accent);
     color: var(--color-accent-fg);
@@ -1235,16 +1237,21 @@
   [data-status="renamed"] .shui-scm-status { color: var(--shui-status-renamed); }
 
   /* ── source control: the Commit / Stash / History panel ────────────── */
+  /* The tabs never scroll away. The branch chip sits beside them when the
+     whole name fits, and otherwise moves up onto a row of its own above
+     them (wrap-reverse keeps the tabs on the bottom line, on the rule),
+     where it has the sidebar's width; only a name longer than that gives
+     way, at its end. */
   .shui-scm-head {
     flex: none;
     display: flex;
+    flex-wrap: wrap-reverse;
     align-items: center;
-    gap: 8px;
+    column-gap: 8px;
     min-height: 40px;
     padding: 0 10px 0 14px;
     box-shadow: inset 0 -1px 0 var(--color-edge);
   }
-  /* The tabs never scroll away; the branch chip gives up its width first. */
   .shui-scm-head [role="tablist"] { flex: none; box-shadow: none; }
   .shui-scm-head .spacer { flex: 1 1 0; min-width: 0; }
   .shui-scm-branch {
@@ -1253,8 +1260,9 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
-    max-width: 55%;
+    max-width: 100%;
     height: 24px;
+    margin-block: 8px;
     padding: 0 8px;
     border: 1px solid var(--color-edge);
     border-radius: var(--radius-md);
@@ -1267,9 +1275,7 @@
   .shui-scm-branch:hover { color: var(--color-ink); }
   .shui-scm-branch:focus-visible { outline: 2px solid var(--color-rule-focus); outline-offset: 1px; }
   .shui-scm-branch > svg { width: 16px; height: 16px; flex: none; }
-  /* little room beside the tabs: the name only; the tooltip has it in full */
   .shui-scm-branch > .shui-branch-name { flex: 0 1 auto; }
-  .shui-scm-branch .shui-branch-name-prefix { display: none; }
   .shui-scm-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .shui-scm-panel[hidden] { display: none; }
   :is(.shui-commit, .shui-stash, .shui-history) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -2510,7 +2516,6 @@
   .shui-wt-menu-filter { flex: 1 1 auto; min-width: 0; }
   .shui-wt-menu-filter input {
     height: 36px;
-    padding-left: 34px;
     border: 0;
     background: transparent;
     box-shadow: none;

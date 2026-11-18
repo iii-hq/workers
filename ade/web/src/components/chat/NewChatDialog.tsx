@@ -183,15 +183,15 @@ export function NewChatDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         aria-describedby={undefined}
-        className="flex w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col gap-0 overflow-visible bg-dialog-surface p-0 font-inter text-neutral-900 ring-1 ring-dialog-edge dark:text-neutral-50"
+        className="flex w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col gap-0 overflow-visible bg-dialog-surface p-0 font-inter text-foreground ring-1 ring-dialog-edge"
         initialFocus={textareaRef}
       >
         <DialogTitle className="sr-only">New chat</DialogTitle>
 
         {/* Where: the project the chat works in, as a dropdown chip in the
-            corner. The caret and the tooltip say it can be changed; the
-            path lives in the tooltip so the chip stays one word wide. */}
-        <div className="flex h-12 items-center gap-2 border-b border-neutral-100 pr-12 pl-2 dark:border-neutral-800">
+ corner. The caret and the tooltip say it can be changed; the
+ path lives in the tooltip so the chip stays one word wide. */}
+        <div className="flex h-12 items-center gap-2 border-b border-border pr-12 pl-2">
           <DirectoryPicker
             value={workingDir}
             onChange={setWorkingDir}
@@ -201,7 +201,7 @@ export function NewChatDialog({
             className="max-w-[min(20rem,60vw)]"
           />
           {/* The way out to the full composer, beside the close button:
-              what is typed and chosen here comes along, unsent. */}
+ what is typed and chosen here comes along, unsent. */}
           {onOpenFull ? (
             <Hint label="Open as a full chat" side="bottom">
               <button
@@ -217,7 +217,7 @@ export function NewChatDialog({
         </div>
 
         {/* What: the first message. The Settings send key sends (Enter by
-            default); every other Enter breaks a line natively. */}
+ default); every other Enter breaks a line natively. */}
         <textarea
           ref={textareaRef}
           name="new-chat-prompt"
@@ -240,7 +240,7 @@ export function NewChatDialog({
             attach(await attachmentsFromFiles(files))
           }}
           rows={6}
-          className="min-h-44 w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-6 text-neutral-900 outline-none placeholder:text-neutral-400 dark:text-neutral-50 dark:placeholder:text-neutral-500"
+          className="min-h-44 w-full resize-none bg-transparent px-4 py-3 text-sm leading-6 text-foreground outline-none placeholder:text-ink-ghost"
         />
 
         {attachments.length > 0 ? (
@@ -265,8 +265,8 @@ export function NewChatDialog({
         ) : null}
 
         {/* How: the model, then the agent profile (the composer's order);
-            then the composer's own tools — the mic, attach — and the one
-            action. The row is the recording bar's containing block. */}
+ then the composer's own tools — the mic, attach — and the one
+ action. The row is the recording bar's containing block. */}
         <div className="new-chat-dialog-toolbar relative flex h-14 items-center justify-between gap-3 px-3">
           <div className="flex min-w-0 items-center gap-1">
             <ModelPicker
@@ -307,7 +307,7 @@ export function NewChatDialog({
               {/* The send-key cap rides on the primary fill in its own ink. */}
               <span
                 aria-hidden
-                className="inline-flex h-5 min-w-5 items-center justify-center gap-0.5 rounded-md bg-primary-foreground/15 px-0.5 text-[12px] text-primary-foreground/80"
+                className="inline-flex h-5 min-w-5 items-center justify-center gap-0.5 rounded-md bg-primary-foreground/15 px-0.5 text-xs text-primary-foreground/80"
               >
                 {sendModifiers.map((cap) => (
                   <span key={cap}>{cap}</span>

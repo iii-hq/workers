@@ -7,16 +7,16 @@
  *
  * The vocabulary, one surface per role (see index.css's surface ramp):
  *
- *   PageShell    the pane's root column — fills the pane, `bg-panel`
- *   PageHeader   the standard top bar: `bg-panel-raised`, hairline edge
- *                border, icon + title + description, an actions slot,
- *                the hosting pane's split control, and the ✕ that closes
- *                the hosting pane (`onClose` — pages get it as
+ *  PageShell  the pane's root column — fills the pane, `bg-panel`
+ *  PageHeader  the standard top bar: `bg-panel-raised`, hairline edge
+ *  border, icon + title + description, an actions slot,
+ *  the hosting pane's split control, and the ✕ that closes
+ *  the hosting pane (`onClose` — pages get it as
  *                `PageRenderProps.onRequestClose`)
- *   PageBody     the row under the header (`side` mirrors it so a
- *                sidebar can hug the pane's outer edge)
- *   PageSidebar  the navigation column — `bg-sidebar`, bounded width
- *   PageMain     the primary workspace — `bg-panel`
+ *  PageBody  the row under the header (`side` mirrors it so a
+ *  sidebar can hug the pane's outer edge)
+ *  PageSidebar  the navigation column — `bg-sidebar`, bounded width
+ *  PageMain  the primary workspace — `bg-panel`
  *
  * PageBody separates its children with a 1px `bg-edge` gap instead of
  * per-child borders, so any composition (sidebar left, right, absent)
@@ -49,7 +49,7 @@ import { IconButton } from './IconButton'
 export { PageSidebar, type PageSidebarProps } from './PageSidebar'
 
 /** The pane's root column. Fills the pane whether the parent is a flex
-    column (native screens) or a block scroller (the ext-page host). */
+ column (native screens) or a block scroller (the ext-page host). */
 export function PageShell({ className, ...rest }: React.ComponentProps<'div'>) {
   return (
     <div
@@ -90,11 +90,11 @@ export interface PageHeaderProps {
   /** Right-side controls, rendered before the close affordance. */
   actions?: React.ReactNode
   /** Close the hosting pane — renders the standard ✕ when present.
-      Worker pages: pass `PageRenderProps.onRequestClose` through. */
+ Worker pages: pass `PageRenderProps.onRequestClose` through. */
   onClose?: () => void
   /** The page's less frequent controls, behind one ⋯ button at the end of
-      the actions. The pane's Settings joins the menu instead of standing
-      on its own. */
+ the actions. The pane's Settings joins the menu instead of standing
+ on its own. */
   menu?: readonly PageHeaderMenuItem[]
   className?: string
 }
@@ -129,12 +129,12 @@ export function PageHeader({
         </span>
       ) : null}
       {title ? (
-        <h1 className="shrink-0 font-sans text-[14px] font-medium text-ink">
+        <h1 className="shrink-0 font-sans text-sm font-medium text-ink">
           {title}
         </h1>
       ) : null}
       {description ? (
-        <span className="min-w-0 truncate font-sans text-[12px] text-ink-faint">
+        <span className="min-w-0 truncate font-sans text-xs text-ink-faint">
           {description}
         </span>
       ) : null}
@@ -143,7 +143,7 @@ export function PageHeader({
         <div className="shrink-0 flex items-center gap-1.5">{actions}</div>
       ) : null}
       {/* The hosting pane's split control (a workspace pane on desktop
-          only), the same in every pane's header. */}
+ only), the same in every pane's header. */}
       <PaneSplitMenu />
       {menu && menu.length > 0 ? (
         <PageHeaderMenu
@@ -165,15 +165,15 @@ export function PageHeader({
         </IconButton>
       ) : null}
       {/* No tooltip on the ✕ — a lone close glyph at a pane's corner is
-          self-describing, and a box popping over the tab bar to say "close
-          panel" costs more attention than it saves. aria-label still names
-          it for screen readers. */}
+ self-describing, and a box popping over the tab bar to say "close
+ panel" costs more attention than it saves. aria-label still names
+ it for screen readers. */}
       {onClose ? (
         <button
           type="button"
           onClick={onClose}
           aria-label="close panel"
-          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 sm:size-7"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -188,12 +188,12 @@ export function PageHeader({
 
 export interface PageBodyProps extends React.HTMLAttributes<HTMLDivElement> {
   /** The pane's side of the tab (`PageRenderProps.panelSide`) — `right`
-      mirrors the row so the sidebar hugs the pane's outer edge. */
+ mirrors the row so the sidebar hugs the pane's outer edge. */
   side?: 'left' | 'right'
 }
 
 /** The row under the header. The 1px gap paints in `bg-edge`, giving a
-    hairline between sidebar and main with zero border bookkeeping. */
+ hairline between sidebar and main with zero border bookkeeping. */
 export function PageBody({ side = 'left', className, ...rest }: PageBodyProps) {
   return (
     <div
@@ -224,8 +224,8 @@ export function PageMain({
 }
 
 /** The header's ⋯ menu: the page's rows, then Settings. Roomier than a
-    context menu (36px rows, a 10px icon gap, shortcuts set apart) because
-    it is read, not just aimed at. */
+ context menu (36px rows, a 10px icon gap, shortcuts set apart) because
+ it is read, not just aimed at. */
 const MENU_ROW = 'min-h-9 gap-2.5 rounded-lg pl-2.5 text-sm'
 const MENU_SHORTCUT = 'pl-6 tracking-normal text-ink-faint'
 

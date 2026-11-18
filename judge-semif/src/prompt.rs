@@ -2,7 +2,7 @@
 //! a system instruction, `{"evidence", "criterion", "options"}` as Python
 //! `json.dumps(ensure_ascii=False)`, the Qwen chat template with thinking
 //! disabled, and the uppercase option letters read from the next token.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const SYSTEM: &str = "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.";
 pub const LETTERS: &str = "ABCDEFGHIJKLMNOP";
@@ -18,11 +18,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
     fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
         w.write_all(b": ")
@@ -32,11 +28,7 @@ impl serde_json::ser::Formatter for PythonJson {
         w: &mut W,
         first: bool,
     ) -> std::io::Result<()> {
-        if first {
-            Ok(())
-        } else {
-            w.write_all(b", ")
-        }
+        if first { Ok(()) } else { w.write_all(b", ") }
     }
 }
 

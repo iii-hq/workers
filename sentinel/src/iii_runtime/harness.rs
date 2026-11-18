@@ -8,12 +8,12 @@
 //! saying otherwise would leave a row running forever.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Runtime;
+use crate::SentinelError;
 use crate::investigation::proxies::EngineWindow;
 use crate::investigation::{Harness, SendOutcome, TurnMetrics, TurnStatus};
-use crate::SentinelError;
 
 pub struct IiiHarness {
     runtime: Runtime,
@@ -112,11 +112,11 @@ impl Harness for IiiHarness {
         }))
     }
 
-    async fn stop(&self, session_id: &str, turn_id: &str) -> Result<(), SentinelError> {
+    async fn stop(&self, session_id: &str) -> Result<(), SentinelError> {
         self.runtime
             .call(
                 "harness::stop",
-                json!({ "session_id": session_id, "turn_id": turn_id, "quiet_deadlines": true }),
+                json!({ "session_id": session_id, "quiet_deadlines": true }),
             )
             .await?;
         Ok(())

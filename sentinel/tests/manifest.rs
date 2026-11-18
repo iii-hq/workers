@@ -59,7 +59,7 @@ fn live_e2e_guard_precedes_client_creation_and_connection() {
     );
 }
 
-use sentinel::{manifest, WorkerConfig};
+use sentinel::{WorkerConfig, manifest};
 
 #[test]
 fn manifest_builder_emits_registry_metadata_without_a_binary() {
@@ -72,18 +72,23 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
     assert_eq!(value["default_config"]["database"], "primary");
     assert_eq!(value["default_config"]["investigation"]["model"], "");
     assert_eq!(value["default_config"]["projects"], serde_json::json!([]));
-    assert!(value["supported_targets"]
-        .as_array()
-        .is_some_and(|targets| targets.len() == 1));
-    assert!(value["supported_targets"][0]
-        .as_str()
-        .is_some_and(|target| !target.is_empty()));
+    assert!(
+        value["supported_targets"]
+            .as_array()
+            .is_some_and(|targets| targets.len() == 1)
+    );
+    assert!(
+        value["supported_targets"][0]
+            .as_str()
+            .is_some_and(|target| !target.is_empty())
+    );
 }
 
 #[test]
 fn the_public_manifest_ships_the_same_defaults_the_binary_seeds() {
     let source = include_str!("../iii.worker.yaml");
-    let document: serde_yaml::Value = serde_yaml::from_str(source).expect("iii.worker.yaml parses");
+    let document: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(source).expect("iii.worker.yaml parses");
 
     assert_eq!(document["name"].as_str(), Some("sentinel"));
     assert_eq!(document["bin"].as_str(), Some("sentinel"));
@@ -101,7 +106,7 @@ fn the_public_manifest_ships_the_same_defaults_the_binary_seeds() {
     // The published defaults and the seeded defaults are the same document:
     // an operator reading the manifest sees what the worker actually starts
     // with, and a drift between the two fails here rather than in the field.
-    let published: WorkerConfig = serde_yaml::from_value(document["config"].clone())
+    let published: WorkerConfig = serde_yaml_ng::from_value(document["config"].clone())
         .expect("the published config block parses as WorkerConfig");
     assert_eq!(published, WorkerConfig::default());
     published.validate().expect("published defaults validate");
@@ -145,9 +150,11 @@ fn manifest_subcommand_emits_valid_json_without_connecting_to_iii() {
     assert_eq!(manifest["name"], "sentinel");
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
     assert!(manifest["default_config"].is_object());
-    assert!(manifest["supported_targets"]
-        .as_array()
-        .is_some_and(|targets| !targets.is_empty()));
+    assert!(
+        manifest["supported_targets"]
+            .as_array()
+            .is_some_and(|targets| !targets.is_empty())
+    );
 }
 
 #[test]

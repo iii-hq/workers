@@ -1,6 +1,6 @@
 # memory-consolidate
 
-Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. Strictly supersede-only through memory's public functions, pinned memories untouchable, every change visible as a `memory::on-item-changed` event. Install, stop, or remove it without touching stored memory.
+Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. An opt-in verify tier checks notes against their source transcript and replaces a note the transcript contradicts. Every write goes through memory's supersede and correct seams (`memory::supersede`, `memory::correct`), pinned memories untouchable, every change visible as a `memory::on-item-changed` event. Install, stop, or remove it without touching stored memory.
 
 ## Install
 
@@ -18,7 +18,7 @@ Plan without writing; the `run` response is the plan:
 iii call memory-consolidate::run dry_run=true
 ```
 
-A dry run is read-only: it reports the deterministic groups, skips the LLM and semantic tiers (no recall, embedding, model or rule calls), and writes no memory, cursor, pass report or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it in `reports` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
+A dry run is read-only: it reports the deterministic groups, skips the LLM, semantic and verify tiers (no recall, embedding, transcript, model or rule calls), and writes no memory, cursor, pass report or `last_run`, so `memory-consolidate::status` keeps showing the last real pass. The configured `dry_run: true` (scheduled planning mode) makes the same read-only plan but records it in `reports` and checkpoints `last_run`, so the schedule still waits `interval_hours` between passes.
 
 Apply for one bank only:
 
@@ -48,14 +48,14 @@ Each observer stays `pending` until its function registers, so the cron, configu
 
 ## Configuration
 
-All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge and semantic tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls).
+All fields hot-reload through the `configuration` worker: `enabled`, `interval_hours`, `dry_run` (scheduled passes plan-only), `banks` (allowlist, empty = all), `max_supersedes_per_run` (safety cap; remainder waits for the next pass), `max_llm_calls_per_run` (200: `router::complete` calls per pass, the judge, semantic and verify tiers of every bank together; the rest waits for the next pass with a `deferred` note; 0 = no model calls), `verify_enabled` (off by default) and `verify_max_per_run` (20), see the verify tier below.
 
 ## The LLM tier (optional)
 
 `llm_assist_enabled` (off by default) adds one `router::complete` judge call per bank after the deterministic pass:
 
 - **Reorder groups** — word-order matches the deterministic pass surfaces report-only ("The deploy runs on Fridays" vs "On Fridays the deploy runs") are merged only when the judge confirms the meaning is identical; role swaps ("Alice manages Bob") stay untouched.
-- **Rule promotion** — memories re-observed `promote_corroboration_threshold`+ times are offered as candidates; ones the judge classifies as standing instructions land as one-line entries in the bank's auto-managed `learned` rule, fingerprint-deduped, append-only. Hand-authored rules are never touched, and the judge can only act on candidates it was offered — it cannot invent targets.
+- **Rule promotion** — memories re-observed `promote_corroboration_threshold`+ times are offered as candidates; ones the judge classifies as standing instructions land as one-line entries in the bank's auto-managed `learned` rule, fingerprint-deduped, append-only. The judge sees the `learned` lines already in force: a candidate one of them already states is never promoted, and the judge lists its id as `covered`. The ids of promoted and covered memories are kept in the state worker (scope `memory_consolidate`, key `promoted:{bank}`), so a later pass does not offer them again. The write re-reads `learned` right before it and sends that read as `expected`; when the rule changed in between, it merges again, up to three tries, then waits for the next pass with a note. Hand-authored rules are never touched, and the judge can only act on candidates it was offered — it cannot invent targets.
 
 Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed. Each bank's report counts the tiers' model calls in `llm_calls`, the router's reported usage in `llm_input_tokens` and `llm_output_tokens`, and its cost in `llm_cost_usd` when the router priced the call; past `max_llm_calls_per_run` the tier is `deferred` with a note.
 
@@ -87,6 +87,47 @@ Config: `semantic_batch` (8 memories per LLM call), `semantic_candidates` (4 per
 III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture
 ```
 
+## The verify tier (opt-in, off by default)
+
+`verify_enabled` (off by default) runs one more tier per bank, after the semantic tier. For each note it reads the conversation the note came from and asks a `router::complete` judge whether that conversation contradicts the note. A contradicted note is replaced by a corrected one. The old note retires with a `superseded_by` pointer and stays visible with `include_superseded: true`.
+
+- **Transcript.** The tier never calls session-manager. It asks memory for the note's source through `memory::transcript`, which returns the user, assistant and notice lines of that span, redacted, a long line as its head and tail. An extracted note's span runs from the first to the last entry of its extraction run. A note an agent saved from a turn is read as that turn, plus the user message right before it.
+- **Order.** Priority notes go first: corrections this tier wrote, `inferred` notes, and `stated` notes saved from a turn. Plain extracted notes follow, with what is left of `verify_max_per_run`. Pinned notes are never checked.
+- **Cursor.** Each bank keeps two positions in the state worker (scope `memory_consolidate`, key `verify_cursor:{bank}`): one for priority notes, one for the rest, each keyed by `(updated_at, id)`. It is saved after each note that cost a call, so a crash never pays for a judge call twice. A note edited since (a tag or entity edit included) is checked again. A cursor that cannot be read or decoded stops the tier with a note.
+- **Judge reply.** Strict JSON, one of two shapes. Anything else fails to parse.
+
+  ```json
+  {"verdict":"supported"}
+  {"verdict":"contradicted","quote":"<verbatim transcript text>","corrected":"<the note rewritten>"}
+  ```
+
+  The judge is told that silence means `supported`, and that the corrected text changes only what the transcript contradicts.
+- **Guards.** A correction is written only when all three hold. Otherwise nothing is written and the note counts in `verify_rejected`.
+  - **Text.** The corrected text is not empty, differs from the note after normalization, is at most 200 chars longer than the note, and holds no numeral other than ASCII digits.
+  - **Quote.** The normalized quote is at least 8 chars and appears as whole tokens in one user or assistant line. Notice lines and the `role [date]:` prefix never count.
+  - **Numbers.** Every number in the corrected text appears in the message text of a user or assistant line, or in the note itself. A line's date does not count. The note counts because extraction writes resolved dates ("on 2026-10-15" for "tomorrow") that no message holds; a correction may keep them, but the judge cannot add a number of its own.
+
+  Normalization is the one duplicates use: lowercase; every char that is not a letter, digit or operator becomes a space, except `-`, `.`, `,`, `:` or `/` between two letters or digits; whitespace collapsed. A number is a whole normalized token with at least one ASCII digit, so "1,500", "1.5", "10:30", "2026-10-15" and "-5" are each one number and none of them vouches for a fragment ("500") or a flipped sign. Number words ("three") are not numbers. The guards are English only.
+- **The write.** `memory::correct` takes `expected_memory`, the note as this pass read it, and refuses a note edited since. It appends the new record and the old record's tombstone in one write. The new record keeps the old note's confidence, tags, entities, source and statement date. Its corroboration starts at 0 and it is not pinned. When the corrected text already exists as a live note, the old note retires into it; when it exists only as a retired note, the correction is skipped, so a note never flips back.
+- **Stored reason.** `source.correction_reason` is built in code: `the source conversation says: "<quote>"`, with the normalized quote cut to 200 chars. It also rides the `memory::on-item-changed` events. The quote stays on the record after its session is deleted.
+- **Skipped and counted.** A skip counts in `verify_skipped` and moves the cursor past the note. A skip is final: the note is not checked again until it is rewritten. These skips cost no judge call:
+  - records written before spans were kept, and notes with no session or span;
+  - reinforced notes (`corroboration` above 0): later evidence the span does not cover;
+  - edited notes, whose text no longer matches their id;
+  - a missing session, entry or turn. An extracted span is read along its own branch, so a note from a rewound branch is still checked; `off_path` means the span's first entry is not on its last entry's path. An agent-saved note is walked along the session's current path and is skipped as `turn_not_found` when its turn is not on it;
+  - a source over 24,000 chars, a span over 1,000 user and assistant messages, a turn walk over 3,000 user and assistant messages, or a read that could not finish within 10 s (a read is not started without its full 5 s left).
+
+  When `memory::correct` refuses a correction that passed the guards (`changed`, `pinned`, `edited`, `no_change`, `text_exists`, `invalid_text`, `flagged`), the note also counts in `verify_skipped` under that reason and the cursor moves past it, but its judge call was spent and counts in `llm_calls`.
+
+  Skips end as one note per bank, for example `verify: skipped 5 (no recorded span 3, session_not_found 2)`. Nothing goes into `errors`.
+- **Caps.** `verify_max_per_run` (20) counts the notes whose transcript was requested, per bank per pass; skips with no call are free. Judge calls count in the bank's `llm_calls`, tokens and cost, and against `max_llm_calls_per_run`. The tier runs last, so when earlier tiers use the cap it is `deferred` with a note. A correction uses the `max_supersedes_per_run` budget and counts in `corrected`, not `superseded`. The model comes from `llm_model`.
+- **Report.** Each bank counts `verified` (supported), `corrected`, `verify_skipped` and `verify_rejected`, each left out at zero. The report carries no per-note list and no quotes.
+- **Failure handling.** A transport error, session-manager down, or a failed cursor save stops the tier for that bank with a note; the cursor stays before the note. A provider error other than a context overflow counts as transport, so a provider that reports a content refusal as an error holds the tier on that note. A context overflow counts in `verify_rejected`. An unparseable reply holds the cursor while no reply of the pass has parsed, and two of them with none parsed stop the tier.
+- **Older memory worker.** A memory worker without `memory::transcript` stops the tier before any model call, with one note: `verify tier skipped: memory worker lacks memory::transcript — upgrade memory`. Release memory first.
+- **Dry runs** skip this tier.
+
+Both memory functions are internal and agent-denied: only this worker calls them.
+
 ## What counts as a duplicate
 
 v1 is deterministic and deliberately conservative: two live memories merge only when their normalized text matches (case, punctuation, and whitespace insensitive). Equal token sets (word-order shuffles) are only reported, and merge only when the LLM tier's judge confirms them. One differing word is NOT a duplicate — "always publishes" and "never publishes" must never merge. Survivor choice is stable: pinned first, then highest corroboration, then the oldest record (it carries the original provenance). Semantic near-duplicate merging is a later, LLM-assisted tier.
@@ -95,7 +136,8 @@ Normalization keeps operators and signs (`<`, `<=`, `!=`, `+`, `#`, `-5`) and an
 
 ## Boundaries
 
-- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call) — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
+- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call), or `memory::correct` for the verify tier — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
 - Pinned memories are never superseded, even inside a duplicate group.
 - Every `memory::supersede` carries `expected_memory` and `expected_superseded_by`, both records as this pass read them, so a memory worker that knows these guards refuses a record edited since; the pass reports the error and stays due. An older memory worker ignores the fields.
+- Every `memory::rule::set` of `learned` carries `expected`, the rule as this pass last read it, so the memory worker refuses it with `rule_changed` when the rule changed since. An older memory worker ignores `expected` and writes unguarded.
 - Not extraction (the memory worker captures), not recall, not rule management. One job: keep banks clean.

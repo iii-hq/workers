@@ -3,7 +3,7 @@
 [package]
 name = "judge-laya"
 version = "0.3.2"
-edition = "2021"
+edition = "2024"
 publish = false
 license = "Apache-2.0"
 description = "Self-contained laya provider for the judge hub: ModernBERT + typed decision head in llama.cpp."

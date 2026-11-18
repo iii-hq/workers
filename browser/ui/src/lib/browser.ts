@@ -484,15 +484,21 @@ const navigateSchema = z.object({
   ok: z.boolean(),
   url: z.string(),
   error: z.string().optional(),
+  /** The url was a file: it downloaded and the tab stayed on its page. */
+  download: z
+    .object({ guid: z.string(), file_name: z.string() })
+    .optional(),
 })
+export type BrowserNavigateResult = z.infer<typeof navigateSchema>
 
 /** Navigate the tab. Resolves even when the site failed to load — like a
- * browser, the tab then shows Chromium's error page and `error` says why. */
+ * browser, the tab then shows Chromium's error page and `error` says why —
+ * and as soon as a url that is a file starts downloading (`download`). */
 export async function navigateBrowser(
   iii: ExtensionIii,
   sessionId: string,
   url: string,
-): Promise<{ url: string; error?: string } | null> {
+): Promise<BrowserNavigateResult | null> {
   const res = await iii.call<unknown>(BROWSER_NAVIGATE_FUNCTION_ID, {
     session_id: sessionId,
     url,

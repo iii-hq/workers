@@ -4,9 +4,9 @@
 //! so the layer uses a tracer that resolves the current provider for every
 //! span instead of capturing the startup no-op provider.
 
+use iii_helpers::observability::opentelemetry::Context;
 use iii_helpers::observability::opentelemetry::global::{self, BoxedSpan};
 use iii_helpers::observability::opentelemetry::trace::{SpanBuilder, Tracer};
-use iii_helpers::observability::opentelemetry::Context;
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;

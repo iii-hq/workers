@@ -278,20 +278,20 @@ export function DeviceSignIn({
     >
       {heading || phase === 'connected' ? (
         <header className="flex items-center justify-between gap-2">
-          <span className="font-sans text-[13px] font-medium text-ink">
+          <span className="font-sans text-body font-medium text-ink">
             Sign in with {provider.site}
           </span>
           {phase === 'connected' ? <Chip tone="success">Signed in</Chip> : null}
         </header>
       ) : null}
       {intro ? (
-        <p className="font-sans text-[13px] leading-relaxed text-ink-faint">
+        <p className="font-sans text-body leading-relaxed text-ink-faint">
           {intro}
         </p>
       ) : null}
       {showCode && code ? (
         <div className="flex flex-col gap-1.5">
-          <span className="font-sans text-[12px] font-medium text-ink-faint">
+          <span className="font-sans text-xs font-medium text-ink-faint">
             Your one-time code
           </span>
           <button
@@ -303,10 +303,8 @@ export function DeviceSignIn({
                 : `Copy code ${code.user_code}`
             }
             className={cn(
-              'group flex h-12 items-center justify-between gap-3 rounded-md border bg-panel-raised pr-2 pl-4 text-left transition-[border-color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
-              copied
-                ? 'border-ok/50'
-                : 'border-edge hover:border-neutral-400 dark:hover:border-neutral-600',
+              'group flex h-12 items-center justify-between gap-3 rounded-md border bg-panel-raised pr-2 pl-4 text-left transition-[border-color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
+              copied ? 'border-ok/50' : 'border-edge hover:border-input ',
             )}
           >
             <span className="select-all font-mono text-[18px] font-semibold tracking-[0.18em] text-ink">
@@ -314,7 +312,7 @@ export function DeviceSignIn({
             </span>
             <span
               className={cn(
-                'flex h-8 items-center gap-1.5 rounded-sm px-2.5 font-sans text-[13px] font-medium transition-colors duration-150',
+                'flex h-8 items-center gap-1.5 rounded-sm px-2.5 font-sans text-body font-medium transition-colors duration-150',
                 copied
                   ? 'text-ok'
                   : 'text-ink-faint group-hover:bg-surface-hover group-hover:text-ink',
@@ -329,13 +327,13 @@ export function DeviceSignIn({
               {copied ? 'Copied' : 'Copy'}
             </span>
           </button>
-          <span className="font-sans text-[12px] text-ink-faint">
+          <span className="font-sans text-xs text-ink-faint">
             Paste it at{' '}
             <a
               href={code.verification_uri}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-ink underline decoration-neutral-400 underline-offset-2 hover:decoration-ink dark:decoration-neutral-600"
+              className="font-medium text-ink underline decoration-ink-ghost underline-offset-2 hover:decoration-ink"
             >
               {pageLabel(code.verification_uri)}
             </a>
@@ -348,7 +346,7 @@ export function DeviceSignIn({
       ) : null}
       {phase === 'fetching' || (message && phase !== 'connected') ? (
         <p
-          className="flex items-center gap-1.5 font-sans text-[13px] text-ink-faint"
+          className="flex items-center gap-1.5 font-sans text-body text-ink-faint"
           role="status"
           aria-live="polite"
         >

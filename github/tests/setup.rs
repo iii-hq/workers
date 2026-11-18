@@ -1,9 +1,9 @@
-use github::webhooks::setup::{
-    blockers, compose_status_route, evaluate, function_missing, CheckState, HttpProbeFailure,
-    ListenerProbe, SetupFix, TunnelProbe, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
-};
 use github::webhooks::Failure;
-use serde_json::{json, Value};
+use github::webhooks::setup::{
+    CLOUDFLARED_INSTALL_URL, CheckState, DEFAULT_LISTENER_PORT, HttpProbeFailure, ListenerProbe,
+    SetupFix, TunnelProbe, blockers, compose_status_route, evaluate, function_missing,
+};
+use serde_json::{Value, json};
 
 fn tunnel_with(cloudflared: Value) -> Result<Value, TunnelProbe> {
     Ok(json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": cloudflared}}))
@@ -111,6 +111,41 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
     );
     assert_eq!(states(&checks), [CheckState::Unknown; 3]);
     assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn opentunnel_provider_replaces_the_cloudflared_row() {
+    let checks = evaluate(
+        &Ok(json!({"status": "stopped", "leases": [], "provider": "opentunnel"})),
+        &listener_on(),
+    );
+    assert_eq!(states(&checks), [CheckState::Ok; 3]);
+    assert_eq!(checks[1].id, "tunnel_provider");
+    assert_eq!(checks[1].title, "tunnel provider");
+    assert_eq!(checks[1].state, CheckState::Ok);
+    assert_eq!(
+        checks[1].detail,
+        "quick-tunnel uses OpenTunnel; no cloudflared binary is needed."
+    );
+    assert_eq!(checks[1].fix, None);
+    assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn only_the_exact_opentunnel_provider_replaces_the_cloudflared_row() {
+    for provider in [json!("OpenTunnel"), json!("cloudflared"), json!(true)] {
+        let checks = evaluate(
+            &Ok(json!({"status": "stopped", "leases": [], "provider": provider})),
+            &listener_on(),
+        );
+        assert_eq!(checks[1].id, "cloudflared", "provider {provider}");
+        assert_eq!(checks[1].title, "cloudflared binary", "provider {provider}");
+        assert_eq!(checks[1].state, CheckState::Unknown, "provider {provider}");
+        assert!(
+            matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "quick-tunnel"),
+            "provider {provider}"
+        );
+    }
 }
 
 #[test]

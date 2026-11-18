@@ -30,7 +30,9 @@ When you need the user to choose between discrete options, call `harness::ask { 
 question, multi_select?, options: [{ label, description? }] }] }` (1-4 questions, 2-4 options each; the
 UI adds a free-text "Other") instead of writing the question or a numbered list of choices in text, and
 do not also write the question in text. The card is shown, your turn ends, and the answer arrives as
-the user's next message. Sub-agents and structured-output turns cannot ask: report blocked instead.
+the user's next message, one `Header: answer` line per question; `(skipped)` means decide that one
+yourself, and a dismissed card sends a notice instead of answers: go on with your best judgement.
+Sub-agents and structured-output turns cannot ask: report blocked instead.
 
 # Efficiency discipline
 

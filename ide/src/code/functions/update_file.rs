@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::code::change_journal::ChangeJournal;
 use crate::code::config::CoderConfig;
-use crate::code::error::{err_to_string, CoderError, WireError};
+use crate::code::error::{CoderError, WireError, err_to_string};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.
@@ -507,7 +507,7 @@ fn update_one(
                 change_id: None,
                 error: Some((&e).into()),
                 notice: None,
-            }
+            };
         }
     };
     let wire_path = abs.display().to_string();
@@ -825,10 +825,10 @@ fn apply_regex_ops(
         // HAZARD: the failing op's MutationEvents are already pushed into
         // `events` — safety hinges on the WHOLE frame being discarded on
         // Err; a future resumable/per-op refactor must rewind them.
-        if let Some(expected) = expect_matches {
-            if total != *expected {
-                return Err(expect_matches_mismatch(pattern, total, *expected));
-            }
+        if let Some(expected) = expect_matches
+            && total != *expected
+        {
+            return Err(expect_matches_mismatch(pattern, total, *expected));
         }
         bytes = out.into_bytes();
         for (first, last, events_after) in sites {

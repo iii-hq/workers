@@ -53,7 +53,7 @@ impl Config {
     /// defaults; a parse error propagates so a typo fails the worker fast.
     pub fn load(path: &str) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
-            Ok(text) => Ok(serde_yaml::from_str(&expand_env(&text))?),
+            Ok(text) => Ok(serde_yaml_ng::from_str(&expand_env(&text))?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e.into()),
         }
@@ -77,7 +77,7 @@ impl Config {
     }
 
     pub fn json_schema() -> Value {
-        let root = schemars::gen::SchemaGenerator::default().into_root_schema_for::<Config>();
+        let root = schemars::r#gen::SchemaGenerator::default().into_root_schema_for::<Config>();
         serde_json::to_value(root).expect("config schema serializes")
     }
 

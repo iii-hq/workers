@@ -15,14 +15,14 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, WorkerIdentityMode};
-use serde_json::{json, Value};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, WorkerIdentityMode, register_worker};
+use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 
 use super::engine_guard::{
     harness_worker_name, skip_after_probe, skip_after_registering, skip_before_registering,
 };
-use super::workers::{wait_until_routable, LAST_REGISTERED};
+use super::workers::{LAST_REGISTERED, wait_until_routable};
 
 /// iii's default port: `cargo test` finds a developer's bare `iii`
 /// without configuration. That is also where an everyday engine runs

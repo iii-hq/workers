@@ -629,17 +629,30 @@ are **not** consulted. An approval gate could only hold the ask, and a held
 call's release goes to the registered handler, which cannot show the card.
 
 **Answering.** The answer is simply the user's next message, so any client
-that can send one can answer. The console renders the call as a card: radio
-buttons or checkboxes, each option's description, an "Other" field and Send.
-Send submits the answer through the composer, one line per question:
+that can send one can answer. The console renders the call as a card:
+checkboxes (a single-select ticks one), each option's description, an "Other"
+field, a Skip toggle per question, and Dismiss and Send for the card. Send
+submits the answer through the composer, one line per question:
 
 - a single choice sends `Approach: End the turn`;
 - a multi-select sends `Channels: Console, Slack`;
-- "Other" sends the typed text.
+- "Other" sends the typed text;
+- a skipped question sends `Approach: (skipped)`: the model decides that
+  one itself.
 
-The card stays open while `harness::status` reports the same `turn_id`. Once
-the session has moved to a later turn, it becomes read-only and is marked
-answered. Typing a reply in the composer instead works the same way.
+Dismiss sends a notice instead of answers (`I dismissed your questions
+without answering them. Go on with your best judgement; …`). The ask result
+tells the model both may happen.
+
+**Settling.** Only the card's own Send or Dismiss closes it. Once the send
+landed (the text parked in the queue, or the session moved on a turn or a
+step), the console records the outcome with `harness::ask::settle
+{ session_id, question_id, outcome: answered | dismissed }` and every card
+reads `harness::ask::settlements { session_id }` (the session's newest 32
+settlements) on mount and on focus, so a card settled in another tab closes
+too. The session moving to a later turn does not settle a card: a reply
+typed in the composer may have been about something else, so the card says
+the chat moved on and still takes an answer, or a dismissal.
 
 ## Observable functions
 
@@ -653,7 +666,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 |---|---|---|---|
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
@@ -751,7 +764,9 @@ briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
 reads every call of the function it observes, other sessions' included, so the
 session's dispatch policy must allow that function, as it must allow a target
 or a condition; functions no agent may call (credential and private state
-accessors, `harness::observer::deliver`) are refused either way. Allowing a
+accessors, `harness::observer::deliver`) are refused either way. `workflow::start`
+is refused as a target, and a stored binding that names it does not fire: a
+delivered call skips the pre-call hook that stamps the caller's folder. Allowing a
 private event source (`state::on-changed`, `shell::on-job-finished`,
 `harness::on-timer`) lets the agent observe it, never call it, and it is not
 offered as a tool. Bindings stored by harness versions before 0.26 are

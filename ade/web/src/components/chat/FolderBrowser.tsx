@@ -86,7 +86,7 @@ async function listDirs(dir: string): Promise<DirEntry[]> {
 
 /** The footer's key caps: hairline boxes, no fill, so they read as labels. */
 const CAP =
-  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-[11px] font-medium text-muted-foreground shadow-none'
+  'h-5 min-w-5 rounded-[5px] border border-border bg-transparent px-1 font-inter text-meta font-medium text-muted-foreground shadow-none'
 
 export function FolderBrowser({
   wide,
@@ -263,14 +263,14 @@ export function FolderBrowser({
   }
 
   /* One row recipe for every column: a rounded wash on hover, a filled
-     wash when open or highlighted, the glyph in the muted ink. */
+ wash when open or highlighted, the glyph in the muted ink. */
   const rowClass = cn(
     'group/row flex w-full min-w-0 items-center gap-2 rounded-md text-left font-inter transition-colors duration-[var(--motion-duration-control)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-    wide ? 'min-h-8 px-2 py-1 text-[13px]' : 'min-h-12 px-3 py-2 text-base',
+    wide ? 'min-h-8 px-2 py-1 text-body' : 'min-h-12 px-3 py-2 text-base',
   )
   const noteClass = cn(
     'px-3 py-8 text-center font-inter text-muted-foreground',
-    wide ? 'text-[13px]' : 'text-base',
+    wide ? 'text-body' : 'text-base',
   )
   const iconButton = cn(
     'flex shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -347,7 +347,7 @@ export function FolderBrowser({
             spellCheck={false}
             className={cn(
               'min-w-0 flex-1 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none',
-              wide ? 'text-[13px]' : 'text-base',
+              wide ? 'text-body' : 'text-base',
             )}
           />
         </div>
@@ -567,7 +567,7 @@ export function FolderBrowser({
       </div>
 
       {/* The footer: how the keys work on the left, the decision on the
-          right. The same bar the shadcn dialog footer draws. */}
+ right. The same bar the shadcn dialog footer draws. */}
       <div
         className={cn(
           'flex shrink-0 items-center gap-3 border-t border-border bg-muted/50',
@@ -619,7 +619,7 @@ export function FolderBrowser({
             className={cn(
               'inline-flex min-w-0 items-center justify-center gap-2 rounded-lg bg-primary font-inter font-medium whitespace-nowrap text-primary-foreground transition-colors duration-[var(--motion-duration-control)] hover:bg-primary/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50',
               wide
-                ? 'h-8 pr-1.5 pl-3 text-[13px]'
+                ? 'h-8 pr-1.5 pl-3 text-body'
                 : 'min-h-12 flex-1 px-4 text-base',
             )}
           >
@@ -630,7 +630,7 @@ export function FolderBrowser({
               <KeyCombo
                 binding="Mod+Enter"
                 className="gap-0.5"
-                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-[11px] font-medium text-primary-foreground shadow-none"
+                capClassName="h-5 min-w-5 rounded-[5px] bg-primary-foreground/15 px-1 font-inter text-meta font-medium text-primary-foreground shadow-none"
               />
             ) : null}
           </button>

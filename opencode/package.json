@@ -1,6 +1,6 @@
 {
   "name": "opencode",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "OpenCode as an iii worker: headless turns over the iii bus, raw events on the opencode::on-raw-event function, AgentEvent frames on opencode::on-agent-event.",
   "license": "Apache-2.0",
@@ -8,7 +8,7 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@10.18.2",
+  "packageManager": "pnpm@11.13.1",
   "scripts": {
     "build": "tsc -b",
     "build:bundle": "node scripts/build-bundle.mjs",
@@ -34,10 +34,5 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

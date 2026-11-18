@@ -4,7 +4,7 @@ use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::{register_fn, spec, Ctx, FunctionSpec};
+use super::{Ctx, FunctionSpec, register_fn, spec};
 use crate::model::UsageSnapshot;
 
 pub const READ: &str = "tmux::usage::read";

@@ -1,7 +1,7 @@
 /* The Stash tab: the repository's stashes newest first, the files the
    selected one records (each opens its diff against the stash's base), and
    Apply / Pop / Unstash… / Drop, all also on a stash's right-click menu
-   with Clear and Show diff. "Stash changes…" sets the working tree aside,
+   with Clear and Show diff. "Stash changes" sets the working tree aside,
    optionally with unversioned files. */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -169,7 +169,7 @@ export function StashView({
   return (
     <div className="shui-stash">
       <div className="shui-commit-toolbar" role="toolbar" aria-label="Stashes">
-        <IconButton label="Stash changes…" disabled={busy || root === null} onClick={() => setStashOpen(true)}>
+        <IconButton label="Stash changes" disabled={busy || root === null} onClick={() => setStashOpen(true)}>
           <Archive aria-hidden />
         </IconButton>
         <IconButton
@@ -220,7 +220,7 @@ export function StashView({
             compact
             title="No stashes"
             description="Stash changes to set work aside without committing it."
-            action={{ label: 'Stash changes…', onClick: () => setStashOpen(true) }}
+            action={{ label: 'Stash changes', onClick: () => setStashOpen(true) }}
           />
         ) : (
           <ul className="shui-log-rows" aria-label="Stashes">

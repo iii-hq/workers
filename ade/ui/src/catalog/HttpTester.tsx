@@ -248,7 +248,7 @@ export function HttpTester({
 
       <div className="console-catalog-fields">
         <Eyebrow className="console-catalog-field-label">
-          query parameters
+          Query parameters
           <Button
             variant="pill"
             size="sm"
@@ -260,7 +260,7 @@ export function HttpTester({
               ])
             }}
           >
-            add
+            Add
           </Button>
         </Eyebrow>
         {query.length === 0 ? (
@@ -278,7 +278,7 @@ export function HttpTester({
                   )
                 }
                 preserveCase
-                placeholder="key"
+                placeholder="Key"
                 aria-label="query parameter name"
               />
               <Input
@@ -291,7 +291,7 @@ export function HttpTester({
                   )
                 }
                 preserveCase
-                placeholder="value"
+                placeholder="Value"
                 aria-label="query parameter value"
               />
               <Button
@@ -301,7 +301,7 @@ export function HttpTester({
                   setQuery((prev) => prev.filter((q) => q.id !== entry.id))
                 }
               >
-                remove
+                Remove
               </Button>
             </div>
           ))
@@ -320,7 +320,7 @@ export function HttpTester({
 
       <div className="console-catalog-invoke-foot">
         <Button size="sm" onClick={send} disabled={sending}>
-          {sending ? 'sending…' : 'send request'}
+          {sending ? 'Sending…' : 'Send request'}
         </Button>
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>

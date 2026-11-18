@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 /// Staged by `build.rs` from the parser's own `external/bcmaps`.
 static CMAPS: Dir<'_> = include_dir!("$OUT_DIR/bcmaps");
@@ -31,7 +31,11 @@ const CMAP_DIR_ENV: &str = "PDF_INSPECTOR_BCMAPS_DIR";
 /// Best effort by design: a read-only or full disk costs CJK fidelity, which is
 /// worth a warning, not a failed boot. An operator who has already set
 /// `PDF_INSPECTOR_BCMAPS_DIR` keeps their directory untouched.
-pub fn materialize() {
+///
+/// # Safety
+/// The entire process must be single-threaded throughout this call because
+/// it may mutate the process environment.
+pub unsafe fn materialize() {
     if let Some(existing) = std::env::var_os(CMAP_DIR_ENV) {
         tracing::info!(
             dir = %Path::new(&existing).display(),
@@ -43,7 +47,8 @@ pub fn materialize() {
     let dir = cache_dir();
     match write_all(&dir) {
         Ok(written) => {
-            std::env::set_var(CMAP_DIR_ENV, &dir);
+            // SAFETY: the caller guarantees the process is single-threaded.
+            unsafe { std::env::set_var(CMAP_DIR_ENV, &dir) };
             tracing::info!(
                 dir = %dir.display(),
                 files = written,

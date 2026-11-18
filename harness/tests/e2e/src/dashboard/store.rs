@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{SecondsFormat, Utc};
 
-use super::{JobStatus, RunMetadata, LOCAL_SCHEMA_VERSION};
+use super::{JobStatus, LOCAL_SCHEMA_VERSION, RunMetadata};
 use crate::report::E2eReport;
 
 pub(super) struct StoredRun {

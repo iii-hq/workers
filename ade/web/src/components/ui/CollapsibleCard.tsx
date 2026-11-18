@@ -1,12 +1,16 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import * as React from 'react'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/shadcn/collapsible'
 import { cn } from '@/lib/utils'
 
 interface CollapsibleCardContextValue {
   contentId: string
   disabled: boolean
   open: boolean
-  setOpen(open: boolean): void
   triggerId: string
 }
 
@@ -35,9 +39,9 @@ export interface CollapsibleCardProps
 }
 
 /**
- * Shared card disclosure with accessible controlled/uncontrolled state and an
- * auto-height expand/collapse transition. Content stays mounted so worker UI
- * state survives while the card is collapsed.
+ * A card that discloses: the shadcn (Base UI) collapsible in the card
+ * recipe, with the first API's controlled / uncontrolled state. Content
+ * stays mounted while collapsed, so worker UI state survives.
  */
 export const CollapsibleCard = React.forwardRef<
   HTMLDivElement,
@@ -60,24 +64,20 @@ export const CollapsibleCard = React.forwardRef<
     const reactId = React.useId()
     const triggerId = `${reactId}-trigger`
     const contentId = `${reactId}-content`
-
-    const setOpen = React.useCallback(
-      (nextOpen: boolean) => {
-        if (controlledOpen === undefined) setUncontrolledOpen(nextOpen)
-        onOpenChange?.(nextOpen)
-      },
-      [controlledOpen, onOpenChange],
-    )
-
     const context = React.useMemo<CollapsibleCardContextValue>(
-      () => ({ contentId, disabled, open, setOpen, triggerId }),
-      [contentId, disabled, open, setOpen, triggerId],
+      () => ({ contentId, disabled, open, triggerId }),
+      [contentId, disabled, open, triggerId],
     )
-
     return (
       <CollapsibleCardContext.Provider value={context}>
-        <div
+        <Collapsible
           ref={ref}
+          open={open}
+          disabled={disabled}
+          onOpenChange={(next) => {
+            if (controlledOpen === undefined) setUncontrolledOpen(next)
+            onOpenChange?.(next)
+          }}
           {...props}
           className={cn(uiClasses.card, uiClasses.collapsibleCard, className)}
           data-slot="card"
@@ -85,7 +85,7 @@ export const CollapsibleCard = React.forwardRef<
           data-state={open ? 'open' : 'closed'}
         >
           {children}
-        </div>
+        </Collapsible>
       </CollapsibleCardContext.Provider>
     )
   },
@@ -99,27 +99,17 @@ export type CollapsibleCardTriggerProps =
 export const CollapsibleCardTrigger = React.forwardRef<
   HTMLButtonElement,
   CollapsibleCardTriggerProps
->(({ className, disabled, onClick, type = 'button', ...props }, ref) => {
+>(({ className, type = 'button', ...props }, ref) => {
   const context = useCollapsibleCard('CollapsibleCardTrigger')
-  const isDisabled = context.disabled || disabled
-
   return (
-    <button
+    <CollapsibleTrigger
       ref={ref}
       {...props}
       id={context.triggerId}
       type={type}
       aria-controls={context.contentId}
-      aria-expanded={context.open}
       className={cn(uiClasses.collapsibleCardTrigger, className)}
       data-state={context.open ? 'open' : 'closed'}
-      disabled={isDisabled}
-      onClick={(event) => {
-        onClick?.(event)
-        if (!event.defaultPrevented && !isDisabled) {
-          context.setOpen(!context.open)
-        }
-      }}
     />
   )
 })
@@ -133,10 +123,11 @@ export const CollapsibleCardContent = React.forwardRef<
   CollapsibleCardContentProps
 >(({ children, className, ...props }, ref) => {
   const context = useCollapsibleCard('CollapsibleCardContent')
-
   return (
-    <section
-      ref={ref}
+    <CollapsibleContent
+      ref={ref as React.Ref<HTMLDivElement>}
+      render={<section />}
+      keepMounted
       {...props}
       id={context.contentId}
       aria-hidden={!context.open}
@@ -146,7 +137,7 @@ export const CollapsibleCardContent = React.forwardRef<
       inert={context.open ? undefined : true}
     >
       <div className={uiClasses.collapsibleCardContentInner}>{children}</div>
-    </section>
+    </CollapsibleContent>
   )
 })
 CollapsibleCardContent.displayName = 'CollapsibleCardContent'

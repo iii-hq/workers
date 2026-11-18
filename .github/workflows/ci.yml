@@ -27,7 +27,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ ade/web/e2e/test_namespaced_provider_ports.py -v
@@ -63,6 +63,7 @@ jobs:
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       native_ui: ${{ steps.bucket.outputs.native_ui }}
       traces_ui: ${{ steps.bucket.outputs.traces_ui }}
+      ade_web: ${{ steps.bucket.outputs.ade_web }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -148,6 +149,19 @@ jobs:
     defaults:
       run:
         working-directory: ${{ matrix.worker }}
+    # One sccache compile cache shared by every worker and every run, on the
+    # GitHub Actions cache backend. GitHub scopes those entries by ref: pull
+    # requests read main's entries and never write (READ_ONLY), and only the
+    # trusted push after merge publishes. Release builds (_deploy-build.yml)
+    # use their own S3 cache and never read this one. rust-cache keeps the
+    # per-worker target/ below: when it restores, Cargo compiles almost
+    # nothing; when it misses (new lockfile, evicted entry), sccache serves
+    # the dependencies another worker already compiled. A lookup the cache
+    # service rate-limits (HTTP 429) is compiled as a miss.
+    env:
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_GHA_VERSION: ci-rust-v1
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -167,6 +181,28 @@ jobs:
           # branch-scoped copy. The push after merge advances the canonical key.
           save-if: ${{ github.event_name == 'push' }}
           workspaces: ${{ matrix.worker }} -> target
+
+      - name: Install sccache
+        continue-on-error: true
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        with:
+          # SCCACHE_GHA_RW_MODE needs a recent sccache; pin it instead of
+          # resolving the latest release on every run.
+          version: v0.19.0
+
+      # Set after rust-cache so its key does not change. sccache cannot cache
+      # incremental builds. A missing binary or an unreachable cache service
+      # (fork token, rate limit, outage) compiles without the cache instead
+      # of failing the job.
+      - name: Enable sccache
+        run: |
+          echo 'CARGO_INCREMENTAL=0' >> "$GITHUB_ENV"
+          if sccache rustc -vV >/dev/null 2>&1; then
+            echo 'RUSTC_WRAPPER=sccache' >> "$GITHUB_ENV"
+          else
+            sccache --stop-server >/dev/null 2>&1 || true
+            echo '::warning::sccache unavailable; compiling without the shared cache'
+          fi
 
       # Workers and their direct local Rust dependencies can embed a frontend
       # through build.rs. For example, approval-gate's tests depend on harness,
@@ -229,6 +265,12 @@ jobs:
           for directory in "${bundles[@]}"; do
             (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
+
+      # The rule editor's save merges and retries; installed by the pre-build.
+      - name: Memory UI tests
+        if: matrix.worker == 'memory'
+        working-directory: memory/ui
+        run: pnpm test
 
       # The worker's web/, ui/ and native-ui/ projects are members of the root
       # pnpm workspace, which the pre-build above installed. Warning only.
@@ -358,6 +400,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y musl-tools
           rustup target add x86_64-unknown-linux-musl
           cargo build --locked --target x86_64-unknown-linux-musl
+
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats
 
   # ──────────────────────────────────────────────────────────────
   # iii-directory links a static ONNX Runtime on five release targets; the
@@ -651,6 +697,8 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
+      # Node 24, not the repo-wide 22: computer/ui runs its .ts tests straight
+      # through `node --test` (see the header of src/lib/computer.test.ts).
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
@@ -955,7 +1003,7 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
@@ -996,8 +1044,8 @@ jobs:
   # The traces page package (packages/traces-ui, @iii-dev/traces-ui). The rust
   # matrix only builds it into ade's bundle on the way to the binary (and
   # discover's BUNDLED_PACKAGES puts ade there when it changes); this job runs
-  # its own biome, typecheck, tests and build, and the ADE design scans that
-  # cover its sources. discover's traces_ui gates it.
+  # its own biome, typecheck, tests and build (the ADE design scans that cover
+  # its sources run in ade-web). discover's traces_ui gates it.
   # ──────────────────────────────────────────────────────────────
   traces-ui:
     name: "traces-ui: package"
@@ -1014,12 +1062,12 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: 24
+          node-version: 22
           cache: 'pnpm'
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Install the package and the ADE console
-        run: pnpm --filter '@iii-dev/traces-ui...' --filter 'chat-app...' install --frozen-lockfile
+      - name: Install the package
+        run: pnpm --filter '@iii-dev/traces-ui...' install --frozen-lockfile
 
       - name: Biome
         run: npx --yes @biomejs/biome@2.4.10 ci packages/traces-ui
@@ -1033,33 +1081,39 @@ jobs:
       - name: Build (what npm gets)
         run: pnpm --filter '@iii-dev/traces-ui' build
 
-      - name: ADE design scans over the package
-        working-directory: ade/web
-        # vitest reads file arguments as filters: a renamed scan would drop out
-        # silently, so each must exist first.
-        run: |
-          set -euo pipefail
-          scans=(
-            src/lib/typography-conformance.test.ts
-            src/lib/icon-size-conformance.test.ts
-            src/lib/theme-hover-conformance.test.ts
-            src/lib/viewport-breakpoint-conformance.test.ts
-          )
-          for scan in "${scans[@]}"; do test -f "$scan"; done
-          pnpm exec vitest run "${scans[@]}"
+  # ──────────────────────────────────────────────────────────────
+  # The ADE console's vitest suite (ade/web, chat-app) and ade/ui's tests. The
+  # suite reads every worker UI, provider icons and fixtures shared with Rust
+  # crates, so discover's ade_web gates it on those paths too.
+  # ──────────────────────────────────────────────────────────────
+  ade-web:
+    name: "ade-web: vitest"
+    needs: discover
+    if: needs.discover.outputs.ade_web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - name: ADE selection scan over the package
-        working-directory: ade/web
-        # Only the case that lists the package's files: the file's other cases
-        # cover other workers. `-t` matching nothing exits 0, so the step
-        # requires that one case to have run and passed.
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/selection-scan.json"
-          pnpm exec vitest run src/lib/selection-conformance.test.ts \
-            -t 'keeps selected native Console labels' \
-            --reporter=default --reporter=json --outputFile.json="$report"
-          jq -e '.numPassedTests == 1' "$report"
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Install the ADE console, ide/ui and ade/ui
+        # ade/web imports ide/ui sources by path, so ide/ui needs its own deps.
+        run: pnpm --filter 'chat-app...' --filter '@iii-workers/shell-ui...' --filter '@iii-workers/console-worker-ui...' install --frozen-lockfile
+
+      - name: ADE console tests
+        run: pnpm --filter chat-app test
+
+      - name: ade/ui tests
+        run: pnpm --filter '@iii-workers/console-worker-ui' test
 
   # ──────────────────────────────────────────────────────────────
   # llm-router lifecycle contract: unlike the regular Rust job, this always
@@ -1728,6 +1782,18 @@ jobs:
         with:
           go-version-file: ${{ matrix.worker }}/go.mod
           cache-dependency-path: ${{ matrix.worker }}/go.sum
+      # Vet and test the configuration the release builds, with its build tags.
+      - name: Use the release build tags
+        working-directory: .
+        env:
+          WORKER: ${{ matrix.worker }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          tags=$(python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; print(",".join(_lib.read_worker(os.environ["WORKER"]).artifact.get("tags", [])))')
+          if [[ -n "$tags" ]]; then
+            echo "GOFLAGS=$GOFLAGS -tags=$tags" >> "$GITHUB_ENV"
+          fi
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       # Modules `go mod tidy` would drop become warnings, never a failure.

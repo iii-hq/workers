@@ -246,6 +246,54 @@ export const WINDOWS = [
   { value: 'all', label: 'All' },
 ]
 
+/**
+ * The worker filter's "every worker" option. A real option, not the Select's
+ * cleared state: cleared, the trigger read as a grey placeholder and no row
+ * in the open list carried the check. (An option value may not be empty.)
+ */
+export const ALL_WORKERS = '*'
+
+/**
+ * The worker filter as Select props: "All workers" first, then each worker.
+ * @param {string} service the filter's worker; empty for every worker
+ * @param {string[]} workers
+ */
+export function workerFilter(service, workers) {
+  return {
+    value: service || ALL_WORKERS,
+    options: [
+      { value: ALL_WORKERS, label: 'All workers' },
+      ...workers.filter((name) => name !== ALL_WORKERS).map((name) => ({ value: name, label: name })),
+    ],
+  }
+}
+
+/** The filter's worker for a picked option: empty for every worker. @param {string} value */
+export function serviceOf(value) {
+  return value === ALL_WORKERS ? '' : value
+}
+
+/**
+ * Rows in the order the person last saw them, while they are working on the
+ * list. A refresh re-sorts by "last seen", so without this the row under the
+ * pointer changed between aiming and clicking, and a checkbox selected a
+ * different issue. Rows keep their place and take their fresh data; rows that
+ * left are dropped; new rows go to the end, where they move nothing.
+ * @template {{ id: string }} T
+ * @param {readonly string[]} previousIds
+ * @param {readonly T[]} rows
+ * @returns {T[]}
+ */
+export function stableOrder(previousIds, rows) {
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const kept = previousIds.flatMap((id) => {
+    const row = byId.get(id)
+    return row ? [row] : []
+  })
+  const seen = new Set(previousIds)
+  return [...kept, ...rows.filter((row) => !seen.has(row.id))]
+}
+
 /** `1 284`: thousands set apart with a space, the way the design counts. @param {number} count */
 export function spaced(count) {
   return Math.round(count).toLocaleString('en-US').replace(/,/g, ' ')

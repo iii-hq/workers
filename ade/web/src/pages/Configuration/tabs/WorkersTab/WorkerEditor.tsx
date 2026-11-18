@@ -261,7 +261,7 @@ export function WorkerEditor({
                       wt.bodySm,
                       'text-destructive',
                       fullForm
-                        ? 'shrink-0 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800'
+                        ? 'shrink-0 border-t border-border px-4 py-3 '
                         : 'mt-4',
                     )}
                     role="alert"
@@ -323,7 +323,7 @@ export function EditorHeader({
           ) : null}
           <p
             data-keep-mono
-            className="truncate font-mono text-sm leading-5 text-neutral-400 dark:text-neutral-500"
+            className="truncate font-mono text-sm leading-5 text-ink-ghost"
           >
             {entry.id}
           </p>

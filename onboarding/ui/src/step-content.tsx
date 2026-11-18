@@ -52,6 +52,14 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
             <Button className="learn-action" onClick={() => tour.ask(step)}>
               {step.ask.label}
             </Button>
+            {step.condition ? (
+              // The agent reports the step done by writing a state key; one
+              // that answers without writing it would leave the tour stuck
+              // here, so the operator can move it on by hand.
+              <Button variant="ghost" className="learn-ghost" onClick={() => tour.complete(step.id)}>
+                Mark as done
+              </Button>
+            ) : null}
           </div>
           <Prompt text={step.ask.text} />
         </div>

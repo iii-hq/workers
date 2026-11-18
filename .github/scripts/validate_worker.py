@@ -24,6 +24,44 @@ BUNDLE_PRESET_IMAGES = frozenset({
 })
 
 
+# Crates first-party manifests must not depend on: the deprecated serde_yaml
+# moved to serde_yaml_ng, and serde_yml is unmaintained (RUSTSEC-2025-0068).
+# The repo has no cargo-deny config, so this is the deny list.
+DENIED_CRATES = {
+    "serde_yaml": "serde_yaml is deprecated upstream; use serde_yaml_ng",
+    "serde_yml": "serde_yml is unmaintained (RUSTSEC-2025-0068); use serde_yaml_ng",
+}
+
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _dependency_names(manifest: dict) -> set[str]:
+    """Every crate a manifest names, under its own key or a `package = ` rename."""
+    tables = [manifest.get(table, {}) for table in DEPENDENCY_TABLES]
+    tables.append(manifest.get("workspace", {}).get("dependencies", {}))
+    for target in manifest.get("target", {}).values():
+        tables.extend(target.get(table, {}) for table in DEPENDENCY_TABLES)
+    names: set[str] = set()
+    for table in tables:
+        for key, value in table.items():
+            names.add(key)
+            if isinstance(value, dict) and isinstance(value.get("package"), str):
+                names.add(value["package"])
+    return names
+
+
+def denied_crate_errors(label: str, manifest_path: pathlib.Path) -> list[str]:
+    """Return one error per denied crate a Cargo.toml depends on, in any dependency table."""
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"{label}: could not parse {manifest_path.name}: {error}"]
+    return [
+        f"{label}: depends on {name}: {DENIED_CRATES[name]}"
+        for name in sorted(_dependency_names(manifest) & DENIED_CRATES.keys())
+    ]
+
+
 def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | None:
     """Return why a rust-binary manifest lacks an explicit `[profile.release]`, or None.
 
@@ -40,6 +78,32 @@ def release_profile_error(worker: str, manifest_path: pathlib.Path) -> str | Non
             f"{worker}/{manifest_path.name} must declare [profile.release] "
             '(the shared one is lto = "thin", codegen-units = 1, strip = true)'
         )
+    return None
+
+
+def root_package_manager(root: pathlib.Path) -> str | None:
+    """The repo-root package.json `packageManager`, the pin every package follows."""
+    try:
+        return json.loads((root / "package.json").read_text(encoding="utf-8")).get("packageManager")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def package_manager_error(label: str, package_json: pathlib.Path, expected: str) -> str | None:
+    """Return why a package.json pins another package manager than the repo root, or None.
+
+    A package with its own pnpm-lock.yaml is installed on its own, so it must
+    pin one; a workspace member without a pin uses the root's.
+    """
+    try:
+        package = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return f"{label}: could not parse {package_json.name}: {error}"
+    pinned = package.get("packageManager")
+    if pinned is None and not (package_json.parent / "pnpm-lock.yaml").exists():
+        return None
+    if pinned != expected:
+        return f'{label}: packageManager is {pinned!r}, must be "{expected}" (the repo-root package.json pin)'
     return None
 
 
@@ -132,6 +196,35 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
                 )
 
 
+RUST_EDITION = "2024"
+
+
+def edition_errors(label: str, manifest_path: pathlib.Path) -> list[str]:
+    """Return why a first-party Cargo.toml is not on the shared Rust edition, if it is not.
+
+    `[package]` must declare the edition (or inherit it with
+    `edition.workspace = true`), and `[workspace.package]`, when it sets one,
+    must set the same. Vendored crates follow their upstream and are not checked.
+    """
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [f"{label}: could not parse {manifest_path.name}: {error}"]
+    errors = []
+    package = manifest.get("package")
+    if isinstance(package, dict) and "edition" not in package:
+        errors.append(f'{label}: [package] must declare edition = "{RUST_EDITION}"')
+    tables = (("package", package), ("workspace.package", manifest.get("workspace", {}).get("package")))
+    for table_name, table in tables:
+        edition = table.get("edition") if isinstance(table, dict) else None
+        # `edition.workspace = true` inherits [workspace.package], checked there.
+        if edition is None or edition == {"workspace": True}:
+            continue
+        if edition != RUST_EDITION:
+            errors.append(f'{label}: [{table_name}] edition = {edition!r}, must be "{RUST_EDITION}"')
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True)
@@ -192,6 +285,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{worker}: artifact.binary={executable!r} must match the worker ID "
                     "because Registry extraction addresses the worker by ID"
                 )
+        # The Rust edition: every first-party crate is on the shared one.
+        cargo_manifest = spec.path / (spec.manifest or "")
+        if cargo_manifest.name == "Cargo.toml" and cargo_manifest.is_file():
+            for error in edition_errors(f"{worker}/{spec.manifest}", cargo_manifest):
+                hard(error)
+
         if spec.manifest:
             manifest_path = spec.path / spec.manifest
             if not manifest_path.is_file():
@@ -201,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
                     profile_error = release_profile_error(worker, manifest_path)
                     if profile_error:
                         hard(profile_error)
+                if manifest_path.name == "Cargo.toml":
+                    for denied_error in denied_crate_errors(f"{worker}/{spec.manifest}", manifest_path):
+                        hard(denied_error)
                 try:
                     current_version = _lib.read_version(manifest_path)
                 except (ValueError, FileNotFoundError) as error:
@@ -238,6 +340,14 @@ def main(argv: list[str] | None = None) -> int:
                             f"{worker}/{spec.manifest} version {current_version} "
                             f"is less than base {base_version}"
                         )
+
+        # The pnpm pin: a worker's package.json follows the repo root's.
+        root_pin = root_package_manager(spec.path.parent)
+        package_json = spec.path / (spec.manifest or "")
+        if root_pin and package_json.name == "package.json" and package_json.is_file():
+            pin_error = package_manager_error(f"{worker}/{spec.manifest}", package_json, root_pin)
+            if pin_error:
+                hard(pin_error)
 
         tests = spec.path / "tests"
         go_tests = spec.artifact_kind == "go-binary" and any(spec.path.rglob("*_test.go"))

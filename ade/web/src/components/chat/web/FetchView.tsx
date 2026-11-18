@@ -43,7 +43,7 @@ export function FetchView({ input, output, running }: FetchViewProps) {
 
   if (running) {
     return (
-      <div className="border-t border-rule-2 bg-bg">
+      <div className="border-t border-border bg-bg">
         <MetaRow>
           <StatusPill label="fetching…" variant="default" />
           <Chip>{method}</Chip>
@@ -68,7 +68,7 @@ export function FetchView({ input, output, running }: FetchViewProps) {
 }
 
 /** Compact preview rendered while a `web::fetch` call sits in the
-    approval gate. Read-only summary of method + URL + payload counts. */
+ approval gate. Read-only summary of method + URL + payload counts. */
 export function FetchPreview({ input }: { input: unknown }) {
   const req = safeParseRequest(fetchRequestSchema, input)
   if (!req) return null
@@ -76,7 +76,7 @@ export function FetchPreview({ input }: { input: unknown }) {
   const headerCount = req.headers ? Object.keys(req.headers).length : 0
   const hasBody = req.body != null || req.json !== undefined
   return (
-    <div className="border-b border-rule-2 bg-bg">
+    <div className="border-b border-border bg-bg">
       <MetaRow>
         <StatusPill label="permission to fetch" variant="warn" />
         <Chip>{method}</Chip>
@@ -90,7 +90,7 @@ export function FetchPreview({ input }: { input: unknown }) {
       <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{req.url}</span>
       </ActionLine>
-      <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5 border-b border-rule-2 bg-paper-2">
+      <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5 border-b border-border bg-paper-2">
         <Chip>
           <span className="iii-ui-eyebrow">headers</span>
           <span className="ml-1 text-ink tabular-nums">{headerCount}</span>
@@ -133,7 +133,7 @@ function FetchSuccessPane({ req, method, result }: FetchSuccessPaneProps) {
   const contentType = result.headers['content-type']
   const statusVariant = statusToVariant(result.status)
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={`${result.status} ${result.status_text}`}
@@ -183,7 +183,7 @@ function FetchSuccessPane({ req, method, result }: FetchSuccessPaneProps) {
 
 function RedirectChain({ chain }: { chain: string[] }) {
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 flex flex-col gap-0.5">
+    <div className="px-3 py-1.5 border-b border-border bg-paper-2 flex flex-col gap-0.5">
       <div className="iii-ui-eyebrow">redirect chain</div>
       {chain.map((url) => (
         <div
@@ -202,7 +202,7 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
   const entries = Object.entries(headers)
   if (entries.length === 0) return null
   return (
-    <div className="border-b border-rule-2 bg-paper-2">
+    <div className="border-b border-border bg-paper-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -213,7 +213,7 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
         <span
           aria-hidden
           className={cn(
-            'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-[11px]',
+            'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-meta',
             open && 'rotate-90',
           )}
         >
@@ -221,7 +221,7 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
         </span>
       </button>
       {open ? (
-        <TableViewport className="border-t border-rule-2">
+        <TableViewport className="border-t border-border">
           <TableFrame className="px-3">
             <Table density="compact" aria-label="Response headers">
               <TableHeader>
@@ -253,12 +253,12 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
 function Body({ result }: { result: Extract<FetchResult, { ok: true }> }) {
   if (result.response_format === 'base64') {
     return (
-      <div className="px-3 py-2 border-b border-rule-2">
+      <div className="px-3 py-2 border-b border-border">
         <div className="flex items-center gap-2 mb-1.5">
           <Chip>
             <span>Base64</span>
           </Chip>
-          <span className="font-mono text-[11px] text-ink-faint tabular-nums">
+          <span className="font-mono text-meta text-ink-faint tabular-nums">
             {result.body.length} chars
           </span>
         </div>
@@ -335,7 +335,7 @@ interface FetchErrorPaneProps {
 
 function FetchErrorPane({ req, method, error }: FetchErrorPaneProps) {
   return (
-    <div className="border-t border-rule-2 bg-bg">
+    <div className="border-t border-border bg-bg">
       <MetaRow>
         <StatusPill
           label={fetchErrorVariantLabel(error.error)}

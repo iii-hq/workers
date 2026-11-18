@@ -38,7 +38,7 @@ const GROUPS: ReadonlyArray<{ group: string; detail: string }> = [
 
 /** A key cap: a flat hairline box, no shadow, so it reads as a label. */
 const KEYCAP =
-  'h-6 min-w-6 rounded-md border border-border bg-background px-1.5 font-inter text-[11px] font-medium text-foreground shadow-none'
+  'h-6 min-w-6 rounded-md border border-border bg-background px-1.5 font-inter text-meta font-medium text-foreground shadow-none'
 
 export function orderedShortcutGroups(
   platform: Platform,
@@ -106,7 +106,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
         </DialogHeader>
 
         {/* Focusable so the arrow keys scroll it when the list is taller
-            than the dialog. */}
+ than the dialog. */}
         <div
           // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
           tabIndex={0}
@@ -122,7 +122,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
                 <div className="mb-2 flex items-baseline justify-between gap-3 px-0.5">
                   <h3
                     id={`shortcuts-${group}`}
-                    className="text-[13px] font-medium text-foreground"
+                    className="text-body font-medium text-foreground"
                   >
                     {group}
                   </h3>
@@ -136,19 +136,19 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
                   {entries.map((entry) => (
                     <li
                       key={entry.id}
-                      className="flex min-h-9 items-center justify-between gap-4 px-3 py-1 text-[13px]"
+                      className="flex min-h-9 items-center justify-between gap-4 px-3 py-1 text-body"
                     >
                       <span className="min-w-0 truncate text-foreground">
                         {entry.title}
                       </span>
                       {/* Alternatives, not one chord: without a separator `tab`
-                          and `shift tab` read as a single four-key press. */}
+ and `shift tab` read as a single four-key press. */}
                       <span className="flex shrink-0 items-center gap-1.5">
                         {resolveBindings(entry.bindings, platform).map(
                           (binding, index) => (
                             <Fragment key={binding}>
                               {index > 0 ? (
-                                <span className="text-[11px] text-muted-foreground">
+                                <span className="text-meta text-muted-foreground">
                                   or
                                 </span>
                               ) : null}

@@ -715,8 +715,9 @@ export interface MentionRendererRegistration {
  */
 /** What `host.chat.compose` did: handed the draft to a composer (or held it
     for the chat being opened), or, with `ifUnambiguous`, left it alone
-    because several chats are open. */
-export type ComposeResult = 'composed' | 'ambiguous'
+    because several chats are open, or, with `sessionId`, left it alone
+    because that chat's composer is not mounted. */
+export type ComposeResult = 'composed' | 'ambiguous' | 'unavailable'
 
 export interface Host {
   iii: ExtensionIii
@@ -829,6 +830,14 @@ export interface Host {
        * the text.
        */
       ifUnambiguous?: boolean
+      /**
+       * The chat session the draft belongs to (a card inside that chat
+       * answering for it). Only that chat's composer takes it; when it is
+       * not mounted nothing lands and `'unavailable'` comes back. Wins over
+       * `beside` and `ifUnambiguous`. Older consoles ignore it and hand the
+       * draft to the chat used last.
+       */
+      sessionId?: string
     }): ComposeResult
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
@@ -864,16 +873,20 @@ export interface Host {
      * does: `agent` (a profile id; the default profile when absent) is
      * selected, the first of `models` this machine serves is chosen with its
      * effort (the chat's usual model when none is), and the chat is shown.
-     * A profile that is not served leaves the text as a draft to send by
-     * hand. Resolves to the chat's session id. Absent on older consoles;
-     * feature-detect.
+     * A profile that is not served falls back to the chat's default one;
+     * the text is sent either way. Resolves to the chat's session id.
+     * Absent on older consoles; feature-detect.
      */
     startChat?(request: {
       text: string
       agent?: string
       models?: { provider: string; model: string; effort?: string }[]
     }): Promise<string>
-    /** Live composer model for a conversation, including unsaved drafts. */
+    /**
+     * The model the chat would send with: the conversation's (or, with no id,
+     * the open chat's) live composer pick, including unsaved drafts, else the
+     * model a new chat starts on. `null` only when no model is known at all.
+     */
     composerModel?(conversationId?: string | null): string | null
   }
 }

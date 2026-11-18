@@ -58,7 +58,7 @@ export async function getRemovalPreview(
     tree.sessions.some((node) => typeof node.session_id !== 'string')
   ) {
     throw new Error(
-      'Could not verify this conversation and its subagents. Please try again.',
+      'Could not verify this conversation and its subagents. Try again.',
     )
   }
   const ids = [...new Set(tree.sessions.map((node) => node.session_id))]
@@ -79,7 +79,7 @@ export async function getRemovalPreview(
         meta.message_count < 0
       ) {
         throw new Error(
-          'Conversation details changed or could not be verified. Please try again.',
+          'Conversation details changed or could not be verified. Try again.',
         )
       }
       preview.hasRunningWork ||= meta.status === 'working'

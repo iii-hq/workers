@@ -10,8 +10,8 @@ use judge_contract::EvaluateResponse;
 use judge_openai::{
     CANCEL_ID as CANCEL_FUNCTION_ID, EVALUATE_ID as FUNCTION_ID, MODELS_ID as MODELS_FUNCTION_ID,
 };
-use serde_json::{json, Value};
-use support::{connect, invoke, wait_for, Engine};
+use serde_json::{Value, json};
+use support::{Engine, connect, invoke, wait_for};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 

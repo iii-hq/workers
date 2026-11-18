@@ -287,7 +287,7 @@ describe('SystemNotice · turn failure', () => {
       createdAt: 0,
     })
     expect(out).toContain('data-failure-owner="iii"')
-    expect(out).toContain('Something went wrong in iii')
+    expect(out).toContain('iii failed while running this turn')
     expect(out).toContain('iii issue')
   })
 })

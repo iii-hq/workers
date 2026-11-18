@@ -20,117 +20,234 @@
    node_modules, so name its sources. */
 @source "../../../packages/traces-ui/src";
 
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* Both the shadcn `.dark` class and the console's `data-theme` attribute
+   select the dark theme, so a stock shadcn `dark:` utility and the
+   console's theme switch agree. */
+@custom-variant dark (
+  &:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *)
+);
+
+/* ── Design system ───────────────────────────────────────────────────────
+   The single palette the whole console paints with: the shadcn semantic
+   variables (`--background`, `--primary`, `--muted`, `--border`, …) in
+   oklch, light on `:root` and dark on `.dark` / `[data-theme="dark"]`.
+   Every console token below (`--color-ink`, `--color-surface`, `--color-edge`,
+   …) is an alias onto one of these, so a legacy `text-ink` and a shadcn
+   `text-foreground` are the same colour, and a worker's `var(--color-*)`
+   follows the theme for free. Change a colour here, never in the aliases. */
+:root {
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0 0 0);
+  --popover: oklch(0.99 0 0);
+  --popover-foreground: oklch(0 0 0);
+  --primary: oklch(0 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.94 0 0);
+  --secondary-foreground: oklch(0 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.44 0 0);
+  --accent: oklch(0.94 0 0);
+  --accent-foreground: oklch(0 0 0);
+  --destructive: oklch(0.63 0.19 23.03);
+  --destructive-foreground: oklch(1 0 0);
+  /* The console's two other status hues, beside `destructive`. */
+  --success: #356f3d;
+  --warning: #a87a00;
+  --border: oklch(0.92 0 0);
+  --input: oklch(0.94 0 0);
+  --ring: oklch(0 0 0);
+  --chart-1: oklch(0.81 0.17 75.35);
+  --chart-2: oklch(0.55 0.22 264.53);
+  --chart-3: oklch(0.72 0 0);
+  --chart-4: oklch(0.92 0 0);
+  --chart-5: oklch(0.56 0 0);
+  --sidebar: oklch(0.99 0 0);
+  --sidebar-foreground: oklch(0 0 0);
+  --sidebar-primary: oklch(0 0 0);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.94 0 0);
+  --sidebar-accent-foreground: oklch(0 0 0);
+  --sidebar-border: oklch(0.94 0 0);
+  --sidebar-ring: oklch(0 0 0);
+  --font-sans: Inter, ui-sans-serif, sans-serif, system-ui;
+  --font-serif: Georgia, serif;
+  --font-mono: "Geist Mono", monospace;
+  --radius: 0.9rem;
+  --shadow-x: 0px;
+  --shadow-y: 1px;
+  --shadow-blur: 2px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.18;
+  --shadow-color: hsl(0 0% 0%);
+  --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-sm:
+    0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow:
+    0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow-md:
+    0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 2px 4px -1px hsl(0 0% 0% / 0.18);
+  --shadow-lg:
+    0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 4px 6px -1px hsl(0 0% 0% / 0.18);
+  --shadow-xl:
+    0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 8px 10px -1px hsl(0 0% 0% / 0.18);
+  --shadow-2xl: 0px 1px 2px 0px hsl(0 0% 0% / 0.45);
+  --tracking-normal: -0.025em;
+  --spacing: 0.25rem;
+}
+
+.dark,
+[data-theme="dark"] {
+  --background: oklch(0 0 0);
+  --foreground: oklch(1 0 0);
+  --card: oklch(0.14 0 0);
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.18 0 0);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(1 0 0);
+  --primary-foreground: oklch(0 0 0);
+  --secondary: oklch(0.25 0 0);
+  --secondary-foreground: oklch(1 0 0);
+  --muted: oklch(0.23 0 0);
+  --muted-foreground: oklch(0.72 0 0);
+  --accent: oklch(0.32 0 0);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.69 0.2 23.91);
+  --destructive-foreground: oklch(0 0 0);
+  --success: #36c98f;
+  --warning: #f5a524;
+  --border: oklch(0.26 0 0);
+  --input: oklch(0.32 0 0);
+  --ring: oklch(0.72 0 0);
+  --chart-1: oklch(0.81 0.17 75.35);
+  --chart-2: oklch(0.58 0.21 260.84);
+  --chart-3: oklch(0.56 0 0);
+  --chart-4: oklch(0.44 0 0);
+  --chart-5: oklch(0.92 0 0);
+  --sidebar: oklch(0.145 0 0); /* neutral-950 */
+  --sidebar-foreground: oklch(1 0 0);
+  --sidebar-primary: oklch(1 0 0);
+  --sidebar-primary-foreground: oklch(0 0 0);
+  --sidebar-accent: oklch(0.32 0 0);
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(0.269 0 0); /* neutral-800 */
+  --sidebar-ring: oklch(0.72 0 0);
+}
 
 /* `static`: every token here reaches :root even when no utility uses it.
    Worker sheets read them with var() (the public inventory in
    packages/console-ui/token-names.mjs), and Tailwind would otherwise drop
    the ones it inlines, e.g. --shadow-floating in light mode. */
 @theme static {
-  --font-sans:
-    "Geist", "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
-    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
-  --font-mono:
-    "Geist Mono", "Chivo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
-    Consolas, "Liberation Mono", "Courier New", monospace;
+  /* The three design-system families (defined on :root above): Inter for
+     humans, Geist Mono for machines, Georgia where prose asks for serif. */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-serif: var(--font-serif);
   /* Code is deliberately distinct from mono UI chrome. Monaco is a system
      font on macOS; the remaining entries preserve a native mono fallback on
      platforms where it is unavailable. */
   --font-code:
     Monaco, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono",
     "Courier New", monospace;
-  --font-geist-mono:
-    "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-  /* The workspace header is set in Inter (already loaded above as the sans
-     fallback); `font-inter` pins it there while the rest of the console
-     keeps Geist first. */
-  --font-inter:
-    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
-    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  /* Console-only role names for the two system families. */
+  --font-geist-mono: var(--font-mono);
+  --font-inter: var(--font-sans);
 
   /* ── Surface ramp ─────────────────────────────────────────────────────
      Layered surfaces communicate hierarchy before borders do:
      bg (canvas) → sidebar → panel → panel-raised → surface →
-     surface-hover → surface-selected → surface-active.
+     surface-hover → surface-selected → surface-active. Each step is one of
+     the design-system surfaces: `background`, `sidebar`, `card`, `muted`,
+     `accent` (the hover tint) and `secondary` (the pressed fill).
      `paper-2` is the legacy alias for panel-raised. `card-highlight` is the
-     special borderless inset for related content inside a card; it is not an
+     borderless inset for related content inside a card; it is not an
      interaction or selection state. */
-  --color-bg: #f5f5f5;
-  --color-sidebar: #f2f2f2;
-  --color-panel: lab(98.26% 0 0);
-  --color-panel-raised: #fafafa;
-  --color-paper-2: #ededed;
-  --color-surface: rgba(24, 24, 24, 0.055);
-  --color-card-highlight: #dbdbdb63;
-  --color-surface-hover: rgba(24, 24, 24, 0.085);
-  --color-surface-selected: rgba(24, 24, 24, 0.12);
-  --color-surface-active: rgba(24, 24, 24, 0.12);
+  --color-bg: var(--background);
+  --color-sidebar: var(--sidebar);
+  --color-panel: var(--background);
+  --color-panel-raised: var(--card);
+  --color-paper-2: var(--card);
+  --color-surface: var(--muted);
+  --color-card-highlight: var(--muted);
+  --color-surface-hover: var(--accent);
+  --color-surface-selected: var(--accent);
+  --color-surface-active: var(--secondary);
 
   /* ── Ink ramp ──────────────────────────────────────────────────────── */
-  --color-ink: #0a0a0a;
-  --color-ink-faint: #6b6b6b;
-  --color-muted-foreground: #6b6b6b;
-  --color-call-running: #57534f;
-  --color-ink-ghost: #909090;
-  --color-ink-disabled: #b5b5b5;
+  --color-ink: var(--foreground);
+  --color-ink-faint: var(--muted-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-call-running: var(--muted-foreground);
+  --color-ink-ghost: color-mix(
+    in oklab,
+    var(--muted-foreground) 72%,
+    var(--background)
+  );
+  --color-ink-disabled: color-mix(
+    in oklab,
+    var(--muted-foreground) 45%,
+    var(--background)
+  );
 
   /* ── Border ramp ──────────────────────────────────────────────────────
-     The system draws no lines: rule/rule-2/rule-strong resolve to
-     transparent in both themes (legacy `border-rule*` utilities become
-     inert 1px transparent borders, so layout never shifts). Hierarchy is
-     carried by the surface fills above. The single exception is
-     rule-focus — the focus indicator on inputs and controls, which must
-     stay visible for accessibility. */
+     rule/rule-2/rule-strong resolve to transparent in both themes (legacy
+     `border-rule*` utilities become inert 1px transparent borders, so
+     layout never shifts). Hierarchy is carried by the surface fills above.
+     The one stroke every control shares is rule-focus, the design-system
+     `ring`. */
   --color-rule: transparent;
   --color-rule-2: transparent;
   --color-rule-strong: transparent;
-  --color-rule-focus: #b8420f;
+  /* Half-strength, like the shadcn `ring-ring/50`: a focus line, never a
+     solid primary stroke. */
+  --color-rule-focus: color-mix(in oklab, var(--ring) 50%, transparent);
 
-  /* The one structural stroke the system keeps: a VERY subtle edge on the
-     main workspace panels (the tab columns), so the floating panels
-     read against the canvas. Never used inside a panel. Light mode draws
-     every line in neutral-100 — a hairline, never a gray rule. */
-  --color-edge: var(--color-neutral-100);
-  /* The 1px ring on cards, popovers and dialogs (shadcn's
-     `ring-foreground/10`): neutral-100 in light, neutral-900 in dark. */
-  --color-card-edge: var(--color-neutral-100);
-  /* shadcn's `bg-card`: the raised panel in light, black in dark. */
-  --color-card-surface: var(--color-panel-raised);
-  /* Every popover, menu and select list: a white sheet with a neutral-200
-     line in light, black with neutral-900 in dark (`bg-popover`). */
-  --color-popover-surface: var(--color-white);
-  --color-popover-edge: var(--color-neutral-200);
-  /* Every dialog (modal, confirm, picker): a white sheet with a neutral-200
-     line in light, black with neutral-900 in dark (`bg-dialog-surface`,
-     `ring-dialog-edge`). */
-  --color-dialog-surface: var(--color-white);
-  --color-dialog-edge: var(--color-neutral-200);
-  /* The resting outline of a form control (checkbox, radio). A control is
-     not a divider: it keeps a stroke you can find on the canvas. */
-  --color-control-edge: var(--color-neutral-300);
+  /* The structural strokes: the design-system `border` on panels, cards,
+     popovers and dialogs, `input` on form controls. */
+  --color-edge: var(--border);
+  --color-card-edge: var(--border);
+  --color-card-surface: var(--card);
+  --color-popover-surface: var(--popover);
+  --color-popover-edge: var(--border);
+  --color-dialog-surface: var(--background);
+  --color-dialog-edge: var(--border);
+  --color-control-edge: var(--input);
 
-  /* Neutral actions and focus; semantic status colors remain distinct. */
-  --color-accent: #383838;
-  --color-accent-fg: #f5f5f5;
-  --color-accent-hover: #262626;
-  --color-accent-muted: rgba(64, 64, 64, 0.1);
-  --color-accent-border: rgba(64, 64, 64, 0.35);
+  /* The console's accent is a FILL (live state, gauges, primary actions,
+     with `accent-fg` type on it): the design-system `primary`. shadcn's own
+     `accent` is a hover tint and is mapped separately as the `surface-hover`
+     step above and `--color-accent-foreground` at the end of this file. */
+  --color-accent: var(--primary);
+  --color-accent-fg: var(--primary-foreground);
+  --color-accent-hover: color-mix(
+    in oklab,
+    var(--primary) 85%,
+    var(--background)
+  );
+  --color-accent-muted: color-mix(in oklab, var(--primary) 10%, transparent);
+  --color-accent-border: color-mix(in oklab, var(--primary) 35%, transparent);
 
   /* The error color — every error surface (text-alert, StatusDot,
-     SPAN_STATUS_COLORS in the trace charts) resolves through this token.
-     Dark mode overrides it with a softer coral tuned for dark surfaces. */
-  --color-alert: #ff0026;
-  --color-alert-muted: rgba(255, 0, 38, 0.08);
-  --color-warn: #a87a00;
+     SPAN_STATUS_COLORS in the trace charts) resolves through the
+     design-system `destructive`. */
+  --color-alert: var(--destructive);
+  --color-alert-muted: color-mix(in oklab, var(--destructive) 10%, transparent);
+  --color-warn: var(--warning);
   --color-warn-muted: rgba(168, 122, 0, 0.12);
   /* Status as small text (11–12px): the same hues pushed to AA on the
      surface ramp. A dot, a mark or a badge keeps the base tone. */
-  --color-alert-strong: #c60021;
+  --color-alert-strong: color-mix(
+    in oklab,
+    var(--destructive) 85%,
+    var(--foreground)
+  );
   --color-warn-strong: #7a5700;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
-  --color-ok: #356f3d;
+  --color-ok: var(--success);
   --color-ok-muted: rgba(53, 111, 61, 0.12);
   /* Session scope (working directory) — the folder mark in the chat
      timeline's activity-kind trail, beside ƒ (accent), observer (warn) and
@@ -164,8 +281,6 @@
   --color-syntax-string: #0a3069;
   --color-syntax-type: #953800;
   --color-syntax-attribute: #116329;
-
-  --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
   /* ── Worker identity ───────────────────────────────────────────────
      Eight dusty mid-tones, hand-picked (the traces redesign reference):
@@ -209,15 +324,19 @@
   --color-trace-error-ink: #ffffff;
 
   /* ── Radii ────────────────────────────────────────────────────────────
-     Compact chrome uses 6px; larger controls and cards use 8px (lg),
-     while panels and dialogs use 12px (xl). `none` keeps frame edges
-     square and `full` is reserved for dots and round action buttons. */
+     One `--radius` (0.9rem, on :root above) and the shadcn steps off it:
+     sm = radius − 4px, md = radius − 2px, lg = radius, xl = radius + 4px.
+     `xs` is the console's compact step for chips and menu rows, `none`
+     keeps frame edges square and `full` is for dots and round buttons. */
   --radius-none: 0px;
-  --radius-xs: 6px;
-  --radius-sm: 6px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-xs: calc(var(--radius) - 8px);
+  /* Text fields, selects and input groups: a 32px control on the 0.9rem
+     radius reads as a pill, so they take a fixed 8px corner. */
+  --radius-field: 0.5rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
   --radius-full: 9999px;
 
   /* ── Elevation ──────────────────────────────────────────────────────
@@ -228,15 +347,25 @@
      (non-inheriting), so a :root override can't reach the utilities.
      Dark mode re-strengthens these (see the [data-theme="dark"] block):
      there the shadow is the only depth cue, so it carries more weight. */
-  --shadow-raised: 0 1px 2px #1818181a, 0 4px 12px #1818181a;
-  --shadow-floating: 0 2px 4px #1818181a, 0 10px 24px #1818181a;
+  --shadow-2xs: var(--shadow-2xs);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow: var(--shadow);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-2xl: var(--shadow-2xl);
+  /* The console's two elevation names: a raised card and a floating
+     popover, on the design-system scale. */
+  --shadow-raised: var(--shadow-md);
+  --shadow-floating: var(--shadow-lg);
   /* `lift` is the crisp-edged instrument surface (the chat composer): a lit
      inset top edge, an inset hairline ring, a 1px outer edge, and two tight
      drops. The ingredients are theme tokens so the composed value below
      stays a single source; the dark block only re-tints them. */
   --iii-ui-lift-highlight: rgba(255, 255, 255, 0.7);
   --iii-ui-lift-ring: transparent;
-  --iii-ui-lift-edge: var(--color-neutral-100);
+  --iii-ui-lift-edge: var(--border);
   --iii-ui-lift-drop: rgba(24, 24, 24, 0.08);
   --shadow-lift:
     inset 0 1px 0 0 var(--iii-ui-lift-highlight),
@@ -289,6 +418,21 @@
   --text-swap-blur: var(--blur-small);
   --text-swap-ease: var(--ease-in-out);
 
+  /* Type scale, by role. Sizes only (no line-height), so `text-body` renders
+     exactly what the brackets it replaces did. `xs` and `sm` are Tailwind's
+     12 / 14px; `meta` is the 11px floor (metadata, eyebrows, key caps) and
+     `body` the 13px console body (rows, labels, buttons). Never a bracket. */
+  --text-meta: 0.6875rem;
+  --text-body: 0.8125rem;
+
+  /* Letter-spacing: the design system's slightly tight default. */
+  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
+  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
+  --tracking-normal: var(--tracking-normal);
+  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
+  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
+  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
   --spacing-section-y: 80px;
@@ -296,13 +440,12 @@
   --spacing-content-max: 1216px;
 }
 
-[data-theme="dark"] {
+[data-theme="dark"],
+.dark {
   color-scheme: dark;
-  /* Neutral grays derived from black — no blue cast in the base ramp. The
-     component fills (surface*) are white-alpha so a step reads identically
-     over any base layer, including selection. Borders are gone:
-     rule/rule-2/rule-strong resolve to transparent, and hierarchy is carried
-     entirely by fills. */
+  /* The palette flips on the design-system variables above; every alias
+     follows. Only the console-only tones (status, glyph, worker, syntax)
+     and the elevation ingredients are re-tuned here. */
 
   /* Elevation carries more weight here — on near-black the shadow is the
      only depth cue, plus an inset white hairline for the lit top edge. */
@@ -315,49 +458,16 @@
   --iii-ui-lift-ring: rgba(255, 255, 255, 0.02);
   --iii-ui-lift-edge: rgba(0, 0, 0, 0.12);
   --iii-ui-lift-drop: rgba(0, 0, 0, 0.18);
-  /* Dark mode is black: the canvas, the sidebars and the chat surface. */
-  --color-bg: var(--color-black);
-  --color-sidebar: var(--color-black);
-  --color-panel: var(--color-black);
-  --color-panel-raised: #171717;
-  --color-paper-2: #171717;
-  --color-surface: rgba(255, 255, 255, 0.055);
-  --color-card-highlight: #0d0d0e63;
-  --color-surface-hover: rgba(255, 255, 255, 0.085);
-  --color-surface-selected: rgba(255, 255, 255, 0.12);
-  --color-surface-active: rgba(255, 255, 255, 0.12);
-  --color-ink: #ededed;
-  --color-ink-faint: #a6a6a6;
-  /* Compact agent activity stays secondary, but remains comfortably legible
-     against the near-black chat canvas. */
-  --color-muted-foreground: #b8b8b8;
-  --color-call-running: #a6a6a6;
-  --color-ink-ghost: #6f6f6f;
-  --color-ink-disabled: #4d4d4d;
-  --color-rule: transparent;
-  --color-rule-2: transparent;
-  --color-rule-strong: transparent;
-  --color-rule-focus: rgba(212, 212, 212, 0.7);
-  --color-edge: rgba(255, 255, 255, 0.07);
-  --color-card-edge: var(--color-neutral-900);
-  --color-card-surface: var(--color-black);
-  --color-popover-surface: var(--color-black);
-  --color-popover-edge: var(--color-neutral-900);
-  --color-dialog-surface: var(--color-black);
-  --color-dialog-edge: var(--color-neutral-900);
-  --color-control-edge: rgba(255, 255, 255, 0.07);
-  --color-accent: #dedede;
-  --color-accent-fg: #070909;
-  --color-accent-hover: #f5f5f5;
-  --color-accent-muted: rgba(212, 212, 212, 0.12);
-  --color-accent-border: rgba(212, 212, 212, 0.35);
-  --color-alert: #f05d68;
-  --color-alert-muted: rgba(240, 93, 104, 0.12);
-  --color-warn: #f5a524;
+  --color-alert-muted: color-mix(in oklab, var(--destructive) 12%, transparent);
+  --color-warn: var(--warning);
   --color-warn-muted: rgba(245, 165, 36, 0.12);
-  --color-alert-strong: #ff4d63;
+  --color-alert-strong: color-mix(
+    in oklab,
+    var(--destructive) 85%,
+    var(--foreground)
+  );
   --color-warn-strong: #d49b00;
-  --color-ok: #36c98f;
+  --color-ok: var(--success);
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.14);
@@ -412,8 +522,11 @@
 }
 
 @layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
   :root {
-    --foreground: var(--color-ink);
     --tw-ring-color: color-mix(in oklab, var(--foreground) 5%, transparent);
 
     /* Syntax token palette (lib/syntax.tsx). The default is the console's
@@ -446,10 +559,10 @@
   }
 
   body {
-    background-color: var(--color-bg);
-    color: var(--color-ink);
+    @apply bg-background text-foreground;
     font-size: 14px;
     line-height: 20px;
+    letter-spacing: var(--tracking-normal);
   }
 
   ::selection {
@@ -620,13 +733,13 @@
 
 .configuration-surface .iii-ui-settings-list {
   border-width: 1px 0;
-  border-color: var(--color-neutral-100);
+  border-color: var(--muted);
   border-radius: 0;
   background: transparent;
 }
 
 .configuration-surface .iii-ui-settings-row + .iii-ui-settings-row {
-  border-top-color: var(--color-neutral-100);
+  border-top-color: var(--muted);
 }
 
 .configuration-surface .iii-ui-settings-row__inner {
@@ -642,7 +755,7 @@
 .configuration-surface .iii-ui-segmented {
   border-radius: var(--radius-lg);
   padding: 2px;
-  background: var(--color-neutral-100);
+  background: var(--muted);
 }
 
 .configuration-surface .iii-ui-segmented__item {
@@ -656,14 +769,14 @@
     [aria-selected="true"],
     [aria-checked="true"]
   ) {
-  background: var(--color-white);
+  background: var(--card);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.08),
     0 0 0 1px rgb(0 0 0 / 0.04);
 }
 
 [data-theme="dark"] .configuration-surface .iii-ui-settings-list {
-  border-color: var(--color-neutral-800);
+  border-color: var(--border);
   background: transparent;
 }
 
@@ -671,11 +784,11 @@
   .configuration-surface
   .iii-ui-settings-row
   + .iii-ui-settings-row {
-  border-top-color: var(--color-neutral-800);
+  border-top-color: var(--border);
 }
 
 [data-theme="dark"] .configuration-surface .iii-ui-segmented {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 [data-theme="dark"]
@@ -685,7 +798,7 @@
     [aria-selected="true"],
     [aria-checked="true"]
   ) {
-  background: var(--color-neutral-700);
+  background: var(--input);
   box-shadow: none;
 }
 
@@ -713,14 +826,14 @@
 .configuration-surface .iii-observability-ui {
   --obs-bg: transparent;
   --obs-card: transparent;
-  --obs-surface: var(--color-neutral-100);
-  --obs-surface-strong: var(--color-neutral-200);
-  --obs-border: var(--color-neutral-100);
-  --obs-border-soft: var(--color-neutral-100);
-  --obs-border-strong: var(--color-neutral-300);
-  --obs-accent: var(--color-neutral-900);
-  --obs-accent-muted: var(--color-neutral-100);
-  --obs-accent-border: var(--color-neutral-300);
+  --obs-surface: var(--muted);
+  --obs-surface-strong: var(--secondary);
+  --obs-border: var(--border);
+  --obs-border-soft: var(--border);
+  --obs-border-strong: var(--input);
+  --obs-accent: var(--primary);
+  --obs-accent-muted: var(--muted);
+  --obs-accent-border: var(--input);
   --obs-mono: var(--font-geist-mono);
   max-width: calc(1120px + 2 * 20px);
   padding: 0 20px 48px;
@@ -786,7 +899,7 @@
 }
 
 .configuration-surface .iii-observability-ui .obs-tabs button.is-active {
-  background: var(--color-white);
+  background: var(--card);
   box-shadow:
     0 1px 2px rgb(0 0 0 / 0.08),
     0 0 0 1px rgb(0 0 0 / 0.04);
@@ -883,35 +996,35 @@
 .configuration-surface .iii-observability-ui .obs-field select:focus,
 .configuration-surface .iii-observability-ui .obs-field textarea:focus,
 .configuration-surface .iii-observability-ui .obs-rule input:focus {
-  border-color: var(--color-neutral-500);
+  border-color: var(--muted-foreground);
   box-shadow: 0 0 0 3px
-    color-mix(in oklab, var(--color-neutral-500) 25%, transparent);
+    color-mix(in oklab, var(--muted-foreground) 25%, transparent);
 }
 
 .configuration-surface .iii-observability-ui .obs-toggle__track {
   width: 40px;
   height: 24px;
-  background: var(--color-neutral-300);
+  background: var(--input);
 }
 
 .configuration-surface .iii-observability-ui .obs-toggle__thumb {
   width: 20px;
   height: 20px;
-  background: var(--color-white);
+  background: var(--card);
 }
 
 .configuration-surface
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__track {
-  background: var(--color-neutral-900);
+  background: var(--primary);
 }
 
 .configuration-surface
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__thumb {
-  background: var(--color-white);
+  background: var(--card);
   transform: translateX(16px);
 }
 
@@ -943,14 +1056,14 @@
 }
 
 [data-theme="dark"] .configuration-surface .iii-observability-ui {
-  --obs-surface: var(--color-neutral-900);
-  --obs-surface-strong: var(--color-neutral-800);
-  --obs-border: var(--color-neutral-800);
-  --obs-border-soft: var(--color-neutral-800);
-  --obs-border-strong: var(--color-neutral-700);
-  --obs-accent: var(--color-neutral-100);
-  --obs-accent-muted: var(--color-neutral-900);
-  --obs-accent-border: var(--color-neutral-700);
+  --obs-surface: var(--muted);
+  --obs-surface-strong: var(--secondary);
+  --obs-border: var(--border);
+  --obs-border-soft: var(--border);
+  --obs-border-strong: var(--input);
+  --obs-accent: var(--primary);
+  --obs-accent-muted: var(--muted);
+  --obs-accent-border: var(--input);
 }
 
 [data-theme="dark"]
@@ -958,7 +1071,7 @@
   .iii-observability-ui
   .obs-tabs
   button.is-active {
-  background: var(--color-neutral-700);
+  background: var(--input);
   box-shadow: none;
 }
 
@@ -966,14 +1079,14 @@
   .configuration-surface
   .iii-observability-ui
   .obs-toggle__track {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 [data-theme="dark"]
   .configuration-surface
   .iii-observability-ui
   .obs-toggle__thumb {
-  background: var(--color-neutral-400);
+  background: var(--color-ink-ghost);
 }
 
 [data-theme="dark"]
@@ -981,7 +1094,7 @@
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__track {
-  background: var(--color-neutral-300);
+  background: var(--muted-foreground);
 }
 
 [data-theme="dark"]
@@ -989,7 +1102,7 @@
   .iii-observability-ui
   .obs-toggle.is-on
   .obs-toggle__thumb {
-  background: var(--color-neutral-800);
+  background: var(--secondary);
 }
 
 /* Chat uses Inter for UI chrome; Monaco only on semantic code surfaces. */
@@ -1810,6 +1923,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A list inside a list counts differently, so the eye can tell the levels
+   apart: 1. then a. then i. — the same in the composer and the reply. */
+.composer-editor .composer-ol .composer-ol,
+.chat-prose ol ol {
+  list-style: lower-alpha;
+}
+
+.composer-editor .composer-ol .composer-ol .composer-ol,
+.chat-prose ol ol ol {
+  list-style: lower-roman;
+}
+
 .composer-editor .composer-li {
   margin: 0;
 }
@@ -2021,12 +2146,14 @@
 }
 
 /* ── shadcn/ui (Base UI) ───────────────────────────────────────────────
-   shadcn components read the semantic variables below. Each one points at
-   a console token, so a shadcn popover, menu or button paints in the same
-   ink, surfaces and focus stroke as the rest of the ADE, and flips with
-   `data-theme` for free — there is no `.dark` block and no second palette.
-   The console keeps its own fonts and radius scale: shadcn's `--font-sans`
-   and `--radius-*` remaps are deliberately not applied. */
+   The shadcn utilities (`bg-background`, `text-muted-foreground`,
+   `border-border`, `ring-ring`, `rounded-lg`, `shadow-md`, `tracking-tight`)
+   read the design-system variables defined at the top of this file. The
+   one deliberate exception is `accent`: `--color-accent` is the console's
+   primary fill (see the aliases above), so a stock `bg-accent
+   text-accent-foreground` pair still contrasts (the foreground is the
+   fill's own), while hover washes belong on `muted` / `surface-hover`
+   (theme-hover-conformance.test.ts). */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -2040,18 +2167,9 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  /* No `--color-accent` remap: that name is the console's own accent (the
-     charcoal / soft-white fill for live state, gauges and primary actions)
-     and shadcn's `accent` is a hover tint. Menu items hover on `muted`.
-     The one thing that IS mapped is the pairing: a stock shadcn recipe
-     that still says `bg-accent text-accent-foreground` used to paint the
-     console's near-white (dark) / charcoal (light) accent fill under text
-     that stayed in the ink colour — white on white, black on charcoal —
-     because `accent-foreground` resolved to nothing. It now resolves to
-     the accent's own foreground, so the pair always contrasts; the hover
-     tint itself belongs on `muted` (see theme-hover-conformance.test.ts). */
   --color-accent-foreground: var(--color-accent-fg);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -2068,39 +2186,6 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-}
-
-:root {
-  --radius: 0.5rem;
-  --background: var(--color-bg);
-  --foreground: var(--color-ink);
-  --card: var(--color-card-surface);
-  --card-foreground: var(--color-ink);
-  --popover: var(--color-popover-surface);
-  --popover-foreground: var(--color-ink);
-  --primary: var(--color-ink);
-  --primary-foreground: var(--color-bg);
-  --secondary: var(--color-surface);
-  --secondary-foreground: var(--color-ink);
-  --muted: var(--color-surface);
-  --muted-foreground: var(--color-ink-faint);
-  --destructive: var(--color-alert);
-  --border: var(--color-edge);
-  --input: var(--color-surface);
-  --ring: var(--color-rule-focus);
-  --chart-1: var(--color-neutral-300);
-  --chart-2: var(--color-neutral-500);
-  --chart-3: var(--color-neutral-600);
-  --chart-4: var(--color-neutral-700);
-  --chart-5: var(--color-neutral-800);
-  --sidebar: var(--color-sidebar);
-  --sidebar-foreground: var(--color-ink);
-  --sidebar-primary: var(--color-ink);
-  --sidebar-primary-foreground: var(--color-bg);
-  --sidebar-accent: var(--color-surface-hover);
-  --sidebar-accent-foreground: var(--color-ink);
-  --sidebar-border: var(--color-edge);
-  --sidebar-ring: var(--color-rule-focus);
 }
 
 /* Monaco's in-page button tooltips (the find widget's "Close (Escape)",
@@ -2126,4 +2211,19 @@
 /* Its replace toggle (›, far left) sits 1px low on the same row. */
 .monaco-editor .find-widget.visible > .button.toggle {
   margin-top: 3px;
+}
+
+/* viewport: phone chrome — the `overlays` slot's `--overlay-inset-top`
+   (ExtOverlays.tsx): the bottom of the shell's chrome, the top bar plus a
+   pane's header row and their hairlines. Phones stack a 56px bar over a
+   56px pane header; from 640px it is a 48px bar over a 44px header. A
+   worker overlay docked to a top corner sits below this line. */
+[data-ext-overlays] {
+  --overlay-inset-top: 113px;
+}
+
+@media (min-width: 640px) {
+  [data-ext-overlays] {
+    --overlay-inset-top: 93px;
+  }
 }

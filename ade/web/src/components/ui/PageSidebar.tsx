@@ -587,6 +587,9 @@ export function PageSidebar({
       style={{ ...style, width: effectiveWidth }}
       className={cn(
         'relative shrink-0 min-h-0 bg-sidebar',
+        side === 'left'
+          ? 'border-r border-sidebar-border'
+          : 'border-l border-sidebar-border',
         hostDrawer ? 'overflow-visible' : 'overflow-hidden',
         hostDrawer && drawerOpen && 'z-10',
         effectiveNarrow && !hostDrawer && 'flex-1 min-w-0',
@@ -639,7 +642,9 @@ export function PageSidebar({
           hostDrawer &&
             cn(
               'z-20 bg-sidebar',
-              side === 'left' ? 'border-r border-edge' : 'border-l border-edge',
+              side === 'left'
+                ? 'border-r border-sidebar-border'
+                : 'border-l border-sidebar-border',
             ),
           effectiveCollapsed
             ? cn('pointer-events-none opacity-0', enterFrom)

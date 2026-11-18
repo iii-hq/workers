@@ -6,6 +6,7 @@
 import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { HarnessFunctionPolicy } from '@/lib/backend/harness-send'
+import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 import {
   getConfiguration,
@@ -82,8 +83,16 @@ export function deriveFunctionPolicy(
   }
 }
 
-/** Load policy defaults from the addressed approval-gate instance, never a global legacy ID. */
+/** Load policy defaults from the addressed approval-gate instance, never a global legacy ID.
+ *  Without an approval-gate worker (a new user's stack has none) this is the
+ *  empty configuration, read without calling it: every send loads these
+ *  defaults, and calling a function nobody registered logs an engine error
+ *  each time (Sentinel then lists them as issues). No rules derive the same
+ *  structural floor as `FALLBACK_FUNCTION_POLICY`. */
 export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> {
+  if (!(await functionRegistered('approval-gate::configuration-id'))) {
+    return { default_mode: 'manual', rules: [] }
+  }
   const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
   const raw = await getConfiguration(id)
   const obj =

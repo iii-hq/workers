@@ -47,9 +47,9 @@ const DOT: Record<string, string> = {
   accent: 'bg-ok',
   alert: 'bg-alert',
   warn: 'bg-warn',
-  ink: 'bg-neutral-400 dark:bg-neutral-600',
+  ink: 'bg-ink-ghost ',
   ok: 'bg-ok',
-  ghost: 'bg-neutral-300 dark:bg-neutral-700',
+  ghost: 'bg-secondary ',
 }
 
 export function WorkerPill({
@@ -65,7 +65,7 @@ export function WorkerPill({
     <button
       type="button"
       onClick={onClick}
-      className="wk-press inline-flex h-7 items-center gap-2 rounded-lg border border-neutral-100 bg-neutral-50 px-3 font-inter text-[13px] font-medium text-neutral-800 transition-[background-color,color,border-color] duration-150 ease-out outline-none hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-200 dark:hover:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400"
+      className="wk-press inline-flex h-7 items-center gap-2 rounded-lg border border-border bg-muted px-3 font-inter text-body font-medium text-foreground transition-[background-color,color,border-color] duration-150 ease-out outline-none hover:border-input hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
     >
       <span
         aria-hidden
@@ -91,12 +91,12 @@ function Fact({
 }) {
   return (
     <>
-      <dt className="font-inter text-[12px] font-medium leading-5 text-neutral-500 dark:text-neutral-400">
+      <dt className="font-inter text-xs font-medium leading-5 text-muted-foreground">
         {label}
       </dt>
       <dd
         className={cn(
-          'min-w-0 truncate text-[13px] leading-5 text-neutral-900 dark:text-neutral-100',
+          'min-w-0 truncate text-body leading-5 text-foreground',
           mono ? 'wk-machine' : 'font-inter',
         )}
         title={title}
@@ -417,19 +417,19 @@ export function ProjectView({
                                 ],
                               )}
                             />
-                            <span className="font-inter text-[13px] font-medium text-neutral-900 dark:text-neutral-100">
+                            <span className="font-inter text-body font-medium text-foreground">
                               {c.name}
                             </span>
                           </span>
                         </TableCell>
-                        <TableCell className="wk-machine text-neutral-500 dark:text-neutral-400">
+                        <TableCell className="wk-machine text-muted-foreground">
                           {c.version ?? 'unpinned'}
                         </TableCell>
                         <TableCell>
                           {newer ? (
                             <Badge className="wk-machine">{newer}</Badge>
                           ) : (
-                            <span className="font-inter text-[12px] text-neutral-500 dark:text-neutral-400">
+                            <span className="font-inter text-xs text-muted-foreground">
                               {latest.of(c.name) ? 'up to date' : '–'}
                             </span>
                           )}
@@ -508,7 +508,7 @@ export function ProjectView({
                     mono={false}
                   >
                     <span className="font-medium">{p.namespace ?? '–'}</span>{' '}
-                    <span className="text-neutral-500 dark:text-neutral-400">
+                    <span className="text-muted-foreground">
                       {
                         (p.containers ?? []).filter((c) => c.state === 'ready')
                           .length

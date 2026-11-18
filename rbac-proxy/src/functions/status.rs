@@ -9,8 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const STATUS_ID: &str = "rbac-proxy::status";
-pub const STATUS_DESC: &str =
-    "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.";
+pub const STATUS_DESC: &str = "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct StatusInput {}

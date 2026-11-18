@@ -20,7 +20,7 @@ describe('Switch', () => {
     expect(html).toContain('name="system-notifications"')
     expect(html).toContain('checked=""')
     expect(html).toContain('disabled=""')
-    expect(html).toContain('iii-ui-switch__thumb')
+    expect(html).toContain('data-slot="switch-thumb"')
   })
 
   it('styles browser-owned states and exposes a mobile touch target', () => {

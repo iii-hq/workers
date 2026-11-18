@@ -10,7 +10,7 @@ use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::AssistantMessageEvent;
 use crate::types::router::CompleteResponse;
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, IIIClient};
+use iii_sdk::{IIIClient, errors::Error};
 
 use super::chat::{ChatCall, ChatPipeline};
 use super::relay::ReadEvent;
@@ -44,10 +44,10 @@ pub fn make_complete(
             // and future error path.
             let mut terminal: Option<AssistantMessageEvent> = None;
             let collect = |terminal: &mut Option<AssistantMessageEvent>, m: &str| {
-                if let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(m) {
-                    if ev.is_terminal() {
-                        *terminal = Some(ev);
-                    }
+                if let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(m)
+                    && ev.is_terminal()
+                {
+                    *terminal = Some(ev);
                 }
             };
             let response = loop {

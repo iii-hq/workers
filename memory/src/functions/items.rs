@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::MemoryError;
 use crate::events::ItemEvent;
-use crate::types::{fingerprint, now_ms, stated_now_ms, Confidence, Memory, Provenance};
+use crate::types::{Confidence, Memory, Provenance, fingerprint, now_ms, stated_now_ms};
 
 /// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {
@@ -30,6 +30,8 @@ struct SaveInput {
     pinned: bool,
     source: Option<Provenance>,
     now: u64,
+    /// A re-observation adds `entities` too, not only tags.
+    merge_entities: bool,
 }
 
 /// The save state transition, pure so its invariants are testable:
@@ -47,6 +49,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
         pinned,
         source,
         now,
+        merge_entities,
     } = input;
     match existing {
         Some(existing) => {
@@ -60,6 +63,13 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
             for tag in normalize_entities(tags) {
                 if !f.tags.contains(&tag) && f.tags.len() < 8 {
                     f.tags.push(tag);
+                }
+            }
+            if merge_entities {
+                for entity in normalize_entities(entities) {
+                    if !f.entities.contains(&entity) && f.entities.len() < 8 {
+                        f.entities.push(entity);
+                    }
                 }
             }
             f.corroboration = f.corroboration.saturating_add(1);
@@ -153,6 +163,18 @@ pub struct SaveResponse {
 }
 
 pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryError> {
+    save_in(deps, req, false).await
+}
+
+/// [`save`]; `demoting`: a `learned` line moving back to memories. A bank
+/// trashed since is not brought back (`BankNotFound`), and a memory that
+/// already holds the line gains the request's entities, so it is read
+/// wherever the line was.
+pub(crate) async fn save_in(
+    deps: &Deps,
+    req: SaveRequest,
+    demoting: bool,
+) -> Result<SaveResponse, MemoryError> {
     let caller = crate::scope::Caller::from_baggage();
     let in_turn = caller.session_id.is_some();
     let text = req.text.trim();
@@ -174,16 +196,18 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     labels.extend(crate::redact::drop_secrets(&mut entities));
     labels.extend(crate::redact::drop_secrets(&mut tags));
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
-    if about_the_user(
-        &entities,
-        &bank_name,
-        &deps.config().await.default_bank,
-        in_turn,
-    ) {
+    let default_bank = deps.config().await.default_bank.clone();
+    if about_the_user(&entities, &bank_name, &default_bank, in_turn) {
         crate::scope::into_layer(&mut entities);
     }
     let store = deps.store().await;
-    let (bank, bank_created) = store.ensure_bank(&bank_name, None).await?;
+    let (bank, bank_created) = if demoting {
+        store
+            .ensure_extraction_bank(&bank_name, &default_bank)
+            .await?
+    } else {
+        store.ensure_bank(&bank_name, None).await?
+    };
     if bank_created {
         deps.emitter.bank("created", &bank_name).await;
     }
@@ -196,6 +220,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
         pinned: req.pinned,
         source: save_source(req.session_id, caller),
         now: stated_now_ms(),
+        merge_entities: demoting,
     };
     // The same text saved twice at once: the commit that lands second
     // re-reads and corroborates the first instead of failing.
@@ -507,7 +532,7 @@ pub struct SupersedeResponse {
 
 const MAX_REASON_CHARS: usize = 500;
 
-fn clamp_reason(reason: Option<String>) -> Option<String> {
+pub(crate) fn clamp_reason(reason: Option<String>) -> Option<String> {
     let reason: String = reason?.trim().chars().take(MAX_REASON_CHARS).collect();
     (!reason.is_empty()).then_some(reason)
 }
@@ -685,6 +710,7 @@ mod tests {
                     ..Provenance::default()
                 }),
                 now: 99,
+                merge_entities: false,
             },
         );
         assert!(created);
@@ -712,6 +738,7 @@ mod tests {
                 pinned: false,
                 source: None,
                 now: 1,
+                merge_entities: false,
             },
         );
         assert_eq!(m.entities.len(), 8);
@@ -719,18 +746,18 @@ mod tests {
 
     #[test]
     fn live_resave_reinforces_and_never_unpins() {
-        let (m, event, created) = save_transition(
-            Some(record("fp1", 4, true, true)),
-            SaveInput {
-                id: "fp1".into(),
-                text: "some text".into(),
-                entities: vec![],
-                tags: vec!["fresh-tag".into()],
-                pinned: false,
-                source: None,
-                now: 99,
-            },
-        );
+        let input = SaveInput {
+            id: "fp1".into(),
+            text: "some text".into(),
+            entities: vec!["User".into()],
+            tags: vec!["fresh-tag".into()],
+            pinned: false,
+            source: None,
+            now: 99,
+            merge_entities: false,
+        };
+        let (m, event, created) =
+            save_transition(Some(record("fp1", 4, true, true)), input.clone());
         assert!(!created);
         assert!(matches!(event, ItemEvent::Updated));
         assert_eq!(m.revision, 5);
@@ -738,6 +765,13 @@ mod tests {
         assert!(m.pinned, "a resave without pinned must not unpin");
         assert_eq!(m.tags, vec!["fresh-tag"], "re-observation adds labels");
         assert_eq!(m.updated_at, 99);
+        assert!(m.entities.is_empty(), "a plain re-save keeps its entities");
+        let merged = SaveInput {
+            merge_entities: true,
+            ..input
+        };
+        let (m, ..) = save_transition(Some(record("fp1", 4, true, true)), merged);
+        assert_eq!(m.entities, ["user"], "a demotion's re-save adds them");
     }
 
     #[test]
@@ -752,6 +786,7 @@ mod tests {
                 pinned: false,
                 source: None,
                 now: 99,
+                merge_entities: false,
             },
         );
         assert!(created, "a resurrection re-enters live sets");

@@ -10,8 +10,8 @@
 
 use std::time::Duration;
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
@@ -20,9 +20,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{build_config, ClaudeCodeConfig};
+use crate::config::{ClaudeCodeConfig, build_config};
 use crate::errors::{classify_bus_error, invalid_request};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{BodyArgs, build_body, build_headers};
 use crate::stream_fn::default_resolve;
 use crate::thinking::build_thinking_config;
 use crate::{auth, router_client, state};

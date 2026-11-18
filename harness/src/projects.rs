@@ -178,7 +178,7 @@ async fn load_catalog(path: &Path) -> Result<ProjectCatalog, HarnessError> {
             return Err(HarnessError::ProjectStore(format!(
                 "read {}: {error}",
                 path.display()
-            )))
+            )));
         }
     };
     let catalog: ProjectCatalog = serde_json::from_slice(&bytes).map_err(|error| {
@@ -380,25 +380,31 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store
-            .delete(
-                catalog_path.to_str().unwrap(),
-                project_path.to_str().unwrap()
-            )
-            .await
-            .unwrap());
-        assert!(!store
-            .delete(
-                catalog_path.to_str().unwrap(),
-                project_path.to_str().unwrap()
-            )
-            .await
-            .unwrap());
-        assert!(store
-            .list(catalog_path.to_str().unwrap())
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .delete(
+                    catalog_path.to_str().unwrap(),
+                    project_path.to_str().unwrap()
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .delete(
+                    catalog_path.to_str().unwrap(),
+                    project_path.to_str().unwrap()
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .list(catalog_path.to_str().unwrap())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

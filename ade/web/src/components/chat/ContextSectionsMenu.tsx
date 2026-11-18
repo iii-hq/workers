@@ -1,7 +1,11 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import * as PopoverPrimitive from '@radix-ui/react-popover'
 import { SlidersHorizontal } from 'lucide-react'
 import { useState } from 'react'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { IconButton } from '@/components/ui/IconButton'
@@ -17,7 +21,6 @@ import {
   useFoldedGroups,
   useHiddenSections,
 } from '@/lib/context-groups'
-import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 
@@ -64,7 +67,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
             key={section.id}
             data-reorder-item={section.id}
             className={cn(
-              'flex items-center gap-1 rounded-sm data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:bg-panel-raised data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+              'flex items-center gap-1 rounded-sm data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:bg-panel-raised data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-ring/50',
               phone ? 'h-12 pl-3' : 'h-8 pr-2',
             )}
           >
@@ -99,7 +102,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
       type="button"
       onClick={resetSectionOrder}
       className={cn(
-        'flex items-center rounded-sm px-2 text-left text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+        'flex items-center rounded-sm px-2 text-left text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
         phone ? 'h-12 px-3' : 'h-8',
       )}
     >
@@ -127,7 +130,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
               <button
                 type="button"
                 onClick={() => foldAllGroups(!allFolded, ids)}
-                className="flex h-11 items-center self-start rounded-sm bg-surface-hover px-3 text-sm hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                className="flex h-11 items-center self-start rounded-sm bg-surface-hover px-3 text-sm hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
               >
                 {allFolded ? 'Expand all' : 'Collapse all'}
               </button>
@@ -142,35 +145,33 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
   }
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger asChild>
-        <IconButton label="Sections" className="size-7 shrink-0">
-          <SlidersHorizontal aria-hidden />
-        </IconButton>
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        <PortalScope>
-          <PopoverPrimitive.Content
-            align="end"
-            sideOffset={4}
-            collisionPadding={8}
-            aria-label="Sections"
-            className={cn(
-              uiClasses.panel,
-              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-popover p-1.5 font-inter text-sm shadow-floating ring-1 ring-popover-edge',
-            )}
-          >
-            <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">
-              <span className="font-semibold">Sections</span>
-              <span className="text-xs text-ink-faint">Drag to reorder</span>
-            </div>
-            {list}
-            <div className="-mx-1.5 my-1 h-px bg-ink/5" />
-            {reset}
-            <LiveRegion announcement={announcement} />
-          </PopoverPrimitive.Content>
-        </PortalScope>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <IconButton label="Sections" className="size-7 shrink-0">
+            <SlidersHorizontal aria-hidden />
+          </IconButton>
+        }
+      />
+      <PopoverContent
+        align="end"
+        sideOffset={4}
+        collisionPadding={8}
+        aria-label="Sections"
+        className={cn(
+          uiClasses.panel,
+          'w-72 max-w-[calc(100vw-1rem)] gap-0 p-1.5',
+        )}
+      >
+        <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">
+          <span className="font-semibold">Sections</span>
+          <span className="text-xs text-ink-faint">Drag to reorder</span>
+        </div>
+        {list}
+        <div className="-mx-1.5 my-1 h-px bg-border" />
+        {reset}
+        <LiveRegion announcement={announcement} />
+      </PopoverContent>
+    </Popover>
   )
 }

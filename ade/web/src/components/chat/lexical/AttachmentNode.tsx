@@ -62,7 +62,7 @@ export class AttachmentNode extends DecoratorNode<JSX.Element> {
   }
 
   /* A chip pasted back in (from this editor or another) comes with its id;
-     the composer restores one it remembers and removes a stray. */
+ the composer restores one it remembers and removes a stray. */
   static importDOM(): DOMConversionMap | null {
     return {
       span: (el: HTMLElement): DOMConversion<HTMLElement> | null => {
@@ -338,7 +338,7 @@ function EditableAttachmentChip({
           attachment={attachment}
           appearance="composer"
           onRemove={remove}
-          className={cn(isSelected && 'ring-rule-focus')}
+          className={cn(isSelected && 'ring-ring/50')}
         />
       </AttachmentPreview>
     </span>

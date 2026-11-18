@@ -75,7 +75,7 @@ pub trait SecurityRuntime: Send + Sync {
     async fn stop_analysis(&self, harness: &crate::HarnessRunV1) -> Result<(), SecurityScanError>;
 
     async fn ensure_analysis_chat_link(&self, run: &RunRecordV1)
-        -> Result<bool, SecurityScanError>;
+    -> Result<bool, SecurityScanError>;
 
     async fn resolve_target_ref(
         &self,

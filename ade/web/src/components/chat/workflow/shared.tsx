@@ -2,7 +2,7 @@ import { Chip, StatusPill } from '@/components/chat/sandbox/shared'
 import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import {
-  consumedDeps,
+  inputSources,
   isJoinNode,
   type NodeState,
   type RunStatus,
@@ -63,8 +63,8 @@ export function NodeStateDot({ state }: { state: NodeState }) {
  *  `workflow::status`. Rendered as a labeled mono row, never buried. */
 export function RunIdRow({ runId }: { runId: string }) {
   return (
-    <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="text-[11px] mr-1">Run</span>
+    <div className="px-3 py-1.5 border-b border-border bg-paper-2 font-mono text-meta text-ink-faint break-all">
+      <span className="text-meta mr-1">Run</span>
       <span className="text-ink select-all">{runId}</span>
     </div>
   )
@@ -84,28 +84,28 @@ interface DagSummaryProps {
  *  This is the core "better view" — structure instead of a raw JSON blob. */
 export function DagSummary({ def, states }: DagSummaryProps) {
   const entries = Object.entries(def.nodes)
-  const outputId = def.output?.from
-    ? def.output.from.replace(/^node:/, '').split('.')[0]
-    : undefined
+  const outputIds = inputSources(def.output?.from).map(
+    (s) => s.replace(/^node:/, '').split('.')[0],
+  )
 
   return (
-    <div className="border-b border-rule-2">
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-rule-2">
+    <div className="border-b border-border">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-2 border-b border-border">
         <span className="iii-ui-eyebrow">dag</span>
-        <span className="font-mono text-[11px] text-ink-faint">
+        <span className="font-mono text-meta text-ink-faint">
           {entries.length} {entries.length === 1 ? 'node' : 'nodes'}
         </span>
-        {outputId ? (
-          <span className="font-mono text-[11px] text-ink-ghost">
-            → output <span className="text-accent">{outputId}</span>
+        {outputIds.length > 0 ? (
+          <span className="font-mono text-meta text-ink-ghost">
+            → output <span className="text-accent">{outputIds.join(', ')}</span>
           </span>
         ) : null}
       </div>
-      <ul className="divide-y divide-rule-2">
+      <ul className="divide-y divide-border">
         {entries.map(([id, node]) => {
           const deps = node.depends_on ?? []
           const join = isJoinNode(node)
-          const consumes = consumedDeps(node.input?.from)
+          const items = node.fanout?.items?.length
           const state = states?.[id]
           return (
             <li key={id} className="flex items-start gap-2 px-3 py-1.5">
@@ -119,7 +119,7 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                   <span className="font-mono text-[12.5px] text-ink font-medium break-all">
                     {id}
                   </span>
-                  {id === outputId ? (
+                  {outputIds.includes(id) ? (
                     <Chip className="bg-accent-muted text-accent">Output</Chip>
                   ) : null}
                   {join ? <Chip className="text-accent">Join</Chip> : null}
@@ -128,8 +128,11 @@ export function DagSummary({ def, states }: DagSummaryProps) {
                 </div>
                 <DagEdges
                   deps={deps}
-                  consumes={consumes}
-                  fanoutOver={node.fanout?.over}
+                  fanoutOver={
+                    items != null
+                      ? `${items} ${items === 1 ? 'item' : 'items'}`
+                      : node.fanout?.over?.replace(/^node:/, '')
+                  }
                 />
               </div>
             </li>
@@ -140,31 +143,19 @@ export function DagSummary({ def, states }: DagSummaryProps) {
   )
 }
 
-/** The wiring line under a node: which deps it waits on, which outputs it
- *  actually reads (join clarity), and its fan-out source. Kept terse + mono. */
+/** The wiring line under a node: which deps it waits on and its fan-out
+ *  source. Kept terse + mono. */
 function DagEdges({
   deps,
-  consumes,
   fanoutOver,
 }: {
   deps: string[]
-  consumes: string[]
   fanoutOver?: string
 }) {
   if (deps.length === 0 && !fanoutOver) return null
   return (
-    <div className="mt-0.5 font-mono text-[11px] text-ink-faint break-all">
-      {deps.length > 0 ? (
-        <span>
-          ← {deps.join(', ')}
-          {/* When a node depends on more than it reads, the gap is the exact
-              footgun the worker now rejects; surface it so a stale def reads
-              clearly. */}
-          {consumes.length > 0 && consumes.length < deps.length ? (
-            <span className="text-warn"> · reads {consumes.join(', ')}</span>
-          ) : null}
-        </span>
-      ) : null}
+    <div className="mt-0.5 font-mono text-meta text-ink-faint break-all">
+      {deps.length > 0 ? <span>← {deps.join(', ')}</span> : null}
       {fanoutOver ? (
         <span className={cn(deps.length > 0 && 'ml-2')}>
           ⋔ over {fanoutOver}
@@ -224,11 +215,11 @@ export function ResultPane({
   const text = typeof value === 'string' ? value : safeStringify(value)
   const labelTone = tone === 'warn' ? 'text-warn' : 'text-ink-faint'
   return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-rule-2">
+    <div className="border-b border-border">
+      <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-border">
         <span className={cn(eyebrowClassName, labelTone)}>{label}</span>
       </div>
-      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-[1.55] text-ink whitespace-pre-wrap break-words">
+      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-xs leading-[1.55] text-ink whitespace-pre-wrap break-words">
         {text}
       </pre>
     </div>

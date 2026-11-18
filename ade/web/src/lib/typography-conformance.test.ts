@@ -16,7 +16,10 @@ function consoleSources(): string[] {
     recursive: true,
     encoding: 'utf8',
   }).map((file) => relative(srcRoot, join(tracesRoot, file)))
-  return [...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }), ...traces]
+  return [
+    ...readdirSync(srcRoot, { recursive: true, encoding: 'utf8' }),
+    ...traces,
+  ]
     .filter(
       (file) =>
         file.endsWith('.tsx') &&

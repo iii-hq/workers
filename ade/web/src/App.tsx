@@ -80,6 +80,7 @@ import {
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { onShortcutsDialogRequest } from '@/lib/shortcuts-request'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
+import { createTabOrNotice } from '@/lib/tab-limit'
 import { trackScreens } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import {
@@ -462,8 +463,8 @@ export function App({
   )
 
   /* Every global shortcut the console has, dispatched from the registry.
-     Which keys reach here while the caret is in a field, and which stand
-     down, is the registry's call — not this component's. */
+ Which keys reach here while the caret is in a field, and which stand
+ down, is the registry's call — not this component's. */
   useKeybindings({
     'palette.toggle': () => {
       setPaletteQuery('')
@@ -483,7 +484,8 @@ export function App({
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
     'page.traces': () => openWorkspaceScreen('traces'),
-    'workspace.create': () => workspaceRef.current.createTab({ columns: 1 }),
+    // At the limit ⌃T says so instead of doing nothing.
+    'workspace.create': () => createTabOrNotice(workspaceRef.current),
     'workspace.next': () => workspaceRef.current.activateAdjacent(1),
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
     'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
@@ -1506,11 +1508,11 @@ function WorkspacePanes({
               }
               className={cn(
                 'group/panel relative flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
-                'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
+                'focus-visible:ring-inset focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50',
                 'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
                 isDragged && 'opacity-60',
                 isDropTarget &&
-                  'z-10 outline-2 -outline-offset-2 outline-accent',
+                  'z-10 ring-3 outline-none ring-inset ring-ring/50',
                 isEntering &&
                   (motionDirection === 'left'
                     ? 'workspace-panel-enter-left'
@@ -1715,7 +1717,7 @@ interface ScreenBodyProps {
 }
 
 /** One workspace-tab column: the page (or chat view) the screen names.
-    Configuration never appears here — it opens as an overlay page. */
+ Configuration never appears here — it opens as an overlay page. */
 function ScreenBody({
   screen,
   panelSide,
@@ -1819,7 +1821,7 @@ export function ConfigurationOverlay({
           document.querySelector<HTMLElement>('[data-settings-focus-root]') ??
           true
         }
-        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-white p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none dark:bg-black"
+        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-card p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none"
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">

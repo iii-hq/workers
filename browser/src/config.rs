@@ -200,13 +200,13 @@ fn configured_origin_policy_for<'a>(
     let mut host_match = None;
 
     for (key, policy) in policies {
-        if let Ok(key_url) = url::Url::parse(key) {
-            if key_url.host_str().is_some() {
-                if origin != "null" && key_url.origin().ascii_serialization() == origin {
-                    return Some(policy);
-                }
-                continue;
+        if let Ok(key_url) = url::Url::parse(key)
+            && key_url.host_str().is_some()
+        {
+            if origin != "null" && key_url.origin().ascii_serialization() == origin {
+                return Some(policy);
             }
+            continue;
         }
         if host.is_some_and(|request_host| key.eq_ignore_ascii_case(request_host)) {
             host_match = Some(policy);
@@ -367,7 +367,7 @@ impl Default for WorkerConfig {
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
             frame_density: DEFAULT_FRAME_DENSITY,
-            live_view_quality: 85,
+            live_view_quality: 70,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             default_origin_policy: None,
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(c.network_buffer, 500);
         assert_eq!(c.viewport_width, 1280);
         assert_eq!(c.viewport_height, 800);
-        assert_eq!(c.live_view_quality(), 85);
+        assert_eq!(c.live_view_quality(), 70);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);
@@ -841,9 +841,11 @@ mod tests {
         assert_eq!(props["frame_density"]["minimum"], 1.0);
         assert_eq!(props["frame_density"]["maximum"], 3.0);
         assert_eq!(props["frame_density"]["default"], 2.0);
-        assert!(props["frame_density"]["description"]
-            .as_str()
-            .is_some_and(|d| d.contains("set 1")));
+        assert!(
+            props["frame_density"]["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("set 1"))
+        );
         assert!(props.get("allowed_schemes").is_some());
         assert!(props.get("default_origin_policy").is_some());
         assert!(props.get("origin_policies").is_some());

@@ -141,8 +141,8 @@ export function ConversationFilterMenu({
     (option) => option.value === view.sort,
   )
   /* Tighter than the stock 28px item: these are short single-line choices,
-     and the whole menu should read at a glance. Narrow rows stay 40px, tall
-     enough for a thumb without stretching twelve rows past the viewport. */
+ and the whole menu should read at a glance. Narrow rows stay 40px, tall
+ enough for a thumb without stretching twelve rows past the viewport. */
   const rowClass = cn('py-1', narrow && 'min-h-10')
   const choices = { view, onViewChange, className: rowClass }
 
@@ -164,8 +164,8 @@ export function ConversationFilterMenu({
       >
         <SlidersVertical aria-hidden />
         {/* A badge, not a wash: a filled button in the header reads as a
-            stuck hover. The dot says "something is hidden" and the ink
-            glyph says it is on; the tooltip says what. */}
+ stuck hover. The dot says "something is hidden" and the ink
+ glyph says it is on; the tooltip says what. */}
         {filtering ? (
           <span
             aria-hidden

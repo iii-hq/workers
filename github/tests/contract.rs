@@ -49,9 +49,30 @@ fn resolve_timeout_clamps_to_the_configured_max() {
 /// their defaults; a missing file yields the full defaults.
 #[test]
 fn seed_loading_expands_env_and_defaults_the_rest() {
-    // Unique var name: no other test reads or writes it, so the process-env
-    // mutation cannot race the parallel test runner.
-    std::env::set_var("GH_CONTRACT_TOKEN_92AF", "sekrit");
+    const CHILD: &str = "III_EDITION_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "seed_loading_expands_env_and_defaults_the_rest",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("GH_CONTRACT_TOKEN_92AF", "sekrit")
+            .output()
+            .expect("start isolated test");
+        assert!(
+            output.status.success(),
+            "isolated test failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "isolated test did not execute"
+        );
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.yaml");
     std::fs::write(
@@ -60,7 +81,6 @@ fn seed_loading_expands_env_and_defaults_the_rest() {
     )
     .unwrap();
     let c = Config::load(path.to_str().unwrap()).unwrap();
-    std::env::remove_var("GH_CONTRACT_TOKEN_92AF");
     assert_eq!(c.token, "sekrit");
     assert_eq!(c.default_timeout_ms, 1000);
     assert_eq!(c.max_timeout_ms, 120_000);
@@ -91,11 +111,12 @@ fn catalog_covers_the_full_surface() {
 #[test]
 fn manifest_config_matches_config_yaml() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let manifest: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap())
+    let manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join("iii.worker.yaml")).unwrap())
             .unwrap();
-    let mut seed: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(root.join("config.yaml")).unwrap()).unwrap();
+    let mut seed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&std::fs::read_to_string(root.join("config.yaml")).unwrap())
+            .unwrap();
     seed.as_mapping_mut().unwrap().remove("token");
     assert_eq!(
         manifest["config"], seed,

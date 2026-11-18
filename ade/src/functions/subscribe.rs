@@ -13,8 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::errors::Error;
 use iii_sdk::CallRequest;
+use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

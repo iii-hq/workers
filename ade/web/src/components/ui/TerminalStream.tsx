@@ -36,10 +36,10 @@ interface TerminalStreamProps {
   /** Pane label (`stdout`, `stderr`, `build`), rendered as an eyebrow. */
   label: string
   /** The stream body; renders nothing when empty — the caller decides
-      what "no output" should say, if anything. */
+ what "no output" should say, if anything. */
   text: string
   /** `err` tints the body warn, and nothing more: stderr is the user's
-      program failing, not the console failing. */
+ program failing, not the console failing. */
   tone?: 'out' | 'err'
   /** Parse ANSI SGR colors in the body (`AnsiText`); plain otherwise. */
   ansi?: boolean

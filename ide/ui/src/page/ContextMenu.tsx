@@ -12,6 +12,7 @@
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -128,13 +129,16 @@ function renderItem(item: ContextMenuItem, onClose: () => void): ReactNode {
   if (item.type === 'separator') return <DropdownMenuSeparator key={item.id} />
   if (item.type === 'label') {
     return (
-      <DropdownMenuLabel key={item.id} className="shui-context-head" title={item.label}>
-        <span className="menu-icon" aria-hidden>
-          {item.icon}
-        </span>
-        <span className="menu-label">{item.label}</span>
-        {item.detail ? <span className="menu-detail">{item.detail}</span> : null}
-      </DropdownMenuLabel>
+      // Base UI's label reads the group context; it throws outside a group.
+      <DropdownMenuGroup key={item.id}>
+        <DropdownMenuLabel className="shui-context-head" title={item.label}>
+          <span className="menu-icon" aria-hidden>
+            {item.icon}
+          </span>
+          <span className="menu-label">{item.label}</span>
+          {item.detail ? <span className="menu-detail">{item.detail}</span> : null}
+        </DropdownMenuLabel>
+      </DropdownMenuGroup>
     )
   }
   if (item.type === 'submenu') {

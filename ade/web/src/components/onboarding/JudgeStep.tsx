@@ -165,9 +165,9 @@ export function JudgeStep({
 
       <section
         aria-label="What Judge does"
-        className="rounded-xl border border-neutral-100 bg-neutral-50 dark:border-neutral-900 dark:bg-black"
+        className="rounded-xl border border-border bg-muted"
       >
-        <ul className="grid divide-y divide-neutral-100 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
+        <ul className="grid divide-y divide-border @md:grid-cols-3 @md:divide-x @md:divide-y-0">
           {JUDGE_USES.map((use) => {
             const Icon = USE_ICONS[use.id]
             return (
@@ -178,10 +178,10 @@ export function JudgeStep({
                   aria-hidden
                 />
                 <span className="flex min-w-0 flex-col gap-px">
-                  <span className="text-[13px] font-medium leading-5 text-ink">
+                  <span className="text-body font-medium leading-5 text-ink">
                     {use.where}
                   </span>
-                  <span className="text-pretty text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+                  <span className="text-pretty text-body leading-5 text-muted-foreground">
                     {use.short}
                   </span>
                 </span>
@@ -189,9 +189,9 @@ export function JudgeStep({
             )
           })}
         </ul>
-        <p className="border-t border-neutral-100 px-3.5 py-2 text-[13px] leading-5 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <p className="border-t border-border px-3.5 py-2 text-body leading-5 text-muted-foreground">
           Without Judge, function search falls back to keyword matching and a
-          broken tool call goes back to the main model.
+          broken function call goes back to the main model.
         </p>
       </section>
 
@@ -232,7 +232,7 @@ export function JudgeStep({
                       )
                     }
                     keysUrl={option.keysUrl}
-                    className="border-t border-neutral-100 px-3.5 py-3 dark:border-neutral-800"
+                    className="border-t border-border px-3.5 py-3"
                   />
                 ) : null
               }
@@ -282,12 +282,8 @@ function JudgeRow({
       data-selected={checked || undefined}
       className={cn(
         'flex flex-col rounded-xl border transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
-        checked
-          ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
-          : 'border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950',
-        !disabled &&
-          !checked &&
-          'hover:bg-neutral-50 dark:hover:bg-neutral-900',
+        checked ? 'border-input bg-muted  ' : 'border-border bg-card  ',
+        !disabled && !checked && 'hover:bg-muted',
       )}
     >
       <div className="flex items-start gap-3 px-3.5 py-3">
@@ -307,7 +303,7 @@ function JudgeRow({
           )}
         >
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+            <span className="font-sans text-body font-medium leading-5 text-ink">
               {option.title}
             </span>
             {running ? (
@@ -321,10 +317,10 @@ function JudgeRow({
               <StatusChip tone="neutral">Answers by default</StatusChip>
             ) : null}
           </span>
-          <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          <span className="text-pretty font-sans text-body leading-5 text-muted-foreground">
             {option.summary}
           </span>
-          <span className="flex items-center gap-1.5 text-xs leading-4 text-neutral-500 dark:text-neutral-400">
+          <span className="flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
             <RunsIcon
               className="size-4 shrink-0"
               strokeWidth={1.75}

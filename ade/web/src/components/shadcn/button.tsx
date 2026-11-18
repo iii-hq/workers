@@ -6,7 +6,7 @@ import { cn } from 'cn'
  * The console's one button. Text-labelled actions pick one of three looks:
  * `default` (the primary action, solid ink), `secondary` (cancel / the
  * alternative, a hairline-bordered card fill) and `destructive` (delete /
- * remove, solid alert). All three are Inter 14px, `rounded-xl`, on the
+ * remove, solid alert). All three are Inter 14px, `rounded-field`, on the
  * sm/default/lg heights. `ghost`, `link` and the `icon*` sizes are for
  * icon-only and toolbar chrome, not for actions. `outline` is a legacy
  * alias that renders exactly as `secondary`.
@@ -15,11 +15,14 @@ const secondary =
   'border-border bg-card text-foreground hover:bg-muted aria-expanded:bg-muted'
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-xl border border-transparent bg-clip-padding font-inter text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,translate,scale] duration-150 ease-out outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-field border border-transparent bg-clip-padding font-inter text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,box-shadow,translate,scale] duration-150 ease-out outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground hover:bg-primary/85',
+        // The focus border takes the fill's colour: the ring outside is the
+        // one indicator, not a second rim inside it.
+        default:
+          'bg-primary text-primary-foreground hover:bg-primary/85 focus-visible:border-primary',
         secondary,
         outline: secondary,
         destructive:
@@ -36,12 +39,12 @@ const buttonVariants = cva(
         sm: "h-7 gap-1 px-2.5 text-[13px] has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [&_svg:not([class*='size-'])]:size-3.5",
         lg: 'h-9 gap-1.5 px-4 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3',
         // Icon-only chrome keeps a tighter corner than the action pill.
-        icon: 'size-8 rounded-lg',
+        icon: 'size-8 rounded-field',
         'icon-xs':
           "size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*='size-'])]:size-3",
         'icon-sm':
           'size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg',
-        'icon-lg': 'size-9 rounded-lg',
+        'icon-lg': 'size-9 rounded-field',
       },
     },
     defaultVariants: {

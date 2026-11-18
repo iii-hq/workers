@@ -68,12 +68,27 @@ pub struct TopicStats {
 #[async_trait]
 pub trait QueueStore: Send + Sync + 'static {
     async fn enqueue(&self, topic: &str, payload: Value) -> anyhow::Result<String>;
-    async fn dequeue(&self, topic: &str) -> Option<Job>;
-    async fn ack(&self, topic: &str, job_id: &str);
-    async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64);
+    /// Hand out the next ready job, moving it in flight. An error means the
+    /// move could not be made durable: no job is handed out and the store is
+    /// unchanged.
+    async fn dequeue(&self, topic: &str) -> anyhow::Result<Option<Job>>;
+    /// Acknowledge an in-flight job. An error means the ACK was not recorded:
+    /// the job stays in flight (redelivered after a restart) and the
+    /// `delivered` counter is unchanged.
+    async fn ack(&self, topic: &str, job_id: &str) -> anyhow::Result<()>;
+    /// Schedule an in-flight job for retry, or dead-letter it once its attempts
+    /// are exhausted. An error means nothing changed: the job stays in flight.
+    async fn nack(
+        &self,
+        topic: &str,
+        job: Job,
+        max_retries: u32,
+        backoff_ms: u64,
+    ) -> anyhow::Result<()>;
     /// Return an in-flight job to the front of its queue without consuming a
     /// retry attempt. Used when a function-queue consumer is replaced or
-    /// shut down before it can acknowledge buffered deliveries.
+    /// shut down before it can acknowledge buffered deliveries. An error means
+    /// the job was not returned and stays in flight.
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()>;
     /// Wake-up signal for `topic`. The store calls `notify_waiters` on it after
     /// every mutation that can make a job dequeueable or move the queue's
@@ -93,9 +108,11 @@ pub trait QueueStore: Send + Sync + 'static {
     async fn topic_stats(&self, topic: &str) -> TopicStats;
     async fn dlq_topics(&self) -> Vec<(String, u64)>;
     async fn dlq_messages(&self, topic: &str, limit: u64) -> Vec<Job>;
-    async fn redrive_dlq(&self, topic: &str) -> u64;
-    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool;
-    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool;
+    /// DLQ operations either commit durably or return an error and change
+    /// nothing.
+    async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64>;
+    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool>;
+    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool>;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -253,16 +270,22 @@ impl QueueStore for InMemoryStore {
         enqueue(&self.shared, topic, payload).await
     }
 
-    async fn dequeue(&self, topic: &str) -> Option<Job> {
+    async fn dequeue(&self, topic: &str) -> anyhow::Result<Option<Job>> {
         dequeue(&self.shared, topic).await
     }
 
-    async fn ack(&self, topic: &str, job_id: &str) {
-        ack(&self.shared, topic, job_id).await;
+    async fn ack(&self, topic: &str, job_id: &str) -> anyhow::Result<()> {
+        ack(&self.shared, topic, job_id).await
     }
 
-    async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
-        nack(&self.shared, topic, job, max_retries, backoff_ms).await;
+    async fn nack(
+        &self,
+        topic: &str,
+        job: Job,
+        max_retries: u32,
+        backoff_ms: u64,
+    ) -> anyhow::Result<()> {
+        nack(&self.shared, topic, job, max_retries, backoff_ms).await
     }
 
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
@@ -293,15 +316,15 @@ impl QueueStore for InMemoryStore {
         dlq_messages(&self.shared, topic, limit).await
     }
 
-    async fn redrive_dlq(&self, topic: &str) -> u64 {
+    async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
         redrive_dlq(&self.shared, topic).await
     }
 
-    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
         redrive_dlq_message(&self.shared, topic, job_id).await
     }
 
-    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
         discard_dlq_message(&self.shared, topic, job_id).await
     }
 }
@@ -312,16 +335,22 @@ impl QueueStore for FileStore {
         enqueue(&self.shared, topic, payload).await
     }
 
-    async fn dequeue(&self, topic: &str) -> Option<Job> {
+    async fn dequeue(&self, topic: &str) -> anyhow::Result<Option<Job>> {
         dequeue(&self.shared, topic).await
     }
 
-    async fn ack(&self, topic: &str, job_id: &str) {
-        ack(&self.shared, topic, job_id).await;
+    async fn ack(&self, topic: &str, job_id: &str) -> anyhow::Result<()> {
+        ack(&self.shared, topic, job_id).await
     }
 
-    async fn nack(&self, topic: &str, job: Job, max_retries: u32, backoff_ms: u64) {
-        nack(&self.shared, topic, job, max_retries, backoff_ms).await;
+    async fn nack(
+        &self,
+        topic: &str,
+        job: Job,
+        max_retries: u32,
+        backoff_ms: u64,
+    ) -> anyhow::Result<()> {
+        nack(&self.shared, topic, job, max_retries, backoff_ms).await
     }
 
     async fn requeue(&self, topic: &str, job: Job) -> anyhow::Result<()> {
@@ -352,15 +381,15 @@ impl QueueStore for FileStore {
         dlq_messages(&self.shared, topic, limit).await
     }
 
-    async fn redrive_dlq(&self, topic: &str) -> u64 {
+    async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
         redrive_dlq(&self.shared, topic).await
     }
 
-    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+    async fn redrive_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
         redrive_dlq_message(&self.shared, topic, job_id).await
     }
 
-    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> bool {
+    async fn discard_dlq_message(&self, topic: &str, job_id: &str) -> anyhow::Result<bool> {
         discard_dlq_message(&self.shared, topic, job_id).await
     }
 }
@@ -383,41 +412,48 @@ async fn enqueue(shared: &SharedStore, topic: &str, payload: Value) -> anyhow::R
     // Nothing applies until the journal line is written, so a rejected publish
     // cannot leave a runnable in-memory "ghost" job.
     let mut data = shared.inner.lock().await;
-    let revision = data.revision.saturating_add(1);
-    append_journal(shared, revision, &mutation)?;
-    apply(&mut data, &mutation);
-    data.revision = revision;
+    commit(shared, &mut data, &mutation)?;
     drop(data);
     shared.notify_ready(topic);
     Ok(id)
 }
 
-async fn dequeue(shared: &SharedStore, topic: &str) -> Option<Job> {
+async fn dequeue(shared: &SharedStore, topic: &str) -> anyhow::Result<Option<Job>> {
     let now = now_ms();
     let mut data = shared.inner.lock().await;
-    let job = data
+    let Some(job) = data
         .queues
-        .get(topic)?
-        .iter()
-        .find(|job| job.ready_at_ms <= now)?
-        .clone();
+        .get(topic)
+        .and_then(|queue| queue.iter().find(|job| job.ready_at_ms <= now))
+        .cloned()
+    else {
+        return Ok(None);
+    };
     let mutation = Mutation::Dequeue {
         topic: topic.to_string(),
         job_id: job.id.clone(),
     };
-    commit_logged(shared, &mut data, &mutation);
-    Some(job)
+    // A job whose move to in-flight was not journaled is not handed out: it
+    // stays waiting, exactly as a restart would find it.
+    commit(shared, &mut data, &mutation)?;
+    Ok(Some(job))
 }
 
-async fn ack(shared: &SharedStore, topic: &str, job_id: &str) {
+async fn ack(shared: &SharedStore, topic: &str, job_id: &str) -> anyhow::Result<()> {
     let mutation = Mutation::Ack {
         topic: topic.to_string(),
         job_id: job_id.to_string(),
     };
-    commit_logged(shared, &mut *shared.inner.lock().await, &mutation);
+    commit(shared, &mut *shared.inner.lock().await, &mutation)
 }
 
-async fn nack(shared: &SharedStore, topic: &str, mut job: Job, max_retries: u32, backoff_ms: u64) {
+async fn nack(
+    shared: &SharedStore,
+    topic: &str,
+    mut job: Job,
+    max_retries: u32,
+    backoff_ms: u64,
+) -> anyhow::Result<()> {
     job.attempts = job.attempts.saturating_add(1);
     let retrying = job.attempts < max_retries;
     if retrying {
@@ -429,12 +465,13 @@ async fn nack(shared: &SharedStore, topic: &str, mut job: Job, max_retries: u32,
         job,
         retrying,
     };
-    commit_logged(shared, &mut *shared.inner.lock().await, &mutation);
+    commit(shared, &mut *shared.inner.lock().await, &mutation)?;
     if retrying {
         // The retry is delayed, but waiters must still learn the queue's new
         // earliest due time so they can arm a timer for it.
         shared.notify_ready(topic);
     }
+    Ok(())
 }
 
 async fn requeue(shared: &SharedStore, topic: &str, mut job: Job) -> anyhow::Result<()> {
@@ -443,9 +480,9 @@ async fn requeue(shared: &SharedStore, topic: &str, mut job: Job) -> anyhow::Res
         topic: topic.to_string(),
         job,
     };
-    let committed = commit(shared, &mut *shared.inner.lock().await, &mutation);
+    commit(shared, &mut *shared.inner.lock().await, &mutation)?;
     shared.notify_ready(topic);
-    committed
+    Ok(())
 }
 
 async fn next_ready_delay(shared: &SharedStore, topic: &str) -> Option<Duration> {
@@ -518,7 +555,7 @@ async fn dlq_messages(shared: &SharedStore, topic: &str, limit: u64) -> Vec<Job>
         .unwrap_or_default()
 }
 
-async fn redrive_dlq(shared: &SharedStore, topic: &str) -> u64 {
+async fn redrive_dlq(shared: &SharedStore, topic: &str) -> anyhow::Result<u64> {
     let mutation = Mutation::RedriveDlq {
         topic: topic.to_string(),
         ready_at_ms: now_ms(),
@@ -526,16 +563,20 @@ async fn redrive_dlq(shared: &SharedStore, topic: &str) -> u64 {
     let count = {
         let mut data = shared.inner.lock().await;
         let count = data.dlqs.get(topic).map_or(0, |jobs| jobs.len() as u64);
-        commit_logged(shared, &mut data, &mutation);
+        commit(shared, &mut data, &mutation)?;
         count
     };
     if count > 0 {
         shared.notify_ready(topic);
     }
-    count
+    Ok(count)
 }
 
-async fn redrive_dlq_message(shared: &SharedStore, topic: &str, job_id: &str) -> bool {
+async fn redrive_dlq_message(
+    shared: &SharedStore,
+    topic: &str,
+    job_id: &str,
+) -> anyhow::Result<bool> {
     let mutation = Mutation::RedriveDlqMessage {
         topic: topic.to_string(),
         job_id: job_id.to_string(),
@@ -544,25 +585,29 @@ async fn redrive_dlq_message(shared: &SharedStore, topic: &str, job_id: &str) ->
     {
         let mut data = shared.inner.lock().await;
         if !dlq_contains(&data, topic, job_id) {
-            return false;
+            return Ok(false);
         }
-        commit_logged(shared, &mut data, &mutation);
+        commit(shared, &mut data, &mutation)?;
     }
     shared.notify_ready(topic);
-    true
+    Ok(true)
 }
 
-async fn discard_dlq_message(shared: &SharedStore, topic: &str, job_id: &str) -> bool {
+async fn discard_dlq_message(
+    shared: &SharedStore,
+    topic: &str,
+    job_id: &str,
+) -> anyhow::Result<bool> {
     let mut data = shared.inner.lock().await;
     if !dlq_contains(&data, topic, job_id) {
-        return false;
+        return Ok(false);
     }
     let mutation = Mutation::DiscardDlqMessage {
         topic: topic.to_string(),
         job_id: job_id.to_string(),
     };
-    commit_logged(shared, &mut data, &mutation);
-    true
+    commit(shared, &mut data, &mutation)?;
+    Ok(true)
 }
 
 fn dlq_contains(data: &StoreData, topic: &str, job_id: &str) -> bool {
@@ -675,20 +720,15 @@ fn sync_depths(data: &mut StoreData, topic: &str) {
     stats.dlq_depth = dlq_depth;
 }
 
-/// Journal `mutation` and apply it. It takes effect even when the append fails;
-/// the error tells the caller it may not survive a restart.
+/// Journal `mutation`, then apply it. Nothing changes when the append fails, so
+/// the live state never runs ahead of what a restart replays: the error tells
+/// the caller the transition did not happen.
 fn commit(shared: &SharedStore, data: &mut StoreData, mutation: &Mutation) -> anyhow::Result<()> {
     let revision = data.revision.saturating_add(1);
-    let appended = append_journal(shared, revision, mutation);
+    append_journal(shared, revision, mutation)?;
     apply(data, mutation);
     data.revision = revision;
-    appended
-}
-
-fn commit_logged(shared: &SharedStore, data: &mut StoreData, mutation: &Mutation) {
-    if let Err(error) = commit(shared, data, mutation) {
-        tracing::warn!(error = %error, "queue journal append failed; the change may not survive a restart");
-    }
+    Ok(())
 }
 
 fn append_journal(shared: &SharedStore, revision: u64, mutation: &Mutation) -> anyhow::Result<()> {
@@ -891,7 +931,7 @@ mod tests {
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     type StoreFuture = Pin<Box<dyn Future<Output = Arc<dyn QueueStore>> + Send>>;
 
@@ -917,11 +957,11 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 let id = store.enqueue("demo", json!({"x": 1})).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
+                let job = store.dequeue("demo").await.unwrap().unwrap();
                 assert_eq!(job.id, id);
                 assert_eq!(job.payload, json!({"x": 1}));
-                store.ack("demo", &job.id).await;
-                assert!(store.dequeue("demo").await.is_none());
+                store.ack("demo", &job.id).await.unwrap();
+                assert!(store.dequeue("demo").await.unwrap().is_none());
                 assert_eq!(store.topic_stats("demo").await.delivered, 1);
                 store
             })
@@ -934,15 +974,15 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 store.enqueue("demo", json!("job")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
+                let job = store.dequeue("demo").await.unwrap().unwrap();
                 // The backoff must dwarf CI scheduling + FileStore persist
                 // stalls: the store reads the wall clock, so if more than the
                 // backoff elapses between nack and the next dequeue, the job
                 // is already ready and the is_none assert flakes.
-                store.nack("demo", job, 3, 500).await;
-                assert!(store.dequeue("demo").await.is_none());
+                store.nack("demo", job, 3, 500).await.unwrap();
+                assert!(store.dequeue("demo").await.unwrap().is_none());
                 sleep(Duration::from_millis(600)).await;
-                let retry = store.dequeue("demo").await.unwrap();
+                let retry = store.dequeue("demo").await.unwrap().unwrap();
                 assert_eq!(retry.attempts, 1);
                 store
             })
@@ -955,9 +995,9 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 store.enqueue("demo", json!("job")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
-                assert!(store.dequeue("demo").await.is_none());
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
+                assert!(store.dequeue("demo").await.unwrap().is_none());
                 let messages = store.dlq_messages("demo", 10).await;
                 assert_eq!(messages.len(), 1);
                 assert_eq!(messages[0].attempts, 1);
@@ -976,13 +1016,13 @@ mod tests {
             Box::pin(async move {
                 for n in 0..2 {
                     store.enqueue("demo", json!(n)).await.unwrap();
-                    let job = store.dequeue("demo").await.unwrap();
-                    store.nack("demo", job, 1, 1).await;
+                    let job = store.dequeue("demo").await.unwrap().unwrap();
+                    store.nack("demo", job, 1, 1).await.unwrap();
                 }
-                assert_eq!(store.redrive_dlq("demo").await, 2);
+                assert_eq!(store.redrive_dlq("demo").await.unwrap(), 2);
                 assert!(store.dlq_messages("demo", 10).await.is_empty());
-                let first = store.dequeue("demo").await.unwrap();
-                let second = store.dequeue("demo").await.unwrap();
+                let first = store.dequeue("demo").await.unwrap().unwrap();
+                let second = store.dequeue("demo").await.unwrap().unwrap();
                 assert_eq!(first.attempts, 0);
                 assert_eq!(second.attempts, 0);
                 store
@@ -996,12 +1036,12 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 store.enqueue("demo", json!("a")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
                 let id = store.dlq_messages("demo", 10).await[0].id.clone();
-                assert!(!store.redrive_dlq_message("demo", "missing").await);
-                assert!(store.redrive_dlq_message("demo", &id).await);
-                assert_eq!(store.dequeue("demo").await.unwrap().id, id);
+                assert!(!store.redrive_dlq_message("demo", "missing").await.unwrap());
+                assert!(store.redrive_dlq_message("demo", &id).await.unwrap());
+                assert_eq!(store.dequeue("demo").await.unwrap().unwrap().id, id);
                 store
             })
         })
@@ -1013,11 +1053,11 @@ mod tests {
         for_each_backend(|store| {
             Box::pin(async move {
                 store.enqueue("demo", json!("a")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
                 let id = store.dlq_messages("demo", 10).await[0].id.clone();
-                assert!(!store.discard_dlq_message("demo", "missing").await);
-                assert!(store.discard_dlq_message("demo", &id).await);
+                assert!(!store.discard_dlq_message("demo", "missing").await.unwrap());
+                assert!(store.discard_dlq_message("demo", &id).await.unwrap());
                 assert!(store.dlq_messages("demo", 10).await.is_empty());
                 store
             })
@@ -1032,8 +1072,8 @@ mod tests {
                 store.enqueue("demo", json!("ready")).await.unwrap();
                 store.enqueue("demo", json!("still-ready")).await.unwrap();
                 store.enqueue("other", json!("ready")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
                 assert_eq!(store.list_topics().await, vec!["demo", "other"]);
                 assert_eq!(store.dlq_topics().await, vec![("demo".to_string(), 1)]);
                 let demo = store.topic_stats("demo").await;
@@ -1069,30 +1109,33 @@ mod tests {
                     store.enqueue("demo", json!("a")).await.unwrap();
                 })
                 .await;
-                let job = store.dequeue("demo").await.unwrap();
-                assert_signals(&store, "retrying nack", store.nack("demo", job, 3, 10_000)).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                assert_signals(&store, "retrying nack", async {
+                    store.nack("demo", job, 3, 10_000).await.unwrap();
+                })
+                .await;
 
                 // The backed-off "a" is skipped; "b" is the ready job.
                 store.enqueue("demo", json!("b")).await.unwrap();
-                let job = store.dequeue("demo").await.unwrap();
+                let job = store.dequeue("demo").await.unwrap().unwrap();
                 assert_eq!(job.payload, json!("b"));
                 assert_signals(&store, "requeue", async {
                     store.requeue("demo", job).await.unwrap();
                 })
                 .await;
 
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
                 assert_signals(&store, "dlq redrive", async {
-                    assert_eq!(store.redrive_dlq("demo").await, 1);
+                    assert_eq!(store.redrive_dlq("demo").await.unwrap(), 1);
                 })
                 .await;
 
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 1, 1).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 1, 1).await.unwrap();
                 let id = store.dlq_messages("demo", 1).await[0].id.clone();
                 assert_signals(&store, "single-message redrive", async {
-                    assert!(store.redrive_dlq_message("demo", &id).await);
+                    assert!(store.redrive_dlq_message("demo", &id).await.unwrap());
                 })
                 .await;
                 store
@@ -1109,8 +1152,8 @@ mod tests {
                 store.enqueue("demo", json!("job")).await.unwrap();
                 assert_eq!(store.next_ready_delay("demo").await, Some(Duration::ZERO));
 
-                let job = store.dequeue("demo").await.unwrap();
-                store.nack("demo", job, 3, 10_000).await;
+                let job = store.dequeue("demo").await.unwrap().unwrap();
+                store.nack("demo", job, 3, 10_000).await.unwrap();
                 let due_in = store.next_ready_delay("demo").await.unwrap();
                 assert!(
                     due_in > Duration::from_secs(9) && due_in <= Duration::from_secs(10),
@@ -1140,7 +1183,7 @@ mod tests {
                 .unwrap();
         }
         let reopened = FileStore::open(&dir, 5).await.unwrap();
-        let job = reopened.dequeue("demo").await.unwrap();
+        let job = reopened.dequeue("demo").await.unwrap().unwrap();
         assert_eq!(job.payload, json!({"survives": true}));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1152,14 +1195,14 @@ mod tests {
             let store = FileStore::open(&dir, 5).await.unwrap();
             let first_id = store.enqueue("demo", json!("first")).await.unwrap();
             store.enqueue("demo", json!("second")).await.unwrap();
-            let delivery = store.dequeue("demo").await.unwrap();
+            let delivery = store.dequeue("demo").await.unwrap().unwrap();
             assert_eq!(delivery.id, first_id);
             first_id
         };
 
         let reopened = FileStore::open(&dir, 5).await.unwrap();
-        let first = reopened.dequeue("demo").await.unwrap();
-        let second = reopened.dequeue("demo").await.unwrap();
+        let first = reopened.dequeue("demo").await.unwrap().unwrap();
+        let second = reopened.dequeue("demo").await.unwrap().unwrap();
         assert_eq!(first.id, first_id);
         assert_eq!(first.payload, json!("first"));
         assert_eq!(second.payload, json!("second"));
@@ -1175,7 +1218,7 @@ mod tests {
 
         let result = store.enqueue("demo", json!("ghost")).await;
         assert!(result.is_err());
-        assert!(store.dequeue("demo").await.is_none());
+        assert!(store.dequeue("demo").await.unwrap().is_none());
         assert_eq!(store.topic_stats("demo").await.depth, 0);
 
         let _ = std::fs::remove_file(dir);
@@ -1196,7 +1239,7 @@ mod tests {
 
     async fn payloads_in_order(store: &FileStore, topic: &str) -> Vec<Value> {
         let mut payloads = Vec::new();
-        while let Some(job) = store.dequeue(topic).await {
+        while let Some(job) = store.dequeue(topic).await.unwrap() {
             payloads.push(job.payload);
         }
         payloads
@@ -1211,21 +1254,21 @@ mod tests {
         }
         store.enqueue("other", json!("untouched")).await.unwrap();
 
-        let acked = store.dequeue("demo").await.unwrap();
-        store.ack("demo", &acked.id).await;
-        let retried = store.dequeue("demo").await.unwrap();
-        store.nack("demo", retried, 3, 60_000).await;
-        let requeued = store.dequeue("demo").await.unwrap();
+        let acked = store.dequeue("demo").await.unwrap().unwrap();
+        store.ack("demo", &acked.id).await.unwrap();
+        let retried = store.dequeue("demo").await.unwrap().unwrap();
+        store.nack("demo", retried, 3, 60_000).await.unwrap();
+        let requeued = store.dequeue("demo").await.unwrap().unwrap();
         store.requeue("demo", requeued).await.unwrap();
         let mut dead = Vec::new();
         for _ in 0..4 {
-            let job = store.dequeue("demo").await.unwrap();
+            let job = store.dequeue("demo").await.unwrap().unwrap();
             dead.push(job.id.clone());
-            store.nack("demo", job, 1, 1).await;
+            store.nack("demo", job, 1, 1).await.unwrap();
         }
-        assert!(store.redrive_dlq_message("demo", &dead[1]).await);
-        assert!(store.discard_dlq_message("demo", &dead[2]).await);
-        assert_eq!(store.redrive_dlq("demo").await, 2);
+        assert!(store.redrive_dlq_message("demo", &dead[1]).await.unwrap());
+        assert!(store.discard_dlq_message("demo", &dead[2]).await.unwrap());
+        assert_eq!(store.redrive_dlq("demo").await.unwrap(), 2);
 
         let live = state(&store).await;
         assert!(
@@ -1313,9 +1356,9 @@ mod tests {
         assert_eq!(store.dlq_messages("demo", 10).await[0].id, "dead");
         let stats = store.topic_stats("demo").await;
         assert_eq!((stats.delivered, stats.failed), (4, 1));
-        let unacked = store.dequeue("demo").await.unwrap();
+        let unacked = store.dequeue("demo").await.unwrap().unwrap();
         assert_eq!((unacked.id.as_str(), unacked.attempts), ("unacked", 2));
-        assert_eq!(store.dequeue("demo").await.unwrap().id, "waiting");
+        assert_eq!(store.dequeue("demo").await.unwrap().unwrap().id, "waiting");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1381,7 +1424,7 @@ mod tests {
         let dir = temp_store_dir();
         let store = FileStore::open(&dir, HUGE_INTERVAL_MS).await.unwrap();
         store.enqueue("demo", json!("job")).await.unwrap();
-        store.dequeue("demo").await.unwrap();
+        store.dequeue("demo").await.unwrap().unwrap();
 
         let revision = compact(&store.shared, &dir, 0).await.unwrap();
         assert_eq!(revision, 2);
@@ -1539,7 +1582,7 @@ mod tests {
         std::fs::write(dir.join(STORE_FILE_NAME), snapshot.to_string()).unwrap();
 
         let store = FileStore::open(&dir, HUGE_INTERVAL_MS).await.unwrap();
-        let first = store.dequeue("demo").await.unwrap();
+        let first = store.dequeue("demo").await.unwrap().unwrap();
         assert_eq!(first.id, "r1");
         store.requeue("demo", first).await.unwrap();
         drop(store);

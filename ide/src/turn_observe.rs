@@ -34,8 +34,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 use crate::events::{
-    ignored_under, is_git_internal, is_own_temp, kind_of, merge_kinds, resolve_kind,
-    watch_new_dirs, DirWatch,
+    DirWatch, ignored_under, is_git_internal, is_own_temp, kind_of, merge_kinds, resolve_kind,
+    watch_new_dirs,
 };
 use crate::turns::TurnLog;
 
@@ -626,18 +626,22 @@ mod tests {
         let observers = observers_in(dir.path());
         watch(&observers, "s1", "t1", Path::new("/w"));
         watch(&observers, "s2", "t2", Path::new("/w"));
-        assert!(observers
-            .own_changes("s1", "t1", change("/w/a.rs"))
-            .is_empty());
+        assert!(
+            observers
+                .own_changes("s1", "t1", change("/w/a.rs"))
+                .is_empty()
+        );
         // Only the paths the other watch covers are contested.
         watch(&observers, "s2", "t2", Path::new("/w/sub"));
         assert_eq!(
             observers.own_changes("s1", "t1", change("/w/a.rs")).len(),
             1
         );
-        assert!(observers
-            .own_changes("s1", "t1", change("/w/sub/b.rs"))
-            .is_empty());
+        assert!(
+            observers
+                .own_changes("s1", "t1", change("/w/sub/b.rs"))
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -651,9 +655,11 @@ mod tests {
             observers.own_changes("s1", "t1", change("/w/a.rs")).len(),
             1
         );
-        assert!(observers
-            .own_changes("s2", "t2", change("/w/a.rs"))
-            .is_empty());
+        assert!(
+            observers
+                .own_changes("s2", "t2", change("/w/a.rs"))
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -684,8 +690,10 @@ mod tests {
                 .len(),
             1
         );
-        assert!(observers
-            .own_changes("other", "ot", change("/w/a.rs"))
-            .is_empty());
+        assert!(
+            observers
+                .own_changes("other", "ot", change("/w/a.rs"))
+                .is_empty()
+        );
     }
 }

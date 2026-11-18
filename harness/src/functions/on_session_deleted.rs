@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 
 /// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -57,6 +57,7 @@ pub async fn handle(
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
+    crate::ask_settlement::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::usage_report::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::hooks::recall::purge(deps, &event.session_id).await;
     // Last, so a failed purge above keeps the record for the handler's retry.

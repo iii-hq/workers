@@ -122,7 +122,7 @@ export function ContextTrackingBody({
       </div>
     )
   return (
-    <div className="flex min-w-0 flex-col gap-3 px-3 py-2 font-sans text-[13px] text-ink">
+    <div className="flex min-w-0 flex-col gap-3 px-3 py-2 font-sans text-body text-ink">
       {error ? (
         <StatusPanel
           variant="warn"
@@ -158,7 +158,7 @@ export function ContextTrackingBody({
           >
             <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
               <h3 className="min-w-0 flex-1 font-semibold">{item.title}</h3>
-              <span className="text-[11px] text-ink-faint">
+              <span className="text-meta text-ink-faint">
                 {item.scope === 'project' ? 'Project' : 'Conversation'}
               </span>
               {progress !== null ? (
@@ -213,20 +213,20 @@ export function ContextTrackingBody({
                   href={url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex min-h-11 items-center gap-2 rounded-sm text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                  className="flex min-h-11 items-center gap-2 rounded-sm text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 >
                   <ExternalLink aria-hidden className="size-4 shrink-0" />
                   {item.source.label}
                 </a>
               ) : (
-                <p className="text-[11px] text-ink-faint">
+                <p className="text-meta text-ink-faint">
                   Source: {item.source.label}
                 </p>
               )
             ) : (
-              <p className="text-[11px] text-ink-faint">Source not provided</p>
+              <p className="text-meta text-ink-faint">Source not provided</p>
             )}
-            <p className="text-[11px] text-ink-faint">
+            <p className="text-meta text-ink-faint">
               Snapshot ·{' '}
               <time
                 dateTime={new Date(item.updated_at).toISOString()}
@@ -268,7 +268,7 @@ export function ContextTrackingBody({
           </article>
         )
       })}
-      <p className="text-[11px] text-ink-faint">
+      <p className="text-meta text-ink-faint">
         Updated by the agent when it checks the source, not monitored live. Ask
         in chat to edit or change scope.
       </p>

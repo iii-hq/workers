@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::schema_for;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{manifest, SecurityScanError, WorkerConfig};
+use crate::{SecurityScanError, WorkerConfig, manifest};
 
 pub const CONFIG_ID: &str = "security-scan";
 

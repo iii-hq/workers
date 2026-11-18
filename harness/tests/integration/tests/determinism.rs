@@ -8,7 +8,7 @@ use harness_integration::scenario::floor::{floor_failure, verify_failure};
 use harness_integration::types::scenario::{Classification, IntegrationResultV1};
 use harness_integration::types::script::SchemaVersion1;
 use harness_integration::types::trace::{TraceEventV1, TraceEvidenceV1, TraceSpanV1, TraceTreeV1};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn span(
     trace_id: &str,

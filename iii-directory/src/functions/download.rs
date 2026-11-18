@@ -14,11 +14,11 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::events;
-use crate::sources::{self, registry::VersionSpec, DownloadResult};
+use crate::sources::{self, DownloadResult, registry::VersionSpec};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DownloadInput {
@@ -1152,12 +1152,16 @@ mod tests {
         ));
         let down = download_worker_skills(&cfg, "down", &spec).await;
         assert!(down.unwrap_err().contains("HTTP 503"));
-        assert!(download_worker_skills(&cfg, "refused", &spec)
-            .await
-            .is_err());
-        assert!(!download_worker_skills(&cfg, "missing", &spec)
-            .await
-            .unwrap());
+        assert!(
+            download_worker_skills(&cfg, "refused", &spec)
+                .await
+                .is_err()
+        );
+        assert!(
+            !download_worker_skills(&cfg, "missing", &spec)
+                .await
+                .unwrap()
+        );
 
         let requests = server.received_requests().await.unwrap();
         let asked = |worker: &str| {

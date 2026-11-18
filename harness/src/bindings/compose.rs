@@ -22,11 +22,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use iii_sdk::{Capture, Source};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Binding;
 use crate::deps::Deps;
-use crate::observed::{delivered_event, Delivered};
+use crate::observed::{Delivered, delivered_event};
 use crate::types::message::AgentMessage;
 
 const MAX_RECOVERIES: usize = 16;
@@ -331,6 +331,7 @@ mod tests {
             capability: None,
             dedup_key: None,
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         }
     }

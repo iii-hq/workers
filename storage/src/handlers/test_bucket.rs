@@ -18,11 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-use super::buckets::{prepare_candidate, stored_buckets_both, Candidate};
 use super::AppState;
+use super::buckets::{Candidate, prepare_candidate, stored_buckets_both};
 use crate::backend::factory::{self, Purpose};
 use crate::binding;
-use crate::config::{parse_bucket, BucketConfig, WorkerConfig};
+use crate::config::{BucketConfig, WorkerConfig, parse_bucket};
 use crate::configuration::StorageRuntime;
 use crate::material::{self, BucketError, Material, Stage};
 use crate::redaction::{at, template_paths};
@@ -143,7 +143,7 @@ async fn run(
                         "send `bucket` (the entry to test) or the `name` of a stored bucket".into()
                     }
                 },
-            )
+            );
         }
     };
     let provider_hint = candidate
@@ -412,11 +412,12 @@ mod tests {
         .unwrap();
         assert!(!resp.ok);
         assert_eq!(resp.stage, Some(Stage::Config));
-        assert!(resp
-            .message
-            .as_deref()
-            .unwrap()
-            .contains("literal credential"));
+        assert!(
+            resp.message
+                .as_deref()
+                .unwrap()
+                .contains("literal credential")
+        );
         let resp = handle(
             &f.state,
             &f.runtime,
@@ -468,11 +469,12 @@ mod tests {
         .unwrap();
         assert!(!resp.ok);
         assert_eq!(resp.stage, Some(Stage::Auth), "{:?}", resp.message);
-        assert!(resp
-            .message
-            .as_deref()
-            .unwrap()
-            .contains("InvalidAccessKeyId"));
+        assert!(
+            resp.message
+                .as_deref()
+                .unwrap()
+                .contains("InvalidAccessKeyId")
+        );
         assert!(!resp.message.unwrap().contains("tok-typed"));
         assert_eq!(got.lock().unwrap().len(), 1, "one attempt, no retries");
     }
@@ -580,10 +582,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp.stage, Some(Stage::Config), "{:?}", resp.message);
-        assert!(resp
-            .message
-            .unwrap()
-            .contains("keeps bucket `tpl`'s stored value"));
+        assert!(
+            resp.message
+                .unwrap()
+                .contains("keeps bucket `tpl`'s stored value")
+        );
         assert!(got.lock().unwrap().is_empty());
     }
 
@@ -686,10 +689,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp.stage, Some(Stage::Config));
-        assert!(resp
-            .message
-            .unwrap()
-            .contains("`bucket.access_key_id` is a ${VAR} template"));
+        assert!(
+            resp.message
+                .unwrap()
+                .contains("`bucket.access_key_id` is a ${VAR} template")
+        );
     }
 
     #[tokio::test]

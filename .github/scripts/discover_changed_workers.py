@@ -10,6 +10,8 @@ Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     provider_contract            : providers whose hermetic contract must run
     crates                        : shared crates/<name> dirs with source changes
     native_ui                     : bool, must the native-ui job (SDK + apps) run
+    traces_ui                     : bool, must the traces-ui package job run
+    ade_web                       : bool, must the ADE console's vitest job run
     any                           : bool, any worker or crate change
 """
 from __future__ import annotations
@@ -150,6 +152,7 @@ BUNDLED_PACKAGES = ("native-ui", "traces-ui")
 NATIVE_UI_PREFIXES = ("packages/native-ui/", "crates/native-ui/")
 NATIVE_UI_APP_DIR = "native-ui"
 NATIVE_UI_INFRA_PATHS = {
+    "package.json",  # its packageManager pins the pnpm that pnpm/action-setup installs
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     ".github/scripts/discover_changed_workers.py",
@@ -157,14 +160,25 @@ NATIVE_UI_INFRA_PATHS = {
 }
 
 # The traces-ui job (ci.yml) runs the @iii-dev/traces-ui package's own
-# biome, typecheck, tests and build, and the ADE design scans that cover it.
-# It runs when the package, the console-ui helpers it imports, the root
-# biome config its own extends, the ADE design scans it runs (and the
-# vitest setup they run under), the root pnpm workspace or this CI changes
-# (the same infra paths as native-ui).
+# biome, typecheck, tests and build. It runs when the package, the console-ui
+# helpers it imports, the root biome config its own extends, the root pnpm
+# workspace or this CI changes (the same infra paths as native-ui).
 TRACES_UI_PREFIXES = ("packages/traces-ui/", "packages/console-ui/")
-TRACES_UI_PATHS = {"biome.json", "ade/web/package.json", "ade/web/vite.config.ts"}
-TRACES_UI_SCANS = "ade/web/src/lib/"
+TRACES_UI_PATHS = {"biome.json"}
+
+# The ade-web job (ci.yml) runs the ADE console's vitest suite (ade/web) and
+# ade/ui's tests. That suite reads files outside ade/web: the workspace
+# packages it imports, every worker UI (its design scans walk <worker>/ui/,
+# and it imports ide/ui), provider icons, and fixtures shared with Rust crates.
+ADE_WEB_PREFIXES = (
+    "ade/web/",
+    "packages/traces-ui/",
+    "packages/console-ui/",
+    "packages/editor-prefs/",
+    "packages/terminal-font/",
+    "crates/mention-contract/fixtures/",
+)
+ADE_WEB_PATHS = {"workflow/tests/fixtures/flat_start_cases.json", "cursor/src/provider-icon.ts"}
 
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
@@ -379,7 +393,17 @@ def traces_ui_changed(files: list[str]) -> bool:
         f in NATIVE_UI_INFRA_PATHS
         or f in TRACES_UI_PATHS
         or f.startswith(TRACES_UI_PREFIXES)
-        or (f.startswith(TRACES_UI_SCANS) and f.endswith("-conformance.test.ts"))
+        for f in files
+    )
+
+
+def ade_web_changed(files: list[str]) -> bool:
+    return any(
+        f in NATIVE_UI_INFRA_PATHS
+        or f in ADE_WEB_PATHS
+        or f.startswith(ADE_WEB_PREFIXES)
+        or f.split("/")[1:2] == ["ui"]
+        or (f.startswith("provider-") and f.split("/")[1:2] == ["assets"])
         for f in files
     )
 
@@ -477,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     provider_contract = provider_contract_selection(files, workers)
     native_ui = native_ui_changed(files)
     traces_ui = traces_ui_changed(files)
+    ade_web = ade_web_changed(files)
     by_language: dict[str, list[str]] = {"rust": [], "go": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(worker_specs[w])
@@ -495,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         "crates": changed_crates,
         "native_ui": native_ui,
         "traces_ui": traces_ui,
+        "ade_web": ade_web,
     }
     print(json.dumps(payload))
 
@@ -518,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write(f"crates={json.dumps(changed_crates)}\n")
             f.write(f"native_ui={'true' if native_ui else 'false'}\n")
             f.write(f"traces_ui={'true' if traces_ui else 'false'}\n")
+            f.write(f"ade_web={'true' if ade_web else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

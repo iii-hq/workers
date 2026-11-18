@@ -27,7 +27,7 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
 
@@ -39,6 +39,7 @@ export function ValueEditor({
   narrow,
   onBack,
   onDirtyChange,
+  onRequestDelete,
   commands,
 }: {
   host: Host
@@ -48,6 +49,8 @@ export function ValueEditor({
   narrow: boolean
   onBack: () => void
   onDirtyChange: (dirty: boolean) => void
+  /** Asks the browser to confirm and delete this key. */
+  onRequestDelete?: () => void
   commands?: PageCommandsApi
 }) {
   const [stored, setStored] = useState<{ loaded: boolean; value: unknown }>({
@@ -253,6 +256,11 @@ export function ValueEditor({
           >
             {saving ? 'saving…' : 'save'}
           </Button>
+          {onRequestDelete ? (
+            <IconButton label="Delete key" onClick={onRequestDelete}>
+              <Trash2 size={16} aria-hidden />
+            </IconButton>
+          ) : null}
         </div>
       </header>
 

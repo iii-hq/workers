@@ -42,6 +42,14 @@ export function ManualTaskForm({
   const [eventInto, setEventInto] = useState('/cron_event')
   const [maxFires, setMaxFires] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+  /** A submit's error is about the values it saw: any edit retires it, so a
+      fixed field never sits above a stale "Describe what the task should do." */
+  const edited =
+    <T,>(set: (value: T) => void) =>
+    (value: T) => {
+      setFormError(null)
+      set(value)
+    }
 
   /** What this expression actually means, before it is scheduled: the plain
       reading, then the next few literal times. A six-field slip usually looks
@@ -132,7 +140,7 @@ export function ManualTaskForm({
         <TextArea
           id="cron-task-label"
           value={label}
-          onChange={setLabel}
+          onChange={edited(setLabel)}
           placeholder="Prepare a daily brief of open work"
         />
       </Field>
@@ -142,6 +150,7 @@ export function ManualTaskForm({
           value={preset}
           options={PRESETS.map((item) => ({ value: item.value, label: item.label }))}
           onChange={(value) => {
+            setFormError(null)
             setPreset(value)
             const selected = PRESETS.find((item) => item.value === value)
             if (selected?.expression) setExpression(selected.expression)
@@ -172,6 +181,7 @@ export function ManualTaskForm({
           id="cron-task-expression"
           value={expression}
           onChange={(value) => {
+            setFormError(null)
             setExpression(value)
             setPreset('custom')
           }}
@@ -189,7 +199,7 @@ export function ManualTaskForm({
             { value: 'notify', label: 'Wake a conversation' },
             { value: 'call', label: 'Call a function' },
           ]}
-          onChange={(value) => setDelivery(value)}
+          onChange={edited(setDelivery)}
           aria-label="Task delivery"
         />
       </Field>
@@ -200,7 +210,7 @@ export function ManualTaskForm({
             <Selector
               value={functionId}
               groups={functionGroups}
-              onChange={setFunctionId}
+              onChange={edited(setFunctionId)}
               placeholder="Choose a function"
               searchPlaceholder="Search functions"
               emptyMessage="No function matches"
@@ -212,12 +222,12 @@ export function ManualTaskForm({
             htmlFor="cron-task-event-path"
             hint="Where the fire event is written inside the payload."
           >
-            <Input id="cron-task-event-path" value={eventInto} onChange={setEventInto} placeholder="/cron_event" />
+            <Input id="cron-task-event-path" value={eventInto} onChange={edited(setEventInto)} placeholder="/cron_event" />
           </Field>
           <Field label="Fixed payload" className="cron-ui-editor-field">
             <CodeEditor
               value={payloadText}
-              onChange={setPayloadText}
+              onChange={edited(setPayloadText)}
               language="json"
               className="cron-ui-code-editor"
               aria-label="Fixed target payload"
@@ -237,7 +247,7 @@ export function ManualTaskForm({
           min={1}
           step={1}
           value={maxFires}
-          onChange={setMaxFires}
+          onChange={edited(setMaxFires)}
           placeholder="unbounded"
         />
       </Field>

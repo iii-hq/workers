@@ -151,7 +151,7 @@ export function ErrorCard({
 
         {technicalDetails ? (
           <details className="group border-t border-edge">
-            <summary className="relative flex min-w-0 cursor-pointer list-none items-center gap-2 p-4 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:p-3 sm:text-sm">
+            <summary className="relative flex min-w-0 cursor-pointer list-none items-center gap-2 p-4 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-[-2px] focus-visible:ring-ring/50 sm:p-3 sm:text-sm">
               <span
                 className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
                 aria-hidden="true"
@@ -174,7 +174,7 @@ export function ErrorCard({
               href={docsUrl}
               target="_blank"
               rel="noreferrer noopener"
-              className="flex w-fit items-center gap-2 text-accent hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="flex w-fit items-center gap-2 text-accent hover:underline focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50"
             >
               <span>Open documentation</span>
               <ExternalLink

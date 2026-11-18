@@ -3,8 +3,8 @@
  * an arc for the used share, starting at twelve o'clock. Lucide has no
  * proportional ring, so this is the one inline SVG the worker keeps, in the
  * `icons.tsx` file the worker-ui lint sets aside for it. Colour comes from
- * the caller (the usage tone); the track is the same surface tint as every
- * other empty bar in the breakdown.
+ * the caller (the usage tone); the track is a tint of the surrounding text so it
+ * reads on any surface.
  */
 
 import type { CSSProperties } from 'react'
@@ -16,9 +16,15 @@ export interface RingGaugeProps {
   size?: number
   /** Stroke width in px. */
   stroke?: number
-  /** Arc colour; the track is always `--color-surface-active`. */
+  /** Arc colour; the track is a tint of `currentColor`. */
   color: string
   className?: string
+}
+
+/* The empty share, as a tint of the text beside it: `--color-surface-active`
+   vanished against the header it sits in, so an unused window drew nothing. */
+const TRACK: CSSProperties = {
+  stroke: 'color-mix(in oklab, currentColor 32%, transparent)',
 }
 
 export function RingGauge({ ratio, size = 16, stroke = 2.5, color, className }: RingGaugeProps) {
@@ -44,8 +50,8 @@ export function RingGauge({ ratio, size = 16, stroke = 2.5, color, className }: 
         cy={centre}
         r={radius}
         fill="none"
-        stroke="var(--color-surface-active)"
         strokeWidth={stroke}
+        style={TRACK}
       />
       {/* A zero-length dash with a round cap still paints a dot: the arc only
           exists once there is something to show. */}

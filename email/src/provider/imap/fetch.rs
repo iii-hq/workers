@@ -2,7 +2,7 @@
 //! body-part streaming for attachment::get. All functions take `&mut Session`
 //! so the caller owns serialization across the half-duplex IMAP socket.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bytes::BytesMut;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -71,15 +71,15 @@ pub async fn header_summary(session: &mut Session, uid: u32) -> Result<HeaderSum
         if let Some(date) = msg.internal_date() {
             summary.ts = Some(date.with_timezone(&Utc));
         }
-        if let Some(header_bytes) = msg.header() {
-            if let Some(parsed) = MessageParser::default().parse(header_bytes) {
-                summary.message_id = parsed.message_id().map(|s| s.to_string());
-                summary.from = parsed
-                    .from()
-                    .and_then(|addrs| addrs.first())
-                    .and_then(|a| a.address.as_ref().map(|s| s.to_string()));
-                summary.subject = parsed.subject().map(|s| s.to_string());
-            }
+        if let Some(header_bytes) = msg.header()
+            && let Some(parsed) = MessageParser::default().parse(header_bytes)
+        {
+            summary.message_id = parsed.message_id().map(|s| s.to_string());
+            summary.from = parsed
+                .from()
+                .and_then(|addrs| addrs.first())
+                .and_then(|a| a.address.as_ref().map(|s| s.to_string()));
+            summary.subject = parsed.subject().map(|s| s.to_string());
         }
         // BODY.PEEK[TEXT]<0.512> — short snippet.
         if let Some(text_section) = msg.text() {

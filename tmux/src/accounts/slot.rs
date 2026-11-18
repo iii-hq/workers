@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::credentials::{chain_id, Raw, SecretStore, OAUTH_KEY};
+use super::credentials::{OAUTH_KEY, Raw, SecretStore, chain_id};
 use super::lockdir::{self, LockId, LockSet};
 use super::paths::ClaudePaths;
 use crate::model::AccountSwitch;
@@ -441,22 +441,21 @@ pub fn carry_session_keys(from: &Map<String, Value>, to: &mut Map<String, Value>
         "lastOnboardingVersion",
         "bypassPermissionsModeAccepted",
     ] {
-        if let Some(value) = from.get(key) {
-            if !to.contains_key(key) {
-                to.insert(key.to_string(), value.clone());
-                changed = true;
-            }
+        if let Some(value) = from.get(key)
+            && !to.contains_key(key)
+        {
+            to.insert(key.to_string(), value.clone());
+            changed = true;
         }
     }
     if let Some(servers) = from
         .get("mcpServers")
         .and_then(Value::as_object)
         .filter(|servers| !servers.is_empty())
+        && !to.contains_key("mcpServers")
     {
-        if !to.contains_key("mcpServers") {
-            to.insert("mcpServers".into(), Value::Object(servers.clone()));
-            changed = true;
-        }
+        to.insert("mcpServers".into(), Value::Object(servers.clone()));
+        changed = true;
     }
     if let Some(projects) = from.get("projects").and_then(Value::as_object) {
         for (project, entry) in projects {
@@ -472,11 +471,11 @@ pub fn carry_session_keys(from: &Map<String, Value>, to: &mut Map<String, Value>
             let slot = theirs
                 .entry(project.clone())
                 .or_insert_with(|| Value::Object(Map::new()));
-            if let Some(slot) = slot.as_object_mut() {
-                if slot.get("hasTrustDialogAccepted").and_then(Value::as_bool) != Some(true) {
-                    slot.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-                    changed = true;
-                }
+            if let Some(slot) = slot.as_object_mut()
+                && slot.get("hasTrustDialogAccepted").and_then(Value::as_bool) != Some(true)
+            {
+                slot.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+                changed = true;
             }
         }
     }
@@ -511,13 +510,12 @@ pub fn seed_folder(
         .unwrap_or_default();
     update_config(&paths.account_json(id), |config| {
         let mut changed = carry_session_keys(&slot, config);
-        if identity {
-            if let Some(record) = slot.get(IDENTITY_KEY) {
-                if config.get(IDENTITY_KEY) != Some(record) {
-                    config.insert(IDENTITY_KEY.into(), record.clone());
-                    changed = true;
-                }
-            }
+        if identity
+            && let Some(record) = slot.get(IDENTITY_KEY)
+            && config.get(IDENTITY_KEY) != Some(record)
+        {
+            config.insert(IDENTITY_KEY.into(), record.clone());
+            changed = true;
         }
         changed
     })
@@ -916,11 +914,11 @@ pub fn swap_records(
     if let Some((slot, with_record)) = saved {
         update_config(&stores.json(&g), |config| {
             let mut changed = carry_session_keys(&slot, config);
-            if let Some(record) = slot.get(IDENTITY_KEY).filter(|_| with_record) {
-                if config.get(IDENTITY_KEY) != Some(record) {
-                    config.insert(IDENTITY_KEY.into(), record.clone());
-                    changed = true;
-                }
+            if let Some(record) = slot.get(IDENTITY_KEY).filter(|_| with_record)
+                && config.get(IDENTITY_KEY) != Some(record)
+            {
+                config.insert(IDENTITY_KEY.into(), record.clone());
+                changed = true;
             }
             changed
         })?;
@@ -1013,10 +1011,11 @@ pub fn recover(
     } else if slot_chain.is_some() && x_uuid.is_some() && !not_x {
         run.journal.step = run.journal.step.max(5);
         // X's folder still holding the chain the swap moved loses it.
-        if let Some(raw) = x_raw {
-            if x_chain.is_some() && x_chain == run.journal.x_rt {
-                run.write(&x, &with_account_part(raw, &Map::new()))?;
-            }
+        if let Some(raw) = x_raw
+            && x_chain.is_some()
+            && x_chain == run.journal.x_rt
+        {
+            run.write(&x, &with_account_part(raw, &Map::new()))?;
         }
     } else {
         tracing::warn!(from = %run.journal.from, to = %run.journal.to, "someone signed in by hand on the slot since; the swap is dropped and nothing moved");
@@ -1176,9 +1175,11 @@ mod tests {
             token_of(&paths.account_dir("personal")).as_deref(),
             Some("rt-x")
         );
-        assert!(raw(&paths.account_dir("default").join(".credentials.json"))
-            .get(OAUTH_KEY)
-            .is_none());
+        assert!(
+            raw(&paths.account_dir("default").join(".credentials.json"))
+                .get(OAUTH_KEY)
+                .is_none()
+        );
         assert_eq!(
             account_uuid(&raw(&paths.default_json)).as_deref(),
             Some("uuid-g")
@@ -1286,15 +1287,17 @@ mod tests {
         // Another worker process is half-way through a swap: its journal,
         // its locks, and the swap lock it holds.
         let theirs = stores.hold_swap().unwrap();
-        assert!(swap(
-            &stores,
-            "default",
-            "personal",
-            None,
-            &no_commit,
-            Crash::None
-        )
-        .is_err_and(|error| error == SwapError::Busy));
+        assert!(
+            swap(
+                &stores,
+                "default",
+                "personal",
+                None,
+                &no_commit,
+                Crash::None
+            )
+            .is_err_and(|error| error == SwapError::Busy)
+        );
         drop(theirs);
         swap(
             &stores,
@@ -1670,15 +1673,17 @@ mod tests {
         let paths = &home.paths;
         let flaky = Flaky::new(vec![(paths.account_dir("default"), 0, 1)]);
         let stores = stores_of(paths, &flaky);
-        assert!(swap(
-            &stores,
-            "default",
-            "personal",
-            None,
-            &no_commit,
-            Crash::None
-        )
-        .is_err());
+        assert!(
+            swap(
+                &stores,
+                "default",
+                "personal",
+                None,
+                &no_commit,
+                Crash::None
+            )
+            .is_err()
+        );
         assert!(stores.read_journal().is_none());
         unchanged(paths);
 
@@ -1712,15 +1717,17 @@ mod tests {
             (paths.account_dir("default"), 1, 1),
         ]);
         let stores = stores_of(paths, &flaky);
-        assert!(swap(
-            &stores,
-            "default",
-            "personal",
-            None,
-            &no_commit,
-            Crash::None
-        )
-        .is_err());
+        assert!(
+            swap(
+                &stores,
+                "default",
+                "personal",
+                None,
+                &no_commit,
+                Crash::None
+            )
+            .is_err()
+        );
         let journal = stores.read_journal().expect("kept");
         assert!(journal.aborted);
         assert_eq!(
@@ -1739,15 +1746,17 @@ mod tests {
         let paths = &home.paths;
         let flaky = Flaky::new(vec![(paths.account_dir("personal"), 0, 1)]);
         let stores = stores_of(paths, &flaky);
-        assert!(swap(
-            &stores,
-            "default",
-            "personal",
-            None,
-            &no_commit,
-            Crash::None
-        )
-        .is_err());
+        assert!(
+            swap(
+                &stores,
+                "default",
+                "personal",
+                None,
+                &no_commit,
+                Crash::None
+            )
+            .is_err()
+        );
         assert!(stores.read_journal().is_some());
         assert!(holds_new_chain(&stores));
         let committed = std::cell::Cell::new(false);
@@ -1933,10 +1942,12 @@ mod tests {
             true
         })
         .unwrap();
-        assert!(std::fs::symlink_metadata(&home.paths.default_json)
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            std::fs::symlink_metadata(&home.paths.default_json)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(raw(&real)["x"], true);
         assert!(!lockdir::config_lock_path(&home.paths.default_json).exists());
     }

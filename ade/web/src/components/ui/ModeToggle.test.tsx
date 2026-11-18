@@ -17,11 +17,12 @@ describe('SegmentedControl', () => {
       />,
     )
 
-    expect(html).toContain('role="tablist"')
-    expect(html).toContain('iii-ui-tabs-list')
+    // The shadcn toggle group: one pressed item, arrow keys move.
+    expect(html).toContain('data-slot="toggle-group"')
+    expect(html).toContain('data-variant="tabs"')
     expect(html).toContain('iii-ui-tab__icon')
     expect(html).toContain('iii-ui-icon')
-    expect(html).toContain('aria-selected="true"')
+    expect(html).toContain('aria-pressed="true"')
   })
 
   it('keeps persistent choices segmented and icon-free', () => {
@@ -38,8 +39,8 @@ describe('SegmentedControl', () => {
       />,
     )
 
-    expect(html).toContain('role="radiogroup"')
-    expect(html).toContain('iii-ui-segmented')
+    expect(html).toContain('data-variant="radio"')
+    expect(html).toContain('data-spacing="0"')
     expect(html).not.toContain('iii-ui-tab__icon')
   })
 

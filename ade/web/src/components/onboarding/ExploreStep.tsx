@@ -3,6 +3,7 @@ import {
   ArrowRight,
   BookOpen,
   Bot,
+  Check,
   Compass,
   Hammer,
   Link2,
@@ -24,8 +25,12 @@ import { StepLayout } from './parts'
 /** The learn-iii tour, as Explore iii starts it. */
 export type TourState =
   | { kind: 'idle' }
-  /** Getting the tour ready: adding its worker, waiting for its command. */
-  | { kind: 'preparing' }
+  /**
+   * Getting the tour ready: adding its worker, waiting for its command.
+   * `adding` names the registry worker being added (none when it is only
+   * waiting for the tour to load), `note` the install's latest progress.
+   */
+  | { kind: 'preparing'; adding?: string; note?: string }
   | { kind: 'failed'; error: string }
 
 /**
@@ -56,39 +61,42 @@ function promptIcon(
 /*
  * Both screens here are a choice, made in two moves: pick one of the
  * options, then confirm it with the footer's button, which names what it
- * will do; with nothing picked it is Finish, and closes setup. The options are a
- * radio group, so arrow keys move the pick and Space or a click sets it;
- * the picked one carries an ink border and a filled dot.
+ * will do; with nothing picked it is Close setup, and closes setup. The
+ * options are a single-choice group (radio semantics), so arrow keys move
+ * the pick and Space or a click sets it. Drawn as checkboxes, like every
+ * choice list in the ADE (single choice ticks one): the picked one carries
+ * an ink border and a ticked box.
  */
 
 const PICK_CLASS =
-  'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-white px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none dark:bg-neutral-950 dark:focus-visible:ring-offset-neutral-950'
-const PICK_IDLE =
-  'border-neutral-100 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:border-neutral-700 dark:hover:bg-neutral-900'
+  'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-card px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none'
+const PICK_IDLE = 'border-border hover:border-input hover:bg-muted'
 const PICK_CHECKED =
-  'border-ink bg-neutral-50 shadow-[inset_0_0_0_1px_var(--color-ink)] dark:bg-neutral-900'
+  'border-input bg-muted shadow-[inset_0_0_0_1px_var(--color-ink)]'
 
 /** Rows rise in one after another as the screen opens; nothing waits on it. */
 const ROW_ENTER = { duration: 0.2, ease: [0.23, 1, 0.32, 1] as const }
 const ROW_STAGGER_S = 0.03
 
-/** The radio mark at a row's end: a ring, filled when the row is picked. */
-function Dot({ checked }: { checked: boolean }) {
+/** The mark at a row's end: a checkbox, ticked when the row is picked. */
+function Tick({ checked }: { checked: boolean }) {
   return (
     <span
       aria-hidden
+      data-pick-mark="checkbox"
       className={cn(
-        'flex size-[18px] shrink-0 items-center justify-center rounded-full border transition-colors duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
+        'flex size-[18px] shrink-0 items-center justify-center rounded-[4px] border transition-colors duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
         checked
-          ? 'border-ink'
-          : 'border-neutral-300 group-hover:border-neutral-400 dark:border-neutral-600 dark:group-hover:border-neutral-500',
+          ? 'border-primary bg-primary text-primary-foreground'
+          : 'border-muted-foreground/60 bg-background group-hover:border-muted-foreground',
       )}
     >
-      <span
+      <Check
         className={cn(
-          'size-2 rounded-full bg-ink transition-transform duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
-          checked ? 'scale-100' : 'scale-0',
+          'size-4 p-0.5 transition-[transform,opacity] duration-150 ease-[var(--motion-ease-standard)] motion-reduce:transition-none',
+          checked ? 'scale-100 opacity-100' : 'scale-50 opacity-0',
         )}
+        strokeWidth={3}
       />
     </span>
   )
@@ -142,13 +150,13 @@ function Pick({
             {title}
           </span>
           {body ? (
-            <span className="text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+            <span className="text-pretty text-base leading-6 text-muted-foreground">
               {body}
             </span>
           ) : null}
         </span>
         <span className="flex self-stretch items-center">
-          <Dot checked={checked} />
+          <Tick checked={checked} />
         </span>
       </button>
     </m.li>
@@ -298,7 +306,7 @@ export function ExampleList({
         <h2 className="text-balance text-xl font-semibold leading-7 tracking-[-0.01em] text-ink">
           Build an example project
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
           Pick one, and a new chat starts building it.
         </p>
       </header>
@@ -350,8 +358,8 @@ const CHOICES: readonly ChoiceId[] = ['example', 'tour', 'own']
  * The step after Ready: build an example (the project's example prompts,
  * one more page in), take the learn-iii tour, or close setup and explore.
  * The first two need a model to answer them. One is picked, then the
- * footer's button — Choose a project, Start the tour, Finish — does it;
- * with nothing picked the button is Finish, and closes setup.
+ * footer's button — Choose a project, Start the tour, Explore on my own — does it;
+ * with nothing picked the button is Close setup, and closes setup.
  */
 export function ExploreStep({
   connected,
@@ -374,7 +382,7 @@ export function ExploreStep({
   onTour: () => void
   /** Close the wizard and hand the composer the focus: Explore on my own. */
   onOwn: () => void
-  /** Close the wizard: Finish, with nothing picked. */
+  /** Close the wizard: Close setup, with nothing picked. */
   onFinish: () => void
   /** Back to Ready. */
   onBack: () => void
@@ -388,21 +396,17 @@ export function ExploreStep({
   useEffect(() => setPrompt(null), [prompts])
   const preparing = tour.kind === 'preparing'
   const count = prompts?.length ?? 0
-  const can: Record<ChoiceId, boolean> = {
-    example: connected && count > 0 && !preparing,
-    tour: connected && !preparing,
-    own: !preparing,
+  const available: Record<ChoiceId, boolean> = {
+    example: connected && count > 0,
+    tour: connected,
+    own: true,
   }
   // A pick that has since gone out of reach (the model left, the examples
-  // emptied) counts as no pick: the button goes back to Finish.
-  const choice = picked !== null && can[picked] ? picked : null
-  const group = usePickGroup(
-    CHOICES,
-    (id) => can[id],
-    choice,
-    setPicked,
-    !examples,
-  )
+  // emptied) counts as no pick: the button goes back to Close setup. While
+  // the tour gets ready its row stays ticked and every row holds still.
+  const choice = picked !== null && available[picked] ? picked : null
+  const can = (id: ChoiceId) => available[id] && !preparing
+  const group = usePickGroup(CHOICES, can, choice, setPicked, !examples)
 
   if (examples) {
     const chosen = prompt !== null ? prompts?.[prompt] : undefined
@@ -440,13 +444,18 @@ export function ExploreStep({
     else if (choice === 'own') onOwn()
     else onFinish()
   }
+  // The button says what it does: with nothing picked it closes setup, so
+  // it reads Close setup, with no forward arrow (it was a Finish that looked
+  // like the next step and closed the wizard without a word).
   const label = preparing
     ? 'Preparing the tour…'
     : choice === 'example'
       ? 'Choose a project'
       : choice === 'tour'
         ? 'Start the tour'
-        : 'Finish'
+        : choice === 'own'
+          ? 'Explore on my own'
+          : 'Close setup'
 
   return (
     <StepLayout
@@ -470,7 +479,7 @@ export function ExploreStep({
               />
             ) : null}
             {label}
-            {preparing ? null : <ArrowRight aria-hidden />}
+            {choice !== null && !preparing ? <ArrowRight aria-hidden /> : null}
           </Button>
         </>
       }
@@ -479,7 +488,7 @@ export function ExploreStep({
         <h2 className="text-balance text-xl font-semibold leading-7 tracking-[-0.01em] text-ink">
           Explore iii
         </h2>
-        <p className="max-w-[56ch] text-pretty text-base leading-6 text-neutral-600 dark:text-neutral-400">
+        <p className="max-w-[56ch] text-pretty text-base leading-6 text-muted-foreground">
           {connected
             ? 'Choose where to start.'
             : 'Connect a model first. The model picker in the composer connects one any time.'}
@@ -496,7 +505,7 @@ export function ExploreStep({
           order={0}
           checked={choice === 'example'}
           tabbable={group.tabbable('example')}
-          disabled={!can.example}
+          disabled={!can('example')}
           onPick={() => setPicked('example')}
           buttonRef={group.register('example')}
           lead={<Lead icon={Sparkles} />}
@@ -507,7 +516,7 @@ export function ExploreStep({
           order={1}
           checked={choice === 'tour'}
           tabbable={group.tabbable('tour')}
-          disabled={!can.tour}
+          disabled={!can('tour')}
           onPick={() => setPicked('tour')}
           buttonRef={group.register('tour')}
           lead={<Lead icon={Compass} />}
@@ -518,7 +527,7 @@ export function ExploreStep({
           order={2}
           checked={choice === 'own'}
           tabbable={group.tabbable('own')}
-          disabled={!can.own}
+          disabled={!can('own')}
           onPick={() => setPicked('own')}
           buttonRef={group.register('own')}
           lead={<Lead icon={MessageSquareText} />}
@@ -526,6 +535,9 @@ export function ExploreStep({
           body="Close setup and start a chat of your own."
         />
       </ul>
+      {tour.kind === 'preparing' ? (
+        <TourProgress adding={tour.adding} note={tour.note} />
+      ) : null}
       {tour.kind === 'failed' ? (
         <p
           role="alert"
@@ -535,5 +547,30 @@ export function ExploreStep({
         </p>
       ) : null}
     </StepLayout>
+  )
+}
+
+/**
+ * What getting the tour ready is doing, said while it does it: the tour
+ * lives in a registry worker that is added to this project's
+ * worker-compose.yaml (with whatever it needs) the first time, which is a
+ * real change to the project, not a quiet one.
+ */
+function TourProgress({ adding, note }: { adding?: string; note?: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="-mt-2 flex flex-col gap-0.5 px-1 text-pretty text-sm leading-5"
+    >
+      <span className="text-ink">
+        {adding
+          ? `Adding the ${adding} worker from the registry to this project, with the workers it needs.`
+          : 'Loading the tour.'}
+      </span>
+      {note ? (
+        <span className="truncate text-muted-foreground">{note}</span>
+      ) : null}
+    </div>
   )
 }

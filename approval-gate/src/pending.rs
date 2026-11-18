@@ -3,8 +3,8 @@
 //! Every record has an explicit deletion path (resolve, turn/session
 //! purge), which is what keeps `state::list` O(live holds).
 
-use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
+use iii_sdk::errors::Error;
 use serde_json::Value;
 
 use crate::state;

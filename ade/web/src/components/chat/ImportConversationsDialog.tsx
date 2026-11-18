@@ -376,7 +376,7 @@ type RowStatus = 'queued' | 'importing' | 'done' | 'failed'
 function RowStatusLabel({ status }: { status: RowStatus }) {
   if (status === 'importing') {
     return (
-      <span className="flex items-center gap-1.5 text-[13px] text-ink-faint">
+      <span className="flex items-center gap-1.5 text-body text-ink-faint">
         <Loader2
           className="size-4 animate-spin motion-reduce:animate-none"
           aria-hidden
@@ -387,7 +387,7 @@ function RowStatusLabel({ status }: { status: RowStatus }) {
   }
   if (status === 'done') {
     return (
-      <span className="flex items-center gap-1.5 text-[13px] text-ok">
+      <span className="flex items-center gap-1.5 text-body text-ok">
         <CircleCheck className="size-4" aria-hidden />
         Imported
       </span>
@@ -395,13 +395,13 @@ function RowStatusLabel({ status }: { status: RowStatus }) {
   }
   if (status === 'failed') {
     return (
-      <span className="flex items-center gap-1.5 text-[13px] text-alert">
+      <span className="flex items-center gap-1.5 text-body text-alert">
         <TriangleAlert className="size-4" aria-hidden />
         Failed
       </span>
     )
   }
-  return <span className="text-[13px] text-ink-faint">Queued</span>
+  return <span className="text-body text-ink-faint">Queued</span>
 }
 
 export function HistoryRow({
@@ -444,7 +444,7 @@ export function HistoryRow({
       data-open={open || undefined}
       data-status={status}
       className={cn(
-        'iii-ui-motion-control group/row flex items-start gap-3 rounded-lg px-3 py-2.5 transition-[background-color] hover:bg-surface-hover has-[[data-row-button]:focus-visible]:ring-2 has-[[data-row-button]:focus-visible]:ring-rule-focus',
+        'iii-ui-motion-control group/row flex items-start gap-3 rounded-lg px-3 py-2.5 transition-[background-color] hover:bg-surface-hover has-[[data-row-button]:focus-visible]:ring-3 has-[[data-row-button]:focus-visible]:ring-ring/50',
         open && 'bg-surface-selected hover:bg-surface-selected',
       )}
     >
@@ -468,11 +468,11 @@ export function HistoryRow({
         <span className="block truncate font-inter text-sm leading-5 text-ink">
           {title}
         </span>
-        <span className="mt-0.5 block truncate font-inter text-[13px] leading-5 text-ink-faint tabular-nums">
+        <span className="mt-0.5 block truncate font-inter text-body leading-5 text-ink-faint tabular-nums">
           {meta.join(' · ')}
         </span>
         {failure ? (
-          <span className="mt-0.5 block truncate font-inter text-[13px] leading-5 text-alert">
+          <span className="mt-0.5 block truncate font-inter text-body leading-5 text-alert">
             {failure}
           </span>
         ) : null}
@@ -563,7 +563,7 @@ function Placeholder({
       </span>
       <p className="text-sm font-medium text-ink">{title}</p>
       {children ? (
-        <div className="mt-1 w-full text-[13px] leading-5 text-ink-faint">
+        <div className="mt-1 w-full text-body leading-5 text-ink-faint">
           {children}
         </div>
       ) : null}
@@ -631,10 +631,10 @@ function CallRow({
       data-preview-role="function-call"
       data-function-id={functionId}
       data-function-status={failed ? 'error' : 'done'}
-      className="flex h-7 min-w-0 items-center gap-2 font-inter text-[13px] text-ink-faint"
+      className="flex h-7 min-w-0 items-center gap-2 font-inter text-body text-ink-faint"
     >
       {/* A failed call only tints its glyph: shells exit non-zero all the
-          time, and a column of red labels would outshout the transcript. */}
+ time, and a column of red labels would outshout the transcript. */}
       <Icon
         className={cn('size-4 shrink-0', failed && 'text-alert/80')}
         aria-hidden
@@ -725,7 +725,7 @@ export function PreviewPane({
               </span>
             ) : null}
           </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-inter text-[13px] leading-5 text-ink-faint">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-inter text-body leading-5 text-ink-faint">
             <Hint label={conversation.cwd ?? 'No project recorded'}>
               <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-md bg-surface px-1.5 py-0.5 text-xs font-medium text-ink-faint">
                 <FolderOpen className="size-4 shrink-0" aria-hidden />
@@ -781,7 +781,7 @@ export function PreviewPane({
             {notices.problems.map((problem) => (
               <p
                 key={problem}
-                className="my-2 flex items-start gap-2 font-inter text-[13px] leading-5 text-warn"
+                className="my-2 flex items-start gap-2 font-inter text-body leading-5 text-warn"
               >
                 <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
                 {problem}
@@ -944,7 +944,7 @@ export function ImportFooter({
               Importing {Math.min(progress.done + 1, progress.total)} of{' '}
               {progress.total}
             </span>
-            <span className="truncate text-[13px] text-ink-faint">
+            <span className="truncate text-body text-ink-faint">
               {progress.title}
             </span>
           </div>
@@ -997,7 +997,7 @@ export function ImportFooter({
   }
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3 font-inter">
-      <p className="flex min-w-[16rem] flex-1 items-start gap-2 text-[13px] leading-5 text-ink-faint">
+      <p className="flex min-w-[16rem] flex-1 items-start gap-2 text-body leading-5 text-ink-faint">
         <Info className="mt-0.5 size-4 shrink-0" aria-hidden />
         {LEFT_BEHIND}
       </p>
@@ -1376,7 +1376,7 @@ export function ImportConversationsDialog({
                   {showSkeleton ? (
                     <>
                       <Skeleton className="size-[18px] rounded-[5px]" />
-                      <span className="flex items-center gap-1.5 text-[13px] text-ink-faint">
+                      <span className="flex items-center gap-1.5 text-body text-ink-faint">
                         <Loader2
                           className="size-4 animate-spin motion-reduce:animate-none"
                           aria-hidden
@@ -1394,7 +1394,7 @@ export function ImportConversationsDialog({
                         aria-label="Select all"
                         onChange={toggleAll}
                       />
-                      <span className="min-w-0 flex-1 truncate text-[13px] text-ink-faint tabular-nums">
+                      <span className="min-w-0 flex-1 truncate text-body text-ink-faint tabular-nums">
                         {selectedIds.length === 0 ? (
                           'Select all'
                         ) : (
@@ -1418,7 +1418,7 @@ export function ImportConversationsDialog({
                           aria-label="Searching"
                         />
                       ) : countLabel ? (
-                        <span className="shrink-0 text-[13px] text-ink-faint tabular-nums">
+                        <span className="shrink-0 text-body text-ink-faint tabular-nums">
                           {countLabel}
                         </span>
                       ) : null}
@@ -1468,7 +1468,7 @@ export function ImportConversationsDialog({
                   {notices?.problems.map((problem) => (
                     <p
                       key={problem}
-                      className="mt-2 flex items-start gap-2 px-3 font-inter text-[13px] leading-5 text-warn"
+                      className="mt-2 flex items-start gap-2 px-3 font-inter text-body leading-5 text-warn"
                     >
                       <TriangleAlert
                         className="mt-0.5 size-4 shrink-0"

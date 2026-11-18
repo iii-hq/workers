@@ -122,11 +122,8 @@ export function EmailPrompt() {
     >
       <DialogContent
         className="flex w-[calc(100%-24px)] max-w-[420px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
-        onOpenAutoFocus={(event) => {
-          // The address field, not the close button, takes the first focus.
-          event.preventDefault()
-          inputRef.current?.focus()
-        }}
+        // The address field, not the close button, takes the first focus.
+        initialFocus={() => inputRef.current}
       >
         {sentTo ? (
           <div
@@ -140,15 +137,15 @@ export function EmailPrompt() {
               >
                 <MailCheck className="size-5" strokeWidth={1.75} />
               </span>
-              <DialogTitle className="mt-4 pr-8 font-inter text-[16px] leading-6 font-semibold">
+              <DialogTitle className="mt-4 pr-8 font-inter text-base leading-6 font-semibold">
                 Check your inbox
               </DialogTitle>
-              <DialogDescription className="mt-1.5 font-inter text-[14px] leading-[22px] text-pretty text-ink-faint">
+              <DialogDescription className="mt-1.5 font-inter text-sm leading-[22px] text-pretty text-ink-faint">
                 We sent a confirmation link to{' '}
                 <span className="font-medium break-all text-ink">{sentTo}</span>
                 . Click it to confirm, and the updates will start.
               </DialogDescription>
-              <p className="mt-3 font-inter text-[13px] leading-5 text-ink-faint">
+              <p className="mt-3 font-inter text-body leading-5 text-ink-faint">
                 Can&apos;t find it? Check your spam folder. Already confirmed
                 this address? You&apos;re all set.
               </p>
@@ -157,7 +154,7 @@ export function EmailPrompt() {
               <Button
                 type="button"
                 variant="ghost"
-                className="-ml-2 h-9 px-2 text-[14px]"
+                className="-ml-2 h-9 px-2 text-sm"
                 onClick={changeAddress}
               >
                 Use a different email
@@ -165,7 +162,7 @@ export function EmailPrompt() {
               <Button
                 type="button"
                 variant="primary"
-                className="h-9 text-[14px]"
+                className="h-9 text-sm"
                 onClick={onClose}
                 autoFocus
               >
@@ -190,10 +187,10 @@ export function EmailPrompt() {
               >
                 <Mail className="size-5" strokeWidth={1.75} />
               </span>
-              <DialogTitle className="mt-4 pr-8 font-inter text-[16px] leading-6 font-semibold">
+              <DialogTitle className="mt-4 pr-8 font-inter text-base leading-6 font-semibold">
                 Get iii product updates
               </DialogTitle>
-              <DialogDescription className="mt-1.5 font-inter text-[14px] leading-[22px] text-pretty text-ink-faint">
+              <DialogDescription className="mt-1.5 font-inter text-sm leading-[22px] text-pretty text-ink-faint">
                 Roadmap news, releases and guides from the iii team. We
                 won&apos;t share your email with anyone.
               </DialogDescription>
@@ -220,7 +217,7 @@ export function EmailPrompt() {
                 <p
                   id={errorId}
                   role="alert"
-                  className="mt-2 font-inter text-[13px] leading-5 text-alert"
+                  className="mt-2 font-inter text-body leading-5 text-alert"
                 >
                   {error}
                 </p>
@@ -230,7 +227,7 @@ export function EmailPrompt() {
               <Button
                 type="button"
                 variant="ghost"
-                className="-ml-2 h-9 px-2 text-[14px]"
+                className="-ml-2 h-9 px-2 text-sm"
                 disabled={sending}
                 onClick={onDismiss}
               >
@@ -240,7 +237,7 @@ export function EmailPrompt() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="h-9 text-[14px]"
+                  className="h-9 text-sm"
                   disabled={sending}
                   onClick={close}
                 >
@@ -249,7 +246,7 @@ export function EmailPrompt() {
                 <Button
                   type="submit"
                   variant="primary"
-                  className="h-9 min-w-[104px] text-[14px]"
+                  className="h-9 min-w-[104px] text-sm"
                   disabled={sending || !isEmailish(email)}
                   aria-busy={sending || undefined}
                 >

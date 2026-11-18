@@ -348,7 +348,7 @@ export function FunctionsPage({
             onRetry={catalog.reload}
           />
         ) : catalog.data === null ? (
-          <CatalogListSkeleton label="loading functions" />
+          <CatalogListSkeleton label="Loading functions" />
         ) : shown === 0 ? (
           <EmptyState
             title={

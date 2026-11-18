@@ -25,13 +25,13 @@
 //! exactly two shapes — wake the owner, or call a plain function — and never
 //! creates an agent.
 
-use iii_sdk::protocol::CallRequest;
 use iii_sdk::Observed;
-use schemars::gen::SchemaGenerator;
-use schemars::schema::Schema;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::Schema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::bindings::Binding;
 use crate::conditions::{self, Skip};
@@ -41,8 +41,7 @@ use crate::subscriptions::fired;
 use crate::types::message::AgentMessage;
 
 pub const DELIVER_ID: &str = "harness::observer::deliver";
-pub const DELIVER_DESC: &str =
-    "Internal target of every observer an agent created with harness::observe: evaluates the \
+pub const DELIVER_DESC: &str = "Internal target of every observer an agent created with harness::observe: evaluates the \
      binding's conditions, projects the observed call's output into the target's payload, and \
      dispatches it (a wake into the owner session, or a plain function call). Receives the \
      Observed envelope from iii's delivery, or the payload as sent from a call through the \
@@ -264,6 +263,9 @@ pub async fn handle(
     // redelivered fire find the budget spent — and the compare-and-set is what
     // stops two SIMULTANEOUS fires taking the same ordinal, which lost a
     // delivery and let a bounded lifecycle over-spend.
+    // Marked before the claim, so no binding pass here sees the spent record
+    // without it: a claimed wake keeps its session parked until `retire` below.
+    let in_flight = deps.deliveries.enter(&binding.id);
     let claimed = match store.claim_fire(&binding).await {
         Ok(crate::bindings::ClaimOutcome::Claimed(b)) => *b,
         Ok(crate::bindings::ClaimOutcome::Exhausted(current)) => {
@@ -318,8 +320,10 @@ pub async fn handle(
 
     let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
 
-    if retiring {
-        retire(deps, &claimed).await;
+    if retiring && !retire(deps, &claimed).await {
+        // The next binding pass cleans up the spent record this left.
+        drop(in_flight);
+        deps.kicks.bindings.notify_one();
     }
 
     let note = outcome
@@ -452,6 +456,10 @@ fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
             "`{target}` is an internal harness function and cannot be a deferred call target"
         ));
     }
+    // A binding stored before this refusal existed must not fire either.
+    if let Some(e) = crate::functions::observe::unstamped_target_refusal(target) {
+        return Err(e);
+    }
     if !CompiledPolicy::from(binding.capability.as_ref()).allows(target) {
         return Err(format!(
             "`{target}` is outside the policy this binding was created with"
@@ -518,17 +526,16 @@ async fn call_target(
         return (payload, Err(e));
     }
     // A starting scaffold runs compose::add inside the ide, unseen by approval.
-    if crate::call::scaffold_starts(target, &payload) {
-        if let Err(e) = crate::functions::observe::approval_allows_unattended(
+    if crate::call::scaffold_starts(target, &payload)
+        && let Err(e) = crate::functions::observe::approval_allows_unattended(
             deps,
             crate::functions::observe::COMPOSE_ADD_ID,
             &binding.owner.session_id,
             &serde_json::json!({}),
         )
         .await
-        {
-            return (payload, Err(e));
-        }
+    {
+        return (payload, Err(e));
     }
     // AWAITED, not fire-and-forget. A void dispatch reports success the moment
     // the engine accepts it, so a target that then fails — a bad statement, a
@@ -559,10 +566,9 @@ async fn call_target(
         .as_ref()
         .err()
         .is_some_and(crate::clients::engine::invocation_outcome_unknown);
-    if !ambiguous {
-        if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
-            return (payload, Err(error.to_string()));
-        }
+    if !ambiguous && let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await
+    {
+        return (payload, Err(error.to_string()));
     }
     (payload, outcome.map_err(|e| e.to_string()))
 }
@@ -978,6 +984,7 @@ mod tests {
             capability: None,
             dedup_key: None,
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         };
         let big = json!({ "blob": "x".repeat(20_000) });
@@ -1193,8 +1200,10 @@ mod tests {
         b.target.payload = Some(json!({ "session_id": "s_owner", "label": "orders-ready" }));
         b.dedup_key.as_mut().unwrap()["label"] = json!("orders-ready");
         assert_eq!(binding_label(&b), Some("orders-ready"));
-        assert!(notification_text(&b, &json!({ "count": 3 }))
-            .starts_with("[notification] orders-ready:"));
+        assert!(
+            notification_text(&b, &json!({ "count": 3 }))
+                .starts_with("[notification] orders-ready:")
+        );
     }
 
     #[test]
@@ -1398,6 +1407,7 @@ mod tests {
             capability: None,
             dedup_key: Some(json!({ "function_id": function_id })),
             fires: 0,
+            claimed_at: None,
             created_at: 0,
         }
     }
@@ -1453,6 +1463,23 @@ mod tests {
             call_allowed(&b, "run::record").is_err(),
             "no frozen capability must deny, not pass"
         );
+    }
+
+    /// Prevents: a stored binding firing workflow::start without the pre-call
+    /// hook that stamps the caller's folder, even inside its frozen capability.
+    #[test]
+    fn a_stored_workflow_start_binding_does_not_fire() {
+        use crate::types::turn::FunctionPolicy;
+        let mut b = wake_binding("state::on-changed");
+        b.target = crate::bindings::BindingTarget::new("workflow::start");
+        b.capability = Some(FunctionPolicy {
+            allow: vec!["workflow::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        });
+        let err = call_allowed(&b, "workflow::start").unwrap_err();
+        assert!(err.contains("skips the pre-call hook"), "got: {err}");
+        assert!(call_allowed(&b, "workflow::status").is_ok());
     }
 
     /// What a ƒ-call target actually receives — the value the delivery record

@@ -3,6 +3,7 @@ import {
   Chip,
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -228,14 +229,16 @@ export function GroupDetailView({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Investigate</DropdownMenuLabel>
-        <MenuItem
-          label="Investigate"
-          hint={repositoryName ? `${repositoryName}/` : 'trace only'}
-          onSelect={() => investigate('assisted')}
-        />
-        <MenuItem label="Investigate with…" hint="pick a model" onSelect={() => setPicking(true)} />
-        <MenuItem label="Open in chat" hint="no first pass" onSelect={() => investigate('chat')} />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Investigate</DropdownMenuLabel>
+          <MenuItem
+            label="Investigate"
+            hint={repositoryName ? `${repositoryName}/` : 'trace only'}
+            onSelect={() => investigate('assisted')}
+          />
+          <MenuItem label="Investigate with" hint="pick a model" onSelect={() => setPicking(true)} />
+          <MenuItem label="Open in chat" hint="no first pass" onSelect={() => investigate('chat')} />
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -249,24 +252,26 @@ export function GroupDetailView({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Resolve</DropdownMenuLabel>
-        <MenuItem
-          label="Resolve now"
-          hint="reopens on any new occurrence"
-          onSelect={() => act(() => api.resolve(group.id, false), 'Resolved. A new occurrence reopens it as a regression.')}
-        />
-        <MenuItem
-          label="Resolve until version change"
-          hint={[group.service_name, group.last_version].filter(Boolean).join(' ')}
-          onSelect={() =>
-            act(
-              () => api.resolve(group.id, true),
-              group.last_version
-                ? `Resolved on ${group.last_version}. Occurrences on this version keep counting without reopening.`
-                : 'Resolved until the version changes.',
-            )
-          }
-        />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Resolve</DropdownMenuLabel>
+          <MenuItem
+            label="Resolve now"
+            hint="reopens on any new occurrence"
+            onSelect={() => act(() => api.resolve(group.id, false), 'Resolved. A new occurrence reopens it as a regression.')}
+          />
+          <MenuItem
+            label="Resolve until version change"
+            hint={[group.service_name, group.last_version].filter(Boolean).join(' ')}
+            onSelect={() =>
+              act(
+                () => api.resolve(group.id, true),
+                group.last_version
+                  ? `Resolved on ${group.last_version}. Occurrences on this version keep counting without reopening.`
+                  : 'Resolved until the version changes.',
+              )
+            }
+          />
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -279,21 +284,23 @@ export function GroupDetailView({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Ignore until…</DropdownMenuLabel>
-        <MenuItem label="Forever" onSelect={() => act(() => api.ignore(group.id, { kind: 'forever' }), 'Ignored forever.')} />
-        <MenuItem
-          label="50 more occurrences"
-          onSelect={() =>
-            act(() => api.ignore(group.id, { kind: 'occurrences', count: 50 }), 'Ignored until 50 more occurrences.')
-          }
-        />
-        <MenuItem
-          label={`${group.service_name} version changes`}
-          hint={group.last_version}
-          onSelect={() =>
-            act(() => api.ignore(group.id, { kind: 'version_change' }), `Ignored until ${group.service_name} changes version.`)
-          }
-        />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Ignore until</DropdownMenuLabel>
+          <MenuItem label="Forever" onSelect={() => act(() => api.ignore(group.id, { kind: 'forever' }), 'Ignored forever.')} />
+          <MenuItem
+            label="50 more occurrences"
+            onSelect={() =>
+              act(() => api.ignore(group.id, { kind: 'occurrences', count: 50 }), 'Ignored until 50 more occurrences.')
+            }
+          />
+          <MenuItem
+            label={`${group.service_name} version changes`}
+            hint={group.last_version}
+            onSelect={() =>
+              act(() => api.ignore(group.id, { kind: 'version_change' }), `Ignored until ${group.service_name} changes version.`)
+            }
+          />
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   )

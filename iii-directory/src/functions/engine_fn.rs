@@ -15,7 +15,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ────────────────── request / response shapes ─────────────────────────
 

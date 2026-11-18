@@ -1,0 +1,242 @@
+{
+  "about": "Flat workflow::start requests and the WorkflowDef each one stores, as serde serializes it: lower() followed by add_read_dependencies (idempotent), before the model step fills inherited models. The run `input` is not part of the stored definition. Read by the worker's lower() test and by the ADE parsers test, so the two lowerings cannot drift.",
+  "cases": [
+    {
+      "name": "one node",
+      "request": {
+        "nodes": {
+          "summary": { "task": "Summarize the README of this repository in five bullets." }
+        }
+      },
+      "stored": {
+        "version": 1,
+        "nodes": {
+          "summary": {
+            "agent": {},
+            "input": { "from": "run_input", "template": "Summarize the README of this repository in five bullets." },
+            "depends_on": []
+          }
+        },
+        "output": { "from": "node:summary" }
+      }
+    },
+    {
+      "name": "chain with a json node",
+      "request": {
+        "input": { "topic": "durable workflows" },
+        "nodes": {
+          "research": {
+            "task": "List the key findings on the topic.",
+            "schema": {
+              "type": "object",
+              "properties": { "findings": { "type": "array", "items": { "type": "string" } } },
+              "required": ["findings"]
+            }
+          },
+          "report": { "reads": "research", "task": "Write a one-page report from these findings." }
+        }
+      },
+      "stored": {
+        "version": 1,
+        "nodes": {
+          "report": {
+            "agent": {},
+            "input": { "from": "node:research", "template": "Write a one-page report from these findings." },
+            "depends_on": ["research"]
+          },
+          "research": {
+            "agent": {
+              "output": {
+                "type": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": { "findings": { "type": "array", "items": { "type": "string" } } },
+                  "required": ["findings"]
+                }
+              }
+            },
+            "input": { "from": "run_input", "template": "List the key findings on the topic." },
+            "depends_on": []
+          }
+        },
+        "output": { "from": "node:report" }
+      }
+    },
+    {
+      "name": "loop with a fanout and an explicit output",
+      "request": {
+        "input": { "goal": "..." },
+        "max_concurrency": 4,
+        "nodes": {
+          "work": { "task": "Do the task." },
+          "check": {
+            "reads": "work",
+            "task": "Verify the claim. Set verdict to fail when it does not hold.",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "verdict": { "type": "string", "enum": ["pass", "fail"] },
+                "reasons": { "type": "array", "items": { "type": "string" } }
+              },
+              "required": ["verdict"]
+            },
+            "loop": { "body": ["work"], "while": { "field": "verdict", "equals": "fail" }, "max_repeats": 2 }
+          },
+          "critic": {
+            "reads": "check",
+            "task": "List loose ends as findings.",
+            "schema": {
+              "type": "object",
+              "properties": { "findings": { "type": "array", "items": { "type": "string" } } },
+              "required": ["findings"]
+            }
+          },
+          "refute": { "fanout": "critic.findings", "task": "Try to refute this finding." }
+        },
+        "output": ["critic", "refute"]
+      },
+      "stored": {
+        "version": 1,
+        "nodes": {
+          "check": {
+            "agent": {
+              "output": {
+                "type": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "verdict": { "type": "string", "enum": ["pass", "fail"] },
+                    "reasons": { "type": "array", "items": { "type": "string" } }
+                  },
+                  "required": ["verdict"]
+                }
+              }
+            },
+            "input": { "from": "node:work", "template": "Verify the claim. Set verdict to fail when it does not hold." },
+            "depends_on": ["work"],
+            "loop": { "body": ["work"], "while": { "field": "verdict", "equals": "fail" }, "max_repeats": 2 }
+          },
+          "critic": {
+            "agent": {
+              "output": {
+                "type": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": { "findings": { "type": "array", "items": { "type": "string" } } },
+                  "required": ["findings"]
+                }
+              }
+            },
+            "input": { "from": "node:check", "template": "List loose ends as findings." },
+            "depends_on": ["check"]
+          },
+          "refute": {
+            "agent": {},
+            "input": { "from": "fanout_item", "template": "Try to refute this finding." },
+            "depends_on": ["critic"],
+            "fanout": { "over": "node:critic.findings" }
+          },
+          "work": {
+            "agent": {},
+            "input": { "from": "run_input", "template": "Do the task." },
+            "depends_on": []
+          }
+        },
+        "output": { "from": ["node:critic", "node:refute"] },
+        "max_concurrency": 4
+      }
+    },
+    {
+      "name": "critics with angles over one draft",
+      "request": {
+        "input": { "feature": "..." },
+        "nodes": {
+          "draft": { "task": "Write a one-page design note for the feature." },
+          "critic": {
+            "fanout": ["security", "cost", "operability"],
+            "reads": "draft",
+            "task": "Criticize the draft in `input` from the angle in `fanout_item`. List concrete problems."
+          },
+          "final": { "reads": ["draft", "critic"], "task": "Revise the draft. Fix every valid problem in `critic`." }
+        }
+      },
+      "stored": {
+        "version": 1,
+        "nodes": {
+          "critic": {
+            "agent": {},
+            "input": {
+              "from": "node:draft",
+              "template": "Criticize the draft in `input` from the angle in `fanout_item`. List concrete problems."
+            },
+            "depends_on": ["draft"],
+            "fanout": { "items": ["security", "cost", "operability"] }
+          },
+          "draft": {
+            "agent": {},
+            "input": { "from": "run_input", "template": "Write a one-page design note for the feature." },
+            "depends_on": []
+          },
+          "final": {
+            "agent": {},
+            "input": { "from": ["node:draft", "node:critic"], "template": "Revise the draft. Fix every valid problem in `critic`." },
+            "depends_on": ["draft", "critic"]
+          }
+        },
+        "output": { "from": "node:final" }
+      }
+    },
+    {
+      "name": "fanout path that also reads its source, several unread nodes",
+      "request": {
+        "nodes": {
+          "plan": {
+            "task": "List the docs to review.",
+            "schema": {
+              "type": "object",
+              "properties": { "docs": { "type": "array", "items": { "type": "string" } } },
+              "required": ["docs"]
+            }
+          },
+          "review": {
+            "fanout": "plan.docs",
+            "reads": "plan",
+            "task": "Review the doc in `fanout_item` against the plan in `input`."
+          },
+          "notes": { "task": "Write the release notes." }
+        }
+      },
+      "stored": {
+        "version": 1,
+        "nodes": {
+          "notes": {
+            "agent": {},
+            "input": { "from": "run_input", "template": "Write the release notes." },
+            "depends_on": []
+          },
+          "plan": {
+            "agent": {
+              "output": {
+                "type": "json",
+                "schema": {
+                  "type": "object",
+                  "properties": { "docs": { "type": "array", "items": { "type": "string" } } },
+                  "required": ["docs"]
+                }
+              }
+            },
+            "input": { "from": "run_input", "template": "List the docs to review." },
+            "depends_on": []
+          },
+          "review": {
+            "agent": {},
+            "input": { "from": "node:plan", "template": "Review the doc in `fanout_item` against the plan in `input`." },
+            "depends_on": ["plan"],
+            "fanout": { "over": "node:plan.docs" }
+          }
+        },
+        "output": { "from": ["node:notes", "node:review"] }
+      }
+    }
+  ]
+}

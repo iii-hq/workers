@@ -15,14 +15,35 @@
 /** Chat composers that take outside input, by id: when each was last used
  *  (0 = not yet), in the order they mounted. */
 const composers = new Map<string, number>()
+/** The chat session each composer sends into, when it has one. */
+const composerSessions = new Map<string, string>()
 let usedClock = 0
 
-/** A chat composer that takes outside input is mounted; returns its removal. */
-export function registerComposer(id: string): () => void {
+/** A chat composer that takes outside input is mounted; returns its removal.
+ *  `sessionId` is the chat it sends into, so a surface inside that chat (a
+ *  question card, say) can address it rather than the one used last. */
+export function registerComposer(id: string, sessionId?: string): () => void {
   composers.set(id, 0)
+  if (sessionId) composerSessions.set(id, sessionId)
   return () => {
     composers.delete(id)
+    if (composerSessions.get(id) === sessionId) composerSessions.delete(id)
   }
+}
+
+/** The mounted composer that sends into `sessionId`; `null` when none is.
+ *  With the same chat open twice, the one used last. */
+export function composerForSession(sessionId: string): string | null {
+  let target: string | null = null
+  let latest = -1
+  for (const [id, usedAt] of composers) {
+    if (composerSessions.get(id) !== sessionId) continue
+    if (usedAt > latest) {
+      target = id
+      latest = usedAt
+    }
+  }
+  return target
 }
 
 /** The person put the caret in this composer: it is the one used last. */
@@ -133,13 +154,16 @@ const inserts = bufferedBus<ComposerInsert>()
 
 export function insertIntoComposer(
   text: string,
-  options: { inline?: boolean; submit?: boolean } = {},
+  options: { inline?: boolean; submit?: boolean; composerId?: string } = {},
 ): void {
-  inserts.publish({
-    text,
-    inline: options.inline === true,
-    submit: options.submit === true,
-  })
+  inserts.publish(
+    {
+      text,
+      inline: options.inline === true,
+      submit: options.submit === true,
+    },
+    options.composerId ?? composerTarget(),
+  )
 }
 
 /** Listen for inserts; with `composerId`, only the ones addressed to it. */
@@ -176,9 +200,9 @@ type ComposerAttachListener = (files: File[]) => void
 const attachments = bufferedBus<File[]>()
 
 /** Hand files to the composer as attachments; buffered like inserts. */
-export function attachToComposer(files: File[]): void {
+export function attachToComposer(files: File[], composerId?: string): void {
   if (files.length === 0) return
-  attachments.publish(files)
+  attachments.publish(files, composerId ?? composerTarget())
 }
 
 export function onComposerAttach(

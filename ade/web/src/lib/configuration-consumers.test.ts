@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 import {
   loadApprovalGateConfig,
@@ -11,9 +12,11 @@ import {
 } from './console-config'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
+vi.mock('@/lib/function-presence', () => ({ functionRegistered: vi.fn() }))
 const call = vi.fn()
 beforeEach(() => {
   call.mockReset()
+  vi.mocked(functionRegistered).mockResolvedValue(true)
   vi.mocked(getIiiClient).mockResolvedValue({ call } as unknown as Awaited<
     ReturnType<typeof getIiiClient>
   >)
@@ -92,5 +95,15 @@ describe('namespace-scoped configuration consumers', () => {
         rules: [{ function: 'state::get', action: 'allow', modes: ['auto'] }],
       },
     })
+  })
+
+  it('reads no approval-gate configuration when no approval-gate worker runs', async () => {
+    vi.mocked(functionRegistered).mockResolvedValue(false)
+    expect(await loadApprovalGateConfig()).toEqual({
+      default_mode: 'manual',
+      rules: [],
+    })
+    // Nothing was called: an unregistered function is an engine error each time.
+    expect(call).not.toHaveBeenCalled()
   })
 })

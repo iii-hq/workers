@@ -48,10 +48,10 @@ use serde_json::json;
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::events;
 use crate::fs_source::{self, FsAgent, FsSkill};
-use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
+use crate::functions::error::{NextAction, invalid_input_message, not_found_message};
 use crate::functions::prompts::validate_name;
 use crate::functions::skills::{
-    find_fs_skill_in, resolve_visible_skills, RegisteredWorkersCache, SKILL_BODY_MAX_BYTES,
+    RegisteredWorkersCache, SKILL_BODY_MAX_BYTES, find_fs_skill_in, resolve_visible_skills,
 };
 use crate::kits::origin::{AgentSource, OriginIndex, SourceKind};
 use crate::sources::{mark_self_write, write_file_atomic};
@@ -1207,12 +1207,16 @@ mod tests {
         let by_id = |id: &str| out.agents.iter().find(|a| a.id == id).unwrap();
         assert!(by_id("ghost").hidden);
         assert!(!by_id("seen").hidden);
-        assert!(serde_json::to_string(by_id("ghost"))
-            .unwrap()
-            .contains("\"hidden\":true"));
-        assert!(!serde_json::to_string(by_id("seen"))
-            .unwrap()
-            .contains("hidden"));
+        assert!(
+            serde_json::to_string(by_id("ghost"))
+                .unwrap()
+                .contains("\"hidden\":true")
+        );
+        assert!(
+            !serde_json::to_string(by_id("seen"))
+                .unwrap()
+                .contains("hidden")
+        );
     }
 
     /// `composer_placeholder` survives create → get → an update of another
@@ -1365,9 +1369,11 @@ mod tests {
         assert_eq!(get("back").skills_index, Some(true));
         let plain = get("plain");
         assert_eq!(plain.skills_index, None);
-        assert!(!serde_json::to_string(&plain)
-            .unwrap()
-            .contains("skills_index"));
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("skills_index")
+        );
     }
 
     /// Like `hidden`, a non-boolean value makes the profile invalid: a scan
@@ -1603,9 +1609,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated.name, "Captain v2");
-        assert!(std::fs::read_to_string(&dest)
-            .unwrap()
-            .contains("New prompt."));
+        assert!(
+            std::fs::read_to_string(&dest)
+                .unwrap()
+                .contains("New prompt.")
+        );
 
         delete_agent(
             &cfg,
@@ -1961,10 +1969,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(get(&cfg, "orphan2", false)
-            .unwrap()
-            .inheritance_error
-            .is_some());
+        assert!(
+            get(&cfg, "orphan2", false)
+                .unwrap()
+                .inheritance_error
+                .is_some()
+        );
     }
 
     #[test]

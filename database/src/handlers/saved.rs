@@ -22,7 +22,7 @@ use crate::error::DbError;
 use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::RwLock;

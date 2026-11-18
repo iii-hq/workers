@@ -247,14 +247,14 @@ impl SnapshotRepo {
         max_file_bytes: u64,
         min_free_bytes: u64,
     ) -> Result<String, String> {
-        if let Some(free) = free_bytes(&self.git_dir) {
-            if free < min_free_bytes {
-                return Err(format!(
-                    "skipped: {} MiB free on the turn store's disk, {} MiB needed",
-                    free >> 20,
-                    min_free_bytes >> 20
-                ));
-            }
+        if let Some(free) = free_bytes(&self.git_dir)
+            && free < min_free_bytes
+        {
+            return Err(format!(
+                "skipped: {} MiB free on the turn store's disk, {} MiB needed",
+                free >> 20,
+                min_free_bytes >> 20
+            ));
         }
         let index = self.index_path(session_stem);
         if !index.is_file() {
@@ -959,9 +959,11 @@ mod tests {
             .snapshot("s1", DEFAULT_SNAPSHOT_MAX_FILE_BYTES, 0)
             .await
             .unwrap();
-        assert!(listed(&old, &tree)
-            .await
-            .contains(&"data/iii.db".to_string()));
+        assert!(
+            listed(&old, &tree)
+                .await
+                .contains(&"data/iii.db".to_string())
+        );
 
         let repo = SnapshotRepo::open_with(&store.join("repos"), &root, &store, Some(&root))
             .await

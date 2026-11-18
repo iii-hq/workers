@@ -1,12 +1,12 @@
 //! Engine-backed integration suite — real engine, real router, real provider,
 //! stubbed upstream. Self-skips when no engine is available.
-use iii_sdk::{register_worker, CallRequest, IIIClient};
+use iii_sdk::{CallRequest, IIIClient, register_worker};
 use llm_router::register::register_router;
 use parking_lot::Mutex;
 use provider_opencode_go::register::register_provider;
-use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 // ── engine bootstrap ── shared with llm-router and every provider suite; see
 // llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +

@@ -1,4 +1,4 @@
-import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { ImageOff, Maximize, X, ZoomIn, ZoomOut } from 'lucide-react'
 import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
@@ -102,6 +102,7 @@ export function ImageViewer({
   actions,
 }: ImageViewerProps) {
   const openerRef = React.useRef<HTMLElement | null>(null)
+  const popupRef = React.useRef<HTMLDivElement>(null)
   React.useLayoutEffect(() => {
     if (open) {
       const active = document.activeElement
@@ -109,23 +110,26 @@ export function ImageViewer({
     }
   }, [open])
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => onOpenChange(next)}
+    >
       <DialogPrimitive.Portal>
         <PortalScope>
-          <DialogPrimitive.Overlay className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/85" />
-          <DialogPrimitive.Content
+          <DialogPrimitive.Backdrop className="iii-ui-motion-overlay fixed inset-0 z-50 bg-black/85" />
+          <DialogPrimitive.Popup
+            ref={popupRef}
             className="iii-ui-motion-panel fixed inset-0 z-50 flex flex-col font-sans text-ink focus-visible:outline-none"
-            onOpenAutoFocus={(event) => {
-              event.preventDefault()
-              const content = event.currentTarget as HTMLElement | null
-              content
-                ?.querySelector<HTMLElement>('[data-image-viewer-root]')
-                ?.focus()
-            }}
-            onCloseAutoFocus={(event) => {
-              event.preventDefault()
+            // The stage, not the first button, takes focus as the viewer opens;
+            // the control that opened it gets focus back when it closes.
+            initialFocus={() =>
+              popupRef.current?.querySelector<HTMLElement>(
+                '[data-image-viewer-root]',
+              ) ?? null
+            }
+            finalFocus={() => {
               const opener = openerRef.current
-              if (opener?.isConnected) opener.focus()
+              return opener?.isConnected ? opener : null
             }}
           >
             <DialogPrimitive.Title className="sr-only">
@@ -143,7 +147,7 @@ export function ImageViewer({
               actions={actions}
               onClose={() => onOpenChange(false)}
             />
-          </DialogPrimitive.Content>
+          </DialogPrimitive.Popup>
         </PortalScope>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -504,11 +508,11 @@ function Stage({
     >
       <div className="relative z-10 flex shrink-0 flex-col items-end gap-2 p-3 @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-3 @2xl:p-4">
         <div className="pointer-events-auto order-2 max-w-full min-w-0 rounded-md bg-panel-raised/95 px-3 py-2 shadow-floating @2xl:order-1 @2xl:max-w-[40%]">
-          <div className="truncate font-sans text-[13px] font-medium text-ink">
+          <div className="truncate font-sans text-body font-medium text-ink">
             {title ?? 'Image'}
           </div>
           {description || image ? (
-            <div className="truncate font-mono text-[11px] text-ink-faint tabular-nums">
+            <div className="truncate font-mono text-meta text-ink-faint tabular-nums">
               {[image ? `${image.width} × ${image.height}` : null, description]
                 .filter(Boolean)
                 .join(' · ')}
@@ -529,7 +533,7 @@ function Stage({
           <output
             aria-live="off"
             aria-label="Zoom"
-            className="min-w-[3.5rem] text-center font-mono text-[12px] text-ink tabular-nums"
+            className="min-w-[3.5rem] text-center font-mono text-xs text-ink tabular-nums"
           >
             {zoomable ? zoomPercent(scale) : '–'}
           </output>
@@ -565,7 +569,7 @@ function Stage({
             aria-pressed={zoomable && atActual}
             onClick={() => zoomTo(1, { x: 0, y: 0 }, true)}
             className={cn(
-              'size-11 sm:size-[30px] font-mono text-[11px] font-semibold tracking-tight',
+              'size-11 sm:size-[30px] font-mono text-meta font-semibold tracking-tight',
               zoomable && atActual && 'bg-surface-selected text-ink',
             )}
           >
@@ -622,6 +626,7 @@ function Stage({
             // theme surface they were rendered for, not on the black scrim:
             // light-theme diagrams draw dark strokes and text.
             className={cn(
+              'outline -outline-offset-1 outline-black/10 dark:outline-white/10',
               'max-w-none shrink-0 origin-center select-none bg-bg',
               phase.kind === 'ready' ? 'opacity-100' : 'opacity-0',
               animated &&
@@ -634,7 +639,7 @@ function Stage({
         {phase.kind === 'loading' ? (
           <div
             role="status"
-            className="absolute rounded-md bg-panel-raised/95 px-3 py-2 font-sans text-[12px] text-ink-faint shadow-floating"
+            className="absolute rounded-md bg-panel-raised/95 px-3 py-2 font-sans text-xs text-ink-faint shadow-floating"
           >
             Loading image…
           </div>
@@ -645,12 +650,12 @@ function Stage({
             className="absolute flex max-w-sm flex-col items-center gap-2 rounded-md bg-panel-raised px-5 py-4 text-center shadow-floating"
           >
             <ImageOff aria-hidden className="size-5 text-ink-faint" />
-            <div className="font-sans text-[13px] font-medium text-ink">
+            <div className="font-sans text-body font-medium text-ink">
               {phase.kind === 'error'
                 ? 'Cannot show this image'
                 : 'Image not available'}
             </div>
-            <div className="font-sans text-[12px] text-ink-faint">
+            <div className="font-sans text-xs text-ink-faint">
               {phase.message}
             </div>
           </div>
@@ -694,7 +699,7 @@ export const ImageThumbnailButton = React.forwardRef<
     type="button"
     aria-label={`View ${title}`}
     className={cn(
-      'iii-ui-motion-control inline-flex cursor-zoom-in items-center justify-center rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+      'iii-ui-motion-control inline-flex cursor-zoom-in items-center justify-center rounded-xs focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
       className,
     )}
     {...props}

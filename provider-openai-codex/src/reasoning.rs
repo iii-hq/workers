@@ -142,17 +142,17 @@ pub fn native_reasoning_effort(
     else {
         return Err("reasoning_effort must be a non-empty string".into());
     };
-    if let Some(supported) = model_meta.and_then(|model| model.reasoning_efforts.as_ref()) {
-        if !supported.iter().any(|option| option.effort == effort) {
-            let allowed = supported
-                .iter()
-                .map(|option| option.effort.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "reasoning effort {effort:?} is not supported by this model; choose one of: {allowed}"
-            ));
-        }
+    if let Some(supported) = model_meta.and_then(|model| model.reasoning_efforts.as_ref())
+        && !supported.iter().any(|option| option.effort == effort)
+    {
+        let allowed = supported
+            .iter()
+            .map(|option| option.effort.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "reasoning effort {effort:?} is not supported by this model; choose one of: {allowed}"
+        ));
     }
     Ok(Some(effort.to_string()))
 }
@@ -306,11 +306,13 @@ mod tests {
             ),
             Ok(Some("ultra".into()))
         );
-        assert!(native_reasoning_effort(
-            Some(&serde_json::json!({ "reasoning_effort": "minimal" })),
-            Some(&model),
-        )
-        .unwrap_err()
-        .contains("choose one of: ultra"));
+        assert!(
+            native_reasoning_effort(
+                Some(&serde_json::json!({ "reasoning_effort": "minimal" })),
+                Some(&model),
+            )
+            .unwrap_err()
+            .contains("choose one of: ultra")
+        );
     }
 }

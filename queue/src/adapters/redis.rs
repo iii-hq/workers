@@ -34,9 +34,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use redis::{aio::ConnectionManager, AsyncCommands, Client};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 

@@ -171,10 +171,10 @@ fn home_dir() -> Option<PathBuf> {
 /// The per-user cache base: `$XDG_CACHE_HOME` or `~/.cache` (Windows:
 /// `%LOCALAPPDATA%`).
 fn user_cache_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        if let Some(local) = non_empty_env("LOCALAPPDATA") {
-            return Some(PathBuf::from(local));
-        }
+    if cfg!(windows)
+        && let Some(local) = non_empty_env("LOCALAPPDATA")
+    {
+        return Some(PathBuf::from(local));
     }
     non_empty_env("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -221,17 +221,16 @@ impl SearchEnv {
     /// The search as this process sees the machine right now.
     pub fn current(cfg: &WorkerConfig) -> Self {
         let mut system_paths: Vec<PathBuf> = SYSTEM_PATHS.iter().map(PathBuf::from).collect();
-        if cfg!(target_os = "macos") {
-            if let Some(home) = home_dir() {
-                system_paths
-                    .push(home.join("Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
-            }
+        if cfg!(target_os = "macos")
+            && let Some(home) = home_dir()
+        {
+            system_paths
+                .push(home.join("Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
         }
-        if cfg!(windows) {
-            if let Some(local) = non_empty_env("LOCALAPPDATA") {
-                system_paths
-                    .push(PathBuf::from(local).join("Google\\Chrome\\Application\\chrome.exe"));
-            }
+        if cfg!(windows)
+            && let Some(local) = non_empty_env("LOCALAPPDATA")
+        {
+            system_paths.push(PathBuf::from(local).join("Google\\Chrome\\Application\\chrome.exe"));
         }
         Self {
             configured: (!cfg.executable.is_empty()).then(|| PathBuf::from(&cfg.executable)),

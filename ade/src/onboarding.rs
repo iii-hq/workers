@@ -36,7 +36,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::workspace_store::WorkspaceStore;
@@ -401,9 +401,9 @@ async fn load_onboarding(path: &Path) -> PromptsOutput {
 #[derive(Debug, Deserialize)]
 struct RawPromptsFile {
     #[serde(default)]
-    prompts: Option<Vec<serde_yaml::Value>>,
+    prompts: Option<Vec<serde_yaml_ng::Value>>,
     #[serde(default)]
-    kits: Option<Vec<serde_yaml::Value>>,
+    kits: Option<Vec<serde_yaml_ng::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,7 +413,7 @@ struct RawPrompt {
     agent: Option<String>,
     prompt: Option<String>,
     #[serde(default)]
-    models: Option<Vec<serde_yaml::Value>>,
+    models: Option<Vec<serde_yaml_ng::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,7 +431,7 @@ fn parse_onboarding(text: &str) -> PromptsOutput {
     if text.trim().is_empty() {
         return PromptsOutput::default();
     }
-    let file: RawPromptsFile = match serde_yaml::from_str(text) {
+    let file: RawPromptsFile = match serde_yaml_ng::from_str(text) {
         Ok(file) => file,
         Err(error) => {
             tracing::warn!(%error, "{PROMPTS_FILE} is not a valid onboarding file; the setup wizard shows no example prompts and installs no kits");
@@ -444,7 +444,7 @@ fn parse_onboarding(text: &str) -> PromptsOutput {
     }
 }
 
-fn parse_prompts(entries: Vec<serde_yaml::Value>) -> Vec<ExamplePrompt> {
+fn parse_prompts(entries: Vec<serde_yaml_ng::Value>) -> Vec<ExamplePrompt> {
     let total = entries.len();
     let mut prompts = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
@@ -467,7 +467,7 @@ fn parse_prompts(entries: Vec<serde_yaml::Value>) -> Vec<ExamplePrompt> {
 
 /// The kits to install: each a `<handle>/<name>` registry id, optionally
 /// `@<version>`, de-duplicated, at most [`MAX_KITS`].
-fn parse_kits(entries: Vec<serde_yaml::Value>) -> Vec<String> {
+fn parse_kits(entries: Vec<serde_yaml_ng::Value>) -> Vec<String> {
     let mut kits: Vec<String> = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
         let Some(kit) = entry.as_str().map(str::trim).filter(|kit| is_kit_ref(kit)) else {
@@ -511,8 +511,8 @@ fn is_kit_ref(value: &str) -> bool {
     id_ok && version_ok
 }
 
-fn prompt_entry(value: serde_yaml::Value) -> Result<ExamplePrompt, String> {
-    let raw: RawPrompt = serde_yaml::from_value(value).map_err(|error| error.to_string())?;
+fn prompt_entry(value: serde_yaml_ng::Value) -> Result<ExamplePrompt, String> {
+    let raw: RawPrompt = serde_yaml_ng::from_value(value).map_err(|error| error.to_string())?;
     let title = one_line(raw.title.as_deref()).ok_or("it has no title")?;
     within("title", &title, MAX_TITLE_CHARS)?;
     let description = one_line(raw.description.as_deref());
@@ -533,7 +533,7 @@ fn prompt_entry(value: serde_yaml::Value) -> Result<ExamplePrompt, String> {
         Some(agent) => {
             return Err(format!(
                 "{title:?} names an invalid agent profile {agent:?}"
-            ))
+            ));
         }
     };
     let raw_models = raw.models.unwrap_or_default();
@@ -564,8 +564,9 @@ fn prompt_entry(value: serde_yaml::Value) -> Result<ExamplePrompt, String> {
     })
 }
 
-fn prompt_model(value: serde_yaml::Value) -> Result<PromptModel, String> {
-    let raw: RawPromptModel = serde_yaml::from_value(value).map_err(|error| error.to_string())?;
+fn prompt_model(value: serde_yaml_ng::Value) -> Result<PromptModel, String> {
+    let raw: RawPromptModel =
+        serde_yaml_ng::from_value(value).map_err(|error| error.to_string())?;
     let provider = model_id("provider", raw.provider.as_deref())?;
     let model = model_id("model", raw.model.as_deref())?;
     let effort = match raw.effort.as_deref().map(str::trim) {

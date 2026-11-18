@@ -13,12 +13,12 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde_json::Value;
 
-use crate::adapters::{function_of, AttributeSource, ErrorEvent};
+use crate::adapters::{AttributeSource, ErrorEvent, function_of};
 use crate::evidence::{
-    filter_attributes, log_limit, EvidenceBundleV1, EvidenceEventV1, EvidenceLogV1, EvidenceSpanV1,
-    EvidenceTruncatedV1, EvidenceWorkerV1, EVIDENCE_VERSION,
+    EVIDENCE_VERSION, EvidenceBundleV1, EvidenceEventV1, EvidenceLogV1, EvidenceSpanV1,
+    EvidenceTruncatedV1, EvidenceWorkerV1, filter_attributes, log_limit,
 };
-use crate::{ids, ErrorSourceV1, Redactor};
+use crate::{ErrorSourceV1, Redactor, ids};
 
 /// Why a whole trace was not ingested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -76,7 +76,7 @@ describe('SandboxErrorView', () => {
     expect(html).toContain('Blocked function')
     expect(html).toContain('web::fetch')
     expect(html).toContain('How to resolve')
-    expect(html).toContain('agent.functions')
+    expect(html).toContain('node’s <code class="text-ink">functions</code>')
     expect(html).toContain('options.functions.allow')
   })
 })

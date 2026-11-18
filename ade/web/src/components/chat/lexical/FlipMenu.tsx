@@ -14,13 +14,13 @@ import { cn } from '@/lib/utils'
  * keeps working while we decide where the menu really goes:
  *
  * - With a `frameEl` (the composer card) the menu takes the card's width
- *   and left edge and hangs just above it — or below it when the card
- *   sits near the top of the viewport — so a long list never covers the
- *   text being typed and always reads as part of the composer.
+ *  and left edge and hangs just above it — or below it when the card
+ *  sits near the top of the viewport — so a long list never covers the
+ *  text being typed and always reads as part of the composer.
  * - Without one it stays caret-anchored and only flips above the caret
- *   when it would otherwise hang off the bottom of the page (Lexical's own
- *   flip needs room WITHIN the editor root, which a short composer never
- *   has).
+ *  when it would otherwise hang off the bottom of the page (Lexical's own
+ *  flip needs room WITHIN the editor root, which a short composer never
+ *  has).
  */
 
 interface FlipMenuProps<T extends MenuOption> {
@@ -71,16 +71,16 @@ export function FlipMenu<T extends MenuOption>({
   const menuRef = useRef<HTMLDivElement>(null)
 
   /* Re-run on options.length so the menu repositions when the option count
-     changes (the menu's height shifts and the flip threshold may cross). */
+ changes (the menu's height shifts and the flip threshold may cross). */
   // biome-ignore lint/correctness/useExhaustiveDependencies: options.length is a trigger, not read in the effect body.
   useLayoutEffect(() => {
     const adjust = () => {
       const menu = menuRef.current
       if (!menu) return
       /* IMPORTANT: read the anchor's layout (offsetTop/offsetLeft), not its
-         visual rect. The bounding rect reflects the transform we apply
-         here, so using it would make the placement flip on every
-         MutationObserver fire and lock the UI. */
+ visual rect. The bounding rect reflects the transform we apply
+ here, so using it would make the placement flip on every
+ MutationObserver fire and lock the UI. */
       const anchorTop = anchorEl.offsetTop - window.scrollY
       const anchorLeft = anchorEl.offsetLeft - window.scrollX
       const anchorHeight = anchorEl.offsetHeight
@@ -133,9 +133,9 @@ export function FlipMenu<T extends MenuOption>({
         </Eyebrow>
       ) : null}
       {/* div+role over ul/li because keyboard navigation is driven by Lexical's
-          typeahead controller (arrow keys, enter, escape), not by Tab. The
-          listbox/option roles preserve the screen-reader semantics without
-          dragging in semantic <ul>/<li> structure that Biome's a11y rules
+ typeahead controller (arrow keys, enter, escape), not by Tab. The
+ listbox/option roles preserve the screen-reader semantics without
+ dragging in semantic <ul>/<li> structure that Biome's a11y rules
           (correctly) treat as non-interactive. */}
       <div role="listbox" className="min-h-0 overflow-y-auto py-1">
         {options.map((opt, i) => {
@@ -149,7 +149,7 @@ export function FlipMenu<T extends MenuOption>({
                 role="presentation"
                 className={cn(
                   'mx-1 flex items-center gap-1.5 px-2 py-1 font-inter text-xs font-medium text-ink-faint',
-                  i > 0 && 'mt-1 border-t border-rule-2',
+                  i > 0 && 'mt-1 border-t border-border',
                 )}
               >
                 {section.icon}
@@ -181,7 +181,7 @@ export function FlipMenu<T extends MenuOption>({
         })}
       </div>
       {footer ? (
-        <div className="shrink-0 border-t border-rule-2 px-3 py-1 font-mono text-xs text-ink-faint">
+        <div className="shrink-0 border-t border-border px-3 py-1 font-mono text-xs text-ink-faint">
           {footer}
         </div>
       ) : null}
