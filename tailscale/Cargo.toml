@@ -2,7 +2,7 @@
 
 [package]
 name = "tailscale"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 publish = false
 description = "Tailscale worker for iii — the tailscale CLI as tailscale::* functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, updates) with an injected Console page"
