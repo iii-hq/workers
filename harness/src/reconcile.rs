@@ -107,12 +107,13 @@ pub struct Reconciled {
     pub changes: Vec<Change>,
 }
 
-/// Reconcile `arguments` for `function_id`, or `None` when nothing changed.
-/// `description` is the call's stated purpose (the `agent_call` wrapper's
-/// `description`), the judge's evidence of intent.
+/// Reconcile `arguments` for `function_id` in `namespace`, or `None` when
+/// nothing changed. `description` is the call's stated purpose (the
+/// `agent_call` wrapper's `description`), the judge's evidence of intent.
 pub async fn reconcile(
     deps: &Deps,
     cfg: &WorkerConfig,
+    namespace: &str,
     function_id: &str,
     arguments: &Value,
     description: Option<&str>,
@@ -120,7 +121,7 @@ pub async fn reconcile(
     if cfg.call_reconciliation == CallReconciliation::Off {
         return None;
     }
-    let schema = schema_for(deps, function_id).await?;
+    let schema = schema_for(deps, namespace, function_id).await?;
     let compiled = JSONSchema::compile(&schema).ok()?;
     let untyped = parse_untyped(&schema, &compiled, arguments);
     let base = untyped.as_ref().map_or(arguments, |r| &r.arguments);
@@ -176,24 +177,27 @@ async fn repair(
     coerced
 }
 
-/// The request schema a dispatch of `function_id` is checked against: the
-/// harness-local contracts first (spawn, intercepted subscription controls —
-/// the engine registry reports their raw registration, not what the harness
-/// accepts), then the discovery snapshot.
-async fn schema_for(deps: &Deps, function_id: &str) -> Option<Value> {
-    if function_id == crate::functions::SPAWN_ID {
-        return Some(crate::surface::schema_value::<
-            crate::functions::spawn::SpawnRequest,
-        >());
-    }
-    if let Some((_, schema)) = crate::functions::observe::control_contract(function_id) {
-        return Some(schema);
+/// The request schema a dispatch of `function_id` in `namespace` is checked
+/// against: the harness-local contracts first when the call stays in its
+/// implicit namespace (spawn, intercepted subscription controls — the engine
+/// registry reports their raw registration, not what the harness accepts),
+/// then the discovery snapshot's copy in `namespace`.
+async fn schema_for(deps: &Deps, namespace: &str, function_id: &str) -> Option<Value> {
+    if namespace == crate::clients::engine::resolve_namespace(function_id, None) {
+        if function_id == crate::functions::SPAWN_ID {
+            return Some(crate::surface::schema_value::<
+                crate::functions::spawn::SpawnRequest,
+            >());
+        }
+        if let Some((_, schema)) = crate::functions::observe::control_contract(function_id) {
+            return Some(schema);
+        }
     }
     deps.functions()
         .await
         .functions
         .iter()
-        .find(|f| f.function_id == function_id)?
+        .find(|f| f.namespace == namespace && f.function_id == function_id)?
         .parameters
         .clone()
 }
@@ -374,6 +378,7 @@ pub async fn settle_result(
     data: &mut ResultData,
     annotations: &mut Map<String, Value>,
     changes: Option<&[Change]>,
+    namespace: &str,
     function_id: &str,
     arguments: &Value,
     contract_in_context: bool,
@@ -386,6 +391,7 @@ pub async fn settle_result(
         if let Some(diagnosis) = diagnose(
             deps,
             cfg,
+            namespace,
             function_id,
             arguments,
             &target_error,
@@ -847,6 +853,7 @@ fn answerable(schema: &JSONSchema, arguments: &Value, asked: &[Question]) -> boo
 async fn diagnose(
     deps: &Deps,
     cfg: &WorkerConfig,
+    namespace: &str,
     function_id: &str,
     arguments: &Value,
     target_error: &str,
@@ -855,7 +862,7 @@ async fn diagnose(
     if cfg.call_reconciliation == CallReconciliation::Off {
         return None;
     }
-    let schema = schema_for(deps, function_id).await?;
+    let schema = schema_for(deps, namespace, function_id).await?;
     let violations = diagnosis(
         &JSONSchema::compile(&schema).ok()?,
         function_id,
@@ -1879,5 +1886,38 @@ mod tests {
         let huge =
             json!({ "type": "object", "description": "x".repeat(MAX_ATTACHED_SCHEMA_BYTES) });
         assert!(conclude(violations, &huge, false).ends_with("shows the full contract."));
+    }
+
+    #[tokio::test]
+    async fn repair_reads_the_schema_of_the_namespace_called() {
+        let deps = crate::functions::observe::tests::disconnected_deps();
+        let own = crate::clients::engine::own_namespace();
+        let d = |ns: &str, ty: &str| crate::clients::FunctionDescriptor {
+            function_id: "w::f".into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: Some(json!({ "type": "object", "properties": { "x": { "type": ty } } })),
+        };
+        crate::discovery::apply(
+            &deps.functions,
+            vec![d(&own, "string"), d("zz-a", "integer")],
+        )
+        .await;
+        let cfg = WorkerConfig {
+            call_reconciliation: CallReconciliation::Coerce,
+            ..WorkerConfig::default()
+        };
+        let args = json!({ "x": "5" });
+        assert_eq!(
+            reconcile(&deps, &cfg, "zz-a", "w::f", &args, None)
+                .await
+                .unwrap()
+                .arguments,
+            json!({ "x": 5 })
+        );
+        assert_eq!(
+            reconcile(&deps, &cfg, &own, "w::f", &args, None).await,
+            None
+        );
     }
 }
