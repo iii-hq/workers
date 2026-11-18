@@ -771,6 +771,24 @@ async fn a_call_in_another_namespace_is_refused_under_an_old_gate() {
     );
 }
 
+/// A call held for another namespace before a gate rollback: the old gate
+/// releases it unseen, so the release refuses it before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    held["held_by"] = json!("approval::gate");
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
 /// A control this harness answers itself, named in another namespace, is
 /// refused: neither answered here nor dispatched to that namespace's harness.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

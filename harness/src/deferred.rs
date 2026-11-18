@@ -134,6 +134,58 @@ pub async fn resolve(
                 checkpoint.namespace.as_deref(),
             );
             let implicit = crate::clients::engine::resolve_namespace(&function_id, None);
+            // A bound approval gate too old to show a namespace could release a
+            // call in another one unseen: refuse it before any hook or dispatch.
+            let gate = if namespace != implicit
+                && deps
+                    .hooks
+                    .bindings(crate::hooks::HookPoint::PreCall)
+                    .iter()
+                    .any(|b| b.target == crate::hooks::APPROVAL_GATE_ID)
+            {
+                Some(deps.engine().await.approval_gate_calls_namespaces().await)
+            } else {
+                None
+            };
+            if let Some(data) =
+                crate::call::old_gate_refusal(&function_id, &namespace, &implicit, gate)
+            {
+                let entry_id =
+                    ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+                let message = AgentMessage::FunctionResult(FunctionResultMessage {
+                    role: FunctionResultRoleTag::FunctionResult,
+                    function_call_id: req.function_call_id.clone(),
+                    function_id,
+                    content: data.content,
+                    details: data.details,
+                    is_error: data.is_error,
+                    timestamp: AgentMessage::now_ms(),
+                });
+                let origin = json!({ "turn_id": record.turn_id });
+                session
+                    .append(
+                        &record.session_id,
+                        &message,
+                        Some(&entry_id),
+                        None,
+                        Some(&origin),
+                    )
+                    .await?;
+                apply_deferred_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &req.function_call_id,
+                    Vec::new(),
+                );
+                if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
+                    cp.state = CallState::Done;
+                    cp.entry_id = Some(entry_id);
+                }
+                let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
+                return Ok(FunctionResolveResponse {
+                    resolved: true,
+                    turn_resumed,
+                });
+            }
             // The checkpoint carries the arguments as mutated by the chain up
             // to the hold (issue #506); transcript recovery — the model's
             // ORIGINAL arguments — is only the fallback for records written
