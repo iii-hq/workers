@@ -17,10 +17,9 @@ const MODELS = [
   { value: 'laya-multilingual', label: 'laya-multilingual', description: '100+ languages · mmBERT-base · 322M · 1024 tokens' },
   { value: 'laya-typed-decisions', label: 'laya-typed-decisions', description: 'Fine-tuned for laya’s four workflows · ModernBERT-large · 421M · 1024 tokens' },
 ]
-const DEFAULT_MODEL = 'laya-multilingual'
-const DEFAULT_PRELOAD = ['laya']
+const DEFAULT_MODEL = 'laya'
 const routingFlags = [
-  { field: 'auto_route', fallback: true, label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English and to laya when it is, each when that checkpoint is loaded (script and stopword detection, like laya’s Router). Text the detector cannot place stays on the default model.' },
+  { field: 'auto_route', fallback: false, label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English and to laya when it is, each when that checkpoint is loaded (script and stopword detection, like laya’s Router). Text the detector cannot place stays on the default model.' },
   { field: 'auto_task_detection', fallback: false, label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
   { field: 'choice_tournament', fallback: false, label: 'Wide choices as a tournament', description: 'A choice of more than 16 options is asked in groups of 16, then once more over the group winners, instead of in one row whose labels get cut. More accurate on wide label sets; costs one more pass, and confidence covers the finalists only.' },
 ]
@@ -109,12 +108,14 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
     else next[field] = on
     props.onChange(next)
   }
-  const preload = Array.isArray(value.preload) ? value.preload.filter((entry): entry is string => typeof entry === 'string') : DEFAULT_PRELOAD
-  // Stored even when empty: an absent list preloads the default.
+  const preload = Array.isArray(value.preload) ? value.preload.filter((entry): entry is string => typeof entry === 'string') : []
   const setPreload = (model: string, on: boolean) => {
+    const next = { ...value }
     const list = preload.filter((entry) => entry !== model)
     if (on) list.push(model)
-    props.onChange({ ...value, preload: list })
+    if (list.length === 0) delete next.preload
+    else next.preload = list
+    props.onChange(next)
   }
   const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(
     ([pointer]) => !knownFields.some((field) => pointer === `/${field}`),

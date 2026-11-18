@@ -143,13 +143,12 @@ describe('LayaConfigForm', () => {
     const { onChange } = await mount(value)
     await act(async () => changes.get('preload:laya-multilingual')?.('true'))
     expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', preload: ['laya-typed-decisions', 'laya-multilingual'] })
-    // An emptied list is stored: an absent one preloads laya.
     await act(async () => changes.get('preload:laya-typed-decisions')?.('false'))
-    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', preload: [] })
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya' })
     // Flags store only a value that differs from the worker's default.
-    await act(async () => changes.get('auto_route')?.('false'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_route: false })
     await act(async () => changes.get('auto_route')?.('true'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_route: true })
+    await act(async () => changes.get('auto_route')?.('false'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value })
     await act(async () => changes.get('auto_task_detection')?.('true'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_task_detection: true })
@@ -160,14 +159,14 @@ describe('LayaConfigForm', () => {
   it('shows the worker defaults for absent fields', async () => {
     const { container } = await mount({})
     const box = (name: string) => container.querySelector<HTMLInputElement>(`input[name="${name}"]`)!.checked
-    expect(container.textContent).toContain('Built-in default (laya-multilingual)')
-    expect(box('preload:laya')).toBe(true)
+    expect(container.textContent).toContain('Built-in default (laya)')
+    expect(box('preload:laya-multilingual')).toBe(false)
     expect(box('preload:laya-typed-decisions')).toBe(false)
-    expect(box('auto_route')).toBe(true)
+    expect(box('auto_route')).toBe(false)
     expect(box('auto_task_detection')).toBe(false)
-    const { container: stored } = await mount({ preload: [], auto_route: false })
-    expect(stored.querySelector<HTMLInputElement>('input[name="preload:laya"]')!.checked).toBe(false)
-    expect(stored.querySelector<HTMLInputElement>('input[name="auto_route"]')!.checked).toBe(false)
+    const { container: stored } = await mount({ preload: ['laya-multilingual'], auto_route: true })
+    expect(stored.querySelector<HTMLInputElement>('input[name="preload:laya-multilingual"]')!.checked).toBe(true)
+    expect(stored.querySelector<HTMLInputElement>('input[name="auto_route"]')!.checked).toBe(true)
   })
 
   it('maps field errors, shows the rest in a panel, and keeps opaque roots', async () => {

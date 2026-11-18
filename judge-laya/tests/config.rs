@@ -4,12 +4,12 @@ use serde_json::json;
 #[test]
 fn config_validates_model_and_limits() {
     let defaults = LayaConfig::default().to_json();
-    assert_eq!(defaults["model"], "laya-multilingual");
+    assert_eq!(defaults["model"], "laya");
     assert_eq!(defaults["batch_questions"], 16);
     assert!((1..=8).contains(&defaults["threads"].as_u64().unwrap()));
     assert!(defaults.get("revision").is_none());
-    assert_eq!(defaults["preload"], json!(["laya"]));
-    assert_eq!(defaults["auto_route"], true);
+    assert_eq!(defaults["preload"], json!([]));
+    assert_eq!(defaults["auto_route"], false);
     assert_eq!(defaults["auto_task_detection"], false);
     assert_eq!(defaults["choice_tournament"], false);
     let routed = LayaConfig::from_json(&json!({
@@ -24,14 +24,11 @@ fn config_validates_model_and_limits() {
     let ok = LayaConfig::from_json(&json!({"model": "laya-multilingual", "batch_questions": 4}))
         .unwrap();
     assert_eq!(ok.limits().batch_questions, 4);
-    // What the form stores for `laya` alone: the default preload names the
-    // model itself, which is already loaded.
-    let laya = LayaConfig::from_json(&json!({"model": "laya"})).unwrap();
+    // A preload entry equal to `model` is already loaded: accepted and skipped.
+    let laya = LayaConfig::from_json(&json!({"model": "laya", "preload": ["laya"]})).unwrap();
     assert_eq!(laya.checkpoints(), ["laya"]);
-    assert_eq!(
-        LayaConfig::default().checkpoints(),
-        ["laya-multilingual", "laya"]
-    );
+    let both = LayaConfig::from_json(&json!({"preload": ["laya-multilingual", "laya"]})).unwrap();
+    assert_eq!(both.checkpoints(), ["laya", "laya-multilingual"]);
     for bad in [
         json!({"model": "jev"}),
         json!({"revision": "abc123"}),
