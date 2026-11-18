@@ -466,6 +466,9 @@ fi"#
 /// When it exits 0, iii-init exports the merged root for the image. A local
 /// worker's copy leaves out what its run's copy leaves out, but `vendor/`
 /// ([`BUILD_COPIES`]); a bundle's is the whole package but Compose's state.
+/// Each nonempty hook is evaluated in the existing shell, preserving setup's
+/// cwd, variables, functions and options for install. A nonzero total status
+/// exits before the success message, even if the hook disabled `errexit`.
 pub fn build_image_script(project: &ProjectInfo, is_bundle: bool) -> String {
     let mut parts = script_header();
     parts.push(SOURCE_SHARE_CHECK.to_string());
@@ -488,13 +491,21 @@ cd /workspace
 echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#
             .to_string(),
     );
-    if !project.setup_cmd.is_empty() {
-        parts.push("echo \"iii: build: running scripts.setup\" >&2".to_string());
-        parts.push(project.setup_cmd.clone());
-    }
-    if !project.install_cmd.is_empty() {
-        parts.push("echo \"iii: build: running scripts.install\" >&2".to_string());
-        parts.push(project.install_cmd.clone());
+    for (name, command) in [
+        ("setup", &project.setup_cmd),
+        ("install", &project.install_cmd),
+    ] {
+        if !command.is_empty() {
+            parts.push(format!("echo \"iii: build: running scripts.{name}\" >&2"));
+            // Keep eval outside conditionals so errexit applies inside the hook.
+            // The case also propagates a final AND-list failure with set +e,
+            // without changing user variables, positional args or traps.
+            let command = shell_quote(command);
+            parts.push(format!(
+                r#"eval {command}
+case $? in 0) ;; *) exit $? ;; esac"#
+            ));
+        }
     }
     parts.push("echo \"iii: build: scripts done\" >&2".to_string());
     parts.join("\n")
@@ -688,16 +699,30 @@ pub fn open_build_export(root: &Path) -> std::io::Result<std::fs::File> {
 /// it) as the lower, a fresh upper in `scratch`, the worker's code shared
 /// read-only at `/mnt/host-src`, and [`build_image_script`] to run. Nothing is
 /// spawned. `env` is the caller's `guest_env`, over the manifest's own env.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn image_build_command(
     worker_dir: &Path,
     package: Option<&str>,
     run_override: Option<&str>,
+    executable: Option<&str>,
+    base_image: Option<&str>,
     scratch: &Path,
     env: HashMap<String, String>,
 ) -> Result<BuildVm, String> {
     use super::worker_manager::oci;
 
-    let (project, kind) = validate_source(worker_dir, package, run_override)?;
+    let (mut project, kind) = match (package, executable) {
+        (Some(package), Some(executable)) => (
+            validate_binary(worker_dir, package, executable)?,
+            String::new(),
+        ),
+        // A base image in the request stands in for the manifest's.
+        _ => validate_source_with(worker_dir, package, run_override, base_image.is_none())?,
+    };
+    if let Some(image) = base_image {
+        project.base_image = Some(image.to_string());
+    }
+    // A binary package is copied whole, as a bundle is.
     let is_bundle = package.is_some();
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
@@ -855,6 +880,11 @@ fn vm_resources(project_path: &Path, is_bundle: bool, worker_name: &str) -> (u32
     if !is_bundle {
         return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
     }
+    // A binary package may ship no manifest: the defaults, as for a local
+    // worker that asks for nothing.
+    if std::fs::symlink_metadata(project_path.join(WORKER_MANIFEST)).is_err() {
+        return parse_manifest_resources(&project_path.join(WORKER_MANIFEST));
+    }
     // Strict clamp at start-time so a publisher-controlled manifest
     // can't boot a libkrun guest with attacker-chosen resources:
     // the VM boot re-reads the manifest from the install dir, which
@@ -906,6 +936,18 @@ pub(crate) fn validate_source(
     worker_dir: &Path,
     package: Option<&str>,
     run_override: Option<&str>,
+) -> Result<(ProjectInfo, String), String> {
+    validate_source_with(worker_dir, package, run_override, true)
+}
+
+/// As [`validate_source`]; `need_base_image: false` drops the local worker's
+/// `runtime.base_image` requirement, for a build whose request names its base
+/// image and for a start that boots a build, whose image is already made.
+pub(crate) fn validate_source_with(
+    worker_dir: &Path,
+    package: Option<&str>,
+    run_override: Option<&str>,
+    need_base_image: bool,
 ) -> Result<(ProjectInfo, String), String> {
     let project_path = worker_dir;
     if let Some(package) = package
@@ -988,10 +1030,152 @@ pub(crate) fn validate_source(
         .unwrap_or("typescript")
         .to_string();
 
-    if package.is_none() {
+    if package.is_none() && need_base_image {
         validate_compose_base_image(&doc, &manifest_path)?;
     }
     Ok((project, kind))
+}
+
+/// The checks a binary package passes before it is built or booted.
+/// `executable` is a relative path of plain components naming a regular,
+/// executable file inside `worker_dir`, through no symlink. A manifest is
+/// optional; one the package ships passes the bundle gates (its name is
+/// `package`, no `scripts.setup`), and gives its `scripts.install` and `env`.
+/// The project runs `executable` from `/workspace`, where the build copies the
+/// package, with no argument.
+pub(crate) fn validate_binary(
+    worker_dir: &Path,
+    package: &str,
+    executable: &str,
+) -> Result<ProjectInfo, String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Component;
+
+    let root = worker_dir.canonicalize().map_err(|e| {
+        format!(
+            "binary package dir {} cannot be read: {e}",
+            worker_dir.display()
+        )
+    })?;
+    if !root.is_dir() {
+        return Err(format!(
+            "binary package dir {} is not a directory",
+            worker_dir.display()
+        ));
+    }
+    let relative = Path::new(executable);
+    if executable.is_empty()
+        || relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(format!(
+            "executable {executable:?} must be a relative path inside the package, without `.` \
+             or `..`"
+        ));
+    }
+    // The build's copy and the source share leave `.iii` out, in any case.
+    if relative
+        .components()
+        .any(|c| super::source_watcher::is_compose_state(c.as_os_str().as_encoded_bytes()))
+    {
+        return Err(format!(
+            "executable {executable:?} is under `.iii`, which never reaches the image"
+        ));
+    }
+    let path = root.join(relative);
+    let resolved = path.canonicalize().map_err(|e| {
+        format!(
+            "executable {executable:?} cannot be read in {}: {e}",
+            root.display()
+        )
+    })?;
+    if resolved != path {
+        return Err(format!(
+            "executable {executable:?} goes through a symlink in {}",
+            root.display()
+        ));
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("executable {executable:?} is not a regular file"));
+    }
+    if meta.permissions().mode() & 0o111 == 0 {
+        return Err(format!("executable {executable:?} is not executable"));
+    }
+
+    let mut project = ProjectInfo {
+        name: package.to_string(),
+        kind: None,
+        setup_cmd: String::new(),
+        install_cmd: String::new(),
+        run_cmd: format!("exec {}", shell_quote(&format!("/workspace/{executable}"))),
+        env: HashMap::new(),
+        base_image: None,
+    };
+    if std::fs::symlink_metadata(root.join(WORKER_MANIFEST)).is_ok() {
+        // The bundle gates, but `scripts.start`: the executable is the program.
+        let rejected = |e: String| format!("binary package manifest rejected: {e}");
+        let content = super::bundle_download::read_bundle_manifest(&root)
+            .map_err(|e| rejected(e.to_string()))?;
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
+            .map_err(|e| rejected(format!("invalid YAML: {e}")))?;
+        let manifest =
+            super::worker_manifest::WorkerManifest::from_value(&doc).map_err(rejected)?;
+        let name = manifest.name.as_deref().map(str::trim);
+        if name != Some(package) {
+            return Err(rejected(format!(
+                "it declares name {name:?}, not the package {package:?}"
+            )));
+        }
+        let scripts = manifest.scripts.as_ref();
+        if scripts
+            .and_then(|s| s.setup.as_deref())
+            .is_some_and(|setup| !setup.trim().is_empty())
+        {
+            return Err(rejected(
+                "a package must not declare scripts.setup; the base image provisions".to_string(),
+            ));
+        }
+        if let Some(install) = scripts.and_then(|s| s.install.as_deref()) {
+            project.install_cmd = install.trim().to_string();
+        }
+        project.env = manifest.env.unwrap_or_default().into_iter().collect();
+    }
+    Ok(project)
+}
+
+/// `s` as one single-quoted shell word.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Builds the VM of a binary package's build (`worker::start` with `build`)
+/// without starting it: the image holds the package, and the guest runs
+/// `executable`. A binary package boots only a build.
+pub async fn binary_vm_command(
+    package: &str,
+    executable: &str,
+    worker_name: &str,
+    package_dir: &Path,
+    over: VmOverride<'_>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let project = validate_binary(package_dir, package, executable)?;
+    if over.image.is_none() {
+        return Err(format!(
+            "binary package '{package}' boots only a build: worker::build it, then \
+             worker::start it with `build`"
+        ));
+    }
+    if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw");
+    }
+    if !super::worker_manager::libkrun::libkrun_available() {
+        return Err("No runtime available.\n  \
+             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
+            .to_string());
+    }
+    image_run_command(worker_name, package_dir, &project, true, over)
 }
 
 /// Shared body for `local_vm_command` and `bundle_vm_command`: validates the
@@ -1011,7 +1195,9 @@ pub(crate) async fn start_worker_impl(
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
     let project_path = Path::new(worker_path);
-    let (project, kind) = validate_source(project_path, package, run_override)?;
+    // A build's image is made: the manifest need not name its base image.
+    let (project, kind) =
+        validate_source_with(project_path, package, run_override, over.image.is_none())?;
     let kind = kind.as_str();
     let is_bundle = package.is_some();
 
@@ -1338,7 +1524,9 @@ mod tests {
     fn the_build_script_installs_and_exits() {
         let project = project_with("apt-get install -y git", "npm ci");
         let script = build_image_script(&project, /*is_bundle=*/ false);
-        assert!(script.contains("apt-get install -y git\necho"));
+        assert!(
+            script.contains("eval 'apt-get install -y git'\ncase $? in 0) ;; *) exit $? ;; esac")
+        );
         assert!(script.contains("npm ci"));
         assert!(script.contains(BUILD_SOURCE_EXCLUDES.as_str()));
         assert!(script.contains("umount \"$SRC\""));
@@ -1350,6 +1538,270 @@ mod tests {
         let bundle = build_image_script(&project, /*is_bundle=*/ true);
         assert!(bundle.contains("tar -cf - --exclude=.iii ."), "{bundle}");
         assert!(!bundle.contains("--exclude=node_modules"));
+    }
+
+    /// Exercise the generated composition, not a stubbed shell exit status.
+    /// Only VM preparation/copy/env is replaced; export/write are scratch sentinels.
+    #[test]
+    fn the_build_script_preserves_each_hook_status_and_shell_semantics() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::process::Command;
+
+        let setup = "printf '%s\\n' SETUP >&2";
+        let install = "fake-begin && fake-npm && fake-finish";
+        let quoted_setup = r#"printf '%s\n' "QUOTED:$HOOK_ENV" 'literal:$HOOK_ENV `exit 99` "double" it'\''s' >&2
+printf '%s\n' "$(printf SUBSTITUTION)" "`printf BACKTICK`" >&2
+IFS= read -r heredoc <<'HOOK_LITERAL'
+heredoc: "$HOOK_ENV" `exit 98` 'single' \backslash
+HOOK_LITERAL
+printf '%s\n' "$heredoc" >&2
+cd "$TEST_SUBDIR"
+private_flag=ready
+shared_fn() { printf '%s\n' "FUNCTION:$private_flag" >&2; }
+. "$TEST_VENV"
+export PATH="$TEST_BIN"
+umask 027
+set -f
+set -- "$private_flag" 'second arg'
+trap 'printf "%s\n" TRAP >&2' 0"#;
+        let shared_install = format!(
+            r#"[ "$PWD" = "$TEST_SUBDIR" ] || exit 91
+[ "$private_flag" = ready ] || exit 93
+[ "$VIRTUAL_ENV" = "$TEST_SUBDIR/venv" ] || exit 94
+[ "$venv_private" = activated ] || exit 95
+[ "$1" = ready ] && [ "$2" = 'second arg' ] || exit 96
+[ "$(umask)" = 0027 ] || exit 97
+case $- in *f*) ;; *) exit 98 ;; esac
+[ "$PATH" = "$TEST_BIN" ] || exit 99
+shared_fn
+{install}"#
+        );
+        let hook_env = "value with 'quotes', \"double\", $dollars and `backticks`";
+        let cases = [
+            (
+                "install-fails",
+                setup,
+                install,
+                42,
+                42,
+                vec![
+                    "running scripts.setup",
+                    "SETUP",
+                    "running scripts.install",
+                    "BEGIN",
+                    "FAILED",
+                ],
+            ),
+            (
+                "success",
+                setup,
+                install,
+                0,
+                0,
+                vec![
+                    "running scripts.setup",
+                    "SETUP",
+                    "running scripts.install",
+                    "BEGIN",
+                    "NPM",
+                    "FINISH",
+                ],
+            ),
+            (
+                "setup-fails",
+                "set +e\nfake-begin && fake-npm && fake-finish",
+                "printf '%s\\n' UNEXPECTED_INSTALL >&2",
+                42,
+                42,
+                vec!["running scripts.setup", "BEGIN", "FAILED"],
+            ),
+            (
+                "multiline-quotes",
+                quoted_setup,
+                shared_install.as_str(),
+                0,
+                0,
+                vec![
+                    "running scripts.setup",
+                    "QUOTED:value with 'quotes', \"double\", $dollars and `backticks`",
+                    "literal:$HOOK_ENV `exit 99` \"double\" it's",
+                    "SUBSTITUTION",
+                    "BACKTICK",
+                    "heredoc: \"$HOOK_ENV\" `exit 98` 'single' \\backslash",
+                    "running scripts.install",
+                    "FUNCTION:ready",
+                    "BEGIN",
+                    "NPM",
+                    "FINISH",
+                ],
+            ),
+            (
+                "standalone-errexit",
+                "",
+                "false\nprintf '%s\\n' UNEXPECTED_AFTER_FALSE >&2",
+                0,
+                1,
+                vec!["running scripts.install"],
+            ),
+            ("empty-hooks", "", "", 0, 0, vec![]),
+            (
+                "setup-only",
+                setup,
+                "",
+                0,
+                0,
+                vec!["running scripts.setup", "SETUP"],
+            ),
+            (
+                "install-only-errexit-disabled",
+                "",
+                "set +e\nfalse",
+                0,
+                1,
+                vec!["running scripts.install"],
+            ),
+        ];
+        for shell in ["bash", "sh"] {
+            for is_bundle in [false, true] {
+                for (name, setup, install, begin_rc, expected_rc, expected_events) in &cases {
+                    let temp = tempfile::tempdir().unwrap();
+                    let root = temp.path().canonicalize().unwrap();
+                    let workspace = root.join("workspace");
+                    let bin = root.join("bin");
+                    std::fs::create_dir(&workspace).unwrap();
+                    let subdir = workspace.join("subdir");
+                    std::fs::create_dir(&subdir).unwrap();
+                    let venv = root.join("activate");
+                    std::fs::write(
+                        &venv,
+                        "VIRTUAL_ENV=\"$TEST_SUBDIR/venv\"\nexport VIRTUAL_ENV\nvenv_private=activated\n",
+                    ).unwrap();
+                    std::fs::create_dir(&bin).unwrap();
+                    symlink(format!("/bin/{shell}"), bin.join(shell)).unwrap();
+                    for (name, body) in [
+                        (
+                            "fake-begin",
+                            r#"[ "$PWD" = "$EXPECTED_WORKSPACE" ] || exit 91
+[ "$HOOK_ENV" = "$EXPECTED_ENV" ] || exit 92
+[ "${private_flag-unset}" = unset ] || exit 93
+if [ "$PWD" = "$TEST_SUBDIR" ]; then
+  [ "$VIRTUAL_ENV" = "$TEST_SUBDIR/venv" ] || exit 94
+  [ "$PATH" = "$TEST_BIN" ] || exit 95
+fi
+printf '%s\n' BEGIN >&2
+if [ "$BEGIN_RC" -ne 0 ]; then
+  printf '%s\n' FAILED >&2
+  exit "$BEGIN_RC"
+fi"#,
+                        ),
+                        ("fake-npm", "printf '%s\\n' NPM >&2"),
+                        ("fake-finish", "printf '%s\\n' FINISH >&2"),
+                    ] {
+                        let path = bin.join(name);
+                        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                            .unwrap();
+                    }
+
+                    let project = project_with(setup, install);
+                    let mut script = build_image_script(&project, is_bundle);
+                    let copy = if is_bundle {
+                        r#"( set -o pipefail; ( cd "$SRC" && tar -cf - --exclude=.iii . ) | ( cd /workspace && tar -xpf - ) ) || { echo "iii: ERROR workspace copy-in failed" >&2; exit 1; }"#.to_string()
+                    } else {
+                        format!("WS=/workspace\nIIISTATE={WORKSPACE_STATE}\n{}", *BUILD_COPY)
+                    };
+                    let header = script_header();
+                    for (before, after) in [
+                        (SOURCE_SHARE_CHECK, ": # offline source-share preparation"),
+                        (copy.as_str(), ": # offline copy"),
+                        // Keep only the chosen real shell and fakes on PATH,
+                        // exercising RUN_SCRIPT_CMD's bash and no-bash branches.
+                        (header[2].as_str(), "export PATH=\"$TEST_BIN\""),
+                        (
+                            r#"cd /
+umount "$SRC" || { echo "iii: ERROR could not detach $SRC" >&2; exit 1; }
+cd /workspace
+echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true"#,
+                            "cd \"$TEST_WORKSPACE\"",
+                        ),
+                    ] {
+                        assert!(script.contains(before), "{name}: preparation changed");
+                        script = script.replace(before, after);
+                    }
+                    let script_path = root.join("dev-run.sh");
+                    std::fs::write(&script_path, script).unwrap();
+                    // Same /bin/sh -c entrypoint as image_build_command. Its exec
+                    // stays inside a child so offline success guards can run.
+                    let entrypoint = RUN_SCRIPT_CMD.replace(
+                        "/opt/iii/dev-run.sh",
+                        &shell_quote(script_path.to_str().unwrap()),
+                    );
+                    let output = Command::new("/bin/sh")
+                        .args([
+                            "-c",
+                            &format!(
+                                r#"/bin/sh -c {} || exit $?
+printf '%s\n' EXPORT >&2
+: > "$EXPORT_FILE"
+printf '%s\n' IMAGE_WRITE >&2
+: > "$IMAGE_FILE""#,
+                                shell_quote(&entrypoint)
+                            ),
+                        ])
+                        .env_clear()
+                        .env("PATH", &bin)
+                        .env("TEST_BIN", &bin)
+                        .env("HOME", &root)
+                        .env("TEST_WORKSPACE", &workspace)
+                        .env("TEST_SUBDIR", &subdir)
+                        .env("TEST_VENV", &venv)
+                        .env(
+                            "EXPECTED_WORKSPACE",
+                            if *name == "multiline-quotes" {
+                                &subdir
+                            } else {
+                                &workspace
+                            },
+                        )
+                        .env("HOOK_ENV", hook_env)
+                        .env("EXPECTED_ENV", hook_env)
+                        .env("BEGIN_RC", begin_rc.to_string())
+                        .env("EXPORT_FILE", root.join("exported"))
+                        .env("IMAGE_FILE", root.join("image-written"))
+                        .current_dir(&root)
+                        .output()
+                        .unwrap();
+                    let log = String::from_utf8(output.stderr).unwrap();
+                    let context = format!("{name}, shell={shell}, bundle={is_bundle}: {log}");
+                    assert_eq!(output.status.code(), Some(*expected_rc), "{context}");
+                    let mut expected_log = vec!["copying the worker's code into /workspace"];
+                    expected_log.extend_from_slice(expected_events);
+                    if *expected_rc == 0 {
+                        expected_log.push("scripts done");
+                        if *name == "multiline-quotes" {
+                            expected_log.push("TRAP");
+                        }
+                        expected_log.extend(["EXPORT", "IMAGE_WRITE"]);
+                    }
+                    let events: Vec<_> = log
+                        .lines()
+                        .map(|line| line.strip_prefix("iii: build: ").unwrap_or(line))
+                        .collect();
+                    assert_eq!(events, expected_log, "{context}");
+                    assert_eq!(
+                        root.join("exported").exists(),
+                        *expected_rc == 0,
+                        "{context}"
+                    );
+                    assert_eq!(
+                        root.join("image-written").exists(),
+                        *expected_rc == 0,
+                        "{context}"
+                    );
+                    assert!(output.stdout.is_empty(), "{context}: unexpected stdout");
+                }
+            }
+        }
     }
 
     /// The run of a build never installs; a local worker's code still syncs
