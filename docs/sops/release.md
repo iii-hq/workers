@@ -50,12 +50,14 @@ deployment it belongs to:
    by booting the artifact against an isolated engine. Interface
    capture is a publication-integrity step: it never calls a worker function or
    an external backend, and it is not a smoke test.
-4. `upload` creates the shared `build-<source_sha>` prerelease if it does not
-   exist and uploads each asset once. An asset already present with identical
+4. `upload` creates the worker's `build-<worker>-<source_sha>` prerelease if it
+   does not exist and uploads each asset once. It is one release per worker,
+   not one shared by every worker of the SHA: GitHub caps a release at 1000
+   assets, which a shared release reached at ~60 workers. An asset already present with identical
    bytes is skipped; one present with different bytes fails the job, because
    these bytes are immutable. When the descriptor declares an image, the OCI
-   index is pushed under the same `build-<source_sha>` tag, or verified if it is
-   already there.
+   index is pushed under the `build-<source_sha>` tag of the worker's own image
+   repository, or verified if it is already there.
 5. `manifest` writes `manifest.json` (assets with URL and SHA-256, image
    digest, descriptor, interface, evidence), attests it with
    `actions/attest-build-provenance`, and uploads it as the `build-manifest`
@@ -63,7 +65,7 @@ deployment it belongs to:
 
 A worker with `screenshots/screenshots.yaml` has its images in the descriptor's
 top-level `screenshots`. `assemble` copies them from the source SHA, checked
-byte for byte against the descriptor; `upload` puts each on `build-<source_sha>`
+byte for byte against the descriptor; `upload` puts each on `build-<worker>-<source_sha>`
 as `<worker>-screenshot-<name>`, under the same identical-bytes rule; and
 `manifest` lists them in the manifest's `screenshots`, present exactly when the
 descriptor has it. See [`screenshots.md`](screenshots.md).

@@ -2,9 +2,9 @@ name: Build
 run-name: Build · ${{ inputs.worker }} · ${{ inputs.source_sha }} · ${{ inputs.correlation_id }}
 
 # Builds one worker from one exact source SHA and uploads only immutable,
-# content-addressed bytes: release assets under `build-<source_sha>` (the
-# worker's archives and, when its descriptor lists them, its screenshots), an
-# OCI index tagged `build-<source_sha>`, and an attested `build-manifest` artifact.
+# content-addressed bytes: release assets under `build-<worker>-<source_sha>`
+# (the worker's archives and, when its descriptor lists them, its screenshots),
+# an OCI index tagged `build-<source_sha>`, and an attested `build-manifest` artifact.
 # Versions, channels, versioned releases and image version tags are published
 # by Release Control from that manifest; nothing here talks to Release Control.
 
@@ -42,7 +42,11 @@ env:
   SOURCE_SHA: ${{ inputs.source_sha }}
   DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
   CORRELATION_ID: ${{ inputs.correlation_id }}
+  # The OCI index tag; the image already lives in the worker's own repository.
   BUILD_TAG: build-${{ inputs.source_sha }}
+  # One GitHub release per worker and SHA: a release holds at most 1000
+  # assets, and a release shared by every worker of a SHA filled up at ~60.
+  RELEASE_TAG: build-${{ inputs.worker }}-${{ inputs.source_sha }}
 
 permissions: {}
 
@@ -408,17 +412,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view "$BUILD_TAG" --json id >/dev/null 2>&1; then
-            # Another worker built from the same source may create it first:
-            # a failed create followed by a successful view is the same outcome.
-            gh release create "$BUILD_TAG" --target "$SOURCE_SHA" --prerelease \
-              --title "build $SOURCE_SHA" \
-              --notes "Immutable build outputs for $SOURCE_SHA. Versions are published by Release Control." \
-              || gh release view "$BUILD_TAG" --json id >/dev/null
+          if ! gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
+            # A concurrent attempt of this build may create it first: a
+            # failed create followed by a successful view is the same outcome.
+            gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --prerelease \
+              --title "build $WORKER $SOURCE_SHA" \
+              --notes "Immutable build outputs of $WORKER for $SOURCE_SHA. Versions are published by Release Control." \
+              || gh release view "$RELEASE_TAG" --json id >/dev/null
           fi
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" > release.json
           test "$(jq -r .draft release.json)" = false
-          gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$BUILD_TAG" > tag-ref.json
+          gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$RELEASE_TAG" > tag-ref.json
           tag_sha=$(jq -er .object.sha tag-ref.json)
           if [[ "$(jq -er .object.type tag-ref.json)" == tag ]]; then
             tag_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/git/tags/$tag_sha" --jq .object.sha)
@@ -437,7 +441,7 @@ jobs:
             --prepared deploy-prepared/prepared-artifacts.json > asset-plan.tsv
           test -s asset-plan.tsv
           mkdir -p upload-stage
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" > release.json
           declare -A state=()
           to_upload=()
           while IFS=$'\t' read -r name asset sha256 size; do
@@ -452,17 +456,17 @@ jobs:
             test "$count" = 1
             remote_digest=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .digest' release.json)
             if [[ "$remote_digest" != "sha256:$sha256" ]]; then
-              echo "::error::release $BUILD_TAG already carries $asset with digest $remote_digest but this build produced sha256:$sha256; immutable assets are never overwritten"
+              echo "::error::release $RELEASE_TAG already carries $asset with digest $remote_digest but this build produced sha256:$sha256; immutable assets are never overwritten"
               exit 1
             fi
             echo "$asset already present with identical bytes; skipping upload"
             state[$name]=existing
           done < asset-plan.tsv
           if ((${#to_upload[@]} > 0)); then
-            gh release upload "$BUILD_TAG" "${to_upload[@]}"
+            gh release upload "$RELEASE_TAG" "${to_upload[@]}"
           fi
 
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release-final.json
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" > release-final.json
           : > assets.jsonl
           while IFS=$'\t' read -r name asset sha256 size; do
             test "$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' release-final.json)" = 1
@@ -583,7 +587,7 @@ jobs:
         run: |
           set -euo pipefail
           jq -n \
-            --arg worker "$WORKER" --arg source_sha "$SOURCE_SHA" --arg tag "$BUILD_TAG" \
+            --arg worker "$WORKER" --arg source_sha "$SOURCE_SHA" --arg tag "$RELEASE_TAG" \
             --slurpfile release release-final.json --slurpfile assets assets.json \
             --arg repository "$IMAGE_REPOSITORY" --arg image_tag "$IMAGE_TAG" \
             --arg digest "$IMAGE_DIGEST" --arg image_state "$IMAGE_STATE" \
@@ -658,7 +662,7 @@ jobs:
             echo "### Build manifest"
             echo
             echo "- worker: \`$WORKER\`"
-            echo "- release: \`$BUILD_TAG\`"
+            echo "- release: \`$RELEASE_TAG\`"
             echo "- assets: $(jq '.artifacts | length' manifest.json)"
             echo "- screenshots: $(jq -r 'if has("screenshots") then (.screenshots | length | tostring) else "not listed (inherits the previous version)" end' manifest.json)"
             echo "- image: \`$(jq -r '.image.digest // "none"' manifest.json)\`"

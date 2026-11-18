@@ -2,8 +2,8 @@
 """Write the content-addressed manifest that hands a build to Release Control.
 
 `build.yml` only builds and uploads immutable bytes. This manifest is its single
-hand-off: it names every GitHub release asset under `build-<source_sha>` and the
-published OCI index digest, and embeds the descriptor, the captured interface
+hand-off: it names every GitHub release asset under `build-<worker>-<source_sha>`
+and the published OCI index digest, and embeds the descriptor, the captured interface
 and the evidence inventory so Release Control can assemble the Registry publish
 payload later (see build_publish_payload.build_payload) without re-running
 anything in a runner.
@@ -35,21 +35,36 @@ RUN_ID_RE = re.compile(r"^[1-9][0-9]*$")
 BUNDLE_KINDS = {"javascript-bundle", "python-bundle"}
 
 
-def release_tag(source_sha: str) -> str:
+def _checked_sha(source_sha: str) -> str:
     if not SOURCE_SHA_RE.fullmatch(source_sha):
         raise SystemExit("source_sha must be exactly 40 lowercase hex characters")
-    return f"build-{source_sha}"
+    return source_sha
+
+
+def image_tag(source_sha: str) -> str:
+    """The OCI index tag: the image lives in the worker's own ghcr.io repository."""
+    return f"build-{_checked_sha(source_sha)}"
+
+
+def release_tag(worker: str, source_sha: str) -> str:
+    """The GitHub release of one worker's bytes for one source SHA.
+
+    One release per worker, not per SHA: GitHub caps a release at 1000 assets,
+    and a Rust worker uploads 16, so a shared `build-<sha>` filled up with ~60
+    workers and every later upload of that SHA failed with HTTP 422.
+    """
+    return f"build-{worker}-{_checked_sha(source_sha)}"
 
 
 def asset_name(worker: str, name: str) -> str:
-    """One release per source SHA is shared by every worker, so each asset carries its worker."""
+    """Each asset carries its worker (a holdover from the shared `build-<sha>` release, kept so names stay stable)."""
     if name == worker or name.startswith(f"{worker}-") or name.startswith(f"{worker}."):
         return name
     return f"{worker}-{name}"
 
 
 def screenshot_asset_name(worker: str, name: str) -> str:
-    """The release asset of one screenshot. `build-<sha>` is shared by every worker of the SHA."""
+    """The release asset of one screenshot."""
     return f"{worker}-screenshot-{name}"
 
 
@@ -58,8 +73,8 @@ def screenshot_prepared_name(name: str) -> str:
     return f"{deployment_train.PREPARED_SCREENSHOTS}/{name}"
 
 
-def asset_url(repository: str, source_sha: str, asset: str) -> str:
-    return f"https://github.com/{repository}/releases/download/{release_tag(source_sha)}/{asset}"
+def asset_url(repository: str, worker: str, source_sha: str, asset: str) -> str:
+    return f"https://github.com/{repository}/releases/download/{release_tag(worker, source_sha)}/{asset}"
 
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:
@@ -140,7 +155,7 @@ def _artifacts(
             "target": targets[artifact["unit"]],
             "sha256": artifact["sha256"],
             "size": artifact["size"],
-            "url": asset_url(repository, str(descriptor["source_sha"]), asset),
+            "url": asset_url(repository, worker, str(descriptor["source_sha"]), asset),
             "upload_state": row.get("state"),
         })
     return result
@@ -176,7 +191,7 @@ def _screenshots(
             shot["caption"] = entry["caption"]
         shot.update(
             sha256=entry["sha256"], size=entry["size"], width=entry["width"], height=entry["height"],
-            url=asset_url(repository, str(descriptor["source_sha"]), asset),
+            url=asset_url(repository, worker, str(descriptor["source_sha"]), asset),
         )
         result.append(shot)
     return result
@@ -193,7 +208,7 @@ def _image(descriptor: dict[str, Any], receipt: dict[str, Any]) -> dict[str, str
     repository, tag, digest = image.get("repository"), image.get("tag"), image.get("digest")
     if not isinstance(repository, str) or not repository.endswith(f"/{descriptor['worker']}"):
         raise SystemExit("OCI repository must be the worker's own ghcr.io repository")
-    if tag != release_tag(str(descriptor["source_sha"])):
+    if tag != image_tag(str(descriptor["source_sha"])):
         raise SystemExit("OCI index tag must be the content-addressed build tag")
     if not isinstance(digest, str) or not IMAGE_DIGEST_RE.fullmatch(digest):
         raise SystemExit("OCI index digest must be sha256:<64 hex>")
@@ -238,7 +253,7 @@ def _interface(descriptor: dict[str, Any], snapshot: dict[str, Any], identity: d
 
 
 def write(args: argparse.Namespace) -> int:
-    tag = release_tag(args.source_sha)
+    tag = release_tag(args.worker, args.source_sha)
     if not RUN_ID_RE.fullmatch(args.descriptor_run_id):
         raise SystemExit("descriptor_run_id must be a positive integer")
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", args.repository):
