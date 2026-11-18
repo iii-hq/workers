@@ -7,7 +7,8 @@ use judge_laya::lang::{analyse, typed_decisions_workflow};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// Every field of `analyse(input)` that differs from `expected`.
+/// Every field of `analyse(input)` that differs from `expected`, or that
+/// `expected` lacks (indexing would read a missing field as null).
 fn mismatches(name: &str, input: &Value, expected: &Value) -> Vec<String> {
     let got = analyse(input);
     let got = json!({
@@ -23,9 +24,20 @@ fn mismatches(name: &str, input: &Value, expected: &Value) -> Vec<String> {
     got.as_object()
         .unwrap()
         .iter()
-        .filter(|(field, value)| expected[field.as_str()] != **value)
-        .map(|(field, value)| format!("{name}: {field} {value}, expected {}", expected[field]))
+        .filter(|(field, value)| expected.get(field.as_str()) != Some(*value))
+        .map(|(field, value)| {
+            let expected = expected
+                .get(field)
+                .map_or("nothing".into(), Value::to_string);
+            format!("{name}: {field} {value}, expected {expected}")
+        })
         .collect()
+}
+
+/// A recorded case's `key`, which must be there (an explicit null is a value).
+fn field<'a>(case: &'a Value, key: &str) -> &'a Value {
+    case.get(key)
+        .unwrap_or_else(|| panic!("case without {key}: {case}"))
 }
 
 #[test]
@@ -35,7 +47,7 @@ fn detection_matches_laya_python_fixtures() {
     assert!(fixtures.len() >= 100);
     let failures: Vec<String> = fixtures
         .iter()
-        .flat_map(|(name, case)| mismatches(name, &case["input"], &case["expected"]))
+        .flat_map(|(name, case)| mismatches(name, field(case, "input"), field(case, "expected")))
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -50,8 +62,8 @@ fn detection_matches_laya_recorded_probe() {
         .flat_map(|case| {
             mismatches(
                 case["label"].as_str().unwrap(),
-                &case["state"],
-                &case["analyse"],
+                field(case, "state"),
+                field(case, "analyse"),
             )
         })
         .collect();

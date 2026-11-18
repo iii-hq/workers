@@ -348,6 +348,11 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
     );
     assert_eq!(model_of(routed.evaluate(one(english, &noul)).await), "laya");
     assert_eq!(model_of(routed.evaluate(one("12345", &noul)).await), "laya");
+    // A non-Latin script leaves the English default too.
+    assert_eq!(
+        model_of(routed.evaluate(one("Հայերեն", &noul)).await),
+        "laya-multilingual"
+    );
     // Routing off: everything answers on the default checkpoint.
     assert_eq!(
         model_of(client.evaluate(one(portuguese, &noul)).await),
@@ -418,7 +423,8 @@ async fn routing_follows_explicit_model_then_workflow_then_state_language() {
 /// loaded checkpoint) and `auto_task_detection`, and a call's `state`,
 /// `questions` and `model`. Model aliases other than laya's three names and
 /// ours are skipped, and so are null and number states: the judge contract
-/// refuses them before any routing (`lang_probe.json` covers their detection).
+/// refuses them before any routing (`lang_probe.json` covers a null state's
+/// detection).
 #[tokio::test]
 async fn routing_matches_laya_recorded_probe() {
     let probe: Vec<Value> =
