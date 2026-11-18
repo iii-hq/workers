@@ -17,12 +17,17 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::search::baggage_own_namespace;
+
 // ────────────────── request / response shapes ─────────────────────────
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct FunctionInfoInput {
     /// Fully-qualified function id on the bus (e.g. `sandbox::create`).
     pub function_id: String,
+    /// Engine namespace to read the function in. Omitted: where a call without one goes (the caller's namespace; default for engine::, configuration:: and sandbox:: ids; the Compose namespace for compose:: ids).
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 /// Response shape for `directory::engine::functions::info`.
@@ -32,6 +37,9 @@ pub struct FunctionInfoInput {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FunctionInfoOutput {
     pub function_id: String,
+    /// The engine namespace the function was read in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub worker_name: Option<String>,
     pub description: Option<String>,
     pub request_schema: Option<Value>,
@@ -61,7 +69,7 @@ pub fn register(iii: &Arc<IIIClient>) {
             "Read full detail for one engine function: schemas, owning worker, the args \
              its observers pass (args_format), its observer count, and whether it is \
              private or observable. Proxies to the engine's native \
-             engine::functions::info.",
+             engine::functions::info. Pass namespace to read it in another engine namespace.",
         ),
     );
 }
@@ -77,11 +85,25 @@ async fn function_info(
         return Err("function_id must be non-empty".into());
     }
 
+    // shortcut: III_COMPOSE_NAMESPACE is read from this worker's environment, which matches the caller only inside one Compose project.
+    let compose = std::env::var("III_COMPOSE_NAMESPACE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let mut payload = json!({ "function_id": function_id });
+    if let Some(namespace) = info_namespace(
+        &function_id,
+        input.namespace.as_deref(),
+        baggage_own_namespace().as_deref(),
+        compose.as_deref(),
+    ) {
+        payload["namespace"] = json!(namespace);
+    }
+
     // Proxy to the engine's native function info.
     let val = iii
         .call(CallRequest {
             function_id: "engine::functions::info".to_string(),
-            payload: json!({ "function_id": function_id }),
+            payload,
             action: None,
             timeout_ms: Some(10_000),
         })
@@ -127,8 +149,14 @@ async fn function_info(
         .and_then(Value::as_bool)
         .unwrap_or(true);
 
+    let namespace = val
+        .get("namespace")
+        .and_then(Value::as_str)
+        .map(String::from);
+
     Ok(FunctionInfoOutput {
         function_id,
+        namespace,
         worker_name,
         description,
         request_schema,
@@ -139,6 +167,37 @@ async fn function_info(
         private,
         observable,
     })
+}
+
+/// The namespace to read `function_id` in: the non-blank one the input names,
+/// else where the caller's call would go. `None` without the caller's own
+/// namespace (an old harness sends no `iii.own_namespace` baggage): the engine
+/// then keeps its own default-first lookup, as before namespaces.
+fn info_namespace(
+    function_id: &str,
+    explicit: Option<&str>,
+    own: Option<&str>,
+    compose: Option<&str>,
+) -> Option<String> {
+    match explicit.map(str::trim).filter(|ns| !ns.is_empty()) {
+        Some(namespace) => Some(namespace.to_string()),
+        None => own.map(|own| lookup_namespace(function_id, own, compose)),
+    }
+}
+
+/// Where a call to `function_id` without a namespace goes. A copy of the
+/// harness's `ComposeScope::target_namespace` (harness/src/clients/engine.rs).
+fn lookup_namespace(function_id: &str, own: &str, compose: Option<&str>) -> String {
+    if ["configuration::", "engine::", "sandbox::"]
+        .iter()
+        .any(|prefix| function_id.starts_with(prefix))
+    {
+        "default".to_string()
+    } else if function_id.starts_with("compose::") {
+        compose.unwrap_or(own).to_string()
+    } else {
+        own.to_string()
+    }
 }
 
 /// First `::` segment, used as a fallback worker-name attribution.
@@ -157,6 +216,7 @@ mod tests {
     fn response_shape_has_no_how_guide_field() {
         let output = FunctionInfoOutput {
             function_id: "sandbox::create".into(),
+            namespace: None,
             worker_name: Some("sandbox".into()),
             description: Some("Boot a sandbox.".into()),
             request_schema: None,
@@ -178,6 +238,41 @@ mod tests {
         );
         assert_eq!(v["function_id"], "sandbox::create");
         assert_eq!(v["worker_name"], "sandbox");
+    }
+
+    #[test]
+    fn missing_namespace_resolves_where_a_call_would_go() {
+        for (id, compose, expected) in [
+            ("shell::exec", Some("host"), "proj"),
+            ("engine::functions::list", None, "default"),
+            ("configuration::get", None, "default"),
+            ("sandbox::create", None, "default"),
+            ("compose::add", Some("host"), "host"),
+            ("compose::add", None, "proj"),
+        ] {
+            assert_eq!(lookup_namespace(id, "proj", compose), expected, "{id}");
+        }
+        let input: FunctionInfoInput =
+            serde_json::from_value(json!({ "function_id": "shell::exec" })).unwrap();
+        assert_eq!(input.namespace, None);
+    }
+
+    #[test]
+    fn old_harness_lookup_names_no_namespace() {
+        // No `iii.own_namespace` baggage: the engine keeps its own lookup.
+        assert_eq!(
+            info_namespace("shell::exec", None, None, Some("host")),
+            None
+        );
+        assert_eq!(info_namespace("shell::exec", Some("  "), None, None), None);
+        assert_eq!(
+            info_namespace("shell::exec", Some(" laptop "), None, None).as_deref(),
+            Some("laptop")
+        );
+        assert_eq!(
+            info_namespace("sandbox::create", None, Some("proj"), None).as_deref(),
+            Some("default")
+        );
     }
 
     #[test]
