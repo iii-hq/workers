@@ -725,7 +725,7 @@ pub(crate) async fn invoke_target_classified(
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, arguments).await {
+    match engine.dispatch(function_id, None, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);

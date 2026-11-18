@@ -106,7 +106,8 @@ impl EngineClient {
         }
     }
 
-    /// Dispatch an arbitrary iii function and return its raw result. This is
+    /// Dispatch an arbitrary iii function in `namespace` (`None`: its implicit
+    /// namespace, see [`resolve_namespace`]) and return its raw result. This is
     /// the target invocation of an unwrapped `agent_call` call.
     ///
     /// An engine restart while the call is in flight fails the dispatch with
@@ -117,10 +118,12 @@ impl EngineClient {
     pub async fn dispatch(
         &self,
         function_id: &str,
+        namespace: Option<&str>,
         payload: Value,
     ) -> Result<Value, DispatchError> {
-        let (payload, prepared_namespace) = self.compose.prepare(function_id, payload);
-        let target_namespace = dispatch_namespace(function_id, prepared_namespace);
+        let (payload, target_namespace) =
+            self.compose
+                .route(&own_namespace(), function_id, namespace, payload);
         // Capture the epoch immediately before the invocation instead of
         // comparing against process-global state. A global baseline becomes
         // stale when the engine restarts while this worker is idle and would
@@ -129,17 +132,15 @@ impl EngineClient {
         // the wait still wakes it.
         let changes = crate::engine_events::subscribe_changes();
         let baseline = engine_epoch_ms(&self.iii).await;
-        let mut request: CallRequestWithMetadata = CallRequest {
+        let request: CallRequestWithMetadata = CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
             timeout_ms: Some(self.timeout_ms),
         }
         .into();
-        if let Some(namespace) = target_namespace {
-            request = request.namespace(namespace);
-        }
-        let call = self.iii.call(request);
+        // The SDK resolved the same namespace when none was set, so the wire is unchanged.
+        let call = self.iii.call(request.namespace(target_namespace));
         let result = match baseline {
             Some(baseline) => {
                 tokio::select! {
@@ -165,7 +166,7 @@ impl EngineClient {
             parsed.message = format!("{function_id}: {}", parsed.message);
             // Classify the structured error before it is flattened to text.
             parsed.outcome_unknown = invocation_outcome_unknown(&e);
-            parsed
+            with_namespace_hint(parsed)
         })
     }
 
@@ -289,7 +290,8 @@ impl EngineClient {
 /// functions live in the daemon namespace. These two environment values are
 /// supervisor-owned: they route `compose::*` to the daemon that started this
 /// harness and pin every request to this harness's compose file. Compose-only
-/// contract lookups use the same daemon namespace in their introspection payload.
+/// contract lookups that name no namespace use the same daemon namespace in
+/// their introspection payload.
 #[derive(Clone, Debug, Default)]
 struct ComposeScope {
     namespace: Option<String>,
@@ -308,7 +310,7 @@ impl ComposeScope {
         }
     }
 
-    fn prepare<'a>(&'a self, function_id: &str, mut payload: Value) -> (Value, Option<&'a str>) {
+    fn prepare(&self, function_id: &str, mut payload: Value) -> Value {
         if function_id == "engine::functions::info" {
             let compose_only = match (payload.get("function_id"), payload.get("function_ids")) {
                 (Some(Value::String(id)), None) => id.starts_with("compose::"),
@@ -324,14 +326,16 @@ impl ComposeScope {
                 && let (Some(namespace), Some(arguments)) =
                     (&self.namespace, payload.as_object_mut())
             {
-                arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
+                arguments
+                    .entry("namespace")
+                    .or_insert_with(|| Value::String(namespace.clone()));
             }
             // The engine built-in stays in its own namespace; only the lookup
             // target is scoped. A compose file is not an introspection argument.
-            return (payload, None);
+            return payload;
         }
         if !function_id.starts_with("compose::") {
-            return (payload, None);
+            return payload;
         }
 
         if payload.is_null() {
@@ -345,21 +349,62 @@ impl ComposeScope {
                 arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
             }
         }
-        (payload, self.namespace.as_deref())
+        payload
+    }
+
+    /// Where `function_id` runs: `explicit` as given; otherwise engine-owned
+    /// functions (`configuration::*`, `engine::*`, iii-sandbox's `sandbox::*`)
+    /// in `default`, `compose::*` in the supervising daemon's namespace, and
+    /// everything else in `own`.
+    fn target_namespace(&self, own: &str, function_id: &str, explicit: Option<&str>) -> String {
+        if let Some(namespace) = explicit {
+            return namespace.to_string();
+        }
+        if ["configuration::", "engine::", "sandbox::"]
+            .iter()
+            .any(|prefix| function_id.starts_with(prefix))
+        {
+            "default".to_string()
+        } else if function_id.starts_with("compose::") {
+            self.namespace.as_deref().unwrap_or(own).to_string()
+        } else {
+            own.to_string()
+        }
+    }
+
+    /// The payload to send and the namespace to send it to.
+    fn route(
+        &self,
+        own: &str,
+        function_id: &str,
+        namespace: Option<&str>,
+        payload: Value,
+    ) -> (Value, String) {
+        (
+            self.prepare(function_id, payload),
+            self.target_namespace(own, function_id, namespace),
+        )
     }
 }
 
-/// Engine-owned functions (`configuration::*`, iii-sandbox's `sandbox::*`)
-/// exist only in `default`, whatever namespace the harness runs in.
-fn dispatch_namespace<'a>(
-    function_id: &str,
-    prepared_namespace: Option<&'a str>,
-) -> Option<&'a str> {
-    if function_id.starts_with("configuration::") || function_id.starts_with("sandbox::") {
-        Some("default")
-    } else {
-        prepared_namespace
+/// The namespace a call to `function_id` runs in: `namespace` when given,
+/// else its implicit namespace. The one routing rule for policy, ledger,
+/// hooks and dispatch.
+pub fn resolve_namespace(function_id: &str, namespace: Option<&str>) -> String {
+    ComposeScope::from_env().target_namespace(&own_namespace(), function_id, namespace)
+}
+
+/// A miss the engine found registered in other namespaces tells the model how
+/// to reach one of them.
+fn with_namespace_hint(mut error: DispatchError) -> DispatchError {
+    if error.code.as_deref() == Some("function_not_found")
+        && error.message.contains("It is registered in namespace(s):")
+    {
+        error
+            .message
+            .push_str(" Pass `namespace` in agent_call to call it in one of those namespaces.");
     }
+    error
 }
 
 /// The namespace this harness registered in.
@@ -694,17 +739,18 @@ mod tests {
             namespace: Some("compose-daemon".to_string()),
             file: Some("/srv/app/worker-compose.yaml".to_string()),
         };
-        let (payload, prepared_namespace) = scope.prepare(
+        let (payload, namespace) = scope.route(
+            "project",
             "compose::add",
+            None,
             json!({
                 "worker": "database",
                 "file": "/tmp/other.yaml",
                 "namespace": "other-daemon"
             }),
         );
-        let namespace = dispatch_namespace("compose::add", prepared_namespace);
 
-        assert_eq!(namespace, Some("compose-daemon"));
+        assert_eq!(namespace, "compose-daemon");
         assert_eq!(payload["worker"], "database");
         assert_eq!(payload["file"], "/srv/app/worker-compose.yaml");
         assert_eq!(payload["namespace"], "compose-daemon");
@@ -716,18 +762,15 @@ mod tests {
             namespace: Some("compose-daemon".to_string()),
             file: Some("/srv/app/worker-compose.yaml".to_string()),
         };
-        for mut payload in [
+        for payload in [
             json!({ "function_id": "compose::add" }),
             json!({ "function_ids": ["compose::add", "compose::operation"] }),
         ] {
-            payload["namespace"] = json!("other-daemon");
-            let (prepared, prepared_namespace) =
-                scope.prepare("engine::functions::info", payload.clone());
-            payload["namespace"] = json!("compose-daemon");
-            assert_eq!(prepared, payload);
+            let mut expected = payload.clone();
+            expected["namespace"] = json!("compose-daemon");
             assert_eq!(
-                dispatch_namespace("engine::functions::info", prepared_namespace),
-                None
+                scope.route("project", "engine::functions::info", None, payload.clone()),
+                (expected, "default".to_string())
             );
         }
     }
@@ -747,13 +790,13 @@ mod tests {
         ] {
             assert_eq!(
                 scope.prepare("engine::functions::info", payload.clone()),
-                (payload, None)
+                payload
             );
         }
         let payload = json!({ "function_id": "compose::add", "namespace": "explicit" });
         assert_eq!(
             ComposeScope::default().prepare("engine::functions::info", payload.clone()),
-            (payload, None)
+            payload
         );
     }
 
@@ -764,38 +807,111 @@ mod tests {
             file: Some("/srv/app/worker-compose.yaml".to_string()),
         };
         let payload = json!({ "path": "." });
-        let (prepared, prepared_namespace) = scope.prepare("shell::fs::ls", payload.clone());
-        let namespace = dispatch_namespace("shell::fs::ls", prepared_namespace);
-
-        assert_eq!(prepared, payload);
-        assert_eq!(namespace, None);
+        assert_eq!(
+            scope.route("project", "shell::fs::ls", None, payload.clone()),
+            (payload, "project".to_string())
+        );
     }
 
     #[test]
-    fn configuration_calls_are_routed_to_default() {
-        for function_id in ["configuration::get", "configuration::list"] {
-            assert_eq!(dispatch_namespace(function_id, None), Some("default"));
+    fn configuration_and_engine_calls_are_routed_to_default() {
+        for function_id in [
+            "configuration::get",
+            "configuration::list",
+            "engine::functions::list",
+        ] {
+            assert_eq!(
+                ComposeScope::default().target_namespace("my-project", function_id, None),
+                "default"
+            );
         }
     }
 
     #[test]
     fn configuration_prefix_match_is_exact() {
-        assert_eq!(dispatch_namespace("configuration-extra::get", None), None);
+        assert_eq!(
+            ComposeScope::default().target_namespace(
+                "my-project",
+                "configuration-extra::get",
+                None
+            ),
+            "my-project"
+        );
     }
 
     #[test]
     fn sandbox_calls_are_routed_to_default_but_not_their_lookalikes() {
         for function_id in ["sandbox::create", "sandbox::exec", "sandbox::fs::write"] {
             assert_eq!(
-                dispatch_namespace(function_id, Some("my-project")),
-                Some("default")
+                ComposeScope::default().target_namespace("my-project", function_id, None),
+                "default"
             );
         }
         // sandbox-code-runner is an ordinary worker in the project namespace.
         assert_eq!(
-            dispatch_namespace("sandbox-code-runner::run", Some("my-project")),
-            Some("my-project")
+            ComposeScope::default().target_namespace(
+                "my-project",
+                "sandbox-code-runner::run",
+                None
+            ),
+            "my-project"
         );
+    }
+
+    #[test]
+    fn compose_calls_without_a_compose_scope_stay_in_the_own_namespace() {
+        assert_eq!(
+            ComposeScope::default().target_namespace("my-project", "compose::add", None),
+            "my-project"
+        );
+    }
+
+    #[test]
+    fn an_explicit_namespace_is_used_as_given_and_keeps_the_compose_file_pin() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".into()),
+            file: Some("/srv/app/worker-compose.yaml".into()),
+        };
+        let (payload, target) = scope.route(
+            "project",
+            "compose::add",
+            Some("laptop"),
+            json!({ "worker": "database" }),
+        );
+        assert_eq!(
+            (payload["file"].clone(), target),
+            (json!("/srv/app/worker-compose.yaml"), "laptop".to_string())
+        );
+        assert_eq!(
+            scope
+                .route("project", "configuration::get", Some("laptop"), json!({}))
+                .1,
+            "laptop"
+        );
+        // A contract lookup that names its namespace keeps it.
+        let lookup = json!({ "function_id": "compose::add", "namespace": "laptop" });
+        assert_eq!(
+            scope.prepare("engine::functions::info", lookup.clone()),
+            lookup
+        );
+    }
+
+    #[test]
+    fn a_miss_in_one_namespace_tells_the_model_to_pass_one() {
+        let error = |message: &str| DispatchError {
+            code: Some("function_not_found".into()),
+            message: message.into(),
+            outcome_unknown: false,
+        };
+        let miss = "shell::exec: remote error (function_not_found): Function shell::exec not found in namespace laptop. It is registered in namespace(s): default, hub.";
+        assert_eq!(
+            with_namespace_hint(error(miss)).message,
+            format!("{miss} Pass `namespace` in agent_call to call it in one of those namespaces.")
+        );
+        let unknown = error(
+            "x::y: remote error (function_not_found): Function x::y not found in namespace proj.",
+        );
+        assert_eq!(with_namespace_hint(unknown.clone()), unknown);
     }
 
     #[test]

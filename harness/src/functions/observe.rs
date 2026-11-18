@@ -1119,6 +1119,7 @@ async fn reject_settled_compose_operation(
         .await
         .dispatch(
             "compose::operation",
+            None,
             json!({ "operation_id": operation_id }),
         )
         .await
