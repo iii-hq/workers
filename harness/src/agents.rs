@@ -443,8 +443,8 @@ async fn attach_preloaded_functions(
 }
 
 /// The current contracts of `ids`, in order: from the cached registry
-/// snapshot, then one `engine::functions::info` batch per 32 ids the snapshot
-/// cannot vouch for. Returns the contracts found, the ids the engine does not
+/// snapshot, then one `engine::functions::info` batch per 32 ids per implicit
+/// namespace that the snapshot cannot vouch for. Returns the contracts found, the ids the engine does not
 /// know, and every id's digest (`None` when unavailable).
 pub(crate) async fn preload_contracts(
     deps: &Deps,

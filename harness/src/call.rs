@@ -309,11 +309,12 @@ fn content_json(content: &[ContentBlock]) -> Option<Value> {
 
 /// Compact one model-visible contract item in place, dropping what carries
 /// no calling contract: response-side schemas (the model reads results, it
-/// never constructs them), the registry envelope, and JSON-Schema boilerplate
+/// never constructs them), the registry bookkeeping (`metadata`,
+/// `observer_count`, `worker_name`), and JSON-Schema boilerplate
 /// inside the request schema (`$schema`, `title`, `default: null`, and
 /// `definitions` referenced exactly once, which are inlined at their `$ref`).
-/// Property names, types, `required`, `enum`, real defaults and every
-/// description survive. A dedupe marker or error item has none of these keys
+/// The id, `namespace`, property names, types, `required`, `enum`, real
+/// defaults and every description survive. A dedupe marker or error item has none of these keys
 /// — the call is a no-op there.
 fn compact_contract(item: &mut Value) -> bool {
     let Some(object) = item.as_object_mut() else {
@@ -3063,7 +3064,7 @@ mod tests {
         );
     }
 
-    /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
+    /// The production gate is `turn_loop`'s `if !policy.allows_in(&namespace, &call.function_id)`,
     /// which answers `denied_result` before `observe::invoke` can intercept:
     /// both exposures must plan the control under its own id, and that id must
     /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)

@@ -278,6 +278,13 @@ fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
             );
             return None;
         }
+        if namespace.is_some() && id.is_empty() {
+            tracing::warn!(
+                pattern = %p,
+                "rejecting policy: pattern {p} names a namespace but no function id"
+            );
+            return None;
+        }
         qualifiers.push(namespace.map(str::to_string));
         let glob = match Glob::new(id) {
             Ok(glob) => glob,
@@ -371,7 +378,9 @@ pub struct PlannedCall {
     pub arguments: Value,
     pub kind: CallKind,
     /// The `agent_call` envelope's `namespace`; `None` when absent or blank,
-    /// for native calls and for `submit_result`.
+    /// for native calls and for `submit_result`. For an
+    /// `engine::functions::info` call it moves into the payload, which names
+    /// the namespace to read.
     pub namespace: Option<String>,
 }
 
@@ -797,6 +806,16 @@ mod tests {
     fn a_glob_namespace_qualifier_denies_everything() {
         let p = CompiledPolicy::from(Some(&policy(&["*", "lap*/shell::*"], &[])));
         assert!(!p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "state::get"));
+    }
+
+    #[test]
+    fn an_empty_id_after_a_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "laptop/"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["laptop/"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
     }
 
     #[test]

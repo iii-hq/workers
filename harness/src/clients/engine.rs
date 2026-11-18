@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const ENGINE_RESTART_INTERRUPTED: &str =
     "execution interrupted by engine restart; the call ran at most once and its result is unknown";
 
-/// A registry function descriptor (id + optional schemas/description). Only
+/// A registry function descriptor (id, namespace + optional schemas/description). Only
 /// the fields the harness reads are typed; the rest pass through as `extra`.
 #[derive(Debug, Clone)]
 pub struct FunctionDescriptor {
@@ -139,7 +139,7 @@ impl EngineClient {
             timeout_ms: Some(self.timeout_ms),
         }
         .into();
-        // The SDK resolved the same namespace when none was set, so the wire is unchanged.
+        // Target the resolved namespace; the SDK defaults it when none is named.
         let call = self.iii.call(request.namespace(target_namespace));
         let result = match baseline {
             Some(baseline) => {
@@ -647,7 +647,7 @@ fn descriptor_id(v: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-/// Extract id + description + parameters schema from a descriptor in the
+/// Extract id + namespace (`default` when absent) + description + parameters schema from a descriptor in the
 /// shapes engines return (`function_id` or `id`; parameters at the top level,
 /// under `request_format`, or `request_schema`).
 fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
