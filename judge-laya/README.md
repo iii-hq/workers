@@ -28,6 +28,12 @@ for the next one. The first load downloads the checkpoint
 into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`) and
 converts it once to the GGUF llama.cpp loads, under `$HF_HOME/judge-laya/`
 (keyed by model and revision; under a second for `laya`, 844 MB).
+Every checkpoint is read at the commit of `convaiinnovations/laya` that laya
+reviewed (`55cf4c4e`, `REVISION` in `src/download.rs`), and each file is
+checked against its sha256 before it is used; a mismatch fails the load. Once
+the pinned snapshot is cached, a load does not contact the Hub. A GGUF
+converted from an earlier `main` commit is not reused (each checkpoint
+converts once more, without a download) and can be deleted by hand.
 `laya` reads the tokenizer in its own `tokenizer/`, as laya 0.3.28 does; a
 cache filled by an earlier judge-laya, which read ModernBERT-large's, lacks
 it, so the first load after upgrading needs the Hub once (it downloads 3.6 MB,
@@ -123,7 +129,6 @@ with a hundred questions, or route such callers to a hosted provider.
 | `preload` | `[]` | next start (extra checkpoints, ~1 GB of RAM each; 1.6 GB on the CPU) |
 | `auto_route` | `false` | new calls |
 | `auto_task_detection` | `false` | new calls |
-| `revision` | `main` | next start |
 | `threads` | min(8, logical cores) | next start |
 | `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU) |
 | `batch_questions` | 16 | new calls (at most 8192 tokens per pass: 8 questions for the 1024-token checkpoints) |

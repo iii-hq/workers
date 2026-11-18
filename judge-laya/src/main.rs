@@ -54,11 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let initial = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)?;
-    let (model, revision, preload) = (
-        initial.model.clone(),
-        initial.revision.clone(),
-        initial.preload.clone(),
-    );
+    let (model, preload) = (initial.model.clone(), initial.preload.clone());
     let options = engine::Options {
         threads: initial.threads,
         gpu_layers: initial.gpu_layers,
@@ -72,7 +68,6 @@ async fn main() -> anyhow::Result<()> {
         .await;
     let checkpoints = Checkpoints {
         model,
-        revision,
         preload,
         checkpoint_dir: cli.checkpoint_dir,
         gguf: cli.gguf,
@@ -99,7 +94,6 @@ async fn main() -> anyhow::Result<()> {
 #[derive(Clone)]
 struct Checkpoints {
     model: String,
-    revision: Option<String>,
     preload: Vec<String>,
     checkpoint_dir: Option<PathBuf>,
     gguf: Option<PathBuf>,
@@ -109,7 +103,6 @@ struct Checkpoints {
 fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaClient> {
     let Checkpoints {
         model,
-        revision,
         preload,
         checkpoint_dir,
         gguf,
@@ -128,11 +121,7 @@ fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaCl
                     model = name,
                     "fetching laya checkpoint from the Hugging Face Hub"
                 );
-                download::fetch(
-                    name,
-                    revision.as_deref(),
-                    gguf.as_deref().filter(|_| i == 0),
-                )?
+                download::fetch(name, gguf.as_deref().filter(|_| i == 0))?
             }
         };
         tracing::info!(

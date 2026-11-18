@@ -27,7 +27,7 @@ const limitFields = [
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', 'threads', 'gpu_layers', 'preload', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'threads', 'gpu_layers', 'preload', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
@@ -155,25 +155,6 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 onClear={() => setString('model', undefined)}
                 onChange={(next) => setString('model', next)}
                 aria-label="Model"
-              />
-            )}
-          />
-          <SettingsField
-            id="laya-cfg-revision"
-            field="revision"
-            label="Revision"
-            description="Hugging Face branch, tag or commit of convaiinnovations/laya. Clear to follow main."
-            error={props.errors?.get('/revision')}
-            renderControl={(controlProps) => (
-              <Input
-                {...controlProps}
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Revision"
-                placeholder="main"
-                value={typeof value.revision === 'string' ? value.revision : ''}
-                onChange={(next) => setString('revision', next)}
               />
             )}
           />

@@ -123,8 +123,6 @@ describe('LayaConfigForm', () => {
     const { onChange } = await mount(value)
     await act(async () => changes.get('model')?.('laya-multilingual'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, model: 'laya-multilingual' })
-    await act(async () => changes.get('revision')?.('abc123'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value, revision: 'abc123' })
     await act(async () => changes.get('threads')?.('6'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, threads: 6 })
     await act(async () => changes.get('gpu_layers')?.('0'))
@@ -154,8 +152,8 @@ describe('LayaConfigForm', () => {
   })
 
   it('maps field errors, shows the rest in a panel, and keeps opaque roots', async () => {
-    const { container } = await mount({}, engine(), { errors: new Map([['/revision', 'bad revision'], ['', 'root failure']]) })
-    expect(container.querySelector('#laya-cfg-revision-error')?.textContent).toBe('bad revision')
+    const { container } = await mount({}, engine(), { errors: new Map([['/threads', 'bad threads'], ['', 'root failure']]) })
+    expect(container.querySelector('#laya-cfg-threads-error')?.textContent).toBe('bad threads')
     expect(container.querySelector('[role="alert"][data-variant="alert"]')?.textContent).toContain('root failure')
     const { container: opaque, onChange } = await mount('${LAYA}')
     expect(opaque.textContent).toContain('single value')
@@ -163,7 +161,7 @@ describe('LayaConfigForm', () => {
   })
 
   it('focuses the deep-linked control', async () => {
-    const { container } = await mount({}, engine(), { focusField: ['revision'] })
-    expect(document.activeElement).toBe(container.querySelector('#laya-cfg-revision'))
+    const { container } = await mount({}, engine(), { focusField: ['threads'] })
+    expect(document.activeElement).toBe(container.querySelector('#laya-cfg-threads'))
   })
 })
