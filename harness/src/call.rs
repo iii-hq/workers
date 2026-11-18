@@ -119,6 +119,11 @@ fn unique_visible_result<'a>(
     found
 }
 
+/// The contract ledger key of `function_id` in `namespace`.
+pub(crate) fn contract_key(namespace: &str, function_id: &str) -> String {
+    format!("{namespace}/{function_id}")
+}
+
 /// Prepare an `engine::functions::info` result for the model: every
 /// contract in the model-visible copy is compacted (see [`compact_contract`])
 /// and an unchanged, successful contract already in context is replaced by
@@ -174,7 +179,7 @@ pub(crate) fn prepare_info_result(
         }
     }
 
-    // `(function_id, digest, repeats)` sent in full this time, and the rows
+    // `(ledger key, digest, repeats)` sent in full this time, and the rows
     // whose repeat was answered from the ledger.
     let mut full = Vec::new();
     let mut counted = Vec::new();
@@ -187,7 +192,11 @@ pub(crate) fn prepare_info_result(
         let Some(contract_digest) = digest_value(contract) else {
             continue;
         };
-        match ledger.get(&function_id) {
+        // An engine without namespaced info leaves the bare id as the key.
+        let namespace = contract.get("namespace").and_then(Value::as_str);
+        let key =
+            namespace.map_or_else(|| function_id.clone(), |ns| contract_key(ns, &function_id));
+        match ledger.get(&key) {
             Some(source)
                 if source.eligible
                     && source.contract_digest == contract_digest
@@ -207,13 +216,16 @@ pub(crate) fn prepare_info_result(
                          sent again in full because it was requested again. Call \
                          {function_id} now instead of fetching its contract."
                     ));
-                    full.push((function_id, contract_digest, 2));
+                    full.push((key, contract_digest, 2));
                 } else {
                     let mut marker = json!({
                         "function_id": function_id,
                         "contract_status": "unchanged_in_context",
                         "source_function_call_id": source_id,
                     });
+                    if let Some(namespace) = namespace {
+                        marker["namespace"] = json!(namespace);
+                    }
                     // Past the re-send, the bare status did not stop the
                     // loop (MOT-4928): say what to do instead.
                     if source.repeats >= 2 {
@@ -224,7 +236,7 @@ pub(crate) fn prepare_info_result(
                     }
                     *item = marker;
                     counted.push((
-                        function_id,
+                        key,
                         FunctionContractLedgerEntry {
                             repeats: source.repeats + 1,
                             ..source.clone()
@@ -238,10 +250,10 @@ pub(crate) fn prepare_info_result(
             // confirmed visible) is still a repeat: keep its count.
             _ => {
                 let repeats = ledger
-                    .get(&function_id)
+                    .get(&key)
                     .filter(|source| source.contract_digest == contract_digest)
                     .map_or(0, |source| source.repeats);
-                full.push((function_id, contract_digest, repeats));
+                full.push((key, contract_digest, repeats));
             }
         }
     }
@@ -267,9 +279,9 @@ pub(crate) fn prepare_info_result(
     };
     let updates = full
         .into_iter()
-        .map(|(function_id, contract_digest, repeats)| {
+        .map(|(key, contract_digest, repeats)| {
             (
-                function_id,
+                key,
                 FunctionContractLedgerEntry {
                     contract_digest,
                     source_function_call_id: call_id.to_string(),
@@ -1700,6 +1712,36 @@ mod tests {
             rendered["functions"][0]["contract_status"],
             "unchanged_in_context"
         );
+    }
+
+    #[test]
+    fn the_contract_ledger_keeps_each_namespace_apart() {
+        let details = json!({ "function_id": "worker::function", "namespace": "b", "description": "Does work",
+            "request_schema": { "type": "object" }, "response_schema": { "type": "object" } });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let entry = FunctionContractLedgerEntry {
+            contract_digest: digest_value(&details).unwrap(),
+            source_function_call_id: "call_0".into(),
+            source_content_digest: "source".into(),
+            eligible: true,
+            repeats: 0,
+        };
+        let args = json!({ "function_id": "worker::function", "namespace": "b" });
+        let shown = |r: &ResultData| {
+            serde_json::from_str::<Value>(&ContentBlock::join_text(&r.content)).unwrap()
+        };
+        let in_a = BTreeMap::from([(contract_key("a", "worker::function"), entry.clone())]);
+        let (first, updates) = prepare_info_result("call_1", &args, &data, &in_a, true);
+        assert_eq!(shown(&first)["request_schema"], json!({ "type": "object" }));
+        assert_eq!(updates[0].0, "b/worker::function");
+        let in_b = BTreeMap::from([(contract_key("b", "worker::function"), entry)]);
+        let (again, _) = prepare_info_result("call_2", &args, &data, &in_b, true);
+        assert_eq!(shown(&again)["contract_status"], "unchanged_in_context");
+        assert_eq!(shown(&again)["namespace"], "b");
     }
 
     #[test]

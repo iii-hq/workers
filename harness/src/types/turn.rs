@@ -454,7 +454,9 @@ pub struct TurnRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_acknowledged: Option<Vec<u32>>,
     /// Function contracts whose exact full source result was retained in the
-    /// most recently assembled model context for this session.
+    /// most recently assembled model context for this session, keyed by
+    /// `call::contract_key(namespace, id)`; rows from engines without
+    /// namespaced info keep the bare id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
     /// Identical failures this turn, keyed by the digest of

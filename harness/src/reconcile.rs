@@ -398,23 +398,30 @@ pub async fn settle_result(
     }
 }
 
-/// Whether the model already holds `function_id`'s request schema: every
-/// tool carries its own under native exposure, and a contract fetched with
-/// `engine::functions::info` (the ledger) or preloaded by a profile or spawn
-/// stays in context. Native mode counts as known even for a dispatch-only
-/// grant called through `agent_call`: that call just gets today's pointer.
-pub fn contract_in_context(record: &TurnRecord, function_id: &str) -> bool {
+/// Whether the model already holds `function_id`'s request schema in
+/// `namespace`: every tool carries its own under native exposure, and a
+/// contract fetched with `engine::functions::info` (the ledger) or preloaded
+/// by a profile or spawn stays in context. A bare-id ledger row and a
+/// preloaded contract name the copy a call without `namespace` reaches.
+/// Native mode counts as known even for a dispatch-only grant called through
+/// `agent_call`: that call just gets today's pointer.
+pub fn contract_in_context(record: &TurnRecord, namespace: &str, function_id: &str) -> bool {
+    let implicit = || namespace == crate::clients::engine::resolve_namespace(function_id, None);
     record
         .options
         .functions
         .as_ref()
         .is_some_and(|functions| functions.expose == ExposeMode::Native)
-        || record.function_contract_ledger.contains_key(function_id)
         || record
+            .function_contract_ledger
+            .contains_key(&crate::call::contract_key(namespace, function_id))
+        || (record.function_contract_ledger.contains_key(function_id) && implicit())
+        || (record
             .options
             .preloaded_contracts
             .as_ref()
             .is_some_and(|preloaded| preloaded.contains_key(function_id))
+            && implicit())
 }
 
 /// A string that parses as JSON of a non-string type.
@@ -1801,31 +1808,47 @@ mod tests {
     #[test]
     fn a_contract_is_in_context_when_fetched_preloaded_or_native() {
         let mut record = crate::types::turn::tests::record();
-        assert!(!contract_in_context(&record, "coder::update-file"));
+        let own = crate::clients::engine::own_namespace();
+        assert!(!contract_in_context(&record, "proj", "coder::update-file"));
 
+        let row = crate::types::turn::FunctionContractLedgerEntry {
+            contract_digest: "d".into(),
+            source_function_call_id: "c".into(),
+            source_content_digest: "s".into(),
+            eligible: true,
+            repeats: 0,
+        };
         record.function_contract_ledger.insert(
-            "coder::update-file".into(),
-            crate::types::turn::FunctionContractLedgerEntry {
-                contract_digest: "d".into(),
-                source_function_call_id: "c".into(),
-                source_content_digest: "s".into(),
-                eligible: true,
-                repeats: 0,
-            },
+            crate::call::contract_key("proj", "coder::update-file"),
+            row.clone(),
         );
-        assert!(contract_in_context(&record, "coder::update-file"));
-        assert!(!contract_in_context(&record, "state::get"));
+        assert!(contract_in_context(&record, "proj", "coder::update-file"));
+        assert!(!contract_in_context(
+            &record,
+            "laptop",
+            "coder::update-file"
+        ));
+        assert!(!contract_in_context(&record, &own, "state::get"));
+
+        // A bare-id row (an engine without namespaced info) counts only in
+        // the namespace a call without one reaches.
+        record
+            .function_contract_ledger
+            .insert("coder::read-file".into(), row);
+        assert!(contract_in_context(&record, &own, "coder::read-file"));
+        assert!(!contract_in_context(&record, "laptop", "coder::read-file"));
 
         record.options.preloaded_contracts = Some(BTreeMap::from([("state::get".into(), None)]));
-        assert!(contract_in_context(&record, "state::get"));
-        assert!(!contract_in_context(&record, "shell::exec"));
+        assert!(contract_in_context(&record, &own, "state::get"));
+        assert!(!contract_in_context(&record, "zz-a", "state::get"));
+        assert!(!contract_in_context(&record, "zz-a", "shell::exec"));
 
         record
             .options
             .functions
             .get_or_insert_with(Default::default)
             .expose = ExposeMode::Native;
-        assert!(contract_in_context(&record, "shell::exec"));
+        assert!(contract_in_context(&record, "zz-a", "shell::exec"));
     }
 
     #[test]

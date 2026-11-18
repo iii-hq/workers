@@ -2119,7 +2119,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
-                    crate::reconcile::contract_in_context(&record, &call.function_id),
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2290,7 +2290,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
-                    crate::reconcile::contract_in_context(&record, &call.function_id),
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2492,7 +2492,7 @@ async fn finish_step(
                 reconciled.as_ref().map(|r| r.changes.as_slice()),
                 &call.function_id,
                 call_args,
-                crate::reconcile::contract_in_context(&record, &call.function_id),
+                crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
             )
             .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
