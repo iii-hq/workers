@@ -88,6 +88,93 @@ function AgentGlyph({
 }
 
 const KITS_ON_CHANGE = 'directory::kits::on-change'
+const AGENTS_ON_CHANGE = 'directory::agents::on-change'
+
+type CatalogRead = { ok: true; agents: AgentEntry[] } | { ok: false }
+
+/**
+ * The Directory's agent profiles, read on mount and again whenever its
+ * profiles change (a kit apply, a download, an edit in Directory) and
+ * whenever the picker opens. The composer can mount while the setup wizard
+ * is still installing the template's kits (Deep Work's profiles land minutes
+ * later, after Compose adds the kit's workers); a single read on mount kept
+ * them out of the picker until a reload.
+ *
+ * A failed first read shows the error with Retry; a failed later read keeps
+ * the list already shown.
+ */
+function useAgentCatalog(provided: AgentEntry[] | null | undefined) {
+  const [entries, setEntries] = useState<AgentEntry[] | null>(null)
+  const [error, setError] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const refreshRef = useRef<() => void>(() => {})
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries a failed catalog request.
+  useEffect(() => {
+    if (provided !== undefined) return
+    let cancelled = false
+    let loaded = false
+    const offs: Array<() => void> = []
+    setError(false)
+    void getIiiClient()
+      .then((client) => {
+        if (cancelled) return
+        // One read in flight, so an older list never lands after a newer one.
+        const { refresh: read, reset } = serialRefresh(
+          (): Promise<CatalogRead> =>
+            listAgents(client).then(
+              (agents) => ({ ok: true, agents }),
+              () => ({ ok: false }),
+            ),
+          (result) => {
+            if (result.ok) {
+              loaded = true
+              setEntries(result.agents)
+              setError(false)
+            } else if (!loaded) {
+              setEntries([])
+              setError(true)
+            }
+          },
+        )
+        offs.push(reset)
+        refreshRef.current = read
+        // Per-mount id: the route chat and the dock can both show a picker.
+        const fnId = `ade::agent-catalog::${instanceId}`
+        try {
+          offs.push(client.on(fnId, () => read()))
+          offs.push(
+            client.observe(
+              { function_id: AGENTS_ON_CHANGE },
+              `${fnId}::${client.browserId}`,
+            ),
+          )
+        } catch {
+          // The client refused the observer: reads on open still refresh.
+        }
+        read()
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEntries([])
+          setError(true)
+        }
+      })
+    return () => {
+      cancelled = true
+      refreshRef.current = () => {}
+      for (const off of offs) off()
+    }
+  }, [provided, instanceId, attempt])
+
+  return {
+    catalog: provided === undefined ? entries : provided,
+    error: provided === undefined && error,
+    retry: () => setAttempt((value) => value + 1),
+    refresh: () => refreshRef.current(),
+  }
+}
 
 /**
  * Installed kits with a newer release, for the profiles they own. Read
@@ -163,31 +250,12 @@ export function AgentProfilePicker({
       ? updates.find((update) => update.kit === entry.source?.kit)
       : undefined
   const detailsRef = useRef<HTMLDivElement>(null)
-  const [entries, setEntries] = useState<AgentEntry[] | null>(null)
-  const [error, setError] = useState(false)
-  const [attempt, setAttempt] = useState(0)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries a failed catalog request.
-  useEffect(() => {
-    if (agentEntries !== undefined) return
-    let cancelled = false
-    setError(false)
-    void getIiiClient()
-      .then(listAgents)
-      .then((next) => {
-        if (!cancelled) setEntries(next)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEntries([])
-          setError(true)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [agentEntries, attempt])
-
-  const catalog = agentEntries === undefined ? entries : agentEntries
+  const {
+    catalog,
+    error,
+    retry,
+    refresh: refreshCatalog,
+  } = useAgentCatalog(agentEntries)
   const agents = (catalog ?? []).filter((entry) => !entry.hidden)
   const selectedId = agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const preselect =
@@ -240,6 +308,7 @@ export function AgentProfilePicker({
           return
         }
         setOpen(next)
+        if (next) refreshCatalog()
       }}
     >
       <PopoverTrigger
@@ -290,7 +359,7 @@ export function AgentProfilePicker({
             Loading agent profiles…
           </p>
         ) : null}
-        {error && agentEntries === undefined ? (
+        {error ? (
           <div
             role="status"
             className="flex items-center justify-between gap-2 px-2.5 py-2 text-sm text-ink-faint"
@@ -298,7 +367,7 @@ export function AgentProfilePicker({
             Could not load agent profiles.
             <button
               type="button"
-              onClick={() => setAttempt((value) => value + 1)}
+              onClick={retry}
               className="rounded-md px-2 py-1 text-ink hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-ring"
             >
               Retry
