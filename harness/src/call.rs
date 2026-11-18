@@ -738,7 +738,15 @@ pub(crate) async fn invoke_target_classified(
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, namespace, arguments).await {
+    let requests = match namespace {
+        None if function_id == "engine::functions::info" => info_requests(&arguments),
+        _ => None,
+    };
+    let dispatched = match requests {
+        Some(requests) => dispatch_info(engine, requests).await,
+        None => engine.dispatch(function_id, namespace, arguments).await,
+    };
+    match dispatched {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);
@@ -756,6 +764,75 @@ pub(crate) async fn invoke_target_classified(
             (invocation_error_result(e.code, e.message), outcome_unknown)
         }
     }
+}
+
+/// The `engine::functions::info` payloads that look every id of `payload` up
+/// where a bare call to it runs: the single-id form as one payload, a
+/// `function_ids` batch as one payload per implicit namespace, each group
+/// whole so the engine's batch cap still answers. `None` when the payload
+/// names a namespace or does not hold only string ids: it is sent as given.
+pub(crate) fn info_requests(payload: &Value) -> Option<Vec<Value>> {
+    if payload.get("namespace").is_some_and(|ns| !ns.is_null()) {
+        return None;
+    }
+    let resolve = |id: &str| crate::clients::engine::resolve_namespace(id, None);
+    if let Some(id) = payload.get("function_id").and_then(Value::as_str) {
+        let mut request = payload.clone();
+        request["namespace"] = json!(resolve(id));
+        return Some(vec![request]);
+    }
+    let ids = payload
+        .get("function_ids")?
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()?;
+    let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for id in ids {
+        groups.entry(resolve(id)).or_default().push(id);
+    }
+    let requests: Vec<Value> = groups
+        .into_iter()
+        .map(|(namespace, ids)| {
+            let mut request = payload.clone();
+            request["function_ids"] = json!(ids);
+            request["namespace"] = json!(namespace);
+            request
+        })
+        .collect();
+    (!requests.is_empty()).then_some(requests)
+}
+
+/// Send each of `requests` to `engine::functions::info` and merge the
+/// answers; the first failure is the answer.
+async fn dispatch_info(
+    engine: &EngineClient,
+    requests: Vec<Value>,
+) -> Result<Value, crate::clients::engine::DispatchError> {
+    let mut answers = Vec::with_capacity(requests.len());
+    for request in requests {
+        answers.push(
+            engine
+                .dispatch("engine::functions::info", None, request)
+                .await?,
+        );
+    }
+    Ok(merged_info(answers))
+}
+
+/// The first answer with every later answer's `functions` appended.
+fn merged_info(answers: Vec<Value>) -> Value {
+    let mut answers = answers.into_iter();
+    let mut first = answers.next().unwrap_or_default();
+    for mut later in answers {
+        if let (Some(all), Some(more)) = (
+            first.get_mut("functions").and_then(Value::as_array_mut),
+            later.get_mut("functions").and_then(Value::as_array_mut),
+        ) {
+            all.append(more);
+        }
+    }
+    first
 }
 
 /// Apply the same function-result normalization to a locally intercepted call
@@ -931,9 +1008,10 @@ pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> 
 /// masked to the same `{ function_id, error: "not available" }` stub the
 /// engine uses for unknown ids — denied stays indistinguishable from
 /// nonexistent, and (unlike the list filter) entries are never dropped, so
-/// the model can pair every requested id with an outcome.
+/// the model can pair every requested id with an outcome. Each entry is
+/// judged in the namespace it names.
 fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
-    let keep = |id: &str| policy.allows(id);
+    let keep = |item: &Value, id: &str| policy.allows_in(row_namespace(item), id);
     if let Some(items) = value.get_mut("functions").and_then(Value::as_array_mut) {
         for item in items.iter_mut() {
             let id = item
@@ -942,7 +1020,7 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            if !keep(&id) {
+            if !keep(item, &id) {
                 *item = json!({ "function_id": id, "error": "not available" });
             } else {
                 overlay_control_contract(item, &id);
@@ -954,7 +1032,7 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
         .and_then(Value::as_str)
     {
         let id = id.to_string();
-        if !keep(&id) {
+        if !keep(value, &id) {
             *value = Value::Null;
         } else {
             overlay_control_contract(value, &id);
@@ -980,6 +1058,10 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
     let Some((description, schema)) = crate::functions::observe::control_contract(id) else {
         return;
     };
+    // Only the copy a bare call reaches is intercepted.
+    if row_namespace(item) != crate::clients::engine::resolve_namespace(id, None) {
+        return;
+    }
     if let Some(map) = item.as_object_mut() {
         map.insert("description".into(), Value::String(description.into()));
         for key in ["request_schema", "parameters", "request_format"] {
@@ -1306,15 +1388,13 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
 /// filtered view — dropping is correct there; info results go through
 /// [`post_filter_info`] instead, which masks rather than drops).
 fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
-    let keep = |id: &str| policy.allows(id);
     if let Some(arr) = value.get_mut("functions").and_then(Value::as_array_mut) {
         arr.retain(|f| {
             f.get("function_id")
                 .or_else(|| f.get("id"))
                 .or_else(|| f.get("name"))
                 .and_then(Value::as_str)
-                .map(keep)
-                .unwrap_or(false)
+                .is_some_and(|id| policy.allows_in(row_namespace(f), id))
         });
         for item in arr.iter_mut() {
             let id = item
@@ -1327,6 +1407,14 @@ fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
             overlay_control_contract(item, &id);
         }
     }
+}
+
+/// The namespace an engine row says it is in; a row without one is in
+/// `default`.
+fn row_namespace(item: &Value) -> &str {
+    item.get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
 }
 
 #[cfg(test)]
@@ -1497,6 +1585,13 @@ mod tests {
             list["functions"][1]["description"],
             "Get a value from state"
         );
+
+        // Another namespace's copy is not this harness's intercept.
+        let mut elsewhere = serde_json::json!({ "functions": [
+            { "function_id": "harness::observe", "namespace": "zz-other", "description": "raw" }
+        ]});
+        post_filter_discovery(&mut elsewhere, &policy);
+        assert_eq!(elsewhere["functions"][0]["description"], "raw");
     }
 
     #[test]
@@ -2484,6 +2579,78 @@ mod tests {
         let mut denied = json!({ "function_id": "fs::read", "request_schema": {} });
         post_filter_info(&mut denied, &policy);
         assert!(denied.is_null());
+    }
+
+    #[test]
+    fn a_contract_lookup_without_namespace_asks_each_namespace_its_calls_use() {
+        use crate::clients::engine::resolve_namespace;
+        let requests = info_requests(
+            &json!({ "function_ids": ["shell::exec", "configuration::get", "compose::add"] }),
+        )
+        .unwrap();
+        let mut seen = 0;
+        for request in &requests {
+            for id in request["function_ids"].as_array().unwrap() {
+                assert_eq!(
+                    request["namespace"],
+                    json!(resolve_namespace(id.as_str().unwrap(), None))
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, 3);
+        assert_eq!(
+            info_requests(&json!({ "function_id": "shell::exec" })).unwrap(),
+            vec![
+                json!({ "function_id": "shell::exec", "namespace": resolve_namespace("shell::exec", None) })
+            ]
+        );
+        assert_eq!(
+            info_requests(&json!({ "function_id": "shell::exec", "namespace": "laptop" })),
+            None
+        );
+    }
+
+    #[test]
+    fn discovery_filters_read_each_row_namespace() {
+        let policy = pol(&["laptop/shell::*"]);
+        let mut list = json!({ "functions": [
+            { "function_id": "shell::exec", "namespace": "laptop" }, { "function_id": "shell::exec", "namespace": "hub" } ]});
+        post_filter_discovery(&mut list, &policy);
+        assert_eq!(
+            list["functions"],
+            json!([{ "function_id": "shell::exec", "namespace": "laptop" }])
+        );
+        let mut info = json!({ "functions": [{ "function_id": "shell::exec", "namespace": "hub", "request_schema": {} }] });
+        post_filter_info(&mut info, &policy);
+        assert_eq!(
+            info["functions"][0],
+            json!({ "function_id": "shell::exec", "error": "not available" })
+        );
+    }
+
+    /// Each namespace group is answered whole and in order; a later answer's
+    /// entries join the first one's.
+    #[test]
+    fn split_contract_lookup_answers_merge_into_one_batch() {
+        let merged = merged_info(vec![
+            json!({ "functions": [{ "function_id": "a" }] }),
+            json!({ "functions": [{ "function_id": "b" }, { "function_id": "c" }] }),
+        ]);
+        assert_eq!(
+            merged,
+            json!({ "functions": [{ "function_id": "a" }, { "function_id": "b" }, { "function_id": "c" }] })
+        );
+        let ids: Vec<String> = (0..40).map(|i| format!("w::f{i}")).collect();
+        let requests = info_requests(&json!({ "function_ids": ids })).unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "one request per namespace group: {requests:?}"
+        );
+        assert_eq!(requests[0]["function_ids"], json!(ids));
+        assert_eq!(info_requests(&json!({ "function_ids": [] })), None);
+        assert_eq!(info_requests(&json!({ "function_ids": ["a::b", 5] })), None);
     }
     fn content_value(content: &[ContentBlock]) -> Value {
         let [ContentBlock::Text { text }] = content else {
