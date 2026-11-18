@@ -37,6 +37,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+# hf-hub never hashes a file; download.rs checks each against its pinned sha256.
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tracing = "0.1"
 

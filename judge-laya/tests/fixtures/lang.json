@@ -384,9 +384,9 @@
    "script_profile": {
     "latin": 1.0
    },
-   "language": null,
+   "language": "en",
    "is_english": true,
-   "language_undecided": true,
+   "language_undecided": false,
    "diacritic_rate": 0.0,
    "non_latin_fraction": 0.0,
    "mixed_segment": null
@@ -1104,9 +1104,9 @@
    "script_profile": {
     "latin": 1.0
    },
-   "language": null,
+   "language": "en",
    "is_english": true,
-   "language_undecided": true,
+   "language_undecided": false,
    "diacritic_rate": 0.0,
    "non_latin_fraction": 0.0,
    "mixed_segment": null
@@ -1941,7 +1941,7 @@
    "language": null,
    "is_english": false,
    "language_undecided": true,
-   "diacritic_rate": 0.1389,
+   "diacritic_rate": 0.3056,
    "non_latin_fraction": 0.0,
    "mixed_segment": null
   }

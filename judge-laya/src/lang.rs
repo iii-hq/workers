@@ -1,10 +1,13 @@
-//! Port of laya 0.3.28 `lang.py`: dependency-free script and language detection
+//! Port of laya 0.4.35 `lang.py`: dependency-free script and language detection
 //! used to route a state to the checkpoint that can read it, plus the router's
 //! typed-decisions workflow signatures. Word lists, numbers and thresholds are
-//! laya's, and `tests/fixtures/lang.json` holds laya's own answers. Character
+//! laya's; `tests/fixtures/lang.json` and laya's recorded
+//! `tests/fixtures/upstream/lang_probe.json` hold laya's own answers. Character
 //! classes are Python's: `str.isalpha` is general category L and `re`'s `\w`
 //! is L, N and `_`, which the regex crate carries for the same Unicode version
-//! as Python 3.14 (16.0). `unicodedata.combining` and case come from tables of
+//! as Python 3.14 (16.0). laya's `_is_letter` table, which supplies letters
+//! newer than an older interpreter's database, is not needed: these tables
+//! already hold them. `unicodedata.combining` and case come from tables of
 //! Unicode 17.0 (ICU4X and the standard library); for what this module asks
 //! they differ from Python's only on characters Unicode 16 leaves unassigned,
 //! and on `ʕ` (see `is_lower`). Lengths and slices count characters, as
@@ -80,6 +83,21 @@ const STOP: &[(&str, &[&str])] = &[
             "the", "and", "is", "are", "was", "were", "to", "of", "in", "for", "with", "that",
             "this", "it", "you", "have", "has", "not", "but", "on", "at", "be", "as", "from",
             "will", "can", "would", "there", "their", "what", "which", "please", "we", "i",
+            // Question words, auxiliaries, pronouns and connectives: without them a
+            // plain request ("Why hasn't my card been delivered?") stayed undecided
+            // and took the router default. `doesn`, `isn` and the rest are what
+            // `WORD` leaves of a contraction; `doesnt` is it typed without the
+            // apostrophe. `over`, `just`, `under`, `still`, `he`, `had`, `or`,
+            // `cant`, `us`, `about`, `up`, `out` and `also` stay out: they moved
+            // other languages' rows to the English checkpoint.
+            "how", "why", "when", "where", "who", "whom", "does", "done", "doing", "been", "being",
+            "could", "should", "might", "must", "shall", "doesn", "didn", "isn", "aren", "wasn",
+            "weren", "haven", "hasn", "couldn", "wouldn", "won", "dont", "wont", "didnt", "doesnt",
+            "isnt", "wasnt", "havent", "ive", "youre", "thats", "whats", "any", "some", "many",
+            "much", "every", "each", "these", "those", "both", "few", "they", "them", "she", "him",
+            "his", "our", "your", "yours", "into", "onto", "between", "after", "before", "through",
+            "during", "without", "within", "down", "if", "nor", "than", "then", "because", "while",
+            "until", "here", "only", "very", "too", "ever", "never", "always", "already", "yet",
         ],
     ),
     (
@@ -396,9 +414,12 @@ const SHORT_SWEDISH_WORDS: &[&str] = &[
 const EN_COLLISION_WORDS: &[&str] = &["come", "son", "do", "care", "todo", "im", "per", "plus"];
 
 /// Letters that ordinary English does not use: the signal for Latin-script
-/// languages without a word list (Polish, Czech, Turkish, Baltic, ...).
-const NON_EN_DIACRITICS: &str =
-    "àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœăâîșțşţąćęłńśźżčďěňřšťůžőűğıāēģīķļņūžđə";
+/// languages without a word list (Polish, Czech, Turkish, Baltic, Vietnamese
+/// with its precomposed tone-marked letters, ...).
+const NON_EN_DIACRITICS: &str = concat!(
+    "àâäãáåçéèêëíìîïñóòôöõøúùûüýÿßæœăâîșțşţąćęłńśźżčďěňřšťůžőűğıāēģīķļņūžđə",
+    "ạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹơư",
+);
 /// Diacritic rate at or above which text is taken as not English.
 const NON_EN_DIACRITIC_RATE: f64 = 0.02;
 /// One accented loanword or name (`café`, `José`) clears the rate above in a
@@ -413,6 +434,14 @@ const NON_LATIN_MIN_FRACTION: f64 = 0.1;
 const NON_LATIN_MIN_LETTERS: usize = 10;
 /// Characters of a state (and of one line) that detection reads.
 const MAX_CHARS: usize = 4000;
+/// An all-caps line names a language only through a matched stop word of at
+/// least this many letters (or non-English letters): `MON DES EST LA` and
+/// `LOS ANGELES LAS VEGAS` are acronyms and place names, not French or Spanish.
+const SHOUTED_MIN_STOPWORD: usize = 4;
+/// A token of this many letters is a word rather than an acronym: an all-caps
+/// line needs one, and an all-caps run this long inside mixed-case text is
+/// emphasis, not an acronym to blank.
+const SHOUTED_MIN_WORD: usize = 5;
 
 fn re(pattern: &str) -> Regex {
     Regex::new(pattern).expect("valid pattern")
@@ -483,6 +512,31 @@ fn is_lower(c: char) -> bool {
 /// titlecase letter such as `ǅ` is one that uppercasing changes).
 fn is_upper(s: &str) -> bool {
     s.chars().any(char::is_uppercase) && s.chars().all(|c| !is_lower(c) && c.to_uppercase().eq([c]))
+}
+
+/// laya's `_shouted`: a cased text written entirely in capitals (a caseless
+/// script has no lowercase either, and is not shouting).
+fn shouted(text: &str) -> bool {
+    text.chars().any(|c| is_upper(c.encode_utf8(&mut [0; 4]))) && !text.chars().any(is_lower)
+}
+
+/// laya's `_shouted_evidence`: whether an all-caps line's evidence for
+/// `language` is more than acronym-shaped tokens.
+fn shouted_evidence(tokens: &[&str], language: &str, diacritic_rate: f64) -> bool {
+    if !tokens.iter().any(|t| t.chars().count() >= SHOUTED_MIN_WORD) {
+        return false;
+    }
+    if diacritic_rate >= NON_EN_DIACRITIC_RATE {
+        return true;
+    }
+    let list = STOP
+        .iter()
+        .find(|(code, _)| *code == language)
+        .map_or(&[][..], |(_, list)| *list);
+    tokens
+        .iter()
+        .map(|t| t.to_lowercase())
+        .any(|w| w.chars().count() >= SHOUTED_MIN_STOPWORD && list.contains(&w.as_str()))
 }
 
 fn letters(text: &str) -> impl Iterator<Item = char> + '_ {
@@ -758,12 +812,11 @@ fn analyse_text(text: &str) -> Detection {
     let (named, latin) = counts.split_at(counts.len() - 1);
     let non_latin = round4(1.0 - latin[0].1 as f64 / total as f64);
     let non_latin_letters = (non_latin * total as f64).round_ties_even() as usize;
+    // Whether the non-Latin letters of a Latin-plurality text carry the state.
+    let non_latin_carries = non_latin >= NON_LATIN_FRACTION
+        || (non_latin >= NON_LATIN_MIN_FRACTION && non_latin_letters >= NON_LATIN_MIN_LETTERS);
     let mut script = dominant(&counts);
-    if script == "latin"
-        && (non_latin >= NON_LATIN_FRACTION
-            || (non_latin >= NON_LATIN_MIN_FRACTION && non_latin_letters >= NON_LATIN_MIN_LETTERS))
-        && has_non_latin_word(text)
-    {
+    if script == "latin" && non_latin_carries && has_non_latin_word(text) {
         script = dominant(named);
     }
     if script != "latin" {
@@ -778,13 +831,45 @@ fn analyse_text(text: &str) -> Detection {
         };
     }
     let profile = latin_profile(text);
+    let mut language = profile.language;
+    // Acronyms do not name a language here either, unless non-Latin letters
+    // carry the state (neither bar can see them). An all-caps text must clear
+    // the shouted bar, else it is undecided and its diacritics still decide.
+    // Mixed-case text is re-read without its all-caps runs while every run is
+    // acronym-short; a longer run is emphasis on a word of the sentence.
+    if let Some(named) = language.filter(|l| *l != "en")
+        && !non_latin_carries
+    {
+        if shouted(text) {
+            let tokens: Vec<&str> = WORD.find_iter(text).map(|m| m.as_str()).collect();
+            if !shouted_evidence(&tokens, named, profile.diacritic_rate) {
+                language = None;
+            }
+        } else {
+            let caps: Vec<&str> = LETTER_RUN
+                .find_iter(text)
+                .map(|m| m.as_str())
+                .filter(|run| is_upper(run))
+                .collect();
+            if !caps.is_empty()
+                && caps
+                    .iter()
+                    .all(|run| run.chars().count() < SHOUTED_MIN_WORD)
+            {
+                let blanked = LETTER_RUN.replace_all(text, |m: &Captures| {
+                    if is_upper(&m[0]) { " " } else { &m[0] }.to_owned()
+                });
+                language = latin_profile(&blanked).language;
+            }
+        }
+    }
     // Undecided is not English: non-English letters or a Swedish-Danish marker
     // still keep such text off the English checkpoint.
-    let undecided = profile.language.is_none();
+    let undecided = language.is_none();
     Detection {
         script,
-        language: profile.language,
-        is_english: profile.language == Some("en") || (undecided && !profile.looks_non_english),
+        language,
+        is_english: language == Some("en") || (undecided && !profile.looks_non_english),
         language_undecided: undecided,
         diacritic_rate: round4(profile.diacritic_rate),
         non_latin_fraction: non_latin,
@@ -796,7 +881,8 @@ fn analyse_text(text: &str) -> Detection {
 /// needs (four words, a language `latin_profile` names) plus two different
 /// words of that language. Code lines name none; joined tokens (`os.path`,
 /// `Nav/Com`, `C:\DOS`) and acronyms inside mixed-case text (`MON`, `COM`) are
-/// not words, while a line written entirely in capitals keeps its words.
+/// not words, while a line written entirely in capitals keeps its words and
+/// must clear the shouted bar.
 fn named_prose_language(segment: &str) -> Option<&'static str> {
     if segment.trim_matches(is_space).is_empty() || CODE_LINE.is_match(segment) {
         return None;
@@ -806,7 +892,8 @@ fn named_prose_language(segment: &str) -> Option<&'static str> {
         .filter(|token| !token.is_empty() && !JOINED.is_match(token))
         .collect::<Vec<_>>()
         .join(" ");
-    if prose.chars().any(is_lower) {
+    let shouted = shouted(&prose);
+    if !shouted {
         prose = LETTER_RUN
             .replace_all(&prose, |m: &Captures| {
                 if is_upper(&m[0]) { " " } else { &m[0] }.to_owned()
@@ -817,7 +904,11 @@ fn named_prose_language(segment: &str) -> Option<&'static str> {
     if tokens.len() < 4 {
         return None;
     }
-    let language = latin_profile(&prose).language.filter(|l| *l != "en")?;
+    let profile = latin_profile(&prose);
+    let language = profile.language.filter(|l| *l != "en")?;
+    if shouted && !shouted_evidence(&tokens, language, profile.diacritic_rate) {
+        return None;
+    }
     let (_, list) = STOP.iter().find(|(code, _)| *code == language)?;
     let own: HashSet<String> = tokens
         .iter()
@@ -857,15 +948,16 @@ fn leaf_non_english(leaf: &str) -> Option<Detection> {
         .filter(|sample| !sample.trim_matches(is_space).is_empty() && !CODE_LINE.is_match(sample))
         .filter_map(|sample| {
             let detection = analyse_text(sample);
+            // A language named and then vetoed (acronyms, joined tokens) is no
+            // verdict of English: it falls through to the letters it carries.
             let qualifies = if detection.is_english {
                 false
-            } else if detection.language.is_some() {
-                named_prose_language(sample).is_some()
+            } else if detection.language.is_some() && named_prose_language(sample).is_some() {
+                true
             } else if detection.script != "latin" && detection.script != "unknown" {
                 has_non_latin_word(sample) && letters(sample).count() >= NON_LATIN_MIN_LETTERS
             } else {
-                detection.language_undecided
-                    && detection.diacritic_rate >= NON_EN_DIACRITIC_RATE
+                detection.diacritic_rate >= NON_EN_DIACRITIC_RATE
                     && WORD.find_iter(sample).count() >= 4
             };
             qualifies.then(|| (letters(sample).count(), detection))
