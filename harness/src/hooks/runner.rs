@@ -1333,6 +1333,12 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
     let ids: Vec<String> = globs
         .iter()
         .filter_map(|glob| match crate::policy::split_namespace_pattern(glob) {
+            // No error path here, so a glob qualifier (approval-gate rejects
+            // one) reads as bare rather than silently skipping the guard.
+            (Some(qualifier), id) if qualifier.contains(['*', '?', '[', '{']) => {
+                warn_glob_qualifier_once(glob);
+                Some(id.to_string())
+            }
             (Some(qualifier), _) if qualifier != namespace => None,
             (_, id) => Some(id.to_string()),
         })
@@ -1346,6 +1352,22 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
         || crate::policy::sandbox_op_aliases(function_id)
             .iter()
             .any(|alias| globs_match(ids, alias))
+}
+
+/// Logs a binding filter entry with a glob namespace qualifier, once per entry.
+fn warn_glob_qualifier_once(glob: &str) {
+    static WARNED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let mut warned = WARNED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if warned.insert(glob.to_string()) {
+        tracing::warn!(
+            pattern = %glob,
+            "hook binding filter: namespace qualifier must be a plain namespace; reading it as bare, which matches every namespace"
+        );
+    }
 }
 
 /// Whether an observer's `sessions` globs match the turn's session (no
@@ -1711,6 +1733,18 @@ mod tests {
         assert!(functions_match(&on_laptop, "laptop", "shell::exec"));
         assert!(!functions_match(&on_laptop, "desk", "shell::exec"));
         assert!(functions_match(&binding("gate", 0), "desk", "shell::exec"));
+    }
+
+    #[test]
+    fn a_glob_namespace_qualifier_reads_as_bare() {
+        for glob in ["*/shell::*", "lap*/shell::*", "{a,b}/shell::*"] {
+            let gate = HookBinding {
+                functions: Some(vec![glob.into()]),
+                ..binding("gate", 0)
+            };
+            assert!(functions_match(&gate, "desk", "shell::exec"), "{glob}");
+            assert!(!functions_match(&gate, "desk", "fs::read"), "{glob}");
+        }
     }
 
     /// A scripted invoker: each target answers from the map, and every call
