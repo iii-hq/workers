@@ -86,6 +86,18 @@ pub struct Checkpoint {
 /// against its sha256 at [`REVISION`] first; a GGUF converted from verified
 /// files is trusted as derived state.
 pub fn fetch(model: &str, gguf: Option<&Path>) -> Result<Checkpoint> {
+    // `from_env` on both: `ApiBuilder::new` ignores HF_HOME (and HF_ENDPOINT),
+    // so the files and the GGUF would land in different caches.
+    let api = ApiBuilder::from_env().with_progress(true);
+    fetch_from(&Cache::from_env(), api, model, gguf)
+}
+
+fn fetch_from(
+    cache: &Cache,
+    api: ApiBuilder,
+    model: &str,
+    gguf: Option<&Path>,
+) -> Result<Checkpoint> {
     let subdir = match model {
         "laya" => "",
         "laya-multilingual" => "multilingual/",
@@ -97,13 +109,7 @@ pub fn fetch(model: &str, gguf: Option<&Path>) -> Result<Checkpoint> {
         }
     };
     let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
-    // `from_env` on both: `ApiBuilder::new` ignores HF_HOME (and HF_ENDPOINT),
-    // so the files and the GGUF would land in different caches.
-    let cache = Cache::from_env();
-    let api = ApiBuilder::from_env()
-        .with_progress(true)
-        .build()?
-        .repo(repo.clone());
+    let api = api.build()?.repo(repo.clone());
     let out = cache
         .path()
         .parent()
@@ -120,7 +126,7 @@ pub fn fetch(model: &str, gguf: Option<&Path>) -> Result<Checkpoint> {
     ];
     let needed = &needed[..if convert { 4 } else { 2 }];
     let needed: Vec<String> = needed.iter().map(|f| format!("{subdir}{f}")).collect();
-    if let Err(error) = link_snapshot(&api, &cache, &repo, &needed) {
+    if let Err(error) = link_snapshot(&api, cache, &repo, &needed) {
         tracing::warn!(
             %error,
             "could not link the cached laya files into the pinned snapshot; downloading them"
@@ -319,9 +325,52 @@ pub fn local(model: &str, dir: &Path) -> Result<Checkpoint> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DIGESTS, LAYA_REPO, MODELS, REVISION, digest, link_snapshot, verify};
+    use super::{DIGESTS, LAYA_REPO, MODELS, REVISION, digest, fetch_from, link_snapshot, verify};
     use hf_hub::api::sync::ApiBuilder;
     use hf_hub::{Cache, Repo, RepoType};
+
+    /// An API on a port nothing listens on: any Hub request fails.
+    fn offline(cache: &Cache) -> ApiBuilder {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        ApiBuilder::from_cache(cache.clone())
+            .with_endpoint(format!("http://127.0.0.1:{port}"))
+            .with_retries(0)
+    }
+
+    #[test]
+    fn a_load_refuses_a_cached_file_whose_sha256_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        // Under `dir`, so the GGUF path (beside the cache) is too.
+        let cache = Cache::new(dir.path().join("hub"));
+        let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
+        let snapshot = cache
+            .path()
+            .join(repo.folder_name())
+            .join("snapshots")
+            .join(REVISION);
+        for file in [
+            "rl_agent_config.json",
+            "tokenizer/tokenizer.json",
+            "model.safetensors",
+            "encoder/config.json",
+        ] {
+            let path = snapshot.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+        cache.repo(repo).create_ref(REVISION).unwrap();
+        let error = fetch_from(&cache, offline(&cache), "laya", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("rl_agent_config.json") && error.contains("sha256"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn every_file_a_load_reads_has_a_pinned_digest() {
@@ -363,18 +412,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = Cache::new(dir.path().into());
         let repo = Repo::with_revision(LAYA_REPO.into(), RepoType::Model, REVISION.into());
-        // A port nothing listens on: any Hub request fails.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let api = ApiBuilder::from_cache(cache.clone())
-            .with_endpoint(format!("http://127.0.0.1:{port}"))
-            .with_retries(0)
-            .build()
-            .unwrap()
-            .repo(repo.clone());
+        let api = offline(&cache).build().unwrap().repo(repo.clone());
         let files = [
             "rl_agent_config.json".to_owned(),
             "tokenizer/tokenizer.json".to_owned(),
