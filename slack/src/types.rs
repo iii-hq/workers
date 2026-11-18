@@ -122,6 +122,8 @@ pub struct ApprovalCallback {
     pub function_id: String,
     pub channel: String,
     pub message_ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +209,8 @@ pub struct PendingApprovalRecord {
     pub function_id: String,
     #[serde(default)]
     pub arguments_excerpt: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
