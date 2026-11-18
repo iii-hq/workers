@@ -1023,6 +1023,27 @@ pub fn denied_result_with_hint(
     }
 }
 
+/// The refusal of a call in another namespace than its implicit one while the
+/// bound approval gate (`gate`: `Some` when bound, `true` when it can show a
+/// namespace) is too old to show where the call runs.
+pub(crate) fn old_gate_refusal(
+    function_id: &str,
+    namespace: &str,
+    implicit: &str,
+    gate: Option<bool>,
+) -> Option<ResultData> {
+    (namespace != implicit && gate == Some(false)).then(|| {
+        invocation_error_result(
+            Some("approval_gate_too_old".into()),
+            format!(
+                "{function_id} was not called in namespace {namespace}: the approval gate is too \
+                 old to approve calls in another namespace. Upgrade approval-gate, or call it \
+                 without `namespace` to run it in {implicit}."
+            ),
+        )
+    })
+}
+
 /// The id permitted in `namespace` and registered there closest to
 /// `function_id` when `function_id` itself is not registered at all (in any
 /// namespace) — a model retyping a long id (a hashed worker name) corrupts it.
@@ -3018,6 +3039,28 @@ mod tests {
                 " It is permitted in namespace desk, laptop: pass `namespace` to call it there."
             ),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn no_gate_or_a_namespace_aware_gate_lets_another_namespace_through() {
+        assert!(old_gate_refusal("shell::exec", "laptop", "proj", None).is_none());
+        assert!(old_gate_refusal("shell::exec", "laptop", "proj", Some(true)).is_none());
+    }
+
+    #[test]
+    fn an_old_gate_refuses_another_namespace_but_not_the_implicit_one() {
+        assert!(
+            old_gate_refusal("configuration::get", "default", "default", Some(false)).is_none()
+        );
+        let refused = old_gate_refusal("shell::exec", "laptop", "proj", Some(false)).unwrap();
+        assert!(refused.is_error);
+        assert_eq!(refused.details["error"]["code"], "approval_gate_too_old");
+        assert_eq!(
+            refused.details["error"]["message"],
+            "shell::exec was not called in namespace laptop: the \
+        approval gate is too old to approve calls in another namespace. Upgrade approval-gate, or call \
+        it without `namespace` to run it in proj."
         );
     }
 }

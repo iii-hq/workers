@@ -194,6 +194,16 @@ impl EngineClient {
             .unwrap_or_default()
     }
 
+    /// Whether the approval gate can approve a call in another namespace. A
+    /// live list, not the cached snapshot: its fingerprint ignores metadata,
+    /// so an upgraded gate would keep a stale answer. A failed list reads as
+    /// an old gate.
+    pub async fn approval_gate_calls_namespaces(&self) -> bool {
+        self.list(json!({}))
+            .await
+            .is_some_and(|v| gate_calls_namespaces(&v))
+    }
+
     /// Every id the registry knows, public or internal (`include_internal:
     /// true`) — ids only, no schemas. `None` on failure so the caller keeps
     /// its previous set instead of declaring every internal id gone.
@@ -616,6 +626,19 @@ fn descriptor_items(v: &Value) -> Vec<&Value> {
     }
 }
 
+/// Whether a list response has the approval gate and every row of it
+/// declares `call_namespace: true` (one old copy can still hold a call).
+fn gate_calls_namespaces(list: &Value) -> bool {
+    let gates: Vec<&Value> = descriptor_items(list)
+        .into_iter()
+        .filter(|v| descriptor_id(v) == Some(crate::hooks::APPROVAL_GATE_ID))
+        .collect();
+    !gates.is_empty()
+        && gates
+            .iter()
+            .all(|v| v["metadata"]["call_namespace"] == Value::Bool(true))
+}
+
 /// A descriptor's id (`function_id`, `id` or `name`).
 fn descriptor_id(v: &Value) -> Option<&str> {
     v.get("function_id")
@@ -654,6 +677,24 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_gate_every_row_of_which_calls_namespaces_counts() {
+        let gate = |ns: &str, metadata: Value| json!({ "function_id": "approval::gate", "namespace": ns, "metadata": metadata });
+        let new = gate("proj", json!({ "call_namespace": true }));
+        assert!(gate_calls_namespaces(
+            &json!({ "functions": [new.clone()] })
+        ));
+        assert!(!gate_calls_namespaces(
+            &json!({ "functions": [new, gate("other", json!({}))] })
+        ));
+        assert!(!gate_calls_namespaces(
+            &json!({ "functions": [gate("proj", json!({ "call_namespace": "yes" }))] })
+        ));
+        assert!(!gate_calls_namespaces(
+            &json!({ "functions": [{ "function_id": "shell::exec" }] })
+        ));
+    }
 
     #[test]
     fn a_private_function_is_no_tool() {

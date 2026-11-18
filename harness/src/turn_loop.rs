@@ -2141,6 +2141,42 @@ async fn finish_step(
                 continue;
             }
 
+            // A bound approval gate too old to show a namespace could approve a
+            // call in another one unseen: refuse it before any hook runs.
+            let gate = if namespace != implicit
+                && deps
+                    .hooks
+                    .bindings(crate::hooks::HookPoint::PreCall)
+                    .iter()
+                    .any(|b| b.target == crate::hooks::APPROVAL_GATE_ID)
+            {
+                Some(engine.approval_gate_calls_namespaces().await)
+            } else {
+                None
+            };
+            if let Some(data) =
+                call::old_gate_refusal(&call.function_id, &namespace, &implicit, gate)
+            {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                call::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // pre_call chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is

@@ -757,6 +757,20 @@ async fn a_held_call_keeps_the_namespace_the_model_named() {
     assert_eq!(turn["calls"]["call_hold"]["namespace"], "zz-a");
 }
 
+/// An old approval gate cannot show a namespace: the call is refused before it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_in_another_namespace_is_refused_under_an_old_gate() {
+    let hooks =
+        json!({"harness::hook::on-pre-call": {"decision": "continue", "target": "approval::gate"}});
+    let (_, calls, _) = generate_observed(hold_reply_in("zz-a"), hooks).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("approval_gate_too_old")),
+        "{calls:?}"
+    );
+}
+
 /// A control this harness answers itself, named in another namespace, is
 /// refused: neither answered here nor dispatched to that namespace's harness.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

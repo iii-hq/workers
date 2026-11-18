@@ -1751,11 +1751,16 @@ fn start_after_approval(arguments: &Value, verdict: Result<Verdict, String>) -> 
 /// The function a starting `coder::scaffold-worker` runs inside the ide.
 pub(crate) const COMPOSE_ADD_ID: &str = "compose::add";
 
+/// An observer-delivered call runs with no namespace, so both namespace fields
+/// are its implicit one: a grant stored with a namespace still matches.
 fn approval_probe_payload(session_id: &str, target: &str, arguments: &Value) -> Value {
+    let namespace = crate::clients::engine::resolve_namespace(target, None);
     json!({
         "session_id": session_id,
         "function_id": target,
         "arguments": arguments,
+        "namespace": namespace,
+        "implicit_namespace": namespace,
     })
 }
 
@@ -3433,6 +3438,9 @@ pub(crate) mod tests {
         assert_eq!(payload["session_id"], "s_1");
         assert_eq!(payload["function_id"], "shell::exec");
         assert_eq!(payload["arguments"], arguments);
+        let implicit = crate::clients::engine::resolve_namespace("shell::exec", None);
+        assert_eq!(payload["namespace"], implicit);
+        assert_eq!(payload["implicit_namespace"], implicit);
     }
 
     #[test]

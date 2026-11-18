@@ -302,6 +302,9 @@ pub struct HookArgs {
     pub input: Option<Vec<String>>,
 }
 
+/// The approval worker's pre-call target: a call it may hold must be one it can show.
+pub const APPROVAL_GATE_ID: &str = "approval::gate";
+
 /// One observer of a hook point, as the chain runs it.
 #[derive(Debug, Clone)]
 pub struct HookBinding {
