@@ -642,17 +642,32 @@ impl Sessions {
         session.last_seen = Instant::now();
         // The client has `last_event_id` and, the stream being ordered,
         // everything its stream wrote before it: those owed are settled.
-        if let Some(at_l) = last_event_id
-            .and_then(|l| session.written.get(&l))
-            .filter(|w| !w.is_empty())
-            .cloned()
-        {
-            // Settled only if every stream that wrote L wrote it first.
-            session.unsent.retain(|_, writes| {
-                !at_l
+        if let Some(l) = last_event_id {
+            // Every place the client may have got L from: each completed
+            // write (stream, order), and each write still in flight (stream,
+            // no order yet: it comes after everything that stream finished).
+            let mut sources: Vec<(u64, Option<u64>)> = session
+                .written
+                .get(&l)
+                .map(|w| w.iter().map(|(g, o)| (*g, Some(*o))).collect())
+                .unwrap_or_default();
+            sources.extend(
+                session
+                    .in_flight
                     .iter()
-                    .all(|(g, o)| writes.iter().any(|(gx, ox)| gx == g && ox <= o))
-            });
+                    .filter(|f| f.id == l)
+                    .map(|f| (f.generation, None)),
+            );
+            if !sources.is_empty() {
+                // Settled only if every possible source wrote it first.
+                session.unsent.retain(|_, writes| {
+                    !sources.iter().all(|(g, o)| {
+                        writes
+                            .iter()
+                            .any(|(gx, ox)| gx == g && o.is_none_or(|o| *ox <= o))
+                    })
+                });
+            }
         }
         let after = last_event_id.unwrap_or(session.sent_through);
         let mut backlog = Vec::new();
@@ -2212,5 +2227,32 @@ mod tests {
         }
         let (backlog, _rx, _) = s.attach_stream(&sid, Some(two)).unwrap();
         assert_eq!(backlog_ids(&backlog), vec![one], "2 could have come from B");
+    }
+
+    #[tokio::test]
+    async fn a_write_still_in_flight_counts_as_a_possible_source() {
+        // B claimed 2 and has not reported yet; 1 is owed. C replays and
+        // writes 1 and 2, unread. The client got 2 from B's pending write
+        // and resumes from 2: 1 stays owed.
+        let (s, sid, a, one, _rx_a) = claimed_by_a().await;
+        let (_, mut rx_b, b) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(2))));
+        let StreamItem::Observation { id: two, .. } = rx_b.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        assert!(s.claim_stream_item(&sid, b, Some(two)));
+        s.finish_stream_item(&sid, a, one, false);
+        let (backlog_c, _rx_c, c) = s.attach_stream(&sid, Some(0)).unwrap();
+        assert_eq!(backlog_ids(&backlog_c), vec![one, two]);
+        for id in [one, two] {
+            assert!(s.claim_stream_item(&sid, c, Some(id)));
+            s.finish_stream_item(&sid, c, id, true);
+        }
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert_eq!(
+            backlog_ids(&backlog),
+            vec![one],
+            "B's pending 2 may be what it got"
+        );
     }
 }
