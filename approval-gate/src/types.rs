@@ -386,6 +386,7 @@ pub enum ResolveDecision {
 /// How far an `allow` on a `filesystem_access` pending record should apply.
 /// Ignored (logged) when the target record's `kind` is not
 /// `"filesystem_access"`. Defaults to `once` when omitted.
+/// For a call held in another namespace, `session` and `always` act as `once`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessDuration {
