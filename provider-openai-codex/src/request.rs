@@ -9,15 +9,12 @@ use llm_router::types::model::AgentFunction;
 use llm_router::types::router::PromptCacheIntent;
 use serde_json::{Value, json};
 
-/// Codex client version whose Responses contract this worker mirrors.
+/// Shared Codex compatibility identity for model discovery and Responses requests.
 ///
-/// The ChatGPT backend uses this header to gate newly released models. Omitting
-/// it makes supported models such as GPT-5.6 Luna fail as "Model not found",
-/// and the `/models` catalog drops models the version is too old for (e.g.
-/// `gpt-6-astra` needs >= 0.153.0). Bump to the installed `codex --version`
-/// when the CLI lists a model this provider does not; the configuration UI
-/// shows the current value.
-pub(crate) const CODEX_COMPAT_VERSION: &str = "0.159.0";
+/// Sent as the backend `version` header and discovery `client_version` query
+/// parameter, and displayed in the configuration UI. This identity does not
+/// establish model availability or account entitlement.
+pub(crate) const CODEX_COMPAT_VERSION: &str = "0.169.0";
 
 const SUMMARY_UNSUPPORTED_MODEL: &str = "gpt-5.3-codex-spark";
 
