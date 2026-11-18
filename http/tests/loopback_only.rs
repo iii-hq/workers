@@ -68,28 +68,31 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
-/// A non-loopback address of this host that this process can connect to,
-/// from the route to a TEST-NET address (a UDP connect sends nothing). `None`
-/// on a host without one, or where a firewall drops connections to it (macOS
-/// application firewall): the constructed-address tests below still cover
-/// the admission there.
-async fn reachable_non_loopback_ip() -> Option<IpAddr> {
+/// A non-loopback address of this host, from the route to a TEST-NET address
+/// (a UDP connect sends nothing). `None` on a host without one: the
+/// constructed-address test still covers the admission there.
+fn non_loopback_local_ip() -> Option<IpAddr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("192.0.2.1:9").ok()?;
     let ip = socket.local_addr().ok()?.ip();
-    if ip.is_loopback() || ip.is_unspecified() {
-        return None;
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// The positive control of a real-socket test: whether the plain route
+/// `GET /plain` answers on `addr`. A host firewall can drop connections to a
+/// non-loopback address (the macOS application firewall does on the first
+/// run of a rebuilt test binary); the test then skips instead of failing.
+async fn plain_route_answers(addr: SocketAddr) -> bool {
+    let reachable = client()
+        .get(url(addr, "/plain"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .is_ok_and(|resp| resp.status() == 201);
+    if !reachable {
+        eprintln!("skipping: {addr} is not reachable from this process");
     }
-    let probe = tokio::net::TcpListener::bind("0.0.0.0:0").await.ok()?;
-    let port = probe.local_addr().ok()?.port();
-    let connect = tokio::net::TcpStream::connect((ip, port));
-    match tokio::time::timeout(Duration::from_secs(1), connect).await {
-        Ok(Ok(_)) => Some(ip),
-        _ => {
-            eprintln!("skipping: {ip} is not reachable from this process");
-            None
-        }
-    }
+    reachable
 }
 
 /// A target answering 201 that counts its calls.
@@ -309,7 +312,8 @@ async fn admission_follows_the_connections_local_address() {
 
 #[tokio::test]
 async fn on_an_unspecified_bind_only_loopback_connections_reach_the_route() {
-    let Some(public_ip) = reachable_non_loopback_ip().await else {
+    let Some(public_ip) = non_loopback_local_ip() else {
+        eprintln!("skipping: no non-loopback address on this host");
         return;
     };
     let (engine, boot) = start_on("0.0.0.0").await.expect("0.0.0.0 binds");
@@ -322,6 +326,12 @@ async fn on_an_unspecified_bind_only_loopback_connections_reach_the_route() {
     let read = serve(&engine, &boot, "GET", "/state", true).await;
     let write = serve(&engine, &boot, "POST", "/state", false).await;
     let plain = serve(&engine, &boot, "GET", "/plain", false).await;
+    if !plain_route_answers(public).await {
+        boot.shutdown().await;
+        engine.shutdown().await;
+        return;
+    }
+    let controls = plain.load(Ordering::SeqCst);
 
     // A client connecting over loopback is admitted.
     assert_eq!(send("POST", url(loopback, "/mcp")).await.status, 201);
@@ -354,7 +364,7 @@ async fn on_an_unspecified_bind_only_loopback_connections_reach_the_route() {
     // Plain routes are unaffected on both.
     assert_eq!(send("GET", url(loopback, "/plain")).await.status, 201);
     assert_eq!(send("GET", url(public, "/plain")).await.status, 201);
-    assert_eq!(plain.load(Ordering::SeqCst), 2);
+    assert_eq!(plain.load(Ordering::SeqCst), controls + 2);
 
     boot.shutdown().await;
     engine.shutdown().await;
@@ -362,11 +372,13 @@ async fn on_an_unspecified_bind_only_loopback_connections_reach_the_route() {
 
 #[tokio::test]
 async fn a_rebind_to_a_public_address_never_exposes_the_route() {
-    let Some(public_ip) = reachable_non_loopback_ip().await else {
+    let Some(public_ip) = non_loopback_local_ip() else {
+        eprintln!("skipping: no non-loopback address on this host");
         return;
     };
     let (engine, boot) = start().await;
     let mcp = serve(&engine, &boot, "POST", "/mcp", true).await;
+    serve(&engine, &boot, "GET", "/plain", false).await;
     assert_eq!(send("POST", url(boot.local_addr, "/mcp")).await.status, 201);
 
     // Rebind to every address; nothing else (no observer) is told about it.
@@ -397,6 +409,11 @@ async fn a_rebind_to_a_public_address_never_exposes_the_route() {
     .expect("rebound to 0.0.0.0");
 
     let public: SocketAddr = (public_ip, port).into();
+    if !plain_route_answers(public).await {
+        boot.shutdown().await;
+        engine.shutdown().await;
+        return;
+    }
     assert_absent("POST", public, "/mcp").await;
     assert_eq!(mcp.load(Ordering::SeqCst), 1);
     let loopback: SocketAddr = (IpAddr::from([127, 0, 0, 1]), port).into();

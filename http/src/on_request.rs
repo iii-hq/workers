@@ -1,6 +1,6 @@
 //! `http::on-request`: one call per HTTP request.
 //!
-//! Each observer's args (`{ method, path, public_webhook?,
+//! Each observer's args (`{ method, path, public_webhook?, loopback_only?,
 //! middleware_function_ids? }`, see [`HttpRouteArgs`]) declare one route. The
 //! server calls the function for every request it receives (the CORS layer
 //! answers `OPTIONS`), with the request as the server received it
@@ -9,11 +9,16 @@
 //!
 //! - **added** files the observer's route, or rejects the observer with
 //!   `HTTP_ROUTE_CONFLICT` when another observer holds the same method and
-//!   path shape;
+//!   path shape (whatever their `loopback_only`), or with
+//!   `HTTP_ROUTE_INVALID` when it sets both `public_webhook` and
+//!   `loopback_only`;
 //! - **removed** takes the route out;
-//! - **deliver** matches the request's method and path to a route. It
-//!   answers `404` when no route of an active observer has the path, and
-//!   `405` with `Allow` when routes have the path on other methods. A
+//! - **deliver** matches the request's method and path to a route the
+//!   request's connection may reach (its [`Admission`]: the restricted
+//!   listener reaches only `public_webhook` routes, a connection accepted on
+//!   a non-loopback local address no `loopback_only` route). It answers `404`
+//!   when no such route has the path, and `405` with `Allow` when such routes
+//!   have the path on other methods. A
 //!   matched request gets `413` when its body is over the server's limit and
 //!   `422` when the observer's filters reject the call. Then the global
 //!   middleware and the route's middleware run, the hook opens the
@@ -62,15 +67,18 @@ pub const HTTP_ROUTE_INVALID: &str = "HTTP_ROUTE_INVALID";
 const CHANNEL_BUFFER: usize = 64;
 
 pub const ON_REQUEST_DESCRIPTION: &str = "One call per HTTP request the http worker receives (OPTIONS requests are answered by its \
-     CORS layer). Observe it with args { method, path } (plus optional public_webhook and \
-     middleware_function_ids) to serve that route: the worker calls the target with the \
+     CORS layer). Observe it with args { method, path } (plus optional public_webhook, \
+     loopback_only and middleware_function_ids) to serve that route: the worker calls the target with the \
      HttpRequest (path template, path_params, query_params, headers, body, and the \
      request_body and response channels), and its return value ({ status_code, headers, \
      body }, or null after streaming to the response channel) is the response. A request \
      without a route gets 404 (405 when the path has routes on other methods); a request the \
      observer's filters reject gets 422. Filters read the request as the server received it: \
-     input.method, input.path, input.query_params, input.headers, input.body. Only the http \
-     worker calls it.";
+     input.method, input.path, input.query_params, input.headers, input.body. A loopback_only \
+     route exists only on connections accepted on a loopback local address (127.0.0.0/8, ::1), \
+     so a rebind to a public address never exposes it; elsewhere it is a 404 like an unknown \
+     path. public_webhook and loopback_only together are rejected with HTTP_ROUTE_INVALID. \
+     Only the http worker calls it.";
 
 /// Registers [`ON_REQUEST_FN`] with [`RouteHooks`] over `routes` as its
 /// hooks. The hooks are set by id before the function registers, so they run
@@ -159,7 +167,18 @@ fn internal_error(message: &str) -> Value {
 /// and an uppercased method. Rejects contradictory args with
 /// [`HTTP_ROUTE_INVALID`].
 pub fn route_from_args(observer_id: &str, args: HttpRouteArgs) -> Result<Route, ObserveRejection> {
-    // TDD stub: no validation yet.
+    if args.public_webhook && args.loopback_only {
+        return Err(ObserveRejection::new(
+            HTTP_ROUTE_INVALID,
+            format!(
+                "Route '{} {}' sets both public_webhook and loopback_only: a route \
+                 exposed on the restricted webhook listener cannot also be \
+                 loopback only; set at most one of them",
+                args.method.to_uppercase(),
+                args.path
+            ),
+        ));
+    }
     Ok(Route {
         observer_id: observer_id.to_string(),
         http_path: args.path,

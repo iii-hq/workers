@@ -145,9 +145,9 @@ fn listener_path_params(
 /// Whether `ip` is a loopback address: `127.0.0.0/8`, `::1`, or an
 /// IPv4-mapped loopback address (`::ffff:127.x.y.z`).
 pub fn is_loopback_ip(ip: IpAddr) -> bool {
-    // TDD stub: replaced by the real check.
-    let _ = ip;
-    false
+    // `to_canonical` turns an IPv4-mapped IPv6 address into its IPv4 form;
+    // the deprecated IPv4-compatible form (`::127.0.0.1`) stays IPv6.
+    ip.to_canonical().is_loopback()
 }
 
 /// What one accepted connection may reach, decided per connection and read
@@ -185,8 +185,8 @@ impl Admission {
 
     /// Whether `route` exists for this connection.
     pub fn admits(&self, route: &Route) -> bool {
-        // TDD stub: ignores loopback_only.
-        !self.public_webhooks_only || route.public_webhook
+        (!self.public_webhooks_only || route.public_webhook)
+            && (!route.loopback_only || self.loopback_connection)
     }
 }
 
@@ -246,6 +246,9 @@ impl RouteTable {
     /// chosen. Iteration order over the backing `HashMap` is nondeterministic,
     /// so this scoring is what makes the result stable. The engine gets the
     /// same precedence for free from axum's matcher.
+    ///
+    /// Unfiltered by connection: this is what the normal listener serves on a
+    /// loopback connection, `loopback_only` routes included.
     pub fn match_route(
         &self,
         method: &str,
