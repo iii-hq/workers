@@ -18,7 +18,7 @@
     "test": "vitest run",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "build:ui": "node ui/build.mjs"
+    "build:ui": "pnpm --dir .. --filter @iii-workers/claude-code-ui... install --frozen-lockfile && pnpm --dir .. --filter @iii-workers/claude-code-ui run build"
   },
   "bin": {
     "claude-code": "./dist/index.js"
