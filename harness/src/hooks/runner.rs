@@ -1333,10 +1333,22 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
     let ids: Vec<String> = globs
         .iter()
         .filter_map(|glob| match crate::policy::split_namespace_pattern(glob) {
+            // A qualifier with no id compiles to a glob that matches no id (a policy
+            // rejects it); with no error path here it reads as `*` in every namespace.
+            (Some(_), "") => {
+                warn_filter_once(
+                    glob,
+                    "names a namespace but no function id; reading it as `*`, which matches every call in every namespace",
+                );
+                Some("*".to_string())
+            }
             // No error path here, so a glob qualifier (approval-gate rejects
             // one) reads as bare rather than silently skipping the guard.
             (Some(qualifier), id) if qualifier.contains(['*', '?', '[', '{']) => {
-                warn_glob_qualifier_once(glob);
+                warn_filter_once(
+                    glob,
+                    "namespace qualifier must be a plain namespace; reading it as bare, which matches every namespace",
+                );
                 Some(id.to_string())
             }
             (Some(qualifier), _) if qualifier != namespace => None,
@@ -1354,8 +1366,8 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
             .any(|alias| globs_match(ids, alias))
 }
 
-/// Logs a binding filter entry with a glob namespace qualifier, once per entry.
-fn warn_glob_qualifier_once(glob: &str) {
+/// Logs a malformed binding filter entry, once per entry.
+fn warn_filter_once(glob: &str, problem: &str) {
     static WARNED: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
     let mut warned = WARNED
@@ -1365,7 +1377,7 @@ fn warn_glob_qualifier_once(glob: &str) {
     if warned.insert(glob.to_string()) {
         tracing::warn!(
             pattern = %glob,
-            "hook binding filter: namespace qualifier must be a plain namespace; reading it as bare, which matches every namespace"
+            "hook binding filter: {problem}"
         );
     }
 }
@@ -1744,6 +1756,13 @@ mod tests {
             };
             assert!(functions_match(&gate, "desk", "shell::exec"), "{glob}");
             assert!(!functions_match(&gate, "desk", "fs::read"), "{glob}");
+        }
+        for glob in ["laptop/", "*/"] {
+            let gate = HookBinding {
+                functions: Some(vec![glob.into()]),
+                ..binding("gate", 0)
+            };
+            assert!(functions_match(&gate, "desk", "fs::read"), "{glob}");
         }
     }
 
