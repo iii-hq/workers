@@ -9,7 +9,9 @@ listener, while at the boundary it:
 - **serves only the engine endpoints you list** in `rbac.expose_endpoints`
   (`/`, `/ws/channels/*`, `/otel`; `/` alone without the key, nothing with an
   empty list), and no other path at all,
-- **authenticates** each connection (the operator's `auth_function_id`),
+- **authenticates** each connection (the operator's `auth_function_id`, or,
+  on a local project without one, the built-in
+  [`loopback_auth`](#local-projects-loopback_auth)),
 - **gates** every invocation in the namespace it is made in (vendored
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
   carve-out > `expose_functions` > deny), and the namespace a connection may
@@ -188,6 +190,56 @@ observer is refused with `FORBIDDEN`. Hooks see bare ids (before the session
 prefix). `rbac` keys of entries stored before 0.26 are ignored with one
 `warn` each, naming the setting to use, so such an entry loads.
 
+### Local projects: `loopback_auth`
+
+Without `auth_function_id` every connection is refused. A local project that
+wants rbac-proxy (for example in front of `mcp-server`) without writing an
+auth function or minting a per-project secret can set `rbac.loopback_auth`
+instead: a connection whose peer address is loopback (`127.0.0.0/8`, `::1`,
+`::ffff:127.x`) gets these grants, exactly as if an auth function had
+returned them; a connection from any other address is refused, as without
+the key.
+
+```yaml
+rbac:
+  loopback_auth:
+    worker_names: [mcp-server]
+    forbidden_functions: [secrets::resolve]
+  expose_endpoints:
+    - match("/")
+  expose_functions:
+    - match("api::*")
+```
+
+It takes the fields an auth function may return, with the same defaults:
+`namespaces`, `allowed_functions`, `forbidden_functions`,
+`allow_function_registration` (default `true`), `context` (default `{}`),
+`function_registration_prefix` and `worker_names`. Every other rule applies
+unchanged: `expose_functions`, the registration hooks, the middleware, the
+`worker_names` rules above (one live session per granted name, never an
+`rbac-proxy:` name) and `forbidden_functions` winning over everything.
+Unknown keys are refused, so a typo cannot drop a restriction.
+
+- **It applies only without `auth_function_id`.** When both are set the auth
+  function authenticates every connection, `loopback_auth` is ignored, and a
+  warning naming both keys is logged each time such a configuration is
+  applied.
+- **Only use it where every local process is trusted.** On such a machine any
+  local process can already reach the engine port directly, so admitting
+  loopback connections gives away nothing a shared token would protect. Do
+  not use it on a shared host.
+- **A reverse proxy on the same machine makes every client look local.** A
+  tunnel, an ingress or nginx forwarding to rbac-proxy connects from
+  `127.0.0.1`, so every client behind it gets the loopback grants. Front such
+  a setup with an `auth_function_id`.
+
+`rbac-proxy::status` reports which authentication is in force as `auth`:
+`"function"`, `"loopback"` or `"none"` (every connection refused), next to
+`rbac_enabled` (still: an `auth_function_id` is set). The session probe a
+client sends through the proxy (`rbac-proxy::session`, used by mcp-server's
+`iii_status`) reports the same `auth` in its `policy`. Like the other
+`rbac.*` keys, a change applies to new connections.
+
 A call through the middleware waits up to 610 s for it (a middleware that
 forwards with its own timeout should use 600 s or less), and a connection that
 does not finish its upgrade headers within 10 s is closed.
@@ -289,13 +341,14 @@ them with `observable: false`. Details:
 
 | Function | Input | Output |
 |---|---|---|
-| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, expose_endpoints, active_connections, version }` |
-| `rbac-proxy::session` | `{}` | `{ proxied: true, session_id, function_registration_prefix, worker_names, policy: { auth_function, expose_functions, expose_endpoints } }` |
+| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, auth, expose_endpoints, active_connections, version }` |
+| `rbac-proxy::session` | `{}` | `{ proxied: true, session_id, function_registration_prefix, worker_names, policy: { auth_function, auth, expose_functions, expose_endpoints } }` |
 
 `rbac-proxy::status` is a read-only health and identity probe: the bound
 host and port, the upstream engine URL with any `user:pass@` redacted,
-whether an auth function is configured, the live connection count and the
-worker version.
+whether an auth function is configured, which authentication is in force
+(`auth`: `"function"`, `"loopback"` or `"none"`), the live connection count
+and the worker version.
 
 `rbac-proxy::session` answers "is **this** connection behind rbac-proxy?",
 while `rbac-proxy::status` reports on the proxy as a whole. The proxy's
@@ -305,7 +358,8 @@ forwards it, so a worker connected straight to the engine gets
 the engine), but `forbidden_functions` does: an auth function that lists
 `rbac-proxy::session` denies it with `FORBIDDEN`. `policy` is the
 configuration the session runs under: whether an auth function is
-configured, the `expose_functions` rules as written (they apply to every
+configured, which authentication admitted it (`auth`: `"function"` or
+`"loopback"`), the `expose_functions` rules as written (they apply to every
 session, in every namespace) and the endpoint rules in force. A client reads
 the globs to decide what to warn its users about, for example a `match("*")`
 without an auth function.
