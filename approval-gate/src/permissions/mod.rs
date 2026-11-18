@@ -40,6 +40,19 @@ pub fn auto_allow_seed_from_specs(specs: &[RuleSpec]) -> Vec<String> {
         .collect()
 }
 
+/// Splits a rule pattern into its engine namespace and id parts:
+/// `laptop/shell::*` → `(Some("laptop"), "shell::*")`. Only a non-empty prefix
+/// without `:` counts, so an id that holds a `/` (`openai-codex::codex/gpt`)
+/// stays whole.
+pub fn split_namespace_pattern(pattern: &str) -> (Option<&str>, &str) {
+    match pattern.split_once('/') {
+        Some((namespace, id)) if !namespace.is_empty() && !namespace.contains(':') => {
+            (Some(namespace), id)
+        }
+        _ => (None, pattern),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Permissions {
     rules: Vec<CompiledRule>,
@@ -79,11 +92,29 @@ impl Permissions {
     }
 
     pub fn check(&self, function_id: &str, args: &Value, mode: PermissionMode) -> Decision {
+        self.check_in(None, function_id, args, mode)
+    }
+
+    /// Like [`Self::check`] for a call in `namespace`. A bare rule matches
+    /// every namespace; a `<namespace>/` rule matches only its own.
+    pub fn check_in(
+        &self,
+        namespace: Option<&str>,
+        function_id: &str,
+        args: &Value,
+        mode: PermissionMode,
+    ) -> Decision {
         for rule in &self.rules {
             if !rule_applies_in_mode(rule, mode) {
                 continue;
             }
-            if !match_function_id(rule, function_id) {
+            let in_namespace = match (rule.namespace.as_deref(), namespace) {
+                (None, _) => true,
+                (Some(rule_ns), Some(ns)) => rule_ns == ns,
+                // Fails closed for a call without namespace: a qualified deny matches, a qualified allow does not.
+                (Some(_), None) => rule.action == Action::Deny,
+            };
+            if !in_namespace || !match_function_id(rule, function_id) {
                 continue;
             }
             let (outcome, matched) = match_constraints(args, &rule.constraints);
@@ -292,5 +323,118 @@ mod tests {
             p.check("f", &json!({ "n": "0" }), PermissionMode::Manual),
             Decision::NeedsApproval
         ));
+    }
+
+    #[test]
+    fn split_namespace_pattern_takes_a_plain_prefix_before_the_first_slash() {
+        assert_eq!(
+            split_namespace_pattern("laptop/shell::*"),
+            (Some("laptop"), "shell::*")
+        );
+        assert_eq!(split_namespace_pattern("shell::*"), (None, "shell::*"));
+        assert_eq!(
+            split_namespace_pattern("openai-codex::codex/gpt"),
+            (None, "openai-codex::codex/gpt")
+        );
+        assert_eq!(
+            split_namespace_pattern("/shell::exec"),
+            (None, "/shell::exec")
+        );
+    }
+
+    #[test]
+    fn bare_rule_matches_every_namespace_and_qualified_rule_only_its_own() {
+        let p = Permissions::compile(&[
+            RuleSpec::Shorthand("laptop/shell::*".into()),
+            RuleSpec::Shorthand("state::get".into()),
+        ])
+        .unwrap();
+        let m = PermissionMode::Manual;
+        for ns in [None, Some("default"), Some("laptop")] {
+            assert!(matches!(
+                p.check_in(ns, "state::get", &json!({}), m),
+                Decision::Allow { .. }
+            ));
+        }
+        assert_eq!(
+            p.check_in(Some("laptop"), "shell::exec", &json!({}), m),
+            Decision::Allow {
+                rule_id: "laptop/shell::*".into()
+            }
+        );
+        assert_eq!(
+            p.check_in(Some("desktop"), "shell::exec", &json!({}), m),
+            Decision::NeedsApproval
+        );
+    }
+
+    #[test]
+    fn qualified_rules_fail_closed_for_a_call_without_namespace() {
+        // old harness
+        let p = Permissions::compile(&[
+            RuleSpec::Shorthand("!laptop/shell::exec".into()),
+            RuleSpec::Shorthand("laptop/state::get".into()),
+        ])
+        .unwrap();
+        assert!(matches!(
+            p.check_in(None, "shell::exec", &json!({}), PermissionMode::Manual),
+            Decision::Deny { .. }
+        ));
+        assert_eq!(
+            p.check_in(None, "state::get", &json!({}), PermissionMode::Manual),
+            Decision::NeedsApproval
+        );
+    }
+
+    #[test]
+    fn a_qualifier_without_an_id_does_not_compile() {
+        for (spec, message) in [
+            (
+                RuleSpec::Shorthand("!laptop/".into()),
+                "deny shorthand must be !<function_id>",
+            ),
+            (
+                RuleSpec::Shorthand("laptop/".into()),
+                "allow shorthand must be <function_id>",
+            ),
+            (
+                RuleSpec::Structured {
+                    rule_id: None,
+                    function: "laptop/".into(),
+                    action: Action::Allow,
+                    modes: None,
+                    args: Vec::new(),
+                },
+                "function is required",
+            ),
+        ] {
+            let err = Permissions::compile(&[spec]).unwrap_err().to_string();
+            assert!(err.contains(message), "{err}");
+        }
+    }
+
+    #[test]
+    fn structured_rule_splits_function_and_keeps_the_qualifier_in_rule_id() {
+        let p = Permissions::compile(&[RuleSpec::Structured {
+            rule_id: None,
+            function: "laptop/web::*".into(),
+            action: Action::Deny,
+            modes: None,
+            args: Vec::new(),
+        }])
+        .unwrap();
+        assert!(matches!(
+            p.check_in(Some("laptop"), "web::fetch", &json!({}), PermissionMode::Manual),
+            Decision::Deny { rule_id, .. } if rule_id == "laptop/web::*"
+        ));
+        assert_eq!(
+            p.check_in(
+                Some("desktop"),
+                "web::fetch",
+                &json!({}),
+                PermissionMode::Manual
+            ),
+            Decision::NeedsApproval
+        );
     }
 }

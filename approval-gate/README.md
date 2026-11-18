@@ -94,6 +94,14 @@ When the configuration entry omits `rules`, the gate denies only this
 worker's own `approval::*` surface; every other call **holds**. On startup the
 worker seeds/backfills the stored entry so `rules` are editable in the console.
 
+Rule patterns may name an engine namespace: prefix `<namespace>/` to match
+one namespace (`laptop/shell::*`); a bare pattern matches every namespace.
+For a call that names no namespace (an older harness), a qualified `deny`
+still matches and a qualified `allow` does not, so it fails closed.
+"Approve always" grants are exact `(namespace, id)` pairs, never patterns. A
+grant stored before namespaces existed covers only the namespace a call
+without `namespace` runs in. Modes are unchanged.
+
 ## Event functions
 
 Both are private functions: only this worker calls them, anyone may observe
