@@ -67,6 +67,28 @@ fn recent_letters_are_letters() {
     assert!(!detection.is_english);
 }
 
+/// laya 0.4.35 cases the fixtures and the probe do not reach.
+#[test]
+fn shouting_and_mixed_fields_keep_their_language() {
+    // An English field does not outvote a German one: the German field's
+    // language, though no German line passes the line scan, is the verdict.
+    let mixed = analyse(&json!({
+        "a": "Please check the order status for this customer and reply with the tracking number that was sent.",
+        "b": "Die Rückerstattung die Bestellung die Lieferung",
+    }));
+    assert_eq!((mixed.language, mixed.is_english), (Some("de"), false));
+    // Non-English letters are evidence enough for an all-caps line whose stop
+    // words are all acronym-short.
+    let shouted = analyse(&json!("DIE LIEFERUNG KAM ZU SPÄT"));
+    assert_eq!((shouted.language, shouted.is_english), (Some("de"), false));
+    // A five-letter all-caps run is emphasis on a word, not an acronym to blank.
+    let emphasis = analyse(&json!("Das Paket kam NICHT an"));
+    assert_eq!(
+        (emphasis.language, emphasis.is_english),
+        (Some("de"), false)
+    );
+}
+
 #[test]
 fn workflow_signatures_need_the_exact_question_ids() {
     let full = ["urgency", "action", "category", "churn_risk", "needs_human"];
