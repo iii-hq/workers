@@ -129,6 +129,11 @@ pub async fn resolve(
                 return Ok(not_resolved());
             };
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
+            let namespace = crate::clients::engine::resolve_namespace(
+                &function_id,
+                checkpoint.namespace.as_deref(),
+            );
+            let implicit = crate::clients::engine::resolve_namespace(&function_id, None);
             // The checkpoint carries the arguments as mutated by the chain up
             // to the hold (issue #506); transcript recovery — the model's
             // ORIGINAL arguments — is only the fallback for records written
@@ -232,8 +237,10 @@ pub async fn resolve(
             // turn loop — depth/fan-out guards, policy subsetting, ParentLink
             // — never the generic dispatcher (which would seed a parentless,
             // unguarded child). Fire-and-forget: the result is the child ids;
-            // post_call is skipped, mirroring the loop's spawn branch.
-            if function_id == crate::functions::SPAWN_ID {
+            // post_call is skipped, mirroring the loop's spawn branch. One
+            // approved for another namespace takes the generic path, which
+            // refuses it (`observe::invoke`).
+            if function_id == crate::functions::SPAWN_ID && namespace == implicit {
                 // Dispatched + persist BEFORE the spawn (mirrors the non-spawn
                 // path below): a crash or redelivered resolve between a
                 // successful spawn and the Done persist would otherwise still
@@ -352,6 +359,7 @@ pub async fn resolve(
                 &engine,
                 &policy,
                 &function_id,
+                checkpoint.namespace.as_deref(),
                 &arguments,
                 &record.session_id,
                 true, // resolve holds this session's lock
@@ -872,6 +880,7 @@ mod tests {
             reconciled: None,
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),
+            namespace: None,
         }
     }
 

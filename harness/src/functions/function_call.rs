@@ -179,6 +179,7 @@ pub async fn handle(
         &engine,
         &policy,
         &req.call.function_id,
+        None,
         &arguments,
         &req.session_id,
         true, // direct pipeline now shares the session lifecycle lock

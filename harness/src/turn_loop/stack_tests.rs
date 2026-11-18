@@ -688,6 +688,86 @@ async fn a_released_call_with_a_held_sibling_stops_claiming_to_run_tools() {
     );
 }
 
+/// The namespace the invoke frame of `function` named.
+fn sent_namespace<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+    let key = format!("namespace of {function}");
+    &calls
+        .iter()
+        .find(|(f, _)| *f == key)
+        .unwrap_or_else(|| panic!("{function} was not invoked: {calls:?}"))
+        .1
+}
+
+fn hold_reply_in(namespace: &str) -> Value {
+    let mut reply = hold_reply()["message"].clone();
+    reply["content"][0]["arguments"]["namespace"] = json!(namespace);
+    reply
+}
+
+/// Whether this harness answered `function`, named in namespace `zz-a`, with
+/// the refusal its own controls get there, and sent no frame for it.
+fn refused_in_zz_a(calls: &[(String, Value)], function: &str) -> bool {
+    let refusal = format!("{function} was called in namespace zz-a");
+    !calls.iter().any(|(f, _)| f == function)
+        && calls
+            .iter()
+            .any(|(f, data)| f == "session::append" && data.to_string().contains(&refusal))
+}
+
+/// The model named a namespace: the call goes out in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_runs_in_the_namespace_the_model_named() {
+    let (_, calls, _) = generate(hold_reply_in("zz-a")).await;
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
+/// A held call is released later, from its checkpoint: the namespace must be
+/// on it, or an approval for another namespace runs in the implicit one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_call_keeps_the_namespace_the_model_named() {
+    let (_, _, turn) = generate_observed(
+        hold_reply_in("zz-a"),
+        json!({"harness::hook::on-pre-call": {"decision": "hold", "held_by": "test::gate"}}),
+    )
+    .await;
+    assert_eq!(turn["calls"]["call_hold"]["namespace"], "zz-a");
+}
+
+/// A control this harness answers itself, named in another namespace, is
+/// refused: neither answered here nor dispatched to that namespace's harness.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_control_the_model_named_in_another_namespace_is_refused() {
+    for control in [crate::functions::ASK_ID, crate::functions::SPAWN_ID] {
+        let mut reply = hold_reply_in("zz-a");
+        reply["content"][0]["arguments"]["function"] = json!(control);
+        let (_, calls, turn) = generate(reply).await;
+        assert!(refused_in_zz_a(&calls, control), "{control}: {calls:?}");
+        assert!(
+            turn["calls"]["call_hold"]["child_session_id"].is_null(),
+            "{turn}"
+        );
+    }
+}
+
+/// A spawn approved for another namespace is refused: the generic release
+/// path would dispatch it to that namespace's harness, which seeds a child
+/// with none of this turn's guards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_spawn_named_in_another_namespace_is_refused() {
+    let mut held = held_call();
+    held["function_id"] = json!(crate::functions::SPAWN_ID);
+    held["namespace"] = json!("zz-a");
+    let (_, calls, turn) = release(json!({"call_hold": held}), json!({})).await;
+    assert!(
+        refused_in_zz_a(&calls, crate::functions::SPAWN_ID),
+        "{calls:?}"
+    );
+    assert!(
+        turn["calls"]["call_hold"]["child_session_id"].is_null(),
+        "{turn}"
+    );
+}
+
 /// External work cannot be confirmed stopped, so a stop leaves the turn parked
 /// on its `stopping` ack: a live phase over it would show a stopped turn as
 /// running until the next delivery observes the abort.
@@ -1969,10 +2049,14 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 .and_then(|id| id.strip_prefix("o_"))
                 .map_or(function, str::to_string);
             let data = message["data"].clone();
-            observed
-                .lock()
-                .unwrap()
-                .push((function.clone(), data.clone()));
+            {
+                let mut observed = observed.lock().unwrap();
+                observed.push((function.clone(), data.clone()));
+                observed.push((
+                    format!("namespace of {function}"),
+                    message["namespace"].clone(),
+                ));
+            }
             if refuse(&function, &data) {
                 if lands(&function, &data) {
                     *stored_turn.lock().unwrap() = data["value"].clone();

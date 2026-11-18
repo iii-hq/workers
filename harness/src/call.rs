@@ -701,7 +701,7 @@ pub async fn invoke_target(
     function_id: &str,
     arguments: &Value,
 ) -> ResultData {
-    invoke_target_classified(engine, policy, function_id, arguments)
+    invoke_target_classified(engine, policy, function_id, None, arguments)
         .await
         .0
 }
@@ -715,6 +715,7 @@ pub(crate) async fn invoke_target_classified(
     engine: &EngineClient,
     policy: &CompiledPolicy,
     function_id: &str,
+    namespace: Option<&str>,
     arguments: &Value,
 ) -> (ResultData, bool) {
     let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
@@ -725,7 +726,7 @@ pub(crate) async fn invoke_target_classified(
     if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
         return (denied, false);
     }
-    match engine.dispatch(function_id, None, arguments).await {
+    match engine.dispatch(function_id, namespace, arguments).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
                 post_filter_discovery(&mut value, policy);

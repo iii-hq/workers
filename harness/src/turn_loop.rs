@@ -2003,6 +2003,14 @@ async fn finish_step(
                 continue;
             }
 
+            // Where the call runs, and where a call without `namespace` would:
+            // the harness answers its own controls only when the two agree.
+            let namespace = crate::clients::engine::resolve_namespace(
+                &call.function_id,
+                call.namespace.as_deref(),
+            );
+            let implicit = crate::clients::engine::resolve_namespace(&call.function_id, None);
+
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
@@ -2085,7 +2093,7 @@ async fn finish_step(
             // one per step, shape, limits), record the awaiting-answer result
             // or the refusal, and mark it Done. Never parks; refusals leave the
             // turn running so the model can react.
-            if call.function_id == crate::functions::ASK_ID {
+            if call.function_id == crate::functions::ASK_ID && namespace == implicit {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 // One ask per step, persisted on the record so a redelivered
                 // step still refuses a second ask and still ends on the first.
@@ -2222,7 +2230,7 @@ async fn finish_step(
             // ids immediately (never invoke a target, never park). The child's
             // result reaches consumers only through observers and state.
             // Guard failures skip post_call.
-            if call.function_id == crate::functions::SPAWN_ID {
+            if call.function_id == crate::functions::SPAWN_ID && namespace == implicit {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 let (mut data, child) = match Box::pin(crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
@@ -2276,6 +2284,7 @@ async fn finish_step(
                         reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
+                        namespace: call.namespace.clone(),
                     },
                 );
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -2297,6 +2306,7 @@ async fn finish_step(
                     reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
+                    namespace: call.namespace.clone(),
                 },
             );
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -2310,17 +2320,19 @@ async fn finish_step(
             // session lock `harness::stop` waits on, until the dispatch
             // timeout. Interceptions are short and not drop-safe, so they run
             // uninterrupted.
-            let raw = if crate::functions::observe::is_locally_intercepted(
-                &call.function_id,
-                &eff_args,
-                &record.session_id,
-                true,
-            ) {
+            let raw = if namespace == implicit
+                && crate::functions::observe::is_locally_intercepted(
+                    &call.function_id,
+                    &eff_args,
+                    &record.session_id,
+                    true,
+                ) {
                 Box::pin(crate::functions::observe::invoke(
                     deps,
                     &engine,
                     &policy,
                     &call.function_id,
+                    call.namespace.as_deref(),
                     &eff_args,
                     &record.session_id,
                     true, // run_step holds this session's lock
@@ -2334,12 +2346,14 @@ async fn finish_step(
                     let (deps, engine, policy) = (deps.clone(), engine.clone(), policy.clone());
                     let (function_id, args) = (call.function_id.clone(), eff_args.clone());
                     let (session_id, options) = (record.session_id.clone(), record.options.clone());
+                    let call_namespace = call.namespace.clone();
                     async move {
                         crate::functions::observe::invoke(
                             &deps,
                             &engine,
                             &policy,
                             &function_id,
+                            call_namespace.as_deref(),
                             &args,
                             &session_id,
                             true, // as inline: only interceptions read it
@@ -3794,6 +3808,7 @@ fn checkpoint_pending(
             reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
+            namespace: call.namespace.clone(),
         },
     );
 }
@@ -3816,6 +3831,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
+            namespace: record.calls.get(call_id).and_then(|c| c.namespace.clone()),
         },
     );
 }

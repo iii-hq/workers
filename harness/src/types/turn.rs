@@ -324,6 +324,9 @@ pub struct CallCheckpoint {
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_at: Option<i64>,
+    /// The call's explicit `agent_call` namespace; absent: today's routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Sub-agent linkage recorded on a child turn (harness.md § Sub-agents).
@@ -817,7 +820,24 @@ pub(crate) mod tests {
             reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
+            namespace: None,
         }
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_call_namespace_and_old_records_have_none() {
+        let mut held = cp(CallState::Pending, None, false);
+        held.namespace = Some("laptop".into());
+        let stored = serde_json::to_value(&held).unwrap();
+        assert_eq!(stored["namespace"], "laptop");
+        assert_eq!(
+            serde_json::from_value::<CallCheckpoint>(stored).unwrap(),
+            held
+        );
+        let old: CallCheckpoint =
+            serde_json::from_value(json!({ "state": "pending", "function_id": "shell::exec" }))
+                .unwrap();
+        assert_eq!(old.namespace, None);
     }
 
     #[test]
