@@ -843,17 +843,18 @@ async fn generate_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let decision_tools = concrete_allowed_tools(
-        &policy,
-        &functions.functions,
-        &record.dispatch_only_functions,
-    );
     let expose = record
         .options
         .functions
         .as_ref()
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
+    let (decision_tools, _) = concrete_allowed_tools(
+        &policy,
+        &functions.functions,
+        &record.dispatch_only_functions,
+        expose,
+    );
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -1901,7 +1902,17 @@ async fn finish_step(
         .as_ref()
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
-    let planned = policy::plan_calls(&outcome.message, expose);
+    let mut planned = policy::plan_calls(&outcome.message, expose);
+    if expose == ExposeMode::Native {
+        // Names are deterministic, so a resumed step rebuilds the same table.
+        let (_, names) = concrete_allowed_tools(
+            &CompiledPolicy::from(record.options.functions.as_ref()),
+            &deps.functions().await.functions,
+            &record.dispatch_only_functions,
+            expose,
+        );
+        policy::resolve_native_names(&mut planned, &names);
+    }
     let dispatch_calls: Vec<_> = planned
         .iter()
         .filter(|c| c.kind == CallKind::Call)
@@ -4976,33 +4987,101 @@ pub(crate) fn preloaded_stale_notice(
 /// does not list). This is the decision surface hooks reason over,
 /// independent of how tools reach the provider. `hidden` are the spawn's
 /// dispatch-only grants (`TurnRecord::dispatch_only_functions`): still
-/// callable by id, never a tool.
+/// callable by id, never a tool. The copy a bare call reaches is named by its
+/// id. In native exposure every other copy gets its own name
+/// ([`native_tool_name`]), listed in the returned table; other modes keep one
+/// tool per id.
 fn concrete_allowed_tools(
     policy: &CompiledPolicy,
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
-) -> Vec<crate::types::model::AgentFunction> {
+    expose: ExposeMode,
+) -> (Vec<AgentFunction>, policy::NativeNames) {
     let mut tools = crate::functions::observe::native_control_tools(policy);
-    for descriptor in descriptors {
-        if !policy.allows(&descriptor.function_id)
-            || hidden.iter().any(|id| id == &descriptor.function_id)
-            || tools.iter().any(|tool| tool.name == descriptor.function_id)
-        {
-            continue;
-        }
-        tools.push(crate::types::model::AgentFunction {
-            name: descriptor.function_id.clone(),
-            description: descriptor.description.clone().unwrap_or_default(),
-            parameters: descriptor
+    // A hidden grant is still called by its id, so no other copy takes that name.
+    let mut taken: std::collections::BTreeSet<String> = tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .chain(hidden.iter().cloned())
+        .collect();
+    let mut names = policy::NativeNames::new();
+    let (own, mut other): (Vec<_>, Vec<_>) = descriptors
+        .iter()
+        .filter(|d| {
+            policy.allows_in(&d.namespace, &d.function_id) && !hidden.contains(&d.function_id)
+        })
+        .partition(|d| {
+            d.namespace == crate::clients::engine::resolve_namespace(&d.function_id, None)
+        });
+    other.sort_by(|a, b| (&a.namespace, &a.function_id).cmp(&(&b.namespace, &b.function_id)));
+    let tool =
+        |name: String, description: String, d: &crate::clients::FunctionDescriptor| AgentFunction {
+            name,
+            description,
+            parameters: d
                 .parameters
                 .clone()
                 .unwrap_or_else(|| json!({ "type": "object" })),
             label: None,
             execution_mode: Some("sequential".to_string()),
-        });
+        };
+    for d in own {
+        if taken.insert(d.function_id.clone()) {
+            let description = d.description.clone().unwrap_or_default();
+            tools.push(tool(d.function_id.clone(), description, d));
+        }
+    }
+    for d in other {
+        let (ns, id) = (&d.namespace, &d.function_id);
+        let name = match expose {
+            ExposeMode::Native => {
+                let name = native_tool_name(ns, id, &taken);
+                names.insert(name.clone(), (ns.clone(), id.clone()));
+                name
+            }
+            ExposeMode::AgentCall if taken.contains(id) => continue,
+            ExposeMode::AgentCall => id.clone(),
+        };
+        taken.insert(name.clone());
+        let description = format!(
+            "Runs in namespace `{ns}`. {}",
+            d.description.as_deref().unwrap_or_default()
+        );
+        tools.push(tool(name, description, d));
     }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
-    tools
+    (tools, names)
+}
+
+/// The native tool name of `function_id` in a namespace other than its
+/// implicit one: `<namespace>::<id>`, or a head of it plus a hash of the pair
+/// when that is too long or already taken.
+fn native_tool_name(
+    namespace: &str,
+    function_id: &str,
+    taken: &std::collections::BTreeSet<String>,
+) -> String {
+    // 64 = strictest provider tool-name limit; llm-router maps `::` to `__` length for length, and `ns2` has no `_`, so the name round-trips.
+    let ns2: String = namespace
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let base = format!("{ns2}::{function_id}");
+    if base.len() <= 64 && !taken.contains(&base) {
+        return base;
+    }
+    let head = base[..base.floor_char_boundary(55)].trim_end_matches(':');
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(format!("{namespace}/{function_id}").as_bytes())
+    );
+    format!("{head}-{}", &hash[..8])
 }
 
 /// The invocation-schema surface attached to the generate request
@@ -5305,9 +5384,9 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
-        dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
-        turn_step_matches,
+        ExposeMode, call_description, cancel_requested, concrete_allowed_tools,
+        count_model_visible, dispatch_unless_stopped, retryable_function_result_append_error,
+        transient_resume_allowed, turn_step_matches,
     };
 
     #[test]
@@ -5682,10 +5761,12 @@ mod tests {
             },
         ];
         let hidden = vec!["directory::skills::get".to_string()];
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &hidden)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
+        let names: Vec<_> =
+            concrete_allowed_tools(&policy, &descriptors, &hidden, ExposeMode::AgentCall)
+                .0
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect();
         assert_eq!(names, vec!["db::x"], "the grant is not a tool");
         assert!(
             policy.allows("directory::skills::get"),
@@ -5751,7 +5832,8 @@ mod tests {
                 parameters: None,
             }
         });
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[], ExposeMode::Native)
+            .0
             .into_iter()
             .map(|tool| tool.name)
             .collect();
@@ -5782,13 +5864,120 @@ mod tests {
             },
         ];
 
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[], ExposeMode::Native)
+            .0
             .into_iter()
             .map(|tool| tool.name)
             .collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn native_tools_name_other_namespace_copies_apart() {
+        use sha2::{Digest, Sha256};
+        let own = crate::clients::engine::own_namespace();
+        // `*shell::exec` keeps the harness control tools out of the list.
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*shell::exec".into()],
+                deny: vec![],
+                expose: ExposeMode::Native,
+            }));
+        let d = |ns: &str, id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some("run".into()),
+            parameters: None,
+        };
+        let hash = |s: &str| format!("{:x}", Sha256::digest(s.as_bytes()))[..8].to_string();
+        let long = "n".repeat(70);
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d(&own, "shell::exec"),
+                d("zz-a", "shell::exec"),
+                d("my.box_1", "shell::exec"),
+                d(&own, "zz-a::shell::exec"),
+                d(&long, "shell::exec"),
+            ],
+            &[],
+            ExposeMode::Native,
+        );
+        let collided = format!("zz-a::shell::exec-{}", hash("zz-a/shell::exec"));
+        let shortened = format!(
+            "{}-{}",
+            "n".repeat(55),
+            hash(&format!("{long}/shell::exec"))
+        );
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            tool_names,
+            vec![
+                "my-box-1::shell::exec",
+                shortened.as_str(),
+                "shell::exec",
+                "zz-a::shell::exec",
+                collided.as_str()
+            ]
+        );
+        assert_eq!(
+            names.get(&collided),
+            Some(&("zz-a".to_string(), "shell::exec".to_string()))
+        );
+        assert_eq!(
+            names.get("my-box-1::shell::exec"),
+            Some(&("my.box_1".to_string(), "shell::exec".to_string()))
+        );
+        assert_eq!(names.len(), 3);
+        assert!(
+            tools
+                .iter()
+                .find(|t| t.name == collided)
+                .unwrap()
+                .description
+                .starts_with("Runs in namespace `zz-a`. ")
+        );
+    }
+
+    #[test]
+    fn other_modes_keep_one_tool_per_id_own_copy_first() {
+        let own = crate::clients::engine::own_namespace();
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*shell::exec".into(), "only::there".into()],
+                deny: vec![],
+                expose: ExposeMode::AgentCall,
+            }));
+        let d = |ns: &str, id: &str, description: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: Some(description.into()),
+            parameters: None,
+        };
+        let (tools, names) = concrete_allowed_tools(
+            &policy,
+            &[
+                d("zz-a", "shell::exec", "theirs"),
+                d(&own, "shell::exec", "ours"),
+                d("zz-a", "only::there", "theirs"),
+            ],
+            &[],
+            ExposeMode::AgentCall,
+        );
+        let tools: Vec<(&str, &str)> = tools
+            .iter()
+            .map(|t| (t.name.as_str(), t.description.as_str()))
+            .collect();
+        assert_eq!(
+            tools,
+            vec![
+                ("only::there", "Runs in namespace `zz-a`. theirs"),
+                ("shell::exec", "ours")
+            ]
+        );
+        assert!(names.is_empty());
     }
 
     #[test]
@@ -6071,7 +6260,8 @@ mod tests {
                 expose: crate::types::turn::ExposeMode::Native,
             }));
         let public_catalog = crate::discovery::snapshot_of(vec![]);
-        let tools = concrete_allowed_tools(&policy, &public_catalog.functions, &[]);
+        let (tools, _) =
+            concrete_allowed_tools(&policy, &public_catalog.functions, &[], ExposeMode::Native);
         assert_eq!(tools.len(), 2, "both controls are effectively offered");
         let frozen = tools
             .iter()

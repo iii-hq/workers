@@ -2,7 +2,7 @@
 //! (harness.md § Functions). The allow/deny globs are structural and final —
 //! hooks run only after they pass.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -483,6 +483,20 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
     out
 }
 
+/// Native tool name to the `(namespace, id)` it calls, for every tool not
+/// named by its bare id. Built per turn step; names are never decoded.
+pub type NativeNames = BTreeMap<String, (String, String)>;
+
+/// Points each native call made under a table name at its `(namespace, id)`.
+pub fn resolve_native_names(calls: &mut [PlannedCall], names: &NativeNames) {
+    for call in calls.iter_mut().filter(|call| call.kind == CallKind::Call) {
+        if let Some((namespace, id)) = names.get(&call.function_id) {
+            call.function_id = id.clone();
+            call.namespace = Some(namespace.clone());
+        }
+    }
+}
+
 /// The object a stringified `payload` holds. Anything after it but JSON
 /// whitespace marks it `_partial` + `_invalid` (the router's markers for the
 /// same text at the top level), so the turn loop refuses it as invalid JSON.
@@ -822,6 +836,37 @@ mod tests {
         assert_eq!(calls[0].function_id, "shell::run");
         assert_eq!(calls[0].kind, CallKind::Call);
         assert_eq!(calls[0].arguments, json!({ "cmd": "ls" }));
+    }
+
+    #[test]
+    fn native_calls_resolve_qualified_tool_names_through_the_table() {
+        let names = NativeNames::from([(
+            "zz-a::shell::exec".to_string(),
+            ("zz-a".to_string(), "shell::exec".to_string()),
+        )]);
+        let msg = assistant_with(vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "zz-a::shell::exec".into(),
+                arguments: json!({ "command": "ls" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "shell::exec".into(),
+                arguments: json!({}),
+            },
+        ]);
+        let mut calls = plan_calls(&msg, ExposeMode::Native);
+        resolve_native_names(&mut calls, &names);
+        assert_eq!(
+            (calls[0].function_id.as_str(), calls[0].namespace.as_deref()),
+            ("shell::exec", Some("zz-a"))
+        );
+        assert_eq!(calls[0].arguments, json!({ "command": "ls" }));
+        assert_eq!(
+            (calls[1].function_id.as_str(), calls[1].namespace.as_deref()),
+            ("shell::exec", None)
+        );
     }
 
     // A wrapper call whose arguments carry no resolvable `function` (null —
