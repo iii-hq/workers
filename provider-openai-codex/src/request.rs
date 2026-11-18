@@ -161,6 +161,11 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_version_is_approved_release() {
+        assert_eq!(CODEX_COMPAT_VERSION, "0.169.0");
+    }
+
+    #[test]
     fn body_has_responses_shape() {
         let body = build_body(&args());
         assert_eq!(body["model"], "gpt-5.5");
@@ -239,7 +244,7 @@ mod tests {
         let h = build_headers(&cfg);
         assert!(h.contains(&("authorization", "Bearer at".to_string())));
         assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
-        assert!(h.contains(&("version", "0.169.0".to_string())));
+        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
         assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
         assert!(h.contains(&("openai-beta", "responses=experimental".to_string())));
         assert!(h.contains(&("content-type", "application/json".to_string())));
@@ -257,7 +262,7 @@ mod tests {
         assert!(h.contains(&("authorization", "Bearer at".to_string())));
         assert!(h.contains(&("chatgpt-account-id", "acc-1".to_string())));
         assert!(h.contains(&("originator", "codex_cli_rs".to_string())));
-        assert!(h.contains(&("version", "0.169.0".to_string())));
+        assert!(h.contains(&("version", CODEX_COMPAT_VERSION.to_string())));
         assert!(!h.iter().any(|(key, _)| *key == "openai-beta"));
         assert!(!h.iter().any(|(key, _)| *key == "accept"));
         assert!(!h.iter().any(|(key, _)| *key == "content-type"));

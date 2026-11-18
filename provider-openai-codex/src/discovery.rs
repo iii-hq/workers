@@ -465,7 +465,9 @@ mod tests {
         let url = models_url("https://chatgpt.com/backend-api/codex/responses").unwrap();
         assert_eq!(
             url.as_str(),
-            "https://chatgpt.com/backend-api/codex/models?client_version=0.169.0"
+            format!(
+                "https://chatgpt.com/backend-api/codex/models?client_version={CODEX_COMPAT_VERSION}"
+            )
         );
     }
 
@@ -519,10 +521,12 @@ mod tests {
         assert_eq!(fetched.models[0].id, "codex/future-model");
 
         let request = request_rx.await.unwrap().to_ascii_lowercase();
-        assert!(request.contains("get /backend-api/codex/models?client_version=0.169.0 http/1.1"));
+        assert!(request.contains(&format!(
+            "get /backend-api/codex/models?client_version={CODEX_COMPAT_VERSION} http/1.1"
+        )));
         assert!(request.contains("authorization: bearer at"));
         assert!(request.contains("chatgpt-account-id: acc-1"));
-        assert!(request.contains("version: 0.169.0"));
+        assert!(request.contains(&format!("version: {CODEX_COMPAT_VERSION}")));
         assert!(request.contains("originator: codex_cli_rs"));
         assert!(!request.contains("openai-beta:"));
         assert!(!request.contains("text/event-stream"));
