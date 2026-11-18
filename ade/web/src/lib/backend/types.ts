@@ -40,6 +40,7 @@ export type StreamEvent =
         requestedRoot: string
         attemptedPath?: string
         errorCode?: string
+        onceOnly?: boolean
       }
     }
   | {

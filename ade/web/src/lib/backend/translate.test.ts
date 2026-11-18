@@ -104,6 +104,37 @@ describe('translateTurnSource — approvals', () => {
     ])
   })
 
+  it.each([
+    [
+      'another namespace',
+      { namespace: 'laptop', implicit_namespace: 'main' },
+      true,
+    ],
+    ['no implicit namespace', { namespace: 'laptop' }, true],
+    [
+      'the implicit namespace',
+      { namespace: 'main', implicit_namespace: 'main' },
+      false,
+    ],
+    ['no namespace', {}, false],
+  ])('filesystemAccess.onceOnly for %s', (_n, extra, once) => {
+    const [t] = translateTurnSource({
+      kind: 'approval-created',
+      record: pendingRecord({
+        kind: 'filesystem_access',
+        access_request: {
+          requested_root: '/abs/d',
+          attempted_path: '/abs/d/f',
+          error_code: 'S215',
+        },
+        ...extra,
+      }),
+    })
+    const fa = (t as { filesystemAccess: { onceOnly?: boolean } })
+      .filesystemAccess
+    expect(fa.onceOnly).toBe(once ? true : undefined)
+  })
+
   it('omits filesystemAccess for a plain function-call record (kind absent)', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',

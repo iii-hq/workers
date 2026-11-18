@@ -94,6 +94,8 @@ export interface PendingApprovalRecord {
   function_id: string
   /** Engine namespace the held call targets. Absent from an older harness. */
   namespace?: string
+  /** Gate's own namespace; a `namespace` differing from it is a call in another namespace. */
+  implicit_namespace?: string | null
   session_id: string
   turn_id: string
   arguments_excerpt?: unknown

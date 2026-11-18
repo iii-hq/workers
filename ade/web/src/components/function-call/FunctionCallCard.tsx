@@ -930,6 +930,7 @@ export function FunctionCallCard({
           requestedRoot={filesystemAccess.requestedRoot}
           workingDir={workingDir}
           namespace={message.namespace}
+          onceOnly={filesystemAccess.onceOnly}
           onResolve={(action) => onResolveFilesystemAccess?.(action)}
           onManage={onManageFilesystemAccess}
           disabled={!onResolveFilesystemAccess}

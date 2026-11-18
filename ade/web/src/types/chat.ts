@@ -234,6 +234,7 @@ export interface FunctionCallMessage extends BaseMessage {
     requestedRoot: string
     attemptedPath?: string
     errorCode?: string
+    onceOnly?: boolean
   }
   /**
    * A placeholder from a paged transcript read: the call's arguments and
@@ -461,6 +462,7 @@ export interface MessagePatch {
     requestedRoot: string
     attemptedPath?: string
     errorCode?: string
+    onceOnly?: boolean
   }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
