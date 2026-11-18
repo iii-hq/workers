@@ -132,13 +132,30 @@ pub(crate) fn sandbox_op_aliases(function_id: &str) -> Vec<String> {
     }
 }
 
+/// Splits a policy pattern into its engine namespace and id parts:
+/// `laptop/shell::*` → `(Some("laptop"), "shell::*")`. Only a non-empty prefix
+/// without `:` counts, so an id that holds a `/` (`api::get/x`) stays whole.
+/// Same rule as approval-gate's.
+pub fn split_namespace_pattern(pattern: &str) -> (Option<&str>, &str) {
+    match pattern.split_once('/') {
+        Some((namespace, id)) if !namespace.is_empty() && !namespace.contains(':') => {
+            (Some(namespace), id)
+        }
+        _ => (None, pattern),
+    }
+}
+
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it
 /// matches an `allow` glob and no `deny` glob; an absent or empty allow-list
-/// denies everything.
+/// denies everything. A `<namespace>/<glob>` pattern holds only in that
+/// namespace; a bare glob holds in every namespace.
 #[derive(Clone)]
 pub struct CompiledPolicy {
     allow: GlobSet,
     deny: GlobSet,
+    /// The namespace qualifier of each glob, by its index in the set.
+    allow_ns: Vec<Option<String>>,
+    deny_ns: Vec<Option<String>>,
     allow_empty: bool,
 }
 
@@ -146,9 +163,11 @@ impl CompiledPolicy {
     pub fn from(policy: Option<&FunctionPolicy>) -> Self {
         match policy {
             Some(p) => match (build_set(&p.allow), build_set(&p.deny)) {
-                (Some(allow), Some(deny)) => CompiledPolicy {
+                (Some((allow, allow_ns)), Some((deny, deny_ns))) => CompiledPolicy {
                     allow,
                     deny,
+                    allow_ns,
+                    deny_ns,
                     allow_empty: p.allow.is_empty(),
                 },
                 _ => CompiledPolicy::deny_all(),
@@ -161,21 +180,37 @@ impl CompiledPolicy {
         CompiledPolicy {
             allow: GlobSet::empty(),
             deny: GlobSet::empty(),
+            allow_ns: Vec::new(),
+            deny_ns: Vec::new(),
             allow_empty: true,
         }
     }
 
-    /// Whether `function_id` may be dispatched (fail-closed).
+    /// Whether `function_id` may be dispatched in its implicit namespace
+    /// (fail-closed).
     pub fn allows(&self, function_id: &str) -> bool {
+        self.allows_in(
+            &crate::clients::engine::resolve_namespace(function_id, None),
+            function_id,
+        )
+    }
+
+    /// Whether `function_id` may be dispatched in `namespace` (fail-closed).
+    pub fn allows_in(&self, namespace: &str, function_id: &str) -> bool {
         if self.allow_empty {
             return false;
         }
+        let hit = |set: &GlobSet, qualifiers: &[Option<String>], id: &str| {
+            set.matches(id)
+                .into_iter()
+                .any(|i| qualifiers[i].as_deref().is_none_or(|ns| ns == namespace))
+        };
         // Only deny crosses over: an allow on `sandbox::*` grants no adapter id.
-        self.allow.is_match(function_id)
-            && !self.deny.is_match(function_id)
+        hit(&self.allow, &self.allow_ns, function_id)
+            && !hit(&self.deny, &self.deny_ns, function_id)
             && !sandbox_op_aliases(function_id)
                 .iter()
-                .any(|alias| self.deny.is_match(alias))
+                .any(|alias| hit(&self.deny, &self.deny_ns, alias))
     }
 }
 
@@ -211,21 +246,40 @@ pub fn subset_policy(
     })
 }
 
-/// Is a child allow glob covered by the parent's allow set? Conservative: an
-/// exact match, a parent `*`, or a parent `<prefix>::*` covering the child.
+/// Is a child allow glob covered by the parent's allow set? Conservative: a
+/// parent without a namespace covers the child in any namespace, a qualified
+/// parent only in the same one; then an exact match, a parent `*`, or a parent
+/// `<prefix>::*` covering the child's id.
 /// Also used by `subagent::child_functions` to skip redundant (or dead — an
 /// exotic deny glob it cannot see stays authoritative at dispatch) discovery
 /// entries before unioning [`CHILD_DISCOVERY_ALLOW`].
 pub(crate) fn glob_covered(child: &str, parent_globs: &[String]) -> bool {
+    let (child_ns, child) = split_namespace_pattern(child);
     parent_globs.iter().any(|p| {
-        p == child || p == "*" || (p.ends_with("::*") && child.starts_with(&p[..p.len() - 1]))
+        let (ns, p) = split_namespace_pattern(p);
+        (ns.is_none() || ns == child_ns)
+            && (p == child
+                || p == "*"
+                || (p.ends_with("::*") && child.starts_with(&p[..p.len() - 1])))
     })
 }
 
-fn build_set(patterns: &[String]) -> Option<GlobSet> {
+/// The globs of `patterns`' id parts, with each one's namespace qualifier at
+/// its index in the set.
+fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
     let mut builder = GlobSetBuilder::new();
+    let mut qualifiers = Vec::with_capacity(patterns.len());
     for p in patterns {
-        let glob = match Glob::new(p) {
+        let (namespace, id) = split_namespace_pattern(p);
+        if let Some(ns) = namespace.filter(|ns| ns.contains(['*', '?', '[', '{'])) {
+            tracing::warn!(
+                pattern = %p,
+                "rejecting policy: namespace qualifier must be a plain namespace, got {ns:?}; a bare pattern already matches every namespace"
+            );
+            return None;
+        }
+        qualifiers.push(namespace.map(str::to_string));
+        let glob = match Glob::new(id) {
             Ok(glob) => glob,
             Err(error) => {
                 tracing::warn!(pattern = %p, error = %error, "rejecting policy with invalid function glob");
@@ -235,7 +289,7 @@ fn build_set(patterns: &[String]) -> Option<GlobSet> {
         builder.add(glob);
     }
     match builder.build() {
-        Ok(set) => Some(set),
+        Ok(set) => Some((set, qualifiers)),
         Err(error) => {
             tracing::warn!(error = %error, "rejecting policy whose function globs did not compile");
             None
@@ -696,6 +750,54 @@ mod tests {
         assert!(!CompiledPolicy::from(None).allows(id));
         assert!(!CompiledPolicy::from(Some(&policy(&[], &["sandbox::fs::rm"]))).allows(id));
         assert!(!CompiledPolicy::from(Some(&policy(&["*"], &["["]))).allows(id));
+    }
+
+    #[test]
+    fn namespace_patterns_split_on_the_first_slash_before_any_colon() {
+        assert_eq!(
+            split_namespace_pattern("laptop/shell::*"),
+            (Some("laptop"), "shell::*")
+        );
+        assert_eq!(split_namespace_pattern("shell::*"), (None, "shell::*"));
+        assert_eq!(split_namespace_pattern("api::get/x"), (None, "api::get/x"));
+        assert_eq!(split_namespace_pattern("/shell::*"), (None, "/shell::*"));
+    }
+
+    #[test]
+    fn a_qualified_rule_holds_only_in_its_namespace() {
+        let p = CompiledPolicy::from(Some(&policy(
+            &["laptop/shell::*", "state::*"],
+            &["desk/state::set"],
+        )));
+        assert!(p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "shell::exec"));
+        assert!(p.allows_in("desk", "state::get") && !p.allows_in("desk", "state::set"));
+        assert!(p.allows_in("laptop", "state::set"));
+        let adapter = CompiledPolicy::from(Some(&policy(&["*"], &["desk/sandbox::fs::rm"])));
+        assert!(!adapter.allows_in("desk", "sandbox-libkrun::fs::rm"));
+        assert!(adapter.allows_in("laptop", "sandbox-libkrun::fs::rm"));
+    }
+
+    // Same rule as approval-gate: a glob in the qualifier is an error, so the
+    // whole policy fails closed.
+    #[test]
+    fn a_glob_namespace_qualifier_denies_everything() {
+        let p = CompiledPolicy::from(Some(&policy(&["*", "lap*/shell::*"], &[])));
+        assert!(!p.allows_in("laptop", "shell::exec") && !p.allows_in("desk", "state::get"));
+    }
+
+    #[test]
+    fn a_qualified_child_glob_is_covered_by_its_namespace_or_a_bare_parent() {
+        assert!(glob_covered("laptop/shell::exec", &["shell::*".into()]));
+        assert!(glob_covered(
+            "laptop/shell::exec",
+            &["laptop/shell::*".into()]
+        ));
+        assert!(!glob_covered(
+            "desk/shell::exec",
+            &["laptop/shell::*".into()]
+        ));
+        assert!(!glob_covered("shell::exec", &["laptop/shell::*".into()]));
+        assert!(glob_covered("laptop/*", &["*".into()]));
     }
 
     use crate::types::content::ContentBlock;

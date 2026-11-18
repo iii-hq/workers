@@ -80,7 +80,7 @@ impl FunctionsSnapshot {
         let mut digests: Vec<u32> = self
             .functions
             .iter()
-            .filter(|f| policy.allows(&f.function_id))
+            .filter(|f| policy.allows_in(&f.namespace, &f.function_id))
             .map(|f| fingerprint_of(std::iter::once(f)) as u32)
             .collect();
         digests.sort_unstable();
