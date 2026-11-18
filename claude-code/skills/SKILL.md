@@ -94,7 +94,11 @@ instead of bolting anything onto this one.
 The same worker also runs Claude Code as a terminal page on the console: it
 installs the CLI on the terminal host (the `ide` worker's), equips a
 workspace with the iii plugin, and opens Claude in a
-`shell::pty` session. A person opens it; the session's turns are published on
+`shell::pty` session. The plugin lives in iii-hq/agent-plugins-claude; the
+worker embeds its latest `main` when it is built (`III_PLUGIN_SOURCE` points
+the build at a local checkout instead). A standalone `claude` installs it
+with `claude plugin marketplace add iii-hq/agent-plugins-claude` then
+`claude plugin install iii@iii`. A person opens it; the session's turns are published on
 `claude::on-agent-event` with the same frames a `claude::run` turn produces, so both
 halves render alike. Use it when an operator wants to talk to Claude Code
 interactively — with login handled in the terminal — or wants an agent that

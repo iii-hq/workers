@@ -2,15 +2,15 @@
  * The `iii` Claude Code plugin, installed wherever this worker runs Claude.
  *
  * One plugin, three sources:
- *   - the committed `iii-plugin/` folder, embedded in the worker bundle
- *     (`assets.generated.ts`): manifest, `/iii:profile`, `/iii:skills`, the
+ *   - the `plugins/iii/` folder of iii-hq/agent-plugins-claude, fetched at
+ *     build and embedded in the worker bundle (`assets.generated.ts`): manifest, `/iii:profile`, `/iii:skills`, the
  *     `iii` agent and the CLI. Its standalone `hooks/hooks.json` (a
  *     SessionStart `sync`) is replaced, because the worker generates the
  *     commands itself;
  *   - what only a worker can write (`../plugin.ts`): hooks that report every
  *     turn through this host's `iii` CLI, the `.mcp.json` pointing at the
  *     engine's mcp-server, and the `iii-runtime` skill;
- *   - one `/iii:<profile>` command per visible profile (`./commands.ts`),
+ *   - one `/iii:<profile>` command per visible profile (`./shared/commands.ts`),
  *     generated now, so a session sees the engine's current profiles.
  *
  * Headless turns get it in a private directory of their own under the OS temp
@@ -34,11 +34,11 @@ import {
   listFiles,
   probe,
 } from '../terminal/host.js';
-import { PLUGIN_STATIC_FILES } from './assets.generated.js';
-import { type CommandOps, type PluginFile, writeProfileCommands } from './commands.js';
-import type { AgentProfile, AgentRow } from './directory.js';
-import { DEFAULT_MCP_URL, normalizeMcpUrl } from './mcp.js';
-import { agentFile, profileText } from './session.js';
+import { PLUGIN_SOURCE, PLUGIN_STATIC_FILES } from './assets.generated.js';
+import { type CommandOps, type PluginFile, writeProfileCommands } from './shared/commands.js';
+import type { AgentProfile, AgentRow } from './shared/directory.js';
+import { DEFAULT_MCP_URL, normalizeMcpUrl } from './shared/mcp.js';
+import { agentFile, profileText } from './shared/session.js';
 
 export const PLUGIN_NAME = 'iii';
 /** Where it lands inside a terminal workspace. */
@@ -351,4 +351,10 @@ export async function installOnHost(
     defaultProfileDetail: def.detail,
   });
   return { ...installed, bridge };
+}
+
+/** Which plugin this build carries: the agent-plugins-claude commit (or local
+ * checkout) `build:iii-plugin` embedded, logged once at worker start. */
+export function pluginSourceLine(source: { repo: string; commit: string } = PLUGIN_SOURCE): string {
+  return `claude-code: iii plugin from ${source.repo} at ${source.commit}`;
 }

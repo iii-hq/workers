@@ -21,6 +21,7 @@ import {
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
+import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { register } from './run.js';
 import { registerActivity } from './terminal/activity.js';
@@ -133,6 +134,7 @@ registerAuth(iii, () => prepared);
 registerUi(iii);
 
 console.log(`claude-code worker connected to ${url}`);
+console.log(pluginSourceLine());
 
 const shutdown = async () => {
   try {

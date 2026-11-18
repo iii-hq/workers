@@ -254,7 +254,7 @@ page went light.
 On every boot, when `terminal.setup_workspace` is on:
 
 - `.iii-plugin/`, a Claude Code **plugin** the session loads with
-  `--plugin-dir` (see [the iii plugin](iii-plugin/README.md)). It carries the
+  `--plugin-dir` (see [the iii plugin](https://github.com/iii-hq/agent-plugins-claude/tree/main/plugins/iii)). It carries the
   hooks for `SessionStart`, `SessionEnd`,
   `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
   payload to `claude::terminal::activity` with the `iii` CLI, so it works
@@ -441,4 +441,17 @@ those keys rather than in one covering span; a headless turn gets both.
 
 ## The iii Claude Code plugin
 
-`iii-plugin/` is the `iii` Claude Code plugin: `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event`, and the `iii-runtime` skill when the engine runs no mcp-server. It also works in a standalone `claude` on any machine that can reach an engine. `pnpm run build:iii-plugin` builds it (part of `build`, `build:bundle`, `typecheck` and `test`); the server build is committed for git installs, and CI fails when it is stale (`check:committed-build`). See [iii-plugin/README.md](iii-plugin/README.md).
+The `iii` Claude Code plugin lives in [iii-hq/agent-plugins-claude](https://github.com/iii-hq/agent-plugins-claude): `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event`, and the `iii-runtime` skill when the engine runs no mcp-server. It also works in a standalone `claude` on any machine that can reach an engine:
+
+```sh
+claude plugin marketplace add iii-hq/agent-plugins-claude
+claude plugin install iii@iii
+```
+
+`pnpm run build:iii-plugin` (part of `build`, `build:bundle`, `typecheck`, `test` and `dev`) fetches the latest `main` of that repository (a shallow clone; the build needs network) and embeds its `plugins/iii/` into `src/iii-plugin/assets.generated.ts`, recording the commit as `PLUGIN_SOURCE`; it also copies the modules the worker shares with the plugin's CLI into `src/iii-plugin/shared/`. Both are generated and git-ignored: change those modules in the plugin repository. The worker logs the embedded commit at start (`claude-code: iii plugin from ... at <sha>`). To build against a local checkout instead (offline, or while changing the plugin), set `III_PLUGIN_SOURCE`:
+
+```sh
+III_PLUGIN_SOURCE=/path/to/agent-plugins-claude pnpm run build:iii-plugin
+```
+
+A failed fetch fails the build. See the [plugin's README](https://github.com/iii-hq/agent-plugins-claude/tree/main/plugins/iii).

@@ -1,40 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import { renderSkill, renderSubagent, slug } from '../src/iii-plugin/directory.js';
-import { PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
-import { atomicWrite, buildId, installWith, resolveWorkerMcp } from '../src/iii-plugin/install.js';
-import { skillDirectories } from '../src/iii-plugin/directory.js';
 import { mkdtemp, readdir, readFile as fsRead } from 'node:fs/promises';
 import { tmpdir as osTmp } from 'node:os';
 import { join as pjoin } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { PLUGIN_SOURCE, PLUGIN_STATIC_FILES } from '../src/iii-plugin/assets.generated.js';
 import {
-  profileCommand,
-  profileCommandName,
-  profileCommands,
-  writeProfileCommands,
-} from '../src/iii-plugin/commands.js';
-
-describe('renderers', () => {
-  it('writes a Claude Code subagent with the preloaded skills named', () => {
-    const md = renderSubagent({
-      id: 'Deep Work',
-      description: 'Runs goals.',
-      system_prompt: 'Be deep.',
-      skills: ['kanban'],
-    });
-    expect(md).toMatch(
-      /^---\nname: iii-deep-work\ndescription: "Runs goals\. \(iii agent profile `Deep Work`\)"\n---/,
-    );
-    expect(md).toContain('Be deep.');
-    expect(md).toContain('`kanban`');
-  });
-
-  it('writes a skill file with a slug name', () => {
-    expect(slug('kanban/tickets/ticket-worker')).toBe('kanban-tickets-ticket-worker');
-    expect(renderSkill({ id: 'a/b', description: 'D', body: 'Body' })).toBe(
-      '---\nname: a-b\ndescription: "D"\n---\n\nBody\n',
-    );
-  });
-});
+  atomicWrite,
+  buildId,
+  installWith,
+  pluginSourceLine,
+  resolveWorkerMcp,
+} from '../src/iii-plugin/install.js';
+import { approveHookEntry } from '../src/iii-plugin/shared/mode.js';
+import { pluginFiles } from '../src/plugin.js';
 
 function memoryOps() {
   const disk: Record<string, string> = {};
@@ -58,53 +35,42 @@ function memoryOps() {
   };
 }
 
-describe('profile commands', () => {
-  it('names a command after the profile, never shadowing /iii:profile or /iii:skills, nor taking `skill`', () => {
-    expect(profileCommandName('Deep Work')).toBe('deep-work');
-    expect(profileCommandName('profile')).toBe('profile-profile');
-    expect(profileCommandName('skill')).toBe('profile-skill');
-    expect(profileCommandName('skills')).toBe('profile-skills');
+describe('the embedded plugin', () => {
+  it('comes from iii-hq/agent-plugins-claude, at the commit the build fetched', () => {
+    expect(PLUGIN_SOURCE.repo).toBe('https://github.com/iii-hq/agent-plugins-claude');
+    expect(PLUGIN_SOURCE.commit).toMatch(/^([0-9a-f]{40}|local:.+)$/);
   });
 
-  it('is user-invoked only, so it costs no tokens until used', () => {
-    const cmd = profileCommand({ id: 'writer', description: 'Writes.' });
-    expect(cmd.path).toBe('commands/writer.md');
-    expect(cmd.content).toContain('disable-model-invocation: true');
-    expect(cmd.content).toContain('description: "iii profile writer: Writes."');
-    expect(cmd.content).toContain('argument-hint: [task]');
-    expect(cmd.content).toContain('mcp__plugin_iii_iii__iii_get_agent');
-    expect(cmd.content).toContain('$ARGUMENTS');
+  it('is named in one line at worker start', () => {
+    expect(
+      pluginSourceLine({
+        repo: 'https://github.com/iii-hq/agent-plugins-claude',
+        commit: 'abc123',
+      }),
+    ).toBe('claude-code: iii plugin from https://github.com/iii-hq/agent-plugins-claude at abc123');
+    expect(pluginSourceLine()).toContain(PLUGIN_SOURCE.commit);
+  });
+});
+
+describe('worker plugin files', () => {
+  const files = (mcpUrl: string) => pluginFiles({ cli: 'iii', context: '', mcpUrl });
+  const file = (mcpUrl: string, path: string) =>
+    files(mcpUrl).find((f) => f.path === path)?.content ?? '';
+
+  it('carry the read-only approval hook after the activity hook', () => {
+    const hooks = JSON.parse(file('http://x/mcp', 'hooks/hooks.json') || '{}').hooks;
+    expect(hooks.PreToolUse[0].hooks[0].command).toContain('claude::terminal::activity');
+    expect(hooks.PreToolUse[1]).toEqual(approveHookEntry());
   });
 
-  it('writes visible profiles, removes gone ones, and touches nothing it did not generate', async () => {
-    const m = memoryOps();
-    m.disk['/p/commands/profile.md'] = 'static';
-    const first = await writeProfileCommands(
-      '/p',
-      [{ id: 'writer' }, { id: 'deepwork' }, { id: 'helper', hidden: true }],
-      m.ops,
-    );
-    expect(first.written.sort()).toEqual(['commands/deepwork.md', 'commands/writer.md']);
-    expect(m.disk['/p/commands/helper.md']).toBeUndefined();
-
-    m.writes.length = 0;
-    await writeProfileCommands('/p', [{ id: 'writer' }, { id: 'deepwork' }], m.ops);
-    expect(m.writes).toEqual([]);
-
-    const next = await writeProfileCommands('/p', [{ id: 'writer' }], m.ops);
-    expect(next.removed).toEqual(['commands/deepwork.md']);
-    expect(m.disk['/p/commands/deepwork.md']).toBeUndefined();
-    expect(m.disk['/p/commands/profile.md']).toBe('static');
+  it('point the session at the mcp-server the worker found', () => {
+    expect(JSON.parse(file('http://127.0.0.1:3211/mcp', '.mcp.json') || '{}')).toEqual({
+      mcpServers: { iii: { type: 'http', url: 'http://127.0.0.1:3211/mcp' } },
+    });
   });
 
-  it('never removes a path outside commands/ even if the manifest names one', async () => {
-    const m = memoryOps();
-    m.disk['/p/.generated-commands.json'] = JSON.stringify([
-      '../../etc/passwd',
-      'server/index.mjs',
-    ]);
-    await writeProfileCommands('/p', [], m.ops);
-    expect(m.removes).toEqual([]);
+  it('have no session-start hook: the worker appends default-mcp itself', () => {
+    expect(file('http://127.0.0.1:3211/mcp', 'hooks/hooks.json')).not.toContain('session-start');
   });
 });
 
@@ -196,20 +162,7 @@ describe('installer', () => {
   });
 });
 
-describe('review fixes', () => {
-  it('skips profiles whose command name is empty or already taken', () => {
-    const files = profileCommands([
-      { id: 'Deep Work' },
-      { id: 'deep-work' },
-      { id: 'a/b' },
-      { id: 'a-b' },
-      { id: '***' },
-    ]);
-    expect(files.map((f) => f.path)).toEqual(['commands/deep-work.md', 'commands/a-b.md']);
-    // The first profile keeps the name.
-    expect(files[0].content).toContain('`Deep Work`');
-  });
-
+describe('installer review fixes', () => {
   it('removes the runtime skill when the context becomes empty', async () => {
     const m = memoryOps();
     const embedded = [
@@ -252,48 +205,6 @@ describe('review fixes', () => {
     const content = await fsRead(path, 'utf8');
     expect(content === 'a'.repeat(100_000) || content === 'b'.repeat(100_000)).toBe(true);
     expect(await readdir(pjoin(dir, 'cli'))).toEqual(['index.mjs']);
-  });
-
-  it('refuses a skill export whose ids land in one directory', () => {
-    expect(skillDirectories(['foo/bar', 'baz'])).toEqual(
-      new Map([
-        ['foo-bar', 'foo/bar'],
-        ['baz', 'baz'],
-      ]),
-    );
-    expect(() => skillDirectories(['foo/bar-baz', 'foo-bar/baz'])).toThrow(
-      /foo\/bar-baz.*foo-bar\/baz|foo-bar\/baz.*foo\/bar-baz/,
-    );
-  });
-});
-
-describe('the plugin talks to mcp-server', () => {
-  const file = (path: string) => PLUGIN_STATIC_FILES.find((f) => f.path === path)?.content ?? '';
-
-  it('declares mcp-server over HTTP at the mcp_url option', () => {
-    expect(JSON.parse(file('.mcp.json'))).toEqual({
-      mcpServers: { iii: { type: 'http', url: '${user_config.mcp_url}' } },
-    });
-    const manifest = JSON.parse(file('.claude-plugin/plugin.json'));
-    expect(manifest.userConfig.engine_url).toBeUndefined();
-    expect(manifest.userConfig.mcp_url).toMatchObject({
-      type: 'string',
-      default: 'http://127.0.0.1:3111/mcp',
-    });
-    expect(manifest.userConfig.mcp_url.description).toContain('mcp-server');
-  });
-
-  it('ships a small CLI without iii-sdk: every engine call goes through mcp-server', () => {
-    const cli = file('cli/index.mjs');
-    expect(cli.length).toBeGreaterThan(0);
-    expect(Buffer.byteLength(cli)).toBeLessThan(64 * 1024);
-    expect(cli).not.toContain('registerWorker');
-    expect(cli).not.toContain('iii-sdk');
-  });
-
-  it('syncs the profile commands with the CLI at session start', () => {
-    const hooks = JSON.parse(file('hooks/hooks.json')).hooks;
-    expect(hooks.SessionStart[0].hooks[1].command).toContain('/cli/index.mjs" sync');
   });
 });
 

@@ -1,46 +1,40 @@
 #!/usr/bin/env node
 /**
- * Build (or check) the iii-plugin plugin.
+ * Fetch the iii Claude Code plugin and generate the worker's copy of it.
  *
- *   node scripts/build-iii-plugin.mjs           build
- *   node scripts/build-iii-plugin.mjs --check   verify the committed build
+ *   node scripts/build-iii-plugin.mjs
+ *   III_PLUGIN_SOURCE=/path/to/agent-plugins-claude node scripts/build-iii-plugin.mjs
  *
- * Build:
- *   1. Bundle the plugin's command line (`sync`, `export`, `status`) into one
- *      minified file inside the plugin (`iii-plugin/cli/index.mjs`). It is COMMITTED: a plugin installed
- *      from git (a Claude Code marketplace) is a copy of the folder, with no
- *      build step of its own.
- *   2. Write `iii-plugin/cli/BUILD.json`: a hash of every input the
- *      bundle was made from (each project source file esbuild read, the
- *      lockfile, this script) and of the output.
- *   3. Embed every plugin file into `src/iii-plugin/assets.generated.ts`
- *      (git-ignored). `deploy: bundle` ships only `dist/bundle/index.mjs`, so
- *      the worker carries the plugin inside itself; CI's deploy build runs
- *      this step through `build:bundle`, like `ui/build.mjs`.
+ * The plugin lives in https://github.com/iii-hq/agent-plugins-claude (a Claude
+ * Code marketplace). On every run this takes the LATEST commit of its default
+ * branch (a shallow clone; network required), or, with `III_PLUGIN_SOURCE`,
+ * a local checkout of it, and:
  *
- * Check (CI, `check:committed-build`): recompute the input and output hashes
- * from the stamp and fail when they differ, i.e. a source changed without a
- * rebuild, or the bundle was edited by hand. It does not rebuild: comparing
- * rebuilt bytes would also fail whenever an install resolved a dependency
- * differently from the lockfile, which is not what the check is about.
+ *   1. Embeds every file of `plugins/iii/` into
+ *      `src/iii-plugin/assets.generated.ts`, with `PLUGIN_SOURCE` (the repo
+ *      and the commit fetched, or `local:<path>`). `deploy: bundle` ships only
+ *      `dist/bundle/index.mjs`, so the worker carries the plugin inside
+ *      itself; CI's deploy build runs this step through `build:bundle`.
+ *   2. Copies the modules the worker shares with the plugin's CLI from the
+ *      repo's `src/` into `src/iii-plugin/shared/`.
  *
- * The CLI has no dependencies: it reaches the engine through mcp-server over
- * HTTP with `fetch`, so the bundle stays a few kilobytes.
+ * Both outputs are git-ignored. The plugin's committed CLI and its `--check`
+ * live in the plugin repository, not here.
  */
 
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const pluginRoot = join(root, 'iii-plugin');
-const OUTPUT = 'iii-plugin/cli/index.mjs';
-const STAMP = 'iii-plugin/cli/BUILD.json';
-const REBUILD = 'run `pnpm run build:iii-plugin` in claude-code/ and commit the result';
+const run = promisify(execFile);
 
-/** The files that make up the plugin, relative to its root. */
-const FILES = [
+export const PLUGIN_REPO = 'https://github.com/iii-hq/agent-plugins-claude';
+
+/** The files that make up the plugin, relative to `plugins/iii/`. */
+export const PLUGIN_FILES = [
   '.claude-plugin/plugin.json',
   '.mcp.json',
   'README.md',
@@ -51,105 +45,96 @@ const FILES = [
   'cli/index.mjs',
 ];
 
-/** Inputs that shape the bundle besides the sources esbuild reports. */
-const EXTRA_INPUTS = ['scripts/build-iii-plugin.mjs'];
-/** Pins the dependencies, so it is an input only when the bundle has any. */
-const LOCKFILE = 'pnpm-lock.yaml';
+/** The plugin repo's `src/` modules the worker uses too. */
+export const SHARED_MODULES = ['commands.ts', 'directory.ts', 'mcp.ts', 'session.ts', 'mode.ts'];
 
-const posix = (p) => p.split(sep).join('/');
+const OFFLINE =
+  'set III_PLUGIN_SOURCE=/path/to/a/checkout/of/agent-plugins-claude to build from a local copy';
 
-async function sha256(path) {
-  return createHash('sha256')
-    .update(await readFile(join(root, path)))
-    .digest('hex');
-}
-
-async function inputsHash(inputs) {
-  const hash = createHash('sha256');
-  for (const path of inputs)
-    hash
-      .update(path)
-      .update('\0')
-      .update(await sha256(path))
-      .update('\0');
-  return hash.digest('hex');
-}
-
-async function check() {
-  let stamp;
-  try {
-    stamp = JSON.parse(await readFile(join(root, STAMP), 'utf8'));
-  } catch {
-    throw new Error(`${STAMP} is missing or unreadable; ${REBUILD}`);
-  }
-  const missing = [];
-  for (const path of stamp.inputs ?? []) {
-    await readFile(join(root, path)).catch(() => missing.push(path));
-  }
-  if (missing.length)
-    throw new Error(`build inputs were removed (${missing.join(', ')}); ${REBUILD}`);
-  if ((await inputsHash(stamp.inputs)) !== stamp.inputs_sha256) {
-    throw new Error(`${OUTPUT} is out of date with its sources; ${REBUILD}`);
-  }
-  if ((await sha256(OUTPUT).catch(() => '')) !== stamp.output_sha256) {
-    throw new Error(
-      `${OUTPUT} does not match the build recorded in ${STAMP} (edited by hand?); ${REBUILD}`,
+/**
+ * Where the plugin comes from: `III_PLUGIN_SOURCE`, or a fresh shallow clone
+ * of `repoUrl` (removed by `cleanup`).
+ * @returns {Promise<{ dir: string, commit: string, cleanup?: () => Promise<void> }>}
+ */
+export async function resolveSource(env = process.env, repoUrl = PLUGIN_REPO) {
+  const local = env.III_PLUGIN_SOURCE;
+  if (local) {
+    const dir = resolve(local);
+    const ok = await stat(join(dir, 'plugins/iii')).then(
+      (s) => s.isDirectory(),
+      () => false,
     );
+    if (!ok)
+      throw new Error(
+        `III_PLUGIN_SOURCE=${local} is not a checkout of agent-plugins-claude (no plugins/iii/)`,
+      );
+    return { dir, commit: `local:${dir}` };
   }
-  console.log(`${OUTPUT} is up to date (${stamp.inputs.length} inputs)`);
+  const parent = await mkdtemp(join(tmpdir(), 'agent-plugins-claude-'));
+  const cleanup = () => rm(parent, { recursive: true, force: true });
+  const dir = join(parent, 'repo');
+  try {
+    await run('git', ['clone', '--quiet', '--depth', '1', repoUrl, dir], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    const { stdout } = await run('git', ['-C', dir, 'rev-parse', 'HEAD']);
+    return { dir, commit: stdout.trim(), cleanup };
+  } catch (err) {
+    await cleanup();
+    const why = (err?.stderr || err?.message || String(err)).trim();
+    throw new Error(`could not fetch the iii plugin from ${repoUrl} (${why}); ${OFFLINE}`);
+  }
 }
 
-async function build() {
-  const { build: esbuild } = await import('esbuild');
-
-  const result = await esbuild({
-    entryPoints: [join(root, 'src/iii-plugin/main.ts')],
-    absWorkingDir: root,
-    bundle: true,
-    minify: true,
-    metafile: true,
-    platform: 'node',
-    target: 'node22',
-    format: 'esm',
-    outfile: join(root, OUTPUT),
-    legalComments: 'none',
-    define: { 'process.env.NODE_ENV': '"production"' },
-    logLevel: 'info',
+const read = (dir, path) =>
+  readFile(join(dir, path), 'utf8').catch(() => {
+    throw new Error(`${path} is missing from the plugin source ${dir}`);
   });
 
-  // Project sources only: dependencies are pinned by the lockfile instead.
-  const read = Object.keys(result.metafile.inputs).map((p) => posix(relative(root, join(root, p))));
-  const sources = read.filter((p) => !p.includes('node_modules/') && !p.startsWith('../'));
-  // A dependency-free bundle cannot change with the lockfile; hashing it
-  // would fail this check on every SDK bump elsewhere in the worker.
-  const usesDependencies = read.some((p) => p.includes('node_modules/'));
-  const inputs = [
-    ...new Set([...sources, ...EXTRA_INPUTS, ...(usesDependencies ? [LOCKFILE] : [])]),
-  ].sort();
-  const stamp = {
-    note: `Generated by scripts/build-iii-plugin.mjs; CI fails when it is stale. To refresh: ${REBUILD}.`,
-    inputs,
-    inputs_sha256: await inputsHash(inputs),
-    output_sha256: await sha256(OUTPUT),
-  };
-  await writeFile(join(root, STAMP), `${JSON.stringify(stamp, null, 2)}\n`);
-
+/** Write the worker's generated copy of the plugin under `root`. */
+export async function generate({ dir, commit }, root) {
   const files = [];
-  for (const path of FILES) {
-    files.push({ path, content: await readFile(join(pluginRoot, path), 'utf8') });
-  }
+  for (const path of PLUGIN_FILES)
+    files.push({ path, content: await read(dir, `plugins/iii/${path}`) });
+  const shared = [];
+  for (const name of SHARED_MODULES) shared.push([name, await read(dir, `src/${name}`)]);
+
+  const source = { repo: PLUGIN_REPO, commit };
+  await mkdir(join(root, 'src/iii-plugin'), { recursive: true });
   await writeFile(
     join(root, 'src/iii-plugin/assets.generated.ts'),
-    `// Generated by scripts/build-iii-plugin.mjs — do not edit.
+    `// Generated by scripts/build-iii-plugin.mjs from ${PLUGIN_REPO} — do not edit.
 /* biome-ignore-all lint: generated file */
+export const PLUGIN_SOURCE = ${JSON.stringify(source)};
 export const PLUGIN_STATIC_FILES: { path: string; content: string }[] = ${JSON.stringify(files)};
 `,
   );
+
+  const sharedDir = join(root, 'src/iii-plugin/shared');
+  await rm(sharedDir, { recursive: true, force: true });
+  await mkdir(sharedDir, { recursive: true });
+  for (const [name, content] of shared) {
+    await writeFile(
+      join(sharedDir, name),
+      `// Generated by scripts/build-iii-plugin.mjs — do not edit; git-ignored.
+// Copied from ${PLUGIN_REPO} src/${name} (${commit}); change it there.
+${content}`,
+    );
+  }
+  return source;
 }
 
-try {
-  await (process.argv.includes('--check') ? check() : build());
-} catch (err) {
-  console.error(`iii-plugin: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  let source;
+  try {
+    source = await resolveSource();
+    await generate(source, root);
+    console.log(`iii-plugin: embedded ${PLUGIN_REPO} at ${source.commit}`);
+  } catch (err) {
+    console.error(`iii-plugin: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  } finally {
+    await source?.cleanup?.();
+  }
 }

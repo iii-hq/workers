@@ -19,8 +19,7 @@
     "start": "node dist/index.js",
     "dev": "npm run build:ui && npm run build:iii-plugin && tsx src/index.ts",
     "build:ui": "node ui/build.mjs",
-    "build:iii-plugin": "node scripts/build-iii-plugin.mjs",
-    "check:committed-build": "node scripts/build-iii-plugin.mjs --check"
+    "build:iii-plugin": "node scripts/build-iii-plugin.mjs"
   },
   "bin": {
     "claude-code": "./dist/index.js"

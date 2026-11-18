@@ -13,7 +13,7 @@ import type { Config } from './config.js';
 import type { Emit } from './agent-feed.js';
 import { fetchIiiContext } from './iii-context.js';
 import { installLocal } from './iii-plugin/install.js';
-import { headlessTools } from './iii-plugin/mode.js';
+import { headlessTools } from './iii-plugin/shared/mode.js';
 import {
   lastAssistant,
   makeAssistantMessage,
