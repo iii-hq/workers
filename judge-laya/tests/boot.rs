@@ -150,7 +150,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     assert_eq!(value["namespace"], "default");
                     assert_eq!(value["data"]["id"], "laya-boot-test");
                     assert_eq!(value["data"]["metadata"]["ui_form"], "judge-laya");
-                    assert_eq!(value["data"]["initial_value"]["model"], "laya");
+                    assert_eq!(value["data"]["initial_value"]["model"], "laya-multilingual");
                     config = true;
                 }
                 "invokefunction" if value["function_id"] == "configuration::register" => {
@@ -225,7 +225,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                 }
                 "invocationresult" if value["function_id"] == "judge-laya::evaluate" => {
                     assert_eq!(value["result"]["status"], "ok", "{value}");
-                    assert_eq!(value["result"]["model"], "laya");
+                    assert_eq!(value["result"]["model"], "laya-multilingual");
                     assert!(
                         value["result"]["results"]["ticket"]["answers"]["urgent"]["noul"].is_f64()
                     );

@@ -4,12 +4,12 @@ use serde_json::json;
 #[test]
 fn config_validates_model_and_limits() {
     let defaults = LayaConfig::default().to_json();
-    assert_eq!(defaults["model"], "laya");
+    assert_eq!(defaults["model"], "laya-multilingual");
     assert_eq!(defaults["batch_questions"], 16);
     assert!((1..=8).contains(&defaults["threads"].as_u64().unwrap()));
     assert!(defaults.get("revision").is_none());
-    assert_eq!(defaults["preload"], json!([]));
-    assert_eq!(defaults["auto_route"], false);
+    assert_eq!(defaults["preload"], json!(["laya"]));
+    assert_eq!(defaults["auto_route"], true);
     assert_eq!(defaults["auto_task_detection"], false);
     assert_eq!(defaults["choice_tournament"], false);
     let routed = LayaConfig::from_json(&json!({
@@ -24,6 +24,9 @@ fn config_validates_model_and_limits() {
     let ok = LayaConfig::from_json(&json!({"model": "laya-multilingual", "batch_questions": 4}))
         .unwrap();
     assert_eq!(ok.limits().batch_questions, 4);
+    // What the form stores for `laya` alone: the default preload names the
+    // model itself, which is already loaded.
+    assert!(LayaConfig::from_json(&json!({"model": "laya"})).is_ok());
     for bad in [
         json!({"model": "jev"}),
         json!({"revision": "abc123"}),
@@ -33,7 +36,6 @@ fn config_validates_model_and_limits() {
         json!({"batch_questions": 257}),
         json!({"max_timeout_ms": 0}),
         json!({"api_key": "test-marker"}),
-        json!({"preload": ["laya"]}),
         json!({"preload": ["laya-multilingual", "laya-multilingual"]}),
         json!({"preload": ["jev"]}),
         json!({"shortlist_k": 20}),

@@ -108,7 +108,8 @@ fn load(source: &Checkpoints, options: engine::Options) -> anyhow::Result<LayaCl
         gguf,
     } = source.clone();
     let mut checkpoints = Vec::new();
-    for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
+    let extra = preload.iter().filter(|name| **name != model);
+    for (i, name) in std::iter::once(&model).chain(extra).enumerate() {
         let checkpoint = match &checkpoint_dir {
             Some(dir) if i == 0 => download::local(name, dir)?,
             // A local directory holds one checkpoint; extra ones need the Hub.

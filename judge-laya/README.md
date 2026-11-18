@@ -47,7 +47,11 @@ a directory holding `model.safetensors`, `encoder/config.json`,
 `rl_agent_config.json` and `tokenizer.json` (plus an optional pre-converted
 `model.gguf`; without it the checkpoint is converted into the temporary
 directory); `III_LAYA_GGUF` swaps only the GGUF of the default model, and
-`cargo run --example convert_gguf` converts one ahead of time.
+`cargo run --example convert_gguf` converts one ahead of time. Either file is
+served under the `model` name, which must name the checkpoint the file holds
+(the default is `laya-multilingual`; set `model: laya` for the English one):
+nothing checks it, and with `III_LAYA_GGUF` the tokenizer and agent config of
+that model still come from the Hub.
 
 The GGUF holds the checkpoint's own (fine-tuned) encoder and decision head
 (two pre-norm blocks, the scorer and the question-type embedding) in
@@ -125,9 +129,9 @@ with a hundred questions, or route such callers to a hosted provider.
 
 | Field | Default | Applied |
 |---|---|---|
-| `model` | `laya` | next start (`laya-multilingual` for non-English, `laya-typed-decisions` for laya's four workflows) |
-| `preload` | `[]` | next start (extra checkpoints, ~1 GB of RAM each; 1.6 GB on the CPU) |
-| `auto_route` | `false` | new calls |
+| `model` | `laya-multilingual` | next start (`laya` for English only, `laya-typed-decisions` for laya's four workflows) |
+| `preload` | `["laya"]` | next start (extra checkpoints, ~1 GB of RAM each; 1.6 GB on the CPU; an entry equal to `model` is ignored) |
+| `auto_route` | `true` | new calls |
 | `auto_task_detection` | `false` | new calls |
 | `threads` | min(8, logical cores) | next start |
 | `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU) |
@@ -140,6 +144,15 @@ The form shows which checkpoint the running worker actually loaded (through
 `context_window`) and warns when the selection needs a restart.
 
 ## Routing (laya 0.4.35 `Router`)
+
+By default `laya-multilingual` is the default checkpoint, `laya` is preloaded
+and `auto_route` is on, as in laya's Router since 0.4.0: text the detector
+cannot place goes to the multilingual checkpoint, which leads on 50 of the 51
+MASSIVE languages laya measured (English is the exception), while the English
+checkpoint answers other languages wrongly at high confidence. A mostly-English
+deployment can set `model: laya`; `model: laya`, `preload: []` and
+`auto_route: false` load the English checkpoint alone, as before. A stored
+setting is kept as stored: only absent keys take these defaults.
 
 A request naming `model` uses that checkpoint, which must be `model` or in
 `preload` (`invalid_request` otherwise). Without it, each evaluation picks its

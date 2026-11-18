@@ -8,12 +8,16 @@ use serde_json::Value;
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct LayaConfig {
-    /// Default checkpoint: `laya` (English, ModernBERT-large), `laya-multilingual`
-    /// (mmBERT-base, 100+ languages) or `laya-typed-decisions` (fine-tuned, 1024
-    /// tokens). Changing it takes effect at the next worker start.
+    /// Default checkpoint: `laya-multilingual` (mmBERT-base, 100+ languages),
+    /// `laya` (English, ModernBERT-large) or `laya-typed-decisions` (fine-tuned,
+    /// 1024 tokens). Routing sends text it cannot place here, so the default is
+    /// laya's: multilingual leads on every language laya measured but English,
+    /// and the English checkpoint fails confidently off English. Changing it
+    /// takes effect at the next worker start.
     pub model: String,
     /// Extra checkpoints loaded at the next start (about 1 GB of RAM each),
-    /// selectable per request by `model` and used by routing.
+    /// selectable per request by `model` and used by routing. An entry equal to
+    /// `model` is already loaded and ignored.
     pub preload: Vec<String>,
     /// Route each evaluation without an explicit `model` by its state's script
     /// and language, like laya's Router: non-English states go to
@@ -62,9 +66,9 @@ impl Default for LayaConfig {
     fn default() -> Self {
         let limits = Limits::default();
         Self {
-            model: "laya".into(),
-            preload: Vec::new(),
-            auto_route: false,
+            model: "laya-multilingual".into(),
+            preload: vec!["laya".into()],
+            auto_route: true,
             auto_task_detection: false,
             choice_tournament: false,
             threads: default_threads(),
@@ -84,10 +88,8 @@ impl LayaConfig {
             if !MODELS.contains(&extra.as_str()) {
                 return Err(format!("laya preload entries must be one of {MODELS:?}"));
             }
-            if *extra == self.model || self.preload[..i].contains(extra) {
-                return Err(
-                    "laya preload entries must be distinct from model and each other".into(),
-                );
+            if self.preload[..i].contains(extra) {
+                return Err("laya preload entries must be distinct".into());
             }
         }
         if self.threads == 0
