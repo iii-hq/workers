@@ -48,6 +48,19 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
         });
     };
 
+    // An old surface shows no namespace, so it may not allow a call held in
+    // another one. `deny` is always safe.
+    if req.decision == ResolveDecision::Allow
+        && record.namespace != record.implicit_namespace
+        && req.namespace != record.namespace
+    {
+        return Err(ApprovalError::InvalidPayload(format!(
+            "{} is held for namespace {}: allow it from a surface that shows the namespace",
+            record.function_id,
+            record.namespace.as_deref().unwrap_or("?")
+        )));
+    }
+
     if req.access_duration.is_some() && record.kind != PendingKind::FilesystemAccess {
         tracing::warn!(
             session_id = %req.session_id,
@@ -324,6 +337,8 @@ mod tests {
             turn_id: "t_9".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::run".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
             session_title: None,
@@ -349,6 +364,8 @@ mod tests {
             turn_id: "t_9".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::run".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 200,
             session_title: None,
@@ -372,6 +389,7 @@ mod tests {
             decision,
             reason: reason.map(str::to_string),
             access_duration: None,
+            namespace: None,
         }
     }
 
@@ -394,6 +412,32 @@ mod tests {
                     .await
                     .is_null()
             );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_old_surface_cannot_allow_a_call_held_in_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_record(&stack.iii).await;
+            let mut held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            held["namespace"] = json!("laptop");
+            held["implicit_namespace"] = json!("default");
+            state_set(&stack.iii, PENDING_SCOPE, "s_1/c_1", held).await;
+
+            // An old surface sends no namespace.
+            let old = handle(&stack.deps, req(ResolveDecision::Allow, None)).await;
+            assert!(
+                matches!(old, Err(ApprovalError::InvalidPayload(_))),
+                "{old:?}"
+            );
+            assert!(log_snapshot(&stack.harness_calls).is_empty());
+
+            let echoed = ResolveRequest {
+                namespace: Some("laptop".into()),
+                ..req(ResolveDecision::Allow, None)
+            };
+            assert!(handle(&stack.deps, echoed).await.unwrap().resolved);
         })
         .await;
     }
@@ -465,6 +509,7 @@ mod tests {
                     decision: ResolveDecision::Allow,
                     reason: None,
                     access_duration: None,
+                    namespace: None,
                 },
             )
             .await
@@ -484,6 +529,8 @@ mod tests {
             turn_id: "t_9".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::fs::read".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "path": requested_root }),
             pending_at: 100,
             session_title: None,
@@ -514,6 +561,7 @@ mod tests {
             decision: ResolveDecision::Allow,
             reason: None,
             access_duration: scope,
+            namespace: None,
         }
     }
 
@@ -732,6 +780,7 @@ mod tests {
                 decision: ResolveDecision::Deny,
                 reason: None,
                 access_duration: None,
+                namespace: None,
             };
             handle(&stack.deps, req).await.unwrap();
 
@@ -759,6 +808,7 @@ mod tests {
                 decision: ResolveDecision::Allow,
                 reason: None,
                 access_duration: Some(AccessDuration::Always),
+                namespace: None,
             };
             handle(&stack.deps, req).await.unwrap();
 

@@ -106,8 +106,36 @@ impl Deps {
     }
 }
 
-/// Register one typed handler under `id`, mapping `ApprovalError` into
-/// the wire error shape (`code: message`).
+/// Metadata on `approval::gate`: tells the harness this gate judges a call
+/// by its namespace. A harness that sees an older gate refuses calls in
+/// another namespace.
+pub fn gate_metadata() -> serde_json::Value {
+    serde_json::json!({ "call_namespace": true })
+}
+
+/// Wrap one typed handler, mapping `ApprovalError` into the wire error
+/// shape (`code: message`).
+fn registration<Req, Resp, F, Fut>(
+    deps: &Arc<Deps>,
+    description: &str,
+    handler: F,
+) -> RegisterFunction
+where
+    Req: DeserializeOwned + JsonSchema + Send + 'static,
+    Resp: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = Result<Resp, ApprovalError>> + Send + 'static,
+{
+    let deps = deps.clone();
+    RegisterFunction::new_async(move |req: Req| {
+        let deps = deps.clone();
+        let handler = handler.clone();
+        async move { handler(deps, req).await.map_err(Error::from) }
+    })
+    .description(description)
+}
+
+/// Register one typed handler under `id`.
 fn register<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
@@ -120,22 +148,19 @@ fn register<Req, Resp, F, Fut>(
     F: Fn(Arc<Deps>, Req) -> Fut + Send + Sync + Clone + 'static,
     Fut: Future<Output = Result<Resp, ApprovalError>> + Send + 'static,
 {
-    let deps = deps.clone();
-    iii.register_function(
-        id,
-        RegisterFunction::new_async(move |req: Req| {
-            let deps = deps.clone();
-            let handler = handler.clone();
-            async move { handler(deps, req).await.map_err(Error::from) }
-        })
-        .description(description),
-    );
+    iii.register_function(id, registration(deps, description, handler));
 }
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
-    register(iii, deps, GATE_ID, GATE_DESC, |d, r| async move {
-        gate::handle(&d, r).await
-    });
+    iii.register_function(
+        GATE_ID,
+        registration(
+            deps,
+            GATE_DESC,
+            |d, r| async move { gate::handle(&d, r).await },
+        )
+        .metadata(gate_metadata()),
+    );
     register(
         iii,
         deps,

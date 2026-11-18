@@ -105,6 +105,13 @@
           "function_id": {
             "type": "string"
           },
+          "implicit_namespace": {
+            "description": "Where a call to `function_id` without `namespace` runs.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "kind": {
             "allOf": [
               {
@@ -112,6 +119,13 @@
               }
             ],
             "description": "`\"function\"` or `\"filesystem_access\"`."
+          },
+          "namespace": {
+            "description": "Engine namespace the held call targets. Absent from an older harness.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pending_at": {
             "description": "ms epoch",

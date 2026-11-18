@@ -57,6 +57,14 @@
       "function_call_id": {
         "type": "string"
       },
+      "namespace": {
+        "default": null,
+        "description": "The namespace the surface showed for this call. Required to allow a call held in another namespace.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "reason": {
         "default": null,
         "description": "Surfaced to the model on deny.",

@@ -177,6 +177,12 @@ pub struct PendingApprovalRecord {
     pub turn_id: String,
     pub function_call_id: String,
     pub function_id: String,
+    /// Engine namespace the held call targets. Absent from an older harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_namespace: Option<String>,
     /// Redacted — safe to forward to notification channels.
     #[serde(default)]
     pub arguments_excerpt: Value,
@@ -404,6 +410,10 @@ pub struct ResolveRequest {
     /// and `decision: "allow"`. Defaults to `once`.
     #[serde(default)]
     pub access_duration: Option<AccessDuration>,
+    /// The namespace the surface showed for this call. Required to allow a
+    /// call held in another namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -659,6 +669,8 @@ mod tests {
             turn_id: "t_1".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::run".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "cmd": "ls" }),
             pending_at: 100,
             session_title: None,
@@ -695,6 +707,8 @@ mod tests {
             turn_id: "t_1".into(),
             function_call_id: "c_1".into(),
             function_id: "shell::fs::read".into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments_excerpt: json!({ "path": "/a/b/x" }),
             pending_at: 100,
             session_title: None,

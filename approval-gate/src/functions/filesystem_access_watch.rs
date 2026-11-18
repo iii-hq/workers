@@ -185,6 +185,8 @@ async fn hold(deps: &Deps, input: &HookInput, call: &HookCall, hint: AccessReque
         turn_id: input.turn_id.clone(),
         function_call_id: call.id.clone(),
         function_id: call.function_id.clone(),
+        namespace: call.namespace.clone(),
+        implicit_namespace: call.implicit_namespace.clone(),
         arguments_excerpt: redact(&call.arguments),
         pending_at: now_ms(),
         session_title,
@@ -504,6 +506,8 @@ mod tests {
                 turn_id: "t_1".into(),
                 function_call_id: "c_1".into(),
                 function_id: "shell::fs::read".into(),
+                namespace: None,
+                implicit_namespace: None,
                 arguments_excerpt: json!({ "path": "/a/b" }),
                 pending_at: 100,
                 session_title: None,
@@ -537,6 +541,68 @@ mod tests {
             assert_eq!(
                 log_snapshot(&stack.created)[0]["kind"],
                 json!("filesystem_access")
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn filesystem_approval_for_a_call_in_another_namespace_needs_the_namespace_echo() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            let generic = PendingApprovalRecord {
+                session_id: "s_1".into(),
+                turn_id: "t_1".into(),
+                function_call_id: "c_1".into(),
+                function_id: "shell::fs::read".into(),
+                namespace: Some("laptop".into()),
+                implicit_namespace: Some("default".into()),
+                arguments_excerpt: json!({ "path": "/a/b" }),
+                pending_at: 100,
+                session_title: None,
+                session_description: None,
+                session_metadata: None,
+                depth: 0,
+                assistant_excerpt: None,
+                kind: PendingKind::Function,
+                access_request: None,
+            };
+            state_set(
+                &stack.iii,
+                PENDING_SCOPE,
+                "s_1/c_1",
+                serde_json::to_value(generic).unwrap(),
+            )
+            .await;
+
+            let mut input = jail_input("s_1", "c_1", "/a/b");
+            let call = input.call.as_mut().unwrap();
+            call.namespace = Some("laptop".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, input).await.unwrap(), HookOutput::Hold);
+            let current = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            assert_eq!(current["kind"], json!("filesystem_access"));
+            assert_eq!(current["namespace"], json!("laptop"));
+            assert_eq!(current["implicit_namespace"], json!("default"));
+
+            let allow = |namespace: Option<&str>| crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: "c_1".into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: None,
+                namespace: namespace.map(str::to_string),
+            };
+            let old = crate::functions::resolve::handle(&stack.deps, allow(None)).await;
+            assert!(
+                matches!(old, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                "{old:?}"
+            );
+            assert!(
+                crate::functions::resolve::handle(&stack.deps, allow(Some("laptop")))
+                    .await
+                    .unwrap()
+                    .resolved
             );
         })
         .await;
