@@ -1,11 +1,13 @@
 import { type RefObject, useLayoutEffect, useRef } from 'react'
-import { type Camera, easeOut, LAYOUT_EASE, LAYOUT_MS } from './use-camera'
+import { type Axis, advance, axis, settled } from './spring'
+import { type Camera, easeOut } from './use-camera'
 
 /**
  * How the Tree moves when it changes under you (a session spawns, a ticket arrives, a fold opens):
  *
- * - Every card glides from where it was drawn to its new place (FLIP: transform from the old offset to none, on the
- *   layout curve). A move that lands mid-glide starts from where the card is drawn, so it never jumps.
+ * - Every card glides from where it was drawn to its new place on a critically damped spring (spring.ts): the
+ *   card is offset back to where it was and pulled to its place. A second move mid-flight adds to the offset and
+ *   keeps the velocity, so a tree that changes every few hundred milliseconds bends its motion, never restarts it.
  * - The connectors are one SVG layer under the cards, routed from where the cards are *drawn* each frame while
  *   anything moves — the lines bend with the cards instead of snapping to the final layout.
  * - A new edge draws out of its parent; the card it leads to grows in as the line arrives (CSS, tree.css).
@@ -43,14 +45,6 @@ function layoutOf(el: HTMLElement, stage: HTMLElement): Box {
   return { x, y, w: el.offsetWidth, h: el.offsetHeight }
 }
 
-/** The translate a running glide is drawing an element at, this instant. */
-function drawnOffset(el: HTMLElement): { x: number; y: number } {
-  const t = getComputedStyle(el).transform
-  if (!t || t === 'none') return { x: 0, y: 0 }
-  const m = new DOMMatrixReadOnly(t)
-  return { x: m.m41, y: m.m42 }
-}
-
 function route(kind: Kind, p: Box, c: Box): string {
   if (kind === 'stack') {
     const ax = p.x + STACK_X
@@ -85,7 +79,9 @@ export function useChartMotion({
   chartKey: string | null
 }) {
   const boxes = useRef(new Map<string, Box>())
-  const glides = useRef(new Map<string, Animation>())
+  /** Cards still on their way: how far each is drawn from its place, per axis, and how fast it is closing. */
+  const springs = useRef(new Map<string, { x: Axis; y: Axis }>())
+  const lastFrame = useRef(0)
   const live = useRef(new Map<string, Wire>())
   const rings = useRef(new Map<string, SVGCircleElement>())
   const shown = useRef<{ key: string | null; stage: HTMLElement | null }>({ key: null, stage: null })
@@ -112,8 +108,11 @@ export function useChartMotion({
     if (baseline) {
       shown.current = { key: chartKey, stage }
       boxes.current = new Map()
-      for (const glide of glides.current.values()) glide.cancel()
-      glides.current = new Map()
+      for (const id of springs.current.keys()) {
+        const el = cards.current.get(id)?.el
+        if (el) el.style.transform = ''
+      }
+      springs.current = new Map()
       for (const wire of live.current.values()) wire.path.remove()
       live.current = new Map()
       for (const ring of rings.current.values()) ring.remove()
@@ -157,29 +156,26 @@ export function useChartMotion({
       }
     }
 
-    // ── glide every card from where it was drawn ───────────────────────────
+    // ── every card that moved: offset back to where it was drawn, the spring takes it home ──────────────
     for (const [id, now] of next) {
       const before = boxes.current.get(id)
       if (!before) continue
-      const el = nextCards.get(id)?.el
-      if (!el) continue
-      const running = glides.current.get(id)
-      const drawn = running ? drawnOffset(el) : { x: 0, y: 0 }
-      const fx = before.x - now.x + comp.x + drawn.x
-      const fy = before.y - now.y + comp.y + drawn.y
-      if (Math.abs(fx) < 0.5 && Math.abs(fy) < 0.5) continue
-      running?.cancel()
+      const dx = before.x - now.x + comp.x
+      const dy = before.y - now.y + comp.y
+      // Its place did not change: a running spring carries on untouched (never restarted by a re-render).
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue
       if (reduced) continue
-      const glide = el.animate([{ transform: `translate(${fx}px, ${fy}px)` }, { transform: 'translate(0px, 0px)' }], {
-        duration: LAYOUT_MS,
-        easing: `cubic-bezier(${LAYOUT_EASE.join(', ')})`,
-      })
-      glides.current.set(id, glide)
-      glide.onfinish = () => {
-        if (glides.current.get(id) === glide) glides.current.delete(id)
-      }
+      const spring = springs.current.get(id) ?? { x: axis(), y: axis() }
+      spring.x.x += dx
+      spring.y.x += dy
+      springs.current.set(id, spring)
     }
-    for (const id of glides.current.keys()) if (!next.has(id)) glides.current.delete(id)
+    for (const id of springs.current.keys()) if (!next.has(id)) springs.current.delete(id)
+    // Drawn where the springs say before this frame paints (the new layout must never flash).
+    for (const [id, spring] of springs.current) {
+      const el = nextCards.get(id)?.el
+      if (el) el.style.transform = `translate(${spring.x.x}px, ${spring.y.x}px)`
+    }
     boxes.current = next
     cards.current = nextCards
 
@@ -224,7 +220,19 @@ export function useChartMotion({
     }
 
     // ── draw now (before paint), and every frame while something moves ─────
-    const frame = (): boolean => {
+    const frame = (dt: number): boolean => {
+      const scale = camera.scaleNow()
+      for (const [id, spring] of springs.current) {
+        advance(spring.x, dt)
+        advance(spring.y, dt)
+        const el = cards.current.get(id)?.el
+        if (settled(spring.x, scale) && settled(spring.y, scale)) {
+          springs.current.delete(id)
+          if (el) el.style.transform = ''
+        } else if (el) {
+          el.style.transform = `translate(${spring.x.x}px, ${spring.y.x}px)`
+        }
+      }
       layer.setAttribute('width', String(stage.offsetWidth))
       layer.setAttribute('height', String(stage.offsetHeight))
       const drawn = new Map<string, Box>()
@@ -234,13 +242,14 @@ export function useChartMotion({
         const box = boxes.current.get(id)
         const el = cards.current.get(id)?.el
         if (!box || !el) return undefined
-        const offset = glides.current.has(id) ? drawnOffset(el) : { x: 0, y: 0 }
+        const spring = springs.current.get(id)
+        const offset = spring ? { x: spring.x.x, y: spring.y.x } : { x: 0, y: 0 }
         const result = { ...box, x: box.x + offset.x, y: box.y + offset.y }
         drawn.set(id, result)
         return result
       }
       const now = performance.now()
-      let busy = glides.current.size > 0
+      let busy = springs.current.size > 0
       for (const wire of live.current.values()) {
         const p = at(wire.parent)
         const c = at(wire.child)
@@ -269,9 +278,12 @@ export function useChartMotion({
       return busy
     }
     cancelAnimationFrame(loop.current)
-    if (frame()) {
-      const tick = () => {
-        loop.current = frame() ? requestAnimationFrame(tick) : 0
+    lastFrame.current = performance.now()
+    if (frame(0)) {
+      const tick = (now: number) => {
+        const dt = (now - lastFrame.current) / 1000
+        lastFrame.current = now
+        loop.current = frame(dt) ? requestAnimationFrame(tick) : 0
       }
       loop.current = requestAnimationFrame(tick)
     }

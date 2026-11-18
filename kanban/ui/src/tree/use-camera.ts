@@ -1,5 +1,6 @@
 import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { type PointerEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type Axis, advance, axis, settled } from './spring'
 
 /**
  * The Tree's camera: one `translate3d(x, y, 0) scale(s)` on the stage that holds the chart, written straight to
@@ -54,16 +55,6 @@ export function bezier(x1: number, y1: number, x2: number, y2: number): (t: numb
 }
 /** The UI's strong ease-out: starts at once, lands softly — for a move you asked for. */
 export const easeOut = bezier(0.23, 1, 0.32, 1)
-/**
- * On-screen movement the chart makes by itself (a re-fit, keeping a card still while the layout moves): eases in
- * and out, and is the exact curve and length of the cards' own glide (use-chart-motion), so the two cancel.
- */
-export const LAYOUT_EASE = [0.77, 0, 0.175, 1] as const
-export const LAYOUT_MS = 300
-export const easeInOut = bezier(...LAYOUT_EASE)
-
-/** Who asked for a glide: you (−/+, Fit, a card brought into view) or the chart keeping itself steady. */
-type GlideMode = 'user' | 'system'
 
 const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s))
 const reducedMotion = () =>
@@ -149,9 +140,13 @@ export function useCamera(paneKey: string) {
     frame.current = requestAnimationFrame(apply)
   }, [apply])
 
+  /** The follow spring: how far the camera still is from the fit it is heading to, and how fast it is closing. */
+  const chase = useRef<{ to: Cam; x: Axis; y: Axis; s: Axis } | null>(null)
+
   const stop = useCallback(() => {
     cancelAnimationFrame(glide.current)
     glide.current = 0
+    chase.current = null
   }, [])
 
   const write = useCallback(
@@ -164,7 +159,7 @@ export function useCamera(paneKey: string) {
 
   /** Glide to `target` from wherever the camera is now; a new glide mid-way starts from there. */
   const glideTo = useCallback(
-    (target: Cam, mode: GlideMode = 'user') => {
+    (target: Cam) => {
       stop()
       const to = clamp(target)
       if (reducedMotion()) {
@@ -173,11 +168,9 @@ export function useCamera(paneKey: string) {
       }
       const from = { ...cam.current }
       const start = performance.now()
-      const ms = mode === 'system' ? LAYOUT_MS : GLIDE_MS
-      const ease = mode === 'system' ? easeInOut : easeOut
       const step = (now: number) => {
-        const t = Math.min(1, (now - start) / ms)
-        const k = ease(t)
+        const t = Math.min(1, (now - start) / GLIDE_MS)
+        const k = easeOut(t)
         cam.current = {
           x: from.x + (to.x - from.x) * k,
           y: from.y + (to.y - from.y) * k,
@@ -261,10 +254,53 @@ export function useCamera(paneKey: string) {
     glideTo(fitTarget())
   }, [fitTarget, glideTo, setFollow])
 
-  /** While Fit holds, glide to the fit of the chart as it is now laid out. */
+  /**
+   * While Fit holds, chase the fit of the chart as it is now laid out — on a spring, so a chart that grows again
+   * mid-way bends the camera's path and keeps its speed instead of starting a new glide.
+   */
   const refit = useCallback(() => {
-    if (followRef.current) glideTo(fitTarget(), 'system')
-  }, [fitTarget, glideTo])
+    if (!followRef.current) return
+    const to = clamp(fitTarget())
+    if (reducedMotion()) {
+      stop()
+      write(to)
+      return
+    }
+    const c = cam.current
+    const running = chase.current
+    if (running) {
+      running.x.x = c.x - to.x
+      running.y.x = c.y - to.y
+      running.s.x = c.s - to.s
+      running.to = to
+      return
+    }
+    // From a timed glide (the Fit press) into the chase: the glide hands over where it is, at rest.
+    cancelAnimationFrame(glide.current)
+    const state = { to, x: axis(c.x - to.x), y: axis(c.y - to.y), s: axis(c.s - to.s) }
+    chase.current = state
+    let last = performance.now()
+    const step = (now: number) => {
+      if (chase.current !== state) return
+      const dt = (now - last) / 1000
+      last = now
+      advance(state.x, dt)
+      advance(state.y, dt)
+      advance(state.s, dt)
+      cam.current = { x: state.to.x + state.x.x, y: state.to.y + state.y.x, s: state.to.s + state.s.x }
+      apply()
+      const done = settled(state.x) && settled(state.y) && Math.abs(state.s.x) < 0.0005 && Math.abs(state.s.v) < 0.005
+      if (done) {
+        cam.current = state.to
+        apply()
+        chase.current = null
+        glide.current = 0
+        return
+      }
+      glide.current = requestAnimationFrame(step)
+    }
+    glide.current = requestAnimationFrame(step)
+  }, [apply, clamp, fitTarget, stop, write])
 
   /** Bring an element (a card the keyboard moved to) into view, gliding only as far as needed. */
   const reveal = useCallback(
@@ -305,14 +341,14 @@ export function useCamera(paneKey: string) {
         stage.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`
         stage.dataset.placed = 'true'
       } else if (followRef.current && (vw !== lastView.vw || vh !== lastView.vh)) {
-        glideTo(fitTarget(), 'system')
+        refit()
       }
       lastView = { vw, vh }
     })
     observer.observe(stage)
     observer.observe(viewport)
     return () => observer.disconnect()
-  }, [stage, viewport, size, stop, write, clamp, glideTo, fitTarget, homeTarget])
+  }, [stage, viewport, size, stop, clamp, refit, fitTarget, homeTarget])
 
   // ── wheel: pan, or pinch / ⌘ / Ctrl to zoom about the cursor ──────────────
 
