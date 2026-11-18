@@ -1474,15 +1474,19 @@ pub async fn search_functions(
         (mut observers, observers_judged),
     ) = tokio::join!(function_search, skill_search, observer_search);
     let own = baggage_own_namespace();
+    // The namespace filter and how many candidates it dropped, for the guidance.
+    let mut filtered_out: Option<(String, usize)> = None;
     if own.is_some() {
         let namespace = request.namespace.as_deref().map(str::trim);
         if let Some(ns) = namespace.filter(|ns| !ns.is_empty()) {
+            let before = selected.len();
             // shortcut: filters after ranking, so other namespaces' ids can use up the candidate budget; filter the ranking lanes if filtered searches come back thin.
             selected.retain(|id| {
                 tools
                     .iter()
                     .any(|t| &t.name == id && t.namespaces.iter().any(|n| n == ns))
             });
+            filtered_out = Some((ns.to_string(), before - selected.len()));
         }
     } else {
         for observer in &mut observers {
@@ -1523,10 +1527,22 @@ pub async fn search_functions(
     };
     let workers = assemble_workers(&selected, &tools, own.is_some());
     let guidance = if workers.is_empty() && repeated.is_empty() {
-        if installable.is_empty() {
-            SEARCH_REFINE_GUIDANCE.to_string()
-        } else {
-            SEARCH_INSTALL_GUIDANCE.to_string()
+        match &filtered_out {
+            // Installed one namespace away is not "nothing matched".
+            Some((ns, dropped)) if *dropped > 0 => {
+                let filtered = format!(
+                    "The `namespace` filter removed every candidate: none of the {dropped} \
+functions matching these capabilities is present in namespace `{ns}`. Search again without \
+`namespace` to list them with the namespaces that hold them."
+                );
+                if installable.is_empty() {
+                    filtered
+                } else {
+                    format!("{filtered} {SEARCH_INSTALL_NOTE}")
+                }
+            }
+            _ if installable.is_empty() => SEARCH_REFINE_GUIDANCE.to_string(),
+            _ => SEARCH_INSTALL_GUIDANCE.to_string(),
         }
     } else {
         let mut guidance = if first_send("guidance") {
@@ -2962,9 +2978,22 @@ mod tests {
         assert!(out["guidance"].as_str().unwrap().contains(
             "Each candidate lists the `namespaces` that hold its id; your own namespace is `default`."
         ));
-        assert_eq!(
-            search_as(&deps, "ns-b", Some("default"), "state::set", Some("laptop")).await["workers"],
-            json!([])
+        let filtered =
+            search_as(&deps, "ns-b", Some("default"), "state::set", Some("laptop")).await;
+        assert_eq!(filtered["workers"], json!([]));
+        let guidance = filtered["guidance"].as_str().unwrap();
+        assert!(
+            guidance.contains("is present in namespace `laptop`"),
+            "{guidance}"
+        );
+        assert!(
+            guidance.contains("Search again without `namespace`"),
+            "{guidance}"
+        );
+        assert!(!guidance.contains("No functions matched"), "{guidance}");
+        assert!(
+            !guidance.contains("Each candidate lists the `namespaces`"),
+            "{guidance}"
         );
         assert_eq!(
             search_as(
