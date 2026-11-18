@@ -21,6 +21,8 @@ pub const ENGINE_RESTART_INTERRUPTED: &str =
 #[derive(Debug, Clone)]
 pub struct FunctionDescriptor {
     pub function_id: String,
+    /// The engine namespace the row lives in; `default` when a row names none.
+    pub namespace: String,
     pub description: Option<String>,
     pub parameters: Option<Value>,
 }
@@ -355,6 +357,16 @@ fn dispatch_namespace<'a>(
     }
 }
 
+/// The namespace this harness registered in.
+pub fn own_namespace() -> String {
+    // shortcut: reads III_NAMESPACE as the SDK does; pass the client's namespace instead if main.rs ever sets InitOptions.namespace.
+    // Blank means unset; a non-blank value is kept untrimmed, as the SDK keeps it.
+    std::env::var("III_NAMESPACE")
+        .ok()
+        .filter(|ns| !ns.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string())
+}
+
 fn nonempty_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -567,6 +579,11 @@ fn descriptor_id(v: &Value) -> Option<&str> {
 /// under `request_format`, or `request_schema`).
 fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
     let function_id = descriptor_id(v)?.to_string();
+    let namespace = v
+        .get("namespace")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_string();
     let description = v
         .get("description")
         .and_then(Value::as_str)
@@ -578,6 +595,7 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
         .cloned();
     Some(FunctionDescriptor {
         function_id,
+        namespace,
         description,
         parameters,
     })
@@ -595,6 +613,26 @@ mod tests {
         ]}));
         let ids: Vec<&str> = listed.iter().map(|d| d.function_id.as_str()).collect();
         assert_eq!(ids, ["state::get"]);
+    }
+
+    #[test]
+    fn list_rows_keep_their_namespace() {
+        let listed = parse_descriptor_list(&json!({ "functions": [
+            { "function_id": "shell::exec", "namespace": "laptop" },
+            { "function_id": "shell::exec", "namespace": "default" },
+            { "function_id": "state::get" } ]}));
+        let rows: Vec<(&str, &str)> = listed
+            .iter()
+            .map(|d| (d.namespace.as_str(), d.function_id.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("laptop", "shell::exec"),
+                ("default", "shell::exec"),
+                ("default", "state::get")
+            ]
+        );
     }
 
     /// The restart check never runs on a clock: with no engine change it

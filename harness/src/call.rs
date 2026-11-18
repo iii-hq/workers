@@ -2863,6 +2863,7 @@ mod tests {
         }));
         let snapshot = crate::discovery::snapshot_of(vec![crate::clients::FunctionDescriptor {
             function_id: "sandbox-libkrun::fs::rm".into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         }]);
@@ -2893,6 +2894,7 @@ mod tests {
         }));
         let descriptor = |id: &str| crate::clients::FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         };

@@ -612,6 +612,7 @@ mod tests {
             &cell,
             vec![crate::clients::FunctionDescriptor {
                 function_id: "listed-spoof::adapter::info".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             }],

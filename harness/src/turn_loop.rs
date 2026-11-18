@@ -5608,11 +5608,13 @@ mod tests {
         let descriptors = vec![
             crate::clients::FunctionDescriptor {
                 function_id: "db::x".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
             crate::clients::FunctionDescriptor {
                 function_id: "directory::skills::get".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
@@ -5682,6 +5684,7 @@ mod tests {
         let descriptors = ["sandbox-libkrun::fs::rm", "sandbox-libkrun::fs::ls"].map(|id| {
             crate::clients::FunctionDescriptor {
                 function_id: id.into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             }
@@ -5705,11 +5708,13 @@ mod tests {
         let descriptors = vec![
             crate::clients::FunctionDescriptor {
                 function_id: "z::last".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
             crate::clients::FunctionDescriptor {
                 function_id: "a::first".into(),
+                namespace: "default".into(),
                 description: None,
                 parameters: None,
             },
@@ -6039,6 +6044,7 @@ mod tests {
         let descriptor =
             |id: &str, desc: &str, params: Option<serde_json::Value>| FunctionDescriptor {
                 function_id: id.into(),
+                namespace: "default".into(),
                 description: Some(desc.into()),
                 parameters: params,
             };
@@ -6427,6 +6433,7 @@ mod tests {
     fn exec_fn(id: &str, schema: serde_json::Value) -> crate::clients::FunctionDescriptor {
         crate::clients::FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("Run one command".into()),
             parameters: Some(schema),
         }
@@ -6463,6 +6470,7 @@ mod tests {
             }));
         let other = crate::clients::FunctionDescriptor {
             function_id: "other::worker".into(),
+            namespace: "default".into(),
             description: None,
             parameters: None,
         };
@@ -6801,6 +6809,7 @@ mod tests {
         }));
         let desc = |id: &str, schema| FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("real internal".into()),
             parameters: schema,
         };
@@ -6928,6 +6937,7 @@ mod tests {
         let id = "x::fn";
         let live = snap(&[FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: Some("d".into()),
             parameters: Some(schema.clone()),
         }]);

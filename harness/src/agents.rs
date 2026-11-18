@@ -1178,6 +1178,7 @@ mod tests {
                             ids.iter()
                                 .map(|id| crate::clients::FunctionDescriptor {
                                     function_id: id.clone(),
+                                    namespace: "default".into(),
                                     description: Some("native".into()),
                                     parameters: Some(
                                         json!({"type":"object", "required":["function_id"]}),

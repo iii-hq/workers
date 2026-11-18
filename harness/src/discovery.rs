@@ -461,6 +461,7 @@ mod tests {
     fn desc(id: &str, parameters: Option<Value>) -> FunctionDescriptor {
         FunctionDescriptor {
             function_id: id.into(),
+            namespace: "default".into(),
             description: None,
             parameters,
         }
