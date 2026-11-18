@@ -2013,11 +2013,15 @@ async fn finish_step(
 
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
-            if !policy.allows(&call.function_id) {
+            if !policy.allows_in(&namespace, &call.function_id) {
                 let functions = deps.functions().await;
-                let did_you_mean = call::closest_permitted(&call.function_id, &policy, &functions);
-                let data =
-                    call::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
+                let did_you_mean =
+                    call::closest_permitted(&namespace, &call.function_id, &policy, &functions);
+                let data = call::denied_result_with_hint(
+                    &call.function_id,
+                    did_you_mean.as_deref(),
+                    &call::permitted_namespaces(&call.function_id, &policy, &functions),
+                );
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -2041,7 +2045,7 @@ async fn finish_step(
             // A call that already failed identically this turn is answered
             // locally before any hook or approval runs: re-running it would
             // only return the error the model has already seen.
-            let failure_key = call::call_digest(&call.function_id, &call.arguments);
+            let failure_key = call::call_digest(&namespace, &call.function_id, &call.arguments);
             if let Some(data) = failure_key.as_deref().and_then(|key| {
                 call::repeated_failure_result(&record.failed_calls, key, &call.function_id)
             }) {

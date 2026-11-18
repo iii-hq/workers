@@ -458,8 +458,8 @@ pub struct TurnRecord {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
     /// Identical failures this turn, keyed by the digest of
-    /// `[function_id, arguments]`: an entry that reaches the repeat limit makes
-    /// the next identical call fail locally instead of re-running the target.
+    /// `[namespace, function_id, arguments]`: an entry that reaches the repeat limit
+    /// makes the next identical call fail locally instead of re-running the target.
     /// A success clears its entry; every new turn starts empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub failed_calls: BTreeMap<String, FailedCall>,

@@ -7,7 +7,7 @@
 //! P1 covers the glob policy + target + normalisation. The `pre_call` /
 //! `post_call` hook chain and `pending` deferral layer on in later phases.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use jsonschema::JSONSchema;
 use serde_json::{Value, json};
@@ -590,9 +590,10 @@ fn digest_value(value: &Value) -> Option<String> {
 /// answered locally instead of re-running the target.
 pub(crate) const REPEATED_FAILURE_LIMIT: u32 = 2;
 
-/// The repeated-failure key of a call: its target and model-authored arguments.
-pub(crate) fn call_digest(function_id: &str, arguments: &Value) -> Option<String> {
-    digest_value(&json!([function_id, arguments]))
+/// The repeated-failure key of a call: its target namespace and id, and the
+/// model-authored arguments.
+pub(crate) fn call_digest(namespace: &str, function_id: &str, arguments: &Value) -> Option<String> {
+    digest_value(&json!([namespace, function_id, arguments]))
 }
 
 /// Track a target result: an error identical to the previous one for this
@@ -987,20 +988,33 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
 
 /// The `is_error` result for a policy denial (no allow match or a deny match).
 pub fn denied_result(function_id: &str) -> ResultData {
-    denied_result_with_hint(function_id, None)
+    denied_result_with_hint(function_id, None, &[])
 }
 
 /// [`denied_result`] naming the permitted id the model most likely meant
 /// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
-/// and without the hint the model reads it as a policy problem.
-pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+/// and without the hint the model reads it as a policy problem. `namespaces`
+/// (see [`permitted_namespaces`]) are where the same id may run.
+pub fn denied_result_with_hint(
+    function_id: &str,
+    did_you_mean: Option<&str>,
+    namespaces: &[String],
+) -> ResultData {
     let hint = did_you_mean
         .map(|id| format!(" No registered function has this id; did you mean {id}?"))
         .unwrap_or_default();
+    let elsewhere = if namespaces.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " It is permitted in namespace {}: pass `namespace` to call it there.",
+            namespaces.join(", ")
+        )
+    };
     let msg = format!(
         "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
-         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
-         permitted function or report the blocker."
+         match or a deny-glob match).{hint}{elsewhere} Calling it again will be denied again: \
+         use a permitted function or report the blocker."
     );
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
@@ -1009,12 +1023,13 @@ pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) ->
     }
 }
 
-/// The permitted, registered id closest to `function_id` when `function_id`
-/// itself is not registered at all — a model retyping a long id (a hashed
-/// worker name) corrupts it. `None` for a real function the policy denies, or
-/// when nothing permitted is within an eighth of the id's length (at least 2)
-/// edits.
+/// The id permitted in `namespace` and registered there closest to
+/// `function_id` when `function_id` itself is not registered at all (in any
+/// namespace) — a model retyping a long id (a hashed worker name) corrupts it.
+/// `None` for a real function the policy denies, or when nothing permitted is
+/// within an eighth of the id's length (at least 2) edits.
 pub fn closest_permitted(
+    namespace: &str,
     function_id: &str,
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
@@ -1031,12 +1046,28 @@ pub fn closest_permitted(
     snapshot
         .functions
         .iter()
+        .filter(|f| f.namespace == namespace)
         .map(|f| f.function_id.as_str())
-        .filter(|id| policy.allows(id))
+        .filter(|id| policy.allows_in(namespace, id))
         .map(|id| (edit_distance(function_id, id), id))
         .filter(|(distance, _)| *distance <= limit)
         .min()
         .map(|(_, id)| id.to_string())
+}
+
+/// The namespaces, sorted, where `function_id` is registered and permitted.
+pub fn permitted_namespaces(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Vec<String> {
+    let namespaces: BTreeSet<&str> = snapshot
+        .functions
+        .iter()
+        .filter(|f| f.function_id == function_id && policy.allows_in(&f.namespace, function_id))
+        .map(|f| f.namespace.as_str())
+        .collect();
+    namespaces.into_iter().map(str::to_string).collect()
 }
 
 /// Levenshtein distance over chars; ids are short and this runs only on a
@@ -2648,7 +2679,7 @@ mod tests {
 
     #[test]
     fn identical_failures_trip_the_breaker_at_the_limit() {
-        let key = call_digest("shell::exec", &json!({ "command": "make" })).unwrap();
+        let key = call_digest("default", "shell::exec", &json!({ "command": "make" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
@@ -2667,7 +2698,7 @@ mod tests {
 
     #[test]
     fn a_success_clears_the_count_and_the_next_failure_restarts_it() {
-        let key = call_digest("state::get", &json!({ "key": "k" })).unwrap();
+        let key = call_digest("default", "state::get", &json!({ "key": "k" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("not found"));
@@ -2681,7 +2712,7 @@ mod tests {
 
     #[test]
     fn a_different_error_restarts_the_count() {
-        let key = call_digest("http::fetch", &json!({ "url": "https://x" })).unwrap();
+        let key = call_digest("default", "http::fetch", &json!({ "url": "https://x" })).unwrap();
         let mut failed = BTreeMap::new();
 
         note_call_result(&mut failed, &key, &failure("timeout request_id=1"));
@@ -2694,7 +2725,7 @@ mod tests {
 
     #[test]
     fn successful_repeats_never_create_an_entry() {
-        let key = call_digest("harness::status", &json!({})).unwrap();
+        let key = call_digest("default", "harness::status", &json!({})).unwrap();
         let mut failed = BTreeMap::new();
 
         for _ in 0..5 {
@@ -2706,17 +2737,20 @@ mod tests {
 
     #[test]
     fn the_call_digest_distinguishes_function_and_arguments() {
-        let base = call_digest("coder::read-file", &json!({ "path": "a" }));
+        let base = call_digest("default", "coder::read-file", &json!({ "path": "a" }));
 
         assert_eq!(
             base,
-            call_digest("coder::read-file", &json!({ "path": "a" }))
+            call_digest("default", "coder::read-file", &json!({ "path": "a" }))
         );
         assert_ne!(
             base,
-            call_digest("coder::read-file", &json!({ "path": "b" }))
+            call_digest("default", "coder::read-file", &json!({ "path": "b" }))
         );
-        assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+        assert_ne!(
+            base,
+            call_digest("default", "coder::search", &json!({ "path": "a" }))
+        );
     }
 
     #[test]
@@ -2869,7 +2903,7 @@ mod tests {
             parameters: None,
         }]);
         assert_eq!(
-            closest_permitted("sandbox-libkrun::fs::rn", &policy, &snapshot),
+            closest_permitted("default", "sandbox-libkrun::fs::rn", &policy, &snapshot),
             None
         );
 
@@ -2902,9 +2936,9 @@ mod tests {
         let snapshot =
             crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
 
-        let hint = closest_permitted(typo, &policy, &snapshot);
+        let hint = closest_permitted("default", typo, &policy, &snapshot);
         assert_eq!(hint.as_deref(), Some(exec));
-        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let denied = denied_result_with_hint(typo, hint.as_deref(), &[]);
         let text = denied.details["message"].as_str().unwrap();
         assert!(
             text.contains("not permitted by this agent's dispatch policy"),
@@ -2918,13 +2952,72 @@ mod tests {
 
         // A real function the policy denies gets no suggestion, nor does an
         // id nothing permitted resembles.
-        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
-        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert_eq!(
+            closest_permitted("default", "auth::browser", &policy, &snapshot),
+            None
+        );
+        assert_eq!(
+            closest_permitted("default", "web::fetch", &policy, &snapshot),
+            None
+        );
         assert!(
             !denied_result("web::fetch").details["message"]
                 .as_str()
                 .unwrap()
                 .contains("did you mean")
+        );
+    }
+
+    fn d(ns: &str, id: &str) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            namespace: ns.into(),
+            description: None,
+            parameters: None,
+        }
+    }
+
+    #[test]
+    fn the_breaker_keys_each_namespace_apart() {
+        let args = json!({ "command": "make" });
+        assert_ne!(
+            call_digest("a", "shell::exec", &args),
+            call_digest("b", "shell::exec", &args)
+        );
+        assert_eq!(
+            call_digest("a", "shell::exec", &args),
+            call_digest("a", "shell::exec", &args)
+        );
+    }
+
+    #[test]
+    fn a_denied_call_names_the_permitted_namespaces_that_hold_the_id() {
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["laptop/shell::*".into(), "desk/shell::*".into()],
+            ..Default::default()
+        }));
+        let snapshot = crate::discovery::snapshot_of(vec![
+            d("proj", "shell::exec"),
+            d("laptop", "shell::exec"),
+            d("desk", "shell::exec"),
+            d("hub", "shell::exec"),
+        ]);
+        assert_eq!(
+            permitted_namespaces("shell::exec", &policy, &snapshot),
+            vec!["desk", "laptop"]
+        );
+        assert_eq!(
+            closest_permitted("proj", "shell::exec", &policy, &snapshot),
+            None
+        );
+        let denied =
+            denied_result_with_hint("shell::exec", None, &["desk".into(), "laptop".into()]);
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains(
+                " It is permitted in namespace desk, laptop: pass `namespace` to call it there."
+            ),
+            "{text}"
         );
     }
 }

@@ -721,6 +721,14 @@ async fn a_call_runs_in_the_namespace_the_model_named() {
     assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
 }
 
+/// A deny qualified with the namespace the model named stops the call there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_denied_in_the_namespace_it_named_is_not_dispatched() {
+    let (_, calls, turn) = generate(hold_reply_in("zz-denied")).await;
+    assert!(!calls.iter().any(|(f, _)| f == "test::hold"), "{calls:?}");
+    assert_eq!(turn["calls"]["call_hold"]["state"], "done", "{turn}");
+}
+
 /// A held call is released later, from its checkpoint: the namespace must be
 /// on it, or an approval for another namespace runs in the implicit one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1985,7 +1993,7 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
         "session_id": "s", "turn_id": "t1", "status": "running",
         "step": 1, "turn_count": 2, "depth": 0,
         "options": {"model": "fake", "max_turns": 16,
-            "functions": {"allow": ["*"], "deny": [], "expose": "agent_call"}},
+            "functions": {"allow": ["*"], "deny": ["zz-denied/test::hold"], "expose": "agent_call"}},
         "calls": checkpoints,
         "created_at": 1, "updated_at": 1
     })));
