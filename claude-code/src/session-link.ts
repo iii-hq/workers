@@ -142,9 +142,63 @@ export async function appendMessage(
 }
 
 /**
+ * Is `sessionId` a child session this worker linked on an earlier turn? An
+ * orchestrator resumes a child with `claude::start { session_id }` alone, and
+ * that turn belongs in the same transcript. A session another agent owns (a
+ * harness chat driving `claude::run` with its own id) is never written to.
+ */
+export async function isClaudeChildSession(iii: IIIClient, sessionId: string): Promise<boolean> {
+  try {
+    const res = await iii.call<unknown, { meta?: { metadata?: Record<string, unknown> } } | null>({
+      function_id: 'session::get',
+      payload: { session_id: sessionId },
+      timeoutMs: TIMEOUT_MS,
+    });
+    return res?.meta?.metadata?.agent === 'claude-code';
+  } catch {
+    return false;
+  }
+}
+
+/** session-manager's StopReason; anything else fails the append. */
+const STOP_REASONS = new Set(['end', 'length', 'function_call', 'aborted', 'error']);
+
+function sessionStopReason(raw: unknown): string {
+  const reason = String(raw ?? 'end');
+  if (STOP_REASONS.has(reason)) return reason;
+  // SDK result subtypes: `error_max_turns`, `error_max_budget_usd`, … hit a
+  // cap; every other subtype (`error_during_execution`) is a failure.
+  return reason.startsWith('error_max') ? 'length' : 'error';
+}
+
+/**
+ * Shape one transcript message for `session::append`. The feed's assistant
+ * message carries the worker's usage (`input_tokens`, …) and the SDK's stop
+ * subtype; session-manager wants its own `Usage` and `StopReason`, and rejects
+ * an unknown stop reason outright — which would cut the transcript short.
+ */
+export function toSessionMessage(message: Record<string, unknown>): Record<string, unknown> {
+  if (message.role !== 'assistant') return message;
+  const usage = message.usage as Record<string, number | undefined> | null | undefined;
+  return {
+    ...message,
+    stop_reason: sessionStopReason(message.stop_reason),
+    usage: usage
+      ? {
+          input: usage.input_tokens ?? 0,
+          output: usage.output_tokens ?? 0,
+          cache_read: usage.cache_read_tokens ?? 0,
+          cache_write: usage.cache_write_tokens ?? 0,
+        }
+      : null,
+  };
+}
+
+/**
  * Write a finished turn into the child session: what was asked, then every
- * message the turn produced, in order. Called once, when the run ends — the
- * live view is the claude::on-agent-event feed, this is what a window opened later replays.
+ * message the turn produced, in order. Called once per turn, before the
+ * session reads `done` — the live view is the claude::on-agent-event feed,
+ * this is what a window opened later replays.
  */
 export async function appendTranscript(
   iii: IIIClient,
@@ -159,6 +213,7 @@ export async function appendTranscript(
   };
   if (!(await appendMessage(iii, sessionId, asked))) return;
   for (const message of messages) {
-    if (!(await appendMessage(iii, sessionId, message))) return;
+    const wire = toSessionMessage(message as Record<string, unknown>);
+    if (!(await appendMessage(iii, sessionId, wire))) return;
   }
 }

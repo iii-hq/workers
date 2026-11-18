@@ -25,6 +25,7 @@ import {
 import { listSessions, loadSession, saveSession } from './state.js';
 import {
   appendTranscript,
+  isClaudeChildSession,
   linkChildSession,
   recordTaskOutcome,
   setSessionStatus,
@@ -245,7 +246,8 @@ export async function executeRun(
   try {
     // A run that names a parent is a sub-agent: give it a linked session first,
     // because `parent_session_id` only applies on creation, and that link is
-    // what nests it in the console.
+    // what nests it in the console. A later turn on the same child (resumed
+    // with its session id alone) stays a child.
     const linked = payload.parent_session_id
       ? await linkChildSession(iii, {
           sessionId: session_id,
@@ -253,7 +255,21 @@ export async function executeRun(
           task: prompt,
         })
       : { linked: false, detail: '' };
-    if (linked.linked) await setSessionStatus(iii, session_id, 'working');
+    const child = linked.linked || (await isClaudeChildSession(iii, session_id));
+    if (child) await setSessionStatus(iii, session_id, 'working');
+    // The feeds are a live tape: a window opened after the run has nothing to
+    // replay from them, which is why a finished sub-agent rendered blank with
+    // `message_count: 0`. A child's turn is therefore also written to
+    // session-manager — whichever entrypoint (run, start, task) started it.
+    let produced: unknown[] = [];
+    const recording: Emit = child
+      ? async (sid, event) => {
+          await emit(sid, event);
+          if ((event as { type?: string }).type === 'agent_end') {
+            produced = (event as { messages?: unknown[] }).messages ?? [];
+          }
+        }
+      : emit;
     // One turn, one traced scope. The identity keys are the harness's own, so
     // a headless Claude Code turn groups and labels itself in the console's
     // trace views like a native turn — and every call the turn makes inherits
@@ -266,12 +282,22 @@ export async function executeRun(
         kind: 'claude.run',
         message: prompt,
       },
-      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle),
+      () => runReserved(iii, cfg, recording, emitRaw, payload, session_id, prompt, handle),
     ).catch(async (err) => {
-      if (linked.linked) await setSessionStatus(iii, session_id, 'error', String(err));
+      if (child) {
+        await appendTranscript(iii, session_id, prompt, [
+          ...produced,
+          makeAssistantMessage([{ type: 'text', text: String(err) }], '', null, 'error'),
+        ]);
+        await setSessionStatus(iii, session_id, 'error', String(err));
+      }
       throw err;
     });
-    if (linked.linked) await setSessionStatus(iii, session_id, 'done');
+    // Transcript first, status second: the console opens a child on `done`.
+    if (child) {
+      await appendTranscript(iii, session_id, prompt, produced);
+      await setSessionStatus(iii, session_id, 'done');
+    }
     return result;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
@@ -523,22 +549,9 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // to state under `agent_tasks/<session id>`, which is what an
       // orchestrator observes (`state::on-changed`) and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      // The turn is persisted as well as published. `claude::on-agent-event` is a
-      // live tape — a console window opened after the run has nothing to replay
-      // from it, which is why a finished sub-agent rendered blank with
-      // `message_count: 0`. The session manager is the durable side, so the
-      // transcript is written there when the turn ends.
-      const transcript: unknown[] = [];
-      const record: Emit = async (sid, event) => {
-        await emit(sid, event);
-        if ((event as { type?: string }).type === 'agent_end') {
-          const messages = (event as { messages?: unknown[] }).messages ?? [];
-          transcript.push(...messages);
-        }
-      };
-      void executeRun(iii, getCfg(), record, emitRaw, run)
+      // The transcript itself is persisted by executeRun, like any linked run.
+      void executeRun(iii, getCfg(), emit, emitRaw, run)
         .then(async (result) => {
-          await appendTranscript(iii, session_id, parsed.task, transcript);
           await recordTaskOutcome(iii, {
             session_id,
             parent_session_id: parsed.parent_session_id,

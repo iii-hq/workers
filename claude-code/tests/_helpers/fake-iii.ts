@@ -215,6 +215,25 @@ export function fakeIii(): FakeIii {
         return null;
       }
       if (req.function_id === 'state::get') return state.get(`${scope}/${key}`) ?? null;
+      // session-manager, as far as a child session needs it: `ensure` creates
+      // once and keeps the creation metadata, `get` answers `{ meta }` or null,
+      // the live worker's response shapes.
+      if (req.function_id === 'session::ensure') {
+        const sessionKey = `session-manager/${String(payload.session_id)}`;
+        const created = !state.has(sessionKey);
+        if (created) {
+          state.set(sessionKey, {
+            session_id: payload.session_id,
+            title: payload.title ?? '',
+            metadata: payload.metadata ?? {},
+          });
+        }
+        return { created, meta: state.get(sessionKey), session_id: payload.session_id };
+      }
+      if (req.function_id === 'session::get') {
+        const meta = state.get(`session-manager/${String(payload.session_id)}`);
+        return meta ? { meta } : null;
+      }
       // The iii context lives in the `iii-directory` worker, so a turn that
       // wants it asks the bus for it — these are the two calls it makes.
       if (req.function_id === 'directory::system-prompts::get') {

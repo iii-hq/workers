@@ -147,7 +147,7 @@ describe('register', () => {
     });
   });
 
-  it('claude::task publishes frames on both feeds through the record wrapper', async () => {
+  it('claude::task publishes frames on both feeds', async () => {
     const fake = await registeredWorker();
     queryMock.mockImplementation(scriptedQuery(fullTurn, { interrupted: false }) as never);
     await fake.observeFeed(ON_AGENT_EVENT_FN, 'task-1');
@@ -167,8 +167,8 @@ describe('register', () => {
     ]);
     expect(agent.map((f) => f.seq)).toEqual([0, 1, 2, 3, 4]);
     expect(fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event)).toEqual(fullTurn);
-    // The wrapper still captures the transcript for session::append.
-    expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(true);
+    // No parent and no existing child session: nothing to persist into.
+    expect(fake.calls.some((c) => c.function_id === 'session::append')).toBe(false);
   });
 
   it('claude::task refuses a task with nothing in it', async () => {
