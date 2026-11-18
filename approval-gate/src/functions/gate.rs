@@ -56,16 +56,23 @@ pub async fn handle(deps: &Deps, input: HookInput) -> Result<HookOutput, Approva
     let (effective, _) = settings::effective(stored, &cfg);
 
     // 3-5. Mode / allow-list short-circuits.
-    if decision::pre_policy_allow(&effective, &call.function_id) {
+    if decision::pre_policy_allow(
+        &effective,
+        call.namespace.as_deref(),
+        call.implicit_namespace.as_deref(),
+        &call.function_id,
+    ) {
         return Ok(HookOutput::Continue);
     }
 
     // 6. Config rules fallback — evaluate the inline permission rules
     //    (first match wins; no match → hold for human approval).
-    match cfg
-        .permissions()
-        .check(&call.function_id, &call.arguments, effective.mode)
-    {
+    match cfg.permissions().check_in(
+        call.namespace.as_deref(),
+        &call.function_id,
+        &call.arguments,
+        effective.mode,
+    ) {
         Decision::Allow { .. } => Ok(HookOutput::Continue),
         Decision::Deny {
             rule_id,

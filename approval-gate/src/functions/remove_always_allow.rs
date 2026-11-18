@@ -16,7 +16,11 @@ pub async fn handle(
     let settings =
         settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, _now| {
             ApprovalSettings {
-                always_allow: without_grant(&base.always_allow, &req.function_id),
+                always_allow: without_grant(
+                    &base.always_allow,
+                    req.namespace.as_deref(),
+                    &req.function_id,
+                ),
                 ..base
             }
         })
@@ -48,6 +52,7 @@ mod tests {
                 &stack.deps,
                 AlwaysAllowMutationRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "shell::run".into(),
                 },
             )
@@ -60,6 +65,7 @@ mod tests {
                 &stack.deps,
                 AlwaysAllowMutationRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "never::granted".into(),
                 },
             )

@@ -21,7 +21,12 @@ pub async fn handle(
     let settings =
         settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, now| {
             ApprovalSettings {
-                approved_always: with_grant(&base.approved_always, &req.function_id, now),
+                approved_always: with_grant(
+                    &base.approved_always,
+                    req.namespace.as_deref(),
+                    &req.function_id,
+                    now,
+                ),
                 ..base
             }
         })
@@ -42,6 +47,7 @@ mod tests {
                 &stack.deps,
                 ApproveAlwaysRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "shell::run".into(),
                 },
             )

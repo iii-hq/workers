@@ -12,6 +12,22 @@
         "description": "The function id to evaluate.",
         "type": "string"
       },
+      "implicit_namespace": {
+        "default": null,
+        "description": "Where a call to `function_id` without `namespace` runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "namespace": {
+        "default": null,
+        "description": "Target namespace of the call; absent = the implicit namespace.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "session_id": {
         "description": "Session whose effective settings apply (mode + always-allow list).",
         "type": "string"

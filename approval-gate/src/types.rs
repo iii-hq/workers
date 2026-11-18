@@ -69,6 +69,10 @@ pub enum GrantedBy {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AlwaysAllowEntry {
+    /// Engine namespace the grant covers. Absent on grants stored before
+    /// namespaces: those cover only the call's implicit namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub function_id: String,
     /// ms epoch
     pub granted_at: i64,
@@ -269,6 +273,12 @@ pub struct PendingResolvedEvent {
 pub struct HookCall {
     pub id: String,
     pub function_id: String,
+    /// Resolved target namespace. Absent from an older harness.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default)]
+    pub implicit_namespace: Option<String>,
     #[serde(default)]
     pub arguments: Value,
 }
@@ -452,12 +462,18 @@ pub struct SetModeRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AlwaysAllowMutationRequest {
     pub session_id: String,
+    /// Namespace the entry covers; absent = the implicit namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub function_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ApproveAlwaysRequest {
     pub session_id: String,
+    /// Namespace the grant covers; absent = the implicit namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
     pub function_id: String,
 }
 
@@ -478,6 +494,12 @@ pub struct EvaluateRequest {
     pub session_id: String,
     /// The function id to evaluate.
     pub function_id: String,
+    /// Target namespace of the call; absent = the implicit namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Where a call to `function_id` without `namespace` runs.
+    #[serde(default)]
+    pub implicit_namespace: Option<String>,
     /// Call arguments, for deployments whose rules carry argument
     /// constraints. Defaults to `{}`.
     #[serde(default)]
@@ -570,9 +592,18 @@ mod tests {
             "step": 3,
             "depth": 1,
             "unknown_future_field": { "x": 1 },
-            "call": { "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "ls" } }
+            "call": {
+                "id": "c_1",
+                "function_id": "shell::run",
+                "namespace": "laptop",
+                "implicit_namespace": "default",
+                "arguments": { "cmd": "ls" }
+            }
         }))
         .unwrap();
+        let call = input.call.as_ref().unwrap();
+        assert_eq!(call.namespace.as_deref(), Some("laptop"));
+        assert_eq!(call.implicit_namespace.as_deref(), Some("default"));
         assert_eq!(input.call.unwrap().function_id, "shell::run");
 
         let bare: HookInput = serde_json::from_value(json!({

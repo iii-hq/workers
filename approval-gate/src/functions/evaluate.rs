@@ -52,7 +52,12 @@ pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateRespons
     let stored = settings::read_tolerant(deps.iii.as_ref(), &req.session_id).await;
     let (effective, _) = settings::effective(stored, &cfg);
 
-    if decision::pre_policy_allow(&effective, &req.function_id) {
+    if decision::pre_policy_allow(
+        &effective,
+        req.namespace.as_deref(),
+        req.implicit_namespace.as_deref(),
+        &req.function_id,
+    ) {
         return Ok(EvaluateResponse {
             verdict: EvaluateVerdict::Allow,
             reason: None,
@@ -63,10 +68,12 @@ pub async fn handle(deps: &Deps, req: EvaluateRequest) -> Result<EvaluateRespons
         .arguments
         .clone()
         .unwrap_or_else(|| serde_json::json!({}));
-    let verdict = match cfg
-        .permissions()
-        .check(&req.function_id, &arguments, effective.mode)
-    {
+    let verdict = match cfg.permissions().check_in(
+        req.namespace.as_deref(),
+        &req.function_id,
+        &arguments,
+        effective.mode,
+    ) {
         Decision::Allow { .. } => EvaluateResponse {
             verdict: EvaluateVerdict::Allow,
             reason: None,
@@ -103,6 +110,8 @@ mod tests {
         EvaluateRequest {
             session_id: "s_1".into(),
             function_id: function_id.into(),
+            namespace: None,
+            implicit_namespace: None,
             arguments: None,
         }
     }
@@ -129,6 +138,7 @@ mod tests {
                 &stack.deps,
                 AlwaysAllowMutationRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "fp::pipe".into(),
                 },
             )
@@ -145,6 +155,7 @@ mod tests {
                 &stack.deps,
                 ApproveAlwaysRequest {
                     session_id: "s_1".into(),
+                    namespace: None,
                     function_id: "fp::pipe".into(),
                 },
             )
@@ -188,6 +199,8 @@ mod tests {
             let bad_session = EvaluateRequest {
                 session_id: String::new(),
                 function_id: "fp::pipe".into(),
+                namespace: None,
+                implicit_namespace: None,
                 arguments: None,
             };
             assert!(handle(&stack.deps, bad_session).await.is_err());

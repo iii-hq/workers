@@ -19,7 +19,12 @@ pub async fn handle(
     let settings =
         settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, now| {
             ApprovalSettings {
-                always_allow: with_grant(&base.always_allow, &req.function_id, now),
+                always_allow: with_grant(
+                    &base.always_allow,
+                    req.namespace.as_deref(),
+                    &req.function_id,
+                    now,
+                ),
                 ..base
             }
         })
@@ -37,6 +42,7 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             let req = AlwaysAllowMutationRequest {
                 session_id: "s_1".into(),
+                namespace: None,
                 function_id: "shell::run".into(),
             };
             let first = handle(&stack.deps, req.clone()).await.unwrap();
