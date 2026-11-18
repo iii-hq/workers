@@ -84,7 +84,8 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
       />
     )
   }
-  const value = props.value ?? {}
+  // The worker refuses a stored `revision` (removed setting), so no edit carries it forward.
+  const { revision: _removed, ...value } = props.value ?? {}
   const setString = (field: string, raw: string | undefined) => {
     const next = { ...value }
     if (raw === undefined || raw === '') delete next[field]

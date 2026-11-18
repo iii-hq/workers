@@ -71,18 +71,18 @@ const engine = (reply: unknown = card) => {
   return { call } as unknown as Engine & { call: typeof call }
 }
 
-let root: Root | undefined
+const roots: Root[] = []
 async function mount(value: ConfigFormProps['value'], iii = engine(), extra: Partial<ConfigFormProps> = {}) {
   changes.clear()
   const container = document.body.appendChild(document.createElement('div'))
-  root = createRoot(container)
+  const root = createRoot(container)
+  roots.push(root)
   const onChange = vi.fn()
-  await act(async () => root!.render(<LayaConfigForm id="judge-laya" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />))
+  await act(async () => root.render(<LayaConfigForm id="judge-laya" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />))
   return { container, onChange, iii }
 }
 afterEach(async () => {
-  if (root) await act(async () => root!.unmount())
-  root = undefined
+  for (const root of roots.splice(0)) await act(async () => root.unmount())
   document.body.innerHTML = ''
 })
 
@@ -152,8 +152,19 @@ describe('LayaConfigForm', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...value })
     await act(async () => changes.get('auto_task_detection')?.('true'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_task_detection: true })
+    // Disabling drops a stored `true`.
+    const on = Object.freeze({ ...value, auto_route: true, auto_task_detection: true })
+    const { onChange: off } = await mount(on)
+    await act(async () => changes.get('auto_route')?.('false'))
+    expect(off).toHaveBeenLastCalledWith({ ...value, auto_task_detection: true })
     await act(async () => changes.get('auto_task_detection')?.('false'))
-    expect(onChange).toHaveBeenLastCalledWith({ ...value })
+    expect(off).toHaveBeenLastCalledWith({ ...value, auto_route: true })
+  })
+
+  it('drops a stored revision, a setting the worker no longer accepts, on any edit', async () => {
+    const { onChange } = await mount({ model: 'laya', revision: 'main', future: 1 })
+    await act(async () => changes.get('threads')?.('6'))
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', future: 1, threads: 6 })
   })
 
   it('shows the worker defaults for absent fields', async () => {
