@@ -81,6 +81,7 @@ interface MessageProps {
     sessionId: string,
     functionCallId: string,
     action: FilesystemAccessAction,
+    namespace?: string,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
   workingDir?: string | null
@@ -228,7 +229,12 @@ function MessageBody({
       }
       if (onResolveFilesystemAccess && sessionId && functionCallId) {
         onResolveFilesystemAccessHandler = (action) =>
-          onResolveFilesystemAccess(sessionId, functionCallId, action)
+          onResolveFilesystemAccess(
+            sessionId,
+            functionCallId,
+            action,
+            message.namespace,
+          )
       }
       return (
         <FunctionCallCard

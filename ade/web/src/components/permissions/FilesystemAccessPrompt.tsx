@@ -9,6 +9,8 @@ interface FilesystemAccessPromptProps {
   requestedRoot: string
   /** The session's working directory, if any — shown as "always allowed". */
   workingDir?: string | null
+  /** Engine namespace of the held call, when it is not the gate's own. */
+  namespace?: string
   onResolve: (action: FilesystemAccessAction) => void | Promise<void>
   /** Footer link to the grants management dialog (§5). */
   onManage?: () => void
@@ -27,6 +29,7 @@ interface FilesystemAccessPromptProps {
 export function FilesystemAccessPrompt({
   requestedRoot,
   workingDir,
+  namespace,
   onResolve,
   onManage,
   disabled,
@@ -69,8 +72,9 @@ export function FilesystemAccessPrompt({
           aria-live="polite"
           className="font-mono text-meta text-ink-faint"
         >
-          the approved function reached this folder and paused before accessing
-          it.
+          {namespace
+            ? `the approved function reached this folder in namespace ${namespace} and paused before accessing it.`
+            : 'the approved function reached this folder and paused before accessing it.'}
         </p>
         <p className="font-mono text-meta text-ink-ghost">
           choose how long to allow access; the function resumes automatically.

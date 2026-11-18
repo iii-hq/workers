@@ -210,3 +210,40 @@ describe('historical call details hydration', () => {
     expect(container.querySelector(skeleton)).not.toBeNull()
   })
 })
+
+describe('filesystem-access prompt for a call in another namespace', () => {
+  it('names the namespace and passes it on allow', async () => {
+    const resolve = vi.fn(async () => {})
+    const held: FunctionCallMessage = {
+      id: 'e_fs:0',
+      role: 'function-call',
+      functionId: 'shell::fs::read',
+      input: { path: '/data/report.txt' },
+      createdAt: 0,
+      pendingApproval: true,
+      sessionId: 'session-1',
+      functionCallId: 'function-call-1',
+      namespace: 'laptop',
+      filesystemAccess: { requestedRoot: '/data' },
+    }
+    await act(() => {
+      root.render(
+        <MessageList messages={[held]} onResolveFilesystemAccess={resolve} />,
+      )
+    })
+
+    expect(container.textContent).toContain(
+      'the approved function reached this folder in namespace laptop and paused before accessing it.',
+    )
+    const once = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent === 'allow once',
+    )
+    await act(() => once?.click())
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(
+      'session-1',
+      'function-call-1',
+      'once',
+      'laptop',
+    )
+  })
+})

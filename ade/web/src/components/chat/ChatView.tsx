@@ -1559,6 +1559,7 @@ export function ChatView({
       sId: string,
       functionCallId: string,
       action: FilesystemAccessAction,
+      namespace?: string,
     ) => {
       const requestedRoot = messagesRef.current.find(
         (m): m is FunctionCallMessage =>
@@ -1577,6 +1578,7 @@ export function ChatView({
 
       await resolveFn(sId, functionCallId, 'allow', {
         accessDuration: action,
+        namespace,
       })
       if (requestedRoot && (action === 'session' || action === 'always')) {
         filesystemGrants.addOptimistic(requestedRoot)
