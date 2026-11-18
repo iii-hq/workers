@@ -51,6 +51,8 @@ type Entry = {
   message: Record<string, unknown>;
   /** Chosen here, so a retried append is idempotent in session-manager. */
   entryId: string;
+  /** An append was sent at least once (its outcome may be unknown). */
+  attempted: boolean;
   committed: boolean;
   /** Changed since it was last written. */
   dirty: boolean;
@@ -272,7 +274,13 @@ export class ChildTranscript implements TurnSink {
   }
 
   private add(message: Record<string, unknown>): Entry {
-    const entry: Entry = { message, entryId: `cc-${randomUUID()}`, committed: false, dirty: false };
+    const entry: Entry = {
+      message,
+      entryId: `cc-${randomUUID()}`,
+      attempted: false,
+      committed: false,
+      dirty: false,
+    };
     this.entries.push(entry);
     if (this.live) this.enqueue(() => this.append(entry));
     return entry;
@@ -320,7 +328,8 @@ export class ChildTranscript implements TurnSink {
     // The append carries the entry as it is NOW, so a change made while it
     // waited in the queue needs no separate update. The caller-chosen entry id
     // makes a retry of an append that did commit a no-op, never a duplicate.
-    const dirty = entry.dirty;
+    const retry = entry.attempted;
+    entry.attempted = true;
     entry.dirty = false;
     try {
       await this.iii.call({
@@ -329,10 +338,18 @@ export class ChildTranscript implements TurnSink {
         timeoutMs: TIMEOUT_MS,
       });
     } catch (err) {
-      entry.dirty = entry.dirty || dirty;
+      // What the store holds is unknown: whatever it is, write it again.
+      entry.dirty = true;
       throw err;
     }
     entry.committed = true;
+    if (retry) {
+      // A first attempt that DID commit stored an older snapshot, and the
+      // idempotent retry returns that entry unchanged: write the content as it
+      // is now (a full replacement, so harmless when the retry stored it).
+      entry.dirty = true;
+      await this.update(entry);
+    }
   }
 
   private async update(entry: Entry): Promise<void> {

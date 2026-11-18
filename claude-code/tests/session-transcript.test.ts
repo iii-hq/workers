@@ -699,3 +699,73 @@ describe('feed failures', () => {
     expect(statuses(fake)).toEqual(['working', 'done']);
   });
 });
+
+describe('append retry race', () => {
+  it('a retried append that hit an already-committed older write still ends with the full message', async () => {
+    // The first assistant append commits its snapshot ("Hel") but its reply
+    // is held until the stream has finished, then times out. The idempotent
+    // retry returns the OLD stored entry, so the writer must still write the
+    // current content before the session reads done.
+    const fake = fakeIii();
+    const real = fake.iii.call.bind(fake.iii);
+    let release: () => void = () => {};
+    const streamDone = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let committed: () => void = () => {};
+    const firstCommitted = new Promise<void>((resolve) => {
+      committed = resolve;
+    });
+    let held = false;
+    (fake.iii as { call: unknown }).call = async (req: {
+      function_id: string;
+      payload: Record<string, unknown>;
+    }) => {
+      const role = (req.payload?.message as { role?: string } | undefined)?.role;
+      if (req.function_id === 'session::append' && role === 'assistant' && !held) {
+        held = true;
+        await real(req as never);
+        committed();
+        await streamDone;
+        // Fail only once the run is already waiting in finish(), with its
+        // final updates queued behind this append.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new Error('timeout');
+      }
+      return real(req as never);
+    };
+    queryMock.mockImplementation((() => ({
+      async *[Symbol.asyncIterator]() {
+        // Up to the first text delta ("Hel"), then wait until that snapshot
+        // has committed, then stream the rest while its reply is held.
+        const firstDelta = streamedTurn.findIndex(
+          (m) => (m as { event?: { delta?: { text?: string } } }).event?.delta?.text === 'Hel',
+        );
+        yield* streamedTurn.slice(0, firstDelta + 1);
+        await firstCommitted;
+        yield* streamedTurn.slice(firstDelta + 1);
+        release();
+      },
+      interrupt: async () => {},
+    })) as never);
+    const feeds = registerAgentFeeds(fake.iii);
+    await executeRun(
+      fake.iii,
+      await cfg(),
+      feeds.agent.emit,
+      feeds.raw.emit,
+      RunPayloadSchema.parse({ prompt: 'x', session_id: 'race-1', parent_session_id: 'p-1' }),
+    );
+    const assistant = appended(fake, 'race-1').find((m) => m.role === 'assistant');
+    expect(assistant?.content).toEqual([
+      { type: 'text', text: 'Hello' },
+      {
+        type: 'function_call',
+        id: 'toolu_1',
+        function_id: 'claude-code::Bash',
+        arguments: { command: 'ls' },
+      },
+    ]);
+    expect(statuses(fake)).toEqual(['working', 'done']);
+  });
+});
