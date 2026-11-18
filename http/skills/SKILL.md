@@ -87,7 +87,7 @@ const route = iii.observe(
     args: {
       method: 'GET',
       path: '/orders/:id',
-      // middleware_function_ids and public_webhook are optional.
+      // middleware_function_ids, public_webhook and loopback_only are optional.
     },
     // optional: filters on the request, e.g. { 'input.headers.x-api-key': { $exists: true } }
   },
@@ -104,7 +104,17 @@ Args:
 | `method` | yes | - | HTTP method to match, case insensitive. |
 | `path` | yes | - | Route path such as `/orders/:id` (or `/orders/{id}`); `:name` segments become path params. |
 | `public_webhook` | no | `false` | Also expose the route on the restricted webhook listener. |
+| `loopback_only` | no | `false` | Serve the route only on connections accepted on a loopback local address (`127.0.0.0/8`, `::1`, `::ffff:127.x`). Cannot be combined with `public_webhook` (`HTTP_ROUTE_INVALID`). |
 | `middleware_function_ids` | no | `[]` | Per-route middleware functions, run before the handler in list order. |
+
+Use `loopback_only` for a route that must stay local (e.g. an MCP or admin
+endpoint). It is decided per connection on every request, from the accepted
+socket's own local address, so a runtime rebind to a public `host` never
+exposes it, even before any `http::on-config-change` observer reacts. On a
+`0.0.0.0` bind, clients connecting to `127.0.0.1` / `::1` still reach it; a
+connection on any other local address gets the same `404` as an unknown path
+(never a `405` that names it). It shares the route namespace:
+`HTTP_ROUTE_CONFLICT` applies as usual.
 
 Unknown args are refused with `INVALID_ARGS`. Path segments prefixed with `:`
 are extracted into `path_params`; query string values arrive in

@@ -81,7 +81,7 @@ query string and headers arrive as `req.query_params` / `req.headers`.
 
 | Function | Args or input | What it is |
 |---|---|---|
-| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request the server receives. Each observer serves one route; its target receives the `HttpRequest`. |
+| `http::on-request` | args `{ method, path, public_webhook?, loopback_only?, middleware_function_ids? }` | One call per HTTP request the server receives. Each observer serves one route; its target receives the `HttpRequest`. |
 | `http::status` | none | Where the server listens: `{ host, port, url, last_reload_error }`. |
 | `http::webhook-listener::status` | none | Internal: the restricted listener this process bound, and the last reload error. |
 | `http::configuration-id` | none | Internal: this instance's configuration entry id. |
@@ -94,11 +94,14 @@ query string and headers arrive as `req.query_params` / `req.headers`.
 | `method` | yes | — | HTTP method to match (case insensitive). |
 | `path` | yes | — | Route path, e.g. `/orders/:id` (or `/orders/{id}`). `:name` segments become `path_params`. |
 | `public_webhook` | no | `false` | Also expose this route on the restricted listener. |
+| `loopback_only` | no | `false` | Serve this route only on connections accepted on a loopback local address (see [Loopback-only routes](#loopback-only-routes)). Cannot be combined with `public_webhook`. |
 | `middleware_function_ids` | no | `[]` | Per-route middleware, run in list order after any global middleware and before the target. |
 
 Unknown args are refused with `INVALID_ARGS`. Two observers cannot claim the
 same method and path shape (`/a/:x` and `/a/:y` are one shape): the later one
-is rejected with `HTTP_ROUTE_CONFLICT`.
+is rejected with `HTTP_ROUTE_CONFLICT`, whatever their `loopback_only`. An
+observer that sets both `public_webhook` and `loopback_only` is rejected with
+`HTTP_ROUTE_INVALID`.
 
 A route lasts while its observer's worker is connected. When that worker's
 connection goes away, the engine withdraws its observers from the http worker:
@@ -211,6 +214,39 @@ iii.observe(
 `http::on-request` is private: only this worker calls it, and it cannot be an
 observer's target. It has one host per namespace: a second `http` worker in
 the same namespace cannot register it.
+
+### Loopback-only routes
+
+A route that must only be reachable from this machine (a local admin or MCP
+endpoint) sets `loopback_only`:
+
+```json
+{"method":"POST","path":"/mcp","loopback_only":true}
+```
+
+The server decides it per connection, on every request: the route exists only
+on a connection whose LOCAL address (the address of the accepted socket, not
+the client's) is loopback: `127.0.0.0/8`, `::1`, or an IPv4-mapped
+`::ffff:127.x.y.z`. On any other connection it is absent, and the request
+answers exactly like an unknown path: `404 NOT_FOUND`, and never a `405` whose
+`Allow` names it (a path whose only routes are loopback-only is a `404`; a
+path with other routes lists only theirs). Nothing more is logged than for an
+unknown path.
+
+What it protects against: the server can rebind at runtime when `host` or
+`port` changes. A new listener on a public address serves the shared route
+table before any `http::on-config-change` observer hears of the change, so a
+route that a worker would withdraw on a public bind would still be reachable
+for that window. Because admission reads the connection's local address, a
+loopback-only route is never served on the public listener, however the
+reload is timed.
+
+On a `0.0.0.0` (or `::`) bind, a local client that connects to `127.0.0.1`
+(or `::1`) still reaches the route, since its connection's local address is
+loopback; a client connecting to the machine's LAN or public address does not.
+The restricted webhook listener never serves it. `loopback_only` does not
+create a separate route namespace: it conflicts with a route of the same shape
+like any other route.
 
 ### Streaming responses
 
