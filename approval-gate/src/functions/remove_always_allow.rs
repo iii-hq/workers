@@ -12,6 +12,7 @@ pub async fn handle(
     deps: &Deps,
     req: AlwaysAllowMutationRequest,
 ) -> Result<SettingsResponse, ApprovalError> {
+    super::validate_namespace(req.namespace.as_deref())?;
     let cfg = deps.config().await;
     let settings =
         settings::materialize_and(deps.iii.as_ref(), &req.session_id, &cfg, |base, _now| {
@@ -72,6 +73,26 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(again.settings.always_allow.len(), 1);
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_namespace_is_rejected() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            for ns in ["", "  "] {
+                let err = handle(
+                    &stack.deps,
+                    crate::types::AlwaysAllowMutationRequest {
+                        session_id: "s_1".into(),
+                        namespace: Some(ns.into()),
+                        function_id: "shell::run".into(),
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(matches!(err, ApprovalError::InvalidPayload(_)));
+            }
         })
         .await;
     }

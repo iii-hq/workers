@@ -14,7 +14,7 @@ operational contract).
 |---|---|---|
 | `approval::gate` | harness only (the target of this worker's observer of `harness::hook::on-pre-call`) | The hook: `HookInput` → `{ decision: "continue" \| "deny" \| "hold" }`. Never call directly. |
 | `approval::filesystem-access-watch` | harness only (the target of this worker's observer of `harness::hook::on-post-call`) | The post-call hook: `HookInput` with the function result → `continue` or a `filesystem_access` hold. Never call directly. |
-| `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason? }` → `{ resolved, turn_resumed? }`. |
+| `approval::resolve` | console / inbox UI (human-only) | Apply a decision to a held call: `{ session_id, function_call_id, decision: "allow" \| "deny", reason?, namespace? }` → `{ resolved, turn_resumed? }`. `namespace` echoes the held call's namespace (the pending record's `namespace`); an `allow` without the echo is refused for a call held in another namespace (`namespace` differs from `implicit_namespace`). `deny` never needs it. |
 | `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
 | `approval::get-pending` | console | One record or `null`. |
 | `approval::set-mode` | console (human-only) | `manual` / `auto` / `full`. |
@@ -48,7 +48,8 @@ hook returns `hold` — never on the hook's hot path.
 
 Event: the `PendingApprovalRecord` plus `status: "pending"` — ids
 (`session_id`, `turn_id`, `function_call_id`, `function_id`), redacted
-`arguments_excerpt`, `pending_at`, denormalized
+`arguments_excerpt`, `pending_at`, `namespace` / `implicit_namespace` (the call's namespace and the
+caller's own, so a surface can show where the call runs), denormalized
 `session_title` / `session_description` / `session_metadata` (omitted when
 session-manager was unreachable at hold time), sub-agent `depth`, `kind`
 and, for a `filesystem_access` hold, `access_request`.

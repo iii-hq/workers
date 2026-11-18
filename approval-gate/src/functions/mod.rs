@@ -113,6 +113,19 @@ pub fn gate_metadata() -> serde_json::Value {
     serde_json::json!({ "call_namespace": true })
 }
 
+/// Grant writes: an empty namespace is an error, never `None` (that would
+/// widen the grant to the implicit namespace).
+pub(crate) fn validate_namespace(
+    namespace: Option<&str>,
+) -> Result<(), crate::error::ApprovalError> {
+    match namespace {
+        Some(ns) if ns.trim().is_empty() => Err(crate::error::ApprovalError::InvalidPayload(
+            "namespace must be a non-empty string".to_string(),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Wrap one typed handler, mapping `ApprovalError` into the wire error
 /// shape (`code: message`).
 fn registration<Req, Resp, F, Fut>(

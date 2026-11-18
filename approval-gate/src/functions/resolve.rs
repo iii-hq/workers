@@ -443,6 +443,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn an_old_surface_can_always_deny_a_call_held_in_another_namespace() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_record(&stack.iii).await;
+            let mut held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            held["namespace"] = json!("laptop");
+            held["implicit_namespace"] = json!("default");
+            state_set(&stack.iii, PENDING_SCOPE, "s_1/c_1", held).await;
+
+            let res = handle(&stack.deps, req(ResolveDecision::Deny, Some("no")))
+                .await
+                .unwrap();
+            assert!(res.resolved);
+            let harness = log_snapshot(&stack.harness_calls);
+            assert_eq!(harness[0]["action"], json!("deliver"));
+            assert_eq!(harness[0]["is_error"], json!(true));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn allow_preserves_a_followup_approval_created_during_execution() {
         let replacement = filesystem_replacement();
         let replacement_value = serde_json::to_value(&replacement).unwrap();

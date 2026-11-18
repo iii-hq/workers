@@ -12,6 +12,7 @@ pub async fn handle(
     deps: &Deps,
     req: ApproveAlwaysRequest,
 ) -> Result<SettingsResponse, ApprovalError> {
+    super::validate_namespace(req.namespace.as_deref())?;
     if req.function_id.is_empty() {
         return Err(ApprovalError::InvalidPayload(
             "function_id must be a non-empty string".to_string(),
@@ -59,6 +60,26 @@ mod tests {
                 res.settings.approved_always[0].granted_by,
                 GrantedBy::UserClick
             );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_namespace_is_rejected() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            for ns in ["", "  "] {
+                let err = handle(
+                    &stack.deps,
+                    ApproveAlwaysRequest {
+                        session_id: "s_1".into(),
+                        namespace: Some(ns.into()),
+                        function_id: "shell::run".into(),
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(matches!(err, ApprovalError::InvalidPayload(_)));
+            }
         })
         .await;
     }
