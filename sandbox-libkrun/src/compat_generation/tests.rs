@@ -851,3 +851,234 @@ fn stale_rebuild_cas_has_no_backup_or_generation_effects() {
     assert!(!f.backup.join("stale").exists());
     assert_eq!(store.selected().unwrap().unwrap().record.generation, 1);
 }
+
+#[test]
+fn recovery_of_unselected_rebuild_refuses_new_parent_writes() {
+    for layout in [Layout::OverlayImage, Layout::LegacyClone] {
+        let f = Fixture::new(layout, Provision::Bundle, "0.3.1");
+        let grant = f.grant();
+        {
+            let store = f.store(&grant);
+            store.capture("first", 0, &mut Faults::default()).unwrap();
+            write(&f.nonce(&f.data("first")), b"NEW1");
+            let mut fault = Faults {
+                fail: Some((Step::SelectorRename, libc::EIO)),
+            };
+            assert!(store.rebuild("second", 1, &f.env, &mut fault).is_err());
+            assert!(fault.fail.is_none(), "must reach selector publication");
+            assert_eq!(store.selected().unwrap().unwrap().record.generation, 1);
+        }
+        // The previously active generation can be used between attempts. A
+        // generation-number CAS alone cannot detect these subsequent writes.
+        write(&f.nonce(&f.data("first")), b"NEW2");
+        write(&f.data("first").join("bundle/data"), b"external-NEW2");
+        File::open(f.data("first")).unwrap().sync_all().unwrap();
+        let selector_before = host::read(f.custody.join("active.json")).unwrap();
+        let pending_before = host::read(f.custody.join("selector-second")).unwrap();
+        let store = f.store(&grant);
+        assert!(matches!(
+            store.recover("second", 1, &mut Faults::default()),
+            Err(Error::Conflict)
+        ));
+        assert_eq!(
+            host::read(f.custody.join("active.json")).unwrap(),
+            selector_before
+        );
+        assert_eq!(
+            host::read(f.custody.join("selector-second")).unwrap(),
+            pending_before
+        );
+        assert_eq!(store.selected().unwrap().unwrap().record.operation, "first");
+        assert_eq!(host::read(f.nonce(&f.data("first"))).unwrap(), b"NEW2");
+        assert!(f.backup.join("second/backup.json").is_file());
+        assert_eq!(host::read(f.nonce(&f.data("second"))).unwrap(), b"NEW1");
+        // Retain the conflicted candidate, but take a fresh snapshot of CURRENT.
+        assert_eq!(
+            store
+                .rebuild("third", 1, &f.env, &mut Faults::default())
+                .unwrap(),
+            Outcome::Committed(2)
+        );
+        assert_eq!(host::read(f.nonce(&f.data("third"))).unwrap(), b"NEW2");
+        assert_eq!(
+            host::read(f.data("third").join("bundle/data")).unwrap(),
+            b"external-NEW2"
+        );
+        write(&f.nonce(&f.data("third")), b"NEW3-after-commit");
+        assert_eq!(
+            store.recover("third", 1, &mut Faults::default()).unwrap(),
+            Outcome::AlreadyCommitted(2)
+        );
+        assert_eq!(
+            host::read(f.nonce(&f.data("third"))).unwrap(),
+            b"NEW3-after-commit"
+        );
+        assert!(
+            host::read(f.nonce(&f.source))
+                .unwrap()
+                .starts_with(b"OLD-fsynced-nonce")
+        );
+    }
+}
+
+#[test]
+fn publication_flush_failures_retain_copies_and_only_recover_complete_generations() {
+    for step in [
+        Step::BackupPublishedSync,
+        Step::GenerationPublishedSync,
+        Step::GenerationRecordSync,
+        Step::GenerationDirectorySync,
+        Step::SelectorPreparedSync,
+    ] {
+        let f = fresh();
+        let grant = f.grant();
+        let store = f.store(&grant);
+        let mut fault = Faults {
+            fail: Some((step, libc::EIO)),
+        };
+        assert!(store.capture("first", 0, &mut fault).is_err(), "{step:?}");
+        assert!(fault.fail.is_none(), "checkpoint was not reached: {step:?}");
+        assert!(!f.custody.join("active.json").exists());
+        assert!(f.backup.join("first/backup.json").is_file());
+        assert!(
+            host::read(f.backup.join("first/data/upper.ext4"))
+                .unwrap()
+                .starts_with(b"OLD-fsynced-nonce")
+        );
+        let backup_before = host::read(f.backup.join("first/backup.json")).unwrap();
+        if step == Step::BackupPublishedSync {
+            assert!(!f.custody.join("generation-first").exists());
+            assert!(matches!(
+                store.recover("first", 0, &mut Faults::default()),
+                Err(Error::Interrupted)
+            ));
+            assert!(matches!(
+                store.capture("first", 0, &mut Faults::default()),
+                Err(Error::Collision)
+            ));
+        } else {
+            assert!(f.custody.join("generation-first/receipt.json").is_file());
+            assert_eq!(
+                store.recover("first", 0, &mut Faults::default()).unwrap(),
+                Outcome::Committed(1)
+            );
+        }
+        assert_eq!(
+            host::read(f.backup.join("first/backup.json")).unwrap(),
+            backup_before
+        );
+        assert!(
+            host::read(f.source.join("upper.ext4"))
+                .unwrap()
+                .starts_with(b"OLD-fsynced-nonce")
+        );
+    }
+}
+
+#[test]
+fn recovery_flush_errors_do_not_claim_success_or_roll_back_current_writes() {
+    let f = fresh();
+    let grant = f.grant();
+    let store = f.store(&grant);
+    let mut before_selector = Faults {
+        fail: Some((Step::GenerationPublishedSync, libc::EIO)),
+    };
+    assert!(store.capture("first", 0, &mut before_selector).is_err());
+    assert!(before_selector.fail.is_none());
+    let mut repeat_sync = Faults {
+        fail: Some((Step::GenerationPublishedSync, libc::EIO)),
+    };
+    assert!(store.recover("first", 0, &mut repeat_sync).is_err());
+    assert!(
+        repeat_sync.fail.is_none(),
+        "recovery must re-sync the generation parent"
+    );
+    assert!(!f.custody.join("active.json").exists());
+    let mut after_selector = Faults {
+        fail: Some((Step::SelectorSync, libc::EIO)),
+    };
+    assert!(matches!(
+        store.recover("first", 0, &mut after_selector),
+        Err(Error::Uncertain)
+    ));
+    assert!(after_selector.fail.is_none());
+    write(&f.nonce(&f.data("first")), b"NEW-after-selector");
+    let active = host::read(f.custody.join("active.json")).unwrap();
+    let mut recovery_sync = Faults {
+        fail: Some((Step::RecoverySelectorSync, libc::EIO)),
+    };
+    assert!(store.recover("first", 0, &mut recovery_sync).is_err());
+    assert!(recovery_sync.fail.is_none());
+    assert_eq!(host::read(f.custody.join("active.json")).unwrap(), active);
+    assert_eq!(
+        host::read(f.nonce(&f.data("first"))).unwrap(),
+        b"NEW-after-selector"
+    );
+    assert_eq!(
+        store.recover("first", 0, &mut Faults::default()).unwrap(),
+        Outcome::AlreadyCommitted(1)
+    );
+    assert_eq!(
+        host::read(f.nonce(&f.data("first"))).unwrap(),
+        b"NEW-after-selector"
+    );
+}
+
+#[test]
+fn symlink_filesystem_barrier_failure_cannot_publish_a_backup_or_generation() {
+    let f = Fixture::new(Layout::LegacyClone, Provision::Path, "0.3.1");
+    symlink("nonce", f.source.join("root/workspace/link")).unwrap();
+    // This positive-support test MUST run on an admitted noatime filesystem.
+    // Unsupported/refused inventory is not a successful durability test.
+    let source = fs::Dir::open(&f.source, true).unwrap();
+    let mut vfs = unsafe { std::mem::zeroed::<libc::statvfs>() };
+    assert_eq!(unsafe { libc::fstatvfs(source.fd(), &mut vfs) }, 0);
+    assert_ne!(
+        vfs.f_flag & libc::ST_NOATIME,
+        0,
+        "requires admitted noatime filesystem; not a skip or support PASS"
+    );
+    let grant = f.grant();
+    let store = f.store(&grant);
+    for errno in [libc::EIO, libc::EINVAL] {
+        let op = format!("symlink-{errno}");
+        let mut fault = Faults {
+            fail: Some((Step::FilesystemSync, errno)),
+        };
+        let error = store.capture(&op, 0, &mut fault).unwrap_err();
+        assert!(matches!(error, Error::Io(ref e) if e.raw_os_error() == Some(errno)));
+        assert!(
+            fault.fail.is_none(),
+            "must reach the symlink inode flush barrier"
+        );
+        assert!(!f.custody.join("active.json").exists());
+        assert!(!f.backup.join(&op).exists());
+        assert!(!f.custody.join(format!("generation-{op}")).exists());
+        let stage = f.backup.join(format!("stage-{op}"));
+        assert!(
+            stage
+                .join("data/root/workspace/link")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!stage.join("backup.json").exists());
+        assert!(matches!(
+            store.recover(&op, 0, &mut Faults::default()),
+            Err(Error::Interrupted)
+        ));
+        assert!(matches!(
+            store.capture(&op, 0, &mut Faults::default()),
+            Err(Error::Collision)
+        ));
+        assert!(
+            stage.exists(),
+            "failed staging is evidence, never automatically removed"
+        );
+    }
+    assert_eq!(
+        host::read_link(f.source.join("root/workspace/link")).unwrap(),
+        PathBuf::from("nonce")
+    );
+}

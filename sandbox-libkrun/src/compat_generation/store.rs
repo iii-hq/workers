@@ -265,6 +265,7 @@ impl<'a> Store<'a> {
         self.backups.sync(fault)?;
         fault.at(Step::BackupRename)?;
         self.backups.rename_new(&stage, &self.backups, operation)?;
+        fault.at(Step::BackupPublishedSync)?;
         self.backups.sync(fault)?;
         let backup_digest = fs::digest(&backup_bytes);
         let staging = self.custody.mkdir(&stage)?;
@@ -290,6 +291,7 @@ impl<'a> Store<'a> {
         fault.at(Step::GenerationRename)?;
         self.custody
             .rename_new(&stage, &self.custody, &final_name)?;
+        fault.at(Step::GenerationPublishedSync)?;
         self.custody.sync(fault)?;
         self.publish(operation, parent, fault)
     }
@@ -314,6 +316,23 @@ impl<'a> Store<'a> {
         }
         Ok(())
     }
+    /// A generation-number CAS does not prove that its mutable parent still
+    /// contains the bytes from which this candidate was built. Reopening after
+    /// interruption may have allowed that parent to receive additional writes.
+    /// The coordinator's quiescence must cover this scan through selector commit.
+    fn validate_parent_snapshot(&self, record: &Record) -> Result<()> {
+        if record.parent == 0 {
+            return Ok(());
+        }
+        let current = self.selected()?.ok_or(Error::Conflict)?;
+        if current.record.generation != record.parent
+            || Some(&current.record.operation) != record.parent_operation.as_ref()
+            || tree::Inventory::scan(&current.data)?.digest() != record.snapshot_digest
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
     fn publish(&self, operation: &str, expected: u64, fault: &mut Faults) -> Result<Outcome> {
         if let Some(done) = self.expected(operation, expected)? {
             return Ok(done);
@@ -331,9 +350,15 @@ impl<'a> Store<'a> {
             return Err(Error::Conflict);
         }
         self.validate_backup(&r)?;
+        self.validate_parent_snapshot(&r)?;
         let generation = self.custody.child(&format!("generation-{operation}"))?;
+        fault.at(Step::GenerationRecordSync)?;
         generation.sync_record("receipt.json", fault)?;
+        fault.at(Step::GenerationDirectorySync)?;
         generation.sync(fault)?;
+        // Recovery may resume after rename but before the original parent sync.
+        fault.at(Step::GenerationPublishedSync)?;
+        self.custody.sync(fault)?;
         let s = Selector {
             version: FORMAT,
             binding: r.binding.clone(),
@@ -351,12 +376,14 @@ impl<'a> Store<'a> {
             fault.at(Step::SelectorWrite)?;
             self.custody.write_record(&tmp, &bytes, fault)?;
         }
+        fault.at(Step::SelectorPreparedSync)?;
         self.custody.sync_record(&tmp, fault)?;
         self.custody.sync(fault)?;
         self.validate_roots()?;
         if let Some(done) = self.expected(operation, expected)? {
             return Ok(done);
         }
+        self.validate_parent_snapshot(&r)?;
         fault.at(Step::SelectorRename)?;
         if expected == 0 {
             self.custody
@@ -384,6 +411,7 @@ impl<'a> Store<'a> {
         fault: &mut Faults,
     ) -> Result<Outcome> {
         if let Some(done) = self.expected(operation, expected)? {
+            fault.at(Step::RecoverySelectorSync)?;
             self.custody.sync(fault)?;
             return Ok(done);
         }

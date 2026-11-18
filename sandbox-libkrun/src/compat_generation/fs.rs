@@ -192,6 +192,17 @@ impl Dir {
         self.chain.last().unwrap().sync_all()?;
         Ok(())
     }
+    /// Flush all inode data and metadata on the retained filesystem, including
+    /// symlink attributes which cannot be fsynced through an O_PATH descriptor.
+    /// Failure is fatal to publication; directory fsync alone is not a substitute.
+    pub(super) fn sync_filesystem(&self, fault: &mut Faults) -> Result<()> {
+        fault.at(Step::FilesystemSync)?;
+        // SAFETY: fd is an open, owned directory on the destination filesystem.
+        if unsafe { libc::syncfs(self.fd()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
     pub(super) fn write_record(&self, name: &str, bytes: &[u8], fault: &mut Faults) -> Result<()> {
         if bytes.len() > MAX_RECORD {
             return Err(Error::Corrupt);

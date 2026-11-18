@@ -355,6 +355,16 @@ impl Inventory {
             fault.at(Step::DirectorySync)?;
             file.sync_all()?;
         }
+        // File/directory fsync does not generically persist a symlink inode's
+        // restored ownership, timestamps and xattrs. Cover those inodes with a
+        // checked filesystem-wide barrier before declaring the copy complete.
+        if self
+            .nodes
+            .iter()
+            .any(|n| matches!(n.entry.kind, Kind::Symlink(_)))
+        {
+            dest.sync_filesystem(fault)?;
+        }
         self.unchanged(source)?;
         let copied = Self::scan(dest)?;
         if copied.digest != self.digest {

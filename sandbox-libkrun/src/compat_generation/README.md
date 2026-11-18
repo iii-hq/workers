@@ -76,7 +76,11 @@ ctime and links, rejects unsupported types before staging, hashes all regular fi
 bytes, and keeps a canonical sorted metadata manifest in memory. Copies use EXCL
 creation, sparse SEEK_DATA/HOLE extents, file/directory fsync, numeric uid/gid,
 modes, nanosecond atime/mtime, complete xattrs (POSIX ACL/capabilities included),
-hardlink groups and symlink target bytes. Every copied entry is reread and compared
+hardlink groups and symlink target bytes. For any admitted symlink tree, a checked
+`syncfs` barrier on the retained destination filesystem follows metadata restoration
+and directory flushes, before the backup/candidate can be declared complete.
+Any barrier error fails the copy and retains staging; no O_PATH-fsync assumption
+or directory-only fallback is made. Every copied entry is reread and compared
 to the source manifest; no dropped metadata success. Source is re-inventoried
 before/after copy; original entries are never renamed, deleted or overwritten.
 
@@ -119,12 +123,18 @@ custody/active.json                           # atomic regular-file selector
 
 Copy+verify+fsync content and directories, then backup rename+parent fsync. Make
 and verify candidate, write/sync receipt, publish generation with no-replace,
-fsync parent. Under the held custody lock, compare current generation, validate
-backup and candidate, sync selector, atomically publish active and fsync parent.
+fsync parent. Under the held custody lock and coordinator-provided quiescence,
+compare the current generation AND the parent's current data/metadata inventory
+against the candidate's original snapshot before selector preparation and again
+before replacement. A changed parent yields Conflict and retains all copies;
+rebuild under a new operation from CURRENT instead of selecting stale data.
+Validate backup and candidate, sync selector, atomically publish active and fsync parent.
 For replacement, rename overwrites ONLY the validated selector record (old
 generation+backup remain); first activation uses no-replace. Any post-selector
 fsync failure returns Uncertain, not success or automatic rollback. Recovery
-rereads active and syncs; operation replay never reimports OLD over NEW. Incomplete
+rereads active and syncs; operation replay never reimports OLD over NEW. Recovery
+of an unselected generation rechecks the parent snapshot and re-syncs the generation's
+parent directory, including interruption immediately after the generation rename. Incomplete
 staging is retained and not adopted/bootable. Full unselected generation recovery
 requires exact backup/candidate digests. There is no cleanup/prune API.
 
@@ -147,6 +157,13 @@ start/archive behavior is NOT fixed by merely adding this private storage module
 No claim of a working general upgrade or support for all legacy trees is made.
 The eight historical source/layout/provision cells remain NOTRUN; two campaigns
 require16 later actual guest cycles, not synthetic disk marker tests.
+
+Fault checkpoints separately cover the flushes after backup/generation publication,
+generation record/directory resync, selector preparation, post-selector sync and
+already-committed recovery sync. This avoids claiming that a first generic fsync
+failure exercised every later barrier. The symlink barrier regression requires an
+explicitly admitted noatime filesystem and fails rather than skipping when absent.
+These tests are not power-loss experiments or approval of arbitrary filesystems.
 
 Tests in tests.rs exercise the actual filesystem implementation with small byte
 fixtures, fault boundaries and OLD/NEW semantics. They are not ext4/EROFS validity
