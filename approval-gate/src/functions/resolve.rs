@@ -52,8 +52,7 @@ pub async fn handle(deps: &Deps, req: ResolveRequest) -> Result<ResolveResponse,
     // An old surface shows no namespace, so it may not allow a call held in
     // another one. `deny` is always safe.
     if req.decision == ResolveDecision::Allow
-        && record.namespace != record.implicit_namespace
-        && req.namespace != record.namespace
+        && allow_lacks_namespace_echo(&record, req.namespace.as_deref())
     {
         return Err(ApprovalError::InvalidPayload(format!(
             "{} is held for namespace {}: allow it from a surface that shows the namespace",
@@ -226,21 +225,15 @@ async fn build_grant_allow_payload(
         return execute_payload(req, &record.turn_id, None);
     };
 
-    let mut duration = req.access_duration.unwrap_or(AccessDuration::Once);
-    // A folder grant is not per namespace: session/always would widen this
-    // namespace's session and shell roots for another namespace's call.
-    if duration != AccessDuration::Once
-        && record.namespace.is_some()
-        && record.namespace != record.implicit_namespace
-    {
+    let duration = folder_grant_duration(record, req.access_duration);
+    if req.access_duration.is_some_and(|d| d != duration) {
         tracing::info!(
             function_id = %record.function_id,
             namespace = ?record.namespace,
             implicit_namespace = ?record.implicit_namespace,
-            requested = ?duration,
+            requested = ?req.access_duration,
             "filesystem grant for a call held in another namespace lasts one call"
         );
-        duration = AccessDuration::Once;
     }
 
     let iii = deps.iii.as_ref();
@@ -261,6 +254,24 @@ async fn build_grant_allow_payload(
                 Err(()) => once_payload(req, &record.turn_id, grant),
             }
         }
+    }
+}
+
+/// An `allow` for a call held in another namespace must echo that namespace.
+fn allow_lacks_namespace_echo(record: &PendingApprovalRecord, echoed: Option<&str>) -> bool {
+    record.namespace != record.implicit_namespace && echoed != record.namespace.as_deref()
+}
+
+/// A folder grant is not per namespace: session/always would widen this
+/// namespace's session and shell roots for another namespace's call.
+fn folder_grant_duration(
+    record: &PendingApprovalRecord,
+    requested: Option<AccessDuration>,
+) -> AccessDuration {
+    if record.namespace.is_some() && record.namespace != record.implicit_namespace {
+        AccessDuration::Once
+    } else {
+        requested.unwrap_or(AccessDuration::Once)
     }
 }
 
@@ -408,6 +419,45 @@ mod tests {
             reason: reason.map(str::to_string),
             access_duration: None,
             namespace: None,
+        }
+    }
+
+    fn held_in(namespace: Option<&str>, implicit: Option<&str>) -> PendingApprovalRecord {
+        PendingApprovalRecord {
+            namespace: namespace.map(str::to_string),
+            implicit_namespace: implicit.map(str::to_string),
+            ..filesystem_replacement()
+        }
+    }
+
+    #[test]
+    fn an_allow_for_another_namespace_must_echo_it() {
+        let other = held_in(Some("laptop"), Some("default"));
+        assert!(allow_lacks_namespace_echo(&other, None));
+        assert!(allow_lacks_namespace_echo(&other, Some("default")));
+        assert!(!allow_lacks_namespace_echo(&other, Some("laptop")));
+        for own in [
+            held_in(Some("default"), Some("default")),
+            held_in(None, None),
+        ] {
+            assert!(!allow_lacks_namespace_echo(&own, None));
+            assert!(!allow_lacks_namespace_echo(&own, Some("laptop")));
+        }
+    }
+
+    #[test]
+    fn a_folder_grant_for_another_namespace_lasts_one_call() {
+        use AccessDuration::{Always, Once, Session};
+        let other = held_in(Some("zz-a"), Some("default"));
+        assert_eq!(folder_grant_duration(&other, Some(Session)), Once);
+        assert_eq!(folder_grant_duration(&other, Some(Always)), Once);
+        for own in [
+            held_in(Some("default"), Some("default")),
+            held_in(None, None),
+        ] {
+            assert_eq!(folder_grant_duration(&own, Some(Session)), Session);
+            assert_eq!(folder_grant_duration(&own, Some(Always)), Always);
+            assert_eq!(folder_grant_duration(&own, None), Once);
         }
     }
 

@@ -363,3 +363,16 @@ pub fn event_catalog() -> Vec<FunctionSpec> {
         ),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_namespace;
+
+    #[test]
+    fn a_blank_namespace_is_rejected() {
+        assert!(validate_namespace(Some("")).is_err());
+        assert!(validate_namespace(Some("  ")).is_err());
+        assert!(validate_namespace(Some("laptop")).is_ok());
+        assert!(validate_namespace(None).is_ok());
+    }
+}
