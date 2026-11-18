@@ -14,7 +14,8 @@
 //! `session`/`always` install a durable `harness::filesystem::grant` first
 //! (falling back to once-style `fs_scope.grants` on failure so the user's click
 //! still works), and `always` additionally best-effort persists the root into
-//! the `shell` deployment configuration. `access_duration` on a plain `function`
+//! the `shell` deployment configuration. For a call held in another namespace,
+//! `session`/`always` act as `once`. `access_duration` on a plain `function`
 //! record — or on a `deny` decision — is ignored (logged).
 
 use serde_json::{Value, json};
@@ -225,8 +226,25 @@ async fn build_grant_allow_payload(
         return execute_payload(req, &record.turn_id, None);
     };
 
+    let mut duration = req.access_duration.unwrap_or(AccessDuration::Once);
+    // A folder grant is not per namespace: session/always would widen this
+    // namespace's session and shell roots for another namespace's call.
+    if duration != AccessDuration::Once
+        && record.namespace.is_some()
+        && record.namespace != record.implicit_namespace
+    {
+        tracing::info!(
+            function_id = %record.function_id,
+            namespace = ?record.namespace,
+            implicit_namespace = ?record.implicit_namespace,
+            requested = ?duration,
+            "filesystem grant for a call held in another namespace lasts one call"
+        );
+        duration = AccessDuration::Once;
+    }
+
     let iii = deps.iii.as_ref();
-    match req.access_duration.unwrap_or(AccessDuration::Once) {
+    match duration {
         AccessDuration::Once => once_payload(req, &record.turn_id, grant),
         AccessDuration::Session => {
             match apply_filesystem_grant(iii, &req.session_id, &grant.requested_root).await {
@@ -694,40 +712,45 @@ mod tests {
         .await;
     }
 
+    /// An IDE whose shell configuration an `always` grant writes `fs.host_roots` into.
+    async fn register_shell_configuration(stack: &TestStack) {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        struct IdentityRequest {}
+        #[derive(serde::Serialize, schemars::JsonSchema)]
+        struct IdentityResponse {
+            id: String,
+        }
+        stack.iii.register_function(
+            "ide::configuration-id",
+            iii_sdk::RegisterFunction::new(|_request: IdentityRequest| {
+                Ok::<_, iii_sdk::errors::Error>(IdentityResponse {
+                    id: "project-ide-custom".into(),
+                })
+            })
+            .description("Test IDE configuration identity"),
+        );
+        crate::testkit::call(
+            &stack.iii,
+            "configuration::register",
+            json!({
+                "id": "project-ide-custom",
+                "name": "IDE",
+                "description": "test seed",
+                "schema": { "type": "object" },
+                "initial_value": { "untouched": "${PRESERVED_TEMPLATE}" },
+            }),
+        )
+        .await
+        .expect("register IDE configuration");
+    }
+
     /// Persistent approvals update the addressed IDE entry while preserving sibling settings.
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_grants_and_persists_configuration_best_effort() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            #[derive(serde::Deserialize, schemars::JsonSchema)]
-            struct IdentityRequest {}
-            #[derive(serde::Serialize, schemars::JsonSchema)]
-            struct IdentityResponse {
-                id: String,
-            }
-            stack.iii.register_function(
-                "ide::configuration-id",
-                iii_sdk::RegisterFunction::new(|_request: IdentityRequest| {
-                    Ok::<_, iii_sdk::errors::Error>(IdentityResponse {
-                        id: "project-ide-custom".into(),
-                    })
-                })
-                .description("Test IDE configuration identity"),
-            );
+            register_shell_configuration(&stack).await;
             seed_filesystem_access_record(&stack.iii, "/a/b").await;
             register_filesystem_grant_fake(&stack, false);
-            crate::testkit::call(
-                &stack.iii,
-                "configuration::register",
-                json!({
-                    "id": "project-ide-custom",
-                    "name": "IDE",
-                    "description": "test seed",
-                    "schema": { "type": "object" },
-                    "initial_value": { "untouched": "${PRESERVED_TEMPLATE}" },
-                }),
-            )
-            .await
-            .expect("register IDE configuration");
 
             handle(&stack.deps, grant_req(Some(AccessDuration::Always)))
                 .await
@@ -785,6 +808,108 @@ mod tests {
                 .find(|c| c["action"] == json!("execute"))
                 .expect("execute call");
             assert!(execute_call.get("fs_scope").is_none());
+        })
+        .await;
+    }
+
+    async fn hold_in_namespace(iii: &iii_sdk::IIIClient, namespace: &str, implicit: &str) {
+        let mut held = state_get(iii, PENDING_SCOPE, "s_1/c_1").await;
+        held["namespace"] = json!(namespace);
+        held["implicit_namespace"] = json!(implicit);
+        state_set(iii, PENDING_SCOPE, "s_1/c_1", held).await;
+    }
+
+    /// Allow with the record's namespace echoed, as a namespace-aware surface sends it.
+    fn echoed_grant_req(scope: AccessDuration, namespace: &str) -> ResolveRequest {
+        ResolveRequest {
+            namespace: Some(namespace.into()),
+            ..grant_req(Some(scope))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_filesystem_grant_for_a_call_in_another_namespace_lasts_one_call() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            hold_in_namespace(&stack.iii, "zz-a", "default").await;
+            register_filesystem_grant_fake(&stack, false);
+
+            let res = handle(
+                &stack.deps,
+                echoed_grant_req(AccessDuration::Session, "zz-a"),
+            )
+            .await
+            .unwrap();
+            assert!(res.resolved);
+
+            let harness = log_snapshot(&stack.harness_calls);
+            assert_eq!(harness.len(), 1, "only function::resolve, no grant call");
+            assert_eq!(harness[0]["action"], json!("execute"));
+            assert_eq!(harness[0]["fs_scope"]["grants"], json!(["/a/b"]));
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_always_filesystem_grant_for_a_call_in_another_namespace_writes_no_host_root() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_shell_configuration(&stack).await;
+            seed_filesystem_access_record(&stack.iii, "/a/b").await;
+            hold_in_namespace(&stack.iii, "zz-a", "default").await;
+            register_filesystem_grant_fake(&stack, false);
+
+            let res = handle(
+                &stack.deps,
+                echoed_grant_req(AccessDuration::Always, "zz-a"),
+            )
+            .await
+            .unwrap();
+            assert!(res.resolved);
+
+            let harness = log_snapshot(&stack.harness_calls);
+            assert_eq!(harness.len(), 1, "only function::resolve, no grant call");
+            assert_eq!(harness[0]["action"], json!("execute"));
+            assert_eq!(harness[0]["fs_scope"]["grants"], json!(["/a/b"]));
+
+            let shell_cfg = crate::testkit::call(
+                &stack.iii,
+                "configuration::get",
+                json!({ "id": "project-ide-custom", "raw": true }),
+            )
+            .await
+            .unwrap();
+            assert!(
+                shell_cfg["value"]["fs"]["host_roots"].is_null(),
+                "{shell_cfg}"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_filesystem_grant_in_the_implicit_namespace_keeps_its_duration() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_filesystem_grant_fake(&stack, false);
+            for scope in [AccessDuration::Session, AccessDuration::Always] {
+                seed_filesystem_access_record(&stack.iii, "/a/b").await;
+                hold_in_namespace(&stack.iii, "default", "default").await;
+                handle(&stack.deps, echoed_grant_req(scope, "default"))
+                    .await
+                    .unwrap();
+            }
+
+            let calls = log_snapshot(&stack.harness_calls);
+            let grants = calls
+                .iter()
+                .filter(|c| c["__fn"] == json!("harness::filesystem::grant"))
+                .count();
+            assert_eq!(grants, 2, "session and always both grant for the session");
+            assert!(
+                calls
+                    .iter()
+                    .filter(|c| c["action"] == json!("execute"))
+                    .all(|c| c.get("fs_scope").is_none())
+            );
         })
         .await;
     }

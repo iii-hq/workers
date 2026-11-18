@@ -180,6 +180,8 @@ Resolving a `filesystem_access` record's `allow` decision takes an additional
 | `session` | `harness::filesystem::grant` first (durable for the rest of the session), THEN release with no `extra_roots` — the harness stamps the grant on every subsequent call itself. Falls back to `once`-style `extra_roots` if the grant call fails, so the user's click still works. |
 | `always` | Same as `session`, PLUS a best-effort append of `dir` to the `shell` deployment configuration's `fs.host_roots` (`configuration::get`/`configuration::set {id: "shell"}`). A persist failure is logged and never blocks the release. |
 
+For a call held in another namespace, session and always last one call: the folder grant never reaches this namespace's shell or session roots.
+
 `deny` records the dir in `approval_filesystem_access_denied/<session_id>` (so the same
 session won't be re-asked about it again) before delivering a denial whose
 default reason mentions folder access specifically (`"user denied folder
