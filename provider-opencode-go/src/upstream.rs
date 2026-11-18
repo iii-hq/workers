@@ -146,10 +146,10 @@ async fn run_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        build_partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -299,6 +299,7 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+                assert!(error.content.is_empty());
             }
             other => panic!("want error, got {other:?}"),
         }
@@ -338,6 +339,40 @@ mod tests {
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => error,
             other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn body_read_error_reports_only_content_received_before_disconnect() {
+        use llm_router::types::content::ContentBlock;
+
+        for (response, expected) in [
+            (
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 1024\r\n\r\n: keepalive\n\n",
+                vec![],
+            ),
+            (
+                concat!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 1024\r\n\r\n",
+                    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                ),
+                vec![ContentBlock::Text {
+                    text: "Hello".into(),
+                }],
+            ),
+        ] {
+            let url = stub(response).await;
+            let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+            let error = single_terminal_error(&events);
+            assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            assert!(
+                error
+                    .error_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("stream read failed")
+            );
+            assert_eq!(error.content, expected);
         }
     }
 

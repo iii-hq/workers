@@ -69,7 +69,7 @@ fn scenario(case: FamilyCase) -> ScenarioFixture {
         case.slug,
         "A permanent provider failure persists one stable public summary and its provider-specific diagnostic detail.",
         ScenarioDriver::Playground,
-        model.clone(),
+        model,
     )
     .send(
         Send::message(&message)
@@ -96,7 +96,6 @@ fn scenario(case: FamilyCase) -> ScenarioFixture {
                     .system_prompt_regex("agent_call")
                     .messages_exact([
                         Message::user(&message),
-                        Message::assistant_empty(&model),
                         Message::user(RECOVERY_MESSAGE),
                     ])
                     .tools_subset([Tool::named("agent_call")]),

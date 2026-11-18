@@ -216,6 +216,25 @@ pub fn handle_event(
                 partial: partial(state, model),
             });
         }
+        "error" | "response.failed" => {
+            // Responses nests failures under response.error; a bare error
+            // event carries its code and message at the top level.
+            let error = data
+                .pointer("/response/error")
+                .or_else(|| data.get("error"))
+                .unwrap_or(data);
+            let kind = classify(None, &json!({ "error": error }).to_string());
+            let diagnostic = error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+                .unwrap_or("xAI response failed");
+            out.push(AssistantMessageEvent::error(
+                partial(state, model),
+                kind,
+                diagnostic,
+            ));
+        }
         "response.completed" => {
             close_thinking(state, model, &mut out);
             if let Some(u) = data.pointer("/response/usage").filter(|u| u.is_object()) {
@@ -369,10 +388,10 @@ async fn run_responses_upstream(
             Ok(c) => c,
             Err(e) => {
                 let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
+                    .send(AssistantMessageEvent::error(
+                        partial(&state, &args.model),
                         ErrorKind::Transient,
+                        format!("stream read failed: {e}"),
                     ))
                     .await;
                 return;
@@ -389,7 +408,8 @@ async fn run_responses_upstream(
                 continue;
             };
             for ev in handle_event(event_type, &parsed, &mut state, &args.model) {
-                if tx.send(ev).await.is_err() {
+                let terminal = ev.is_terminal();
+                if tx.send(ev).await.is_err() || terminal {
                     return;
                 }
             }
@@ -414,10 +434,10 @@ async fn run_responses_upstream(
     // completed. Surface a transient error so callers can distinguish this from
     // a real terminal completion (and retry).
     let _ = tx
-        .send(synthetic_error_event(
-            "xai responses stream ended before completion",
-            &args.model,
+        .send(AssistantMessageEvent::error(
+            partial(&state, &args.model),
             ErrorKind::Transient,
+            "xai responses stream ended before completion",
         ))
         .await;
 }

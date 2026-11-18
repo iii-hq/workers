@@ -240,9 +240,7 @@ async fn pump_with_auth_invalidation(
                          copilot/ model; it has been removed from the catalog until the next refresh.",
                         upstream_id(&model)
                     );
-                    error.error_message = Some(actionable.clone());
-                    error.content =
-                        vec![llm_router::types::content::ContentBlock::Text { text: actionable }];
+                    error.error_message = Some(actionable);
                     let (iii, model) = (iii.clone(), model.clone());
                     tokio::spawn(async move {
                         let token = state::load_token(&iii).await;
@@ -343,6 +341,60 @@ mod tests {
         assert_eq!(frames.len(), 2);
         let last: Value = serde_json::from_str(&frames[1]).unwrap();
         assert_eq!(last["type"], "done");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plan_refusal_rewrites_only_the_diagnostic() {
+        use llm_router::types::content::ContentBlock;
+
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
+        for content in [
+            vec![],
+            vec![ContentBlock::Text {
+                text: "saved".into(),
+            }],
+        ] {
+            let ch = FakeChannel::new();
+            let mut partial = empty_assistant("gpt-test");
+            partial.content = content.clone();
+            let (tx, rx) = mpsc::channel(1);
+            tx.send(AssistantMessageEvent::error(
+                partial,
+                ErrorKind::Permanent,
+                r#"{"error":{"code":"model_not_supported"}}"#,
+            ))
+            .await
+            .unwrap();
+            drop(tx);
+            pump_with_auth_invalidation(
+                rx,
+                &ch.writer,
+                Duration::from_secs(30),
+                None,
+                &BearerCache::new(),
+                &iii,
+                "copilot/gpt-test",
+            )
+            .await;
+            ch.writer.close();
+            let mut reader = ch.reader;
+            let llm_router::chat::relay::ReadEvent::Msg(raw) =
+                reader.next(Duration::from_secs(1)).await
+            else {
+                panic!("missing refusal frame");
+            };
+            let AssistantMessageEvent::Error { error } = serde_json::from_str(&raw).unwrap() else {
+                panic!("unexpected refusal frame: {raw}");
+            };
+            assert_eq!(error.content, content);
+            assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+            assert!(
+                error
+                    .error_message
+                    .unwrap()
+                    .contains("gpt-test is not available on this Copilot plan")
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
