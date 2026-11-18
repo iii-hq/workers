@@ -282,7 +282,9 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 
 /// The hint's namespace sentence: the caller's own namespace and every other
 /// namespace the catalog holds. `None` when the catalog holds no other one.
-fn namespace_line(own: &str, catalog: &[ToolSchema]) -> Option<String> {
+/// Only `agent_call` exposure says to pass `namespace`: a native call has no
+/// envelope, so a `namespace` argument would land in the function's payload.
+fn namespace_line(own: &str, catalog: &[ToolSchema], expose: ExposeKind) -> Option<String> {
     let others: std::collections::BTreeSet<&str> = catalog
         .iter()
         .flat_map(|tool| tool.namespaces.iter().map(String::as_str))
@@ -296,9 +298,14 @@ fn namespace_line(own: &str, catalog: &[ToolSchema]) -> Option<String> {
         .map(|namespace| format!("`{namespace}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    Some(format!(
-        "Your namespace: `{own}`. A call without `namespace` runs there. Other namespaces: {others}. Pass `namespace` to use a function in one of them.\n"
-    ))
+    Some(match expose {
+        ExposeKind::AgentCall => format!(
+            "Your namespace: `{own}`. A call without `namespace` runs there. Other namespaces: {others}. Pass `namespace` to use a function in one of them.\n"
+        ),
+        ExposeKind::Native | ExposeKind::Other => {
+            format!("Your namespace: `{own}`. Other namespaces: {others}.\n")
+        }
+    })
 }
 
 /// The exact `<discovery_assist>` block one generation receives.
@@ -452,7 +459,7 @@ pub async fn pre_generate(deps: &Deps, request: PreGenerateHookRequest) -> PreGe
         );
     }
     let line = match request.own_namespace.as_deref() {
-        Some(own) => namespace_line(own, &deps.catalog.read().await),
+        Some(own) => namespace_line(own, &deps.catalog.read().await, expose),
         None => None,
     };
     PreGenerateHookResponse {
@@ -628,10 +635,37 @@ mod tests {
                 &[ToolSchema {
                     namespaces: vec!["default".into()],
                     ..tool("a::b")
-                }]
+                }],
+                ExposeKind::AgentCall
             ),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn native_hint_names_namespaces_without_a_namespace_argument() {
+        let deps = deps();
+        *deps.catalog.write().await = Arc::new(vec![
+            ToolSchema {
+                namespaces: vec!["laptop".into()],
+                ..tool("state::set")
+            },
+            ToolSchema {
+                namespaces: vec!["hub".into(), "default".into()],
+                ..tool("shell::exec")
+            },
+            ToolSchema {
+                namespaces: vec!["hub".into()],
+                ..tool("github::repo::view")
+            },
+        ]);
+        let mut request = request_for("find the stars", wide_tools());
+        request.generate.expose = ExposeKind::Native;
+        request.own_namespace = Some("default".into());
+        let prompt = hint_text(&pre_generate(&deps, request).await);
+        assert!(prompt.ends_with(
+            "Your namespace: `default`. Other namespaces: `hub`, `laptop`.\n</discovery_assist>"
+        ));
     }
 
     #[tokio::test]
