@@ -97,6 +97,37 @@ pub fn suggested_rule(path: &str) -> String {
 
 /// The log line for an endpoint no rule exposes. The client gets a bare 404:
 /// the hint is for the operator, not for whoever is probing.
+/// Which endpoint kinds already logged a refusal since the last reload.
+/// Refusals come before authentication, so the hint is logged once per kind
+/// (not per request, nor per made-up channel id) and at debug after that.
+#[derive(Default)]
+pub struct RefusalLog {
+    logged: [std::sync::atomic::AtomicBool; 3],
+}
+
+impl RefusalLog {
+    /// True the first time `kind` is refused since the last [`Self::reset`].
+    pub fn first(&self, kind: &Endpoint) -> bool {
+        let slot = match kind {
+            Endpoint::Worker => 0,
+            Endpoint::Telemetry => 1,
+            Endpoint::Channel(_) => 2,
+        };
+        !self.logged[slot].swap(true, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A reload: the next refusal of each kind is logged again.
+    pub fn reset(&self) {
+        for flag in &self.logged {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// The process-wide refusal log, reset by every applied configuration.
+pub static REFUSALS: std::sync::LazyLock<RefusalLog> =
+    std::sync::LazyLock::new(RefusalLog::default);
+
 pub fn not_exposed_hint(path: &str) -> String {
     format!(
         "endpoint {path} is not exposed; add {} to rbac.expose_endpoints to serve it",
@@ -230,6 +261,23 @@ impl JsonSchema for EndpointFilter {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_refusal_is_logged_once_per_endpoint_kind_until_a_reload() {
+        // Refusals come before authentication: one visible line per kind,
+        // not per request or per channel id a client makes up.
+        let log = RefusalLog::default();
+        assert!(log.first(&Endpoint::Channel("a".into())));
+        assert!(!log.first(&Endpoint::Channel("b".into())));
+        assert!(log.first(&Endpoint::Telemetry));
+        assert!(!log.first(&Endpoint::Telemetry));
+        assert!(log.first(&Endpoint::Worker));
+        log.reset();
+        assert!(
+            log.first(&Endpoint::Channel("c".into())),
+            "a reload logs it again"
+        );
+    }
 
     fn rules(v: serde_json::Value) -> Vec<EndpointFilter> {
         serde_json::from_value(v).expect("valid rules")

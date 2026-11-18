@@ -87,7 +87,12 @@ async fn endpoint(
     };
     let cfg = state.config.read().await.clone();
     if !endpoints::endpoint_exposed(&cfg.rbac.endpoints(), &path) {
-        tracing::debug!(hint = %endpoints::not_exposed_hint(&path), "refused an unexposed endpoint");
+        let hint = endpoints::not_exposed_hint(&path);
+        if endpoints::REFUSALS.first(&kind) {
+            tracing::info!(%hint, "refused an unexposed endpoint (logged once per endpoint kind until the next reload)");
+        } else {
+            tracing::debug!(%hint, "refused an unexposed endpoint");
+        }
         return not_found();
     }
     let Ok(ws) = ws else {

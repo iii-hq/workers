@@ -180,6 +180,7 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
         tracing::warn!("{warning}");
     }
     *cell.write().await = Arc::new(cfg);
+    crate::endpoints::REFUSALS.reset();
     CONFIG_REVISION.send_modify(|revision| *revision += 1);
 }
 

@@ -928,6 +928,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_malformed_match_rule_is_a_config_error_not_a_panic() {
+        for bad in ["match(\")", "match(')"] {
+            let endpoints =
+                serde_json::from_value::<RbacConfig>(json!({ "expose_endpoints": [bad] }));
+            assert!(endpoints.is_err(), "expose_endpoints {bad}");
+            let functions =
+                serde_json::from_value::<RbacConfig>(json!({ "expose_functions": [bad] }));
+            assert!(functions.is_err(), "expose_functions {bad}");
+        }
+    }
+
+    #[test]
     fn a_match_rule_whose_quotes_overlap_is_not_a_pattern() {
         // `match(")` passes both the prefix and the suffix check on one
         // shared quote; slicing it used to panic during deserialization.
