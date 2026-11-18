@@ -13,7 +13,7 @@ const candidate = {
 
 const response = {
   guidance: 'Choose candidates, then fetch their contracts in one batch.',
-  workers: [{ namespace: 'github', functions: [candidate] }],
+  workers: [{ worker: 'github', functions: [candidate] }],
   latency_ms: 12.4,
 }
 
@@ -38,6 +38,11 @@ describe('isErrorOutput', () => {
 })
 
 describe('parseDiscoverResponse', () => {
+  it('reads the worker group from `worker` and from the legacy `namespace` field', () => {
+    expect(parseDiscoverResponse({ ...response, workers: [{ worker: 'github', functions: [candidate] }] })?.workers[0].worker).toBe('github')
+    expect(parseDiscoverResponse({ ...response, workers: [{ namespace: 'github', functions: [candidate] }] })?.workers[0].worker).toBe('github')
+  })
+
   it('parses a flat response and an enveloped one identically', () => {
     const parsed = { ...response, installable: [], skills: [], observers: [] }
     expect(parseDiscoverResponse(response)).toEqual(parsed)
@@ -148,7 +153,7 @@ describe('parseDiscoverResponse', () => {
         ...response,
         workers: [
           {
-            namespace: 'github',
+            worker: 'github',
             functions: [{ ...candidate, request_schema: { type: 'object' } }],
           },
         ],
@@ -203,14 +208,14 @@ describe('parseDiscoverResponse', () => {
     ['non-finite latency', { guidance: 'g', workers: [], latency_ms: Number.NaN }],
     ['workers not an array', { guidance: 'g', workers: {}, latency_ms: 1 }],
     [
-      'worker without namespace',
+      'worker without a worker name',
       { guidance: 'g', workers: [{ functions: [] }], latency_ms: 1 },
     ],
     [
       'candidate without function_id',
       {
         guidance: 'g',
-        workers: [{ namespace: 'github', functions: [{ description: '' }] }],
+        workers: [{ worker: 'github', functions: [{ description: '' }] }],
         latency_ms: 1,
       },
     ],
@@ -218,7 +223,7 @@ describe('parseDiscoverResponse', () => {
       'candidate without description',
       {
         guidance: 'g',
-        workers: [{ namespace: 'github', functions: [{ function_id: 'github::x' }] }],
+        workers: [{ worker: 'github', functions: [{ function_id: 'github::x' }] }],
         latency_ms: 1,
       },
     ],
@@ -239,8 +244,8 @@ describe('functionCount', () => {
         skills: [],
         observers: [],
         workers: [
-          { namespace: 'a', functions: [candidate, candidate] },
-          { namespace: 'b', functions: [candidate] },
+          { worker: 'a', functions: [candidate, candidate] },
+          { worker: 'b', functions: [candidate] },
         ],
       }),
     ).toBe(3)
