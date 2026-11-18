@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- **The batch check finds an already verified card's fallout by its landed commit.** Since 0.1.4 commits carry no ticket key, so the `In range:` line now gives each card's landed sha and the check looks it up with `git log --format=%H`.
+- **An empty `plan_model` takes a given `check_model` before the model list**, as the arguments table says.
+- **The automatic choice no longer skips past the next size down.** It finds the size right below the orchestrator's first, and stays on the orchestrator's model when that size is the smallest or has a smaller context window.
+- **A model a start refuses does not use up the start's three sends** while its cell has another id, so every listed model gets a try.
+
 ## 0.1.4
 
 - **The run picks a model per stage, from a list you can edit.** `agents/workflow-models.md` is a new kit file, data and not an agent: one row per provider and, for the plan, check and work stages, a list of model ids, best first; the file says which nodes each stage covers. With `models=auto`, the new default, a run whose orchestrator is on a listed provider gives each stage the first listed id its model catalog has and picks nothing outside the row; a stage with no listed id in the catalog runs on the orchestrator's model. The file ships filled in, and kit updates keep your edits.
