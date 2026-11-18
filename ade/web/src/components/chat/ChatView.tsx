@@ -3126,9 +3126,25 @@ export function ChatView({
   ])
 
   const conversationBodyRef = useRef<HTMLDivElement>(null)
+  // The welcome is for a chat that has nothing in it yet: a draft, or a
+  // session the person opened that never started. A sub-agent's session
+  // is never that, and neither is one whose transcript failed to load
+  // (a read that times out leaves it "hydrated" and empty): both would
+  // otherwise read as a blank new chat, inviting a message into a session
+  // that is someone else's work.
+  const transcriptLoadFailed = Boolean(
+    conversationsCtx?.conversationLoadErrors?.[conversation.id],
+  )
+  const freshChat =
+    conversation.draft === true ||
+    (conversation.started !== true &&
+      !conversation.parentId &&
+      !conversation.spawnedBy)
   const welcome =
     !side &&
     !readOnly &&
+    freshChat &&
+    !transcriptLoadFailed &&
     shownMessages.length === 0 &&
     !isThinking &&
     !streamingIndicator &&
