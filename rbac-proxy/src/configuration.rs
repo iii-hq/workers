@@ -164,9 +164,24 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
+/// Bumped on every applied configuration; long-lived relays watch it.
+static CONFIG_REVISION: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// A receiver that wakes on every applied configuration.
+pub fn config_changes() -> tokio::sync::watch::Receiver<u64> {
+    CONFIG_REVISION.subscribe()
+}
+
 /// Swap the config snapshot under the write lock.
 pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
+    if let Some(warning) = crate::endpoints::endpoints_warning(cfg.rbac.expose_endpoints.as_deref())
+    {
+        tracing::warn!("{warning}");
+    }
     *cell.write().await = Arc::new(cfg);
+    crate::endpoints::REFUSALS.reset();
+    CONFIG_REVISION.send_modify(|revision| *revision += 1);
 }
 
 /// What `rbac-proxy::on-config-change` receives: the

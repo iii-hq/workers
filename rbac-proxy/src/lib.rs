@@ -15,6 +15,7 @@
 pub mod channels;
 pub mod config;
 pub mod configuration;
+pub mod endpoints;
 pub mod engine_overrides;
 pub mod functions;
 pub mod interceptor;
@@ -27,19 +28,23 @@ pub fn worker_name() -> &'static str {
     "rbac-proxy"
 }
 
-/// Strip userinfo (`user:pass@`) from a URL before logging or returning it.
-/// The engine WebSocket URL is operator-controlled and can carry credentials
-/// in `wss://user:secret@host` form; the redactor keeps them out of `tracing`
-/// output and out of the agent-callable `rbac-proxy::status` probe. Falls back
-/// to the original string on parse failure.
+/// Strip userinfo (`user:pass@`), the query and the fragment from a URL
+/// before logging or returning it. The engine WebSocket URL is
+/// operator-controlled and can carry credentials in `wss://user:secret@host`
+/// or `?token=` form, and a channel URL carries its access key in the query;
+/// the redactor keeps them out of `tracing` output and out of the
+/// agent-callable `rbac-proxy::status` probe. A string that does not parse is
+/// cut at its first `?`.
 pub fn redact_url(s: &str) -> String {
     match url::Url::parse(s) {
         Ok(mut u) => {
             let _ = u.set_username("");
             let _ = u.set_password(None);
+            u.set_query(None);
+            u.set_fragment(None);
             u.to_string()
         }
-        Err(_) => s.to_string(),
+        Err(_) => s.split('?').next().unwrap_or_default().to_string(),
     }
 }
 
@@ -55,5 +60,15 @@ mod redact_tests {
             "wss://iii.example.com:1234/path"
         );
         assert_eq!(redact_url("not a url"), "not a url");
+    }
+
+    #[test]
+    fn redact_url_drops_query_credentials() {
+        assert_eq!(
+            redact_url("ws://e:1/ws/channels/c?key=secret&dir=read"),
+            "ws://e:1/ws/channels/c"
+        );
+        assert_eq!(redact_url("ws://e:1/?token=t#frag"), "ws://e:1/");
+        assert_eq!(redact_url("not a url?key=secret"), "not a url");
     }
 }
