@@ -132,7 +132,7 @@ jobs:
 
       - name: Run the memory-gain suite on the ${{ matrix.stack }} stack
         id: e2e
-        # The memory gain arms; the stacks run harness-e2e latest, 0.30.0 or later.
+        # The memory gain arms; the stacks run harness-e2e latest, 0.33.0 or later.
         uses: iii-hq/harness-e2e/.github/actions/verify-stack@34f19f5c331d993777c58decab0a0c7d0062c96d
         with:
           token: ${{ steps.app.outputs.token }}
@@ -195,8 +195,8 @@ jobs:
 
       - name: Compare the arms
         id: gain
-        # The memory gain arms; the stacks run harness-e2e latest, 0.30.0 or later.
-        uses: iii-hq/harness-e2e/.github/actions/memory-gain@82dfa887f488f64d050e7ac86b557f966b7f124c
+        # The memory gain arms; the stacks run harness-e2e latest, 0.33.0 or later.
+        uses: iii-hq/harness-e2e/.github/actions/memory-gain@7080dbba660910d853fcb32b54c37f059084f108
         with:
           token: ${{ steps.app.outputs.token }}
           runs: ${{ steps.runs.outputs.runs }}
