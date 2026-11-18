@@ -325,7 +325,8 @@ fn unwatched_override() -> bool {
 }
 
 /// Re-check the bind; when `http::status` cannot be read, the routes stay
-/// withdrawn and recovery checks follow after each of
+/// withdrawn (unless the public-http override serves an unknown bind) and
+/// recovery checks follow after each of
 /// [`http_guard::RECOVERY_DELAYS`], until one reads the bind or a newer
 /// check starts its own.
 pub async fn recheck_and_recover(ctx: &Ctx, routes: &Arc<Routes>) {
@@ -360,7 +361,8 @@ pub async fn recheck_and_recover(ctx: &Ctx, routes: &Arc<Routes>) {
 }
 
 /// Check the bind once and withdraw or restore the routes; `false` when
-/// `http::status` could not be read (the routes are then withdrawn).
+/// `http::status` could not be read (the routes are then withdrawn, unless
+/// the public-http override serves an unknown bind).
 pub async fn recheck_bind(ctx: &Ctx, routes: &Routes) -> bool {
     let _one_at_a_time = routes.rechecking.lock().await;
     let status = Bus::call(&ctx.engine, "http::status", json!({}), Some(10_000))

@@ -138,12 +138,21 @@ struct Entry {
 }
 
 impl Entry {
-    /// Ended, with every delivery accounted for: all of its
-    /// `max_observations` arrived. Anything else (an expiry, a limit not
+    /// Ended, with every delivery accounted for: a target observer (its
+    /// deliveries bypass the session), or all of its `max_observations`
+    /// arrived. Anything else (an expiry, a limit not
     /// reached) may still have an observation in flight, with no bound on
     /// when it lands, so only `iii_unobserve` frees it.
     fn complete(&self) -> bool {
-        self.handle.state() == "disposed" && self.limit.is_some_and(|m| self.received >= m)
+        if self.handle.state() != "disposed" {
+            return false;
+        }
+        match self.delivery {
+            // Its observations go to the target, never through the
+            // session: ending it here drops nothing in flight.
+            Delivery::Target(_) => true,
+            _ => self.limit.is_some_and(|m| self.received >= m),
+        }
     }
 }
 
@@ -174,10 +183,18 @@ struct Session {
     /// stream that took over cannot erase the replaced one's record.
     in_flight: Vec<InFlight>,
     /// SSE observations whose write failed after a later one was sent, so
-    /// `sent_through` cannot be rolled back over them: every backlog
-    /// carries them, whatever its `Last-Event-ID`, until a stream writes
-    /// them or the cap drops them.
-    unsent: std::collections::BTreeSet<u64>,
+    /// `sent_through` cannot be rolled back over them. Every backlog carries
+    /// them, whatever its `Last-Event-ID`, until the client shows it has
+    /// one (see `written`) or the cap drops it. A write does not settle
+    /// it: the client can drop before reading. Value: where it was last
+    /// written, (stream generation, write order).
+    unsent: std::collections::BTreeMap<u64, Option<(u64, u64)>>,
+    /// Where each buffered SSE observation was last written: (stream
+    /// generation, write order). A client resuming from `Last-Event-ID` L
+    /// has every owed observation its stream wrote at or before L.
+    written: HashMap<u64, (u64, u64)>,
+    /// Counts successful writes, for `written`.
+    write_order: u64,
 }
 
 /// A claimed observation whose write has not reported yet.
@@ -272,7 +289,9 @@ impl Sessions {
                 sent_through: 0,
                 sse_dropped_through: 0,
                 in_flight: Vec::new(),
-                unsent: std::collections::BTreeSet::new(),
+                unsent: std::collections::BTreeMap::new(),
+                written: HashMap::new(),
+                write_order: 0,
             },
         );
         Ok(id)
@@ -528,7 +547,8 @@ impl Sessions {
                     // from before it, a loss only if no stream wrote it.
                     session.sse_dropped_through = session.sse_dropped_through.max(dropped_seq);
                     // An owed one was never written either.
-                    let owed = session.unsent.remove(&dropped_seq);
+                    let owed = session.unsent.remove(&dropped_seq).is_some();
+                    session.written.remove(&dropped_seq);
                     owed || dropped_seq > session.sent_through
                 } else {
                     session.dropped += 1;
@@ -619,6 +639,13 @@ impl Sessions {
             .get_mut(session_id)
             .ok_or_else(|| format!("unknown session: {session_id}"))?;
         session.last_seen = Instant::now();
+        // The client has `last_event_id` and, the stream being ordered,
+        // everything its stream wrote before it: those owed are settled.
+        if let Some(&(stream, order)) = last_event_id.and_then(|l| session.written.get(&l)) {
+            session
+                .unsent
+                .retain(|_, w| !matches!(w, Some((g, o)) if *g == stream && *o <= order));
+        }
         let after = last_event_id.unwrap_or(session.sent_through);
         let mut backlog = Vec::new();
         if session.sse_dropped_through > after {
@@ -628,7 +655,7 @@ impl Sessions {
             });
         }
         for (seq, id, observation) in &session.buffer {
-            if (*seq > after || session.unsent.contains(seq)) && session.is_sse(id) {
+            if (*seq > after || session.unsent.contains_key(seq)) && session.is_sse(id) {
                 backlog.push(StreamItem::Observation {
                     id: *seq,
                     observation: observation.clone(),
@@ -702,14 +729,19 @@ impl Sessions {
         };
         let f = session.in_flight.remove(at);
         if written {
-            session.unsent.remove(&id);
+            session.write_order += 1;
+            let at = (generation, session.write_order);
+            session.written.insert(id, at);
+            if let Some(w) = session.unsent.get_mut(&id) {
+                *w = Some(at);
+            }
             return;
         }
         if session.sent_through == id {
             session.sent_through = f.prev;
         } else {
             // A later event already counts as sent: keep this one owed.
-            session.unsent.insert(id);
+            session.unsent.insert(id, None);
         }
         if session.stream_gen != generation && !f.covered {
             let observation = session
@@ -2002,9 +2034,80 @@ mod tests {
     async fn an_expired_observer_keeps_its_place_until_unobserved() {
         // No bound on delivery time says the last observation arrived;
         // iii_unobserve frees it.
+        let s = Sessions::new(limits(16, 1, 500));
+        let fired = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
         let r =
-            serde_json::from_value(json!({ "function_id": "a::b", "expires_in_ms": 0 })).unwrap();
-        assert!(blocked_by(r).await, "its place is kept");
+            serde_json::from_value(json!({ "function_id": "a::b", "expires_in_ms": 1 })).unwrap();
+        s.observe(&fired, &sid, r, Delivery::Poll, SINK)
+            .await
+            .unwrap();
+        let o = FakeObserve {
+            next: AtomicUsize::new(100),
+            ..Default::default()
+        };
+        assert!(
+            s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+                .await
+                .is_err(),
+            "expired, but its place is kept"
+        );
+        s.unobserve(&sid, "obs-1").await.unwrap();
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .expect("iii_unobserve freed it");
+    }
+
+    #[tokio::test]
+    async fn a_finished_target_observer_frees_its_place() {
+        // Its observations go straight to the target, never through the
+        // session, so ending it here drops nothing in flight.
+        let s = Sessions::new(limits(16, 1, 500));
+        let fired = FakeObserve {
+            fire_early: true,
+            ..Default::default()
+        };
+        let sid = s.create().unwrap();
+        s.observe(
+            &fired,
+            &sid,
+            req_limited("a::b", 1),
+            Delivery::Target("my::target".into()),
+            SINK,
+        )
+        .await
+        .unwrap();
+        let o = FakeObserve {
+            next: AtomicUsize::new(100),
+            ..Default::default()
+        };
+        s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+            .await
+            .expect("the finished target observer no longer counts");
+    }
+
+    #[tokio::test]
+    async fn an_active_target_observer_keeps_its_place() {
+        let s = Sessions::new(limits(16, 1, 500));
+        let o = FakeObserve::default();
+        let sid = s.create().unwrap();
+        s.observe(
+            &o,
+            &sid,
+            req("a::b"),
+            Delivery::Target("my::target".into()),
+            SINK,
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.observe(&o, &sid, req("c::d"), Delivery::Poll, SINK)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2032,7 +2135,58 @@ mod tests {
         assert!(s.claim_stream_item(&sid, c, Some(one)));
         s.finish_stream_item(&sid, c, one, true);
 
+        // Written is not received: the client dropped before reading it
+        // and still says 2, so 1 is still owed.
         let (backlog_d, _rx_d, _) = s.attach_stream(&sid, Some(two)).unwrap();
-        assert!(backlog_ids(&backlog_d).is_empty(), "written now");
+        assert_eq!(backlog_ids(&backlog_d), vec![one], "still owed");
+    }
+
+    /// 1 owed after a takeover (see above), and the store at the point the
+    /// client resumes from 2: (store, session, one, two).
+    async fn owed_one_after_two() -> (Sessions, String, u64, u64) {
+        let (s, sid, a, one, _rx_a) = claimed_by_a().await;
+        let (_, mut rx_b, b) = s.attach_stream(&sid, None).unwrap();
+        assert!(s.deliver(observation("obs-1", json!(2))));
+        let StreamItem::Observation { id: two, .. } = rx_b.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        assert!(s.claim_stream_item(&sid, b, Some(two)));
+        s.finish_stream_item(&sid, a, one, false);
+        s.finish_stream_item(&sid, b, two, true);
+        (s, sid, one, two)
+    }
+
+    #[tokio::test]
+    async fn an_owed_observation_is_settled_when_the_client_reports_it() {
+        let (s, sid, one, two) = owed_one_after_two().await;
+        let (_, _rx, c) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert!(s.claim_stream_item(&sid, c, Some(one)));
+        s.finish_stream_item(&sid, c, one, true);
+        // The client's Last-Event-ID is 1: it read 1, the last it got.
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(one)).unwrap();
+        assert!(!backlog_ids(&backlog).contains(&one), "received");
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert!(!backlog_ids(&backlog).contains(&one), "settled for good");
+    }
+
+    #[tokio::test]
+    async fn an_owed_observation_is_settled_by_a_later_event_on_its_stream() {
+        let (s, sid, one, two) = owed_one_after_two().await;
+        let (_, mut rx_c, c) = s.attach_stream(&sid, Some(two)).unwrap();
+        assert!(s.claim_stream_item(&sid, c, Some(one)));
+        s.finish_stream_item(&sid, c, one, true);
+        assert!(s.deliver(observation("obs-1", json!(3))));
+        let StreamItem::Observation { id: three, .. } = rx_c.recv().await.unwrap() else {
+            panic!("expected an observation");
+        };
+        assert!(s.claim_stream_item(&sid, c, Some(three)));
+        s.finish_stream_item(&sid, c, three, true);
+        // 3 came after 1 on the same stream: having 3 means having 1.
+        let (backlog, _rx, _) = s.attach_stream(&sid, Some(three)).unwrap();
+        assert!(
+            backlog_ids(&backlog).is_empty(),
+            "{:?}",
+            backlog_ids(&backlog)
+        );
     }
 }

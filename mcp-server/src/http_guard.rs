@@ -14,8 +14,9 @@ use std::time::Duration;
 use serde_json::Value;
 
 /// After a check that could not read `http::status`, the waits before each
-/// recovery check. The routes stay withdrawn meanwhile (the bind is
-/// unknown); after the last one, the next reload of the http worker checks.
+/// recovery check. The routes stay withdrawn meanwhile, the bind being
+/// unknown, unless the public-http override serves it anyway; after the
+/// last one, the next reload of the http worker checks.
 pub const RECOVERY_DELAYS: [Duration; 5] = [
     Duration::from_secs(2),
     Duration::from_secs(5),
