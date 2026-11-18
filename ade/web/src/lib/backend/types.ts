@@ -22,6 +22,8 @@ export type StreamEvent =
   | {
       kind: 'fcall-start'
       functionId: string
+      /** Engine namespace of a held call; echoed back when resolving it. */
+      namespace?: string
       input: unknown
       pendingApproval?: boolean
       /** iii function_call_id — needed to resolve approval. */
@@ -317,9 +319,14 @@ export interface ChatBackend {
     functionCallId: string,
     decision: 'allow' | 'deny',
     /**
-     * Filesystem access duration. Sent only for filesystem_access resolutions.
+     * Filesystem access duration: sent only for filesystem_access
+     * resolutions. Namespace: the held call's, which the gate requires to
+     * allow a call held in another namespace.
      */
-    opts?: { accessDuration?: 'once' | 'session' | 'always' },
+    opts?: {
+      accessDuration?: 'once' | 'session' | 'always'
+      namespace?: string
+    },
   ): Promise<void>
   /**
    * Send a message into a session whose turn is already streaming, WITHOUT

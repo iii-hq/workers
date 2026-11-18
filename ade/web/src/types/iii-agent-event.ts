@@ -92,6 +92,8 @@ export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
 export interface PendingApprovalRecord {
   function_call_id: string
   function_id: string
+  /** Engine namespace the held call targets. Absent from an older harness. */
+  namespace?: string
   session_id: string
   turn_id: string
   arguments_excerpt?: unknown

@@ -936,7 +936,9 @@ export function FunctionCallCard({
       ) : pending ? (
         <div className="flex flex-col gap-2 border-t border-edge px-3 py-2.5">
           <p className="font-inter text-body text-ink-faint">
-            Execution is paused until you approve or deny this call.
+            {message.namespace
+              ? `Execution is paused until you approve or deny this call in namespace ${message.namespace}.`
+              : 'Execution is paused until you approve or deny this call.'}
           </p>
           <div className="flex items-center gap-2" data-approval-actions="">
             <Button
@@ -960,6 +962,7 @@ export function FunctionCallCard({
             {onAlwaysAllow ? (
               <AlwaysAllowButton
                 functionId={message.functionId}
+                namespace={message.namespace}
                 onConfirm={() => void runResolve('always_allow')}
                 disabled={!!submitting}
                 submitting={submitting === 'always_allow'}

@@ -146,11 +146,13 @@ interface MessageListProps {
     sessionId: string,
     functionCallId: string,
     decision: 'allow' | 'deny',
+    namespace?: string,
   ) => Promise<void>
   onAlwaysAllow?: (
     sessionId: string,
     functionCallId: string,
     functionId: string,
+    namespace?: string,
   ) => Promise<void>
   onResolveFilesystemAccess?: (
     sessionId: string,

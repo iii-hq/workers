@@ -61,6 +61,7 @@ export function translateTurnSource(event: TurnSourceEvent): StreamEvent[] {
           pendingApproval: true,
           functionCallId: record.function_call_id,
           sessionId: record.session_id,
+          ...(record.namespace ? { namespace: record.namespace } : {}),
           ...(accessRequest
             ? {
                 filesystemAccess: {

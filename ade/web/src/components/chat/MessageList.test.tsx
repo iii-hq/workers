@@ -224,6 +224,31 @@ describe('MessageList function-call groups', () => {
     expect(html).toContain('data-approval-actions=""')
   })
 
+  it('names the namespace of a pending call held in another namespace', () => {
+    const pending: FunctionCallMessage = {
+      ...call('approval'),
+      functionId: 'state::list',
+      pendingApproval: true,
+      sessionId: 'session-1',
+      functionCallId: 'function-call-1',
+      namespace: 'laptop',
+    }
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[pending]}
+        onResolveApproval={async () => {}}
+        onAlwaysAllow={async () => {}}
+      />,
+    )
+
+    expect(html).toContain(
+      'Execution is paused until you approve or deny this call in namespace laptop.',
+    )
+    expect(html).toContain(
+      'title="approve and stop asking for this function in namespace laptop this session"',
+    )
+  })
+
   it('renders the branded waiting indicator while the model is pending', () => {
     const user: UserMessage = {
       id: 'user-1',

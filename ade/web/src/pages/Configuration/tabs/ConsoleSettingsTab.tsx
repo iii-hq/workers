@@ -472,7 +472,8 @@ export function ConsoleSettingsTab({
             <DialogTitle>Auto-mode allowlist</DialogTitle>
             <DialogDescription>
               Selected functions run automatically in new conversations using
-              Auto mode. Existing conversations keep their current selection.
+              Auto mode. Existing conversations keep their current selection. A
+              selected function runs automatically in every namespace.
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-border p-2">

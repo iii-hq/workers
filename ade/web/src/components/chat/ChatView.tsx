@@ -1300,7 +1300,8 @@ export function ChatView({
       sessionId: string,
       functionCallId: string,
       decision: 'allow' | 'deny',
-    ) => fn(sessionId, functionCallId, decision)
+      namespace?: string,
+    ) => fn(sessionId, functionCallId, decision, { namespace })
   }, [backend])
 
   // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
@@ -1348,6 +1349,7 @@ export function ChatView({
             running: false,
             functionCallId: event.functionCallId,
             sessionId: event.sessionId,
+            namespace: event.namespace,
             filesystemAccess: event.filesystemAccess,
           })
           return
@@ -1361,6 +1363,7 @@ export function ChatView({
           pendingApproval: true,
           functionCallId: event.functionCallId,
           sessionId: event.sessionId,
+          namespace: event.namespace,
           filesystemAccess: event.filesystemAccess,
           createdAt: Date.now(),
         }
@@ -1531,9 +1534,14 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    return async (sId: string, functionCallId: string, functionId: string) => {
-      await approvalSettings.approveAlways(functionId)
-      await resolveFn(sId, functionCallId, 'allow')
+    return async (
+      sId: string,
+      functionCallId: string,
+      functionId: string,
+      namespace?: string,
+    ) => {
+      await approvalSettings.approveAlways(functionId, namespace)
+      await resolveFn(sId, functionCallId, 'allow', { namespace })
       announcer.announce(`approved always this session: ${functionId}`)
     }
   }, [backend, approvalSettings, announcer])
@@ -2215,6 +2223,7 @@ export function ChatView({
                     running: !event.pendingApproval,
                     functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
+                    namespace: event.namespace,
                     filesystemAccess: event.filesystemAccess,
                   })
                   fcallId = existing
@@ -2237,6 +2246,7 @@ export function ChatView({
                 pendingApproval: event.pendingApproval,
                 functionCallId: event.functionCallId,
                 sessionId: event.sessionId,
+                namespace: event.namespace,
                 filesystemAccess: event.filesystemAccess,
                 createdAt: Date.now(),
               }

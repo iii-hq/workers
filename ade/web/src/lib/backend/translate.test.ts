@@ -45,6 +45,18 @@ describe('translateTurnSource — approvals', () => {
     ])
   })
 
+  it('carries the record namespace onto the pending fcall-start', () => {
+    const [start] = translateTurnSource({
+      kind: 'approval-created',
+      record: pendingRecord({ namespace: 'laptop' }),
+    })
+    expect(start).toMatchObject({
+      kind: 'fcall-start',
+      functionId: 'shell::fs::write',
+      namespace: 'laptop',
+    })
+  })
+
   it('defaults input to {} when the record omits arguments_excerpt', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',
