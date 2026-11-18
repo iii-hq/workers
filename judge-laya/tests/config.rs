@@ -26,7 +26,12 @@ fn config_validates_model_and_limits() {
     assert_eq!(ok.limits().batch_questions, 4);
     // What the form stores for `laya` alone: the default preload names the
     // model itself, which is already loaded.
-    assert!(LayaConfig::from_json(&json!({"model": "laya"})).is_ok());
+    let laya = LayaConfig::from_json(&json!({"model": "laya"})).unwrap();
+    assert_eq!(laya.checkpoints(), ["laya"]);
+    assert_eq!(
+        LayaConfig::default().checkpoints(),
+        ["laya-multilingual", "laya"]
+    );
     for bad in [
         json!({"model": "jev"}),
         json!({"revision": "abc123"}),

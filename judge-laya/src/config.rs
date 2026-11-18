@@ -104,6 +104,12 @@ impl LayaConfig {
         }
         Ok(())
     }
+    /// The checkpoints a start loads: `model` first, then each `preload` entry
+    /// that is not `model`.
+    pub fn checkpoints(&self) -> Vec<String> {
+        let extra = self.preload.iter().filter(|name| **name != self.model);
+        std::iter::once(&self.model).chain(extra).cloned().collect()
+    }
     pub fn limits(&self) -> Limits {
         Limits {
             max_request_bytes: self.max_request_bytes,
