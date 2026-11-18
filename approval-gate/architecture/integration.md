@@ -18,8 +18,8 @@ operational contract).
 | `approval::list-pending` | console / notification workers | The inbox: filters `session_id?`, `metadata?` (subset-equality tenancy match), `limit?` (default 50), opaque `cursor?`; ordered by `pending_at` asc. |
 | `approval::get-pending` | console | One record or `null`. |
 | `approval::set-mode` | console (human-only) | `manual` / `auto` / `full`. |
-| `approval::add-always-allow` / `remove-always-allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). |
-| `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. |
+| `approval::add-always-allow` / `remove-always-allow` | console (human-only) | Curate the auto-mode trust list (idempotent add / no-op remove). `namespace?` is the namespace the entry covers (absent = the implicit namespace); add and remove match the exact `(namespace, function_id)` pair, so a remove without it leaves a namespaced entry in place. |
+| `approval::approve-always` | console (human-only) | Per-session grant honoured in **every** mode; call it right before `resolve { decision: "allow" }` for an "Approve always" button. Pass the pending record's `namespace`: the grant is an exact `(namespace, function_id)` pair, and one sent without `namespace` covers only the implicit namespace, not the namespace the prompt showed. |
 | `approval::get-settings` | console | Effective settings + `source: "stored" \| "defaults"`. Never writes. |
 | `approval::clear-settings` | console | Drop the stored record; revert to deployment defaults. |
 | `approval::on-config-change` / `on-session-deleted` / `on-turn-completed` | targets of this worker's observers of `configuration::on-updated`, `session::on-deleted`, `harness::on-turn-completed` | Internal — never call directly. |
