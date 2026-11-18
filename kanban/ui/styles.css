@@ -12,6 +12,24 @@
  * the neutral surface ramp, and the six glyph hues for status, priority,
  * labels and avatars. */
 
+/* --- status palette ------------------------------------------------------ */
+
+/* One colour per status, the same wherever it shows: the board's status glyphs, the Tree's badges, menus and
+ * dialogs. Nine hues; the closest pair is ΔE 33.5 apart in either theme. Canceled is a pink mixed away from the
+ * failed red; pending is a cyan between to do and running. Ticket columns: backlog → canceled. Agent sessions:
+ * running, pending, failed (a finished session is the same purple as a done ticket). */
+[data-iii-ui="kanban"] {
+  --kb-status-backlog: var(--color-ink-faint);
+  --kb-status-todo: var(--color-glyph-teal);
+  --kb-status-progress: var(--color-glyph-amber);
+  --kb-status-review: var(--color-glyph-green);
+  --kb-status-done: var(--color-glyph-purple);
+  --kb-status-canceled: color-mix(in oklab, var(--color-glyph-rose) 60%, var(--color-glyph-purple));
+  --kb-status-running: var(--color-glyph-blue);
+  --kb-status-pending: color-mix(in oklab, var(--color-glyph-teal) 50%, var(--color-glyph-blue));
+  --kb-status-failed: var(--color-alert);
+}
+
 /* --- page ---------------------------------------------------------------- */
 
 [data-iii-ui="kanban"] .kb {
@@ -163,7 +181,7 @@
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="start"] {
-  --kb-step: var(--color-ink-ghost);
+  --kb-step: var(--kb-status-backlog);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="start"] .kb-status-icon__ring {
@@ -175,11 +193,11 @@
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="ready"] {
-  --kb-step: var(--color-ink-faint);
+  --kb-step: var(--kb-status-todo);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="progress"] {
-  --kb-step: var(--color-glyph-amber);
+  --kb-step: var(--kb-status-progress);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="progress"] .kb-status-icon__fill {
@@ -187,7 +205,7 @@
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="review"] {
-  --kb-step: var(--color-glyph-green);
+  --kb-step: var(--kb-status-review);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="review"] .kb-status-icon__fill {
@@ -195,11 +213,11 @@
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="done"] {
-  --kb-step: var(--color-glyph-purple);
+  --kb-step: var(--kb-status-done);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="canceled"] {
-  --kb-step: var(--color-ink-ghost);
+  --kb-step: var(--kb-status-canceled);
 }
 
 [data-iii-ui="kanban"] .kb-status-icon[data-step="done"] .kb-status-icon__ring,

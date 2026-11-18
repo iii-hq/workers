@@ -350,21 +350,52 @@
   height: 12px;
 }
 
-[data-iii-ui="kanban"] .kb-node__badge[data-state="active"] {
-  --kb-badge: var(--color-glyph-blue);
+/* A ticket's badge is its column's colour (data-step, as the status glyph); a session's is its live state. */
+[data-iii-ui="kanban"] .kb-node__badge[data-step="start"],
+[data-iii-ui="kanban"] .kb-node__badge[data-step="unknown"] {
+  --kb-badge: var(--kb-status-backlog);
 }
 
-[data-iii-ui="kanban"] .kb-node__badge[data-state="done"] {
-  --kb-badge: var(--color-ok);
+[data-iii-ui="kanban"] .kb-node__badge[data-step="ready"] {
+  --kb-badge: var(--kb-status-todo);
 }
 
-[data-iii-ui="kanban"] .kb-node__badge[data-state="failed"] {
-  --kb-badge: var(--color-alert);
+[data-iii-ui="kanban"] .kb-node__badge[data-step="progress"] {
+  --kb-badge: var(--kb-status-progress);
 }
 
-/* A ticket's column is quiet text: the tile's glyph already carries the hue. Done keeps its green. */
-[data-iii-ui="kanban"] .kb-node__badge[data-kind="column"]:not([data-state="done"]) {
-  --kb-badge: var(--color-ink-faint);
+[data-iii-ui="kanban"] .kb-node__badge[data-step="review"] {
+  --kb-badge: var(--kb-status-review);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="done"],
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="done"] {
+  --kb-badge: var(--kb-status-done);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-step="canceled"] {
+  --kb-badge: var(--kb-status-canceled);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="active"] {
+  --kb-badge: var(--kb-status-running);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="pending"] {
+  --kb-badge: var(--kb-status-pending);
+}
+
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="failed"] {
+  --kb-badge: var(--kb-status-failed);
+}
+
+/* A ticket's column badge leads with a dot of its colour (the glyph on the left says the shape). */
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="column"]::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
 }
 
 /* The running mark: a ring with one bright quarter, turned by the shared spin recipe. */

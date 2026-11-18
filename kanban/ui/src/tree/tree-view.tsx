@@ -36,6 +36,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { type StatusStep, statusStep } from '../board-state'
 import type { AgentProfile, BoardData, GlyphTone, ProjectView, TicketSummary } from '../shared'
 import { assigneeName } from '../ui/avatar'
 import { Empty, Notice } from '../ui/feedback'
@@ -646,7 +647,7 @@ function NodeCard({
 }
 
 /** A session's live state ("Running" turns), or a ticket's column (`label`, no spinner: a column is not a process). */
-function StateBadge({ state, label }: { state: WorkState; label?: string }) {
+function StateBadge({ state, label, step }: { state: WorkState; label?: string; step?: StatusStep }) {
   const Icon =
     state === 'done'
       ? Check
@@ -658,7 +659,7 @@ function StateBadge({ state, label }: { state: WorkState; label?: string }) {
             ? CircleDashed
             : null
   return (
-    <span className="kb-node__badge" data-kind={label ? 'column' : 'session'} data-state={state}>
+    <span className="kb-node__badge" data-kind={label ? 'column' : 'session'} data-state={state} data-step={step}>
       {label ? null : state === 'active' ? (
         <span aria-hidden="true" className="kb-node__spinner iii-ui-spin" />
       ) : Icon ? (
@@ -697,11 +698,7 @@ function GroupCard({
   const isAll = node.id === 'all'
   return (
     <NodeCard
-      badge={
-        pct !== null ? (
-          <span className="kb-node__badge" data-kind="column" data-state="pending">{`${pct}%`}</span>
-        ) : null
-      }
+      badge={pct !== null ? <span className="kb-node__badge" data-kind="meta">{`${pct}%`}</span> : null}
       count={node.children.length}
       description={
         p?.description?.trim() ||
@@ -747,7 +744,13 @@ function TicketCard({
   const agentsHere = countSessions(node.sessions)
   return (
     <NodeCard
-      badge={<StateBadge label={column?.label ?? ticket.status} state={node.state} />}
+      badge={
+        <StateBadge
+          label={column?.label ?? ticket.status}
+          state={node.state}
+          step={statusStep(data.columns, ticket.status, data.done_status, data.canceled_status)}
+        />
+      }
       count={node.sessions.length + subtasks}
       description={ticket.title}
       facts={
