@@ -993,3 +993,19 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+/* The dialog never scrolls sideways: a too-wide line wraps or truncates, it does not widen the sheet. */
+[data-iii-ui="kanban"] .kb-ticket-frame .kb-ticket {
+  overflow-x: clip;
+}
+
+/* The board behind the ticket dialog is dimmed 10 points less than the shared dialog scrim (black/60 dark,
+   black/40 light): the cards stay legible as context while the ticket is read. Only this dialog's scrim — its
+   portal holds the overlay and the popup side by side. */
+[data-iii-ui="kanban"]:has(> .kb-ticket-dialog) > [data-slot="dialog-overlay"] {
+  background-color: color-mix(in srgb, black 30%, transparent);
+}
+
+[data-iii-ui="kanban"]:is([data-theme="dark"] *):has(> .kb-ticket-dialog) > [data-slot="dialog-overlay"] {
+  background-color: color-mix(in srgb, black 50%, transparent);
+}

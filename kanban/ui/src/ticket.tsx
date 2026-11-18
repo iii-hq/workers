@@ -1578,8 +1578,9 @@ export function TicketScreen({
 const FAINT = 'tw:text-neutral-500 tw:dark:text-neutral-400'
 const SIDE = [
   'tw:flex tw:flex-col tw:gap-6 tw:pt-1',
-  // The pickers' quiet buttons become full-width rows: 32px, left aligned, 14px.
-  'tw:[&_.kb-prop]:border-transparent tw:[&_.kb-prop]:bg-transparent tw:[&_.kb-prop]:shadow-none tw:[&_.kb-prop:hover]:bg-neutral-100 tw:dark:[&_.kb-prop:hover]:bg-neutral-900 tw:[&_.kb-prop]:h-8 tw:[&_.kb-prop]:w-full tw:[&_.kb-prop]:max-w-none tw:[&_.kb-prop]:justify-start tw:[&_.kb-prop]:gap-2.5 tw:[&_.kb-prop]:px-2 tw:[&_.kb-prop]:text-sm tw:[&_.kb-prop]:font-normal',
+  // The pickers' quiet buttons become full-width rows: 32px, left aligned, 14px — and they shrink (min-w-0), so the
+  // hover action beside one (open the project, detach from the parent) fits in the row instead of overflowing it.
+  'tw:[&_.kb-prop]:border-transparent tw:[&_.kb-prop]:bg-transparent tw:[&_.kb-prop]:shadow-none tw:[&_.kb-prop:hover]:bg-neutral-100 tw:dark:[&_.kb-prop:hover]:bg-neutral-900 tw:[&_.kb-prop]:h-8 tw:[&_.kb-prop]:w-full tw:[&_.kb-prop]:min-w-0 tw:[&_.kb-prop]:flex-1 tw:[&_.kb-prop]:max-w-none tw:[&_.kb-prop]:justify-start tw:[&_.kb-prop]:gap-2.5 tw:[&_.kb-prop]:px-2 tw:[&_.kb-prop]:text-sm tw:[&_.kb-prop]:font-normal',
 ].join(' ')
 /** The open/detach action that appears beside a row on hover. */
 const OPEN = 'tw:opacity-0 tw:group-hover/row:opacity-100 tw:focus-visible:opacity-100 tw:pointer-coarse:opacity-100'
