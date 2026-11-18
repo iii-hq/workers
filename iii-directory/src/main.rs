@@ -841,6 +841,7 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         assert!(!judge_hub_installed(&[]));
         assert!(!judge_hub_installed(&[

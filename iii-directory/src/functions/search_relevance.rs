@@ -44,6 +44,7 @@ fn fixture_catalog() -> Vec<ToolSchema> {
                 .unwrap_or_default()
                 .to_string(),
             parameters: entry["parameters"].clone(),
+            namespaces: Vec::new(),
         })
         .collect();
     assert_eq!(catalog.len(), 509, "fixture catalog count changed");

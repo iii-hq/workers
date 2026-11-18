@@ -447,6 +447,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} description"),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         }
     }
 

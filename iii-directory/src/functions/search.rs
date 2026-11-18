@@ -1,7 +1,7 @@
 //! `directory::search_functions` — lexical, local hybrid, or judge-worker
 //! function discovery, with shared catalog, registry and session policies.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -959,6 +959,7 @@ fn registry_contracts(info: &WorkerInfoOutput, installed: &HashSet<&str>) -> Vec
                 .request_schema
                 .clone()
                 .unwrap_or_else(|| json!({ "type": "object" })),
+            namespaces: Vec::new(),
         })
         .collect()
 }
@@ -1574,6 +1575,7 @@ async fn installed_skill_docs(
                     name: entry.id.clone(),
                     description: document,
                     parameters: json!({}),
+                    namespaces: Vec::new(),
                 },
                 SkillCandidate {
                     id: entry.id,
@@ -1751,6 +1753,7 @@ fn observer_docs(listed: &Value) -> Vec<(ToolSchema, ObserverCandidate)> {
                     name: candidate.id.clone(),
                     description: document,
                     parameters: json!({}),
+                    namespaces: Vec::new(),
                 },
                 candidate,
             )
@@ -2143,7 +2146,10 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
     total
 }
 
-fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
+/// The `(namespace, id)` pairs `engine::functions::list` returns, in listed
+/// order. A row without a namespace (an engine before namespaces) is in
+/// `default`. The same id may appear once per namespace.
+fn listed_functions(value: &Value) -> Result<Vec<(String, String)>, String> {
     let items = match value {
         Value::Array(items) => items,
         Value::Object(object) => object
@@ -2153,33 +2159,38 @@ fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
             .ok_or_else(|| "catalog list response was malformed".to_string())?,
         _ => return Err("catalog list response was malformed".into()),
     };
-    let mut ids = items
+    let mut listed = items
         .iter()
         .map(|item| {
-            item.as_str()
+            let id = item
+                .as_str()
                 .or_else(|| {
                     item.get("function_id")
                         .or_else(|| item.get("id"))
                         .or_else(|| item.get("name"))
                         .and_then(Value::as_str)
                 })
-                .map(str::to_string)
-                .ok_or_else(|| "catalog list response was malformed".to_string())
+                .ok_or_else(|| "catalog list response was malformed".to_string())?;
+            let namespace = item
+                .get("namespace")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            Ok((namespace.to_string(), id.to_string()))
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut seen = HashSet::with_capacity(ids.len());
-    if ids.iter().any(|id| !seen.insert(id.as_str())) {
-        return Err("catalog list contained duplicate function id".into());
-    }
-    ids.retain(|id| !excluded_from_search(id));
-    Ok(ids)
+        .collect::<Result<Vec<_>, String>>()?;
+    listed.retain(|(_, id)| !excluded_from_search(id));
+    Ok(listed)
 }
 
-/// Pool one `functions::info` batch response's entries by function id.
+/// Pool one `functions::info` batch response's entries by `(namespace, id)`.
 /// Each entry is either a FunctionDetail or `{ function_id, error }` for an
 /// id this caller cannot see; both carry the id, so association survives
 /// any ordering.
-fn pool_info_entries(response: &Value, pool: &mut HashMap<String, Value>) {
+fn pool_info_entries(
+    namespace: &str,
+    response: &Value,
+    pool: &mut HashMap<(String, String), Value>,
+) {
     let Some(functions) = response.get("functions").and_then(Value::as_array) else {
         tracing::warn!("catalog info batch response was malformed; skipping batch");
         return;
@@ -2193,39 +2204,56 @@ fn pool_info_entries(response: &Value, pool: &mut HashMap<String, Value>) {
         else {
             continue;
         };
-        pool.insert(id.to_string(), entry.clone());
+        pool.insert((namespace.to_string(), id.to_string()), entry.clone());
     }
 }
 
-/// Build the catalog from pooled per-function entries, in listed-id order.
+/// Build the catalog from pooled entries: one row per id, in first-listed
+/// order, naming every namespace whose copy survives. The contract comes
+/// from the first of those namespaces in sorted order.
 /// Resilient by design: an errored, missing, or malformed entry only drops
-/// THAT function — the surviving contracts still make a working catalog.
-fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec<ToolSchema> {
-    ids.iter()
-        .filter_map(|id| {
-            let entry = entries.get(id)?;
-            // Per-entry batch errors ({ function_id, error: "forbidden" |
-            // "not_found" }) mean this caller cannot see the function.
-            if entry.get("error").is_some() {
-                return None;
-            }
-            // Internal plumbing (hooks, config handlers, on-change
-            // listeners) is not a capability an agent should discover —
-            // exclusion is by metadata, not by namespace, so the worker's
-            // own public directory::* functions stay searchable.
-            if entry
-                .get("metadata")
-                .and_then(|metadata| metadata.get("internal"))
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                return None;
-            }
-            // A private function (an event source) answers only its own
-            // worker's calls: observable, never callable by an agent.
-            if entry.get("private").and_then(Value::as_bool) == Some(true) {
-                return None;
-            }
+/// THAT copy — the surviving contracts still make a working catalog.
+fn catalog_from_entries(
+    listed: &[(String, String)],
+    entries: &HashMap<(String, String), Value>,
+) -> Vec<ToolSchema> {
+    let mut copies: HashMap<&str, BTreeMap<&str, &Value>> = HashMap::new();
+    for pair in listed {
+        let Some(entry) = entries.get(pair) else {
+            continue;
+        };
+        // Per-entry batch errors ({ function_id, error: "forbidden" |
+        // "not_found" }) mean this caller cannot see the function.
+        if entry.get("error").is_some() {
+            continue;
+        }
+        // Internal plumbing (hooks, config handlers, on-change
+        // listeners) is not a capability an agent should discover —
+        // exclusion is by metadata, not by namespace, so the worker's
+        // own public directory::* functions stay searchable.
+        if entry
+            .get("metadata")
+            .and_then(|metadata| metadata.get("internal"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            continue;
+        }
+        // A private function (an event source) answers only its own
+        // worker's calls: observable, never callable by an agent.
+        if entry.get("private").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        copies
+            .entry(pair.1.as_str())
+            .or_default()
+            .insert(pair.0.as_str(), entry);
+    }
+    listed
+        .iter()
+        .filter_map(|(_, id)| {
+            let copies = copies.remove(id.as_str())?;
+            let (_, entry) = copies.first_key_value()?;
             Some(ToolSchema {
                 name: id.clone(),
                 description: entry
@@ -2239,6 +2267,10 @@ fn catalog_from_entries(ids: &[String], entries: &HashMap<String, Value>) -> Vec
                     .or_else(|| entry.get("request_schema"))
                     .cloned()
                     .unwrap_or_else(|| json!({ "type": "object" })),
+                namespaces: copies
+                    .keys()
+                    .map(|namespace| namespace.to_string())
+                    .collect(),
             })
         })
         .collect()
@@ -2254,29 +2286,42 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
         })
         .await
         .map_err(|_| "catalog list failed".to_string())?;
-    let ids = listed_ids(&list)?;
-    // Contracts arrive in `functions::info` batches (`function_ids`, engine
-    // max 32 per call) fired concurrently — fan-out is bounded to
-    // ceil(ids/32) in-flight calls, each under the same per-call timeout.
-    let mut batches = tokio::task::JoinSet::new();
-    for chunk in ids.chunks(CATALOG_INFO_BATCH) {
-        let iii = iii.clone();
-        let chunk: Vec<String> = chunk.to_vec();
-        batches.spawn(async move {
-            iii.call(CallRequest {
-                function_id: "engine::functions::info".into(),
-                payload: json!({ "function_ids": chunk }),
-                action: None,
-                timeout_ms: Some(CATALOG_TIMEOUT_MS),
-            })
-            .await
-        });
+    let listed = listed_functions(&list)?;
+    let mut by_namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (namespace, id) in &listed {
+        by_namespace
+            .entry(namespace.clone())
+            .or_default()
+            .push(id.clone());
     }
-    let mut entries: HashMap<String, Value> = HashMap::with_capacity(ids.len());
+    // Contracts arrive in `functions::info` batches (`function_ids`, engine
+    // max 32 per call, one namespace per call) fired concurrently — fan-out is
+    // bounded to ceil(ids/32) in-flight calls per namespace, each under the
+    // same per-call timeout.
+    let mut batches = tokio::task::JoinSet::new();
+    for (namespace, ids) in by_namespace {
+        for chunk in ids.chunks(CATALOG_INFO_BATCH) {
+            let iii = iii.clone();
+            let namespace = namespace.clone();
+            let payload = json!({ "function_ids": chunk, "namespace": namespace });
+            batches.spawn(async move {
+                let result = iii
+                    .call(CallRequest {
+                        function_id: "engine::functions::info".into(),
+                        payload,
+                        action: None,
+                        timeout_ms: Some(CATALOG_TIMEOUT_MS),
+                    })
+                    .await;
+                (namespace, result)
+            });
+        }
+    }
+    let mut entries: HashMap<(String, String), Value> = HashMap::with_capacity(listed.len());
     while let Some(joined) = batches.join_next().await {
         match joined {
-            Ok(Ok(response)) => pool_info_entries(&response, &mut entries),
-            Ok(Err(error)) => {
+            Ok((namespace, Ok(response))) => pool_info_entries(&namespace, &response, &mut entries),
+            Ok((_, Err(error))) => {
                 tracing::warn!(%error, "catalog info batch failed; skipping its functions")
             }
             Err(error) => {
@@ -2284,10 +2329,10 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
             }
         }
     }
-    let catalog = catalog_from_entries(&ids, &entries);
+    let catalog = catalog_from_entries(&listed, &entries);
     // A listed-but-empty catalog means every batch failed: erroring keeps
     // the previous catalog live instead of activating an empty one.
-    if catalog.is_empty() && !ids.is_empty() {
+    if catalog.is_empty() && !listed.is_empty() {
         return Err("catalog info failed for every function".into());
     }
     Ok(catalog)
@@ -2553,11 +2598,13 @@ mod tests {
                 name: "cron".into(),
                 description: "Schedule recurring function execution with cron expressions".into(),
                 parameters: json!({}),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "harness/frontend".into(),
                 description: "Build a browser UI with the frontend SDK".into(),
                 parameters: json!({}),
+                namespaces: Vec::new(),
             },
         ];
         let queries = ["execute a job on a nightly timetable".to_string()];
@@ -2609,6 +2656,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({}),
+            namespaces: Vec::new(),
         };
         let small = vec![
             doc("mail::send", "Send an email."),
@@ -2655,11 +2703,13 @@ mod tests {
                 name: "state::claim-namespace".into(),
                 description: "claim a namespace".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "state::set".into(),
                 description: "set a value".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
         ];
         let kept: Vec<String> = canonical_tools(&tools)
@@ -2696,11 +2746,13 @@ mod tests {
                 name: "cron".into(),
                 description: "Schedule recurring function execution with cron expressions".into(),
                 parameters: json!({}),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "harness/frontend".into(),
                 description: "Build a browser UI with the frontend SDK".into(),
                 parameters: json!({}),
+                namespaces: Vec::new(),
             },
         ];
         let ranked = local_rank_documents(
@@ -2722,6 +2774,7 @@ mod tests {
                 "type": "object",
                 "properties": { "draft": { "type": "boolean" } }
             }),
+            namespaces: Vec::new(),
         }];
 
         let workers = assemble_workers(&["github::pr::create".into()], &tools);
@@ -2742,6 +2795,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let tools = vec![
             tool("alpha::one", "Handle alpha capability."),
@@ -2970,11 +3024,13 @@ mod tests {
                 name: "mail::send".into(),
                 description: "Send a message".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "web::fetch".into(),
                 description: "Fetch a web page".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
         ];
 
@@ -2992,11 +3048,13 @@ mod tests {
                 name: "mail::send".into(),
                 description: "Send a message".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "web::fetch".into(),
                 description: "Fetch a web page".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
         ];
         let queries = vec![" mail::send ".into(), "fetch a page".into()];
@@ -3020,6 +3078,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let tools = vec![
             tool("git::clone", "Access and clone a git repository."),
@@ -3076,6 +3135,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let deps = search_deps(vec![
             tool("browser::fetch", "Fetch a browser page."),
@@ -3109,6 +3169,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let fetch_tier = |name: &str, description: &str| ToolSchema {
             name: name.into(),
@@ -3117,6 +3178,7 @@ mod tests {
                 "type": "object",
                 "properties": { "main_content_only": { "type": "boolean" } }
             }),
+            namespaces: Vec::new(),
         };
         let deps = search_deps(vec![
             tool(
@@ -3218,6 +3280,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let tools = vec![
             tool(
@@ -3278,6 +3341,7 @@ mod tests {
             name: "browser::fetch".into(),
             description: "Fetch a browser page.".into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         }]);
         let response = search_functions(
             &deps,
@@ -3317,11 +3381,13 @@ mod tests {
                 name: "compose::add".into(),
                 description: "Install a worker from the public registry.".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "compose::remove".into(),
                 description: "Remove an installed worker.".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
         ]);
         let context = opentelemetry::Context::new().with_baggage([opentelemetry::KeyValue::new(
@@ -3448,6 +3514,7 @@ mod tests {
                 name: "mail::send".into(),
                 description: "Send an email message.".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             }]))),
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
@@ -3831,6 +3898,7 @@ mod tests {
             name: name.into(),
             description: format!("{name} description"),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let candidate = |name: &str| RegistryCandidate {
             name: name.into(),
@@ -3862,7 +3930,7 @@ mod tests {
 
     #[test]
     fn catalog_entries_skip_errors_internals_privates_and_missing_but_keep_order() {
-        let ids: Vec<String> = [
+        let ids: Vec<(String, String)> = [
             "state::set",
             "gone::fn",
             "email::send",
@@ -3870,11 +3938,12 @@ mod tests {
             "state::on-changed",
         ]
         .into_iter()
-        .map(String::from)
+        .map(|id| ("default".to_string(), id.to_string()))
         .collect();
         let mut entries = HashMap::new();
         let mut batch_pool = HashMap::new();
         pool_info_entries(
+            "default",
             &json!({ "functions": [
                 { "function_id": "email::send", "description": "send",
                   "request_schema": { "type": "object" } },
@@ -3901,9 +3970,86 @@ mod tests {
     #[test]
     fn malformed_batch_responses_pool_nothing() {
         let mut pool = HashMap::new();
-        pool_info_entries(&json!({ "nope": true }), &mut pool);
-        pool_info_entries(&json!("not an object"), &mut pool);
+        pool_info_entries("default", &json!({ "nope": true }), &mut pool);
+        pool_info_entries("default", &json!("not an object"), &mut pool);
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn same_id_in_two_namespaces_becomes_one_row_listing_both() {
+        let listed = listed_functions(&json!({ "functions": [
+            { "function_id": "shell::exec", "namespace": "laptop" },
+            { "function_id": "state::set", "namespace": "default" },
+            { "function_id": "shell::exec", "namespace": "default" },
+            { "function_id": "shell::exec", "namespace": "hub" },
+            { "function_id": "legacy::row" },
+        ]}))
+        .unwrap();
+        assert_eq!(
+            listed[4],
+            ("default".to_string(), "legacy::row".to_string())
+        );
+        let mut entries = HashMap::new();
+        pool_info_entries(
+            "default",
+            &json!({ "functions": [
+                { "function_id": "shell::exec", "description": "run in default" },
+                { "function_id": "state::set", "description": "set a value" },
+                { "function_id": "legacy::row", "error": "not_found" },
+            ]}),
+            &mut entries,
+        );
+        pool_info_entries(
+            "laptop",
+            &json!({ "functions": [{ "function_id": "shell::exec", "description": "run on laptop" }]}),
+            &mut entries,
+        );
+        pool_info_entries(
+            "hub",
+            &json!({ "functions": [{ "function_id": "shell::exec", "error": "forbidden" }]}),
+            &mut entries,
+        );
+        let catalog = catalog_from_entries(&listed, &entries);
+        let rows: Vec<(&str, Vec<&str>)> = catalog
+            .iter()
+            .map(|t| {
+                (
+                    t.name.as_str(),
+                    t.namespaces.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("shell::exec", vec!["default", "laptop"]),
+                ("state::set", vec!["default"])
+            ]
+        );
+        assert_eq!(catalog[0].description, "run in default"); // first namespace in sorted order
+    }
+
+    #[test]
+    fn fingerprint_covers_namespaces_and_keeps_unnamespaced_rows_stable() {
+        let bare = ToolSchema {
+            name: "shell::exec".into(),
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
+        };
+        let one = ToolSchema {
+            namespaces: vec!["default".into()],
+            ..bare.clone()
+        };
+        let two = ToolSchema {
+            namespaces: vec!["default".into(), "laptop".into()],
+            ..bare.clone()
+        };
+        assert_ne!(tool_fingerprint(&[one]), tool_fingerprint(&[two]));
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            json!({ "name": "shell::exec", "description": "run", "parameters": { "type": "object" } })
+        );
     }
 
     #[test]
@@ -3936,11 +4082,13 @@ mod tests {
                 name: "email::send".into(),
                 description: "Send an email message to a recipient over smtp.".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
             ToolSchema {
                 name: "email::templates::render".into(),
                 description: "Render an html template.".into(),
                 parameters: json!({ "type": "object" }),
+                namespaces: Vec::new(),
             },
         ];
         let queries = ["send an email".to_string()];
@@ -3959,6 +4107,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let contracts = vec![
             tool("git::clone", "Access and clone a git repository."),
@@ -4001,6 +4150,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             parameters: json!({ "type": "object" }),
+            namespaces: Vec::new(),
         };
         let ranked = rank_registry_contracts(
             &["fetch a browser page".into()],

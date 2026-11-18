@@ -21,6 +21,7 @@ fn tools() -> Vec<ToolSchema> {
         name: name.into(),
         description: description.into(),
         parameters: json!({"type": "object"}),
+        namespaces: Vec::new(),
     })
     .collect()
 }
@@ -504,6 +505,7 @@ async fn judge_keeps_multiple_capabilities_within_existing_caps() {
             name: format!("worker{i}::act"),
             description: "Perform an action.".into(),
             parameters: json!({"type":"object"}),
+            namespaces: Vec::new(),
         })
         .chain(tools().into_iter().skip(4))
         .collect();

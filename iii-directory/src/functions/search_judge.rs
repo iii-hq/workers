@@ -1066,6 +1066,7 @@ mod tests {
                 "subject": {"type":"string", "description":"private schema detail"},
                 "body": {"type":"string"}
             }}),
+            namespaces: Vec::new(),
         }
     }
 
@@ -1146,6 +1147,7 @@ mod tests {
                         "cron::on-tick observer runs harness::sweep-pending with args expression"
                             .into(),
                     parameters: json!({}),
+                    namespaces: Vec::new(),
                 }],
                 &JudgeOptions {
                     corpus: JudgeCorpus::Observers,
