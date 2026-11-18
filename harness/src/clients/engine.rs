@@ -237,13 +237,17 @@ impl EngineClient {
         reply.get("adapter")?.as_str().map(str::to_owned)
     }
 
-    /// Read one function's descriptor (`None` when unknown).
-    pub async fn functions_info(&self, function_id: &str) -> Option<FunctionDescriptor> {
+    /// Read one function's descriptor in `namespace` (`None` when unknown).
+    pub async fn functions_info(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Option<FunctionDescriptor> {
         let resp = self
             .iii
             .call(CallRequest {
                 function_id: "engine::functions::info".into(),
-                payload: json!({ "function_id": function_id }),
+                payload: json!({ "function_id": function_id, "namespace": namespace }),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
             })
@@ -255,21 +259,22 @@ impl EngineClient {
         descriptor_of(&resp)
     }
 
-    /// Read several descriptors in ONE `engine::functions::info` call
-    /// (`function_ids` batch). `None` when the engine predates batch support
+    /// Read several descriptors of `namespace` in ONE `engine::functions::info`
+    /// call (`function_ids` batch). `None` when the engine predates batch support
     /// (the caller falls back to per-id [`Self::functions_info`]); unknown ids
     /// come back as marker entries and are simply skipped by `descriptor_of`
     /// parsing (no `request_schema`/`parameters` on them is fine — hydration
     /// keeps such descriptors schema-less).
     pub async fn functions_info_batch(
         &self,
+        namespace: &str,
         function_ids: &[String],
     ) -> Option<Vec<FunctionDescriptor>> {
         let resp = self
             .iii
             .call(CallRequest {
                 function_id: "engine::functions::info".into(),
-                payload: json!({ "function_ids": function_ids }),
+                payload: json!({ "function_ids": function_ids, "namespace": namespace }),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
             })
