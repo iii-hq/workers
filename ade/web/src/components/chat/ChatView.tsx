@@ -162,6 +162,11 @@ import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
 import {
+  actionRequiredText,
+  approvedAlwaysText,
+  filesystemDecisionText,
+} from './approval-announcements'
+import {
   type AsideRequest,
   type AsideTab,
   ChatAside,
@@ -1335,9 +1340,11 @@ export function ChatView({
             announcedApprovalIdsRef.current.add(announcementId)
           }
           announcer.announceAssertive(
-            event.filesystemAccess
-              ? `Action required: ${event.functionId} needs approval to access ${event.filesystemAccess.requestedRoot}.`
-              : `Action required: approve or deny ${event.functionId}.`,
+            actionRequiredText(
+              event.functionId,
+              event.namespace,
+              event.filesystemAccess?.requestedRoot,
+            ),
           )
         }
         if (existing) {
@@ -1542,7 +1549,7 @@ export function ChatView({
     ) => {
       await approvalSettings.approveAlways(functionId, namespace)
       await resolveFn(sId, functionCallId, 'allow', { namespace })
-      announcer.announce(`approved always this session: ${functionId}`)
+      announcer.announce(approvedAlwaysText(functionId, namespace))
     }
   }, [backend, approvalSettings, announcer])
 
@@ -1569,9 +1576,12 @@ export function ChatView({
       if (action === 'deny') {
         await resolveFn(sId, functionCallId, 'deny')
         announcer.announce(
-          requestedRoot
-            ? `denied filesystem access to ${requestedRoot}`
-            : 'denied filesystem access',
+          filesystemDecisionText(
+            requestedRoot
+              ? `denied filesystem access to ${requestedRoot}`
+              : 'denied filesystem access',
+            namespace,
+          ),
         )
         return
       }
@@ -1585,11 +1595,14 @@ export function ChatView({
       }
       if (requestedRoot) {
         announcer.announce(
-          action === 'session'
-            ? `allowed ${requestedRoot} for this session`
-            : action === 'always'
-              ? `permanently allowed ${requestedRoot}`
-              : `allowed ${requestedRoot} for this call`,
+          filesystemDecisionText(
+            action === 'session'
+              ? `allowed ${requestedRoot} for this session`
+              : action === 'always'
+                ? `permanently allowed ${requestedRoot}`
+                : `allowed ${requestedRoot} for this call`,
+            namespace,
+          ),
         )
       }
     }

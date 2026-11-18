@@ -247,3 +247,57 @@ describe('filesystem-access prompt for a call in another namespace', () => {
     )
   })
 })
+
+describe('approval buttons for a call in another namespace', () => {
+  it('forward the call namespace on approve, deny and approve always', async () => {
+    const resolve = vi.fn(async () => {})
+    const always = vi.fn(async () => {})
+    const held: FunctionCallMessage = {
+      id: 'e_ap:0',
+      role: 'function-call',
+      functionId: 'state::list',
+      input: {},
+      createdAt: 0,
+      pendingApproval: true,
+      sessionId: 'session-1',
+      functionCallId: 'function-call-1',
+      namespace: 'laptop',
+    }
+    const show = () =>
+      act(() => {
+        root.render(
+          <MessageList
+            key={Math.random()}
+            messages={[held]}
+            onResolveApproval={resolve}
+            onAlwaysAllow={always}
+          />,
+        )
+      })
+    // A click leaves the card submitting, so each action gets a fresh mount.
+    await show()
+    await click('[data-message-action="approve"]')
+    expect(resolve).toHaveBeenLastCalledWith(
+      'session-1',
+      'function-call-1',
+      'allow',
+      'laptop',
+    )
+    await show()
+    await click('[data-message-action="deny"]')
+    expect(resolve).toHaveBeenLastCalledWith(
+      'session-1',
+      'function-call-1',
+      'deny',
+      'laptop',
+    )
+    await show()
+    await click('[data-message-action="always-allow"]')
+    expect(always).toHaveBeenCalledExactlyOnceWith(
+      'session-1',
+      'function-call-1',
+      'state::list',
+      'laptop',
+    )
+  })
+})
