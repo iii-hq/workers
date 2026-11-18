@@ -213,6 +213,8 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth, req.state_key.as_deref())?;
+        let _admission = crate::worker_admission::worker(&self.base, req.state_key.as_deref())
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let source = Source::of(&req.source);
         if source.executable.is_some() {
             return Err(SandboxError::SourceRejected(
@@ -220,16 +222,22 @@ impl WorkerVms {
             ));
         }
         let dir = self.admit(source.host_path)?;
+        crate::worker_admission::reject_retained_path(&dir)
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let (project, kind) = validate_source(&dir, source.package, source.run_override)
             .map_err(SandboxError::SourceRejected)?;
         let rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
             .await
             .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
         if crate::cli::overlay::overlay_active() {
-            tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&rootfs))
-                .await
-                .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
-                .map_err(SandboxError::PrepareFailed)?;
+            let writer_admission = _admission.clone();
+            tokio::task::spawn_blocking(move || {
+                let _admission = writer_admission;
+                crate::cli::erofs::ensure_base_erofs(&rootfs)
+            })
+            .await
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+            .map_err(SandboxError::PrepareFailed)?;
         }
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
@@ -249,6 +257,8 @@ impl WorkerVms {
         req: WorkerStartRequest,
     ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
+        let admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         // Compose presents the project token and supervises its VMs itself.
         let leased = !self.is_project_token(&req.auth);
         let source = Source::of(&req.source);
@@ -258,6 +268,8 @@ impl WorkerVms {
             ));
         }
         let dir = self.admit(source.host_path)?;
+        crate::worker_admission::reject_retained_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if req.build.is_some() && !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
         }
@@ -312,7 +324,14 @@ impl WorkerVms {
         }
         .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
-            .launch(&req.state_key, built.command, built.env_stdin, Some(start))
+            .launch_admitted(
+                &req.state_key,
+                built.command,
+                built.env_stdin,
+                Some(start),
+                admission,
+                built.lifecycle_leases,
+            )
             .map_err(|e| match e {
                 SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
                 e => e,
@@ -349,6 +368,8 @@ impl WorkerVms {
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
+        crate::worker_admission::reject_retained_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
@@ -389,13 +410,20 @@ impl WorkerVms {
         req: WorkerBuildRequest,
     ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
+        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         if !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
         }
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
+        crate::worker_admission::reject_retained_path(&dir)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let planned = self.plan_output(&req.output_dir)?;
+        crate::worker_admission::reject_retained_path(&planned)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let output_admission = _admission.clone();
         let id = vm_id(&req.state_key);
         // Dropped last of the locals below: the key is free only once the
         // writer stopped and the scratch dir is gone.
@@ -423,6 +451,8 @@ impl WorkerVms {
         let done = Mutex::new(BuildDone::default());
         let job = BuildJob {
             worker_name: &req.worker_name,
+            admission: _admission.clone(),
+            output_admission,
             dir: &dir,
             source,
             base_image,
@@ -626,6 +656,28 @@ impl WorkerVms {
         env_stdin: Vec<u8>,
         start: Option<u64>,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        self.launch_admitted(state_key, cmd, env_stdin, start, admission, Vec::new())
+    }
+
+    fn launch_admitted(
+        &self,
+        state_key: &str,
+        cmd: Command,
+        env_stdin: Vec<u8>,
+        start: Option<u64>,
+        admission: crate::worker_admission::Lease,
+        local_leases: Vec<crate::worker_admission::Lease>,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        for lease in &local_leases {
+            lease
+                .revalidate()
+                .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        }
         let id = vm_id(state_key);
         let dir = self.base.join(&id);
         // Held to the insert, so two launches of one key cannot both spawn.
@@ -685,12 +737,23 @@ impl WorkerVms {
             )),
         ];
         let waited = vm.clone();
+        let mut held = local_leases;
+        held.push(admission);
+        let writer_admission = crate::worker_admission::WriterLease::new(held);
         tokio::spawn(async move {
-            let status = child.wait().await.ok();
+            // Guard survives the request and slot replacement: release only
+            // after the writer process is reaped. A wait error stays conservative.
+            let status = child.wait().await;
+            let proven_reaped = status.is_ok();
+            let status = status.ok();
             waited.reaped.store(true, Ordering::SeqCst);
             drop(lifeline);
             // So an exited VM's log is complete.
             let _ = tokio::time::timeout(DRAIN_GRACE, futures::future::join_all(pumps)).await;
+            if proven_reaped {
+                writer_admission.reaped();
+            }
+            // Otherwise Drop retains the descriptor lease; no false quiescence.
             waited.ended.send_replace(Some(Ended {
                 exit_code: status.and_then(|s| s.code()),
                 signal: status.and_then(|s| s.signal()),
@@ -857,6 +920,8 @@ impl WorkerVms {
         req: WorkerDestroyRequest,
     ) -> Result<WorkerDestroyResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
+        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+            .map_err(|e| SandboxError::FsIo(e.to_string()))?;
         let id = vm_id(&req.state_key);
         let dir = self.base.join(&id);
         // The marker, not the lock, keeps a `start` out of a half-removed dir:
@@ -1031,6 +1096,8 @@ impl Drop for BuildHold<'_> {
 /// One `worker::build`, from its build VM to the renamed image.
 struct BuildJob<'a> {
     worker_name: &'a str,
+    admission: crate::worker_admission::Lease,
+    output_admission: crate::worker_admission::Lease,
     dir: &'a Path,
     source: Source<'a>,
     /// The request's base image, over the manifest's; a binary package's.
@@ -1104,6 +1171,7 @@ impl BuildJob<'_> {
             SandboxError::BuildFailed(format!("the build VM left no image root: {e}"))
         })?;
         let image = ImageWrite {
+            _admissions: vec![self.admission.clone(), self.output_admission.clone()],
             export,
             out: self.out.to_path_buf(),
             spool: self.scratch.join("image.spool"),
@@ -1218,6 +1286,10 @@ async fn run_build_vm(
     vm: crate::cli::worker_manager::libkrun::VmCommand,
     log: &mut BuildLog<'_>,
 ) -> Result<std::process::ExitStatus, SandboxError> {
+    // These local preparation guards supplement the outer worker build guard.
+    // Cancellation may drop this future before Child::wait: retain their shared
+    // leases conservatively unless successful wait proves the writer is gone.
+    let lifecycle_leases = vm.lifecycle_leases;
     let mut cmd = vm.command;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1227,6 +1299,7 @@ async fn run_build_vm(
         .and_then(|lifeline| Ok((lifeline, cmd.spawn()?)));
     let (_lifeline, mut child) = spawned
         .map_err(|e| SandboxError::BuildFailed(format!("cannot launch the build VM: {e}")))?;
+    let lifecycle_leases = crate::worker_admission::WriterLease::new(lifecycle_leases);
     let stdin = child.stdin.take();
     let env_stdin = vm.env_stdin;
     tokio::spawn(async move {
@@ -1254,6 +1327,8 @@ async fn run_build_vm(
             })?,
         }
     };
+    // Successful wait is the only explicit release of the spawned writer lease.
+    lifecycle_leases.reaped();
     // What the VM printed last, unless a grandchild holds the pipes open.
     tokio::time::timeout(DRAIN_GRACE, async {
         while let Some((stream, line)) = received.recv().await {
@@ -1339,6 +1414,8 @@ impl<'a> BuildLog<'a> {
 
 /// The blocking part of a build: the exported root into an image in `out`.
 struct ImageWrite {
+    /// Survives a dropped async caller until the blocking writer has stopped.
+    _admissions: Vec<crate::worker_admission::Lease>,
     /// The tar the build VM exported.
     export: File,
     out: PathBuf,
@@ -2307,6 +2384,10 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
 }
+
+#[cfg(test)]
+#[path = "worker_vm/compat_admission_tests.rs"]
+mod compat_admission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4656,6 +4737,7 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let state = Arc::new(AtomicU8::new(state));
         let write = ImageWrite {
+            _admissions: Vec::new(),
             export,
             out,
             spool: t.join("spool"),

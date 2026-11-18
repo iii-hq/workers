@@ -740,6 +740,24 @@ pub fn run(args: &VmBootArgs) -> ! {
         Vec::new()
     };
 
+    // Independent __vm-boot callers must also refuse compatibility custody.
+    // Retain the shared admission for the process lifetime before boot_vm can
+    // alter the trampoline, copy source or mount an upper. This is NOT authority.
+    let _admission = match crate::worker_admission::local(std::path::Path::new(&args.rootfs)) {
+        Ok(lease) => lease,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    for path in args.rootfs_lower.iter().chain(args.rootfs_upper.iter()) {
+        if let Err(e) = crate::worker_admission::reject_retained_path(std::path::Path::new(path)) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+
     if !std::path::Path::new(&args.rootfs).exists() {
         eprintln!("error: rootfs path does not exist: {}", args.rootfs);
         std::process::exit(1);

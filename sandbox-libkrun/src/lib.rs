@@ -20,6 +20,7 @@ pub mod daemon_exit;
 pub mod sandbox_daemon;
 pub mod wire;
 pub mod worker_vm;
+pub(crate) mod worker_admission;
 
 pub use cli::app::{Cli, Commands};
 pub use cli::vm_boot::VmBootArgs;

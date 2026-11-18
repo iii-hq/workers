@@ -195,7 +195,10 @@ advertises `worker.binary` and `worker.prune` in the overlay mode only.
   equate a retained `.pre-build` file with data available in the new guest.
   Private Linux offline-generation primitives now exist under
   [`src/compat_generation`](src/compat_generation/README.md), but are not wired
-  to normal start/build/destroy or advertised as a migration feature. They
+  to actual compatibility boot/rebuild or advertised as a migration feature.
+  Normal prepare/start/build/destroy now refuse recognized compatibility custody
+  before changing it; see the [lifecycle admission boundary](src/worker_admission/README.md).
+  Valid records alone do not authorize booting an old root. The offline primitives
   require a future authenticated local-owner coordinator, exact old lower/profile,
   retired old credentials/writers, independent offline backups and supported
   metadata/filesystem capabilities. Preserve the old installation and backup;

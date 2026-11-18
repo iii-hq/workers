@@ -2,8 +2,9 @@
 
 This module implements real offline filesystem copying and durable generation
 selection. It is **not a migration endpoint or boot feature**. No production
-constructor issues `OfflineGrant`; only tests do. No `worker::*` handler imports
-or calls this module, and no feature, S-code, contract version or release changes.
+constructor issues `OfflineGrant`; only tests do. No `worker::*` handler calls capture/rebuild/rollback, and no feature, S-code, contract version or release changes.
+Worker lifecycle now calls a strict READ-ONLY admission inspector to prevent
+normal destructive behavior over compatibility custody; see lifecycle section below.
 A hash, path, JSON record, old bearer token or a caller boolean cannot create a
 production grant. `#[allow(dead_code)]` on the private module is intentional while
 that reviewed coordinator seam is absent.
@@ -150,10 +151,12 @@ snapshot into a fresh isolated directory and retains current NEW for reconciliat
 
 Real OS-peer grant issuance/cross-process all-mutator fencing, authentic published
 artifact and old-lower/profile observation, old authority retirement, secret
-sanitation, selector admission before normal build claims/next_instance, actual
+sanitation, authority-backed selection before actual boot (normal callers now refuse custody
+before build claims/next_instance), actual
 VM boot using these retained handles/profiles, same-app reprovision hooks, negotiated
-destroy intent and real historical smoke harness remain integration work. Existing
-start/archive behavior is NOT fixed by merely adding this private storage module.
+destroy intent and real historical smoke harness remain integration work. Normal non-compat start/archive behavior is preserved. Recognized compatibility
+custody now refuses before that behavior can run; no active root is automatically
+booted by this refusal boundary.
 No claim of a working general upgrade or support for all legacy trees is made.
 The eight historical source/layout/provision cells remain NOTRUN; two campaigns
 require16 later actual guest cycles, not synthetic disk marker tests.

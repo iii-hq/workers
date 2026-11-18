@@ -710,6 +710,8 @@ pub(crate) async fn image_build_command(
     env: HashMap<String, String>,
 ) -> Result<BuildVm, String> {
     use super::worker_manager::oci;
+    let admission = crate::worker_admission::local(scratch).map_err(|e| e.to_string())?;
+    crate::worker_admission::reject_retained_path(worker_dir).map_err(|e| e.to_string())?;
 
     let (mut project, kind) = match (package, executable) {
         (Some(package), Some(executable)) => (
@@ -738,10 +740,14 @@ pub(crate) async fn image_build_command(
         .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
     let lower = {
         let base = base_rootfs.clone();
-        tokio::task::spawn_blocking(move || crate::cli::erofs::ensure_base_erofs(&base))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("failed to build base erofs: {e}"))?
+        let writer_admission = admission.clone();
+        tokio::task::spawn_blocking(move || {
+            let _admission = writer_admission;
+            crate::cli::erofs::ensure_base_erofs(&base)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("failed to build base erofs: {e}"))?
     };
 
     let root = scratch.join("root");
@@ -771,7 +777,7 @@ pub(crate) async fn image_build_command(
             "/opt/iii".to_string(),
         ),
     ];
-    let command = super::worker_manager::libkrun::build_vm_command(
+    let mut command = super::worker_manager::libkrun::build_vm_command(
         "/bin/sh",
         &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
         env_all,
@@ -785,6 +791,8 @@ pub(crate) async fn image_build_command(
         None,
         Some(worker_dir),
     )?;
+    admission.revalidate().map_err(|e| e.to_string())?;
+    command.lifecycle_leases.push(admission);
     debug_assert_eq!(script_dir.join("root.tar"), root.join(BUILD_EXPORT_HOST));
     Ok(BuildVm {
         command,
@@ -818,7 +826,11 @@ fn image_run_command(
     is_bundle: bool,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
     let BootImage { image, upper } = over.image.expect("a build to boot");
+    for path in [project_path, &image, &upper] {
+        crate::worker_admission::reject_retained_path(path).map_err(|e| e.to_string())?;
+    }
     if !crate::cli::overlay::overlay_active() {
         return Err(
             "booting a build needs the overlay rootfs mode; this adapter runs in \
@@ -858,7 +870,7 @@ fn image_run_command(
         script_dir.to_string_lossy().into_owned(),
         "/opt/iii".to_string(),
     ));
-    super::worker_manager::libkrun::build_vm_command(
+    let mut command = super::worker_manager::libkrun::build_vm_command(
         "/bin/sh",
         &["-c".to_string(), RUN_SCRIPT_CMD.to_string()],
         env,
@@ -871,7 +883,10 @@ fn image_run_command(
         &mounts,
         (!is_bundle).then_some(project_path),
         None,
-    )
+    )?;
+    admission.revalidate().map_err(|e| e.to_string())?;
+    command.lifecycle_leases.push(admission);
+    Ok(command)
 }
 
 /// vCPUs and MiB of RAM: a bundle's clamped, as its manifest is
@@ -1160,6 +1175,8 @@ pub async fn binary_vm_command(
     package_dir: &Path,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
+    crate::worker_admission::reject_retained_path(package_dir).map_err(|e| e.to_string())?;
     let project = validate_binary(package_dir, package, executable)?;
     if over.image.is_none() {
         return Err(format!(
@@ -1175,7 +1192,10 @@ pub async fn binary_vm_command(
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
             .to_string());
     }
-    image_run_command(worker_name, package_dir, &project, true, over)
+    let mut command = image_run_command(worker_name, package_dir, &project, true, over)?;
+    admission.revalidate().map_err(|e| e.to_string())?;
+    command.lifecycle_leases.push(admission);
+    Ok(command)
 }
 
 /// Shared body for `local_vm_command` and `bundle_vm_command`: validates the
@@ -1194,7 +1214,9 @@ pub(crate) async fn start_worker_impl(
     over: VmOverride<'_>,
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
     let project_path = Path::new(worker_path);
+    crate::worker_admission::reject_retained_path(project_path).map_err(|e| e.to_string())?;
     // A build's image is made: the manifest need not name its base image.
     let (project, kind) =
         validate_source_with(project_path, package, run_override, over.image.is_none())?;
@@ -1212,7 +1234,10 @@ pub(crate) async fn start_worker_impl(
             .to_string());
     }
     if over.image.is_some() {
-        return image_run_command(worker_name, project_path, &project, is_bundle, over);
+        let mut command = image_run_command(worker_name, project_path, &project, is_bundle, over)?;
+        admission.revalidate().map_err(|e| e.to_string())?;
+        command.lifecycle_leases.push(admission);
+        return Ok(command);
     }
 
     // 4. Prepare managed dir — clone rootfs on first start
@@ -1417,7 +1442,7 @@ pub(crate) async fn start_worker_impl(
     };
 
     // The caller spawns, waits on and stops the VM.
-    super::worker_manager::libkrun::build_vm_command(
+    let mut command = super::worker_manager::libkrun::build_vm_command(
         exec_path,
         &args,
         env,
@@ -1430,7 +1455,10 @@ pub(crate) async fn start_worker_impl(
         &mounts,
         (!is_bundle).then_some(project_path),
         None,
-    )
+    )?;
+    admission.revalidate().map_err(|e| e.to_string())?;
+    command.lifecycle_leases.push(admission);
+    Ok(command)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

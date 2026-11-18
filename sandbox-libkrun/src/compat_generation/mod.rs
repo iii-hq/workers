@@ -1,10 +1,11 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Offline whole-generation storage. Intentionally private and NOT called by
-//! worker::*: there is no production issuer for OfflineGrant yet. Hashes/JSON
+//! Offline whole-generation storage. Private operations have no runtime issuer.
+//! worker lifecycle calls only the read-only admission inspector; hashes/JSON
 //! and old tokens never manufacture authority. See README.md for the exact seam.
 
+pub(crate) mod admission;
 mod fs;
 mod store;
 mod tree;

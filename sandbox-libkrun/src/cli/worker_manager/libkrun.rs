@@ -94,6 +94,9 @@ pub struct VmCommand {
     /// local user (MOT-5492): whoever spawns it must write this to the
     /// child's stdin and close it (see [`feed_env_stdin`]).
     pub env_stdin: Vec<u8>,
+    /// Cooperative normal-mode guards, retained by the owning worker waiter.
+    /// They are not compatibility authority and cannot boot a retained root.
+    pub(crate) lifecycle_leases: Vec<crate::worker_admission::Lease>,
 }
 
 /// Writes [`VmCommand::env_stdin`] into a spawned `__vm-boot` and closes the
@@ -199,6 +202,7 @@ pub fn build_vm_command(
     Ok(VmCommand {
         command: cmd,
         env_stdin,
+        lifecycle_leases: Vec::new(),
     })
 }
 
