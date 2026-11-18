@@ -176,12 +176,25 @@ fn verify(path: &Path, file: &str, expected: &str) -> Result<()> {
     let mut hasher = Sha256::new();
     std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
     let found = format!("{:x}", hasher.finalize());
-    ensure!(
-        found == expected,
-        "{file} ({}) has sha256 {found}, expected {expected} at revision {REVISION}",
+    if found == expected {
+        return Ok(());
+    }
+    // hf-hub serves a cached file without asking the Hub again, and relinks a
+    // cached blob: both have to go for the next load to download it.
+    let delete = if path.is_symlink() {
+        format!(
+            "{} and the blob it links to, {}",
+            path.display(),
+            std::fs::canonicalize(path)?.display()
+        )
+    } else {
+        path.display().to_string()
+    };
+    Err(anyhow!(
+        "{file} ({}) has sha256 {found}, expected {expected} at revision {REVISION}; \
+         delete {delete} and load again",
         path.display()
-    );
-    Ok(())
+    ))
 }
 
 /// Point `refs/<REVISION>` at the pinned snapshot, linking into it the blobs
@@ -191,7 +204,12 @@ fn verify(path: &Path, file: &str, expected: &str) -> Result<()> {
 /// no network.
 fn link_snapshot(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) -> Result<()> {
     let cached = cache.repo(repo.clone());
-    if files.iter().all(|file| cached.get(file).is_some()) {
+    let dir = cache.path().join(repo.folder_name());
+    // huggingface_hub fills `snapshots/<sha>` without `refs/<sha>` when asked
+    // for a commit, and hf-hub's `get` finds nothing without the ref.
+    let snapshot = dir.join("snapshots").join(repo.revision());
+    if files.iter().all(|file| snapshot.join(file).exists()) {
+        cached.create_ref(repo.revision())?;
         return Ok(());
     }
     #[derive(serde::Deserialize)]
@@ -238,7 +256,6 @@ fn link_snapshot(api: &ApiRepo, cache: &Cache, repo: &Repo, files: &[String]) ->
     };
     #[cfg(unix)]
     {
-        let dir = cache.path().join(repo.folder_name());
         for file in files {
             let link = dir.join("snapshots").join(&head.sha).join(file);
             let Some(id) = blob(file).filter(|id| dir.join("blobs").join(id).is_file()) else {
@@ -362,12 +379,12 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "{}").unwrap();
         }
-        cache.repo(repo).create_ref(REVISION).unwrap();
         let error = fetch_from(&cache, offline(&cache), "laya", None)
             .unwrap_err()
             .to_string();
+        let path = snapshot.join("rl_agent_config.json");
         assert!(
-            error.contains("rl_agent_config.json") && error.contains("sha256"),
+            error.contains("sha256") && error.contains(&format!("delete {}", path.display())),
             "{error}"
         );
     }
@@ -405,6 +422,25 @@ mod tests {
             error.contains("rl_agent_config.json") && error.contains(abc),
             "{error}"
         );
+        // A snapshot link names its blob too: deleting the link alone relinks it.
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let error = verify(
+            &link,
+            "rl_agent_config.json",
+            digest("rl_agent_config.json").unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        let blob = std::fs::canonicalize(&path).unwrap();
+        assert!(
+            error.contains(&format!(
+                "delete {} and the blob it links to, {}",
+                link.display(),
+                blob.display()
+            )),
+            "{error}"
+        );
     }
 
     #[test]
@@ -428,7 +464,8 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "{}").unwrap();
         }
-        cache.repo(repo.clone()).create_ref(REVISION).unwrap();
+        // No `refs/`, as huggingface_hub leaves a download by commit.
         link_snapshot(&api, &cache, &repo, &files).unwrap();
+        assert!(cache.repo(repo).get(&files[0]).is_some());
     }
 }
