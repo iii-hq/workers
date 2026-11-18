@@ -1,7 +1,7 @@
 """Regenerate lang.json: laya's own `analyse` over the cases below.
 
     git -C <laya clone> show v0.4.35:laya/lang.py > /tmp/laya_lang.py
-    python3 -I tests/fixtures/lang.py /tmp/laya_lang.py
+    python3.14 -I tests/fixtures/lang.py /tmp/laya_lang.py
 
 lang.json was generated from v0.3.28; the three cases v0.4.35 answers
 differently were then edited by hand to its answer: `collision_son` and
