@@ -672,6 +672,22 @@ async fn a_released_call_held_again_stops_claiming_to_run_tools() {
     );
 }
 
+/// A person approved the call for one namespace: the release must run it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_call_runs_in_the_namespace_it_was_held_for() {
+    let mut held = held_call();
+    held["namespace"] = json!("zz-a");
+    let hooks =
+        json!({"harness::hook::on-post-call": {"decision": "hold", "held_by": "test::gate"}});
+    let (_, calls, _) = release(json!({"call_hold": held}), hooks).await;
+    let post = calls
+        .iter()
+        .find(|(function, _)| function == "harness::hook::on-post-call")
+        .expect("post_call ran");
+    assert_eq!(post.1["call"]["namespace"], "zz-a");
+    assert_eq!(sent_namespace(&calls, "test::hold"), "zz-a");
+}
+
 /// The released call finished and a sibling still waits on a person, for
 /// hours maybe: `running tools` would stay up with nothing running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

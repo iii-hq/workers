@@ -5,7 +5,7 @@
     "description": "The args of an observer of a `harness::hook::on-<point>` function.",
     "properties": {
       "functions": {
-        "description": "on-pre-call / on-post-call only: called function id globs to consult on.",
+        "description": "on-pre-call / on-post-call only: called function id globs to consult on. A `<namespace>/<pattern>` entry matches one engine namespace; a bare pattern matches every namespace. A harness older than this one matches no call for a `<namespace>/<pattern>` entry and skips the hook; register one only after a hook input carried `own_namespace`.",
         "items": {
           "type": "string"
         },
@@ -22,7 +22,7 @@
         ]
       },
       "input": {
-        "description": "The hook-input fields the target reads, as dotted paths; `[]` after a name maps over a list (`generate.tools[].name` sends each tool as `{ name }`). The target gets those plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`, `metadata`). Omit to get the whole input. An on-pre-generate input carries the whole prompt, so a target that reads a few fields of it should list them.",
+        "description": "The hook-input fields the target reads, as dotted paths; `[]` after a name maps over a list (`generate.tools[].name` sends each tool as `{ name }`). The target gets those plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`, `metadata`, `own_namespace`). Omit to get the whole input. An on-pre-generate input carries the whole prompt, so a target that reads a few fields of it should list them.",
         "items": {
           "type": "string"
         },
@@ -166,6 +166,13 @@
       "metadata": {
         "description": "The turn's `options.metadata`."
       },
+      "own_namespace": {
+        "description": "The namespace the harness runs in; a call without a namespace goes there.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "parent": {
         "anyOf": [
           {
@@ -289,6 +296,13 @@
       },
       "metadata": {
         "description": "The turn's `options.metadata`."
+      },
+      "own_namespace": {
+        "description": "The namespace the harness runs in; a call without a namespace goes there.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "parent": {
         "anyOf": [

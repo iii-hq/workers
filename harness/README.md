@@ -683,23 +683,34 @@ harness calls the function with the hook input and waits for the merged
 outcome. Its deliver hook runs the chain: the observers whose `sessions` and
 `functions` globs match the input and whose filters match the call, in
 `priority` order (ties by target), each called through its observer with the
-input as the previous one left it. A target answers
+input as the previous one left it. A `<namespace>/<pattern>` entry in
+`functions` matches one engine namespace; a bare pattern matches every
+namespace. A harness older than this one matches no call for a
+`<namespace>/<pattern>` entry and skips the hook; register one only after a
+hook input carried `own_namespace`. A target answers
 `{ decision, reason?, mutations?, annotations? }`.
 
 The handler returns the hook input, so the function's `request_format` and
 `response_format` are the input, and that is what observers observe. Every
-input carries `{ point, session_id, turn_id, step, depth, metadata? }`
-(`metadata` is the turn's `options.metadata`) plus the point's own fields. The
-harness gets back the merged outcome, `{ decision, reason?, held_by?,
-system_prompt?, append_messages?, arguments?, result?, prompt?, annotations? }`,
-with `decision` `continue`, `deny` or `hold`.
+input carries `{ point, session_id, turn_id, step, depth, own_namespace,
+metadata? }` (`own_namespace` is the namespace the harness runs in, where a
+call without a namespace goes; `metadata` is the turn's `options.metadata`)
+plus the point's own fields. The harness gets back the merged outcome,
+`{ decision, reason?, held_by?, system_prompt?, append_messages?, arguments?,
+result?, prompt?, annotations? }`, with `decision` `continue`, `deny` or `hold`.
+
+Each turn step also carries the namespace as the OpenTelemetry baggage
+`iii.own_namespace`, next to `iii.session.id`, so a worker the step calls (the
+directory's search and info) knows where a call without a namespace goes. The
+baggage is set around the turn step only, so a held call released later
+reaches iii-directory as if from an older harness and gets the old output.
 
 | Function | Runs | Input adds | The harness gets back |
 |---|---|---|---|
 | `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. | — | `decision`, `reason?` |
 | `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly to the turns its `sessions` globs and filters select (filters see the input without the assembled `system_prompt`, `messages` and `tools`), so the budget and compaction count it, and its target is not called. It joins the stable prefix ahead of the per-session runtime aid, so every session it selects shares it from the provider's prompt cache. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }`, `parent?`, `parent_session_id?` (a sub-agent turn's parent, as on `harness::on-turn-completed`) | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
 | `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
-| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments }` | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
+| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, namespace, implicit_namespace, arguments }` (`namespace` is the engine namespace the call runs in; `implicit_namespace` is where this id runs when a call names none) | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
 | `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
 | `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
@@ -714,8 +725,9 @@ refused (`OVERFLOW`, `OBSERVER_NOT_ACTIVE`) follows `on_error`. `input` lists th
 input fields the target reads as dotted paths, `[]` mapping over a list
 (`generate.tools[].name` sends each tool as `{ name }`); the target gets those
 plus the envelope (`point`, `session_id`, `turn_id`, `step`, `depth`,
-`metadata`). An `on-pre-generate` input carries the whole prompt, every message
-and every tool schema, so a target that reads a few of them should list them.
+`metadata`, `own_namespace`). An `on-pre-generate` input carries the whole
+prompt, every message and every tool schema, so a target that reads a few of
+them should list them.
 
 ```rust
 iii.observe(

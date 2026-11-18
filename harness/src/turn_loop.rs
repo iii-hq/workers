@@ -2160,6 +2160,7 @@ async fn finish_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
+                    &namespace,
                     &trusted_call_args,
                     None,
                 )
@@ -2399,6 +2400,7 @@ async fn finish_step(
                     payload.step,
                     &call.id,
                     &call.function_id,
+                    &namespace,
                     &eff_args,
                     raw,
                 )

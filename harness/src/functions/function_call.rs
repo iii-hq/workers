@@ -79,6 +79,7 @@ pub async fn handle(
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
     let policy = CompiledPolicy::from(record.as_ref().and_then(|r| r.options.functions.as_ref()));
     let engine = deps.engine().await;
+    let namespace = crate::clients::engine::resolve_namespace(&req.call.function_id, None);
     let started = Instant::now();
 
     // A call is a pipeline: fail-closed globs, then the pre_call chain,
@@ -124,6 +125,7 @@ pub async fn handle(
                 rec.step,
                 &req.call.id,
                 &req.call.function_id,
+                &namespace,
                 &arguments,
                 None,
             )
@@ -196,6 +198,7 @@ pub async fn handle(
                 rec.step,
                 &req.call.id,
                 &req.call.function_id,
+                &namespace,
                 &arguments,
                 raw,
             )

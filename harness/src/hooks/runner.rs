@@ -151,6 +151,7 @@ impl HookRegistry {
             "turn_id": record.turn_id,
             "step": step,
             "depth": record.depth,
+            "own_namespace": crate::clients::engine::own_namespace(),
         });
         // Only the Memory hook reads recall provenance; the query holds the
         // user's text, so the other points never carry it.
@@ -174,6 +175,30 @@ impl HookRegistry {
             v["metadata"] = m.clone();
         }
         v
+    }
+
+    /// A pre/post_call hook input: the envelope plus the call, with the
+    /// namespace it runs in and the one it would run in without `namespace`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn call_hook_input(
+        &self,
+        point: HookPoint,
+        record: &TurnRecord,
+        step: u64,
+        call_id: &str,
+        function_id: &str,
+        namespace: &str,
+        arguments: &Value,
+    ) -> Value {
+        let mut input = self.envelope(point, record, step);
+        input["call"] = serde_json::json!({
+            "id": call_id,
+            "function_id": function_id,
+            "namespace": namespace,
+            "implicit_namespace": crate::clients::engine::resolve_namespace(function_id, None),
+            "arguments": arguments,
+        });
+        input
     }
 
     /// What static `inject_prompt` observers are selected against for a
@@ -330,21 +355,26 @@ impl HookRegistry {
     /// `resume_after` is the hook-held release path (harness.md §
     /// `function::resolve`): the chain resumes AFTER the named holder (see
     /// [`chain_slice`]), over the checkpointed arguments it already mutated.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_pre_call(
         &self,
         record: &TurnRecord,
         step: u64,
         call_id: &str,
         function_id: &str,
+        namespace: &str,
         arguments: &Value,
         resume_after: Option<&str>,
     ) -> PreCallOutcome {
-        let mut input = self.envelope(HookPoint::PreCall, record, step);
-        input["call"] = serde_json::json!({
-            "id": call_id,
-            "function_id": function_id,
-            "arguments": arguments,
-        });
+        let mut input = self.call_hook_input(
+            HookPoint::PreCall,
+            record,
+            step,
+            call_id,
+            function_id,
+            namespace,
+            arguments,
+        );
         if let Some(holder) = resume_after {
             input[RESUME_AFTER] = Value::String(holder.to_string());
         }
@@ -374,21 +404,26 @@ impl HookRegistry {
 
     /// `post_call`: rewrite result content / details / is_error (redaction,
     /// truncation). Returns the (possibly rewritten) result + annotations.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_post_call(
         &self,
         record: &TurnRecord,
         step: u64,
         call_id: &str,
         function_id: &str,
+        namespace: &str,
         arguments: &Value,
         mut result: crate::call::ResultData,
     ) -> PostCallOutcome {
-        let mut input = self.envelope(HookPoint::PostCall, record, step);
-        input["call"] = serde_json::json!({
-            "id": call_id,
-            "function_id": function_id,
-            "arguments": arguments,
-        });
+        let mut input = self.call_hook_input(
+            HookPoint::PostCall,
+            record,
+            step,
+            call_id,
+            function_id,
+            namespace,
+            arguments,
+        );
         input["result"] = serde_json::json!({
             "function_call_id": call_id,
             "function_id": function_id,
@@ -940,19 +975,30 @@ async fn chain_pre_generate(
     }
 }
 
+/// The namespace and id of a call hook input's call; an input without
+/// `call.namespace` runs in the id's implicit namespace.
+fn called(input: &Value) -> (String, String) {
+    let function_id = input["call"]["function_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let namespace = match input["call"]["namespace"].as_str() {
+        Some(namespace) => namespace.to_string(),
+        None => crate::clients::engine::resolve_namespace(&function_id, None),
+    };
+    (namespace, function_id)
+}
+
 async fn chain_pre_call(
     invoker: &dyn HookInvoker,
     bindings: Vec<HookBinding>,
     mut input: Value,
     resume_after: Option<&str>,
 ) -> HookChainOutcome {
-    let function_id = input["call"]["function_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let (namespace, function_id) = called(&input);
     let mut args = input["call"]["arguments"].clone();
     let mut annotations = Map::new();
-    for binding in chain_slice(bindings, &function_id, resume_after) {
+    for binding in chain_slice(bindings, &namespace, &function_id, resume_after) {
         input["call"]["arguments"] = args.clone();
         match invoke(invoker, &binding, input.clone()).await {
             HookOutcome::Continue(m) => {
@@ -991,13 +1037,10 @@ async fn chain_post_call(
     bindings: &[HookBinding],
     mut input: Value,
 ) -> HookChainOutcome {
-    let function_id = input["call"]["function_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+    let (namespace, function_id) = called(&input);
     let mut annotations = Map::new();
     for binding in bindings {
-        if !functions_match(binding, &function_id) {
+        if !functions_match(binding, &namespace, &function_id) {
             continue;
         }
         match invoke(invoker, binding, input.clone()).await {
@@ -1112,13 +1155,14 @@ async fn invoke(invoker: &dyn HookInvoker, binding: &HookBinding, input: Value) 
 }
 
 /// Hook-input fields every target gets, whatever its `input` paths say.
-const ENVELOPE: [&str; 6] = [
+const ENVELOPE: [&str; 7] = [
     "point",
     "session_id",
     "turn_id",
     "step",
     "depth",
     "metadata",
+    "own_namespace",
 ];
 
 /// The envelope of `input` plus the fields `paths` name ([`HookArgs::input`]).
@@ -1257,12 +1301,13 @@ fn append_prompt(base: Option<String>, injected: &str) -> Option<String> {
 /// resume point is unknowable.
 fn chain_slice(
     bindings: Vec<HookBinding>,
+    namespace: &str,
     function_id: &str,
     resume_after: Option<&str>,
 ) -> Vec<HookBinding> {
     let mut matched: Vec<HookBinding> = bindings
         .into_iter()
-        .filter(|b| functions_match(b, function_id))
+        .filter(|b| functions_match(b, namespace, function_id))
         .collect();
     let Some(holder) = resume_after else {
         return matched;
@@ -1274,14 +1319,33 @@ fn chain_slice(
 }
 
 /// Whether a pre/post_call observer's `functions` globs match the called
-/// function (no `functions` filter → all calls), under either id of a sandbox
-/// operation.
-pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool {
-    let globs = binding.functions.as_deref();
-    globs_match(globs, function_id)
+/// function in `namespace` (no `functions` filter → all calls), under either
+/// id of a sandbox operation. A `<namespace>/<glob>` entry holds only in that
+/// namespace; a bare glob holds in every one.
+pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_id: &str) -> bool {
+    let Some(globs) = binding
+        .functions
+        .as_deref()
+        .filter(|globs| !globs.is_empty())
+    else {
+        return true;
+    };
+    let ids: Vec<String> = globs
+        .iter()
+        .filter_map(|glob| match crate::policy::split_namespace_pattern(glob) {
+            (Some(qualifier), _) if qualifier != namespace => None,
+            (_, id) => Some(id.to_string()),
+        })
+        .collect();
+    // An empty list reads as "no filter" in `globs_match`.
+    if ids.is_empty() {
+        return false;
+    }
+    let ids = Some(ids.as_slice());
+    globs_match(ids, function_id)
         || crate::policy::sandbox_op_aliases(function_id)
             .iter()
-            .any(|alias| globs_match(globs, alias))
+            .any(|alias| globs_match(ids, alias))
 }
 
 /// Whether an observer's `sessions` globs match the turn's session (no
@@ -1470,7 +1534,7 @@ mod tests {
     fn chain_slice_without_resume_runs_the_matched_chain() {
         let chain = vec![binding("mutate", 10), binding("gate", 20)];
         assert_eq!(
-            ids(&chain_slice(chain, "shell::run", None)),
+            ids(&chain_slice(chain, "default", "shell::run", None)),
             vec!["mutate", "gate"]
         );
     }
@@ -1484,17 +1548,22 @@ mod tests {
         ];
         // The mutator and the holder already ran — only `audit` remains.
         assert_eq!(
-            ids(&chain_slice(chain.clone(), "shell::run", Some("gate"))),
+            ids(&chain_slice(
+                chain.clone(),
+                "default",
+                "shell::run",
+                Some("gate")
+            )),
             vec!["audit"]
         );
         // Holder last in the chain → nothing remains.
-        assert!(chain_slice(chain, "shell::run", Some("audit")).is_empty());
+        assert!(chain_slice(chain, "default", "shell::run", Some("audit")).is_empty());
     }
 
     #[test]
     fn chain_slice_runs_nothing_when_the_holder_was_unbound() {
         let chain = vec![binding("mutate", 10), binding("audit", 30)];
-        assert!(chain_slice(chain, "shell::run", Some("gone")).is_empty());
+        assert!(chain_slice(chain, "default", "shell::run", Some("gone")).is_empty());
     }
 
     #[test]
@@ -1504,7 +1573,7 @@ mod tests {
         let mut other = binding("gate", 20);
         other.functions = Some(vec!["fs::*".into()]);
         let chain = vec![binding("mutate", 10), other, binding("audit", 30)];
-        assert!(chain_slice(chain, "shell::run", Some("gate")).is_empty());
+        assert!(chain_slice(chain, "default", "shell::run", Some("gate")).is_empty());
     }
 
     #[test]
@@ -1557,14 +1626,14 @@ mod tests {
     #[test]
     fn functions_filter_matches_globs() {
         let binding = binding("gate", 0);
-        assert!(functions_match(&binding, "shell::run"));
-        assert!(!functions_match(&binding, "fs::read"));
+        assert!(functions_match(&binding, "default", "shell::run"));
+        assert!(!functions_match(&binding, "default", "fs::read"));
 
         let all = HookBinding {
             functions: None,
             ..binding
         };
-        assert!(functions_match(&all, "anything"));
+        assert!(functions_match(&all, "default", "anything"));
     }
 
     // A guard on one id of a sandbox op must not be skipped through the other.
@@ -1574,17 +1643,74 @@ mod tests {
             functions: Some(vec!["sandbox::exec".into()]),
             ..binding("gate", 0)
         };
-        assert!(functions_match(&on_router, "sandbox::exec"));
-        assert!(functions_match(&on_router, "sandbox-libkrun::exec"));
-        assert!(!functions_match(&on_router, "sandbox-libkrun::fs::rm"));
-        assert!(!functions_match(&on_router, "shell::exec"));
+        assert!(functions_match(&on_router, "default", "sandbox::exec"));
+        assert!(functions_match(
+            &on_router,
+            "default",
+            "sandbox-libkrun::exec"
+        ));
+        assert!(!functions_match(
+            &on_router,
+            "default",
+            "sandbox-libkrun::fs::rm"
+        ));
+        assert!(!functions_match(&on_router, "default", "shell::exec"));
 
         let on_adapter = HookBinding {
             functions: Some(vec!["sandbox-libkrun::fs::*".into()]),
             ..binding("gate", 0)
         };
-        assert!(functions_match(&on_adapter, "sandbox::fs::read"));
-        assert!(!functions_match(&on_adapter, "sandbox::exec"));
+        assert!(functions_match(&on_adapter, "default", "sandbox::fs::read"));
+        assert!(!functions_match(&on_adapter, "default", "sandbox::exec"));
+    }
+
+    #[test]
+    fn call_hook_input_names_the_call_namespace_and_the_own_namespace() {
+        use crate::clients::engine::own_namespace;
+        let hooks = HookRegistry::new(Arc::new(IIIClient::new("ws://127.0.0.1:0")));
+        let record = crate::types::turn::tests::record();
+        let input = hooks.call_hook_input(
+            HookPoint::PreCall,
+            &record,
+            0,
+            "c_1",
+            "shell::exec",
+            "laptop",
+            &json!({ "cmd": "ls" }),
+        );
+        assert_eq!(
+            input["call"],
+            json!({ "id": "c_1", "function_id": "shell::exec", "namespace": "laptop",
+                "implicit_namespace": own_namespace(), "arguments": { "cmd": "ls" } })
+        );
+        let pinned = hooks.call_hook_input(
+            HookPoint::PreCall,
+            &record,
+            0,
+            "c_2",
+            "configuration::get",
+            "default",
+            &json!({}),
+        );
+        assert_eq!(pinned["call"]["implicit_namespace"], "default");
+        for point in HookPoint::all() {
+            assert_eq!(
+                project(&hooks.envelope(point, &record, 0), &[])["own_namespace"],
+                json!(own_namespace()),
+                "{point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn functions_filter_reads_the_namespace_qualifier() {
+        let on_laptop = HookBinding {
+            functions: Some(vec!["laptop/shell::*".into()]),
+            ..binding("gate", 0)
+        };
+        assert!(functions_match(&on_laptop, "laptop", "shell::exec"));
+        assert!(!functions_match(&on_laptop, "desk", "shell::exec"));
+        assert!(functions_match(&binding("gate", 0), "desk", "shell::exec"));
     }
 
     /// A scripted invoker: each target answers from the map, and every call
@@ -1638,6 +1764,32 @@ mod tests {
             "depth": 0,
             "call": { "id": "c_1", "function_id": function_id, "arguments": arguments },
         })
+    }
+
+    #[tokio::test]
+    async fn a_pre_call_hook_on_one_namespace_skips_calls_in_another() {
+        let invoker = Scripted::new(&[("gate", Ok(json!({ "decision": "deny", "reason": "no" })))]);
+        let chain = || {
+            vec![HookBinding {
+                functions: Some(vec!["laptop/shell::*".into()]),
+                ..binding("gate", 0)
+            }]
+        };
+        let mut input = call_input("shell::exec", json!({}));
+        input["call"]["namespace"] = json!("desk");
+        assert_eq!(
+            run_chain(HookPoint::PreCall, &invoker, chain(), input.clone())
+                .await
+                .decision,
+            ChainDecision::Continue
+        );
+        input["call"]["namespace"] = json!("laptop");
+        assert_eq!(
+            run_chain(HookPoint::PreCall, &invoker, chain(), input)
+                .await
+                .decision,
+            ChainDecision::Deny
+        );
     }
 
     /// Each hook sees the arguments as the previous one left them, and the

@@ -49,10 +49,12 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
         .then(|| preview.as_deref().map(|p| format!("Sub-agent · {p}")))
         .flatten();
 
+    let own = crate::clients::engine::own_namespace();
     let mut baggage: Vec<(&str, &str)> = vec![
         ("iii.session.id", session_id.as_str()),
         ("iii.message.id", turn_id.as_str()),
         ("iii.tag.kind", kind),
+        ("iii.own_namespace", own.as_str()),
     ];
     if let Some(preview) = preview.as_deref() {
         baggage.push(("iii.tag.message", preview));

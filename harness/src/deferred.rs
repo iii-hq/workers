@@ -151,6 +151,7 @@ pub async fn resolve(
                     record.step,
                     &req.function_call_id,
                     &function_id,
+                    &namespace,
                     &arguments,
                     Some(&held_by),
                 )
@@ -376,6 +377,7 @@ pub async fn resolve(
                     record.step,
                     &req.function_call_id,
                     &function_id,
+                    &namespace,
                     &arguments,
                     raw,
                 )
