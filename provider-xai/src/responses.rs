@@ -229,6 +229,10 @@ pub fn handle_event(
                 .and_then(Value::as_str)
                 .or_else(|| error.as_str())
                 .unwrap_or("xAI response failed");
+            if let Some(usage) = data.pointer("/response/usage").filter(|u| u.is_object()) {
+                merge_usage(usage, &mut state.usage);
+                state.usage_seen = true;
+            }
             out.push(AssistantMessageEvent::error(
                 partial(state, model),
                 kind,
@@ -505,6 +509,40 @@ mod tests {
             evs.extend(handle_event(t, d, &mut st, "grok-4.3"));
         }
         (st, evs)
+    }
+
+    #[test]
+    fn terminal_errors_keep_reported_token_usage() {
+        let usage = json!({
+            "input_tokens": 10, "input_tokens_details": {"cached_tokens": 6},
+            "output_tokens": 4, "output_tokens_details": {"reasoning_tokens": 2}
+        });
+        for (event_type, data) in [
+            (
+                "response.failed",
+                json!({"response": {"error": {"message": "failed"}, "usage": usage}}),
+            ),
+            (
+                "error",
+                json!({"message": "failed", "response": {"usage": usage}}),
+            ),
+        ] {
+            let (_, events) = run(&[(event_type, data)]);
+            let Some(AssistantMessageEvent::Error { error }) = events.last() else {
+                panic!("expected a terminal error for {event_type}");
+            };
+            assert_eq!(
+                error.usage,
+                Some(Usage {
+                    input: Some(4),
+                    cache_read: Some(6),
+                    output: Some(4),
+                    reasoning: Some(2),
+                    ..Usage::default()
+                }),
+                "{event_type}"
+            );
+        }
     }
 
     fn tags(evs: &[AssistantMessageEvent]) -> Vec<&'static str> {
