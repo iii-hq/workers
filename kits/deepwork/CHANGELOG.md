@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+The machine is no longer mistaken for the code, and a budget works with subscription models.
+
+- **`env:` failures.** A check that could not judge the code because of the machine (no space left, a port in use, a server or database that did not start before any test ran, a tool timeout while the tests passed) is `unsure` with an `env:` reason. The batch lead runs it once more on the same commit with no repair and without spending a phase. A second `env:` result stops the run `blocked: environment: …` with a `⛔ Needs you` on the run ticket; a resume re-runs only the checks. Before, KAN-592 spent two of its three rounds "repairing" a batch whose code was already right (a 90 s tool timeout, then a 60 s server start).
+- **Repository rules first.** In the dev flow the orchestrator reads the repository's `AGENTS.md` or `CLAUDE.md` and copies its build, test and environment rules into every phase's `Functions:`. An environment rule a person gives during a run becomes a Follow-ups line to add it to that file (KAN-29's cargo and Postgres rules lived only in comments).
+- **`budget_tokens`.** A soft cap on the run's input plus output tokens, checked before each wave. Subscription models have no price, so `budget_usd` never tripped for them; tokens are now reported next to the cost (`cost unknown, 412k tokens`).
+- **Compatibility.** The orchestrator, `deepwork-lead` and `deepwork-verifier` changed. Older orchestrators ignore `env:` (they repair as before). Install between runs.
+
 ## 0.10.0
 
 A run can end at a pull request without a person carrying it there. Before, `approve=auto` kept the branch, and people opened the PR, squashed, rebased and fixed the title themselves (KAN-29).

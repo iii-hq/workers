@@ -79,6 +79,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `min_free_gb` | 5 | in the dev flow, the free disk the run keeps: checked before the baseline and before each batch, and the run finishes `blocked: disk` under it instead of failing phases on a full disk. `0` turns the check off |
 | `critic` | on | a last check for anything missing once the queue is empty, and a second pass when the round that ran its findings landed new commits. In the dev flow, this is the branch review: every defect in the run's diff becomes a card, proven by a failing check or marked `Not proven` (one that needs a person's decision, or is not proven, goes to Backlog as `pending`) |
 | `max_items` | 5 × `concurrency` | the most tickets a run creates |
+| `budget_tokens` | – | soft cap on the run's input plus output tokens, checked before each wave like `budget_usd`. Unlike `budget_usd` it works with subscription models (claude-code, Codex), whose cost the harness cannot price |
 | `budget_usd` | – | soft cost cap. It is checked before each wave, and no new wave starts once it is reached. A model without catalog pricing, or a call without usage, isn't counted, so the cap can be overshot |
 | `notify` | – | a function id that gets the final report, such as a Slack or email send |
 | `project` | – | an existing kanban project (id or name) for the run. Without it, each run creates its own project, `deepwork: <goal> · <id>` |
@@ -90,7 +91,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 
 ### Hard cost cap
 
-The console only has the soft `budget_usd`. For a hard cap, start the run from the CLI:
+The console only has the soft `budget_usd` and `budget_tokens`. A run started from the board by the kanban dispatcher gets the rule's `max_total_tokens` as a hard cap (see the kanban README, Board dispatch). For a hard cap on a run you start yourself, use the CLI:
 
 ```
 iii call harness::send --json '{"message":"<goal + args>","model":"<provider::model>","options":{"agent":"deepwork","max_cost_usd":5,"max_total_tokens":2000000}}'
@@ -191,6 +192,8 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
    The report goes on the run ticket, into the chat and to `notify`.
 
 A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent observes `shell::on-job-finished` with args `{ job_id }` for that job, reads `shell::status` once (a job that already ended is read there), and otherwise ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs the observe v2 release of `ide`, which hosts `shell::on-job-finished`.
+
+A check that fails on the machine rather than the code (no disk space, a port in use, a service that does not start, a tool timeout while the tests pass) says `env:` in its verdict. The batch lead runs that check once more on the same commit, without a repair; a second `env:` failure stops the run `blocked: environment: …` with a `⛔ Needs you`, instead of spending rounds repairing code that is not broken. The run reads the repository's `AGENTS.md` or `CLAUDE.md` first, and passes its build, test and environment rules to every phase.
 
 Results go through `state` rather than kanban events. State has compare-and-set, and a kanban outage won't lose results.
 
