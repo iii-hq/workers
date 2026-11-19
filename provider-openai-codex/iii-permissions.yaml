@@ -9,6 +9,8 @@ rules:
   - '!provider::openai-codex::refresh_models'
   - '!provider::openai-codex::on_router_ready'
   - '!provider::openai-codex::count_tokens'
+  # Returns a live access token; only judge-openai may call it.
+  - '!provider::openai-codex::auth::token'
   # provider::openai-codex::image::generate and image::read are deliberately
   # NOT listed: images have no router front door, the calls bypass no
   # accounting, and agents need them directly (generate saves to
