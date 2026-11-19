@@ -323,6 +323,15 @@ impl CacheProbe {
         if !op.holds.is_empty() || !op.journals.is_empty() {
             return Err(busy());
         }
+        // The probe's Strict reads excluded every owned writer for its whole
+        // life, so any change to them now is unowned. Retiring it into a writer
+        // without this recheck would let the new prep pin an alien inode (or an
+        // appeared path) as fresh admitted state: the stale selection that
+        // checkpoint() and handoff() already refuse. Only the deliberate gap
+        // AFTER retirement belongs to the next exclusive recheck.
+        for entry in &op.entries {
+            super::validate_entry(entry)?;
+        }
         let mut cache = op
             .cache
             .clone()
