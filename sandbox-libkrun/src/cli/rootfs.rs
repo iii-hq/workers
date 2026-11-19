@@ -27,62 +27,30 @@ pub fn clone_rootfs(base: &std::path::Path, dest: &std::path::Path) -> Result<()
     Ok(())
 }
 
-/// Reclone into an owned stage. The copy process inherits only the selected
-/// operation FD; the parent retains its lease until a successful wait.
+/// Reclone a readable source through the core-owned producer: the source is
+/// captured under a Strict use (O_NOATIME descriptors, metadata, xattrs and
+/// internal link groups inventoried before any destination effect), then its
+/// bytes are copied by the SAME core writer that seals and publishes the exact
+/// Reclone root. No `cp -a`, external stage pathname, chmod or completion bool.
+/// An unreadable source (e.g. an already-shared Strict 0000 root without a
+/// retained readable descriptor) fails capture and is refused before effects.
 pub(crate) fn clone_rootfs_admitted(
     lease: &crate::worker_admission::Lease,
     base: &std::path::Path,
     dest: &std::path::Path,
 ) -> Result<(), String> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
-    // H keeps cache consumption Strict. This legacy clone remains supported for
-    // readable trees; source0000 requires an exclusive pre-handoff copy plan.
-    // Do not chmod the shared source or obtain a new writer after read handoff.
-    let used = lease.use_path(base).map_err(|e| e.to_string())?;
-    let mut mutation = lease
+    let source = lease
+        .capture_payload(base)
+        .map_err(|e| format!("capture readable clone source {}: {e}", base.display()))?;
+    let guard = lease
         .begin(crate::worker_admission::MutationPlan::Reclone {
             root: dest.to_path_buf(),
         })
         .map_err(|e| e.to_string())?;
-    let stage = mutation.stage_tree(dest).map_err(|e| e.to_string())?;
-    let child_admission = lease.export_child().map_err(|e| e.to_string())?;
-    let fd = child_admission
-        .duplicate_for_exec()
-        .map_err(|e| e.to_string())?;
-    let mut cmd = std::process::Command::new("cp");
-    cmd.args(if cfg!(target_os = "macos") {
-        vec!["-c", "-a"]
-    } else {
-        vec!["--reflink=auto", "-a"]
-    })
-    .arg(used.path().join("."))
-    .arg(stage.path());
-    unsafe {
-        cmd.pre_exec(move || {
-            let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
-            if flags < 0
-                || libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    mutation.checkpoint().map_err(|e| e.to_string())?;
-    let mut child = cmd.spawn().map_err(|e| format!("cp: {e}"))?;
-    let held = crate::worker_admission::WriterLease::new(vec![lease.clone()]);
-    let status = child.wait().map_err(|e| format!("wait cp: {e}"))?;
-    held.reaped();
-    drop(child_admission);
-    if !status.success() {
-        return Err(format!("cp exited with {status}"));
-    }
-    used.revalidate().map_err(|e| e.to_string())?;
-    mutation.checkpoint().map_err(|e| e.to_string())?;
-    mutation.publish_tree(stage).map_err(|e| e.to_string())?;
-    mutation.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    source
+        .produce(guard, dest)
+        .and_then(|seal| seal.publish())
+        .map_err(|e| format!("clone {} into {}: {e}", base.display(), dest.display()))
 }
 
 #[cfg(test)]
@@ -133,8 +101,8 @@ mod tests {
             ],
         )
         .unwrap();
-        // Runs the actual joined cp -a source/. STAGE path, not a mock producer
-        // or direct chmod of the core's stage identity. SOURCEONLY: authored only.
+        // Runs the actual core capture -> producer -> seal route of the clone
+        // entry (no cp -a, mock producer or chmod of the core's stage identity).
         clone_rootfs_admitted(&lease, &source, &dest).unwrap();
         assert_eq!(std::fs::metadata(&dest).unwrap().mode() & 0o7777, 0o755);
         assert_eq!(
@@ -236,6 +204,167 @@ mod tests {
             b"original"
         );
         assert_eq!(std::fs::read(source.join("data")).unwrap(), b"foreign");
+    }
+
+    fn r4_clone_lease(
+        t: &std::path::Path,
+        source: &std::path::Path,
+        dest: &std::path::Path,
+    ) -> crate::worker_admission::Lease {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let namespace = t.join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        crate::worker_admission::with_paths(
+            context.local(dest).unwrap(),
+            &[
+                PathRequest {
+                    path: source,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: dest,
+                    role: PathRole::MutableTree,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    fn r4_data_extents(path: &std::path::Path) -> Vec<(i64, i64)> {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::File::open(path).unwrap();
+        let size = file.metadata().unwrap().len() as i64;
+        let mut extents = Vec::new();
+        let mut at = 0;
+        while at < size {
+            let start = unsafe { libc::lseek(file.as_raw_fd(), at, libc::SEEK_DATA) };
+            if start < 0 {
+                break;
+            }
+            let end = unsafe { libc::lseek(file.as_raw_fd(), start, libc::SEEK_HOLE) };
+            assert!(end > start);
+            extents.push((start, end.min(size)));
+            at = end;
+        }
+        extents
+    }
+
+    /// R4 through the real clone entry: 1777/0777 children, an internal
+    /// hardlink group and a sparse file keep exact metadata, link count and
+    /// data/hole map; the source is untouched and no stage path escapes.
+    #[test]
+    fn r4_readable_clone_keeps_1777_internal_hardlinks_and_sparse_extents() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir_all(source.join("tmp")).unwrap();
+        std::fs::create_dir_all(source.join("shared")).unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(source.join("tmp"), std::fs::Permissions::from_mode(0o1777))
+            .unwrap();
+        std::fs::set_permissions(
+            source.join("shared"),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
+        std::fs::write(source.join("data"), b"linked bytes").unwrap();
+        std::fs::hard_link(source.join("data"), source.join("shared/alias")).unwrap();
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut sparse = std::fs::File::create(source.join("sparse")).unwrap();
+            sparse.seek(SeekFrom::Start(8 * 1024 * 1024)).unwrap();
+            sparse.write_all(b"tail").unwrap();
+            sparse.set_len(16 * 1024 * 1024).unwrap();
+        }
+        let source_extents = r4_data_extents(&source.join("sparse"));
+        let source_modes: Vec<_> = ["", "tmp", "shared", "data", "sparse"]
+            .iter()
+            .map(|name| std::fs::symlink_metadata(source.join(name)).unwrap().mode())
+            .collect();
+        let dest = t.path().join("managed");
+        let lease = r4_clone_lease(t.path(), &source, &dest);
+        clone_rootfs_admitted(&lease, &source, &dest).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().mode() & 0o7777, 0o755);
+        assert_eq!(
+            std::fs::metadata(dest.join("tmp")).unwrap().mode() & 0o7777,
+            0o1777
+        );
+        assert_eq!(
+            std::fs::metadata(dest.join("shared")).unwrap().mode() & 0o7777,
+            0o777
+        );
+        let data = std::fs::metadata(dest.join("data")).unwrap();
+        let alias = std::fs::metadata(dest.join("shared/alias")).unwrap();
+        assert_eq!((data.dev(), data.ino()), (alias.dev(), alias.ino()));
+        assert_eq!(data.nlink(), 2);
+        assert_eq!(
+            std::fs::read(dest.join("shared/alias")).unwrap(),
+            b"linked bytes"
+        );
+        assert_eq!(r4_data_extents(&dest.join("sparse")), source_extents);
+        let sparse = std::fs::read(dest.join("sparse")).unwrap();
+        assert_eq!(sparse.len(), 16 * 1024 * 1024);
+        assert_eq!(&sparse[8 * 1024 * 1024..8 * 1024 * 1024 + 4], b"tail");
+        let after: Vec<_> = ["", "tmp", "shared", "data", "sparse"]
+            .iter()
+            .map(|name| std::fs::symlink_metadata(source.join(name)).unwrap().mode())
+            .collect();
+        assert_eq!(after, source_modes, "the source is never chmodded");
+        assert!(!std::fs::read_dir(t.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-stage")
+        }));
+        lease.revalidate().unwrap();
+    }
+
+    /// R4 user-approved refusal, and only this one: a new clone of an already
+    /// shared Strict 0000 source without a retained readable descriptor is
+    /// refused before any destination effect, and the source is not chmodded.
+    #[test]
+    fn r4_shared_0000_source_without_readable_fd_is_refused_before_effects() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_ne!(
+            unsafe { libc::geteuid() },
+            0,
+            "the 0000 refusal premise requires an owner without DAC override"
+        );
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("data"), b"shared").unwrap();
+        // Already shared as 0000 when this operation admitted it as Strict.
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let dest = t.path().join("managed");
+        let lease = r4_clone_lease(t.path(), &source, &dest);
+        let result = clone_rootfs_admitted(&lease, &source, &dest);
+        let mode = std::fs::symlink_metadata(&source).unwrap().mode() & 0o7777;
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(mode, 0o000, "refusal must not chmod the shared source");
+        assert!(!dest.exists());
+        assert_eq!(std::fs::read(source.join("data")).unwrap(), b"shared");
+    }
+
+    /// R4 negative: a source hardlink that escapes the captured tree is a
+    /// metadata-loss risk and is refused, never copied as an unrelated file.
+    #[test]
+    fn r4_clone_refuses_a_source_hardlink_outside_the_captured_tree() {
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("data"), b"linked").unwrap();
+        std::fs::hard_link(source.join("data"), t.path().join("external")).unwrap();
+        let dest = t.path().join("managed");
+        let lease = r4_clone_lease(t.path(), &source, &dest);
+        assert!(clone_rootfs_admitted(&lease, &source, &dest).is_err());
+        assert!(!dest.exists());
+        assert_eq!(std::fs::read(t.path().join("external")).unwrap(), b"linked");
     }
 
     #[test]
