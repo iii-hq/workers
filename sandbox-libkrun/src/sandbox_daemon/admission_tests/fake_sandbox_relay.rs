@@ -154,6 +154,7 @@ async fn end_to_end_create_exec_stop() {
         "core control owns signalling"
     );
     assert_eq!(h.registry.count().await, 0);
+    h.registry.finish().await;
 }
 
 #[tokio::test]

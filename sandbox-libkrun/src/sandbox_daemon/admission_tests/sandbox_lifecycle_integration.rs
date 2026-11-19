@@ -407,6 +407,7 @@ async fn stop_happy_path_calls_stopper_and_removes_entry() {
         reg.get(id).await.is_err(),
         "registry entry must be removed after successful stop"
     );
+    reg.finish().await;
 }
 
 #[tokio::test]
@@ -477,6 +478,7 @@ async fn stop_on_already_stopped_sandbox_is_idempotent_and_skips_stopper() {
         0,
         "stopper must not be invoked for an already-stopped sandbox"
     );
+    reg.finish().await;
 }
 
 #[tokio::test]
@@ -663,4 +665,5 @@ async fn stop_during_exec_does_not_deadlock_and_settles_consistently() {
     let stop_resp = stop_outcome.expect("stop must succeed");
     assert!(stop_resp.stopped);
     assert!(reg.get(id).await.is_err());
+    reg.finish().await;
 }

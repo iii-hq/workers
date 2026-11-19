@@ -97,6 +97,7 @@ async fn workflow_create_exec_stop_list_round_trip() {
         post_list.sandboxes.is_empty(),
         "list must be empty after stop"
     );
+    reg.finish().await;
 }
 
 // --------------------------------------------------------------------
@@ -138,6 +139,7 @@ async fn workflow_stopped_sandbox_rejects_further_work() {
         stopper.call_count.load(std::sync::atomic::Ordering::SeqCst),
         0
     );
+    reg.finish().await;
 }
 
 // --------------------------------------------------------------------

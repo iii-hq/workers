@@ -23,6 +23,10 @@ use std::{
     sync::Arc,
 };
 
+/// Fixture namespaces whose scenario reached [`owned_boot`]: only those can
+/// have an owned runtime child that removing their storage would race.
+static BOOTED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 #[derive(Clone)]
 pub(super) struct TestRegistry(Arc<Fixture>);
 struct Fixture {
@@ -34,14 +38,29 @@ struct Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        // Successful finish explicitly disposes of owned temporary storage.
-        // Failure/unwind retains it for diagnostics instead of racing children.
+        // A successful finish explicitly disposes of owned temporary storage,
+        // and so does a passing scenario that never booted an owned runtime
+        // child: nothing can race it. Failure/unwind, or a booted scenario
+        // that never finished, retains it for diagnostics instead of racing
+        // children; `preserve_evidence` retains it explicitly.
+        let booted = {
+            let mut booted = BOOTED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = booted.len();
+            booted.retain(|namespace| namespace != &self.namespace);
+            booted.len() != before
+        };
         if let Some((namespace, data)) = self
             .temporary
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
+            if !booted && !std::thread::panicking() {
+                drop((namespace, data));
+                return;
+            }
             eprintln!(
                 "retained failed fixture namespace: {}",
                 namespace.keep().display()
@@ -221,6 +240,11 @@ pub(super) async fn owned_boot(
     let namespace = registry
         .test_namespace()
         .ok_or_else(|| SandboxError::BootFailed("fixture namespace absent".into()))?;
+    // Recorded before any spawn: from here a child may exist.
+    BOOTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(namespace.clone());
     let session = sandbox_daemon::adapters::runtime_test_session_registered(
         lease,
         &namespace,
