@@ -1220,15 +1220,12 @@ async fn activity_list(ctx: Arc<Ctx>, input: ActivityListInput) -> Result<Activi
 async fn sessions_links(ctx: Arc<Ctx>, input: SessionLinksInput) -> Result<SessionLinks, Error> {
     let board = read(&ctx).await?;
     // A ticket or project that names nothing on the board matches nothing, rather than everything.
-    let ticket_id = match input
+    let ticket_id = input
         .ticket_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
-    {
-        Some(id) => Some(board::resolve_id(&board, id).unwrap_or_default()),
-        None => None,
-    };
+        .map(|id| board::resolve_id(&board, id).unwrap_or_default());
     let project_id = match input.project_id.as_deref().map(str::trim) {
         Some("") => Some(String::new()),
         Some(reference) => Some(
