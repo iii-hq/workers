@@ -48,12 +48,6 @@ impl SmoltcpNetwork {
             "sandbox slot {slot} exceeds address pool capacity (max {MAX_SLOT})"
         );
 
-        let guest_mac = derive_guest_mac(slot);
-        let gateway_mac = derive_gateway_mac(slot);
-        let mtu = config.mtu;
-        let guest_ipv4 = derive_guest_ipv4(slot);
-        let gateway_ipv4 = gateway_from_guest_ipv4(guest_ipv4);
-
         // Best-effort: a sandbox whose beacon can't be created behaves like
         // one without networking as far as the idle reaper is concerned —
         // it is reaped on exec-idleness alone. Warn rather than fail the
@@ -70,6 +64,35 @@ impl SmoltcpNetwork {
                 })
                 .ok()
         });
+        Self::with_activity(config, slot, activity)
+    }
+
+    /// Admitted callers supply the already-open beacon. Never use the config
+    /// pathname as fallback; doing so would create an independent writer.
+    pub fn new_with_activity(
+        config: NetworkConfig,
+        slot: u64,
+        activity: Option<crate::shared::ActivityStamp>,
+    ) -> std::io::Result<Self> {
+        if config.activity_file.is_some() || slot > MAX_SLOT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "checked network requires activity_file=None and a valid slot",
+            ));
+        }
+        Ok(Self::with_activity(config, slot, activity))
+    }
+
+    fn with_activity(
+        config: NetworkConfig,
+        slot: u64,
+        activity: Option<crate::shared::ActivityStamp>,
+    ) -> Self {
+        let guest_mac = derive_guest_mac(slot);
+        let gateway_mac = derive_gateway_mac(slot);
+        let mtu = config.mtu;
+        let guest_ipv4 = derive_guest_ipv4(slot);
+        let gateway_ipv4 = gateway_from_guest_ipv4(guest_ipv4);
         let shared = Arc::new(SharedState::with_activity(DEFAULT_QUEUE_CAPACITY, activity));
         let backend = SmoltcpBackend::new(shared.clone());
 
@@ -165,6 +188,17 @@ fn gateway_from_guest_ipv4(guest: Ipv4Addr) -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_network_never_opens_a_config_beacon_path() {
+        let mut config = NetworkConfig::default();
+        config.activity_file = Some(std::path::PathBuf::from("must-not-be-opened"));
+        assert!(SmoltcpNetwork::new_with_activity(config, 0, None).is_err());
+        assert!(
+            SmoltcpNetwork::new_with_activity(NetworkConfig::default(), MAX_SLOT + 1, None)
+                .is_err()
+        );
+    }
 
     #[test]
     fn derive_addresses_slot_0() {

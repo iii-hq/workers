@@ -1,7 +1,7 @@
 use crate::cli::rootfs_cache;
 use crate::sandbox_daemon::config::SandboxConfig;
 use crate::sandbox_daemon::{
-    auto_install, catalog,
+    catalog,
     errors::SandboxError,
     events::SandboxCreateEvent,
     overlay::OverlayLayout,
@@ -77,6 +77,20 @@ pub trait VmLauncher: Send + Sync + 'static {
     }
 
     async fn boot(&self, params: &BootParams) -> Result<BootHandle, SandboxError>;
+
+    /// Admitted entry used by production create. Legacy implementations do not
+    /// acquire writer authority by returning a fabricated PID.
+    async fn boot_admitted(
+        &self,
+        _params: &BootParams,
+        _lease: crate::worker_admission::Lease,
+        _registry: &SandboxRegistry,
+        _id: Uuid,
+    ) -> Result<BootHandle, SandboxError> {
+        Err(SandboxError::BootFailed(
+            "launcher does not support admitted runtime ownership".into(),
+        ))
+    }
 }
 
 pub struct BootParams {
@@ -110,7 +124,23 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     cfg: &SandboxConfig,
     registry: &SandboxRegistry,
     launcher: &L,
+    on_event: F,
+) -> Result<CreateResponse, SandboxError> {
+    handle_create_in(req, cfg, registry, launcher, on_event, None).await
+}
+
+struct CreatePaths {
+    layout: OverlayLayout,
+    cache: PathBuf,
+}
+
+async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 'static>(
+    req: CreateRequest,
+    cfg: &SandboxConfig,
+    registry: &SandboxRegistry,
+    launcher: &L,
     mut on_event: F,
+    paths: Option<CreatePaths>,
 ) -> Result<CreateResponse, SandboxError> {
     let t_create = Instant::now();
     // Held to the insert below, so parallel creates cannot all pass the cap.
@@ -168,64 +198,114 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     // launcher cannot boot an isolated root (no embedded iii-init).
     launcher.preflight()?;
 
-    let rootfs = match rootfs_cache::resolve_cached(&oci_ref) {
-        Some(path) => path,
-        None => {
-            if !cfg.auto_install {
-                return Err(SandboxError::RootfsMissing {
-                    image: req.image.clone(),
-                });
-            }
-            let t_ai = Instant::now();
-            // auto_install_image requires `impl FnMut(SandboxCreateEvent) + Send + 'static`.
-            // We can't borrow on_event into it (lifetime), so we buffer events
-            // through a channel: the Sender is Send+'static, the future is
-            // awaited inline, then we drain the channel and forward to on_event
-            // before continuing.
-            let (tx, rx) = std::sync::mpsc::channel::<SandboxCreateEvent>();
-            let dest = auto_install::auto_install_image(&req.image, &oci_ref, move |e| {
-                let _ = tx.send(e);
-            })
-            .await?;
-            for e in rx.try_iter() {
-                on_event(e);
-            }
-            tracing::info!(
-                ms = t_ai.elapsed().as_millis() as u64,
-                image = %req.image,
-                rootfs = %dest.display(),
-                "create_phase: auto_install (pull+extract)"
-            );
-            dest
-        }
-    };
-
+    let context = registry
+        .admission_context()
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
     let id = Uuid::new_v4();
-    // Removes the dirs unless the create succeeds: a failed boot, a failed
-    // `ensure_dirs`, or a caller that drops this future mid-boot.
-    let mut dirs = DirsGuard {
+    let planned = paths.unwrap_or_else(|| CreatePaths {
         layout: OverlayLayout::for_sandbox(id),
-        keep: false,
-    };
-    let layout = &dirs.layout;
+        cache: rootfs_cache::cache_root(),
+    });
+    let layout = planned.layout;
+    // Short private control/endpoint setup completes before the payload lease.
     layout
-        .ensure_dirs()
-        .map_err(|e| SandboxError::BootFailed(format!("overlay dirs: {e}")))?;
-    let shell_sock = layout.base().join("shell.sock");
+        .prepare_parents(&context)
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+    let admission = layout
+        .admit(&context)
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+    let admission =
+        crate::cli::local_worker::admit_cache_paths(admission, &oci_ref, &planned.cache)
+            .map_err(SandboxError::BootFailed)?;
+    let rootfs = if cfg.auto_install {
+        let dest = rootfs_cache::ensure_rootfs_admitted_at_notify(
+            &admission,
+            &oci_ref,
+            &planned.cache,
+            || {
+                on_event(SandboxCreateEvent::PullingImage {
+                    image_ref: oci_ref.clone(),
+                    progress_bytes: 0,
+                    total_bytes: None,
+                });
+                on_event(SandboxCreateEvent::Unpacking);
+            },
+        )
+        .await
+        .map_err(|e| {
+            SandboxError::auto_install_failed(
+                &req.image,
+                format!("pull_and_extract_rootfs failed: {e:#}"),
+            )
+        })?;
+        if !dest.join("bin").exists() {
+            return Err(SandboxError::auto_install_failed(
+                &req.image,
+                "rootfs is missing bin/ after pull",
+            ));
+        }
+        dest
+    } else {
+        let path = rootfs_cache::canonical_path_at(&planned.cache, &oci_ref);
+        if !rootfs_cache::is_populated(&path) {
+            return Err(SandboxError::RootfsMissing {
+                image: req.image.clone(),
+            });
+        }
+        path
+    };
+    if let Err(error) = layout.ensure_admitted(&admission) {
+        // No launcher has been invoked; only the core can authorize rollback
+        // of this operation's created-from-absence effects.
+        let rollback = layout.rollback_never_spawned(&admission);
+        return Err(SandboxError::BootFailed(match rollback {
+            Ok(()) => format!("layout preparation failed; rollback committed: {error}"),
+            Err(rollback) => {
+                format!("layout preparation failed: {error}; retained for recovery: {rollback}")
+            }
+        }));
+    }
+    let shell_sock = layout.shell_sock();
     let workdir = layout.merged.clone();
-
-    on_event(SandboxCreateEvent::BootingVm);
-    let boot = launcher
-        .boot(&BootParams {
-            rootfs: layout.root.clone(),
-            base_rootfs: rootfs.clone(),
+    // Publish an unresolved/closing registry entry BEFORE boot: cancellation or
+    // a post-spawn startup error must retain both layout and discoverable owner.
+    registry
+        .insert(SandboxState {
+            id,
+            name: req.name.clone(),
+            image: req.image.clone(),
+            rootfs: rootfs.clone(),
             workdir: workdir.clone(),
             shell_sock: shell_sock.clone(),
-            cpus,
-            memory_mb,
-            env: env_vec,
-            network: req.network.unwrap_or(false),
+            vm_pid: None,
+            lifeline: None,
+            created_at: Instant::now(),
+            last_exec_at: Instant::now(),
+            exec_in_flight: 0,
+            idle_timeout_secs: req
+                .idle_timeout_secs
+                .unwrap_or(cfg.default_idle_timeout_secs),
+            stopped: false,
         })
+        .await;
+    registry.begin_start(id).await;
+    on_event(SandboxCreateEvent::BootingVm);
+    let boot = launcher
+        .boot_admitted(
+            &BootParams {
+                rootfs: layout.root.clone(),
+                base_rootfs: rootfs.clone(),
+                workdir: workdir.clone(),
+                shell_sock: shell_sock.clone(),
+                cpus,
+                memory_mb,
+                env: env_vec,
+                network: req.network.unwrap_or(false),
+            },
+            admission,
+            registry,
+            id,
+        )
         .await?;
 
     let state = SandboxState {
@@ -246,7 +326,7 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
         stopped: false,
     };
     registry.insert(state).await;
-    dirs.keep = true;
+    registry.mark_ready(id).await?;
 
     on_event(SandboxCreateEvent::Ready {
         sandbox_id: id.to_string(),
@@ -265,19 +345,9 @@ pub async fn handle_create<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + 
     })
 }
 
-/// Removes a sandbox's directories on drop unless told to keep them.
-struct DirsGuard {
-    layout: OverlayLayout,
-    keep: bool,
-}
-
-impl Drop for DirsGuard {
-    fn drop(&mut self) {
-        if !self.keep {
-            let _ = self.layout.cleanup();
-        }
-    }
-}
+// No destructive Drop: cancellation is not NeverSpawned or WriterRetirement.
+// Explicit pre-spawn rollback is available via OverlayLayout::rollback_never_spawned
+// only while the caller still owns the original, never-invoked launch operation.
 
 #[cfg(test)]
 mod tests {
@@ -404,9 +474,33 @@ mod tests {
     struct Scripted {
         boot: Boot,
         base: std::sync::Mutex<Option<PathBuf>>,
+        namespace: PathBuf,
     }
     #[async_trait::async_trait]
     impl VmLauncher for Scripted {
+        async fn boot_admitted(
+            &self,
+            p: &BootParams,
+            lease: crate::worker_admission::Lease,
+            registry: &SandboxRegistry,
+            id: Uuid,
+        ) -> Result<BootHandle, SandboxError> {
+            *self.base.lock().unwrap() = p.rootfs.parent().map(PathBuf::from);
+            match self.boot {
+                Boot::Fails => Err(SandboxError::BootFailed("before spawn refusal".into())),
+                Boot::Hangs => std::future::pending().await,
+                Boot::Succeeds => {
+                    let session =
+                        super::super::adapters::runtime_test_session(lease, &self.namespace, true)
+                            .await;
+                    registry.attach_runtime(id, session).await?;
+                    Ok(BootHandle {
+                        vm_pid: 1,
+                        lifeline: None,
+                    }) // diagnostic only; authority is the real child above
+                }
+            }
+        }
         async fn boot(&self, p: &BootParams) -> Result<BootHandle, SandboxError> {
             *self.base.lock().unwrap() = p.shell_sock.parent().map(PathBuf::from);
             match self.boot {
@@ -420,29 +514,39 @@ mod tests {
         }
     }
 
-    /// Only a finished create keeps its sandbox dir: a failed boot and a
-    /// create dropped mid-boot remove it.
-    #[test]
-    fn only_a_finished_create_keeps_its_sandbox_dir() {
-        let _g = crate::cli::test_support::lock_home();
-        let home = tempfile::tempdir().unwrap();
-        let prior = std::env::var_os("HOME");
-        // SAFETY: TEST_HOME_LOCK serializes all env mutation.
-        unsafe { std::env::set_var("HOME", home.path()) };
-        let oci_ref = "ghcr.io/acme/my-app:1";
-        std::fs::create_dir_all(rootfs_cache::canonical_path(oci_ref).join("bin")).unwrap();
-        let mut cfg = cfg_with_python_allowed();
-        cfg.custom_images.insert("my-app".into(), oci_ref.into());
-        cfg.image_allowlist.push("my-app".into());
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+    /// A completed create has real runtime authority for explicit cleanup;
+    /// cancellation or startup failure retains the layout and closing entry.
+    #[tokio::test]
+    async fn owned_create_can_cleanup_and_interrupted_create_preserves_uncertainty() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let namespace = t.path().join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        let cache = t.path().join("cache");
+        let reference = "ghcr.io/acme/my-app:1";
+        std::fs::create_dir_all(rootfs_cache::canonical_path_at(&cache, reference).join("bin"))
             .unwrap();
-        let mut kept = vec![];
-        for boot in [Boot::Fails, Boot::Hangs, Boot::Succeeds] {
+        let mut cfg = cfg_with_python_allowed();
+        cfg.custom_images.insert("my-app".into(), reference.into());
+        cfg.image_allowlist.push("my-app".into());
+        for (index, boot) in [Boot::Fails, Boot::Hangs, Boot::Succeeds]
+            .into_iter()
+            .enumerate()
+        {
+            let base = t.path().join(format!("sandbox-{index}"));
+            let layout = OverlayLayout {
+                upper: base.join("upper"),
+                work: base.join("work"),
+                merged: base.join("merged"),
+                root: base.join("root"),
+            };
+            let reg = SandboxRegistry::new().with_context(context.clone());
             let launcher = Scripted {
                 boot,
                 base: Default::default(),
+                namespace: namespace.clone(),
             };
             let req = CreateRequest {
                 image: "my-app".into(),
@@ -451,32 +555,46 @@ mod tests {
                 name: None,
                 network: None,
                 idle_timeout_secs: None,
-                env: crate::sandbox_daemon::exec::EnvShape::default(),
+                env: Default::default(),
             };
-            let reg = SandboxRegistry::new();
-            let create = handle_create(req, &cfg, &reg, &launcher, |_| {});
-            // Only the hanging boot needs cutting short; a tight bound on the others flakes on slow runners.
-            let wait = std::time::Duration::from_millis(if matches!(boot, Boot::Hangs) {
-                200
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handle_create_in(
+                    req,
+                    &cfg,
+                    &reg,
+                    &launcher,
+                    |_| {},
+                    Some(CreatePaths {
+                        layout,
+                        cache: cache.clone(),
+                    }),
+                ),
+            )
+            .await;
+            assert!(
+                base.exists(),
+                "cancel/failure retains layout until receipt removal"
+            );
+            if matches!(boot, Boot::Succeeds) {
+                let response = result.unwrap().unwrap();
+                let id = Uuid::parse_str(&response.sandbox_id).unwrap();
+                let session = reg.lifecycle(id).await.unwrap();
+                let receipt = session.stop(std::time::Duration::ZERO).await.unwrap();
+                session.finish_resources(&receipt).await.unwrap();
+                let mut remove = receipt
+                    .begin_remove(session.lease(), &base, &[&base])
+                    .unwrap();
+                remove.remove_path(&base).unwrap();
+                remove.commit().unwrap();
+                reg.complete_cleanup(id).await;
+                assert!(!base.exists());
             } else {
-                10_000
-            });
-            let _ = rt.block_on(async { tokio::time::timeout(wait, create).await });
-            let base = launcher.base.lock().unwrap().take();
-            kept.push(base.as_ref().map(|b| b.exists()));
-            if let Some(base) = base {
-                let _ = std::fs::remove_dir_all(base);
+                assert_eq!(reg.count().await, 1);
+                let id = reg.list().await[0].id;
+                assert!(reg.begin_exec(id).await.is_err());
             }
         }
-        match prior {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-        assert_eq!(
-            kept,
-            [Some(false), Some(false), Some(true)],
-            "fails, hangs, succeeds"
-        );
     }
 
     /// A bad env name is caught with the other request checks, before any

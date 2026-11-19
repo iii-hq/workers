@@ -97,6 +97,11 @@ pub struct VmCommand {
     /// Cooperative normal-mode guards, retained by the owning worker waiter.
     /// They are not compatibility authority and cannot boot a retained root.
     pub(crate) lifecycle_leases: Vec<crate::worker_admission::Lease>,
+    /// Exact prepared writable paths; activate only after host control writes.
+    pub(crate) runtime_paths: Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>,
+    /// This builder currently launches no shell relay. Future relay flags must
+    /// be added together with their exact declared endpoint, never by scanning.
+    pub(crate) runtime_endpoints: Vec<PathBuf>,
 }
 
 /// Writes [`VmCommand::env_stdin`] into a spawned `__vm-boot` and closes the
@@ -143,15 +148,68 @@ pub fn build_vm_command(
     source_sync: Option<&Path>,
     source_readonly: Option<&Path>,
 ) -> Result<VmCommand, String> {
-    // Independent callers get the same parser and fences as __vm-boot,
-    // before even platform provisioning (codesigning on macOS).
-    let mount_args: Vec<String> = mounts
+    let mount_args: Vec<_> = mounts
         .iter()
         .map(|(host, guest)| format!("{host}:{guest}"))
         .collect();
     let (admission, _) = crate::cli::vm_boot::admit_boot_inputs(
         &rootfs,
         rootfs_lower.as_deref(),
+        rootfs_upper.as_deref(),
+        &mount_args,
+        source_sync,
+        source_readonly,
+    )?;
+    build_vm_command_admitted(
+        admission,
+        exec_path,
+        args,
+        env,
+        vcpus,
+        ram_mib,
+        rootfs,
+        rootfs_lower,
+        rootfs_mode,
+        rootfs_upper,
+        mounts,
+        source_sync,
+        source_readonly,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_vm_command_admitted(
+    admission: crate::worker_admission::Lease,
+    exec_path: &str,
+    args: &[String],
+    env: HashMap<String, String>,
+    vcpus: u32,
+    ram_mib: u32,
+    rootfs: PathBuf,
+    rootfs_lower: Option<PathBuf>,
+    rootfs_mode: String,
+    rootfs_upper: Option<PathBuf>,
+    mounts: &[(String, String)],
+    source_sync: Option<&Path>,
+    source_readonly: Option<&Path>,
+) -> Result<VmCommand, String> {
+    // Independent callers get the same parser and fences as __vm-boot,
+    // before even platform provisioning (codesigning on macOS).
+    let mount_args: Vec<String> = mounts
+        .iter()
+        .map(|(host, guest)| format!("{host}:{guest}"))
+        .collect();
+    let (admission, _) = crate::cli::vm_boot::admit_boot_inputs_on(
+        admission,
+        &rootfs,
+        rootfs_lower.as_deref(),
+        rootfs_upper.as_deref(),
+        &mount_args,
+        source_sync,
+        source_readonly,
+    )?;
+    let runtime_paths = runtime_paths(
+        &rootfs,
         rootfs_upper.as_deref(),
         &mount_args,
         source_sync,
@@ -208,6 +266,15 @@ pub fn build_vm_command(
     }
 
     cmd.stdin(std::process::Stdio::piped());
+    attach_child_admission(&mut cmd, &admission)?;
+
+    // This builder does not emit --shell-sock (unlike the sandbox launcher).
+    // Refuse accidental drift rather than settling an empty set for a relay.
+    if cmd.as_std().get_args().any(|arg| {
+        arg == "--shell-sock" || arg.to_str().is_some_and(|s| s.starts_with("--shell-sock="))
+    }) {
+        return Err("worker command added an undeclared runtime endpoint".into());
+    }
 
     // Deliberately no `setsid` here: how the child is detached belongs to
     // whoever spawns it. A caller that supervises its own children puts them in
@@ -217,7 +284,63 @@ pub fn build_vm_command(
         command: cmd,
         env_stdin,
         lifecycle_leases: vec![admission],
+        runtime_paths,
+        runtime_endpoints: Vec::new(),
     })
+}
+
+fn runtime_paths(
+    root: &Path,
+    upper: Option<&Path>,
+    mounts: &[String],
+    source_sync: Option<&Path>,
+    source_readonly: Option<&Path>,
+) -> Result<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>, String> {
+    use crate::worker_admission::RuntimePathKind;
+    let mut paths = vec![(root.to_path_buf(), RuntimePathKind::GuestTree)];
+    if let Some(upper) = upper {
+        paths.push((upper.to_path_buf(), RuntimePathKind::UpperImage));
+    }
+    for mount in crate::cli::vm_boot::build_virtiofs_mount_plan(mounts)?.entries {
+        let host = Path::new(&mount.host_path);
+        if Some(host) == source_sync || Some(host) == source_readonly {
+            continue;
+        }
+        // A child of root is already included by the exact root export.
+        if !host.starts_with(root) {
+            paths.push((host.to_path_buf(), RuntimePathKind::GuestTree));
+        }
+    }
+    Ok(paths)
+}
+
+/// Select exactly one CLOEXEC duplicate; clear only its CHILD copy. The command
+/// closure owns ChildAdmission until spawn/command disposal; the waiter retains
+/// the same Lease through successful wait (or the existing uncertain-writer policy).
+pub(crate) fn attach_child_admission(
+    cmd: &mut tokio::process::Command,
+    lease: &crate::worker_admission::Lease,
+) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let child = lease.export_child().map_err(|e| e.to_string())?;
+    let fd = child.duplicate_for_exec().map_err(|e| e.to_string())?;
+    if fd.as_raw_fd() < 3 {
+        return Err("admission duplicate overlaps standard IO descriptors".into());
+    }
+    cmd.arg("--admission-fd").arg(fd.as_raw_fd().to_string());
+    unsafe {
+        cmd.pre_exec(move || {
+            let _retained = &child;
+            let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 const VM_BOOT_NETWORK_FLAG: &str = "--network";
@@ -308,6 +431,9 @@ mod tests {
         let custody = crate::worker_admission::custody(&base, &id).unwrap();
         std::fs::create_dir_all(&custody).unwrap();
         std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let root = t.path().join("normal-root");
         for field in ["lower", "upper", "mount", "sync", "readonly"] {
             let mounts = if field == "mount" {
@@ -315,17 +441,18 @@ mod tests {
             } else {
                 Vec::new()
             };
-            let error = build_vm_command(
-                "/bin/false",
-                &[],
-                HashMap::new(),
-                1,
-                128,
-                root.clone(),
-                (field == "lower").then(|| retained.join("image.erofs")),
-                "overlay".into(),
-                (field == "upper").then(|| retained.join("upper.ext4")),
-                &mounts,
+            let lower = (field == "lower").then(|| retained.join("image.erofs"));
+            let upper = (field == "upper").then(|| retained.join("upper.ext4"));
+            let mount_args: Vec<_> = mounts
+                .iter()
+                .map(|(host, guest)| format!("{host}:{guest}"))
+                .collect();
+            let error = crate::cli::vm_boot::admit_boot_inputs_fresh(
+                context.local(&root).unwrap(),
+                &root,
+                lower.as_deref(),
+                upper.as_deref(),
+                &mount_args,
                 (field == "sync").then_some(retained.as_path()),
                 (field == "readonly").then_some(retained.as_path()),
             )
@@ -334,6 +461,80 @@ mod tests {
             assert!(error.contains("compatibility custody"), "{field}: {error}");
             assert!(!root.exists());
         }
+    }
+
+    #[test]
+    fn child_descriptor_is_cloexec_and_imports_the_same_operation() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let namespace = t.path().join("catalog");
+        std::fs::create_dir(&namespace).unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        let root = t.path().join("root");
+        let lease = context.local(&root).unwrap();
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &root,
+                role: crate::worker_admission::PathRole::MutableTree,
+            }],
+        )
+        .unwrap();
+        let export = lease.export_child().unwrap();
+        let fd = export.duplicate_for_exec().unwrap();
+        assert_ne!(
+            unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let imported = context.import_child(fd).unwrap();
+        let mut mutation = imported
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        mutation.create_dir_all(&root, 0o700).unwrap();
+        mutation.commit().unwrap();
+        lease.revalidate().unwrap();
+        imported.revalidate().unwrap();
+        drop(export);
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn runtime_footprint_matches_writable_exports_and_excludes_sources() {
+        use crate::worker_admission::RuntimePathKind;
+        let paths = runtime_paths(
+            Path::new("/owned/root"),
+            Some(Path::new("/owned/upper.ext4")),
+            &[
+                "/project:/mnt/host-src".into(),
+                "/owned/root/runtime:/opt/iii".into(),
+                "/owned/data:/data".into(),
+            ],
+            Some(Path::new("/project")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(paths.len(), 3);
+        assert!(
+            paths
+                .iter()
+                .any(|(p, k)| p == Path::new("/owned/root")
+                    && matches!(k, RuntimePathKind::GuestTree))
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|(p, k)| p == Path::new("/owned/upper.ext4")
+                    && matches!(k, RuntimePathKind::UpperImage))
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|(p, k)| p == Path::new("/owned/data")
+                    && matches!(k, RuntimePathKind::GuestTree))
+        );
+        assert!(!paths.iter().any(|(p, _)| p == Path::new("/project")));
     }
 
     #[test]

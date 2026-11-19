@@ -21,7 +21,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::IIIClient;
 use iii_sdk::channels::ChannelWriter;
+#[cfg(test)]
 use nix::sys::signal::{Signal, kill};
+#[cfg(test)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,10 +35,7 @@ use crate::cli::local_worker::{
     BootImage, VmOverride, WorkerProject, open_build_export, validate_source,
 };
 #[cfg(test)]
-use crate::cli::local_worker::{
-    binary_vm_command, bundle_vm_command, image_build_command, local_vm_command, validate_binary,
-    validate_source_with,
-};
+use crate::cli::local_worker::{validate_binary, validate_source_with};
 use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
 use crate::sandbox_daemon::SandboxError;
@@ -106,6 +105,8 @@ const BUILD_COMMITTED: u8 = 2;
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
+    #[cfg(test)]
+    admission_context: Option<crate::worker_admission::AdmissionContext>,
     /// Per-VM state lives in `<base>/<vm_id>/`: the control files, and the VM's
     /// writable share `root/`, which a uid-0 guest controls.
     base: PathBuf,
@@ -113,6 +114,10 @@ pub struct WorkerVms {
     roots: Vec<PathBuf>,
     /// Keyed by `vm_id`. An exited VM stays, so `status` can report it.
     slots: Mutex<HashMap<String, Slot>>,
+    /// Keep the original Arc across prepare/build/start. Restart recovery is
+    /// separate; a same-process request never substitutes a fresh operation.
+    operations: Mutex<HashMap<String, crate::worker_admission::Lease>>,
+    retired_builds: Mutex<HashMap<String, crate::worker_admission::WriterRetirement>>,
     /// Names each `start` call in its `Slot::Preparing` reservation.
     starts: AtomicU64,
     /// Notified as each `start` drops its reservation, for a `stop` that
@@ -149,11 +154,16 @@ enum Slot {
 
 struct Vm {
     instance: u64,
+    #[cfg(test)]
     pid: Pid,
+    lifecycle: Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
+    admission: crate::worker_admission::Lease,
+    retirement: Mutex<Option<Result<crate::worker_admission::WriterRetirement, String>>>,
     started_at_ms: u64,
     /// Set by `stop` before it signals, so the exit reads as `Stopped`.
     stopping: AtomicBool,
     /// Set once the waiter reaps the process: its pid may then be reused.
+    #[cfg(test)]
     reaped: AtomicBool,
     /// `None` until the waiter records the exit, after the pumps drain.
     ended: watch::Sender<Option<Ended>>,
@@ -180,10 +190,14 @@ struct StateFile {
 impl WorkerVms {
     pub fn new(base: PathBuf, token: Option<String>, roots: Vec<PathBuf>) -> Self {
         Self {
+            #[cfg(test)]
+            admission_context: None,
             base,
             token,
             roots,
             slots: Mutex::default(),
+            operations: Mutex::default(),
+            retired_builds: Mutex::default(),
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
             destroyed: Mutex::default(),
@@ -192,6 +206,43 @@ impl WorkerVms {
             claims: Mutex::default(),
             lease_grace: LEASE_GRACE,
         }
+    }
+
+    fn admission(&self, key: Option<&str>) -> io::Result<crate::worker_admission::Lease> {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(key) = key {
+            if let Some(lease) = operations.get(key) {
+                return Ok(lease.clone());
+            }
+        }
+        #[cfg(test)]
+        let context = match &self.admission_context {
+            Some(context) => context.clone(),
+            None => crate::worker_admission::AdmissionContext::system()?,
+        };
+        #[cfg(not(test))]
+        let context = crate::worker_admission::AdmissionContext::system()?;
+        let lease = context.worker(&self.base, key)?;
+        let lease = match key {
+            Some(key) => admit_control_files(lease, &self.base.join(vm_id(key)))?,
+            None => lease,
+        };
+        if let Some(key) = key {
+            operations.insert(key.to_string(), lease.clone());
+        }
+        Ok(lease)
+    }
+
+    #[cfg(test)]
+    fn with_admission_context(
+        mut self,
+        context: crate::worker_admission::AdmissionContext,
+    ) -> Self {
+        self.admission_context = Some(context);
+        self
     }
 
     /// Compose sets the token and the roots on this container only.
@@ -217,8 +268,22 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth, req.state_key.as_deref())?;
-        let _admission = crate::worker_admission::worker(&self.base, req.state_key.as_deref())
+        let _admission = self
+            .admission(req.state_key.as_deref())
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _admission = if let Some(key) = &req.state_key {
+            let vm = self.base.join(vm_id(key));
+            crate::worker_admission::with_paths(
+                _admission,
+                &[crate::worker_admission::PathRequest {
+                    path: &vm,
+                    role: crate::worker_admission::PathRole::MutableTree,
+                }],
+            )
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+        } else {
+            _admission
+        };
         let source = Source::of(&req.source);
         if source.executable.is_some() {
             return Err(SandboxError::SourceRejected(
@@ -229,8 +294,12 @@ impl WorkerVms {
         let _admission =
             crate::worker_admission::with_inputs(_admission, &[Path::new(source.host_path), &dir])
                 .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let (project, kind) = validate_source(&dir, source.package, source.run_override)
             .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let _admission = crate::cli::local_worker::admit_base_image_inputs(
             _admission,
             &kind,
@@ -259,8 +328,7 @@ impl WorkerVms {
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
             let vm_dir = self.base.join(vm_id(state_key));
-            std::fs::create_dir_all(&vm_dir)
-                .and_then(|()| store_state_key(&vm_dir, state_key))
+            write_control_admitted(&_admission, &vm_dir, STATE_KEY_FILE, state_key.as_bytes())
                 .map_err(|e| SandboxError::PrepareFailed(format!("{}: {e}", vm_dir.display())))?;
         }
         Ok(WorkerPrepareResponse {})
@@ -286,7 +354,8 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+        let admission = self
+            .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         // Compose presents the project token and supervises its VMs itself.
         let leased = !self.is_project_token(&req.auth);
@@ -312,6 +381,8 @@ impl WorkerVms {
             },
         ));
         inputs.push(vm_dir.join(crate::cli::upper::UPPER_NAME));
+        inputs.push(vm_dir.clone());
+        let mutable_end = inputs.len();
         if let Some(build) = &req.build {
             let build_dir = self.admit(&build.build_dir)?;
             inputs.push(PathBuf::from(&build.build_dir));
@@ -320,11 +391,33 @@ impl WorkerVms {
             inputs.push(build_dir);
         }
         let inputs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
-        let admission = crate::worker_admission::with_inputs(admission, &inputs)
+        let requests: Vec<_> = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, path)| crate::worker_admission::PathRequest {
+                path,
+                role: if index >= 2 && index < mutable_end {
+                    if path
+                        .file_name()
+                        .is_some_and(|name| name == crate::cli::upper::UPPER_NAME)
+                    {
+                        crate::worker_admission::PathRole::MutableFile
+                    } else {
+                        crate::worker_admission::PathRole::MutableTree
+                    }
+                } else {
+                    crate::worker_admission::PathRole::Strict
+                },
+            })
+            .collect();
+        let admission = crate::worker_admission::with_paths(admission, &requests)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if req.build.is_some() && !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
         }
+        let _source_use = admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let resolved = WorkerProject::resolve(
             &dir,
             source.package,
@@ -334,6 +427,7 @@ impl WorkerVms {
             req.build.is_none(),
         )
         .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let admission = if req.build.is_none() {
             admit_cache(&resolved, admission).map_err(SandboxError::BootFailed)?
         } else {
@@ -353,7 +447,9 @@ impl WorkerVms {
         // Under the reservation: no destroy runs while the claim writes the
         // VM's build-dir record, so none leaves it behind.
         let image = match &req.build {
-            Some(build) => Some(self.admit_build(&req.auth, &req.state_key, build)?),
+            Some(build) => {
+                Some(self.admit_build_on(&req.auth, &req.state_key, build, admission.clone())?)
+            }
             None => None,
         };
         // Use the project selected before reservation; do not re-read its manifest.
@@ -361,12 +457,15 @@ impl WorkerVms {
         let image = match image {
             Some(image) => {
                 let vm_dir = self.base.join(&id);
-                let (upper, kept) = adopt_build_mode(&vm_dir, &req.worker_name).map_err(|e| {
-                    SandboxError::BootFailed(format!(
-                        "cannot set up the data disk in {}: {e}",
-                        vm_dir.display()
-                    ))
-                })?;
+                let (upper, kept) =
+                    adopt_build_mode_admitted(&admission, &vm_dir, &req.worker_name).map_err(
+                        |e| {
+                            SandboxError::BootFailed(format!(
+                                "cannot set up the data disk in {}: {e}",
+                                vm_dir.display()
+                            ))
+                        },
+                    )?;
                 // Now: the seal is written, so no later start logs them again.
                 for note in &kept {
                     tracing::warn!(vm_id = %id, "{note}");
@@ -383,7 +482,13 @@ impl WorkerVms {
             image,
         };
         let built = resolved
-            .start(&req.worker_name, &dir, source.package, over)
+            .start(
+                &req.worker_name,
+                &dir,
+                source.package,
+                over,
+                admission.clone(),
+            )
             .await
             .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
@@ -394,6 +499,8 @@ impl WorkerVms {
                 Some(start),
                 admission,
                 built.lifecycle_leases,
+                Some(built.runtime_paths),
+                built.runtime_endpoints,
             )
             .map_err(|e| match e {
                 SandboxError::BootFailed(e) => SandboxError::BootFailed(with_notes(e, &notes)),
@@ -430,11 +537,22 @@ impl WorkerVms {
         state_key: &str,
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
-        let dir = self.admit(&build.build_dir)?;
-        // The start caller retains its composite through the waiter. Keep an
-        // independent guard here too, through the claim and image inspection.
-        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
+        let admission = self
+            .admission(Some(state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        self.admit_build_on(auth, state_key, build, admission)
+    }
+
+    fn admit_build_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        build: &WorkerBuildRef,
+        admission: crate::worker_admission::Lease,
+    ) -> Result<PathBuf, SandboxError> {
+        let dir = self.admit(&build.build_dir)?;
+        // The start caller retains its operation through the waiter.
+        // independent guard here too, through the claim and image inspection.
         let _admission = crate::worker_admission::with_inputs(
             admission,
             &[
@@ -445,7 +563,10 @@ impl WorkerVms {
             ],
         )
         .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
+        self.claim_build_dir_on(auth, state_key, &dir, "build_dir", Some(&_admission))?;
+        let _directory_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
             Some(found) if found == wanted => {}
@@ -498,24 +619,51 @@ impl WorkerVms {
         ) -> Result<crate::worker_admission::Lease, String>,
     ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
+        let _admission = self
+            .admission(Some(&req.state_key))
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
         let planned = self.plan_output(&req.output_dir)?;
-        let _admission = crate::worker_admission::with_inputs(
+        use crate::worker_admission::{PathRequest, PathRole};
+        let _admission = crate::worker_admission::with_paths(
             _admission,
             &[
-                Path::new(source.host_path),
-                &dir,
-                Path::new(&req.output_dir),
-                &planned,
-                &planned.join(IMAGE_FILE),
-                &planned.join(IMAGE_ID_FILE),
+                PathRequest {
+                    path: Path::new(source.host_path),
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dir,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: Path::new(&req.output_dir),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join(IMAGE_ID_FILE),
+                    role: PathRole::MutableFile,
+                },
+                PathRequest {
+                    path: &planned.join("image.spool"),
+                    role: PathRole::MutableFile,
+                },
             ],
         )
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let _source_use = _admission
+            .use_path(&dir)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let resolved = WorkerProject::resolve(
             &dir,
             source.package,
@@ -525,6 +673,7 @@ impl WorkerVms {
             true,
         )
         .map_err(SandboxError::SourceRejected)?;
+        drop(_source_use);
         let _admission = admit_cache(&resolved, _admission).map_err(SandboxError::BuildFailed)?;
         if !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
@@ -537,28 +686,59 @@ impl WorkerVms {
             self.build_seq.fetch_add(1, Ordering::SeqCst)
         );
         let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
-        let _admission = crate::worker_admission::with_inputs(
+        let _admission = crate::worker_admission::with_paths(
             _admission,
             &[
-                &scratch,
-                &scratch.join("root"),
-                &scratch.join("root/runtime"),
-                &scratch.join(crate::cli::upper::UPPER_NAME),
+                PathRequest {
+                    path: &vm_dir,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch,
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join("root/runtime"),
+                    role: PathRole::MutableTree,
+                },
+                PathRequest {
+                    path: &scratch.join(crate::cli::upper::UPPER_NAME),
+                    role: PathRole::MutableFile,
+                },
             ],
         )
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let output_admission = _admission.clone();
-        // Dropped last of the locals below: the key is free only once the
-        // writer stopped and the scratch dir is gone.
+        // The key stays held through the writer. V2 scratch/journal evidence
+        // is not deleted by an unowned Drop or a PID-based sweep.
         let _held = self.hold_build(&id)?;
         // Under the hold, so no `destroy` removes the claim while this build
         // writes, and before the directory exists: a refused token creates nothing.
-        self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
-        let out = self.create_output(&planned, &req.output_dir)?;
-        // Project/cache selection was completed before claims and output creation.
-        sweep_build_scratch(&vm_dir);
-        sweep_image_partials(&out);
-        let _scratch = RemoveOnDrop(scratch.clone());
+        self.claim_build_dir_on(
+            &req.auth,
+            &req.state_key,
+            &planned,
+            "output_dir",
+            Some(&_admission),
+        )?;
+        let mut create = _admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: planned.clone(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .create_dir_all(&planned, 0o700)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let out = planned.clone();
+        // V2 stage/scratch evidence is core-journaled, not swept by PID. Legacy
+        // sweep helpers remain for independent maintenance, not this transaction.
         let writer = ChannelWriter::new(iii.address(), &req.logs);
         let mut log = BuildLog::new(&writer);
         let state = Arc::new(AtomicU8::new(BUILD_RUNNING));
@@ -579,6 +759,10 @@ impl WorkerVms {
             image_writer: &image_writer,
             done: &done,
         };
+        self.retired_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
         let mut built = tokio::select! {
             built = job.run(&mut log) => built,
             gone = reader_gone(&writer, BUILD_KEEPALIVE) => Err(SandboxError::BuildFailed(
@@ -586,8 +770,8 @@ impl WorkerVms {
             )),
         };
         if built.is_err() {
-            // The build VM died with the dropped run; a writer still in its
-            // blocking part stops, renames nothing and removes its files.
+            // Await the blocking writer. Its uncommitted stages remain under
+            // core recovery custody; cancellation never implies disposal.
             let written = cancel_writer(&image_writer, &state).await;
             // Unless the image was already in place: then the build is done.
             let mut done = done.lock().unwrap_or_else(PoisonError::into_inner);
@@ -600,6 +784,19 @@ impl WorkerVms {
                     base_image,
                     built_at_ms: now_ms(),
                 });
+            }
+        }
+        if built.is_ok() {
+            if let Some(receipt) = done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retirement
+                .clone()
+            {
+                self.retired_builds
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(id.clone(), receipt);
             }
         }
         match &built {
@@ -620,6 +817,14 @@ impl WorkerVms {
     /// while it is being destroyed.
     fn hold_build(&self, vm_id: &str) -> Result<BuildHold<'_>, SandboxError> {
         let slots = self.slots();
+        if let Some(Slot::Booted(vm)) = slots.get(vm_id) {
+            if vm.lifecycle.is_some() && vm.receipt().is_err() {
+                return Err(SandboxError::StateBusy {
+                    vm_id: vm_id.to_string(),
+                    instance: vm.instance,
+                });
+            }
+        }
         if let Some(Slot::Destroying(instance)) = slots.get(vm_id) {
             return Err(SandboxError::StateBusy {
                 vm_id: vm_id.to_string(),
@@ -728,6 +933,17 @@ impl WorkerVms {
         dir: &Path,
         field: &str,
     ) -> Result<(), SandboxError> {
+        self.claim_build_dir_on(auth, state_key, dir, field, None)
+    }
+
+    fn claim_build_dir_on(
+        &self,
+        auth: &str,
+        state_key: &str,
+        dir: &Path,
+        field: &str,
+        admission: Option<&crate::worker_admission::Lease>,
+    ) -> Result<(), SandboxError> {
         if self.is_project_token(auth) {
             return Ok(());
         }
@@ -735,6 +951,19 @@ impl WorkerVms {
         let token = self.token.as_deref().unwrap_or("");
         let id = vm_id(state_key);
         let _claims = self.claims.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lease) = admission {
+            let mut create = lease
+                .begin(crate::worker_admission::MutationPlan::Create {
+                    root: self.base.join(&id),
+                })
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .create_dir_all(&self.base.join(&id), 0o700)
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+            create
+                .commit()
+                .map_err(|e| SandboxError::FsIo(e.to_string()))?;
+        }
         let _lock = lock_build_dirs(&self.base).map_err(SandboxError::FsIo)?;
         let here = dir_identity(dir);
         let mut own = None;
@@ -756,7 +985,21 @@ impl WorkerVms {
             return Ok(());
         }
         // A first claim, a move from another directory, or a new spelling.
-        store_build_dir(&self.base, &id, state_key, dir, token).map_err(|e| {
+        let stored = if let Some(lease) = admission {
+            let record = BuildDirRecord {
+                state_key: state_key.to_string(),
+                dir: dir.to_path_buf(),
+                mac: hex::encode(build_dir_mac(token, state_key, dir).finalize().into_bytes()),
+            };
+            serde_json::to_vec(&record)
+                .map_err(io::Error::other)
+                .and_then(|bytes| {
+                    write_control_admitted(lease, &self.base.join(&id), BUILD_DIR_RECORD, &bytes)
+                })
+        } else {
+            store_build_dir(&self.base, &id, state_key, dir, token)
+        };
+        stored.map_err(|e| {
             SandboxError::FsIo(format!("cannot record the build directory of VM {id}: {e}"))
         })
     }
@@ -764,6 +1007,7 @@ impl WorkerVms {
     /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
     /// into `console.log`, and write `env_stdin` (the `--env-stdin` frame) to
     /// its stdin. `start` names the `start` call whose reservation this fills.
+    #[cfg(test)]
     pub(crate) fn launch(
         &self,
         state_key: &str,
@@ -771,9 +1015,19 @@ impl WorkerVms {
         env_stdin: Vec<u8>,
         start: Option<u64>,
     ) -> Result<WorkerStartResponse, SandboxError> {
-        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
+        let admission = self
+            .admission(Some(state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        self.launch_admitted(state_key, cmd, env_stdin, start, admission, Vec::new())
+        self.launch_admitted(
+            state_key,
+            cmd,
+            env_stdin,
+            start,
+            admission,
+            Vec::new(),
+            None,
+            Vec::new(),
+        )
     }
 
     fn launch_admitted(
@@ -784,7 +1038,18 @@ impl WorkerVms {
         start: Option<u64>,
         admission: crate::worker_admission::Lease,
         local_leases: Vec<crate::worker_admission::Lease>,
+        runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
+        runtime_endpoints: Vec<PathBuf>,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        let control = self.base.join(vm_id(state_key));
+        let admission = crate::worker_admission::with_paths(
+            admission,
+            &[crate::worker_admission::PathRequest {
+                path: &control,
+                role: crate::worker_admission::PathRole::MutableTree,
+            }],
+        )
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         admission
             .revalidate()
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
@@ -808,67 +1073,115 @@ impl WorkerVms {
             }
         }
         let instance = self.next_instance(&id)?;
-        let (console, lifeline, mut child) =
-            spawn(&dir, state_key, instance, cmd).map_err(|e| {
-                SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
-            })?;
+        let (console, lifeline, mut child, startup_error) =
+            spawn_admitted(&admission, &dir, state_key, instance, cmd, runtime_paths).map_err(
+                |e| SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display())),
+            )?;
         let console = Arc::new(Mutex::new(Console {
+            admission: Some(admission.clone()),
+            failed: false,
             dir,
             file: console,
             len: 0,
             base: 0,
         }));
+        #[cfg(test)]
+        let pid = Pid::from_raw(child.id().expect("a spawned child has a diagnostic id") as i32);
+        let stdin = child.take_stdin();
+        let stdout = child.take_stdout().expect("stdout is piped");
+        let stderr = child.take_stderr().expect("stderr is piped");
+        let (lifecycle, completion) = child.supervise(admission.clone(), runtime_endpoints);
         let vm = Arc::new(Vm {
             instance,
-            pid: Pid::from_raw(child.id().expect("a just-spawned child has a pid") as i32),
+            #[cfg(test)]
+            pid,
+            lifecycle,
+            admission: admission.clone(),
+            retirement: Mutex::new(None),
             started_at_ms: now_ms(),
             stopping: AtomicBool::new(false),
+            #[cfg(test)]
             reaped: AtomicBool::new(false),
             ended: watch::Sender::new(None),
             console: console.clone(),
             followers: watch::Sender::new(0),
             leased: AtomicBool::new(false),
         });
-        let stdin = child.stdin.take();
-        tokio::spawn(async move {
-            // On failure the VM gets a truncated frame and exits by itself,
-            // with the reason in its console.log.
-            if let Err(e) =
-                crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
-            {
-                tracing::warn!(error = %e, "cannot send the worker environment to the VM");
-            }
+        let feed = tokio::spawn(async move {
+            crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
         });
         let pumps = [
-            tokio::spawn(pump(
-                child.stdout.take().expect("stdout is piped"),
-                LogStream::Stdout,
-                console.clone(),
-            )),
-            tokio::spawn(pump(
-                child.stderr.take().expect("stderr is piped"),
-                LogStream::Stderr,
-                console,
-            )),
+            tokio::spawn(pump(stdout, LogStream::Stdout, console.clone())),
+            tokio::spawn(pump(stderr, LogStream::Stderr, console)),
         ];
         let waited = vm.clone();
         let mut held = local_leases;
         held.push(admission);
         let writer_admission = crate::worker_admission::WriterLease::new(held);
         tokio::spawn(async move {
-            // Guard survives the request and slot replacement: release only
-            // after the writer process is reaped. A wait error stays conservative.
-            let status = child.wait().await;
-            let proven_reaped = status.is_ok();
-            let status = status.ok();
-            waited.reaped.store(true, Ordering::SeqCst);
+            let (status, mut retirement) = match completion.await {
+                Ok(result) => result,
+                Err(error) => (None, Err(format!("worker completion task: {error}"))),
+            };
+            #[cfg(test)]
+            waited.reaped.store(status.is_some(), Ordering::SeqCst);
             drop(lifeline);
-            // So an exited VM's log is complete.
-            let _ = tokio::time::timeout(DRAIN_GRACE, futures::future::join_all(pumps)).await;
-            if proven_reaped {
+            let mut feed = feed;
+            match tokio::time::timeout(DRAIN_GRACE, &mut feed).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => {
+                    retirement = Err(format!("worker environment delivery failed: {error}"))
+                }
+                Ok(Err(error)) => {
+                    retirement = Err(format!("worker environment task failed: {error}"))
+                }
+                Err(_) => {
+                    feed.abort();
+                    if let Err(error) = feed.await {
+                        tracing::warn!(%error, "worker environment task joined after deadline");
+                    }
+                    retirement =
+                        Err("worker environment delivery deadline; preserving lifecycle".into());
+                }
+            }
+            for mut pump in pumps {
+                match tokio::time::timeout(DRAIN_GRACE, &mut pump).await {
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(error))) => {
+                        retirement = Err(format!("console pipe read failed: {error}"))
+                    }
+                    Ok(Err(error)) => retirement = Err(format!("console pump failed: {error}")),
+                    Err(_) => {
+                        pump.abort();
+                        if let Err(error) = pump.await {
+                            tracing::warn!(%error, "console pump joined after drain deadline");
+                        }
+                        retirement = Err("console pump did not drain; preserving lifecycle".into());
+                    }
+                }
+            }
+            if waited
+                .console
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .failed
+            {
+                retirement = Err("console publication failed; cleanup retained".into());
+            }
+            if let (Ok(Some(receipt)), Some(session)) = (&retirement, &waited.lifecycle) {
+                if let Err(error) = session.finish_resources(receipt).await {
+                    retirement = Err(format!("worker endpoint retirement failed: {error}"));
+                }
+            }
+            if retirement.is_ok() {
                 writer_admission.reaped();
             }
-            // Otherwise Drop retains the descriptor lease; no false quiescence.
+            *waited
+                .retirement
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(retirement.and_then(|receipt| {
+                receipt.ok_or_else(|| "fixture has no production retirement receipt".into())
+            }));
             waited.ended.send_replace(Some(Ended {
                 exit_code: status.and_then(|s| s.code()),
                 signal: status.and_then(|s| s.signal()),
@@ -876,6 +1189,9 @@ impl WorkerVms {
             }));
         });
         slots.insert(id.clone(), Slot::Booted(vm));
+        if let Some(error) = startup_error {
+            return Err(SandboxError::BootFailed(error));
+        }
         Ok(WorkerStartResponse {
             vm_id: id,
             instance,
@@ -923,7 +1239,9 @@ impl WorkerVms {
             });
         }
         let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
-        vm.stop(Duration::from_millis(req.grace_ms)).await;
+        vm.stop(Duration::from_millis(req.grace_ms))
+            .await
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         Ok(Slot::Booted(vm).status(&req.vm_id))
     }
 
@@ -1035,29 +1353,49 @@ impl WorkerVms {
         req: WorkerDestroyRequest,
     ) -> Result<WorkerDestroyResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
-        let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
-            .map_err(|e| SandboxError::FsIo(e.to_string()))?;
         let id = vm_id(&req.state_key);
         let dir = self.base.join(&id);
         // The marker, not the lock, keeps a `start` out of a half-removed dir:
         // a legacy rootfs clone takes seconds to remove.
-        let (prev, last) = {
+        let (prev, last, admission, receipt) = {
             let mut slots = self.slots();
             refuse_busy(&id, slots.get(&id))?;
             // The build writes in `<vm_id>/`, so it must end first.
             if self.builds().contains(&id) {
                 return Err(SandboxError::BuildInProgress(id));
             }
-            let instance = slots.get(&id).map_or(0, Slot::instance);
+            let (admission, receipt, instance) = match slots.get(&id) {
+                Some(Slot::Booted(vm)) => (
+                    vm.admission.clone(),
+                    vm.receipt()
+                        .map_err(|e| SandboxError::FsIo(e.to_string()))?,
+                    vm.instance,
+                ),
+                _ => {
+                    let receipt = self.retired_builds.lock().unwrap_or_else(PoisonError::into_inner).get(&id).cloned()
+                        .ok_or_else(|| SandboxError::FsIo("destroy has no original lifecycle retirement proof; retain for explicit recovery".into()))?;
+                    let admission = self
+                        .operations
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&req.state_key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            SandboxError::FsIo("retired build lost its original operation".into())
+                        })?;
+                    (admission, receipt, 0)
+                }
+            };
             // A daemon restarted since the last boot knows it only from disk.
             let last = instance.max(stored_instance(&dir).unwrap_or(0));
-            (slots.insert(id.clone(), Slot::Destroying(instance)), last)
+            (
+                slots.insert(id.clone(), Slot::Destroying(instance)),
+                last,
+                admission,
+                receipt,
+            )
         };
-        let removed = if req.prune {
-            std::fs::remove_dir_all(&dir).map(|()| (true, Vec::new()))
-        } else {
-            remove_runtime_state(&dir, &id)
-        };
+        let removed = remove_runtime_state_admitted(&admission, &receipt, &dir, &id, req.prune);
         let mut slots = self.slots();
         slots.remove(&id);
         // Even on failure: the removal may have reached `state.json` already.
@@ -1066,7 +1404,6 @@ impl WorkerVms {
         }
         let (destroyed, kept) = match removed {
             Ok((removed, kept)) => (removed, kept),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (false, Vec::new()),
             Err(e) => {
                 // Its state is still there, so keep reporting it.
                 if let Some(prev) = prev {
@@ -1078,6 +1415,11 @@ impl WorkerVms {
                 )));
             }
         };
+        // Keep the same lifecycle proof for same-process idempotent cleanup;
+        // the core, not absence alone, decides if a consumed receipt permits it.
+        if let Some(previous) = prev {
+            slots.insert(id.clone(), previous);
+        }
         let kept: Vec<String> = kept.iter().map(|p| p.display().to_string()).collect();
         for path in &kept {
             tracing::info!(vm_id = %id, path = %path, "worker::destroy kept the VM's data");
@@ -1234,6 +1576,7 @@ struct BuildJob<'a> {
 struct BuildDone {
     base_image: Option<BaseImageRef>,
     response: Option<WorkerBuildResponse>,
+    retirement: Option<crate::worker_admission::WriterRetirement>,
 }
 
 impl BuildJob<'_> {
@@ -1241,9 +1584,18 @@ impl BuildJob<'_> {
         self.admission
             .revalidate()
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        std::fs::create_dir_all(self.scratch).map_err(|e| {
-            SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
-        })?;
+        let mut create = self
+            .admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: self.scratch.to_path_buf(),
+            })
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .create_dir_all(self.scratch, 0o700)
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        create
+            .commit()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         log.note(format!(
             "iii: building {} from {}",
             self.worker_name,
@@ -1255,7 +1607,13 @@ impl BuildJob<'_> {
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let mut vm = self
             .resolved
-            .build(self.dir, self.package, self.scratch, self.env)
+            .build(
+                self.dir,
+                self.package,
+                self.scratch,
+                self.env,
+                self.admission.clone(),
+            )
             .await
             .map_err(SandboxError::BuildFailed)?;
         self.done
@@ -1273,7 +1631,11 @@ impl BuildJob<'_> {
             .lifecycle_leases
             .extend([self.admission.clone(), self.output_admission.clone()]);
         let image_admissions = vm.command.lifecycle_leases.clone();
-        let status = run_build_vm(vm.command, log).await?;
+        let (status, receipt) = run_build_vm(vm.command, log).await?;
+        self.done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retirement = Some(receipt);
         if !status.success() {
             let how = match (status.code(), status.signal()) {
                 (Some(code), _) => format!("exited {code}"),
@@ -1299,7 +1661,7 @@ impl BuildJob<'_> {
             _admissions: image_admissions,
             export,
             out: self.out.to_path_buf(),
-            spool: self.scratch.join("image.spool"),
+            spool: self.out.join("image.spool"),
             base_rootfs: vm.base_rootfs,
             tag: self.tag.to_string(),
             state: self.state.clone(),
@@ -1373,29 +1735,10 @@ async fn cancel_writer(slot: &WriterSlot, state: &AtomicU8) -> Option<Result<Str
     )
 }
 
-/// The temporary image files a build of an earlier adapter process left in
-/// `out` (it died while writing): `.image.erofs.<pid>-<n>.partial` and
-/// `.image.id.<pid>-<n>.partial` of another pid. This process's own may be a
-/// running build's.
+/// Preserve temporary image evidence left by another or this process. There
+/// is deliberately no PID-based removal authority in this compatibility hook.
 fn sweep_image_partials(out: &Path) {
-    let Ok(entries) = std::fs::read_dir(out) else {
-        return;
-    };
-    let mine = std::process::id().to_string();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(tag) = name.to_str().and_then(|name| {
-            [IMAGE_FILE, IMAGE_ID_FILE].iter().find_map(|file| {
-                name.strip_prefix(&format!(".{file}."))?
-                    .strip_suffix(".partial")
-            })
-        }) else {
-            continue;
-        };
-        if pid_seq(tag).is_some_and(|pid| pid != mine) {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    tracing::warn!(path=%out.display(), "partial images retained: PID/name is not disposal authority");
 }
 
 /// The pid of a `<pid>-<seq>` build tag.
@@ -1405,15 +1748,23 @@ fn pid_seq(tag: &str) -> Option<&str> {
     (digits(pid) && digits(seq)).then_some(pid)
 }
 
-/// Spawn a build VM and stream its output into `log` until it exits. Dropped
-/// early, it kills the VM.
+/// Spawn a build VM and stream its output. Cancellation retains the owned
+/// supervisor; lifeline policy and core control, never Tokio raw-PID Drop,
+/// determine process termination. No receipt is fabricated on cancellation.
 async fn run_build_vm(
     vm: crate::cli::worker_manager::libkrun::VmCommand,
     log: &mut BuildLog<'_>,
-) -> Result<std::process::ExitStatus, SandboxError> {
+) -> Result<
+    (
+        std::process::ExitStatus,
+        crate::worker_admission::WriterRetirement,
+    ),
+    SandboxError,
+> {
     // These local preparation guards supplement the outer worker build guard.
     // Cancellation may drop this future before Child::wait: retain their shared
     // leases conservatively unless successful wait proves the writer is gone.
+    let runtime_endpoints = vm.runtime_endpoints;
     let lifecycle_leases = vm.lifecycle_leases;
     for lease in &lifecycle_leases {
         lease
@@ -1423,42 +1774,96 @@ async fn run_build_vm(
     let mut cmd = vm.command;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let spawned = crate::daemon_exit::attach_lifeline(&mut cmd)
-        .and_then(|lifeline| Ok((lifeline, cmd.spawn()?)));
-    let (_lifeline, mut child) = spawned
-        .map_err(|e| SandboxError::BuildFailed(format!("cannot launch the build VM: {e}")))?;
-    let lifecycle_leases = crate::worker_admission::WriterLease::new(lifecycle_leases);
-    let stdin = child.stdin.take();
-    let env_stdin = vm.env_stdin;
-    tokio::spawn(async move {
-        if let Err(e) = crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
-        {
-            tracing::warn!(error = %e, "cannot send the build environment to the VM");
-        }
-    });
-    let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(forward_lines(
-        child.stdout.take().expect("stdout is piped"),
-        LogStream::Stdout,
-        lines.clone(),
-    ));
-    tokio::spawn(forward_lines(
-        child.stderr.take().expect("stderr is piped"),
-        LogStream::Stderr,
-        lines,
-    ));
-    let status = loop {
-        tokio::select! {
-            Some((stream, line)) = received.recv() => log.record(stream, line).await?,
-            status = child.wait() => break status.map_err(|e| {
-                SandboxError::BuildFailed(format!("cannot wait for the build VM: {e}"))
-            })?,
+        .stderr(Stdio::piped());
+    let admission = lifecycle_leases
+        .first()
+        .ok_or_else(|| SandboxError::BuildFailed("build has no runtime admission".into()))?;
+    let paths: Vec<_> = vm
+        .runtime_paths
+        .iter()
+        .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
+        .collect();
+    let launch = admission
+        .prepare_runtime(&paths)
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    let _lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    let mut child = match launch.spawn(cmd) {
+        Ok(child) => child,
+        Err(error) => {
+            let (cause, child) = error.into_parts();
+            if let Some(mut child) = child {
+                drop(child.take_stdin());
+                let stdout = child.take_stdout();
+                let stderr = child.take_stderr();
+                let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+                    child,
+                    admission.clone(),
+                    runtime_endpoints.clone(),
+                );
+                tokio::spawn(async move {
+                    if let Some(mut stdout) = stdout {
+                        if let Err(error) =
+                            tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await
+                        {
+                            tracing::warn!(%error, "failed-spawn stdout drain");
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    if let Some(mut stderr) = stderr {
+                        if let Err(error) =
+                            tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await
+                        {
+                            tracing::warn!(%error, "failed-spawn stderr drain");
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    let (_, result) = session.wait().await;
+                    if let Err(error) = result {
+                        tracing::error!(%error, "failed build spawn retained writer");
+                    }
+                });
+            }
+            return Err(SandboxError::BuildFailed(format!(
+                "cannot launch build: {cause}"
+            )));
         }
     };
-    // Successful wait is the only explicit release of the spawned writer lease.
-    lifecycle_leases.reaped();
+    let stdin = child.take_stdin();
+    let stdout = child.take_stdout().expect("stdout piped");
+    let stderr = child.take_stderr().expect("stderr piped");
+    let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+        child,
+        admission.clone(),
+        runtime_endpoints,
+    );
+    let lifecycle_leases = crate::worker_admission::WriterLease::new(lifecycle_leases);
+    let env_stdin = vm.env_stdin;
+    let feed = tokio::spawn(async move {
+        crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin).await
+    });
+    let (lines, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let pumps = [
+        tokio::spawn(forward_lines(stdout, LogStream::Stdout, lines.clone())),
+        tokio::spawn(forward_lines(stderr, LogStream::Stderr, lines)),
+    ];
+    let waited = session.wait();
+    tokio::pin!(waited);
+    let (status, receipt) = loop {
+        tokio::select! {
+            Some((stream, line)) = received.recv() => log.record(stream, line).await?,
+            completed = &mut waited => {
+                let (status, retirement) = completed;
+                let receipt = retirement.map_err(|e| SandboxError::BuildFailed(format!("build writer retirement: {e}")))?;
+                break (status.ok_or_else(|| SandboxError::BuildFailed("build has no OS exit status".into()))?, receipt);
+            },
+        }
+    };
+    feed.await
+        .map_err(|e| SandboxError::BuildFailed(format!("build env task: {e}")))?
+        .map_err(|e| SandboxError::BuildFailed(format!("build env: {e}")))?;
     // What the VM printed last, unless a grandchild holds the pipes open.
     tokio::time::timeout(DRAIN_GRACE, async {
         while let Some((stream, line)) = received.recv().await {
@@ -1467,8 +1872,20 @@ async fn run_build_vm(
         Ok::<_, SandboxError>(())
     })
     .await
-    .unwrap_or(Ok(()))?;
-    Ok(status)
+    .map_err(|_| {
+        SandboxError::BuildFailed("build output writers did not drain; retaining evidence".into())
+    })??;
+    for pump in pumps {
+        pump.await
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe task: {e}")))?
+            .map_err(|e| SandboxError::BuildFailed(format!("build pipe read: {e}")))?;
+    }
+    session
+        .finish_resources(&receipt)
+        .await
+        .map_err(|e| SandboxError::BuildFailed(format!("build endpoint retirement: {e}")))?;
+    lifecycle_leases.reaped();
+    Ok((status, receipt))
 }
 
 /// Send one record per line of `out` to `lines`, as `pump` does for a VM's console.
@@ -1476,20 +1893,24 @@ async fn forward_lines(
     out: impl AsyncRead + Unpin,
     stream: LogStream,
     lines: tokio::sync::mpsc::UnboundedSender<(LogStream, String)>,
-) {
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
         let text = text.strip_suffix(b"\r").unwrap_or(text);
         let text = String::from_utf8_lossy(text).into_owned();
         if lines.send((stream.clone(), text)).is_err() {
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "build log receiver closed",
+            ));
         }
     }
 }
@@ -1561,6 +1982,105 @@ impl ImageWrite {
     /// last ([`swap_image`], [`commit_image_id`]). A build cancelled before that
     /// leaves the previous pair; returns the build id.
     fn write(self) -> Result<String, String> {
+        if !self._admissions.is_empty() {
+            return self.write_admitted();
+        }
+        #[cfg(test)]
+        {
+            return self.write_legacy();
+        }
+        #[cfg(not(test))]
+        Err("image writer requires an admitted operation".into())
+    }
+
+    fn write_admitted(self) -> Result<String, String> {
+        let admission = &self._admissions[0];
+        let base = admission
+            .use_path(&self.base_rootfs)
+            .map_err(|e| e.to_string())?;
+        let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
+            admission,
+            crate::worker_admission::MutationPlan::ImagePair {
+                directory: self.out.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mut image = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut id = mutation
+            .apply(|g| g.stage_file(&self.out.join(IMAGE_ID_FILE), 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let mut spool = mutation
+            .apply(|g| g.stage_file(&self.spool, 0o600))
+            .map_err(|e| format!("{e:#}"))?;
+        let config = oci::read_rootfs_file_no_follow(base.path(), Path::new(".oci-config.json"));
+        let extra: Vec<_> = config
+            .ok()
+            .map(|data| crate::cli::erofs::ImageFile {
+                path: ".oci-config.json",
+                data,
+                mode: 0o644,
+            })
+            .into_iter()
+            .collect();
+        let cancelled = || self.state.load(Ordering::SeqCst) == BUILD_CANCELLED;
+        crate::cli::erofs::build_erofs_from_tar_to_files(
+            self.export,
+            image.file_mut().try_clone().map_err(|e| e.to_string())?,
+            spool.file_mut().try_clone().map_err(|e| e.to_string())?,
+            &extra,
+            &cancelled,
+        )?;
+        mutation.checkpoint.check().map_err(|e| e.to_string())?;
+        image
+            .file_mut()
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| e.to_string())?;
+        let mut hash = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            if cancelled() {
+                return Err("cancelled".into());
+            }
+            let read = image
+                .file_mut()
+                .read(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&bytes[..read]);
+        }
+        let build_id = format!("sha256:{}", hex::encode(hash.finalize()));
+        id.file_mut()
+            .write_all(format!("{build_id}\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        image.file_mut().sync_all().map_err(|e| e.to_string())?;
+        id.file_mut().sync_all().map_err(|e| e.to_string())?;
+        mutation
+            .apply(|g| g.discard_file(spool))
+            .map_err(|e| format!("{e:#}"))?;
+        self.state
+            .compare_exchange(
+                BUILD_RUNNING,
+                BUILD_COMMITTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| "cancelled".to_string())?;
+        mutation
+            .apply(|g| g.publish_file(image))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation
+            .apply(|g| g.publish_file(id))
+            .map_err(|e| format!("{e:#}"))?;
+        mutation.commit().map_err(|e| format!("{e:#}"))?;
+        Ok(build_id)
+    }
+
+    #[cfg(test)]
+    fn write_legacy(self) -> Result<String, String> {
         for lease in &self._admissions {
             lease.revalidate().map_err(|e| e.to_string())?;
         }
@@ -1750,25 +2270,10 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Remove the scratch dirs (`build-<pid>-<seq>`) that a build of an earlier
-/// adapter process left in `vm_dir`; this process's own builds remove theirs.
-/// Nothing else matches: not the `build-mode` seal.
+/// Preserve unresolved build scratch. Only stage disposal or a current exact
+/// cleanup receipt may remove it; a filename/PID is diagnostic evidence only.
 fn sweep_build_scratch(vm_dir: &Path) {
-    let mine = std::process::id().to_string();
-    let Ok(entries) = std::fs::read_dir(vm_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let stale = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(BUILD_SCRATCH_PREFIX))
-            .and_then(pid_seq)
-            .is_some_and(|pid| pid != mine);
-        if stale && entry.file_type().is_ok_and(|t| t.is_dir()) {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
+    tracing::warn!(path=%vm_dir.display(), "scratch retained: only owned stage discard or recovery may remove it");
 }
 
 /// Make `vm_dir` a VM that boots builds; returns its data disk and the lines to
@@ -1778,6 +2283,47 @@ fn sweep_build_scratch(vm_dir: &Path) {
 /// `root.pre-build/`, with a fresh `root/` in its place. The data disk is
 /// `<vm_id>/upper.ext4`, outside `root/` (the guest's share), and outlives
 /// every build; only `worker::destroy` removes it.
+fn adopt_build_mode_admitted(
+    lease: &crate::worker_admission::Lease,
+    vm_dir: &Path,
+    worker: &str,
+) -> io::Result<(PathBuf, Vec<String>)> {
+    let mut guard = lease.begin(crate::worker_admission::MutationPlan::Adopt {
+        root: vm_dir.to_path_buf(),
+    })?;
+    guard.create_dir_all(vm_dir, 0o700)?;
+    let mut notes = Vec::new();
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    if std::fs::symlink_metadata(&seal).is_err() {
+        let root = vm_dir.join("root");
+        let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+        if std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file()) {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            guard.rename_preserving(&old_upper, &kept)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        if is_rootfs_clone(&root) {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            guard.rename_preserving(&root, &kept)?;
+            guard.create_dir_all(&root, 0o700)?;
+            notes.push(format!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            ));
+        }
+        let mut stage = guard.stage_file(&seal, 0o600)?;
+        stage.file_mut().write_all(b"1\n")?;
+        guard.publish_file(stage)?;
+    }
+    guard.commit()?;
+    let upper = crate::cli::upper::ensure_upper_admitted(lease, vm_dir)?;
+    Ok((upper, notes))
+}
+
+#[cfg(test)]
 fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<String>)> {
     std::fs::create_dir_all(vm_dir)?;
     let mut notes = Vec::new();
@@ -1798,6 +2344,7 @@ fn adopt_build_mode(vm_dir: &Path, worker: &str) -> io::Result<(PathBuf, Vec<Str
 /// overlay disk `root/upper.ext4` to `upper.ext4.pre-build`, a legacy rootfs
 /// clone `root/` to `root.pre-build/` (or the first free `.<n>` of each).
 /// Returns the lines to log, and whether `root/` itself moved.
+#[cfg(test)]
 fn keep_pre_build(vm_dir: &Path, worker: &str) -> io::Result<(Vec<String>, bool)> {
     let mut notes = Vec::new();
     let root = vm_dir.join("root");
@@ -1835,6 +2382,108 @@ fn keep_pre_build(vm_dir: &Path, worker: &str) -> io::Result<(Vec<String>, bool)
 /// `build` begins with a new disk. A VM without data goes whole. Returns
 /// whether runtime state went (`false` for a VM that is gone, or holds data
 /// only), and the data paths kept.
+fn remove_runtime_state_admitted(
+    lease: &crate::worker_admission::Lease,
+    receipt: &crate::worker_admission::WriterRetirement,
+    vm_dir: &Path,
+    worker: &str,
+    prune: bool,
+) -> io::Result<(bool, Vec<PathBuf>)> {
+    use crate::worker_admission::MutationPlan;
+    match std::fs::symlink_metadata(vm_dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let mut absent = receipt.begin_remove(lease, vm_dir, &[vm_dir])?;
+            absent.remove_path(vm_dir)?;
+            absent.commit()?;
+            return Ok((false, Vec::new()));
+        }
+        metadata => {
+            metadata?;
+        }
+    }
+    if prune {
+        // Only the original authenticated request selects this exact VM tree.
+        let mut removal = receipt.begin_remove(lease, vm_dir, &[vm_dir])?;
+        removal.remove_path(vm_dir)?;
+        removal.commit()?;
+        return Ok((true, Vec::new()));
+    }
+    let seal = vm_dir.join(BUILD_MODE_SEAL);
+    let root = vm_dir.join("root");
+    let old_upper = root.join(crate::cli::upper::UPPER_NAME);
+    let move_upper = std::fs::symlink_metadata(&old_upper).is_ok_and(|m| m.is_file());
+    let move_root = is_rootfs_clone(&root);
+    if move_upper || move_root {
+        let mut retain = lease.begin(MutationPlan::Adopt {
+            root: vm_dir.to_path_buf(),
+        })?;
+        if move_upper {
+            let kept = unused_name(vm_dir, PRE_BUILD_DISK);
+            retain.rename_preserving(&old_upper, &kept)?;
+            tracing::info!(
+                "{worker}: kept the pre-build data disk at {}",
+                kept.display()
+            );
+        }
+        if move_root {
+            let kept = unused_name(vm_dir, PRE_BUILD_ROOT);
+            retain.rename_preserving(&root, &kept)?;
+            tracing::info!("{worker}: kept the pre-build root at {}", kept.display());
+        }
+        retain.commit()?;
+    }
+    let mut kept = Vec::new();
+    let mut targets = Vec::new();
+    for (index, entry) in std::fs::read_dir(vm_dir)?.enumerate() {
+        if index >= 4096 {
+            return Err(io::Error::other("VM control entries exceed removal bound"));
+        }
+        let entry = entry?;
+        if is_vm_data(entry.file_name().to_str().unwrap_or("")) {
+            kept.push(entry.path());
+        } else if entry.file_name() != BUILD_MODE_SEAL {
+            targets.push(entry.path());
+        }
+    }
+    // Roots and control files were declared before runtime. Unknown leftover
+    // evidence is retained; never broaden a receipt from an enumeration.
+    let permitted = [
+        "root",
+        STATE_FILE,
+        STATE_KEY_FILE,
+        BUILD_DIR_RECORD,
+        CONSOLE_LOG,
+        CONSOLE_LOG_OLD,
+    ];
+    let (mut allowed, unknown): (Vec<_>, Vec<_>) = targets.into_iter().partition(|path| {
+        path == vm_dir
+            || path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| permitted.contains(&n))
+    });
+    kept.extend(unknown);
+    if kept.is_empty() {
+        allowed = vec![vm_dir.to_path_buf()];
+    } else if std::fs::symlink_metadata(&seal).is_err() {
+        write_control_admitted(lease, vm_dir, BUILD_MODE_SEAL, b"1\n")?;
+    }
+    let removed = !allowed.is_empty();
+    if removed {
+        allowed.sort();
+        let targets = allowed;
+        let exact: Vec<&Path> = targets.iter().map(PathBuf::as_path).collect();
+        let mut removal = receipt.begin_remove(lease, vm_dir, &exact)?;
+        for target in targets {
+            removal.remove_path(&target)?;
+        }
+        removal.commit()?;
+    }
+    kept.sort();
+    Ok((removed, kept))
+}
+
+#[cfg(test)]
 fn remove_runtime_state(vm_dir: &Path, worker: &str) -> io::Result<(bool, Vec<PathBuf>)> {
     match std::fs::symlink_metadata(vm_dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((false, Vec::new())),
@@ -2034,7 +2683,9 @@ async fn lease(vm: Arc<Vm>, vm_id: String, grace: Duration) {
         }
     }
     tracing::warn!(%vm_id, instance = vm.instance, ?grace, "no client follows this worker VM; stopping it");
-    vm.stop(LEASE_STOP_GRACE).await;
+    if let Err(error) = vm.stop(LEASE_STOP_GRACE).await {
+        tracing::error!(%error, %vm_id, "worker lease stop retained unresolved lifecycle");
+    }
 }
 
 /// Resolves once a frame cannot reach `channel`'s reader. The engine closes a writer's
@@ -2076,7 +2727,9 @@ impl Slot {
     fn busy(&self) -> bool {
         match self {
             Slot::Preparing(..) | Slot::Destroying(_) => true,
-            Slot::Booted(vm) => vm.ended.borrow().is_none(),
+            Slot::Booted(vm) => {
+                vm.ended.borrow().is_none() || (vm.lifecycle.is_some() && vm.receipt().is_err())
+            }
         }
     }
 
@@ -2085,10 +2738,28 @@ impl Slot {
             // Nothing has started yet. `lookup` never hands out `Destroying`.
             Slot::Preparing(..) | Slot::Destroying(_) => (State::Preparing, None, 0),
             Slot::Booted(vm) => {
-                let ended = *vm.ended.borrow();
+                let observed = vm.lifecycle.as_ref().map(|session| session.observation());
+                let ended = (*vm.ended.borrow()).or_else(|| {
+                    observed
+                        .as_ref()
+                        .and_then(|o| o.os_status())
+                        .map(|status| Ended {
+                            exit_code: status.code(),
+                            signal: status.signal(),
+                            at_ms: now_ms(),
+                        })
+                });
                 let state = match ended {
                     None => State::Running,
-                    Some(_) if vm.stopping.load(Ordering::SeqCst) => State::Stopped,
+                    Some(_)
+                        if vm.stopping.load(Ordering::SeqCst)
+                            && (vm.receipt().is_ok() || cfg!(test) && vm.lifecycle.is_none()) =>
+                    {
+                        State::Stopped
+                    }
+                    Some(_) if observed.as_ref().is_some_and(|o| o.os_status().is_none()) => {
+                        State::Running
+                    }
                     Some(_) => State::Exited,
                 };
                 (state, ended, vm.started_at_ms)
@@ -2107,31 +2778,64 @@ impl Slot {
 }
 
 impl Vm {
-    /// Signal the VM unless it was reaped already, since its pid may name another process by then.
-    fn signal(&self, signal: Signal) {
-        if !self.reaped.load(Ordering::SeqCst) {
-            let _ = kill(self.pid, signal);
+    fn receipt(&self) -> io::Result<crate::worker_admission::WriterRetirement> {
+        match self
+            .retirement
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(Ok(receipt)) => Ok(receipt.clone()),
+            Some(Err(error)) => Err(io::Error::other(error.clone())),
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "runtime/host writers have not retired",
+            )),
         }
     }
-
-    /// SIGTERM, then SIGKILL after `grace`; a zero `grace` kills at once. Returns once
-    /// the exit is recorded. A VM that already exited is left as it is.
-    async fn stop(&self, grace: Duration) {
-        if self.ended.borrow().is_some() {
-            return;
-        }
+    async fn stop(&self, grace: Duration) -> io::Result<()> {
         self.stopping.store(true, Ordering::SeqCst);
-        let mut ended = self.ended.subscribe();
-        let gone = !grace.is_zero() && {
-            self.signal(Signal::SIGTERM);
-            tokio::time::timeout(grace, ended.wait_for(Option::is_some))
-                .await
-                .is_ok()
-        };
-        if !gone {
-            self.signal(Signal::SIGKILL);
-            let _ = ended.wait_for(Option::is_some).await;
+        if let Some(session) = &self.lifecycle {
+            session.stop(grace).await?;
+            let mut ended = self.ended.subscribe();
+            tokio::time::timeout(
+                DRAIN_GRACE + Duration::from_secs(5),
+                ended.wait_for(Option::is_some),
+            )
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "worker host-writer completion is unresolved",
+                )
+            })?
+            .map_err(|_| io::Error::other("worker completion observer closed"))?;
+            self.receipt()?;
+            return Ok(());
         }
+        #[cfg(test)]
+        {
+            if !self.reaped.load(Ordering::SeqCst) {
+                if !grace.is_zero() {
+                    let _ = kill(self.pid, Signal::SIGTERM);
+                    let mut ended = self.ended.subscribe();
+                    let _ = tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await;
+                }
+                if !self.reaped.load(Ordering::SeqCst) {
+                    let _ = kill(self.pid, Signal::SIGKILL);
+                }
+            }
+            let mut ended = self.ended.subscribe();
+            ended
+                .wait_for(Option::is_some)
+                .await
+                .map_err(|_| io::Error::other("fixture waiter closed"))?;
+            return Ok(());
+        }
+        #[cfg(not(test))]
+        Err(io::Error::other(
+            "worker instance lacks runtime control authority",
+        ))
     }
 }
 
@@ -2160,6 +2864,61 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
 /// Replace `<dir>/state.json` with one recording `instance`. Written to a
 /// temp file and renamed over it, so a crash or a full disk mid-write leaves
 /// the previous file whole: a truncated one failed every later start.
+fn admit_control_files(
+    lease: crate::worker_admission::Lease,
+    dir: &Path,
+) -> io::Result<crate::worker_admission::Lease> {
+    let paths: Vec<_> = [
+        STATE_FILE,
+        STATE_KEY_FILE,
+        BUILD_DIR_RECORD,
+        BUILD_MODE_SEAL,
+        CONSOLE_LOG,
+        CONSOLE_LOG_OLD,
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
+    let mut requests: Vec<_> = paths
+        .iter()
+        .map(|path| crate::worker_admission::PathRequest {
+            path,
+            role: crate::worker_admission::PathRole::MutableFile,
+        })
+        .collect();
+    let root = dir.join("root");
+    requests.push(crate::worker_admission::PathRequest {
+        path: &root,
+        role: crate::worker_admission::PathRole::MutableTree,
+    });
+    crate::worker_admission::with_paths(lease, &requests)
+}
+
+fn write_control_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    if !dir.exists() {
+        let mut create = lease.begin(crate::worker_admission::MutationPlan::Create {
+            root: dir.to_path_buf(),
+        })?;
+        create.create_dir_all(dir, 0o700)?;
+        create.commit()?;
+    }
+    let target = dir.join(name);
+    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+        files: vec![target.clone()],
+    })?;
+    let mut stage = mutation.stage_file(&target, 0o600)?;
+    stage.file_mut().write_all(bytes)?;
+    stage.file_mut().sync_all()?;
+    mutation.publish_file(stage)?;
+    mutation.commit()?;
+    Ok(())
+}
+
 fn store_instance(dir: &Path, instance: u64) -> io::Result<()> {
     let tmp = dir.join("state.json.tmp");
     // A crash between the create and the rename leaves it behind.
@@ -2340,6 +3099,131 @@ fn lock_unsupported(e: &io::Error) -> bool {
 
 /// Record `state_key` and `instance`, truncate `console.log` and spawn `cmd`
 /// with piped stdin (the env frame) and output, and a lifeline.
+enum LaunchedChild {
+    Runtime(crate::worker_admission::RuntimeChild),
+    #[cfg(test)]
+    Fixture(Child),
+}
+impl LaunchedChild {
+    fn id(&self) -> Option<u32> {
+        match self {
+            Self::Runtime(child) => child.id(),
+            #[cfg(test)]
+            Self::Fixture(child) => child.id(),
+        }
+    }
+    fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        match self {
+            Self::Runtime(child) => child.take_stdin(),
+            #[cfg(test)]
+            Self::Fixture(child) => child.stdin.take(),
+        }
+    }
+    fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        match self {
+            Self::Runtime(child) => child.take_stdout(),
+            #[cfg(test)]
+            Self::Fixture(child) => child.stdout.take(),
+        }
+    }
+    fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
+        match self {
+            Self::Runtime(child) => child.take_stderr(),
+            #[cfg(test)]
+            Self::Fixture(child) => child.stderr.take(),
+        }
+    }
+    fn supervise(
+        self,
+        lease: crate::worker_admission::Lease,
+        endpoints: Vec<PathBuf>,
+    ) -> (
+        Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
+        tokio::task::JoinHandle<(
+            Option<std::process::ExitStatus>,
+            Result<Option<crate::worker_admission::WriterRetirement>, String>,
+        )>,
+    ) {
+        match self {
+            Self::Runtime(child) => {
+                let session = crate::sandbox_daemon::adapters::RuntimeSession::supervise(
+                    child, lease, endpoints,
+                );
+                let held = session.clone();
+                let task = tokio::spawn(async move {
+                    let (status, retirement) = held.wait().await;
+                    (status, retirement.map(Some).map_err(|e| e.to_string()))
+                });
+                (Some(session), task)
+            }
+            #[cfg(test)]
+            Self::Fixture(mut child) => (
+                None,
+                tokio::spawn(async move {
+                    match child.wait().await {
+                        Ok(status) => (Some(status), Ok(None)),
+                        Err(error) => (None, Err(error.to_string())),
+                    }
+                }),
+            ),
+        }
+    }
+}
+
+fn spawn_admitted(
+    lease: &crate::worker_admission::Lease,
+    dir: &Path,
+    state_key: &str,
+    instance: u64,
+    mut cmd: Command,
+    runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
+) -> io::Result<(File, Lifeline, LaunchedChild, Option<String>)> {
+    write_control_admitted(lease, dir, STATE_KEY_FILE, state_key.as_bytes())?;
+    write_control_admitted(
+        lease,
+        dir,
+        STATE_FILE,
+        &serde_json::to_vec(&StateFile { instance })?,
+    )?;
+    write_control_admitted(lease, dir, CONSOLE_LOG, b"")?;
+    let console = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(CONSOLE_LOG))?;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
+    let mut startup_error = None;
+    let child = match runtime_paths {
+        Some(paths) => {
+            let paths: Vec<_> = paths
+                .iter()
+                .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
+                .collect();
+            match lease.prepare_runtime(&paths)?.spawn(cmd) {
+                Ok(child) => LaunchedChild::Runtime(child),
+                Err(error) => {
+                    let (cause, child) = error.into_parts();
+                    match child {
+                        Some(child) => {
+                            startup_error = Some(cause.to_string());
+                            LaunchedChild::Runtime(child)
+                        }
+                        None => return Err(cause),
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        None => LaunchedChild::Fixture(cmd.spawn()?),
+        #[cfg(not(test))]
+        None => return Err(io::Error::other("runtime launch footprint is required")),
+    };
+    Ok((console, lifeline, child, startup_error))
+}
+
+#[cfg(test)]
 fn spawn(
     dir: &Path,
     state_key: &str,
@@ -2362,13 +3246,105 @@ fn spawn(
 /// A log offset counts every byte this instance logged, across rotations: the
 /// current file holds the offsets from `base` on, the rotated one those below.
 struct Console {
+    admission: Option<crate::worker_admission::Lease>,
+    /// Once publication/commit outcome is uncertain, never append from stale cursors.
+    failed: bool,
     dir: PathBuf,
     file: File,
     len: u64,
     base: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleBoundary {
+    Prepared,
+    BeforeRotation,
+    AfterRotation,
+    BeforeCurrent,
+    AfterCurrent,
+    BeforeCommit,
+}
+
 impl Console {
+    fn append_admitted(
+        &mut self,
+        record: &[u8],
+        mut boundary: impl FnMut(ConsoleBoundary) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console mutation requires verified recovery",
+            ));
+        }
+        // Failure is sticky even if no publication occurred: this avoids retrying
+        // a poisoned mutation or copying the old snapshot after partial success.
+        self.failed = true;
+        let lease = self
+            .admission
+            .as_ref()
+            .ok_or_else(|| io::Error::other("console admission missing"))?;
+        let current = self.dir.join(CONSOLE_LOG);
+        let old = self.dir.join(CONSOLE_LOG_OLD);
+        let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+            files: vec![current.clone(), old.clone()],
+        })?;
+        use std::os::unix::fs::MetadataExt;
+        let held = self.file.metadata()?;
+        let current_identity = std::fs::symlink_metadata(&current)?;
+        if !current_identity.is_file()
+            || held.dev() != current_identity.dev()
+            || held.ino() != current_identity.ino()
+        {
+            return Err(io::Error::other(
+                "console readable handle no longer names the admitted current log",
+            ));
+        }
+        let mut stage = guard.stage_file(&current, 0o600)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        io::copy(&mut self.file, stage.file_mut())?;
+        stage.file_mut().write_all(record)?;
+        stage.file_mut().sync_all()?;
+        let accumulated = self
+            .len
+            .checked_add(record.len() as u64)
+            .ok_or_else(|| io::Error::other("console size overflow"))?;
+        let (next_len, next_base) = if accumulated > CONSOLE_LOG_CAP {
+            (
+                0,
+                self.base
+                    .checked_add(accumulated)
+                    .ok_or_else(|| io::Error::other("console cursor overflow"))?,
+            )
+        } else {
+            (accumulated, self.base)
+        };
+        boundary(ConsoleBoundary::Prepared)?;
+        if next_len == 0 {
+            let mut rotated = guard.stage_file(&old, 0o600)?;
+            stage.file_mut().seek(SeekFrom::Start(0))?;
+            io::copy(stage.file_mut(), rotated.file_mut())?;
+            rotated.file_mut().sync_all()?;
+            guard.discard_file(stage)?;
+            boundary(ConsoleBoundary::BeforeRotation)?;
+            guard.publish_file(rotated)?;
+            boundary(ConsoleBoundary::AfterRotation)?;
+            stage = guard.stage_file(&current, 0o600)?;
+        }
+        boundary(ConsoleBoundary::BeforeCurrent)?;
+        guard.publish_file(stage)?;
+        boundary(ConsoleBoundary::AfterCurrent)?;
+        boundary(ConsoleBoundary::BeforeCommit)?;
+        guard.commit()?;
+        let readable = open_private(&current, false)?;
+        // Do not change any cursor or handle until committed publication AND
+        // the replacement readable handle are available.
+        self.file = readable;
+        self.len = next_len;
+        self.base = next_base;
+        self.failed = false;
+        Ok(())
+    }
+
     /// The log offset after the last record: `append` writes whole lines under this lock.
     fn end(&self) -> u64 {
         self.base + self.len
@@ -2382,6 +3358,9 @@ impl Console {
             "ts_ms": now_ms(),
         }))?;
         record.push(b'\n');
+        if self.admission.is_some() {
+            return self.append_admitted(&record, |_| Ok(()));
+        }
         self.file.write_all(&record)?;
         self.len += record.len() as u64;
         if self.len > CONSOLE_LOG_CAP {
@@ -2397,14 +3376,19 @@ impl Console {
 
 /// Copy one output stream into `console.log`, a record per line. It keeps
 /// reading after a write error, so a full disk cannot stall the VM on a full pipe.
-async fn pump(out: impl AsyncRead + Unpin, stream: LogStream, console: Arc<Mutex<Console>>) {
+async fn pump(
+    out: impl AsyncRead + Unpin,
+    stream: LogStream,
+    console: Arc<Mutex<Console>>,
+) -> io::Result<()> {
     let mut out = BufReader::new(out);
     let mut line = Vec::new();
     let mut warned = false;
     loop {
         line.clear();
         match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return Ok(()),
+            Err(error) => return Err(error),
             Ok(_) => {}
         }
         let text = line.strip_suffix(b"\n").unwrap_or(&line);
@@ -2518,7 +3502,13 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
 
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("admission-catalog");
+        std::fs::create_dir_all(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
+            .with_admission_context(context)
     }
 
     fn local(host_path: &Path) -> WorkerSource {
@@ -3163,11 +4153,69 @@ mod tests {
         }
         std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
         Mutex::new(Console {
+            admission: None,
+            failed: false,
             dir: dir.to_path_buf(),
             file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
             len: current.len() as u64,
             base: rotated.len() as u64,
         })
+    }
+
+    #[tokio::test]
+    async fn retirement_survives_final_console_and_retention_without_deleting_data() {
+        let t = tempfile::tempdir().unwrap();
+        let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let control = t.path().join("endpoints");
+        std::fs::create_dir(&control).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let endpoint = control.join("worker.sock");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[crate::worker_admission::PathRequest {
+                path: &endpoint,
+                role: crate::worker_admission::PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        let dir = console.dir.clone();
+        let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
+            .unwrap();
+        let mut image = create.stage_file(&upper, 0o600).unwrap();
+        image.file_mut().write_all(b"guest-data").unwrap();
+        create.publish_file(image).unwrap();
+        create.commit().unwrap();
+        let session = crate::sandbox_daemon::adapters::runtime_test_session_resources(
+            lease.clone(),
+            &t.path().join("catalog"),
+            false,
+            crate::sandbox_daemon::adapters::RuntimeTestResources {
+                reads: vec![dir.join("root")],
+                endpoints: vec![endpoint.clone()],
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        console
+            .append(&LogStream::Stdout, b"last line after OS wait")
+            .unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        assert!(!endpoint.exists());
+        let (removed, kept) =
+            remove_runtime_state_admitted(&lease, &receipt, &dir, "console", false).unwrap();
+        assert!(removed);
+        assert!(kept.contains(&dir.join(PRE_BUILD_DISK)));
+        assert_eq!(
+            std::fs::read(dir.join(PRE_BUILD_DISK)).unwrap(),
+            b"guest-data"
+        );
+        assert!(!dir.join(CONSOLE_LOG).exists());
+        assert!(dir.join(BUILD_MODE_SEAL).exists());
     }
 
     /// A cursor into the rotated file reads its rest, then the new file, even
@@ -3193,12 +4241,167 @@ mod tests {
         assert_eq!(read_records(&console, end + 1).unwrap().0.len(), 8);
     }
 
+    fn admitted_console_fixture(
+        t: &Path,
+        initial: &[u8],
+    ) -> (crate::worker_admission::Lease, Console) {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let base = t.join("workers");
+        let dir = base.join(vm_id("console"));
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::write(dir.join(CONSOLE_LOG), initial).unwrap();
+        std::fs::set_permissions(
+            dir.join(CONSOLE_LOG),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let lease =
+            admit_control_files(context.worker(&base, Some("console")).unwrap(), &dir).unwrap();
+        let console = Console {
+            admission: Some(lease.clone()),
+            failed: false,
+            file: open_private(&dir.join(CONSOLE_LOG), false).unwrap(),
+            dir,
+            len: initial.len() as u64,
+            base: 0,
+        };
+        (lease, console)
+    }
+
+    #[test]
+    fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let guest = console.dir.join("root");
+        let runtime = lease
+            .prepare_runtime(&[crate::worker_admission::RuntimePath {
+                path: &guest,
+                kind: crate::worker_admission::RuntimePathKind::GuestTree,
+            }])
+            .unwrap();
+        console.append(&LogStream::Stdout, b"first").unwrap();
+        assert_eq!(console.base, 0);
+        assert!(console.len > 0);
+        let flags = unsafe { libc::fcntl(console.file.as_raw_fd(), libc::F_GETFL) };
+        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+        assert_eq!(
+            std::fs::metadata(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let third = console.dir.join("not-declared");
+        let mut exact = lease
+            .begin(crate::worker_admission::MutationPlan::ControlFiles {
+                files: vec![
+                    console.dir.join(CONSOLE_LOG),
+                    console.dir.join(CONSOLE_LOG_OLD),
+                ],
+            })
+            .unwrap();
+        assert!(exact.stage_file(&third, 0o600).is_err());
+        assert!(!third.exists());
+        drop(exact);
+        drop(runtime);
+        // Prepared-runtime conflict coverage, not a claim of actual guest execution.
+    }
+
+    #[test]
+    fn admitted_console_rotation_publishes_private_files_before_advancing_cursor() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+        let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+        console.append(&LogStream::Stderr, b"rotate").unwrap();
+        let old = std::fs::read(console.dir.join(CONSOLE_LOG_OLD)).unwrap();
+        assert!(old.starts_with(&initial));
+        assert!(old.ends_with(b"\n"));
+        assert_eq!(console.base, old.len() as u64);
+        assert_eq!(console.len, 0);
+        assert!(!console.failed);
+        assert!(
+            std::fs::read(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .is_empty()
+        );
+        for name in [CONSOLE_LOG, CONSOLE_LOG_OLD] {
+            assert_eq!(
+                std::fs::metadata(console.dir.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_console_failures_never_advance_cursor_or_swap_the_readable_handle() {
+        use std::os::unix::fs::MetadataExt;
+        for fail_at in [
+            ConsoleBoundary::Prepared,
+            ConsoleBoundary::BeforeRotation,
+            ConsoleBoundary::AfterRotation,
+            ConsoleBoundary::BeforeCurrent,
+            ConsoleBoundary::AfterCurrent,
+            ConsoleBoundary::BeforeCommit,
+        ] {
+            let t = tempfile::tempdir().unwrap();
+            let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+            let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+            let inode = console.file.metadata().unwrap().ino();
+            let error = console
+                .append_admitted(b"line\n", |at| {
+                    if at == fail_at {
+                        Err(io::Error::other("injected publication boundary failure"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert_eq!(console.len, CONSOLE_LOG_CAP);
+            assert_eq!(console.base, 0);
+            assert_eq!(console.file.metadata().unwrap().ino(), inode);
+            assert!(console.failed);
+            assert!(
+                console
+                    .append(&LogStream::Stdout, b"must not retry")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_console_refuses_replacement_without_copying_into_it() {
+        let t = tempfile::tempdir().unwrap();
+        let (_lease, mut console) = admitted_console_fixture(t.path(), b"old\n");
+        let path = console.dir.join(CONSOLE_LOG);
+        std::fs::rename(&path, console.dir.join("held-old")).unwrap();
+        std::fs::write(&path, b"external\n").unwrap();
+        assert!(console.append(&LogStream::Stdout, b"forbidden").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"external\n");
+        assert_eq!(console.len, 4);
+        assert_eq!(console.base, 0);
+    }
+
     /// Through `Console::append`: a reader a whole rotation behind still gets
     /// every record after its cursor, in order.
     #[test]
     fn a_reader_behind_a_rotation_loses_no_record() {
         let t = tempfile::tempdir().unwrap();
         let console = Mutex::new(Console {
+            admission: None,
+            failed: false,
             dir: t.path().to_path_buf(),
             file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
             len: 0,
@@ -4248,7 +5451,7 @@ mod tests {
         let out = t.path().join("output");
         std::fs::create_dir(&out).unwrap();
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
-        let admission = crate::worker_admission::worker(&vms.base, Some("b")).unwrap();
+        let admission = vms.admission(Some("b")).unwrap();
         let admission = crate::worker_admission::with_inputs(admission, &[&out]).unwrap();
         claim(&vms, &b, "b", &out).unwrap();
         assert_eq!(code(claim(&vms, &a, "a", &out)), "S505");
@@ -4973,7 +6176,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_earlier_processs_build_scratch_is_swept() {
+    fn build_scratch_is_preserved_without_owned_removal_authority() {
         let t = tempfile::tempdir().unwrap();
         let mine = t.path().join(format!("build-{}-0", std::process::id()));
         let stale = t.path().join("build-1-0");
@@ -4986,15 +6189,15 @@ mod tests {
         std::fs::write(t.path().join(BUILD_MODE_SEAL), "1\n").unwrap();
         std::fs::write(t.path().join("build-2-0"), "a file").unwrap();
         sweep_build_scratch(t.path());
-        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && !stale.exists());
+        assert!(mine.is_dir() && root.is_dir() && other.is_dir() && stale.exists());
         assert!(t.path().join(BUILD_MODE_SEAL).is_file());
         assert!(t.path().join("build-2-0").is_file());
     }
 
-    /// A build whose adapter died while writing left its temporary image in the
-    /// project; the next build removes it, and only it.
+    /// A prior adapter's partial image is unresolved evidence, not permission
+    /// for the next process to remove it by filename or diagnostic PID.
     #[test]
-    fn the_next_build_sweeps_an_earlier_processs_partial_image() {
+    fn the_next_build_preserves_unrelated_partial_image_evidence() {
         let t = tempfile::tempdir().unwrap();
         let mine = format!("{}-3", std::process::id());
         let names = [
@@ -5012,8 +6215,10 @@ mod tests {
         }
         sweep_image_partials(t.path());
         for name in &names {
-            let gone = name.contains(".1-0.");
-            assert_eq!(!t.path().join(name).exists(), gone, "{name}");
+            assert!(
+                t.path().join(name).exists(),
+                "PID-only sweep must preserve {name}"
+            );
         }
     }
 

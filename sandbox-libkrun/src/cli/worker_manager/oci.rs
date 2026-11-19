@@ -726,6 +726,29 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
     dest: &Path,
     checkpoint: crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<Vec<String>> {
+    let (image_data, image_digests) = pull_data_checked(image, &checkpoint).await?;
+    extract_pulled_rootfs(image_data, image_digests, dest, &checkpoint)
+}
+
+pub(crate) async fn pull_into_stage_checked(
+    image: &str,
+    stage: &Path,
+    checkpoint: crate::cli::rootfs_cache::Checkpoint,
+) -> Result<Vec<String>> {
+    let (image_data, digests) = pull_data_checked(image, &checkpoint).await?;
+    checkpoint.check()?;
+    extract_layers_into(&image_data, stage)?;
+    // These writes are inside the owned stage, not the live cached tree.
+    std::fs::create_dir_all(stage.join("workspace"))?;
+    write_default_hosts_no_follow(&stage.join("etc/hosts"));
+    checkpoint.check()?;
+    Ok(digests)
+}
+
+async fn pull_data_checked(
+    image: &str,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<(oci_client::client::ImageData, Vec<String>)> {
     checkpoint.check()?;
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
@@ -886,7 +909,7 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
         total_layer_bytes as f64 / (1024.0 * 1024.0)
     );
 
-    extract_pulled_rootfs(image_data, image_digests, dest, &checkpoint)
+    Ok((image_data, image_digests))
 }
 
 /// A contextualized refusal is terminal, never a registry retry. The latch
@@ -911,8 +934,6 @@ fn extract_pulled_rootfs(
     checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<Vec<String>> {
     checkpoint.check()?; // Pull completed; no staging mkdir/remove before this check.
-    let layer_count = image_data.layers.len();
-
     // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
     // before pull would leak the temp dir on network/auth failure.
     //
@@ -953,35 +974,7 @@ fn extract_pulled_rootfs(
         }
     };
 
-    let mut total_size: u64 = 0;
-    let extract_result: Result<()> = (|| {
-        for (i, layer) in image_data.layers.iter().enumerate() {
-            extract_layer_with_limits(
-                &layer.data,
-                &layer.media_type,
-                &extract_root,
-                i,
-                layer_count,
-                &mut total_size,
-            )?;
-            eprintln!(
-                "  Extracted layer {}/{} ({:.1} MiB total)",
-                i + 1,
-                layer_count,
-                total_size as f64 / (1024.0 * 1024.0),
-            );
-        }
-
-        let config_json = &image_data.config.data;
-        let config_path = extract_root.join(".oci-config.json");
-        // SECURITY: never std::fs::write here — a hostile layer can leave a
-        // symlink at this name and fs::write would follow it, overwriting an
-        // arbitrary host file with publisher-controlled bytes before any VM
-        // exists. Write without following links; fail the pull if we cannot.
-        write_rootfs_file_no_follow(&config_path, config_json, None)
-            .with_context(|| format!("Failed to write image config: {}", config_path.display()))?;
-        Ok(())
-    })();
+    let extract_result = extract_layers_into(&image_data, &extract_root);
 
     // Extraction done. If we were in the atomic path, either promote the
     // temp dir into place OR clean it up.
@@ -1027,6 +1020,26 @@ fn extract_pulled_rootfs(
         eprintln!("  {} Rootfs ready", "\u{2713}".green());
         Ok(image_digests)
     }
+}
+
+fn extract_layers_into(
+    image_data: &oci_client::client::ImageData,
+    extract_root: &Path,
+) -> Result<()> {
+    let mut total_size = 0;
+    for (i, layer) in image_data.layers.iter().enumerate() {
+        extract_layer_with_limits(
+            &layer.data,
+            &layer.media_type,
+            extract_root,
+            i,
+            image_data.layers.len(),
+            &mut total_size,
+        )?;
+    }
+    let config_path = extract_root.join(".oci-config.json");
+    write_rootfs_file_no_follow(&config_path, &image_data.config.data, None)
+        .with_context(|| format!("Failed to write image config: {}", config_path.display()))
 }
 
 /// Read environment variables from the saved OCI image config.
@@ -1464,7 +1477,10 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
         std::fs::create_dir(&owner).unwrap();
-        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let lease = context.local(&owner.join("state")).unwrap();
         let dest = t.path().join("root");
         std::fs::create_dir(&dest).unwrap();
         std::fs::write(dest.join("sentinel"), b"keep").unwrap();

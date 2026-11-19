@@ -84,7 +84,6 @@ pub const SPOOL_THRESHOLD: u64 = 64 * 1024;
 
 /// A writable spool file for large file data during tar ingestion.
 pub struct DataSpool {
-    file: std::fs::File,
     shared: Arc<std::sync::Mutex<std::fs::File>>,
     offset: u64,
 }
@@ -288,20 +287,42 @@ impl DataSpool {
             .read(true)
             .write(true)
             .open(path)?;
-        let shared = Arc::new(std::sync::Mutex::new(file.try_clone()?));
+        Self::from_file(file)
+    }
+
+    /// Consume an empty stage descriptor, not its pathname. One mutex protects
+    /// all readers and writes since duplicated FDs share their open-file offset.
+    pub(crate) fn from_file(mut file: std::fs::File) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        // SAFETY: file owns the descriptor while flags are inspected.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if !metadata.is_file()
+            || metadata.nlink() != 1
+            || metadata.len() != 0
+            || flags & libc::O_ACCMODE != libc::O_RDWR
+            || flags & libc::O_APPEND != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "spool requires an empty, single-link read/write regular descriptor without append",
+            ));
+        }
+        file.seek(SeekFrom::Start(0))?;
         Ok(Self {
-            file,
-            shared,
+            shared: Arc::new(std::sync::Mutex::new(file)),
             offset: 0,
         })
     }
 
     /// Write data to the spool and return a `FileData::Spool` reference.
     pub fn write_data(&mut self, data: &[u8]) -> std::io::Result<FileData> {
-        use std::io::Write;
         let offset = self.offset;
-        self.file.write_all(data)?;
-        self.offset += data.len() as u64;
+        self.write_chunk(data)?;
         Ok(FileData::Spool {
             spool: Arc::clone(&self.shared),
             offset,
@@ -315,7 +336,12 @@ impl DataSpool {
 
     pub fn write_chunk(&mut self, data: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
-        self.file.write_all(data)?;
+        let mut file = self
+            .shared
+            .lock()
+            .map_err(|_| std::io::Error::other("spool lock poisoned"))?;
+        file.seek(SeekFrom::Start(self.offset))?;
+        file.write_all(data)?;
         self.offset += data.len() as u64;
         Ok(())
     }
@@ -841,6 +867,49 @@ fn merge_directory(base: &mut DirectoryNode, layer: DirectoryNode) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn descriptor_spool_keeps_logical_offsets_across_reader_and_fd_clones() {
+        use std::io::{Read, Seek, SeekFrom};
+        use std::os::unix::fs::MetadataExt;
+        let named = tempfile::NamedTempFile::new().unwrap();
+        let mut file = named.reopen().unwrap();
+        let inode = file.metadata().unwrap().ino();
+        file.seek(SeekFrom::Start(8192)).unwrap();
+        let mut spool = super::DataSpool::from_file(file.try_clone().unwrap()).unwrap();
+        let first = spool.write_data(b"first").unwrap();
+        let second = spool.write_data(b"second").unwrap();
+        assert_eq!(first.read_all().unwrap(), b"first");
+        // Reading first moved the shared OFD cursor; append still uses offset11.
+        let third = spool.write_data(b"third").unwrap();
+        assert_eq!(second.clone().read_all().unwrap(), b"second");
+        assert_eq!(third.read_all().unwrap(), b"third");
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"firstsecondthird");
+        assert_eq!(file.metadata().unwrap().ino(), inode);
+        assert_eq!(spool.current_offset(), 16);
+    }
+
+    #[test]
+    fn descriptor_spool_rejects_existing_bytes_and_read_only_without_truncating() {
+        use std::io::Write;
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("keep");
+        std::fs::write(&path, b"keep").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(super::DataSpool::from_file(file).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        let empty = t.path().join("empty");
+        std::fs::File::create(&empty).unwrap().flush().unwrap();
+        assert!(super::DataSpool::from_file(std::fs::File::open(&empty).unwrap()).is_err());
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+    }
+
     use super::*;
 
     fn make_regular_file(data: &[u8]) -> TreeNode {

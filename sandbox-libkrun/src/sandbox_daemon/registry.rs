@@ -68,6 +68,20 @@ pub const DEFAULT_MAX_EXEC_IN_FLIGHT: u32 = 4;
 /// in the sandbox's overlay base dir, so `OverlayLayout::cleanup` reclaims
 /// it with everything else.
 pub fn net_activity_path(shell_sock: &std::path::Path) -> std::path::PathBuf {
+    let parent = shell_sock.parent();
+    if parent
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .is_some_and(|name| name == ".endpoints")
+    {
+        if let (Some(id), Some(root)) = (
+            parent.and_then(|p| p.file_name()),
+            parent.and_then(|p| p.parent()).and_then(|p| p.parent()),
+        ) {
+            return root.join(id).join("net-activity");
+        }
+    }
+    // Legacy paths remain diagnostic/readable; never imply retirement authority.
     shell_sock.with_file_name("net-activity")
 }
 
@@ -81,6 +95,13 @@ pub struct SandboxRegistry {
     /// Creates past the `max_concurrent_sandboxes` check whose sandbox is
     /// not inserted yet; see [`SandboxRegistry::reserve`].
     booting: Arc<AtomicUsize>,
+    lifecycles: Arc<Mutex<HashMap<Uuid, Arc<super::adapters::RuntimeSession>>>>,
+    closing: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    initializing: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    #[cfg(test)]
+    context: Option<crate::worker_admission::AdmissionContext>,
+    #[cfg(test)]
+    layout_root: Option<PathBuf>,
 }
 
 /// A create's claim on one of `max_concurrent_sandboxes`, from the cap check
@@ -110,7 +131,114 @@ impl SandboxRegistry {
             inner: Arc::new(Mutex::new(HashMap::new())),
             max_exec_in_flight: max,
             booting: Arc::new(AtomicUsize::new(0)),
+            lifecycles: Arc::default(),
+            closing: Arc::default(),
+            initializing: Arc::default(),
+            #[cfg(test)]
+            context: None,
+            #[cfg(test)]
+            layout_root: None,
         }
+    }
+
+    pub(crate) fn admission_context(
+        &self,
+    ) -> std::io::Result<crate::worker_admission::AdmissionContext> {
+        #[cfg(test)]
+        if let Some(context) = &self.context {
+            return Ok(context.clone());
+        }
+        crate::worker_admission::AdmissionContext::system()
+    }
+    #[cfg(test)]
+    pub(crate) fn with_context(
+        mut self,
+        context: crate::worker_admission::AdmissionContext,
+    ) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    pub(crate) fn layout(&self, id: Uuid) -> super::overlay::OverlayLayout {
+        #[cfg(test)]
+        if let Some(root) = &self.layout_root {
+            let base = root.join(id.to_string());
+            return super::overlay::OverlayLayout {
+                upper: base.join("upper"),
+                work: base.join("work"),
+                merged: base.join("merged"),
+                root: base.join("root"),
+            };
+        }
+        super::overlay::OverlayLayout::for_sandbox(id)
+    }
+    #[cfg(test)]
+    pub(crate) fn with_layout_root(mut self, root: PathBuf) -> Self {
+        self.layout_root = Some(root);
+        self
+    }
+
+    pub(crate) async fn attach_runtime(
+        &self,
+        id: Uuid,
+        session: Arc<super::adapters::RuntimeSession>,
+    ) -> Result<(), SandboxError> {
+        let mut map = self.lifecycles.lock().await;
+        if map.contains_key(&id) {
+            return Err(SandboxError::BootFailed(
+                "sandbox already has a lifecycle owner".into(),
+            ));
+        }
+        map.insert(id, session);
+        Ok(())
+    }
+    pub(crate) async fn lifecycle(
+        &self,
+        id: Uuid,
+    ) -> Result<Arc<super::adapters::RuntimeSession>, SandboxError> {
+        self.lifecycles
+            .lock()
+            .await
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| {
+                SandboxError::BootFailed(
+                    "sandbox has no live retirement authority; preserve for explicit recovery"
+                        .into(),
+                )
+            })
+    }
+    pub(crate) async fn begin_start(&self, id: Uuid) {
+        self.initializing.lock().await.insert(id);
+    }
+    pub(crate) async fn claim_stop(&self, id: Uuid) -> Result<SandboxState, SandboxError> {
+        let mut map = self.inner.lock().await;
+        let state = map
+            .get_mut(&id)
+            .ok_or_else(|| SandboxError::NotFound(id.to_string()))?;
+        self.closing.lock().await.insert(id);
+        Ok(state.clone())
+    }
+    pub(crate) async fn mark_ready(&self, id: Uuid) -> Result<(), SandboxError> {
+        let session = self.lifecycle(id).await?;
+        if session.observation().is_terminal() || session.observation().os_status().is_some() {
+            return Err(SandboxError::BootFailed(
+                "sandbox exited before create completed".into(),
+            ));
+        }
+        if self.closing.lock().await.contains(&id) {
+            return Err(SandboxError::BootFailed(
+                "sandbox stop claimed during create; preserving closing state".into(),
+            ));
+        }
+        self.initializing.lock().await.remove(&id);
+        Ok(())
+    }
+    pub(crate) async fn complete_cleanup(&self, id: Uuid) {
+        self.inner.lock().await.remove(&id);
+        self.lifecycles.lock().await.remove(&id);
+        self.closing.lock().await.remove(&id);
+        self.initializing.lock().await.remove(&id);
     }
 
     /// Claim a sandbox slot under `cap`, counting the creates still booting:
@@ -148,7 +276,10 @@ impl SandboxRegistry {
         let state = map
             .get_mut(&id)
             .ok_or_else(|| SandboxError::NotFound(id.to_string()))?;
-        if state.stopped {
+        if state.stopped
+            || self.closing.lock().await.contains(&id)
+            || self.initializing.lock().await.contains(&id)
+        {
             return Err(SandboxError::AlreadyStopped(id.to_string()));
         }
         if state.exec_in_flight >= self.max_exec_in_flight.max(1) {
@@ -169,8 +300,8 @@ impl SandboxRegistry {
         }
     }
 
-    /// Decide under ONE lock whether `id` should be reaped, and if so mark it
-    /// stopped so nothing else can claim it. `None` means leave it alone.
+    /// Decide under ONE lock whether `id` should be reaped, and claim closing
+    /// without reporting successful stop. Failure retains this closing claim. `None` means leave it alone.
     ///
     /// Atomic on purpose. The reaper used to filter a `list()` snapshot and
     /// then act on it, so an exec admitted between the snapshot and the reap
@@ -211,7 +342,10 @@ impl SandboxRegistry {
     ) -> Option<SandboxState> {
         let mut map = self.inner.lock().await;
         let state = map.get_mut(&id)?;
-        if state.stopped {
+        if state.stopped
+            || self.closing.lock().await.contains(&id)
+            || self.initializing.lock().await.contains(&id)
+        {
             return None;
         }
         let mut idle = now.saturating_duration_since(state.last_exec_at);
@@ -226,7 +360,7 @@ impl SandboxRegistry {
         {
             return None;
         }
-        state.stopped = true;
+        self.closing.lock().await.insert(id);
         Some(state.clone())
     }
 
@@ -302,6 +436,19 @@ pub fn sandbox_state_for_test(id: Uuid) -> SandboxState {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[tokio::test]
+    async fn closing_claim_is_not_stopped_and_does_not_restore_exec_admission() {
+        let registry = SandboxRegistry::new();
+        let id = Uuid::new_v4();
+        registry.insert(fixture(id)).await;
+        let state = registry.claim_stop(id).await.unwrap();
+        assert!(!state.stopped);
+        assert!(registry.begin_exec(id).await.is_err());
+        assert!(registry.lifecycle(id).await.is_err());
+        assert!(registry.mark_ready(id).await.is_err());
+        assert!(registry.get(id).await.is_ok());
+    }
 
     fn fixture(id: Uuid) -> SandboxState {
         SandboxState {

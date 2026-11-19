@@ -2,7 +2,11 @@
 // contributor license agreements. Licensed under the Elastic License 2.0.
 //! No VM or subprocess: every compatibility case must fail BEFORE such work.
 use super::*;
+use crate::cli::local_worker::{test_binary_command, test_build_command, test_source_command};
 use std::os::unix::fs::PermissionsExt;
+fn context(s: &Setup) -> &crate::worker_admission::AdmissionContext {
+    s.vms.admission_context.as_ref().unwrap()
+}
 fn private(path: &Path) {
     std::fs::create_dir(path).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -33,7 +37,11 @@ fn setup(compat: bool) -> Setup {
         private(&custody);
         std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
     }
-    let vms = WorkerVms::new(base, Some("token".into()), vec![root.path().to_path_buf()]);
+    let catalog = root.path().join("catalog");
+    private(&catalog);
+    let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+    let vms = WorkerVms::new(base, Some("token".into()), vec![root.path().to_path_buf()])
+        .with_admission_context(context);
     Setup {
         _root: root,
         vms,
@@ -237,12 +245,12 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
         extra_env: Default::default(),
         image: None,
     };
-    let local = crate::cli::local_worker::local_vm_command("w", &s.source, None, over())
+    let local = test_source_command(context(&s), "w", &s.source, None, over())
         .await
         .err()
         .unwrap();
     assert!(local.contains("compatibility custody"));
-    let bundle = crate::cli::local_worker::bundle_vm_command("pkg", "w", &s.source, over())
+    let bundle = test_source_command(context(&s), "w", &s.source, Some("pkg"), over())
         .await
         .err()
         .unwrap();
@@ -253,26 +261,18 @@ async fn local_path_bundle_binary_and_build_helpers_refuse_before_runtime_work()
         upper: s.vm.join("upper.ext4"),
     });
     assert!(
-        crate::cli::local_worker::binary_vm_command("pkg", "bin/w", "w", &s.source, binary)
+        test_binary_command(context(&s), "pkg", "bin/w", "w", &s.source, binary)
             .await
             .err()
             .unwrap()
             .contains("compatibility custody")
     );
     assert!(
-        crate::cli::local_worker::image_build_command(
-            &s.source,
-            None,
-            None,
-            None,
-            None,
-            &s.vm.join("build-1"),
-            Default::default()
-        )
-        .await
-        .err()
-        .unwrap()
-        .contains("compatibility custody")
+        test_build_command(context(&s), &s.source, &s.vm.join("build-1"))
+            .await
+            .err()
+            .unwrap()
+            .contains("compatibility custody")
     );
     unchanged(&s);
 }
@@ -423,17 +423,17 @@ async fn normal_root_and_source_refuse_foreign_image_or_upper_at_outer_builders(
         };
         // An invalid manifest/executable is a second, effect-free sentinel if
         // the early guard regresses; these cases never need real firmware.
-        let local = local_vm_command("w", &s.source, None, over())
+        let local = test_source_command(context(&s), "w", &s.source, None, over())
             .await
             .err()
             .unwrap();
         assert!(local.contains("compatibility custody"), "{local}");
-        let bundle = bundle_vm_command("pkg", "w", &s.source, over())
+        let bundle = test_source_command(context(&s), "w", &s.source, Some("pkg"), over())
             .await
             .err()
             .unwrap();
         assert!(bundle.contains("compatibility custody"), "{bundle}");
-        let binary = binary_vm_command("pkg", "missing", "w", &s.source, over())
+        let binary = test_binary_command(context(&s), "pkg", "missing", "w", &s.source, over())
             .await
             .err()
             .unwrap();
@@ -485,18 +485,10 @@ async fn image_build_refuses_foreign_source_before_default_image_or_firmware() {
     let s = setup(false);
     let original = enrolled_other_root(&s);
     let scratch = s.vm.join("build-not-created");
-    let error = image_build_command(
-        &original,
-        None,
-        None,
-        None,
-        None,
-        &scratch,
-        Default::default(),
-    )
-    .await
-    .err()
-    .unwrap();
+    let error = test_build_command(context(&s), &original, &scratch)
+        .await
+        .err()
+        .unwrap();
     assert!(error.contains("compatibility custody"), "{error}");
     assert!(!scratch.exists());
     unchanged(&s);
@@ -678,3 +670,154 @@ async fn symlink_image_id_refuses_external_start_and_internal_claim_before_effec
 // network/VM fixtures here, identity refresh, or an unadmitted convenience mkdir.
 // This source-only round tests the real checked lock/cache control flow with an
 // own-temp path and a deterministic pull future, not the full public build flow.
+
+#[tokio::test]
+async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_context() {
+    // This public build-start path requires the integration profile with overlay.
+    // Never turn an unsupported test profile into a passing normal-mode claim.
+    assert!(
+        crate::cli::overlay::overlay_active(),
+        "run with the admitted overlay test profile"
+    );
+    let s = setup(false);
+    valid_project(&s);
+    let dir = s._root.path().join("claimed-image");
+    private(&dir);
+    std::fs::write(dir.join(IMAGE_FILE), b"fixture-image-not-booted").unwrap();
+    std::fs::write(dir.join(IMAGE_ID_FILE), b"sha256:fixture\n").unwrap();
+    let other = crate::wire::scoped_auth_token("token", "other");
+    s.vms
+        .claim_build_dir(&other, "other", &dir, "output_dir")
+        .unwrap();
+    let mut req = start(&s);
+    req.auth = crate::wire::scoped_auth_token("token", "key");
+    req.build = Some(WorkerBuildRef {
+        build_dir: dir.display().to_string(),
+        build_id: "sha256:fixture".into(),
+    });
+    let error = s.vms.start(req).await.unwrap_err();
+    assert!(matches!(error, SandboxError::BuildDirRefused(_)), "{error}");
+    assert!(!s.vm.join(BUILD_DIR_RECORD).exists());
+    assert!(s.vms.slots().is_empty());
+    assert_eq!(
+        std::fs::read(dir.join(IMAGE_FILE)).unwrap(),
+        b"fixture-image-not-booted"
+    );
+    assert_eq!(
+        std::fs::read(s.vm.join("state.json")).unwrap(),
+        b"{\"instance\":7}"
+    );
+}
+
+async fn install_retired_fixture(s: &Setup) {
+    let lease = s.vms.admission(Some("key")).unwrap();
+    let session = crate::sandbox_daemon::adapters::runtime_test_session(
+        lease.clone(),
+        &s._root.path().join("catalog"),
+        false,
+    )
+    .await;
+    let (status, receipt) = session.wait().await;
+    let receipt = receipt.unwrap();
+    session.finish_resources(&receipt).await.unwrap();
+    let console = Console {
+        admission: Some(lease.clone()),
+        failed: false,
+        dir: s.vm.clone(),
+        file: File::open(s.vm.join(CONSOLE_LOG)).unwrap(),
+        len: 12,
+        base: 0,
+    };
+    let vm = Arc::new(Vm {
+        instance: 7,
+        pid: Pid::from_raw(0),
+        lifecycle: Some(session),
+        admission: lease,
+        retirement: Mutex::new(Some(Ok(receipt))),
+        started_at_ms: 0,
+        stopping: AtomicBool::new(false),
+        reaped: AtomicBool::new(true),
+        ended: watch::Sender::new(Some(Ended {
+            exit_code: status.and_then(|s| s.code()),
+            signal: None,
+            at_ms: now_ms(),
+        })),
+        console: Arc::new(Mutex::new(console)),
+        followers: watch::Sender::new(0),
+        leased: AtomicBool::new(false),
+    });
+    s.vms.slots().insert(vm_id("key"), Slot::Booted(vm));
+}
+
+#[tokio::test]
+async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
+    let s = setup(false);
+    let backup = s._root.path().join("independent-backup");
+    private(&backup);
+    std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+    install_retired_fixture(&s).await;
+    let retained = s
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: false,
+        })
+        .unwrap();
+    assert!(retained.destroyed);
+    assert!(retained.kept.iter().any(|p| p.contains(PRE_BUILD_DISK)));
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    assert!(!s.vm.join(STATE_FILE).exists());
+    assert!(s.vm.join(BUILD_MODE_SEAL).exists());
+    assert!(s.vm.exists());
+    // Prune is tested as the first removal of a different genuine lifecycle.
+    let fresh = setup(false);
+    install_retired_fixture(&fresh).await;
+    let pruned = fresh
+        .vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: true,
+        })
+        .unwrap();
+    assert!(pruned.destroyed);
+    assert!(!fresh.vm.exists());
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+    assert_eq!(
+        std::fs::read(backup.join("sentinel")).unwrap(),
+        b"protected"
+    );
+}
+
+#[tokio::test]
+async fn consumed_destroy_receipt_cannot_be_expanded_into_later_prune() {
+    let s = setup(false);
+    install_retired_fixture(&s).await;
+    s.vms
+        .destroy(WorkerDestroyRequest {
+            auth: "token".into(),
+            state_key: "key".into(),
+            prune: false,
+        })
+        .unwrap();
+    assert!(
+        s.vms
+            .destroy(WorkerDestroyRequest {
+                auth: "token".into(),
+                state_key: "key".into(),
+                prune: true
+            })
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(s.vm.join(PRE_BUILD_DISK)).unwrap(),
+        b"OLD-do-not-archive"
+    );
+}

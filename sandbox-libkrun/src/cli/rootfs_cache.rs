@@ -72,6 +72,15 @@ impl Checkpoint {
     }
 
     pub(crate) fn with_valid<T>(&self, effect: impl FnOnce() -> T) -> Result<T, AdmissionRefused> {
+        self.with_io(|| Ok(effect()))
+    }
+
+    /// Restricted diagnostic operations can fail after validation. Latch that
+    /// failure too, without a second evaluation or a cleanup recovery attempt.
+    pub(crate) fn with_io<T>(
+        &self,
+        effect: impl FnOnce() -> std::io::Result<T>,
+    ) -> Result<T, AdmissionRefused> {
         let mut failure = match self.state.failure.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -94,7 +103,14 @@ impl Checkpoint {
         }
         // Keep the mutex through diagnostic mutation: a concurrent refusal
         // cannot be recorded before a supposedly-authorized cleanup/write.
-        Ok(effect())
+        match effect() {
+            Ok(value) => Ok(value),
+            Err(cause) => {
+                let error = AdmissionRefused(std::sync::Arc::new(cause));
+                *failure = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -191,9 +207,113 @@ pub(crate) fn checked_cache_lock(
     Ok(held)
 }
 
+/// Diagnostic adapter used by worker cache/EROFS mutations. The legacy File
+/// route is independent only; a refused mutation never falls back to it.
+pub(crate) struct MutationLock {
+    lock: Option<crate::worker_admission::DiagnosticLock>,
+    checkpoint: Checkpoint,
+}
+impl MutationLock {
+    pub(crate) fn acquire(
+        mut lock: crate::worker_admission::DiagnosticLock,
+        checkpoint: Checkpoint,
+        write_pid: bool,
+    ) -> Result<Self> {
+        checkpoint.check()?;
+        if !checkpoint.with_io(|| lock.try_lock_exclusive())? {
+            #[cfg(test)]
+            if let Some(notify) = &checkpoint.on_contention {
+                notify();
+            }
+            // Neither the terminal mutex nor a mutation/catalog mutex is held.
+            let acquired = lock.lock_exclusive();
+            checkpoint.with_io(|| acquired)?;
+        }
+        checkpoint.with_io(|| -> std::io::Result<()> {
+            lock.revalidate()?;
+            if write_pid {
+                lock.write_pid(std::process::id())?;
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            lock: Some(lock),
+            checkpoint,
+        })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<()> {
+        if let Some(mut lock) = self.lock.take() {
+            self.checkpoint.with_io(|| -> std::io::Result<()> {
+                lock.revalidate()?;
+                lock.clear()
+            })?;
+            drop(lock); // Must precede MutationGuard::commit.
+        }
+        Ok(())
+    }
+    // Drop intentionally performs no diagnostic write or pathname cleanup.
+}
+
+/// One caller-owned core mutation. The callback checks THIS guard's original
+/// proofs during staging, not stale pre-publication inode pins on a fresh lease.
+pub(crate) struct MutationWriter {
+    guard: std::sync::Arc<std::sync::Mutex<crate::worker_admission::MutationGuard>>,
+    pub(crate) checkpoint: Checkpoint,
+}
+impl MutationWriter {
+    pub(crate) fn begin(
+        lease: &crate::worker_admission::Lease,
+        plan: crate::worker_admission::MutationPlan,
+    ) -> std::io::Result<Self> {
+        let guard = std::sync::Arc::new(std::sync::Mutex::new(lease.begin(plan)?));
+        let checked = guard.clone();
+        let checkpoint = Checkpoint::new(move || {
+            checked
+                .lock()
+                .map_err(|_| std::io::Error::other("mutation poisoned"))?
+                .checkpoint()
+        });
+        Ok(Self { guard, checkpoint })
+    }
+
+    pub(crate) fn apply<T>(
+        &self,
+        effect: impl FnOnce(&mut crate::worker_admission::MutationGuard) -> std::io::Result<T>,
+    ) -> Result<T> {
+        self.checkpoint
+            .with_io(|| {
+                let mut guard = self
+                    .guard
+                    .lock()
+                    .map_err(|_| std::io::Error::other("mutation poisoned"))?;
+                effect(&mut guard)
+            })
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn diagnostic(
+        &self,
+        path: &Path,
+    ) -> Result<crate::worker_admission::DiagnosticLock> {
+        self.apply(|guard| guard.diagnostic_lock(path))
+    }
+
+    pub(crate) fn commit(self) -> Result<()> {
+        self.checkpoint.check()?;
+        drop(self.checkpoint);
+        let guard = std::sync::Arc::try_unwrap(self.guard)
+            .map_err(|_| anyhow::anyhow!("mutation still has checkpoint/writer references"))?
+            .into_inner()
+            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?;
+        guard.commit()?;
+        Ok(())
+    }
+}
+
 /// Canonical cache root. All new pulls land under here, keyed by
 /// `rootfs_slug_for_image(oci_ref)`.
-fn cache_root() -> PathBuf {
+pub(crate) fn cache_root() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".iii")
@@ -215,7 +335,7 @@ pub fn canonical_path(oci_ref: &str) -> PathBuf {
     canonical_path_at(&cache_root(), oci_ref)
 }
 
-fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+pub(crate) fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
     let shared = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     match pinned_digest(oci_ref) {
         Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
@@ -227,7 +347,7 @@ fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
 
 /// `<rootfs>.digest`, beside the rootfs: the manifest digests it was
 /// pulled from, one per line.
-fn digest_path(rootfs: &Path) -> PathBuf {
+pub(crate) fn digest_path(rootfs: &Path) -> PathBuf {
     let mut name = rootfs.file_name().unwrap_or_default().to_os_string();
     name.push(".digest");
     rootfs.with_file_name(name)
@@ -274,7 +394,7 @@ fn lock_path_for_image(oci_ref: &str) -> PathBuf {
     lock_path_at(&cache_root(), oci_ref)
 }
 
-fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+pub(crate) fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
     let mut path = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     let name = path
         .file_name()
@@ -378,6 +498,73 @@ where
     record_digest(&digest_file, &digests, &checkpoint)?;
     lock.finish()?;
     Ok(dest)
+}
+
+/// Owned worker cache transaction: no live-root removal before a successful
+/// replacement, and no raw diagnostic/stage cleanup. Selection cannot drift
+/// between the admitted mutation footprint and the actual pull.
+pub(crate) async fn ensure_rootfs_admitted(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+) -> Result<PathBuf> {
+    ensure_rootfs_admitted_at(lease, reference, &cache_root()).await
+}
+
+pub(crate) async fn ensure_rootfs_admitted_at(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+    cache: &Path,
+) -> Result<PathBuf> {
+    ensure_rootfs_admitted_at_notify(lease, reference, cache, || {}).await
+}
+
+pub(crate) async fn ensure_rootfs_admitted_at_notify(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+    cache: &Path,
+    on_pull: impl FnOnce() + Send,
+) -> Result<PathBuf> {
+    use std::io::Write;
+    let cache = cache.to_path_buf();
+    let selected = canonical_path_at(&cache, reference);
+    let mutation = MutationWriter::begin(
+        lease,
+        crate::worker_admission::MutationPlan::Cache {
+            root: cache.clone(),
+        },
+    )?;
+    mutation.apply(|guard| guard.create_dir_all(&cache, 0o700))?;
+    let diagnostic = mutation.diagnostic(&lock_path_at(&cache, reference))?;
+    let check = mutation.checkpoint.clone();
+    let lock = tokio::task::spawn_blocking(move || MutationLock::acquire(diagnostic, check, true))
+        .await
+        .context("cache lock task failed")??;
+    mutation.checkpoint.check()?;
+    anyhow::ensure!(
+        canonical_path_at(&cache, reference) == selected,
+        "cache selection changed while waiting; retry the complete admitted operation"
+    );
+    if !is_populated(&selected) {
+        on_pull();
+        mutation.checkpoint.check()?;
+        let stage = mutation.apply(|guard| guard.stage_tree(&selected))?;
+        let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
+            reference,
+            stage.path(),
+            mutation.checkpoint.clone(),
+        )
+        .await?;
+        mutation.checkpoint.check()?;
+        let mut digest =
+            mutation.apply(|guard| guard.stage_file(&digest_path(&selected), 0o600))?;
+        digest.file_mut().write_all(digests.join("\n").as_bytes())?;
+        digest.file_mut().sync_all()?;
+        mutation.apply(|guard| guard.publish_tree(stage))?;
+        mutation.apply(|guard| guard.publish_file(digest))?;
+    }
+    lock.finish()?;
+    mutation.commit()?;
+    Ok(selected)
 }
 
 fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Result<()> {
@@ -652,10 +839,35 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 9);
     }
 
+    #[test]
+    fn diagnostic_effect_error_latches_without_callback_recovery() {
+        let checkpoint = Checkpoint::new(|| Ok(()));
+        let result: Result<(), AdmissionRefused> = checkpoint.with_io(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "diagnostic write failed",
+            ))
+        });
+        assert_eq!(result.unwrap_err().0.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(checkpoint.clone().check().is_err());
+        assert!(
+            checkpoint
+                .with_io(|| -> std::io::Result<()> {
+                    panic!("must not retry cleanup after diagnostic failure")
+                })
+                .is_err()
+        );
+    }
+
     fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
         let owner = t.join("owner");
         std::fs::create_dir(&owner).unwrap();
-        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let lease = context.local(&owner.join("state")).unwrap();
         (owner, lease)
     }
 
