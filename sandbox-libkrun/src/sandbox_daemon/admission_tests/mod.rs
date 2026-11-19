@@ -42,7 +42,7 @@ impl TestRegistry {
     pub fn new() -> Self {
         Self::with_max_exec_in_flight(sandbox_daemon::registry::DEFAULT_MAX_EXEC_IN_FLIGHT)
     }
-    pub fn with_max_exec_in_flight(cap: usize) -> Self {
+    pub fn with_max_exec_in_flight(cap: u32) -> Self {
         let namespace = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let context =

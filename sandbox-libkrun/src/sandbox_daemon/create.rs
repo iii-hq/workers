@@ -168,7 +168,7 @@ async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + '
     cfg: &SandboxConfig,
     registry: &SandboxRegistry,
     launcher: &L,
-    mut on_event: F,
+    on_event: F,
     paths: Option<CreatePaths>,
 ) -> Result<CreateResponse, SandboxError> {
     let t_create = Instant::now();
@@ -357,7 +357,7 @@ async fn handle_create_in<L: VmLauncher, F: FnMut(SandboxCreateEvent) + Send + '
     registry.insert(state).await;
     registry.mark_ready(id).await?;
 
-    on_event(SandboxCreateEvent::Ready {
+    events.lock().unwrap()(SandboxCreateEvent::Ready {
         sandbox_id: id.to_string(),
     });
 

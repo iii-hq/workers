@@ -329,7 +329,7 @@ pub(super) fn ofd(file: &File, query: bool) -> io::Result<bool> {
             &mut lock,
         )
     })?;
-    Ok(lock.l_type == libc::F_UNLCK as _)
+    Ok(libc::c_int::from(lock.l_type) == libc::F_UNLCK)
 }
 #[cfg(not(target_os = "linux"))]
 pub(super) fn ofd(_file: &File, _query: bool) -> io::Result<bool> {

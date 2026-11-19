@@ -95,6 +95,18 @@ struct XattrArgs {
 }
 const _: [(); 16] = [(); std::mem::size_of::<XattrArgs>()];
 const _: [(); 8] = [(); std::mem::align_of::<XattrArgs>()];
+// libc 0.2.191 does not expose SYS_getxattrat. Linux v6.13 UAPI assigns 464
+// to native x86_64 and asm-generic (AArch64). Verified against installed UAPI
+// headers and linux-raw-sys 0.12.1/src/{x86_64,aarch64}/general.rs.
+// Deliberately exclude x32/ILP32: x32 adds __X32_SYSCALL_BIT. Runtime syscall
+// or filesystem failure remains an error, never evidence of an absent ACL.
+#[cfg(all(
+    target_os = "linux",
+    target_pointer_width = "64",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+const SYS_GETXATTRAT: libc::c_long = 464;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Acls {
     access: Option<Vec<u8>>,
@@ -133,6 +145,7 @@ fn xattr_read(
 ) -> io::Result<Option<Vec<u8>>> {
     #[cfg(all(
         target_os = "linux",
+        target_pointer_width = "64",
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
@@ -147,7 +160,7 @@ fn xattr_read(
         // getxattrat(O_PATH,"",...) or /proc/self/fd; no guessed syscall number.
         let size = unsafe {
             libc::syscall(
-                libc::SYS_getxattrat,
+                SYS_GETXATTRAT,
                 parent.as_raw_fd(),
                 component.as_ptr(),
                 libc::AT_SYMLINK_NOFOLLOW,
@@ -174,7 +187,7 @@ fn xattr_read(
         };
         let read = unsafe {
             libc::syscall(
-                libc::SYS_getxattrat,
+                SYS_GETXATTRAT,
                 parent.as_raw_fd(),
                 component.as_ptr(),
                 libc::AT_SYMLINK_NOFOLLOW,
@@ -193,13 +206,14 @@ fn xattr_read(
     }
     #[cfg(not(all(
         target_os = "linux",
+        target_pointer_width = "64",
         any(target_arch = "x86_64", target_arch = "aarch64")
     )))]
     {
         let _ = (parent, leaf, attribute);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "owner-read needs verified getxattrat UAPI on Linux x86_64/aarch64",
+            "owner-read needs verified getxattrat UAPI on native 64-bit Linux x86_64/aarch64",
         ))
     }
 }
