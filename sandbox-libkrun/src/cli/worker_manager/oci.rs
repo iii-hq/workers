@@ -367,7 +367,12 @@ pub(crate) fn base_image_ref(kind: &str, base_image_override: Option<&str>) -> S
 /// `iii.worker.yaml`.
 pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
     // Independent legacy/sandbox API; admitted worker paths MUST use checked.
-    prepare_rootfs_checked(kind, base_image_override, Arc::new(|| Ok(()))).await
+    prepare_rootfs_checked(
+        kind,
+        base_image_override,
+        crate::cli::rootfs_cache::Checkpoint::new(|| Ok(())),
+    )
+    .await
 }
 
 pub(crate) async fn prepare_rootfs_checked(
@@ -375,7 +380,7 @@ pub(crate) async fn prepare_rootfs_checked(
     base_image_override: Option<&str>,
     checkpoint: crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<PathBuf> {
-    checkpoint()?;
+    checkpoint.check()?;
     let oci_image = match base_image_override.map(str::trim) {
         Some(img) if !img.is_empty() => img.to_string(),
         _ => oci_image_for_kind(kind).to_string(),
@@ -398,7 +403,7 @@ fn finish_prepare_rootfs(
     rootfs_dir: PathBuf,
     checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<PathBuf> {
-    checkpoint()?; // After cache/pull wait, before workspace/hosts writes.
+    checkpoint.check()?; // After cache/pull wait, before workspace/hosts writes.
     // Post-populate runtime-expected dirs even on a cache hit; these are
     // idempotent and cheap.
     let workspace = rootfs_dir.join("workspace");
@@ -708,7 +713,12 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 /// resolved to, then the platform manifest's when that was an image index.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<Vec<String>> {
     // Independent callers retain this API; checked cache never falls back here.
-    pull_and_extract_rootfs_checked(image, dest, Arc::new(|| Ok(()))).await
+    pull_and_extract_rootfs_checked(
+        image,
+        dest,
+        crate::cli::rootfs_cache::Checkpoint::new(|| Ok(())),
+    )
+    .await
 }
 
 pub(crate) async fn pull_and_extract_rootfs_checked(
@@ -716,7 +726,7 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
     dest: &Path,
     checkpoint: crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<Vec<String>> {
-    checkpoint()?;
+    checkpoint.check()?;
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
@@ -800,7 +810,7 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
         _ => String::new(),
     };
 
-    checkpoint()?;
+    checkpoint.check()?;
     eprintln!("  Pulling {}{}...", image, manifest_summary);
     let _ = manifest_summary; // consumed inside pull_with_progress now
 
@@ -827,10 +837,10 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
         // real progress line:
         //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
         // so the adapter's log shows genuine download progress.
-        checkpoint()?; // Includes the retry backoff wait.
+        checkpoint.check()?; // Includes the retry backoff wait.
         let pull_result =
             pull_with_progress(&client, &reference, image, host_arch, &checkpoint).await;
-        checkpoint()?; // Refusal is not retried as a registry failure.
+        let pull_result = classify_pull_result(pull_result, &checkpoint)?;
 
         match pull_result {
             Ok((data, digests)) => {
@@ -879,13 +889,28 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
     extract_pulled_rootfs(image_data, image_digests, dest, &checkpoint)
 }
 
+/// A contextualized refusal is terminal, never a registry retry. The latch
+/// also wins if the awaited helper returned an unrelated error after refusal.
+fn classify_pull_result<T>(
+    result: Result<T>,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<Result<T>> {
+    if let Err(error) = &result {
+        if crate::cli::rootfs_cache::is_admission_refusal(error) {
+            return result.map(Ok);
+        }
+    }
+    checkpoint.check()?;
+    Ok(result)
+}
+
 fn extract_pulled_rootfs(
     image_data: oci_client::client::ImageData,
     image_digests: Vec<String>,
     dest: &Path,
     checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<Vec<String>> {
-    checkpoint()?; // Pull completed; no staging mkdir/remove before this check.
+    checkpoint.check()?; // Pull completed; no staging mkdir/remove before this check.
     let layer_count = image_data.layers.len();
 
     // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
@@ -963,24 +988,26 @@ fn extract_pulled_rootfs(
     if let Some((tmp_dir, final_dir)) = temp_to_promote {
         match extract_result {
             Ok(()) => {
-                // If `final_dir` already exists (leftover from a prior
-                // interrupted run), remove it so the rename can succeed. We're claiming this
-                // dir atomically — stale contents are replaced wholesale.
-                if final_dir.exists() {
-                    std::fs::remove_dir_all(&final_dir).with_context(|| {
+                checkpoint.with_valid(|| -> Result<()> {
+                    // Serialize publication against a concurrent terminal refusal;
+                    // this does NOT authorize replacement of pinned identities.
+                    if final_dir.exists() {
+                        std::fs::remove_dir_all(&final_dir).with_context(|| {
+                            format!(
+                                "Failed to remove stale rootfs before atomic promote: {}",
+                                final_dir.display()
+                            )
+                        })?;
+                    }
+                    std::fs::rename(&tmp_dir, &final_dir).with_context(|| {
                         format!(
-                            "Failed to remove stale rootfs before atomic promote: {}",
+                            "Failed to atomically promote rootfs {} -> {}",
+                            tmp_dir.display(),
                             final_dir.display()
                         )
                     })?;
-                }
-                std::fs::rename(&tmp_dir, &final_dir).with_context(|| {
-                    format!(
-                        "Failed to atomically promote rootfs {} -> {}",
-                        tmp_dir.display(),
-                        final_dir.display()
-                    )
-                })?;
+                    Ok(())
+                })??;
                 tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
                 eprintln!("  {} Rootfs ready", "\u{2713}".green());
                 Ok(image_digests)
@@ -989,7 +1016,7 @@ fn extract_pulled_rootfs(
                 // Extraction failed mid-way. Clean up the temp dir so the
                 // next pull doesn't see a half-filled sibling. Ignore errors
                 // on cleanup — original extraction error is what matters.
-                let _ = std::fs::remove_dir_all(&tmp_dir);
+                let _ = checkpoint.with_valid(|| std::fs::remove_dir_all(&tmp_dir));
                 Err(e)
             }
         }
@@ -1056,7 +1083,7 @@ async fn pull_with_progress(
     host_arch: &str,
     checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<(oci_client::client::ImageData, Vec<String>)> {
-    checkpoint()?;
+    checkpoint.check()?;
     use futures::StreamExt;
     use oci_client::client::{Config, ImageData, ImageLayer};
     use sha2::Digest;
@@ -1068,7 +1095,7 @@ async fn pull_with_progress(
     //    to the caller alongside the data.
     let (image_manifest, manifest_digests) =
         pull_image_manifest_resolved(client, reference, host_arch, checkpoint).await?;
-    checkpoint()?;
+    checkpoint.check()?;
     check_declared_blob_sizes(&image_manifest)?;
 
     let total_bytes: u64 = image_manifest
@@ -1146,9 +1173,9 @@ async fn pull_with_progress(
         .pull_blob_stream(reference, &image_manifest.config)
         .await
         .context("failed to pull image config blob")?;
-    checkpoint()?;
+    checkpoint.check()?;
     while let Some(chunk) = config_stream.next().await {
-        checkpoint()?;
+        checkpoint.check()?;
         let chunk = chunk.context("config blob stream chunk failed")?;
         check_blob_len(
             config_bytes.len() + chunk.len(),
@@ -1158,7 +1185,7 @@ async fn pull_with_progress(
         config_hasher.update(&chunk);
         config_bytes.extend_from_slice(&chunk);
     }
-    checkpoint()?; // Includes the final stream wait returning None.
+    checkpoint.check()?; // Includes the final stream wait returning None.
     verify_sha256_digest(&image_manifest.config.digest, config_hasher, "image config")?;
     let config = Config {
         data: bytes::Bytes::from(config_bytes),
@@ -1182,9 +1209,9 @@ async fn pull_with_progress(
             .pull_blob_stream(reference, layer_desc)
             .await
             .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
-        checkpoint()?;
+        checkpoint.check()?;
         while let Some(chunk) = stream.next().await {
-            checkpoint()?;
+            checkpoint.check()?;
             let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
             check_blob_len(
                 layer_bytes.len() + chunk.len(),
@@ -1195,7 +1222,7 @@ async fn pull_with_progress(
             downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             layer_bytes.extend_from_slice(&chunk);
         }
-        checkpoint()?;
+        checkpoint.check()?;
         verify_sha256_digest(
             &layer_desc.digest,
             layer_hasher,
@@ -1323,7 +1350,7 @@ async fn pull_image_manifest_resolved(
     host_arch: &str,
     checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<(oci_client::manifest::OciImageManifest, Vec<String>)> {
-    checkpoint()?;
+    checkpoint.check()?;
     use oci_client::secrets::RegistryAuth;
 
     let target_arch = match host_arch {
@@ -1336,7 +1363,7 @@ async fn pull_image_manifest_resolved(
         .await
         .context("failed to pull image manifest")?;
 
-    checkpoint()?;
+    checkpoint.check()?;
     match manifest {
         oci_client::manifest::OciManifest::Image(m) => Ok((m, vec![digest])),
         oci_client::manifest::OciManifest::ImageIndex(idx) => {
@@ -1369,7 +1396,7 @@ async fn pull_image_manifest_resolved(
                 .pull_manifest(&resolved_ref, &RegistryAuth::Anonymous)
                 .await
                 .context("failed to pull resolved platform manifest")?;
-            checkpoint()?;
+            checkpoint.check()?;
             match m {
                 oci_client::manifest::OciManifest::Image(im) => Ok((im, vec![digest, d])),
                 oci_client::manifest::OciManifest::ImageIndex(_) => {
@@ -1386,6 +1413,53 @@ mod tests {
     use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
 
     #[test]
+    fn contextual_one_shot_stream_refusal_never_retries_or_publishes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let t = tempfile::tempdir().unwrap();
+        let published = t.path().join("published");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let checked = calls.clone();
+        let checkpoint = crate::cli::rootfs_cache::Checkpoint::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "transient",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        let mut attempts = 0;
+        let result: Result<()> = (|| {
+            for _ in 0..3 {
+                attempts += 1;
+                let streamed = checkpoint
+                    .clone()
+                    .check()
+                    .context("layer stream")
+                    .context("pull");
+                match classify_pull_result(streamed, &checkpoint)? {
+                    Ok(()) => {
+                        std::fs::write(&published, b"must not publish")?;
+                        return Ok(());
+                    }
+                    Err(_) => continue,
+                }
+            }
+            anyhow::bail!("attempts exhausted")
+        })();
+        let error = result.unwrap_err();
+        assert!(crate::cli::rootfs_cache::is_admission_refusal(&error));
+        assert_eq!(attempts, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!published.exists());
+        assert!(checkpoint.check().is_err());
+        let healthy = crate::cli::rootfs_cache::Checkpoint::new(|| Ok(()));
+        let ordinary: Result<()> = Err(anyhow::anyhow!("registry unavailable"));
+        assert!(classify_pull_result(ordinary, &healthy).unwrap().is_err());
+    }
+
+    #[test]
     fn invalidated_post_pull_fence_prevents_extract_staging_and_publication() {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
@@ -1396,7 +1470,8 @@ mod tests {
         std::fs::write(dest.join("sentinel"), b"keep").unwrap();
         std::fs::rename(&owner, t.path().join("old-owner")).unwrap();
         std::fs::create_dir(&owner).unwrap();
-        let checkpoint: crate::cli::rootfs_cache::Checkpoint = Arc::new(move || lease.revalidate());
+        let checkpoint: crate::cli::rootfs_cache::Checkpoint =
+            crate::cli::rootfs_cache::Checkpoint::new(move || lease.revalidate());
         let data = oci_client::client::ImageData {
             layers: Vec::new(),
             digest: None,
@@ -1420,7 +1495,9 @@ mod tests {
         std::fs::create_dir_all(root.join("etc")).unwrap();
         std::fs::write(root.join("etc/hosts"), b"keep-hosts").unwrap();
         let checkpoint: crate::cli::rootfs_cache::Checkpoint =
-            Arc::new(|| Err(std::io::Error::other("invalid after cache await")));
+            crate::cli::rootfs_cache::Checkpoint::new(|| {
+                Err(std::io::Error::other("invalid after cache await"))
+            });
         assert!(finish_prepare_rootfs(root.clone(), &checkpoint).is_err());
         assert!(!root.join("workspace").exists());
         assert_eq!(

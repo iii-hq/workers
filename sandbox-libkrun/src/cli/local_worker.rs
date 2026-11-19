@@ -832,7 +832,7 @@ pub(crate) async fn prepare_admitted_rootfs(
     let base_image = base_image.map(str::to_string);
     let fence = admission.clone();
     let checkpoint: super::rootfs_cache::Checkpoint =
-        std::sync::Arc::new(move || fence.revalidate());
+        super::rootfs_cache::Checkpoint::new(move || fence.revalidate());
     run_cache_writer(admission.clone(), move || async move {
         super::worker_manager::oci::prepare_rootfs_checked(&kind, base_image.as_deref(), checkpoint)
             .await
@@ -876,9 +876,9 @@ pub(crate) fn write_admitted_erofs(
 ) -> Result<PathBuf, String> {
     let fence = admission.clone();
     let checkpoint: super::rootfs_cache::Checkpoint =
-        std::sync::Arc::new(move || fence.revalidate());
+        super::rootfs_cache::Checkpoint::new(move || fence.revalidate());
     run_erofs_writer(admission, || {
-        super::erofs::ensure_base_erofs_checked(root, &checkpoint)
+        super::erofs::ensure_base_erofs_checked(root, &checkpoint).map_err(|e| format!("{e:#}"))
     })
 }
 

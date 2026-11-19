@@ -21,7 +21,88 @@ use crate::cli::worker_manager::oci::{pull_and_extract_rootfs_checked, rootfs_sl
 /// Required validation at writer boundaries; never a mutation/refresh grant.
 /// These checkpoints do not make pathname operations atomic against outsiders.
 /// The closure owns its fence so a queued blocking lock task retains it too.
-pub(crate) type Checkpoint = std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+#[derive(Clone)]
+pub(crate) struct Checkpoint {
+    state: std::sync::Arc<CheckpointState>,
+    #[cfg(test)]
+    on_contention: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+struct CheckpointState {
+    validate: Box<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    // Serialize checks and diagnostic effects. Once set, never call validate
+    // again, even if the underlying path or transient I/O error recovers.
+    failure: std::sync::Mutex<Option<AdmissionRefused>>,
+}
+
+/// Typed across anyhow contexts/stream helpers; retains the original kind,
+/// OS code and source rather than classifying a diagnostic string.
+#[derive(Clone, Debug)]
+pub(crate) struct AdmissionRefused(std::sync::Arc<std::io::Error>);
+
+impl std::fmt::Display for AdmissionRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "worker admission refused: {}", self.0)
+    }
+}
+impl std::error::Error for AdmissionRefused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+pub(crate) fn is_admission_refusal(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<AdmissionRefused>())
+}
+
+impl Checkpoint {
+    pub(crate) fn new(validate: impl Fn() -> std::io::Result<()> + Send + Sync + 'static) -> Self {
+        Self {
+            state: std::sync::Arc::new(CheckpointState {
+                validate: Box::new(validate),
+                failure: std::sync::Mutex::new(None),
+            }),
+            #[cfg(test)]
+            on_contention: None,
+        }
+    }
+
+    pub(crate) fn check(&self) -> Result<(), AdmissionRefused> {
+        self.with_valid(|| ())
+    }
+
+    pub(crate) fn with_valid<T>(&self, effect: impl FnOnce() -> T) -> Result<T, AdmissionRefused> {
+        let mut failure = match self.state.failure.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.get_or_insert_with(|| {
+                    AdmissionRefused(std::sync::Arc::new(std::io::Error::other(
+                        "checkpoint validation panicked",
+                    )))
+                });
+                guard
+            }
+        };
+        if let Some(error) = failure.as_ref() {
+            return Err(error.clone());
+        }
+        if let Err(cause) = (self.state.validate)() {
+            let error = AdmissionRefused(std::sync::Arc::new(cause));
+            *failure = Some(error.clone());
+            return Err(error);
+        }
+        // Keep the mutex through diagnostic mutation: a concurrent refusal
+        // cannot be recorded before a supposedly-authorized cleanup/write.
+        Ok(effect())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn on_contention(mut self, notify: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_contention = Some(std::sync::Arc::new(notify));
+        self
+    }
+}
 
 /// Existing cache lock protocol (same file and flock), split so validation can
 /// run AFTER acquisition but BEFORE lock_with_pid's otherwise immediate write.
@@ -35,8 +116,8 @@ impl Drop for CheckedCacheLock {
     fn drop(&mut self) {
         // Invalidated admission must not truncate even this diagnostic file.
         // A successful/ordinary error path keeps the existing empty-on-drop rule.
-        if self.clear_on_drop && (self.checkpoint)().is_ok() {
-            let _ = self.file.set_len(0);
+        if self.clear_on_drop {
+            let _ = self.checkpoint.with_valid(|| self.file.set_len(0));
         }
         // Closing the owned descriptor releases flock even on early refusal.
     }
@@ -47,10 +128,10 @@ pub(crate) fn checked_cache_lock(
     checkpoint: &Checkpoint,
     write_pid: bool,
 ) -> Result<CheckedCacheLock> {
-    use std::io::Write;
+    use std::io::{Seek, SeekFrom, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
-    checkpoint()?; // Before open/create, including after spawn_blocking's queue.
+    checkpoint.check()?; // Before open/create, including after spawn_blocking's queue.
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -64,19 +145,35 @@ pub(crate) fn checked_cache_lock(
         clear_on_drop: false,
         checkpoint: checkpoint.clone(),
     };
-    checkpoint()?; // Last pre-wait boundary; opening alone cannot authorize writes.
-    // SAFETY: file owns this live descriptor through acquisition and release.
-    // This is the same per-image flock, not an enrollment/mutation protocol.
-    if unsafe { libc::flock(held.file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("could not lock {}", path.display()));
+    checkpoint.check()?; // Last pre-wait boundary; opening alone cannot authorize writes.
+    // SAFETY: the descriptor stays owned through both attempts and release.
+    if unsafe { libc::flock(held.file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error).with_context(|| format!("could not lock {}", path.display()));
+        }
+        // Notify only AFTER an actual contended attempt, never before flock.
+        #[cfg(test)]
+        if let Some(notify) = &checkpoint.on_contention {
+            notify();
+        }
+        if unsafe { libc::flock(held.file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("could not lock {}", path.display()));
+        }
     }
-    checkpoint()?; // INSIDE the helper, while locked, before PID or caller effects.
-    held.clear_on_drop = true;
-    if write_pid {
-        writeln!(held.file, "{}", std::process::id())
-            .with_context(|| format!("could not lock {}", path.display()))?;
-    }
+    checkpoint
+        .with_valid(|| -> std::io::Result<()> {
+            // Under the acquired lock and terminal-state mutex, BEFORE any write.
+            held.clear_on_drop = true;
+            if write_pid {
+                held.file.set_len(0)?;
+                held.file.seek(SeekFrom::Start(0))?;
+                writeln!(held.file, "{}", std::process::id())?;
+            }
+            Ok(())
+        })?
+        .with_context(|| format!("could not lock {}", path.display()))?;
     Ok(held)
 }
 
@@ -180,7 +277,7 @@ fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
 /// The lock is released when the guard drops, and by the kernel if the
 /// process dies, so a crashed pull does not wedge the next one.
 async fn lock_at_path(lock_path: PathBuf, checkpoint: Checkpoint) -> Result<CheckedCacheLock> {
-    checkpoint()?; // Parent creation is an effect too.
+    checkpoint.check()?; // Parent creation is an effect too.
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -200,7 +297,7 @@ async fn lock_at_path(lock_path: PathBuf, checkpoint: Checkpoint) -> Result<Chec
 /// surface a progress event to the user.
 pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Result<PathBuf> {
     // Compatibility entry for independent, non-worker callers only.
-    ensure_rootfs_checked(oci_ref, on_pull_start, std::sync::Arc::new(|| Ok(()))).await
+    ensure_rootfs_checked(oci_ref, on_pull_start, Checkpoint::new(|| Ok(()))).await
 }
 
 pub(crate) async fn ensure_rootfs_checked(
@@ -224,7 +321,7 @@ where
     F: FnOnce(String, PathBuf, Checkpoint) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<String>>>,
 {
-    checkpoint()?;
+    checkpoint.check()?;
     let selected = canonical_path_at(cache, oci_ref);
     if is_populated(&selected) {
         return Ok(selected);
@@ -236,7 +333,7 @@ where
     // extracting into, and the survivor would keep a rootfs with another
     // pull's files spliced through it.
     let _lock = lock_at_path(lock_path_at(cache, oci_ref), checkpoint.clone()).await?;
-    checkpoint()?; // Also covers rescheduling after the blocking lock returned.
+    checkpoint.check()?; // Also covers rescheduling after the blocking lock returned.
     // Re-check under the lock: whoever held it before us has very likely
     // just finished this exact pull, and re-pulling would throw away a
     // rootfs that is already complete.
@@ -245,7 +342,7 @@ where
         return Ok(selected);
     }
     on_pull_start();
-    checkpoint()?;
+    checkpoint.check()?;
     let dest = selected;
     // Clean any partial-state stub from a prior failed attempt: a
     // dir-exists-but-empty rootfs can confound tar's overwrite logic
@@ -268,8 +365,8 @@ where
 }
 
 fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Result<()> {
-    checkpoint()?; // Pull/extraction awaited: never publish a sidecar first.
-    if let Err(e) = std::fs::write(path, digests.join("\n")) {
+    // No clone may record a refusal between this check and publication.
+    if let Err(e) = checkpoint.with_valid(|| std::fs::write(path, digests.join("\n")))? {
         tracing::warn!(path = %path.display(), error = %e, "failed to record the rootfs digest");
     }
     Ok(())
@@ -279,6 +376,122 @@ fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Re
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn first_refusal_is_shared_irreversible_and_retains_its_original_cause() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let checked = calls.clone();
+        let checkpoint = Checkpoint::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            } else {
+                Ok(())
+            }
+        });
+        let a = checkpoint.clone();
+        let b = checkpoint.clone();
+        let (first, second) = std::thread::scope(|scope| {
+            let a = scope.spawn(move || a.check().unwrap_err());
+            let b = scope.spawn(move || b.check().unwrap_err());
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        assert!(Arc::ptr_eq(&first.0, &second.0));
+        assert_eq!(first.0.raw_os_error(), Some(libc::EIO));
+        assert_eq!(
+            first.0.kind(),
+            std::io::Error::from_raw_os_error(libc::EIO).kind()
+        );
+        let contextual = anyhow::Error::new(first)
+            .context("stream chunk")
+            .context("pull attempt");
+        assert!(is_admission_refusal(&contextual));
+        assert!(checkpoint.check().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let fresh = Checkpoint::new(|| Ok(()));
+        assert!(
+            fresh.check().is_ok(),
+            "independent operations have independent state"
+        );
+    }
+
+    #[test]
+    fn one_shot_refusal_prevents_later_digest_pid_and_cleanup() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let path = t.path().join("held.lock");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let checked = calls.clone();
+        let checkpoint = Checkpoint::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 3 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "one-shot refusal",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        let lock = checked_cache_lock(&path, &checkpoint, true).unwrap();
+        let diagnostic = std::fs::read(&path).unwrap();
+        let other = checkpoint.clone();
+        assert!(other.check().is_err());
+        let digest = t.path().join("image.digest");
+        assert!(record_digest(&digest, &["sha256:unused".into()], &checkpoint).is_err());
+        let next_lock = t.path().join("never-created.lock");
+        assert!(checked_cache_lock(&next_lock, &checkpoint, true).is_err());
+        drop(lock);
+        assert_eq!(std::fs::read(&path).unwrap(), diagnostic);
+        assert!(!digest.exists());
+        assert!(!next_lock.exists());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(exclusive(&path));
+    }
+
+    #[test]
+    fn one_shot_post_wait_refusal_preserves_long_diagnostic_and_releases_lock() {
+        use std::os::fd::AsRawFd;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let path = t.path().join("image.lock");
+        let prior = b"a stale diagnostic substantially longer than the next PID\n";
+        std::fs::write(&path, prior).unwrap();
+        let holder = std::fs::File::open(&path).unwrap();
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let checked = calls.clone();
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let checkpoint = Checkpoint::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 2 {
+                Err(std::io::Error::other("one-shot post-wait"))
+            } else {
+                Ok(())
+            }
+        })
+        .on_contention(move || ready.send(()).unwrap());
+        let worker = checkpoint.clone();
+        let lock_path = path.clone();
+        let task = std::thread::spawn(move || checked_cache_lock(&lock_path, &worker, true));
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!task.is_finished());
+        drop(holder);
+        assert!(task.join().unwrap().is_err());
+        assert!(checkpoint.check().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(std::fs::read(&path).unwrap(), prior);
+        assert!(exclusive(&path));
+    }
 
     fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
         let owner = t.join("owner");
@@ -304,10 +517,12 @@ mod tests {
     fn checked_lock_preserves_pid_lifetime_and_pre_open_refusal() {
         let t = tempdir().unwrap();
         let path = t.path().join("image.lock");
-        let refused: Checkpoint = std::sync::Arc::new(|| Err(std::io::Error::other("refused")));
+        let refused: Checkpoint = Checkpoint::new(|| Err(std::io::Error::other("refused")));
         assert!(checked_cache_lock(&path, &refused, true).is_err());
         assert!(!path.exists());
-        let allowed: Checkpoint = std::sync::Arc::new(|| Ok(()));
+        let old_diagnostic = b"older diagnostic much longer than the current process identifier\n";
+        std::fs::write(&path, old_diagnostic).unwrap();
+        let allowed: Checkpoint = Checkpoint::new(|| Ok(()));
         let lock = checked_cache_lock(&path, &allowed, true).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -317,6 +532,17 @@ mod tests {
         drop(lock);
         assert!(std::fs::read(&path).unwrap().is_empty());
         assert!(exclusive(&path));
+        // Compare the full-diagnostic fslock API through the existing dependency,
+        // without reaching external source paths or executing this test now.
+        std::fs::write(&path, old_diagnostic).unwrap();
+        let mut legacy = fslock::LockFile::open(&path).unwrap();
+        assert!(legacy.try_lock_with_pid().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{}\n", std::process::id())
+        );
+        drop(legacy);
+        assert!(std::fs::read(&path).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -325,7 +551,7 @@ mod tests {
         let image = "docker.io/library/alpine:3.20";
         let dest = canonical_path_at(t.path(), image);
         std::fs::create_dir_all(dest.join("bin")).unwrap();
-        let checkpoint: Checkpoint = std::sync::Arc::new(|| Ok(()));
+        let checkpoint: Checkpoint = Checkpoint::new(|| Ok(()));
         let got = ensure_rootfs_at(
             image,
             || panic!("cache hit"),
@@ -349,7 +575,7 @@ mod tests {
             if !missing_parent {
                 std::fs::create_dir(&cache).unwrap();
             }
-            let checkpoint: Checkpoint = std::sync::Arc::new(move || lease.revalidate());
+            let checkpoint: Checkpoint = Checkpoint::new(move || lease.revalidate());
             assert!(
                 lock_at_path(cache.join("image.lock"), checkpoint)
                     .await
@@ -364,10 +590,7 @@ mod tests {
     #[tokio::test]
     async fn cache_rechecks_inside_lock_before_pid_removal_or_pull() {
         use std::os::fd::AsRawFd;
-        use std::sync::{
-            Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
-        };
+        use std::sync::Mutex;
         let t = tempdir().unwrap();
         let (owner, lease) = fence(t.path());
         let cache = t.path().join("cache");
@@ -386,17 +609,10 @@ mod tests {
         std::fs::write(&lock_path, b"keep-lock").unwrap();
         let holder = std::fs::File::open(&lock_path).unwrap();
         assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let seen = calls.clone();
         let (ready, waiting) = tokio::sync::oneshot::channel();
         let ready = Mutex::new(Some(ready));
-        let checkpoint: Checkpoint = Arc::new(move || {
-            lease.revalidate()?;
-            // entry, parent, open, then the final pre-wait checkpoint.
-            if seen.fetch_add(1, Ordering::SeqCst) == 3 {
-                ready.lock().unwrap().take().unwrap().send(()).unwrap();
-            }
-            Ok(())
+        let checkpoint = Checkpoint::new(move || lease.revalidate()).on_contention(move || {
+            ready.lock().unwrap().take().unwrap().send(()).unwrap();
         });
         let worker_cache = cache.clone();
         let task = tokio::spawn(async move {
@@ -414,7 +630,6 @@ mod tests {
         let old = invalidate(&owner);
         drop(holder);
         assert!(task.await.unwrap().is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
         assert_eq!(std::fs::read(dest.join("sentinel")).unwrap(), b"keep-root");
         assert_eq!(std::fs::read(lower).unwrap(), b"keep-erofs");
         assert_eq!(std::fs::read(digest_path(&dest)).unwrap(), b"keep-digest");
@@ -430,7 +645,7 @@ mod tests {
         std::fs::create_dir(&cache).unwrap();
         let image = "docker.io/library/alpine:3.20";
         let dest = canonical_path_at(&cache, image);
-        let checkpoint: Checkpoint = std::sync::Arc::new(move || lease.revalidate());
+        let checkpoint: Checkpoint = Checkpoint::new(move || lease.revalidate());
         let (ready, waiting) = tokio::sync::oneshot::channel();
         let (resume, resumed) = tokio::sync::oneshot::channel();
         let worker_cache = cache.clone();
