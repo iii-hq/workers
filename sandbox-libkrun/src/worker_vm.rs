@@ -4344,9 +4344,11 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
-        let started = vms
-            .launch("k", sh("echo hi; sleep 30"), Vec::new(), None)
-            .unwrap();
+        // A genuine owned runtime child: one stdout record, then it activates
+        // and holds, so stop and destroy go through its retirement receipt.
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 1, None, true);
+        let started = owned_launch(&vms, &admission, child).unwrap();
         let id = started.vm_id;
         assert_eq!((id.as_str(), started.instance), (vm_id("k").as_str(), 1));
 
@@ -4354,7 +4356,11 @@ mod tests {
         assert!(matches!(status.state, State::Running), "{status:?}");
         assert_eq!(status.instance, 1);
         let dir = t.join("workers").join(&id);
-        assert_eq!(wait_record(&dir, "hi").await["stream"], "stdout");
+        assert_eq!(
+            wait_record(&dir, "console-line-0").await["stream"],
+            "stdout"
+        );
+        wait_activated(&dir).await;
 
         let status = vms.stop(stop_req("t", &id, 1, 2000)).await.unwrap();
         assert!(matches!(status.state, State::Stopped), "{status:?}");
@@ -4364,48 +4370,61 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    /// A stop delayed past a destroy and a new boot must not reach that boot,
-    /// even when the destroying daemon never booted the VM itself.
+    /// A stop delayed past a destroy and a new boot must not reach that boot.
+    /// A daemon that never booted the VM holds no original retirement proof:
+    /// its destroy is refused and the VM retained for explicit recovery, while
+    /// the booting daemon's destroy spends that proof and the next boot follows.
     #[tokio::test]
     async fn instance_survives_a_destroy() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
-        let first = vms(t.path(), Some("t"), vec![]);
-        let id = first
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&first, &id, 1).await;
-        drop(first);
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let id = owned_retired(&vms, t, "k").await.vm_id;
+        let dir = t.join("workers").join(&id);
 
-        let vms = vms(t.path(), Some("t"), vec![]);
+        let restarted = reopened_vms(t, Some("t"), vec![]);
+        let refused = restarted.destroy(destroy_req("t", "k")).unwrap_err();
+        assert_eq!(refused.code().as_str(), "S216", "{refused}");
+        assert!(
+            refused.to_string().contains("retirement proof"),
+            "{refused}"
+        );
+        assert!(dir.exists());
+        drop(restarted);
+
         assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
-        assert!(!t.path().join("workers").join(&id).exists());
-        let again = vms.launch("k", sh("sleep 30"), Vec::new(), None).unwrap();
+        assert!(!dir.exists());
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, true);
+        let again = owned_launch(&vms, &admission, child).unwrap();
         assert_eq!(again.instance, 2);
         assert_eq!(code(vms.stop(stop_req("t", &id, 1, 0)).await), "S503");
+        wait_activated(&dir).await;
         vms.stop(stop_req("t", &id, 2, 0)).await.unwrap();
     }
 
+    /// A restarted adapter reopens the same admission namespace (never a second
+    /// bootstrap) and numbers the next boot after the stopped one.
     #[tokio::test]
     async fn instance_survives_an_adapter_restart() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
+        let namespace = t.join("admission-catalog");
         let first = vms(t, Some("t"), vec![]);
-        let id = first
-            .launch("k", sh("sleep 30"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        let admission = first.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, true);
+        let id = owned_launch(&first, &admission, child).unwrap().vm_id;
+        wait_activated(&t.join("workers").join(&id)).await;
         first.stop(stop_req("t", &id, 1, 0)).await.unwrap();
-        drop(first);
+        drop((admission, first));
 
-        let vms = vms(t, Some("t"), vec![]);
-        assert_eq!(
-            vms.launch("k", sh("exit 0"), Vec::new(), None)
-                .unwrap()
-                .instance,
-            2
-        );
+        let vms = reopened_vms(t, Some("t"), vec![]);
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, false);
+        let again = owned_launch(&vms, &admission, child).unwrap();
+        assert_eq!(again.instance, 2);
         assert_eq!(code(vms.status(status_req("t", &id, 1))), "S503");
+        wait_ended(&vms, &id, 2).await;
     }
 
     #[tokio::test]
@@ -4437,12 +4456,14 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms
-            .launch("k", sh("sleep 30"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
+        let namespace = t.join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 0, None, true);
+        let id = owned_launch(&vms, &admission, child).unwrap().vm_id;
 
-        let busy = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap_err();
+        // Refused before its command is ever spawned.
+        let second = owned_console_child(&admission, &namespace, 0, None, false);
+        let busy = owned_launch(&vms, &admission, second).unwrap_err();
         assert_eq!(busy.code().as_str(), "S502");
         assert_eq!(
             busy.to_payload()["fix"],
@@ -4451,6 +4472,7 @@ mod tests {
         assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
 
+        wait_activated(&t.join("workers").join(&id)).await;
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
     }
 
@@ -4532,35 +4554,69 @@ mod tests {
         assert_eq!(status.exit_code, Some(7), "{status:?}");
     }
 
-    /// `remove_dir_all` stops at the first entry it cannot remove, possibly
-    /// after `state.json`: the next boot must still follow the old one.
+    /// A core Remove stops at the first entry it cannot remove, possibly after
+    /// `state.json`: the next boot must still follow the old one. The guest
+    /// leaves that entry in its declared share from inside its owned runtime.
     #[tokio::test]
     async fn a_partly_failed_destroy_keeps_the_instance_order() {
-        use std::os::unix::fs::PermissionsExt;
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vms
-            .launch("k", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
-        // A non-empty read-only dir in the guest's share: unremovable unless root.
-        let stuck = t.path().join("workers").join(&id).join("root").join("ro");
-        private_dirs(&stuck);
-        write_private(&stuck.join("f"), "");
-        // Armed before the chmod and dropped before the TempDir: a failing
-        // assertion never leaves this read-only dir undeletable.
+        let namespace = t.path().join("admission-catalog");
+        let id = vm_id("k");
+        let dir = t.path().join("workers").join(&id);
+        let guest = dir.join("root");
+        let admission = vms.admission(Some("k")).unwrap();
+        // The guest's share, prepared through the VM's own operation as the
+        // start path does before boot.
+        admitted_files(&admission, &dir, &["root"], &[]);
+        // A non-empty read-only dir the guest leaves in its share: unremovable
+        // unless root. Armed before the guest's chmod and dropped before the
+        // TempDir: a failing assertion never leaves this dir undeletable.
+        let stuck = guest.join("ro");
         let _restore = RestoreModes(vec![(stuck.clone(), 0o755)]);
-        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let script = format!(
+            "mkdir -m 700 '{s}' && (umask 077 && : > '{s}/f') && chmod 0555 '{s}'",
+            s = stuck.display()
+        );
+        let child = owned_runtime_child(&admission, &namespace, 0, None, false, Some(&script));
+        let started = vms
+            .launch_admitted(
+                "k",
+                child,
+                Vec::new(),
+                None,
+                admission.clone(),
+                Vec::new(),
+                Some(vec![(
+                    guest.clone(),
+                    crate::worker_admission::RuntimePathKind::GuestTree,
+                )]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        wait_ended(&vms, &id, started.instance).await;
+        assert!(
+            stuck.join("f").exists(),
+            "the guest's write is in its share"
+        );
 
         let destroyed = vms.destroy(destroy_req("t", "k"));
         if stuck.exists() {
             assert_eq!(code(destroyed), "S216");
-            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
-            std::fs::remove_dir_all(&stuck).unwrap();
+            assert!(dir.exists(), "a partly failed removal retains the VM");
+        } else {
+            assert!(destroyed.unwrap().destroyed);
         }
-        let again = vms.launch("k", sh("exit 0"), Vec::new(), None).unwrap();
-        assert_eq!(again.instance, 2);
+        // Whatever the removal reached, the next instance follows instance 1.
+        assert_eq!(vms.next_instance(&id).unwrap(), 2);
+        // A failed Remove spent its one receipt and leaves the lifecycle for
+        // explicit recovery; any boot admission still allows is the next one.
+        let child = owned_console_child(&admission, &namespace, 0, None, false);
+        if let Ok(again) = owned_launch(&vms, &admission, child) {
+            assert_eq!(again.instance, 2);
+            wait_ended(&vms, &id, 2).await;
+        }
     }
 
     #[tokio::test]
@@ -5130,6 +5186,20 @@ mod tests {
         release: Option<&Path>,
         live: bool,
     ) -> tokio::process::Command {
+        owned_runtime_child(lease, namespace, lines, release, live, None)
+    }
+
+    /// `owned_console_child` whose runtime process first runs `guest`: a shell
+    /// script standing for the guest's own writes in its declared runtime
+    /// paths. It runs only inside the owned runtime child, never in the test.
+    fn owned_runtime_child(
+        lease: &crate::worker_admission::Lease,
+        namespace: &Path,
+        lines: usize,
+        release: Option<&Path>,
+        live: bool,
+        guest: Option<&str>,
+    ) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("/bin/sh");
         command
             .arg("-c")
@@ -5143,6 +5213,9 @@ mod tests {
                   *) exit 91;;
                 esac
             done
+            if [ -n "${III_TEST_GUEST_SCRIPT:-}" ]; then
+                /bin/sh -c "$III_TEST_GUEST_SCRIPT" || exit 92
+            fi
             if [ -n "$release" ]; then
                 while [ ! -e "$release" ]; do sleep 0.05; done
                 echo after-release
@@ -5171,6 +5244,9 @@ mod tests {
                 })
                 .unwrap(),
             );
+        if let Some(guest) = guest {
+            command.env("III_TEST_GUEST_SCRIPT", guest);
+        }
         crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, lease).unwrap();
         command
     }
@@ -5180,8 +5256,17 @@ mod tests {
         admission: &crate::worker_admission::Lease,
         command: tokio::process::Command,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        owned_launch_key(vms, "k", admission, command)
+    }
+
+    fn owned_launch_key(
+        vms: &WorkerVms,
+        key: &str,
+        admission: &crate::worker_admission::Lease,
+        command: tokio::process::Command,
+    ) -> Result<WorkerStartResponse, SandboxError> {
         vms.launch_admitted(
-            "k",
+            key,
             command,
             Vec::new(),
             None,
@@ -5191,6 +5276,96 @@ mod tests {
             Vec::new(),
             Vec::new(),
         )
+    }
+
+    /// The owned runtime fixture acknowledges activation (its runtime writer
+    /// imported) with a `RUNTIME_READY` line, which libtest may prefix.
+    async fn wait_activated(dir: &Path) {
+        for _ in 0..200 {
+            let text = std::fs::read_to_string(dir.join(CONSOLE_LOG)).unwrap_or_default();
+            if text.lines().any(|line| {
+                serde_json::from_str::<serde_json::Value>(line).is_ok_and(|record| {
+                    record["line"]
+                        .as_str()
+                        .is_some_and(|line| line.contains("RUNTIME_READY"))
+                })
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "the owned runtime child in {} never activated",
+            dir.display()
+        );
+    }
+
+    /// One genuine owned lifecycle of `key` through the production launcher
+    /// and waiter: the runtime child activates, exits 0 and retires, so a later
+    /// stop, destroy or prune holds its original retirement receipt.
+    async fn owned_retired(vms: &WorkerVms, t: &Path, key: &str) -> WorkerStartResponse {
+        let admission = vms.admission(Some(key)).unwrap();
+        let child = owned_console_child(&admission, &t.join("admission-catalog"), 0, None, false);
+        let started = owned_launch_key(vms, key, &admission, child).unwrap();
+        wait_ended(vms, &started.vm_id, started.instance).await;
+        let retired = match vms.slots().get(&started.vm_id) {
+            Some(Slot::Booted(vm)) => vm.receipt().map(drop),
+            _ => Err(io::Error::other("no booted slot")),
+        };
+        if let Err(error) = retired {
+            panic!("owned lifecycle of {key} did not retire: {error}");
+        }
+        started
+    }
+
+    /// A restarted adapter over the SAME admission namespace: the documented
+    /// reopen path (`testing::open_context`). Bootstrap provisions an empty
+    /// namespace only and refuses an existing one.
+    fn reopened_vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
+        let context =
+            crate::worker_admission::testing::open_context(&t.join("admission-catalog")).unwrap();
+        WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
+            .with_admission_context(context)
+    }
+
+    /// Objects a lifecycle leaves in its VM dir, created through the VM's own
+    /// admitted operation as core-recorded Create effects; a raw write would be
+    /// a path appearing outside an owned mutation.
+    fn admitted_files(
+        admission: &crate::worker_admission::Lease,
+        vm: &Path,
+        dirs: &[&str],
+        files: &[(&str, &str)],
+    ) {
+        let mut create = admission
+            .begin(crate::worker_admission::MutationPlan::Create {
+                root: vm.to_path_buf(),
+            })
+            .unwrap();
+        create.create_dir_all(vm, 0o700).unwrap();
+        for dir in dirs {
+            create.create_dir_all(&vm.join(dir), 0o700).unwrap();
+        }
+        for (name, body) in files {
+            let mut stage = create.stage_file(&vm.join(name), 0o600).unwrap();
+            stage.file_mut().write_all(body.as_bytes()).unwrap();
+            create.publish_file(stage).unwrap();
+        }
+        create.commit().unwrap();
+    }
+
+    /// A build-dir claim as the start and build paths issue it: under the VM's
+    /// own admission, so its dir and record are core-recorded effects.
+    fn admitted_claim(
+        vms: &WorkerVms,
+        auth: &str,
+        key: &str,
+        dir: &Path,
+    ) -> Result<(), SandboxError> {
+        let admission = vms
+            .admission(Some(key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        vms.claim_build_dir_on(auth, key, dir, "output_dir", Some(&admission))
     }
 
     fn console_lines(records: &[LogRecord], prefix: &str) -> Vec<String> {
@@ -6207,11 +6382,14 @@ mod tests {
         vms(t, Some("t"), vec![t.join("elsewhere")])
     }
 
-    #[test]
-    fn one_build_per_state_key_and_no_destroy_under_it() {
+    /// One build per state key, and no destroy under it. The key has one
+    /// genuine retired lifecycle: once the hold is gone, its destroy spends
+    /// that lifecycle's original receipt.
+    #[tokio::test]
+    async fn one_build_per_state_key_and_no_destroy_under_it() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
-        let id = vm_id("k");
+        let id = owned_retired(&vms, t.path(), "k").await.vm_id;
         let held = vms.hold_build(&id).unwrap();
         assert_eq!(code(vms.hold_build(&id).map(drop)), "S509");
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S509");
@@ -6220,7 +6398,8 @@ mod tests {
         drop(held);
         let again = vms.hold_build(&id).unwrap();
         drop((again, other));
-        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!t.path().join("workers").join(&id).exists());
     }
 
     /// `plan_output` creates nothing and refuses what is not a directory under
@@ -6411,20 +6590,27 @@ mod tests {
     }
 
     /// A scoped `worker::destroy` deletes its own VM's record only: another
-    /// VM's directory stays out of reach.
-    #[test]
-    fn a_scoped_destroy_frees_only_its_own_dir() {
+    /// VM's directory stays out of reach. Each claim is issued under its VM's
+    /// admission, as the start path does, and each destroy spends one genuine
+    /// lifecycle's retirement receipt.
+    #[tokio::test]
+    async fn a_scoped_destroy_frees_only_its_own_dir() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
         let vms = vms(t, Some("t"), vec![t.into()]);
-        claim(&vms, &a, "a", &dir_a).unwrap();
-        claim(&vms, &b, "b", &dir_b).unwrap();
+        admitted_claim(&vms, &a, "a", &dir_a).unwrap();
+        admitted_claim(&vms, &b, "b", &dir_b).unwrap();
+        for key in ["a", "b"] {
+            owned_retired(&vms, t, key).await;
+        }
         assert!(vms.destroy(destroy_req(&a, "a")).unwrap().destroyed);
         assert!(!record_of(t, "a").exists());
-        assert_eq!(code(claim(&vms, &a, "a", &dir_b)), "S505");
-        claim(&vms, &a, "a", &dir_a).unwrap();
+        assert_eq!(code(admitted_claim(&vms, &a, "a", &dir_b)), "S505");
+        admitted_claim(&vms, &a, "a", &dir_a).unwrap();
+        // A's first receipt is spent; its next lifecycle holds the next one.
+        owned_retired(&vms, t, "a").await;
         // Nothing of the claims, lock included, outlives the last VM.
         for key in ["a", "b"] {
             assert!(vms.destroy(destroy_req("t", key)).unwrap().destroyed);
@@ -6440,7 +6626,8 @@ mod tests {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![t.into()]);
-        let second = vms(t, Some("t"), vec![t.into()]);
+        // The second adapter process reopens the provisioned namespace.
+        let second = reopened_vms(t, Some("t"), vec![t.into()]);
         for round in 0..25 {
             let [dir] = build_dirs(t, [&format!("race-{round}")]);
             let keys = [format!("x{round}"), format!("y{round}")];
@@ -6534,34 +6721,37 @@ mod tests {
     }
 
     /// A VM dir as a VM that booted builds leaves it, the earlier adapter's
-    /// disks kept beside it, and its runtime state.
-    fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
+    /// disks kept beside it, and its runtime state. Every object is created
+    /// through the VM's own admitted operation (the build-dir claim the start
+    /// path issues, then core Create effects); one genuine owned lifecycle then
+    /// boots, exits and retires and writes the runtime state itself, so a
+    /// destroy spends that lifecycle's original retirement receipt.
+    async fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
         let vm = t.join("workers").join(vm_id(key));
-        private_dirs(&vm.join("root/opt/iii"));
-        private_dirs(&vm.join("root.pre-build/bin"));
-        private_dirs(&vm.join("build-1-2/root"));
-        for (name, body) in [
-            ("upper.ext4", "data"),
-            ("upper.ext4.pre-build", "0.26 disk"),
-            ("upper.ext4.pre-build.1", "older 0.26 disk"),
-            ("build-mode", "1\n"),
-            ("console.log", "log"),
-            ("console.log.1", "old log"),
-            ("state.json", r#"{"instance":3}"#),
-            ("state_key", key),
-            ("root/opt/iii/run.sh", "script"),
-        ] {
-            write_private(&vm.join(name), body);
-        }
+        let admission = vms.admission(Some(key)).unwrap();
         let dir = t.join("project/build").join(key);
         private_dirs(&dir);
-        claim(
-            vms,
+        vms.claim_build_dir_on(
             &scoped_auth_token("t", key),
             key,
             &dir.canonicalize().unwrap(),
+            "output_dir",
+            Some(&admission),
         )
         .unwrap();
+        admitted_files(
+            &admission,
+            &vm,
+            &["root/opt/iii", "root.pre-build/bin", "build-1-2/root"],
+            &[
+                ("upper.ext4", "data"),
+                ("upper.ext4.pre-build", "0.26 disk"),
+                ("upper.ext4.pre-build.1", "older 0.26 disk"),
+                ("build-mode", "1\n"),
+                ("root/opt/iii/run.sh", "script"),
+            ],
+        );
+        owned_retired(vms, t, key).await;
         vm
     }
 
@@ -6577,15 +6767,17 @@ mod tests {
     /// Without `prune`, destroy removes the runtime state and the build-dir
     /// record, and keeps the data: the data disk, the earlier adapter's disks
     /// and the seal. The next start of the key boots over the same disk, and
-    /// the build directory is free.
-    #[test]
-    fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
+    /// the build directory is free. Unknown leftovers (an earlier adapter's
+    /// build scratch, a planted link) are retained evidence: a receipt never
+    /// broadens from an enumeration, and the planted link is never followed.
+    #[tokio::test]
+    async fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         let outside = t.join("outside");
-        std::fs::write(&outside, "keep me").unwrap();
+        write_private(&outside, "keep me");
         std::os::unix::fs::symlink(&outside, vm.join("planted")).unwrap();
 
         let reply = vms.destroy(keep_req("t", "k")).unwrap();
@@ -6593,6 +6785,8 @@ mod tests {
         assert_eq!(
             reply.kept,
             [
+                "build-1-2",
+                "planted",
                 "root.pre-build",
                 "upper.ext4",
                 "upper.ext4.pre-build",
@@ -6603,7 +6797,9 @@ mod tests {
         assert_eq!(
             names_in(&vm),
             [
+                "build-1-2",
                 "build-mode",
+                "planted",
                 "root.pre-build",
                 "upper.ext4",
                 "upper.ext4.pre-build",
@@ -6612,75 +6808,84 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep me");
         assert!(vm.join("root.pre-build/bin").is_dir());
+        assert!(vm.join("build-1-2/root").is_dir());
 
         // The next start: the seal stands, nothing moves, the same disk.
-        let (upper, notes) = adopt_build_mode(&vm, "w").unwrap();
+        let admission = vms.admission(Some("k")).unwrap();
+        let (upper, notes) = adopt_build_mode_admitted(&admission, &vm, "w").unwrap();
         assert_eq!(upper, vm.join("upper.ext4"));
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(std::fs::read_to_string(&upper).unwrap(), "data");
         // The build directory is free.
         let dir = t.join("project/build/k").canonicalize().unwrap();
         claim(&vms, &scoped_auth_token("t", "other"), "other", &dir).unwrap();
-        // A second destroy finds data only: it keeps it, removes nothing, and
-        // says what it kept.
-        let reply = vms.destroy(keep_req("t", "k")).unwrap();
-        assert!(!reply.destroyed);
-        assert_eq!(reply.kept.len(), 4, "{:?}", reply.kept);
-        assert!(vm.join("upper.ext4").is_file());
+        // That lifecycle's one receipt is spent: a second destroy without a new
+        // lifecycle is refused fail-closed and leaves every kept entry as it is.
+        assert_eq!(code(vms.destroy(keep_req("t", "k"))), "S216");
+        assert_eq!(names_in(&vm).len(), 7);
+        assert_eq!(
+            std::fs::read_to_string(vm.join("upper.ext4")).unwrap(),
+            "data"
+        );
     }
 
     /// With `prune`, destroy leaves nothing, the data and the record included.
-    #[test]
-    fn a_destroy_with_prune_leaves_nothing() {
+    /// It spends the lifecycle's one receipt: a repeated destroy is refused
+    /// fail-closed (no receipt is ever reused) and nothing reappears.
+    #[tokio::test]
+    async fn a_destroy_with_prune_leaves_nothing() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         let reply = vms.destroy(destroy_req("t", "k")).unwrap();
         assert!(reply.destroyed && reply.kept.is_empty(), "{reply:?}");
         assert!(!vm.exists());
         assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
-        assert!(!vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
-        assert!(!vms.destroy(keep_req("t", "k")).unwrap().destroyed);
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
+        assert_eq!(code(vms.destroy(keep_req("t", "k"))), "S216");
+        assert_eq!(std::fs::read_dir(t.join("workers")).unwrap().count(), 0);
     }
 
     /// A VM with no data goes whole without `prune` too, seal included; a VM an
     /// earlier adapter ran keeps its disk as a pre-build copy, as its first
-    /// build start would have.
+    /// build start would have. Every VM is a genuine lifecycle; its data, if
+    /// any, is created through its own operation before its runtime boots.
     #[tokio::test]
     async fn a_destroy_without_prune_keeps_only_what_holds_data() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let id = vms
-            .launch("empty", sh("exit 0"), Vec::new(), None)
-            .unwrap()
-            .vm_id;
-        wait_ended(&vms, &id, 1).await;
+        let id = owned_retired(&vms, t, "empty").await.vm_id;
         assert!(vms.destroy(keep_req("t", "empty")).unwrap().destroyed);
         assert!(!t.join("workers").join(&id).exists());
         // The same key boots on, as after a destroy with prune.
-        let again = vms.launch("empty", sh("exit 0"), Vec::new(), None).unwrap();
+        let again = owned_retired(&vms, t, "empty").await;
         assert_eq!(again.instance, 2);
-        wait_ended(&vms, &again.vm_id, 2).await;
 
         // A 0.26 overlay VM: its disk is `root/upper.ext4`, no seal yet.
         let old = t.join("workers").join(vm_id("old"));
-        private_dirs(&old.join("root"));
-        write_private(&old.join("root/upper.ext4"), "0.26 data");
-        write_private(&old.join("console.log"), "log");
+        let admission = vms.admission(Some("old")).unwrap();
+        admitted_files(
+            &admission,
+            &old,
+            &["root"],
+            &[("root/upper.ext4", "0.26 data")],
+        );
+        owned_retired(&vms, t, "old").await;
         assert!(vms.destroy(keep_req("t", "old")).unwrap().destroyed);
         assert_eq!(names_in(&old), ["build-mode", "upper.ext4.pre-build"]);
         assert_eq!(
             std::fs::read_to_string(old.join("upper.ext4.pre-build")).unwrap(),
             "0.26 data"
         );
-        // A legacy rootfs clone: `root/` is the data.
+        // A legacy rootfs clone: `root/` is the data. The clone moves aside and
+        // only the runtime state this lifecycle itself wrote goes.
         let legacy = t.join("workers").join(vm_id("legacy"));
-        private_dirs(&legacy.join("root/bin"));
-        write_private(&legacy.join("root/bin/x"), "x");
-        // Nothing but data there: the clone moves aside, and no runtime state goes.
-        assert!(!vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
+        let admission = vms.admission(Some("legacy")).unwrap();
+        admitted_files(&admission, &legacy, &["root/bin"], &[("root/bin/x", "x")]);
+        owned_retired(&vms, t, "legacy").await;
+        assert!(vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
         assert_eq!(names_in(&legacy), ["build-mode", "root.pre-build"]);
         assert!(legacy.join("root.pre-build/bin/x").is_file());
     }
@@ -6876,24 +7081,48 @@ mod tests {
 
     /// A start without `build` boots on `root/upper.ext4`, a new disk once a
     /// destroy kept the previous one: a second destroy without `prune` moves it
-    /// to the next pre-build name and lists it, never deletes it.
+    /// to the next pre-build name and lists it, never deletes it. That second
+    /// start is a genuine lifecycle: its disk is prepared through the VM's own
+    /// operation, declared as the runtime's upper image, and the owned runtime
+    /// child (the guest) writes into that exact inode.
     #[tokio::test]
     async fn a_second_destroy_keeps_what_a_start_without_build_wrote() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
-        let vm = vm_with_data(t, &vms, "k");
+        let vm = vm_with_data(t, &vms, "k").await;
         assert!(vms.destroy(keep_req("t", "k")).unwrap().destroyed);
 
+        let admission = vms.admission(Some("k")).unwrap();
         let disk = vm.join("root").join(crate::cli::upper::UPPER_NAME);
-        let script = format!(
-            "mkdir -p '{}' && echo guest-wrote > '{}'",
-            vm.join("root").display(),
-            disk.display()
+        admitted_files(&admission, &vm, &["root"], &[("root/upper.ext4", "")]);
+        let script = format!("printf 'guest-wrote\\n' > '{}'", disk.display());
+        let child = owned_runtime_child(
+            &admission,
+            &t.join("admission-catalog"),
+            0,
+            None,
+            false,
+            Some(&script),
         );
-        let started = vms.launch("k", sh(&script), Vec::new(), None).unwrap();
+        let started = vms
+            .launch_admitted(
+                "k",
+                child,
+                Vec::new(),
+                None,
+                admission.clone(),
+                Vec::new(),
+                Some(vec![(
+                    disk.clone(),
+                    crate::worker_admission::RuntimePathKind::UpperImage,
+                )]),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
         wait_ended(&vms, &started.vm_id, started.instance).await;
-        assert!(disk.is_file());
+        assert_eq!(std::fs::read_to_string(&disk).unwrap(), "guest-wrote\n");
 
         let reply = vms.destroy(keep_req("t", "k")).unwrap();
         assert!(reply.destroyed);
@@ -6914,25 +7143,29 @@ mod tests {
 
     /// In the legacy mode every start clones a rootfs into `root/`: each
     /// destroy without `prune` moves the clone it finds to the next pre-build
-    /// name, so no clone is ever deleted.
-    #[test]
-    fn a_destroy_without_prune_in_legacy_mode_keeps_every_clone() {
+    /// name, so no clone is ever deleted. Each clone belongs to a genuine
+    /// lifecycle: written through the VM's own operation before its owned
+    /// runtime boots, and each destroy spends that lifecycle's one receipt.
+    #[tokio::test]
+    async fn a_destroy_without_prune_in_legacy_mode_keeps_every_clone() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = t.join("workers").join(vm_id("legacy"));
+        let admission = vms.admission(Some("legacy")).unwrap();
         let clone = |body: &str| {
-            private_dirs(&vm.join("root/bin"));
-            write_private(&vm.join("root/bin/data"), body);
-            write_private(&vm.join("console.log"), "log");
+            admitted_files(&admission, &vm, &["root/bin"], &[("root/bin/data", body)]);
         };
         clone("first");
+        owned_retired(&vms, t, "legacy").await;
         let reply = vms.destroy(keep_req("t", "legacy")).unwrap();
+        assert!(reply.destroyed);
         assert_eq!(
             reply.kept,
             [vm.join("root.pre-build").display().to_string()]
         );
         clone("second");
+        owned_retired(&vms, t, "legacy").await;
         let reply = vms.destroy(keep_req("t", "legacy")).unwrap();
         assert!(reply.destroyed);
         assert_eq!(

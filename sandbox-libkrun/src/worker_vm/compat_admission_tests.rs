@@ -1221,9 +1221,14 @@ async fn normal_missing_manifest_keeps_prior_validation_and_no_effects() {
     assert!(!error.to_string().contains("compatibility custody"));
     unchanged(&s);
 }
-#[test]
-fn normal_destroy_retains_data_and_explicit_prune_still_removes_it() {
+/// Each destroy spends the original receipt of one genuine owned lifecycle
+/// (`install_retired_fixture`): the retained destroy spends the first, and the
+/// explicit prune is the first removal of the next lifecycle of the same key,
+/// never an expansion of the spent receipt.
+#[tokio::test]
+async fn normal_destroy_retains_data_and_explicit_prune_still_removes_it() {
     let s = setup(false);
+    install_retired_fixture(&s).await;
     let retained = s
         .vms
         .destroy(WorkerDestroyRequest {
@@ -1239,6 +1244,7 @@ fn normal_destroy_retains_data_and_explicit_prune_still_removes_it() {
             .to_string_lossy()
             .starts_with("upper.ext4.pre-build")
     }));
+    install_retired_fixture(&s).await;
     let removed = s
         .vms
         .destroy(WorkerDestroyRequest {
