@@ -105,7 +105,10 @@ export interface ConversationAdapter {
   selectConversation(sessionId: string): void
   /** The session in a new pane beside the chat. */
   openConversation(sessionId: string): void
-  openDraft(draft: { text: string; title?: string }): void
+  openDraft(
+    draft: { text: string; title?: string },
+    options?: { show?: boolean },
+  ): string
   composerModel(conversationId?: string | null): string | null
   /**
    * A new chat that sends `text` the way a setup example prompt does: the
@@ -266,7 +269,10 @@ function makeHost(
         requestPanelOpen(request)
       },
       openScreen(request) {
-        const { screen, relativeTo, direction } = request
+        const { screen, relativeTo, direction, replaces } = request
+        if (replaces !== undefined && !isValidScreen(replaces)) {
+          throw new Error(`panels.openScreen: unknown replaces '${replaces}'`)
+        }
         if (!isValidScreen(screen)) {
           throw new Error(`panels.openScreen: unknown screen '${screen}'`)
         }
@@ -363,8 +369,10 @@ function makeHost(
       },
     },
     chat: {
-      openDraft(draft) {
-        conversationAdapter.openDraft(draft)
+      openDraft(draft, options) {
+        return options
+          ? conversationAdapter.openDraft(draft, options)
+          : conversationAdapter.openDraft(draft)
       },
       registerSessionChip(chip) {
         const Chip = chip.render
@@ -447,7 +455,8 @@ function makeHost(
         if (draft.sessionId !== undefined) {
           const target = composerForSession(draft.sessionId)
           if (target === null) return 'unavailable'
-          if (draft.files && draft.files.length > 0) attachToComposer(draft.files, target)
+          if (draft.files && draft.files.length > 0)
+            attachToComposer(draft.files, target)
           if (draft.text) {
             insertIntoComposer(draft.text, {
               inline: draft.inline === true,

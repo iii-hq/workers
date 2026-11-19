@@ -396,9 +396,16 @@ export function App({
   // openScreen`): the same placement as the palette's, in the tab on screen.
   useEffect(
     () =>
-      subscribeScreenOpen(({ screen, relativeTo, direction, sizes }) => {
-        openWorkspaceScreen(screen, { relativeTo, direction, sizes })
-      }),
+      subscribeScreenOpen(
+        ({ screen, relativeTo, direction, sizes, replaces }) => {
+          openWorkspaceScreen(screen, {
+            relativeTo,
+            direction,
+            sizes,
+            replaces,
+          })
+        },
+      ),
     [openWorkspaceScreen],
   )
   // Closing settings only drops the `#/configuration` hash: the hash never

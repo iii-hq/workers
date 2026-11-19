@@ -33,6 +33,7 @@ import {
   withPaneSplit,
   withScreenDetached,
   withScreenOpenedBeside,
+  withScreenSwapped,
   withTabClosed,
   withTabSizes,
   withWorkspaceScreenOpened,
@@ -422,6 +423,27 @@ describe('panel column transforms', () => {
     const parsed = parseWorkspaceTabs({ tabs: [four] })
     expect(parsed).toHaveLength(1)
     expect(tabColumns(parsed[0])).toBe(4)
+  })
+})
+
+describe('withScreenSwapped', () => {
+  const tab: WorkspaceTab = {
+    id: 'a',
+    columns: 3,
+    screens: [CHAT_SCREEN, 'ext:kanban-board', 'chat:s-1'],
+    paneIds: ['pane-chat', 'pane-kanban', 'pane-s1'],
+  }
+
+  it('puts the new screen in the column of the one it replaces, with a fresh pane', () => {
+    const next = withScreenSwapped(tab, 'chat:s-1', 'chat:s-2', () => 'pane-s2')
+    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:kanban-board', 'chat:s-2'])
+    expect(next?.paneIds).toEqual(['pane-chat', 'pane-kanban', 'pane-s2'])
+    expect(next?.columns).toBe(3)
+  })
+
+  it('declines when the replaced screen is gone or the new one is already shown', () => {
+    expect(withScreenSwapped(tab, 'chat:closed', 'chat:s-2')).toBeNull()
+    expect(withScreenSwapped(tab, 'chat:s-1', CHAT_SCREEN)).toBeNull()
   })
 })
 

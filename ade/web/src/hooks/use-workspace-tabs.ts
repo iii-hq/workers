@@ -59,6 +59,7 @@ import {
   withPaneRemoved,
   withPaneSplit,
   withScreenDetached,
+  withScreenSwapped,
   withTabClosed,
   withTabSizes,
   withWorkspaceScreenOpened,
@@ -644,6 +645,21 @@ export function useWorkspaceTabs({
       const newScreenTabId = newTabId()
       const stablePaneId = { current: null as string | null }
       const update: WorkspaceTransform = (state) => {
+        // A screen taking the place of the caller's earlier one, where the tab on screen still shows it.
+        if (placement.replaces) {
+          const active = state.tabs.find((tab) => tab.id === state.activeTabId)
+          const swapped = active
+            ? withScreenSwapped(active, placement.replaces, screen)
+            : null
+          if (active && swapped) {
+            return {
+              ...state,
+              tabs: state.tabs.map((tab) =>
+                tab.id === active.id ? swapped : tab,
+              ),
+            }
+          }
+        }
         const next = withWorkspaceScreenOpened(
           state.tabs,
           state.activeTabId,

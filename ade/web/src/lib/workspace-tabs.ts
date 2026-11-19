@@ -251,6 +251,11 @@ export interface ScreenPlacement {
   direction?: OpenDirection
   /** One positive number per column of the tab after placement. */
   sizes?: readonly number[]
+  /**
+   * A screen this one takes the place of, in the tab on screen: the caller's own earlier screen (a worker page's
+   * side chat swapping one conversation for the next). Absent there, the screen is placed as usual.
+   */
+  replaces?: TabScreen
 }
 
 /**
@@ -322,6 +327,29 @@ export function withScreenOpenedBeside(
   const sizes = tabSizes(tab).map((size) => size * (1 - newFraction))
   sizes.splice(insertAt, 0, newFraction)
   return { ...tab, columns: columns + 1, screens, paneIds, sizes }
+}
+
+/**
+ * Put `screen` in the column showing `from` (a fresh pane there, so the new screen mounts clean). `null` when the
+ * tab does not show `from`, or already shows `screen` (reused as it is).
+ */
+export function withScreenSwapped(
+  tab: WorkspaceTab,
+  from: TabScreen,
+  screen: TabScreen,
+  makePaneId: () => string = newPaneId,
+): WorkspaceTab | null {
+  const columns = tabColumns(tab)
+  const screens: (TabScreen | null)[] = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  )
+  const at = screens.indexOf(from)
+  if (at < 0 || screens.includes(screen)) return null
+  screens[at] = screen
+  const paneIds = tabPaneIds(tab)
+  paneIds[at] = makePaneId()
+  return { ...tab, columns, screens, paneIds }
 }
 
 /**

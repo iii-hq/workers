@@ -120,6 +120,11 @@ export interface ScreenOpenRequest {
   /** Widths of the tab the screen is placed in, one positive number per
    *  column; ignored when the screen is reused or the count does not match. */
   sizes?: number[]
+  /** A screen this one takes the place of, where the tab on screen shows it:
+   *  the caller's own earlier screen (a side chat swapping one conversation
+   *  for the next, so columns never pile up). Absent there, or ignored by an
+   *  older console, the screen is placed as usual. */
+  replaces?: string
 }
 
 /** Props the host passes to every registered page render component. */
@@ -799,8 +804,18 @@ export interface Host {
     registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   chat: {
-    /** Open a new, editable human chat draft without sending or creating a session. */
-    openDraft(draft: { text: string; title?: string }): void
+    /**
+     * Open a new, editable human chat draft without sending or creating a
+     * session. Returns the draft's conversation id (older consoles return
+     * nothing). With `show: false` it is not brought up in the main chat:
+     * the caller shows it itself (e.g. `panels.openScreen({ screen:
+     * 'chat:<id>' })` beside its page).
+     */
+    openDraft(
+      draft: { text: string; title?: string },
+      options?: { show?: boolean },
+      // biome-ignore lint/suspicious/noConfusingVoidType: an older console's openDraft returns nothing
+    ): string | void
     /**
      * Hand text and files to a chat's composer, the way a drop or a paste
      * would, and put the caret there: the only chat open, else the one used
