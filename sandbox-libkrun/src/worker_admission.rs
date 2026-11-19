@@ -15,7 +15,7 @@ pub(crate) use log::LogFaultPhase;
 pub(crate) use log::{LogCursor, LogRead, LogSpec, LogWriter};
 pub(crate) use payload::{
     PayloadBuilder, PayloadEntry, PayloadInventory, PayloadKind, PayloadMetadata, PayloadSeal,
-    ReadablePayload,
+    ReadablePayload, SealedFile, SealedPayloadRead,
 };
 mod owner_read;
 mod process_control;

@@ -7,17 +7,21 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::{CString, OsStr},
-    fs::File,
+    ffi::{CString, OsStr, OsString},
+    fs::{File, Metadata},
     io::{self, Read},
     os::{
         fd::AsRawFd,
         unix::{
-            ffi::OsStrExt,
+            ffi::{OsStrExt, OsStringExt},
             fs::{FileExt, MetadataExt},
         },
     },
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 const CEILING_ENTRIES: usize = 262144;
 const CEILING_BYTES: u64 = 64 * 1024 * 1024 * 1024;
@@ -889,7 +893,7 @@ impl PayloadBuilder {
     }
 }
 impl PayloadSeal {
-    pub(crate) fn publish_into_guard(mut self) -> io::Result<MutationGuard> {
+    fn publish_inner(&mut self) -> io::Result<()> {
         self.builder.guard.checkpoint()?;
         self.builder.verify()?;
         let root = Identity::of(&self.builder.nodes[0].pin)?;
@@ -908,8 +912,21 @@ impl PayloadSeal {
                 .zip(&self.builder.nodes)
                 .map(|(e, n)| Ok((e.relative.clone(), Identity::of(&n.pin)?)))
                 .collect::<io::Result<Vec<_>>>()?,
-        )?;
+        )
+    }
+    pub(crate) fn publish_into_guard(mut self) -> io::Result<MutationGuard> {
+        self.publish_inner()?;
         Ok(self.builder.guard)
+    }
+    /// Publish exactly as [`Self::publish_into_guard`] and keep the sealed
+    /// members' retained core descriptors as a read capability for the SAME
+    /// published tree (for example to build its EROFS lower). The capability is
+    /// only ever minted here, from this seal; no path, hash, PID or flag issues it.
+    pub(crate) fn publish_into_guard_with_reader(
+        mut self,
+    ) -> io::Result<(MutationGuard, SealedPayloadRead)> {
+        self.publish_inner()?;
+        SealedPayloadRead::from_published(self.builder)
     }
     pub(crate) fn publish(self) -> io::Result<()> {
         self.publish_into_guard()?.commit()?;
@@ -1178,6 +1195,366 @@ impl ReadablePayload {
         builder.seal()
     }
 }
+/// Read capability for EXACTLY one sealed and published payload tree, minted
+/// only by [`PayloadSeal::publish_into_guard_with_reader`]. It retains the core's
+/// own member descriptors from production (opened at creation, before final
+/// modes, `O_NOATIME`), so owner-unreadable members such as mode 0000 are read
+/// without any chmod or grant, and nothing is reopened by pathname. Every
+/// served member is first rechecked against its sealed inode identity, link
+/// count, metadata stamp (ctime included, atime excluded) and named identity;
+/// directories against their exact sealed name set; file bytes are hashed as
+/// they are consumed. `finish` re-verifies the whole tree and any content not
+/// consumed. The generic `OwnerReadGuard` profile is unchanged.
+pub(crate) struct SealedPayloadRead {
+    lease: Lease,
+    root: PathBuf,
+    parent: Directory,
+    inventory: PayloadInventory,
+    nodes: Vec<SealedNode>,
+    contents: BTreeMap<(u64, u64), (usize, String)>,
+    failed: Arc<AtomicBool>,
+    verified: Arc<Mutex<BTreeSet<(u64, u64)>>>,
+}
+struct SealedNode {
+    pin: File,
+    read: Option<File>,
+    stamp: Stamp,
+}
+/// One sealed regular file's bytes, bounded by the sealed size and hashed as
+/// read; reaching EOF with bytes that differ from the seal is an error.
+pub(crate) struct SealedFile {
+    file: File,
+    size: u64,
+    at: u64,
+    hash: Sha256,
+    expected: String,
+    inode: (u64, u64),
+    done: bool,
+    failed: Arc<AtomicBool>,
+    verified: Arc<Mutex<BTreeSet<(u64, u64)>>>,
+}
+/// Sealed metadata equality for read-back. Atime is excluded on purpose: any
+/// reader (including the caller's own cache inspection) may update it, while
+/// every change that can alter content, shape, ownership, mode, links or
+/// xattrs also changes ctime, which no unprivileged process can restore.
+fn same_sealed(a: &Stamp, b: &Stamp) -> bool {
+    a.identity == b.identity
+        && a.gid == b.gid
+        && a.size == b.size
+        && (a.mtime, a.mtime_ns, a.ctime, a.ctime_ns) == (b.mtime, b.mtime_ns, b.ctime, b.ctime_ns)
+}
+impl SealedPayloadRead {
+    fn from_published(builder: PayloadBuilder) -> io::Result<(MutationGuard, Self)> {
+        let PayloadBuilder {
+            guard,
+            target,
+            parent,
+            inventory,
+            nodes,
+            sources,
+            ..
+        } = builder;
+        // Source read holds of a clone production end with the production.
+        drop(sources);
+        let lease = guard.lease_handle();
+        let mut sealed = Vec::with_capacity(nodes.len());
+        let mut contents = BTreeMap::new();
+        for (index, node) in nodes.into_iter().enumerate() {
+            let mut recorded = node
+                .stamp
+                .ok_or_else(|| invalid("payload metadata not finalized"))?;
+            if index == 0 {
+                // The publication rename this core just performed may only
+                // have changed the root's ctime; everything else is the seal.
+                let now = stamp(&node.pin)?;
+                if now.identity != recorded.identity
+                    || now.gid != recorded.gid
+                    || now.size != recorded.size
+                    || (now.mtime, now.mtime_ns) != (recorded.mtime, recorded.mtime_ns)
+                {
+                    return Err(invalid("published payload root changed during publication"));
+                }
+                recorded = now;
+            }
+            if let Some(hash) = node.hash {
+                contents.insert(
+                    (recorded.identity.dev, recorded.identity.ino),
+                    (index, hash),
+                );
+            }
+            sealed.push(SealedNode {
+                pin: node.pin,
+                read: node.read,
+                stamp: recorded,
+            });
+        }
+        let reader = Self {
+            lease,
+            root: target,
+            parent,
+            inventory,
+            nodes: sealed,
+            contents,
+            failed: Arc::new(AtomicBool::new(false)),
+            verified: Arc::new(Mutex::new(BTreeSet::new())),
+        };
+        reader.checkpoint()?;
+        Ok((guard, reader))
+    }
+    fn terminal<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.failed.store(true, Ordering::Release);
+        }
+        result
+    }
+    fn live(&self) -> io::Result<()> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(invalid("sealed payload read failure is terminal"));
+        }
+        Ok(())
+    }
+    fn locate(&self, path: &Path) -> io::Result<usize> {
+        let path = absolute(path)?;
+        let relative = path
+            .strip_prefix(&self.root)
+            .map_err(|_| invalid("path is outside the sealed payload"))?;
+        self.inventory
+            .index
+            .get(relative)
+            .copied()
+            .ok_or_else(|| invalid("path is not a sealed payload member"))
+    }
+    /// The directory descriptor holding member `index` and its exact leaf name.
+    fn place(&self, index: usize) -> io::Result<(&File, &OsStr)> {
+        if index == 0 {
+            return Ok((
+                &self.parent.file,
+                self.root
+                    .file_name()
+                    .ok_or_else(|| invalid("sealed payload root name"))?,
+            ));
+        }
+        let relative = &self.inventory.entries[index].relative;
+        let parent = *self
+            .inventory
+            .index
+            .get(
+                relative
+                    .parent()
+                    .ok_or_else(|| invalid("sealed member parent"))?,
+            )
+            .ok_or_else(|| invalid("sealed member parent not inventoried"))?;
+        let directory = self.nodes[parent]
+            .read
+            .as_ref()
+            .ok_or_else(|| invalid("sealed directory descriptor missing"))?;
+        Ok((
+            directory,
+            relative
+                .file_name()
+                .ok_or_else(|| invalid("sealed member name"))?,
+        ))
+    }
+    /// Exact sealed inode, metadata stamp and named identity of one member.
+    fn check(&self, index: usize) -> io::Result<()> {
+        let node = &self.nodes[index];
+        let current = stamp(&node.pin)?;
+        if !same_sealed(&node.stamp, &current) {
+            return Err(invalid("sealed payload member changed after seal"));
+        }
+        let (directory, leaf) = self.place(index)?;
+        if Identity::of(&open_pin(directory, leaf)?)? != current.identity {
+            return Err(invalid("sealed payload member replaced after seal"));
+        }
+        Ok(())
+    }
+    /// A directory's live entries are exactly its sealed children (names and inodes).
+    fn check_names(&self, index: usize) -> io::Result<()> {
+        let directory = self.nodes[index]
+            .read
+            .as_ref()
+            .ok_or_else(|| invalid("sealed directory descriptor missing"))?;
+        let mut expected = self.inventory.children[index]
+            .iter()
+            .map(|&child| {
+                Ok((
+                    self.inventory.entries[child]
+                        .relative
+                        .file_name()
+                        .ok_or_else(|| invalid("sealed member name"))?
+                        .to_os_string(),
+                    self.nodes[child].stamp.identity.ino,
+                ))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        expected.sort();
+        if super::payload_fs::names(directory, CEILING_ENTRIES)? != expected {
+            return Err(invalid("sealed payload directory entries changed"));
+        }
+        Ok(())
+    }
+    pub(crate) fn checkpoint(&self) -> io::Result<()> {
+        self.terminal((|| {
+            self.live()?;
+            self.parent.revalidate()?;
+            self.check(0)
+        })())
+    }
+    pub(crate) fn read_dir(&mut self, path: &Path) -> io::Result<Vec<super::OwnerReadEntry>> {
+        let result = (|| {
+            self.live()?;
+            let index = self.locate(path)?;
+            if !matches!(self.inventory.entries[index].kind, PayloadKind::Directory) {
+                return Err(invalid("sealed payload member is not a directory"));
+            }
+            self.check(index)?;
+            self.check_names(index)?;
+            let mut entries = Vec::with_capacity(self.inventory.children[index].len());
+            for &child in &self.inventory.children[index] {
+                self.check(child)?;
+                entries.push(super::OwnerReadEntry {
+                    name: self.inventory.entries[child]
+                        .relative
+                        .file_name()
+                        .ok_or_else(|| invalid("sealed member name"))?
+                        .to_os_string(),
+                    metadata: self.nodes[child].pin.metadata()?,
+                });
+            }
+            Ok(entries)
+        })();
+        self.terminal(result)
+    }
+    pub(crate) fn original_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        self.terminal((|| {
+            self.live()?;
+            let index = self.locate(path)?;
+            self.check(index)?;
+            self.nodes[index].pin.metadata()
+        })())
+    }
+    /// The sealed symlink target from the inventory, after verifying that the
+    /// sealed symlink inode is still the one named at this path.
+    pub(crate) fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        self.terminal((|| {
+            self.live()?;
+            let index = self.locate(path)?;
+            let PayloadKind::Symlink { target } = &self.inventory.entries[index].kind else {
+                return Err(invalid("sealed payload member is not a symlink"));
+            };
+            self.check(index)?;
+            Ok(PathBuf::from(OsString::from_vec(target.clone())))
+        })())
+    }
+    pub(crate) fn open_file(&mut self, path: &Path) -> io::Result<SealedFile> {
+        let result = (|| {
+            self.live()?;
+            let index = self.locate(path)?;
+            if !matches!(
+                self.inventory.entries[index].kind,
+                PayloadKind::File { .. } | PayloadKind::Hardlink { .. }
+            ) {
+                return Err(invalid("sealed payload member is not a regular file"));
+            }
+            self.check(index)?;
+            let node = &self.nodes[index];
+            let inode = (node.stamp.identity.dev, node.stamp.identity.ino);
+            let (_, expected) = self
+                .contents
+                .get(&inode)
+                .ok_or_else(|| invalid("sealed file content digest missing"))?;
+            Ok(SealedFile {
+                file: node
+                    .read
+                    .as_ref()
+                    .ok_or_else(|| invalid("sealed file descriptor missing"))?
+                    .try_clone()?,
+                size: node.stamp.size,
+                at: 0,
+                hash: Sha256::new(),
+                expected: expected.clone(),
+                inode,
+                done: false,
+                failed: self.failed.clone(),
+                verified: self.verified.clone(),
+            })
+        })();
+        self.terminal(result)
+    }
+    /// Re-verify the whole published tree before its derived image may be
+    /// published: lifecycle, root and parent, every member's sealed identity,
+    /// stamp and name, every directory's exact entries, and any file content
+    /// not already verified while it was consumed.
+    pub(crate) fn finish(self) -> io::Result<()> {
+        self.live()?;
+        {
+            let tx = self.lease.0.namespace.transaction()?;
+            let op = tx.operation(&self.lease.0.id)?;
+            if op.closed || op.uncertain {
+                return Err(invalid("sealed payload lifecycle is no longer available"));
+            }
+        }
+        self.parent.revalidate()?;
+        for index in 0..self.nodes.len() {
+            self.check(index)?;
+            if matches!(self.inventory.entries[index].kind, PayloadKind::Directory) {
+                self.check_names(index)?;
+            }
+        }
+        let verified = self
+            .verified
+            .lock()
+            .map_err(|_| invalid("sealed payload verification poisoned"))?
+            .clone();
+        for (inode, (index, expected)) in &self.contents {
+            if verified.contains(inode) {
+                continue;
+            }
+            let node = &self.nodes[*index];
+            let file = node
+                .read
+                .as_ref()
+                .ok_or_else(|| invalid("sealed file descriptor missing"))?;
+            if &hash_file(file, node.stamp.size)? != expected {
+                return Err(invalid("sealed payload bytes changed after seal"));
+            }
+        }
+        self.live()
+    }
+}
+impl Read for SealedFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(invalid("sealed payload read failure is terminal"));
+        }
+        if self.at >= self.size {
+            if !self.done {
+                self.done = true;
+                if hex::encode(std::mem::take(&mut self.hash).finalize()) != self.expected {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(invalid("sealed payload bytes differ from the seal"));
+                }
+                self.verified
+                    .lock()
+                    .map_err(|_| invalid("sealed payload verification poisoned"))?
+                    .insert(self.inode);
+            }
+            return Ok(0);
+        }
+        let n = (buf.len() as u64).min(self.size - self.at) as usize;
+        let got = self.file.read_at(&mut buf[..n], self.at)?;
+        if got == 0 && n > 0 {
+            self.failed.store(true, Ordering::Release);
+            return Err(invalid("sealed payload file shorter than the seal"));
+        }
+        self.hash.update(&buf[..got]);
+        self.at += got as u64;
+        Ok(got)
+    }
+}
+#[cfg(test)]
+#[path = "payload_read_tests.rs"]
+mod read_tests;
 #[cfg(test)]
 #[path = "payload_tests.rs"]
 mod tests;

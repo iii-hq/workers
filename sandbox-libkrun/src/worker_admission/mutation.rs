@@ -1680,6 +1680,10 @@ impl MutationGuard {
     ) -> io::Result<super::PayloadBuilder> {
         super::payload::PayloadBuilder::start(self, target, inventory)
     }
+    /// The lifecycle this mutation belongs to (core-internal; no authority).
+    pub(super) fn lease_handle(&self) -> Lease {
+        self.lease.clone()
+    }
     pub(super) fn payload_source(&self, source: &Lease) -> io::Result<()> {
         if !Arc::ptr_eq(&self.lease.0, &source.0) {
             return Err(invalid("foreign payload source capability"));
