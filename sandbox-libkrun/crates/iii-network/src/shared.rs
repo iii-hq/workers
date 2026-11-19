@@ -30,20 +30,41 @@ pub const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 /// Touches are throttled to once per second — the reaper's granularity is
 /// tens of seconds, and per-packet `futimens` would be pure overhead.
 pub struct ActivityStamp {
-    file: std::fs::File,
-    checked: Option<CheckedActivity>,
+    writer: ActivityWriter,
     /// Unix-seconds of the last touch; CAS gate so concurrent relay tasks
     /// collapse to ~one syscall per second.
     last_touch_secs: AtomicU64,
 }
 
+enum ActivityWriter {
+    Independent(std::fs::File),
+    Checked(CheckedActivity),
+}
+
 struct CheckedActivity {
-    checkpoint: std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
+    update: std::sync::Arc<dyn Fn(SystemTime) -> std::io::Result<()> + Send + Sync>,
     failure: std::sync::Mutex<Option<std::sync::Arc<std::io::Error>>>,
 }
 
 impl ActivityStamp {
-    /// Adopt the exact runtime-owned descriptor; never reopen/truncate a path.
+    /// Admitted route: only the owner performs the write and records its outcome.
+    /// Initial and payload touches use the same updater and irreversible latch.
+    pub fn from_updater(
+        update: std::sync::Arc<dyn Fn(SystemTime) -> std::io::Result<()> + Send + Sync>,
+    ) -> std::io::Result<Self> {
+        let stamp = Self {
+            writer: ActivityWriter::Checked(CheckedActivity {
+                update,
+                failure: std::sync::Mutex::new(None),
+            }),
+            last_touch_secs: AtomicU64::new(0),
+        };
+        stamp.write_modified()?;
+        Ok(stamp)
+    }
+
+    /// Independent descriptor API, NOT the admitted runtime route. Callers
+    /// needing durable writer-outcome tracking must use from_updater instead.
     pub fn from_file_checked(
         file: std::fs::File,
         checkpoint: std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>,
@@ -66,21 +87,16 @@ impl ActivityStamp {
                 "activity stamp requires an owned single-link read/write regular descriptor",
             ));
         }
-        let stamp = Self {
-            file,
-            last_touch_secs: AtomicU64::new(0),
-            checked: Some(CheckedActivity {
-                checkpoint,
-                failure: std::sync::Mutex::new(None),
-            }),
-        };
-        stamp.write_modified()?;
-        Ok(stamp)
+        Self::from_updater(std::sync::Arc::new(move |when| {
+            checkpoint()?;
+            file.set_modified(when)
+        }))
     }
 
     fn write_modified(&self) -> std::io::Result<()> {
-        let Some(checked) = &self.checked else {
-            return self.file.set_modified(SystemTime::now());
+        let checked = match &self.writer {
+            ActivityWriter::Independent(file) => return file.set_modified(SystemTime::now()),
+            ActivityWriter::Checked(checked) => checked,
         };
         let mut failure = checked
             .failure
@@ -89,11 +105,7 @@ impl ActivityStamp {
         if let Some(error) = failure.as_ref() {
             return Err(std::io::Error::new(error.kind(), error.to_string()));
         }
-        // FD failures are terminal locally. The fixed callback is one-way:
-        // integration still needs an explicit RuntimeWriter failure sink before
-        // a set_modified error can participate in the parent's final receipt.
-        let result =
-            (checked.checkpoint)().and_then(|()| self.file.set_modified(SystemTime::now()));
+        let result = (checked.update)(SystemTime::now());
         if let Err(error) = result {
             let error = std::sync::Arc::new(error);
             *failure = Some(error.clone());
@@ -112,8 +124,7 @@ impl ActivityStamp {
             .open(path)?;
         file.set_modified(SystemTime::now())?;
         Ok(Self {
-            file,
-            checked: None,
+            writer: ActivityWriter::Independent(file),
             last_touch_secs: AtomicU64::new(0),
         })
     }
@@ -251,6 +262,83 @@ impl Default for NetworkMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updater_receives_initial_and_throttled_timestamps_without_a_file() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let before = SystemTime::now();
+        let stamp = ActivityStamp::from_updater(Arc::new(move |when| {
+            record.lock().unwrap().push(when);
+            Ok(())
+        }))
+        .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let state = SharedState::with_activity(2, Some(stamp));
+        state.add_tx_bytes(10);
+        state.add_rx_bytes(10);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "frame counters must not touch"
+        );
+        let stamp = state.activity.as_ref().unwrap();
+        stamp.touch_at(42);
+        stamp.touch_at(42);
+        stamp.touch_at(43);
+        let times = seen.lock().unwrap();
+        assert_eq!(times.len(), 3);
+        assert!(times.iter().all(|when| *when >= before));
+    }
+
+    #[test]
+    fn updater_error_is_terminal_across_threads_and_never_retried() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let stamp = Arc::new(
+            ActivityStamp::from_updater(Arc::new(move |_| {
+                if count.fetch_add(1, Ordering::SeqCst) == 1 {
+                    Err(std::io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    Ok(())
+                }
+            }))
+            .unwrap(),
+        );
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let shared = stamp.clone();
+                scope.spawn(move || assert!(shared.write_modified().is_err()));
+            }
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        stamp.touch_at(100);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "no recovery retry on later traffic"
+        );
+        let fresh = ActivityStamp::from_updater(Arc::new(|_| Ok(()))).unwrap();
+        assert!(fresh.write_modified().is_ok());
+    }
+
+    #[test]
+    fn initial_updater_failure_is_reported_without_a_usable_stamp() {
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let result = ActivityStamp::from_updater(Arc::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "pending touch refused",
+            ))
+        }));
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn checked_beacon_preserves_payload_and_stops_after_first_refusal() {

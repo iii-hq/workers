@@ -1314,15 +1314,13 @@ fn boot_vm(
         if args.network {
             let activity = match &args.net_activity_file {
                 Some(path) => {
-                    let file = runtime
-                        .open_activity_file(std::path::Path::new(path))
+                    let activity = runtime
+                        .activity(std::path::Path::new(path))
                         .map_err(|e| e.to_string())?;
-                    let writer = runtime.clone();
                     Some(
-                        iii_network::ActivityStamp::from_file_checked(
-                            file,
-                            std::sync::Arc::new(move || writer.checkpoint()),
-                        )
+                        iii_network::ActivityStamp::from_updater(std::sync::Arc::new(
+                            move |when| activity.touch_at(when),
+                        ))
                         .map_err(|e| e.to_string())?,
                     )
                 }

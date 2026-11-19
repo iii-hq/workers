@@ -728,6 +728,12 @@ fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
 
 /// Hand the VM `child` (pid `pid`) to a task that reaps it on exit, and keep
 /// its pid signalable until then.
+///
+/// Admission-v2 integration boundary: RuntimeChild::wait performs OS reap and
+/// THEN fallible/possibly waiting catalog finalization. Substituting that wait
+/// here would leave a reused PID signalable during finalization. It requires a
+/// core-owned reap observation synchronized with signal_vm, before catalog work;
+/// neither a caller bool nor a final wait error can supply that evidence.
 fn watch_vm(mut child: tokio::process::Child, pid: u32) {
     unreaped_vms().push(pid);
     tokio::spawn(async move {

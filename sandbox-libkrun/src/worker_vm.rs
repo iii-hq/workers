@@ -198,9 +198,17 @@ impl WorkerVms {
     fn admission(&self, key: Option<&str>) -> io::Result<crate::worker_admission::Lease> {
         #[cfg(test)]
         if let Some(context) = &self.admission_context {
-            return context.worker(&self.base, key);
+            let lease = context.worker(&self.base, key)?;
+            return match key {
+                Some(key) => admit_control_files(lease, &self.base.join(vm_id(key))),
+                None => Ok(lease),
+            };
         }
-        crate::worker_admission::AdmissionContext::system()?.worker(&self.base, key)
+        let lease = crate::worker_admission::AdmissionContext::system()?.worker(&self.base, key)?;
+        match key {
+            Some(key) => admit_control_files(lease, &self.base.join(vm_id(key))),
+            None => Ok(lease),
+        }
     }
 
     #[cfg(test)]
@@ -1018,6 +1026,7 @@ impl WorkerVms {
             )?;
         let console = Arc::new(Mutex::new(Console {
             admission: Some(admission.clone()),
+            failed: false,
             dir,
             file: console,
             len: 0,
@@ -2611,17 +2620,49 @@ fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
 /// Replace `<dir>/state.json` with one recording `instance`. Written to a
 /// temp file and renamed over it, so a crash or a full disk mid-write leaves
 /// the previous file whole: a truncated one failed every later start.
+fn admit_control_files(
+    lease: crate::worker_admission::Lease,
+    dir: &Path,
+) -> io::Result<crate::worker_admission::Lease> {
+    let paths: Vec<_> = [
+        STATE_FILE,
+        STATE_KEY_FILE,
+        BUILD_DIR_RECORD,
+        BUILD_MODE_SEAL,
+        CONSOLE_LOG,
+        CONSOLE_LOG_OLD,
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
+    let requests: Vec<_> = paths
+        .iter()
+        .map(|path| crate::worker_admission::PathRequest {
+            path,
+            role: crate::worker_admission::PathRole::MutableFile,
+        })
+        .collect();
+    crate::worker_admission::with_paths(lease, &requests)
+}
+
 fn write_control_admitted(
     lease: &crate::worker_admission::Lease,
     dir: &Path,
     name: &str,
     bytes: &[u8],
 ) -> io::Result<()> {
-    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::Create {
-        root: dir.to_path_buf(),
+    if !dir.exists() {
+        let mut create = lease.begin(crate::worker_admission::MutationPlan::Create {
+            root: dir.to_path_buf(),
+        })?;
+        create.create_dir_all(dir, 0o700)?;
+        create.commit()?;
+    }
+    let target = dir.join(name);
+    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+        files: vec![target.clone()],
     })?;
-    mutation.create_dir_all(dir, 0o700)?;
-    let mut stage = mutation.stage_file(&dir.join(name), 0o600)?;
+    let mut stage = mutation.stage_file(&target, 0o600)?;
     stage.file_mut().write_all(bytes)?;
     stage.file_mut().sync_all()?;
     mutation.publish_file(stage)?;
@@ -2915,13 +2956,104 @@ fn spawn(
 /// current file holds the offsets from `base` on, the rotated one those below.
 struct Console {
     admission: Option<crate::worker_admission::Lease>,
+    /// Once publication/commit outcome is uncertain, never append from stale cursors.
+    failed: bool,
     dir: PathBuf,
     file: File,
     len: u64,
     base: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleBoundary {
+    Prepared,
+    BeforeRotation,
+    AfterRotation,
+    BeforeCurrent,
+    AfterCurrent,
+    BeforeCommit,
+}
+
 impl Console {
+    fn append_admitted(
+        &mut self,
+        record: &[u8],
+        mut boundary: impl FnMut(ConsoleBoundary) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console mutation requires verified recovery",
+            ));
+        }
+        // Failure is sticky even if no publication occurred: this avoids retrying
+        // a poisoned mutation or copying the old snapshot after partial success.
+        self.failed = true;
+        let lease = self
+            .admission
+            .as_ref()
+            .ok_or_else(|| io::Error::other("console admission missing"))?;
+        let current = self.dir.join(CONSOLE_LOG);
+        let old = self.dir.join(CONSOLE_LOG_OLD);
+        let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+            files: vec![current.clone(), old.clone()],
+        })?;
+        use std::os::unix::fs::MetadataExt;
+        let held = self.file.metadata()?;
+        let current_identity = std::fs::symlink_metadata(&current)?;
+        if !current_identity.is_file()
+            || held.dev() != current_identity.dev()
+            || held.ino() != current_identity.ino()
+        {
+            return Err(io::Error::other(
+                "console readable handle no longer names the admitted current log",
+            ));
+        }
+        let mut stage = guard.stage_file(&current, 0o600)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        io::copy(&mut self.file, stage.file_mut())?;
+        stage.file_mut().write_all(record)?;
+        stage.file_mut().sync_all()?;
+        let accumulated = self
+            .len
+            .checked_add(record.len() as u64)
+            .ok_or_else(|| io::Error::other("console size overflow"))?;
+        let (next_len, next_base) = if accumulated > CONSOLE_LOG_CAP {
+            (
+                0,
+                self.base
+                    .checked_add(accumulated)
+                    .ok_or_else(|| io::Error::other("console cursor overflow"))?,
+            )
+        } else {
+            (accumulated, self.base)
+        };
+        boundary(ConsoleBoundary::Prepared)?;
+        if next_len == 0 {
+            let mut rotated = guard.stage_file(&old, 0o600)?;
+            stage.file_mut().seek(SeekFrom::Start(0))?;
+            io::copy(stage.file_mut(), rotated.file_mut())?;
+            rotated.file_mut().sync_all()?;
+            guard.discard_file(stage)?;
+            boundary(ConsoleBoundary::BeforeRotation)?;
+            guard.publish_file(rotated)?;
+            boundary(ConsoleBoundary::AfterRotation)?;
+            stage = guard.stage_file(&current, 0o600)?;
+        }
+        boundary(ConsoleBoundary::BeforeCurrent)?;
+        guard.publish_file(stage)?;
+        boundary(ConsoleBoundary::AfterCurrent)?;
+        boundary(ConsoleBoundary::BeforeCommit)?;
+        guard.commit()?;
+        let readable = open_private(&current, false)?;
+        // Do not change any cursor or handle until committed publication AND
+        // the replacement readable handle are available.
+        self.file = readable;
+        self.len = next_len;
+        self.base = next_base;
+        self.failed = false;
+        Ok(())
+    }
+
     /// The log offset after the last record: `append` writes whole lines under this lock.
     fn end(&self) -> u64 {
         self.base + self.len
@@ -2935,35 +3067,8 @@ impl Console {
             "ts_ms": now_ms(),
         }))?;
         record.push(b'\n');
-        if let Some(lease) = &self.admission {
-            // INTEGRATION SEAM D1: Create{vm_dir} overlaps a live GuestTree
-            // rooted at vm_dir/root. A narrowly-scoped control-file mutation
-            // or explicit control-root relocation is needed; do not bypass Busy.
-            let current = self.dir.join(CONSOLE_LOG);
-            let mut guard = lease.begin(crate::worker_admission::MutationPlan::Create {
-                root: self.dir.clone(),
-            })?;
-            let mut stage = guard.stage_file(&current, 0o600)?;
-            self.file.seek(SeekFrom::Start(0))?;
-            io::copy(&mut self.file, stage.file_mut())?;
-            stage.file_mut().write_all(&record)?;
-            stage.file_mut().sync_all()?;
-            self.len += record.len() as u64;
-            if self.len > CONSOLE_LOG_CAP {
-                let mut rotated = guard.stage_file(&self.dir.join(CONSOLE_LOG_OLD), 0o600)?;
-                stage.file_mut().seek(SeekFrom::Start(0))?;
-                io::copy(stage.file_mut(), rotated.file_mut())?;
-                rotated.file_mut().sync_all()?;
-                guard.discard_file(stage)?;
-                guard.publish_file(rotated)?;
-                stage = guard.stage_file(&current, 0o600)?;
-                self.base += self.len;
-                self.len = 0;
-            }
-            guard.publish_file(stage)?;
-            guard.commit()?;
-            self.file = open_private(&current, false)?;
-            return Ok(());
+        if self.admission.is_some() {
+            return self.append_admitted(&record, |_| Ok(()));
         }
         self.file.write_all(&record)?;
         self.len += record.len() as u64;
@@ -3753,6 +3858,7 @@ mod tests {
         std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
         Mutex::new(Console {
             admission: None,
+            failed: false,
             dir: dir.to_path_buf(),
             file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
             len: current.len() as u64,
@@ -3783,6 +3889,159 @@ mod tests {
         assert_eq!(read_records(&console, end + 1).unwrap().0.len(), 8);
     }
 
+    fn admitted_console_fixture(
+        t: &Path,
+        initial: &[u8],
+    ) -> (crate::worker_admission::Lease, Console) {
+        use std::os::unix::fs::PermissionsExt;
+        let catalog = t.join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let base = t.join("workers");
+        let dir = base.join(vm_id("console"));
+        std::fs::create_dir_all(dir.join("root")).unwrap();
+        std::fs::write(dir.join(CONSOLE_LOG), initial).unwrap();
+        std::fs::set_permissions(
+            dir.join(CONSOLE_LOG),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let lease =
+            admit_control_files(context.worker(&base, Some("console")).unwrap(), &dir).unwrap();
+        let console = Console {
+            admission: Some(lease.clone()),
+            failed: false,
+            file: open_private(&dir.join(CONSOLE_LOG), false).unwrap(),
+            dir,
+            len: initial.len() as u64,
+            base: 0,
+        };
+        (lease, console)
+    }
+
+    #[test]
+    fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let guest = console.dir.join("root");
+        let runtime = lease
+            .prepare_runtime(&[crate::worker_admission::RuntimePath {
+                path: &guest,
+                kind: crate::worker_admission::RuntimePathKind::GuestTree,
+            }])
+            .unwrap();
+        console.append(&LogStream::Stdout, b"first").unwrap();
+        assert_eq!(console.base, 0);
+        assert!(console.len > 0);
+        let flags = unsafe { libc::fcntl(console.file.as_raw_fd(), libc::F_GETFL) };
+        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
+        assert_eq!(
+            std::fs::metadata(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let third = console.dir.join("not-declared");
+        let mut exact = lease
+            .begin(crate::worker_admission::MutationPlan::ControlFiles {
+                files: vec![
+                    console.dir.join(CONSOLE_LOG),
+                    console.dir.join(CONSOLE_LOG_OLD),
+                ],
+            })
+            .unwrap();
+        assert!(exact.stage_file(&third, 0o600).is_err());
+        assert!(!third.exists());
+        drop(exact);
+        drop(runtime);
+        // Prepared-runtime conflict coverage, not a claim of actual guest execution.
+    }
+
+    #[test]
+    fn admitted_console_rotation_publishes_private_files_before_advancing_cursor() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+        let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+        console.append(&LogStream::Stderr, b"rotate").unwrap();
+        let old = std::fs::read(console.dir.join(CONSOLE_LOG_OLD)).unwrap();
+        assert!(old.starts_with(&initial));
+        assert!(old.ends_with(b"\n"));
+        assert_eq!(console.base, old.len() as u64);
+        assert_eq!(console.len, 0);
+        assert!(!console.failed);
+        assert!(
+            std::fs::read(console.dir.join(CONSOLE_LOG))
+                .unwrap()
+                .is_empty()
+        );
+        for name in [CONSOLE_LOG, CONSOLE_LOG_OLD] {
+            assert_eq!(
+                std::fs::metadata(console.dir.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_console_failures_never_advance_cursor_or_swap_the_readable_handle() {
+        use std::os::unix::fs::MetadataExt;
+        for fail_at in [
+            ConsoleBoundary::Prepared,
+            ConsoleBoundary::BeforeRotation,
+            ConsoleBoundary::AfterRotation,
+            ConsoleBoundary::BeforeCurrent,
+            ConsoleBoundary::AfterCurrent,
+            ConsoleBoundary::BeforeCommit,
+        ] {
+            let t = tempfile::tempdir().unwrap();
+            let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
+            let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+            let inode = console.file.metadata().unwrap().ino();
+            let error = console
+                .append_admitted(b"line\n", |at| {
+                    if at == fail_at {
+                        Err(io::Error::other("injected publication boundary failure"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert_eq!(console.len, CONSOLE_LOG_CAP);
+            assert_eq!(console.base, 0);
+            assert_eq!(console.file.metadata().unwrap().ino(), inode);
+            assert!(console.failed);
+            assert!(
+                console
+                    .append(&LogStream::Stdout, b"must not retry")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_console_refuses_replacement_without_copying_into_it() {
+        let t = tempfile::tempdir().unwrap();
+        let (_lease, mut console) = admitted_console_fixture(t.path(), b"old\n");
+        let path = console.dir.join(CONSOLE_LOG);
+        std::fs::rename(&path, console.dir.join("held-old")).unwrap();
+        std::fs::write(&path, b"external\n").unwrap();
+        assert!(console.append(&LogStream::Stdout, b"forbidden").is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"external\n");
+        assert_eq!(console.len, 4);
+        assert_eq!(console.base, 0);
+    }
+
     /// Through `Console::append`: a reader a whole rotation behind still gets
     /// every record after its cursor, in order.
     #[test]
@@ -3790,6 +4049,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let console = Mutex::new(Console {
             admission: None,
+            failed: false,
             dir: t.path().to_path_buf(),
             file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
             len: 0,
