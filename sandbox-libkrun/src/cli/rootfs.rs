@@ -68,6 +68,20 @@ mod tests {
         std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
     }
 
+    /// Restores owner access to fixture directories when dropped, so a failing
+    /// assertion never leaves an undeletable temporary tree behind.
+    struct R4RestoreModes(Vec<(std::path::PathBuf, u32)>);
+    impl Drop for R4RestoreModes {
+        fn drop(&mut self) {
+            for (path, mode) in &self.0 {
+                let _ = std::fs::set_permissions(
+                    path,
+                    std::os::unix::fs::PermissionsExt::from_mode(*mode),
+                );
+            }
+        }
+    }
+
     fn r4_admitted_clone_fixture(existing: bool) {
         use crate::worker_admission::{PathRequest, PathRole};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -342,6 +356,7 @@ mod tests {
     /// refused before any destination effect, and the source is not chmodded.
     #[test]
     fn r4_shared_0000_source_without_readable_fd_is_refused_before_effects() {
+        use crate::worker_admission::{PathRequest, PathRole};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         assert_ne!(
             unsafe { libc::geteuid() },
@@ -352,17 +367,70 @@ mod tests {
         let source = t.path().join("source");
         r4_mkdir(&source, 0o755);
         r4_write(&source.join("data"), b"shared", 0o644);
-        // Already shared as 0000 when this operation admitted it as Strict.
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
         let dest = t.path().join("managed");
-        let lease = r4_clone_lease(t.path(), &source, &dest);
-        let result = clone_rootfs_admitted(&lease, &source, &dest);
+        let namespace = t.path().join("catalog");
+        r4_mkdir(&namespace, 0o700);
+        let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
+        // Armed BEFORE the chmod and dropped before the TempDir: whatever fails
+        // below, the temporary tree stays removable.
+        let restore = R4RestoreModes(vec![(source.clone(), 0o700)]);
+        // Already shared as 0000 when this operation declares it Strict.
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let declared = crate::worker_admission::with_paths(
+            context.local(&dest).unwrap(),
+            &[
+                PathRequest {
+                    path: &source,
+                    role: PathRole::Strict,
+                },
+                PathRequest {
+                    path: &dest,
+                    role: PathRole::MutableTree,
+                },
+            ],
+        );
+        // The core refuses either at the Strict declaration (it cannot pin an
+        // owner-unreadable directory) or, once declared, at the clone's
+        // readable capture. Either way it is PermissionDenied before effects.
+        let refusal = match declared {
+            Err(error) => error,
+            Ok(lease) => {
+                let error = lease
+                    .capture_payload(&source)
+                    .err()
+                    .expect("an unreadable shared 0000 source must not be captured");
+                assert!(clone_rootfs_admitted(&lease, &source, &dest).is_err());
+                error
+            }
+        };
+        assert_eq!(
+            refusal.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "{refusal}"
+        );
         let mode = std::fs::symlink_metadata(&source).unwrap().mode() & 0o7777;
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(result.is_err());
         assert_eq!(mode, 0o000, "refusal must not chmod the shared source");
         assert!(!dest.exists());
+        r4_assert_no_destination_effect(&namespace);
+        drop(restore);
         assert_eq!(std::fs::read(source.join("data")).unwrap(), b"shared");
+    }
+
+    /// The persisted catalog shows no destination effect: no operation began
+    /// any mutation journal and none retains a hold.
+    fn r4_assert_no_destination_effect(namespace: &std::path::Path) {
+        let bytes = std::fs::read(namespace.join("catalog.json")).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+        for operation in catalog["operations"].as_array().unwrap() {
+            for field in ["journals", "holds"] {
+                assert!(
+                    operation[field].as_array().is_none_or(Vec::is_empty),
+                    "{field} recorded an effect: {operation}"
+                );
+            }
+        }
     }
 
     /// R4 negative: a source hardlink that escapes the captured tree is a

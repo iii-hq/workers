@@ -4132,6 +4132,18 @@ mod tests {
         }
     }
 
+    /// Restores owner access to fixture directories when dropped, so a failing
+    /// assertion never leaves an undeletable temporary tree behind.
+    struct RestoreModes(Vec<(PathBuf, u32)>);
+    impl Drop for RestoreModes {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in &self.0 {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode));
+            }
+        }
+    }
+
     /// A private (0600) fixture file, independent of the host umask.
     fn write_private(path: &Path, bytes: impl AsRef<[u8]>) {
         use std::os::unix::fs::PermissionsExt;
@@ -4536,6 +4548,9 @@ mod tests {
         let stuck = t.path().join("workers").join(&id).join("root").join("ro");
         private_dirs(&stuck);
         write_private(&stuck.join("f"), "");
+        // Armed before the chmod and dropped before the TempDir: a failing
+        // assertion never leaves this read-only dir undeletable.
+        let _restore = RestoreModes(vec![(stuck.clone(), 0o755)]);
         std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let destroyed = vms.destroy(destroy_req("t", "k"));

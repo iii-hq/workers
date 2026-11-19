@@ -1265,6 +1265,18 @@ mod tests {
         assert_eq!(fs::read(out).unwrap(), b"old-image");
     }
 
+    /// Restores owner access to fixture directories when dropped, so a failing
+    /// assertion never leaves an undeletable temporary tree behind.
+    struct RestoreModes(Vec<(PathBuf, u32)>);
+    impl Drop for RestoreModes {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in &self.0 {
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(*mode));
+            }
+        }
+    }
+
     #[test]
     fn managed_owner_read_preserves_zero_modes_and_internal_hardlinks() {
         use crate::worker_admission::{PathRequest, PathRole};
@@ -1316,6 +1328,13 @@ mod tests {
             fs::Permissions::from_mode(0),
         )
         .unwrap();
+        // Armed before the 0600 (no owner x) chmod and dropped before the
+        // TempDir, for the stage and the published path alike: the tree stays
+        // removable whether the test passes or fails.
+        let _restore = RestoreModes(vec![
+            (staged.path().join("private"), 0o700),
+            (root.join("private"), 0o700),
+        ]);
         fs::set_permissions(
             staged.path().join("private"),
             fs::Permissions::from_mode(0o600),
@@ -1655,6 +1674,12 @@ mod tests {
         // builds the erofs is not root.
         fs::create_dir_all(src.join("etc")).unwrap();
         fs::write(src.join("etc/shadow"), b"root:!!:19000::::::\n").unwrap();
+        // Armed before any owner-unreadable chmod: a panic before the explicit
+        // restore below never leaves the fixed temp tree undeletable.
+        let _restore = RestoreModes(vec![
+            (src.join("secret"), 0o755),
+            (src.join("listonly"), 0o755),
+        ]);
         fs::set_permissions(src.join("etc/shadow"), fs::Permissions::from_mode(0o000)).unwrap();
         fs::create_dir_all(src.join("secret")).unwrap();
         fs::write(src.join("secret/key"), b"k").unwrap();
@@ -1705,6 +1730,9 @@ mod tests {
         for i in 0..32 {
             fs::write(src.join(format!("secret/f{i}")), format!("{i}")).unwrap();
         }
+        // Armed before the 0000 chmod: a panicking build thread or assertion
+        // never leaves the fixed temp tree undeletable.
+        let _restore = RestoreModes(vec![(src.join("secret"), 0o755)]);
         fs::set_permissions(src.join("secret"), fs::Permissions::from_mode(0o000)).unwrap();
 
         // Concurrent first boots of one image.
