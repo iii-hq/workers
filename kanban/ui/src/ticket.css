@@ -917,6 +917,15 @@
   background: var(--kb-dialog-bg);
 }
 
+/* What the dialog focuses as it opens (see ticket-dialog.tsx); it carries the frame's flex column through. */
+[data-iii-ui="kanban"] .kb-ticket-dialog__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+}
+
 [data-iii-ui="kanban"] .kb-ticket-frame {
   display: flex;
   flex: 1;

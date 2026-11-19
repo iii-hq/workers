@@ -334,6 +334,32 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   }
 
   /**
+   * The chat that opens beside the tree focuses its composer as it mounts. The card that opened it keeps the keys
+   * instead (D for details, arrows, Enter), so tickets can be browsed one after another; clicking into the chat
+   * (or a moment passing) ends the hold, and typing there works as always.
+   */
+  const keepFocusOnCard = (id: string) => {
+    let pointed = false
+    const onPointer = () => {
+      pointed = true
+    }
+    const onFocusIn = (event: FocusEvent) => {
+      const chart = chartRef.current
+      if (pointed || !chart) return done()
+      if (event.composedPath().includes(chart)) return
+      chart.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: true })
+    }
+    const done = () => {
+      document.removeEventListener('focusin', onFocusIn, true)
+      document.removeEventListener('pointerdown', onPointer, true)
+      window.clearTimeout(timer)
+    }
+    document.addEventListener('focusin', onFocusIn, true)
+    document.addEventListener('pointerdown', onPointer, true)
+    const timer = window.setTimeout(done, FOCUS_HOLD_MS)
+  }
+
+  /**
    * A ticket's card opens its conversation beside the tree: the session working it now, else the one that worked
    * it last. A ticket no agent has touched starts a chat about it (its mention in the composer, not sent). On a
    * console without a workspace chat, the ticket's details open instead.
@@ -348,11 +374,16 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
             text: `@kanban(id="${node.ticket.key}") `,
             title: `${node.ticket.key} · ${node.ticket.title}`,
           })
-      if (opened) revealSoon(node.id)
-      else onOpenTicket(node.ticket.key)
+      if (opened) {
+        keepFocusOnCard(node.id)
+        revealSoon(node.id)
+      } else onOpenTicket(node.ticket.key)
     } else if (node.kind === 'session') {
       setSelectedId(node.id)
-      if (openChatBeside(host, screen, node.session.id)) revealSoon(node.id)
+      if (openChatBeside(host, screen, node.session.id)) {
+        keepFocusOnCard(node.id)
+        revealSoon(node.id)
+      }
     } else if (node.project && node.project.id !== project?.id) onOpenProject(node.project.id)
   }
 
@@ -1060,6 +1091,8 @@ function agentsAtWork(node: Node): boolean {
 }
 
 /** How long a prompt counts as "just" reaching a session. */
+/** How long a clicked card holds the keys against the chat it opened (its composer focuses as it mounts). */
+const FOCUS_HOLD_MS = 1500
 const PROMPT_FRESH_MS = 8000
 
 /** The sessions at work under a ticket (one each, however often drawn), the latest active first. */

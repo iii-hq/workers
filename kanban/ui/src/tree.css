@@ -585,7 +585,7 @@
   background: var(--color-surface-selected);
 }
 
-/* The details action stays quiet until the card is hovered or focused. */
+/* The details action stays quiet until the card is hovered, focused or selected (its chat is open beside). */
 @media (hover: hover) and (pointer: fine) {
   [data-iii-ui="kanban"] .kb-node .kb-node__action {
     opacity: 0;
@@ -593,6 +593,7 @@
   }
 
   [data-iii-ui="kanban"] .kb-node:hover .kb-node__action,
+  [data-iii-ui="kanban"] .kb-chart__item[data-selected="true"] > .kb-chart__card .kb-node__action,
   [data-iii-ui="kanban"] .kb-chart__item:focus-visible > .kb-chart__card .kb-node__action,
   [data-iii-ui="kanban"] .kb-node .kb-node__action:focus-visible {
     opacity: 1;

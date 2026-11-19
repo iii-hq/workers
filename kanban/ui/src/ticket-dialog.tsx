@@ -1,6 +1,6 @@
 import { type Host, type PageRenderProps, ShadcnDialog, ShadcnDialogContent } from '@iii-dev/console-ui'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import type { KeyboardEvent } from 'react'
+import { type KeyboardEvent, useRef } from 'react'
 import type { AgentProfile, Column } from './shared'
 import { TicketScreen } from './ticket'
 import { IconAction } from './ui/icon-action'
@@ -50,6 +50,9 @@ export function TicketDialog({
   /** The tickets on screen, in the order they are drawn: what previous / next walk. */
   order?: readonly { id: string; key: string }[]
 }) {
+  // The dialog opens on its content, not its first button: focus there would show that button's tooltip, and the
+  // first Escape would close the tooltip instead of the dialog.
+  const start = useRef<HTMLDivElement | null>(null)
   const at = ticketId ? order.findIndex((t) => t.key === ticketId || t.id === ticketId) : -1
   const prev = at > 0 ? order[at - 1] : null
   const next = at >= 0 && at < order.length - 1 ? order[at + 1] : null
@@ -82,25 +85,32 @@ export function TicketDialog({
       }}
       open={ticketId !== null}
     >
-      <ShadcnDialogContent className="kb-dialog kb-ticket-dialog" onKeyDown={onKeyDown} showCloseButton={false}>
-        {ticketId ? (
-          <TicketScreen
-            agents={agents}
-            canceledStatus={canceledStatus}
-            columns={columns}
-            commands={commands}
-            doneStatus={doneStatus}
-            host={host}
-            // One screen per ticket: drafts, reply target and errors never travel to the next one.
-            key={ticketId}
-            onBack={onClose}
-            onOpenTicket={onOpenTicket}
-            priorities={priorities}
-            dialogNav={nav}
-            ticketId={ticketId}
-            variant="dialog"
-          />
-        ) : null}
+      <ShadcnDialogContent
+        className="kb-dialog kb-ticket-dialog"
+        initialFocus={start}
+        onKeyDown={onKeyDown}
+        showCloseButton={false}
+      >
+        <div className="kb-ticket-dialog__body" ref={start} tabIndex={-1}>
+          {ticketId ? (
+            <TicketScreen
+              agents={agents}
+              canceledStatus={canceledStatus}
+              columns={columns}
+              commands={commands}
+              doneStatus={doneStatus}
+              host={host}
+              // One screen per ticket: drafts, reply target and errors never travel to the next one.
+              key={ticketId}
+              onBack={onClose}
+              onOpenTicket={onOpenTicket}
+              priorities={priorities}
+              dialogNav={nav}
+              ticketId={ticketId}
+              variant="dialog"
+            />
+          ) : null}
+        </div>
       </ShadcnDialogContent>
     </ShadcnDialog>
   )
