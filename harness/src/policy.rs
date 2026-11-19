@@ -384,9 +384,9 @@ pub struct PlannedCall {
     pub arguments: Value,
     pub kind: CallKind,
     /// The `agent_call` envelope's `namespace`; `None` when absent or blank,
-    /// for native calls and for `submit_result`. For an
-    /// `engine::functions::info` call it moves into the payload, which names
-    /// the namespace to read.
+    /// for native calls and for `submit_result`. Always `None` for an
+    /// `engine::functions::info` call: the envelope's namespace fills the
+    /// payload's when the payload names none, and is dropped otherwise.
     pub namespace: Option<String>,
 }
 
@@ -462,11 +462,12 @@ pub fn plan_calls(message: &AssistantMessage, expose: ExposeMode) -> Vec<Planned
                     (function_id.clone(), arguments.clone(), None)
                 };
             // `engine::*` ids exist only in `default`, so a namespace beside a
-            // contract lookup can only mean the namespace to look up.
+            // contract lookup never routes it: it names the namespace to look
+            // up, unless the payload already names one.
             if target == "engine::functions::info"
-                && let Value::Object(p) = &mut payload
-                && !p.contains_key("namespace")
                 && let Some(ns) = namespace.take()
+                && let Value::Object(p) = &mut payload
+                && p.get("namespace").is_none_or(Value::is_null)
             {
                 p.insert("namespace".to_string(), Value::String(ns));
             }
@@ -1039,6 +1040,8 @@ mod tests {
             json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"] } }),
             json!({ "function": "engine::functions::info", "namespace": "laptop", "function_ids": ["shell::exec"] }),
             json!({ "function": "engine::functions::info", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": "laptop" } }),
+            json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_ids": ["shell::exec"], "namespace": null } }),
         ] {
             let call = planned(args);
             assert_eq!(
@@ -1049,6 +1052,7 @@ mod tests {
                 )
             );
         }
+        // The payload's namespace wins; the wrapper's never routes the lookup.
         let both = planned(
             json!({ "function": "engine::functions::info", "namespace": "laptop", "payload": { "function_id": "a::b", "namespace": "hub" } }),
         );
@@ -1057,7 +1061,7 @@ mod tests {
                 both.namespace.as_deref(),
                 both.arguments["namespace"].clone()
             ),
-            (Some("laptop"), json!("hub"))
+            (None, json!("hub"))
         );
     }
 
