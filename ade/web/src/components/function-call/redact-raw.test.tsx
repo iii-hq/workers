@@ -519,3 +519,63 @@ describe('agent activity and prominent injected content', () => {
     expect(html(message)).toContain('compact terminal')
   })
 })
+
+describe('an error output no renderer draws', () => {
+  const failed = {
+    functionId: 'workflow::start',
+    input: { runtime_id: SECRET },
+    output: {
+      error: { kind: 'function_error', message: `rejected ${SECRET}` },
+    },
+  }
+
+  it('renders the error panel above the footer with a raw toggle', () => {
+    const out = html(failed)
+    expect(out).toContain('data-error-card=""')
+    expect(out).toContain('Call failed')
+    expect(out).toContain('Invocation error')
+    expect(out).toContain('Show raw')
+    expect(out.indexOf('data-error-card')).toBeLessThan(
+      out.indexOf('data-function-call-footer'),
+    )
+  })
+
+  it('also draws it when the claiming renderer returns null', () => {
+    register({ isMatch: (f) => f === 'workflow::start' })
+    expect(html(failed)).toContain('data-error-card=""')
+  })
+
+  it('leaves a success output on the JSON fallback', () => {
+    const out = html({ functionId: 'workflow::start' })
+    expect(out).not.toContain('data-error-card')
+    expect(out).not.toContain('Show raw')
+    expect(out).toContain('data-function-call-footer')
+  })
+
+  it('lets an injected renderer that draws the error win', () => {
+    register({
+      isMatch: (f) => f === 'workflow::start',
+      tryRender: () => <span>worker error view</span>,
+    })
+    const out = html(failed)
+    expect(out).toContain('worker error view')
+    expect(out).not.toContain('data-error-card')
+  })
+
+  it('shows the panel through the claiming renderer redactRaw', () => {
+    register({ isMatch: (f) => f === 'workflow::start', redactRaw: maskDeep })
+    const out = html(failed)
+    expect(out).toContain('data-error-card=""')
+    expect(out).not.toContain(SECRET)
+    expect(out).toContain(MASKED)
+  })
+
+  it('leaves redaction of other functions unchanged', () => {
+    register({ redactRaw: maskDeep })
+    expect(rawRedactor(functionCallRenderers(injected), FN)).toBeDefined()
+    expect(
+      rawRedactor(functionCallRenderers(injected), 'workflow::start'),
+    ).toBeUndefined()
+    expect(html(failed)).toContain(SECRET)
+  })
+})

@@ -10,11 +10,20 @@ const GROUP_LABELS: Record<ContextGroup, string> = {
   tickets: 'Tickets',
   prs: 'Pull requests',
   assets: 'Assets',
-  workflow: 'Workflow',
   subagents: 'Sub-agents',
   observers: 'Observers',
   links: 'Links',
   tracking: 'Tracking',
+}
+
+/** The worker named beside a section's title, unless it reads the same. */
+export function sectionSource(section: {
+  scope: string
+  title: string
+}): string | undefined {
+  return section.scope.toLowerCase() === section.title.toLowerCase()
+    ? undefined
+    : section.scope
 }
 
 /** Where a worker's section lands when it asks for no place. */
@@ -181,7 +190,7 @@ export function useContextSections(): ContextSectionInfo[] {
       ...workers.map((section) => ({
         id: section.id,
         label: section.title,
-        source: section.scope,
+        source: sectionSource(section),
         rank: section.order ?? WORKER_DEFAULT_ORDER,
       })),
     ]
