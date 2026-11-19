@@ -995,21 +995,78 @@ fn reopened_context_cannot_import_another_namespace_sentinel() {
     );
     lease.revalidate().unwrap();
 }
+/// R5 (third test). Name preserved from before the LOCK_EX change: catalog
+/// contention is now ordinary serialization, so the acquisition WAITS on an
+/// independently held catalog mutex with no payload effect, completes after an
+/// independent release, and the lifetime sentinel stays nonblocking. The test
+/// never holds the catalog mutex on the thread that acquires it.
 #[test]
 fn mutex_contention_is_nonblocking_and_does_not_touch_payload() {
+    use std::sync::mpsc;
+    use std::time::Duration;
     let f = fixture();
-    let held = f
-        .context
-        .namespace
-        .directory
-        .file("catalog.lock", false)
-        .unwrap();
-    flock(&held).unwrap();
     let root = f.data.join("absent");
-    assert!(f.context.local(&root).is_err());
-    assert!(!root.exists());
-    drop(held);
-    assert!(f.context.local(&root).is_ok());
+    std::thread::scope(|scope| {
+        // Every channel end lives inside this closure: if any assertion panics,
+        // unwinding drops `release_tx`, the holder's `recv` returns, and the
+        // independent holder releases before `scope` joins its threads.
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (result_tx, result_rx) = mpsc::channel();
+        let context = f.context.clone();
+        scope.spawn(move || {
+            let held = context
+                .namespace
+                .directory
+                .file("catalog.lock", false)
+                .unwrap();
+            super::storage::catalog_mutex(&held).unwrap();
+            let _ = ready_tx.send(());
+            let _ = release_rx.recv();
+            drop(held);
+        });
+        ready_rx
+            .recv()
+            .expect("independent holder acquired the catalog mutex");
+        let context = f.context.clone();
+        let path = root.clone();
+        scope.spawn(move || {
+            let _ = started_tx.send(());
+            let _ = result_tx.send(context.local(&path));
+        });
+        started_rx.recv().expect("acquirer thread started");
+        // A timeout is an observation only, never a retry or a process signal.
+        // Release before asserting, so no assertion can strand the holder.
+        let waiting = result_rx.recv_timeout(Duration::from_millis(50));
+        let untouched = !root.exists();
+        release_tx.send(()).unwrap();
+        assert!(
+            matches!(waiting, Err(mpsc::RecvTimeoutError::Timeout)),
+            "catalog acquisition must wait while another description holds it"
+        );
+        assert!(untouched, "no payload effect before serialized acquisition");
+        // Released: the waiting acquisition completes; no deadline is needed.
+        let lease = result_rx
+            .recv()
+            .expect("acquirer reports after release")
+            .expect("serialized acquisition succeeds after independent release");
+        assert!(!root.exists());
+        // The lifetime sentinel, unlike the catalog mutex, is still refused
+        // immediately (LOCK_NB) instead of waiting.
+        let held = f
+            .context
+            .namespace
+            .directory
+            .file(&format!("op-{}", lease.0.id), false)
+            .unwrap();
+        assert_eq!(
+            super::storage::sentinel(&held).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(held);
+        drop(lease);
+    });
 }
 
 fn recovery_request(f: &Fixture, operation: &str, action: RecoveryAction) -> RecoveryRequest {

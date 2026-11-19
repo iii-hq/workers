@@ -175,10 +175,26 @@ pub(super) fn recover_fault_test(
     request: RecoveryRequest,
     at: &str,
 ) -> io::Result<RecoveryReport> {
-    recover_inner(&context.namespace, request, Some(at))
+    recover_inner(&context.namespace, request, Some(at), None)
+}
+/// Per-call typed fault inside the ordinary-log reconcile step of recovery
+/// (`RecoveryObserve`, `RecoverySync`, `RecoveryOutcome`); no global flag.
+#[cfg(test)]
+pub(super) fn recover_log_fault_test(
+    context: &super::AdmissionContext,
+    request: RecoveryRequest,
+    phase: super::log::LogFaultPhase,
+) -> io::Result<RecoveryReport> {
+    recover_inner(&context.namespace, request, None, Some(phase))
 }
 fn recover(ns: &Arc<Namespace>, request: RecoveryRequest) -> io::Result<RecoveryReport> {
-    recover_inner(ns, request, None)
+    recover_inner(
+        ns,
+        request,
+        None,
+        #[cfg(test)]
+        None,
+    )
 }
 fn boundary(fault: Option<&str>, at: &str) -> io::Result<()> {
     if fault == Some(at) {
@@ -190,6 +206,7 @@ fn recover_inner(
     ns: &Arc<Namespace>,
     request: RecoveryRequest,
     fault: Option<&str>,
+    #[cfg(test)] log_fault: Option<super::log::LogFaultPhase>,
 ) -> io::Result<RecoveryReport> {
     if !id_valid(&request.operation_id) || request.expected_record_sha256.len() != 64 {
         return Err(invalid("invalid recovery request"));
@@ -294,7 +311,14 @@ fn recover_inner(
                     .retain(|e| !(e.role == super::PathRole::Endpoint && e.path == endpoint.path));
             }
             tx.save()?;
-            if !super::log::reconcile(&mut resolved)? {
+            #[cfg(test)]
+            let reconciled = match log_fault {
+                Some(phase) => super::log::reconcile_fault(&mut resolved, phase)?,
+                None => super::log::reconcile(&mut resolved)?,
+            };
+            #[cfg(not(test))]
+            let reconciled = super::log::reconcile(&mut resolved)?;
+            if !reconciled {
                 return report(
                     ns,
                     &tx.catalog,
@@ -604,6 +628,13 @@ pub(super) fn validate_archives(ns: &Namespace, catalog: &Catalog) -> io::Result
             }
         }
     }
+    // Reservation structure only; the aggregate budget is an admission rule in
+    // `archive`, so an over-budget request never makes inspect/recovery unusable.
+    for archive in &catalog.archives {
+        if let Some(reservation) = &archive.reservation {
+            validate_reservation(archive, reservation)?;
+        }
+    }
     let names = ns.archive.names()?;
     let mut bytes = 0u64;
     for name in &names {
@@ -652,6 +683,127 @@ fn rename_noreplace(
         ))
     }
 }
+const ARCHIVE_NAME_BUDGET: usize = 2048; // same bound as Directory::names, never raised
+const ARCHIVE_BYTE_BUDGET: u64 = 128 * 1024 * 1024; // same bound validate_archives enforces
+type ArchiveNames = std::collections::BTreeMap<String, u64>;
+fn expected_archive_names(a: &ArchiveRecord) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::from([
+        format!("{}.json", a.operation),
+        format!("op-{}", a.operation),
+    ]);
+    if !a.complete {
+        names.insert(format!("{}.stage", a.operation));
+    }
+    names.extend(a.endpoints.iter().map(|e| format!("ep-{}", e.id)));
+    names.extend(a.runtimes.iter().map(|r| format!("rt-{}", r.id)));
+    names
+}
+/// Structural check only: a reservation names exactly its record's archive
+/// names. Never an aggregate budget check, so it cannot wedge transactions.
+fn validate_reservation(
+    a: &ArchiveRecord,
+    reservation: &super::catalog::ArchiveReservation,
+) -> io::Result<()> {
+    if reservation.names.len() > ARCHIVE_NAME_BUDGET
+        || reservation.names.values().any(|n| *n > ARCHIVE_BYTE_BUDGET)
+        || reservation
+            .names
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            != expected_archive_names(a)
+    {
+        return Err(invalid(
+            "archive reservation does not match exact record names",
+        ));
+    }
+    Ok(())
+}
+/// Union by name: a name already present or reserved counts once, at its
+/// largest observed/reserved size.
+fn add_names(union: &mut ArchiveNames, names: impl IntoIterator<Item = (String, u64)>) {
+    for (name, bytes) in names {
+        let previous = union.entry(name).or_insert(0);
+        *previous = (*previous).max(bytes);
+    }
+}
+fn within_budget(union: &ArchiveNames) -> io::Result<()> {
+    let bytes = union
+        .values()
+        .try_fold(0u64, |sum, n| sum.checked_add(*n).ok_or_else(limit))?;
+    if union.len() > ARCHIVE_NAME_BUDGET || bytes > ARCHIVE_BYTE_BUDGET {
+        return Err(limit());
+    }
+    Ok(())
+}
+fn merge_reservation(
+    union: &mut ArchiveNames,
+    names: impl IntoIterator<Item = (String, u64)>,
+) -> io::Result<()> {
+    add_names(union, names);
+    within_budget(union)
+}
+/// Exact union of names already in `archive/` and names durably reserved by
+/// archive records (incomplete ones include their stage). Used only to admit a
+/// new or resumed archive, never as a validation precondition.
+fn archive_usage(ns: &Namespace, catalog: &Catalog) -> io::Result<ArchiveNames> {
+    let mut union = ArchiveNames::new();
+    for name in ns.archive.names()? {
+        let length = ns.archive.file(&name, false)?.metadata()?.len();
+        add_names(&mut union, [(name, length)]);
+    }
+    for a in &catalog.archives {
+        if let Some(reservation) = &a.reservation {
+            validate_reservation(a, reservation)?;
+            add_names(&mut union, reservation.names.clone());
+        } else if !a.complete {
+            // Legacy in-flight work is not silently unreserved: count its exact
+            // current bundle, stage and sentinels before admitting other work.
+            let op = catalog
+                .operations
+                .iter()
+                .find(|op| op.id == a.operation)
+                .ok_or_else(|| invalid("archive reservation source missing"))?;
+            let reservation =
+                reservation_for(ns, op, a.endpoints.clone(), a.runtimes.clone(), &a.digest)?;
+            add_names(&mut union, reservation.names);
+        }
+    }
+    Ok(union)
+}
+fn reservation_for(
+    ns: &Namespace,
+    op: &Operation,
+    endpoints: Vec<EndpointRecord>,
+    runtimes: Vec<super::catalog::RuntimeRecord>,
+    sha: &str,
+) -> io::Result<super::catalog::ArchiveReservation> {
+    let bundle = ArchiveBundle {
+        version: 1,
+        operation: op.clone(),
+        endpoints: endpoints.clone(),
+        runtimes: runtimes.clone(),
+        record_sha256: sha.into(),
+    };
+    let bytes = json_bytes(&bundle)? as u64;
+    let mut names = std::collections::BTreeMap::from([
+        (format!("{}.stage", op.id), bytes),
+        (format!("{}.json", op.id), bytes),
+    ]);
+    for name in std::iter::once(format!("op-{}", op.id))
+        .chain(endpoints.iter().map(|e| format!("ep-{}", e.id)))
+        .chain(runtimes.iter().map(|r| format!("rt-{}", r.id)))
+    {
+        let file = match ns.directory.file(&name, false) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => ns.archive.file(&name, false)?,
+            Err(e) => return Err(e),
+        };
+        Identity::of(&file)?.regular(ns.uid)?;
+        names.insert(name, file.metadata()?.len());
+    }
+    Ok(super::catalog::ArchiveReservation { names })
+}
 fn archive(
     ns: &Namespace,
     tx: &mut super::catalog::Transaction<'_>,
@@ -696,44 +848,68 @@ fn archive(
         return Err(busy());
     }
     let sha = digest(op)?;
-    if let Some(prior) = tx.catalog.archives.iter().find(|a| a.operation == op.id) {
-        if prior.digest != sha {
-            return Err(invalid("archive intent digest mismatch"));
+    let reservation = reservation_for(ns, op, endpoints.clone(), runtimes.clone(), &sha)?;
+    // Aggregate name/byte budget BEFORE any intent or effect, in this one catalog
+    // transaction: names already in `archive/`, every durable reservation
+    // (in-flight stages included) and this operation's bundle, temporary stage
+    // and sentinels. Idempotent names count once. Refusal is limit(), never
+    // busy(), and leaves the catalog untouched.
+    let mut budget = archive_usage(ns, &tx.catalog)?;
+    merge_reservation(&mut budget, reservation.names.clone())?;
+    let prior = tx
+        .catalog
+        .archives
+        .iter()
+        .find(|a| a.operation == op.id)
+        .map(|a| (a.digest.clone(), a.reservation.clone()));
+    match prior {
+        Some((prior_digest, reserved)) => {
+            if prior_digest != sha {
+                return Err(invalid("archive intent digest mismatch"));
+            }
+            match reserved {
+                // Resume reuses the durable reservation: the recomputed exact
+                // names are the same set and never larger than what was reserved.
+                Some(reserved) => {
+                    if reserved.names.len() != reservation.names.len()
+                        || reservation
+                            .names
+                            .iter()
+                            .any(|(name, bytes)| reserved.names.get(name).is_none_or(|r| bytes > r))
+                    {
+                        return Err(invalid("archive resume exceeds its durable reservation"));
+                    }
+                }
+                // Legacy in-flight intent: reserve durably before any new effect.
+                None => {
+                    tx.catalog
+                        .archives
+                        .iter_mut()
+                        .find(|a| a.operation == op.id)
+                        .ok_or_else(|| invalid("archive intent missing"))?
+                        .reservation = Some(reservation);
+                    tx.save()?;
+                }
+            }
         }
-    } else {
-        if tx.catalog.archives.len() >= MAX_ARCHIVES {
-            return Err(limit());
+        None => {
+            if tx.catalog.archives.len() >= MAX_ARCHIVES {
+                return Err(limit());
+            }
+            tx.catalog.archives.push(ArchiveRecord {
+                operation: op.id.clone(),
+                digest: sha.clone(),
+                metadata: None,
+                sentinel: op.sentinel.clone(),
+                endpoints: endpoints.clone(),
+                runtimes: runtimes.clone(),
+                complete: false,
+                reservation: Some(reservation),
+            });
+            tx.save()?;
         }
-        tx.catalog.archives.push(ArchiveRecord {
-            operation: op.id.clone(),
-            digest: sha.clone(),
-            metadata: None,
-            sentinel: op.sentinel.clone(),
-            endpoints: endpoints.clone(),
-            runtimes: runtimes.clone(),
-            complete: false,
-        });
-        tx.save()?;
     }
     boundary(fault, "archive-intent")?;
-    let existing_bytes =
-        ns.archive
-            .names()?
-            .iter()
-            .try_fold(0u64, |total, name| -> io::Result<u64> {
-                Ok(total
-                    .checked_add(ns.archive.file(name, false)?.metadata()?.len())
-                    .ok_or_else(limit)?)
-            })?;
-    // Envelope escaping may double the serialized payload; reserve the full
-    // per-record cap before staging, rather than crossing the archive limit.
-    if existing_bytes
-        .checked_add(MAX_BYTES as u64)
-        .ok_or_else(limit)?
-        > 128 * 1024 * 1024
-    {
-        return Err(limit());
-    }
     let stage_name = format!("{}.stage", op.id);
     let final_name = format!("{}.json", op.id);
     if !ns.archive.path.join(&final_name).try_exists()? {
@@ -825,11 +1001,21 @@ fn archive(
     tx.catalog.operations.retain(|p| p.id != op.id);
     tx.catalog.endpoints.retain(|e| e.operation != op.id);
     tx.catalog.runtimes.retain(|r| r.operation != op.id);
-    tx.catalog
+    let complete = tx
+        .catalog
         .archives
         .iter_mut()
         .find(|a| a.operation == op.id)
-        .ok_or_else(|| invalid("archive intent missing"))?
-        .complete = true;
+        .ok_or_else(|| invalid("archive intent missing"))?;
+    complete.complete = true;
+    // The temporary stage name is released in the same transaction that marks
+    // completion; the final bundle and moved sentinels stay reserved/counted.
+    if let Some(reservation) = &mut complete.reservation {
+        reservation.names.remove(&format!("{}.stage", op.id));
+    }
     tx.save()
 }
+
+#[cfg(test)]
+#[path = "archive_budget_tests.rs"]
+mod archive_budget_tests;

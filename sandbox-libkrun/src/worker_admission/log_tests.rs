@@ -357,3 +357,146 @@ async fn log_final_pump_after_actual_reap_finishes_without_prior_files_blocking_
     remove.commit().unwrap();
     assert!(!f.root.exists());
 }
+
+#[test]
+fn correction_log_typed_effect_and_sync_boundaries_are_distinct_and_sticky() {
+    // "ABCDE" exceeds cap 3, so one append walks every effect boundary in order.
+    let order = [
+        LogFaultPhase::Intent,
+        LogFaultPhase::Append,
+        LogFaultPhase::CurrentSync,
+        LogFaultPhase::RotationCopy,
+        LogFaultPhase::RotationSync,
+        LogFaultPhase::CurrentReset,
+        LogFaultPhase::ResetSync,
+        LogFaultPhase::Outcome,
+    ];
+    for (at, phase) in order.iter().copied().enumerate() {
+        let f = fixture();
+        let writer = writer(&f, 3);
+        writer.inject_fault(phase);
+        assert!(writer.append(b"ABCDE").is_err());
+        let reached = writer.observed_phases();
+        assert_eq!(reached, order[..=at].to_vec());
+        // Sticky terminal failure: no retry reaches another boundary.
+        assert!(writer.append(b"not-retried").is_err());
+        assert_eq!(writer.observed_phases(), reached);
+        let tx = f.context.namespace.transaction().unwrap();
+        let op = tx.operation(&f.lease.0.id).unwrap();
+        assert!(op.uncertain);
+        assert_eq!(op.logs[0].phase, LogPhase::Failed);
+        // Every pre-outcome boundary leaves the durable intent unresolved.
+        assert!(op.logs[0].pending.is_some());
+        drop(tx);
+        assert!(writer.finish().is_err());
+    }
+}
+#[test]
+fn correction_log_finish_reopen_recovery_have_separate_fault_oracles() {
+    let f = fixture();
+    let log = writer(&f, 32);
+    log.append(b"data").unwrap();
+    log.inject_fault(LogFaultPhase::FinishSync);
+    assert!(log.finish().is_err());
+    {
+        // Both files were flushed, but the Finished record never ran.
+        let tx = f.context.namespace.transaction().unwrap();
+        let op = tx.operation(&f.lease.0.id).unwrap();
+        assert_ne!(op.logs[0].phase, LogPhase::Finished);
+        assert!(op.uncertain);
+    }
+    assert!(f.lease.revalidate().is_err());
+    let f = fixture();
+    let log = writer(&f, 32);
+    log.append(b"data").unwrap();
+    let cursor = log.finish().unwrap();
+    assert!(
+        f.lease
+            .open_log_fault(
+                LogSpec {
+                    current: &f.current,
+                    previous: Some(&f.old),
+                    cap_bytes: 32,
+                },
+                LogFaultPhase::Reopen,
+            )
+            .is_err()
+    );
+    // The injected reopen refusal had no catalog effect: a real reopen resumes.
+    let log = writer(&f, 32);
+    assert_eq!(log.cursor().unwrap(), cursor);
+    log.finish().unwrap();
+    for phase in [
+        LogFaultPhase::RecoveryObserve,
+        LogFaultPhase::RecoverySync,
+        LogFaultPhase::RecoveryOutcome,
+    ] {
+        let f = fixture();
+        let log = writer(&f, 32);
+        log.inject_fault(LogFaultPhase::Outcome);
+        assert!(log.append(b"once").is_err());
+        let tx = f.context.namespace.transaction().unwrap();
+        let mut operation = tx.operation(&f.lease.0.id).unwrap().clone();
+        drop(tx);
+        let before = operation.logs[0].cursor.clone();
+        assert!(reconcile_fault(&mut operation, phase).is_err());
+        assert_eq!(operation.logs[0].cursor, before);
+        assert!(operation.logs[0].pending.is_some());
+        assert_ne!(operation.logs[0].phase, LogPhase::Finished);
+        assert_eq!(fs::read(&f.current).unwrap(), b"once");
+    }
+}
+#[test]
+fn correction_recovery_driver_log_fault_is_per_call_and_never_finishes_the_record() {
+    use crate::worker_admission::{RecoveryAction, RecoveryRequest};
+    fn request(
+        context: &crate::worker_admission::AdmissionContext,
+        operation: &str,
+    ) -> RecoveryRequest {
+        let tx = context.namespace.transaction().unwrap();
+        RecoveryRequest {
+            operation_id: operation.into(),
+            expected_record_sha256: crate::worker_admission::recovery::digest(
+                tx.operation(operation).unwrap(),
+            )
+            .unwrap(),
+            action: RecoveryAction::ReconcileVerified,
+        }
+    }
+    for phase in [
+        LogFaultPhase::RecoveryObserve,
+        LogFaultPhase::RecoverySync,
+        LogFaultPhase::RecoveryOutcome,
+    ] {
+        let f = fixture();
+        let log = writer(&f, 32);
+        log.inject_fault(LogFaultPhase::Outcome);
+        assert!(log.append(b"once").is_err());
+        drop(log);
+        let Fixture {
+            _temp,
+            context,
+            lease,
+            current,
+            ..
+        } = f;
+        let operation = lease.0.id.clone();
+        // The lifecycle sentinel must be free for explicit recovery.
+        drop(lease);
+        assert!(
+            testing::recover_log_fault(&context, request(&context, &operation), phase).is_err()
+        );
+        {
+            let tx = context.namespace.transaction().unwrap();
+            let op = tx.operation(&operation).unwrap();
+            assert!(op.logs[0].pending.is_some());
+            assert_ne!(op.logs[0].phase, LogPhase::Finished);
+            assert!(!op.closed);
+        }
+        // The fault was per call: the same recovery without it proves the
+        // durable effect exactly once and completes.
+        let report = testing::recover(&context, request(&context, &operation)).unwrap();
+        assert_eq!(serde_json::to_value(report).unwrap()["status"], "completed");
+        assert_eq!(fs::read(&current).unwrap(), b"once");
+    }
+}

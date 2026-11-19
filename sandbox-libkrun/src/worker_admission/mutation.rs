@@ -532,6 +532,8 @@ impl MutationGuard {
             intents: Vec::new(),
             permissions: Vec::new(),
             payload: None,
+            stage_completions: Vec::new(),
+            image_pair: None,
             epoch,
             committed: false,
             changes: Vec::new(),
@@ -855,14 +857,15 @@ impl MutationGuard {
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
             mode,
         )?;
-        let cache_writer_fence = self
-            .lease
-            .0
-            .namespace
-            .transaction()?
-            .operation(&self.lease.0.id)?
-            .cache
-            .is_some();
+        let cache_writer_fence = self.plan == "image-pair"
+            || self
+                .lease
+                .0
+                .namespace
+                .transaction()?
+                .operation(&self.lease.0.id)?
+                .cache
+                .is_some();
         if cache_writer_fence {
             sentinel(&file)?;
         }
@@ -1129,6 +1132,77 @@ impl MutationGuard {
         }
         self.complete_intent(&top, None)
     }
+    /// ImagePair only: record one exact completed stage AFTER `settle_cache_stage`
+    /// proved that no writer clone still shares the stage OFD. Bytes are hashed
+    /// before the catalog transaction; the catalog mutex never covers file I/O.
+    fn record_stage_completion(&self, stage: &StagedFile) -> io::Result<()> {
+        use sha2::Digest;
+        if self.plan != "image-pair" {
+            return Ok(());
+        }
+        if !stage.cache_writer_fence {
+            return Err(invalid("ImagePair stage lacks owned FD completion"));
+        }
+        if stage.owner != self.id
+            || stage.operation != self.lease.0.id
+            || !Arc::ptr_eq(&stage.namespace, &self.lease.0.namespace)
+            || !self.stages.iter().any(|t| t == &stage.token)
+        {
+            return Err(invalid(
+                "ImagePair completion requires this mutation's own stage",
+            ));
+        }
+        stage.file.sync_all()?;
+        let before = stage.file.metadata()?;
+        if Identity::metadata(&before) != stage.identity {
+            return Err(invalid("ImagePair stage identity changed"));
+        }
+        let mut hash = sha2::Sha256::new();
+        let mut bytes = [0u8; 65536];
+        let mut at = 0u64;
+        while at < before.len() {
+            let n = (before.len() - at).min(bytes.len() as u64) as usize;
+            stage.file.read_exact_at(&mut bytes[..n], at)?;
+            hash.update(&bytes[..n]);
+            at += n as u64;
+        }
+        let after = stage.file.metadata()?;
+        if Identity::metadata(&before) != Identity::metadata(&after)
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return Err(invalid("ImagePair stage changed after writer completion"));
+        }
+        let completion = super::catalog::StageCompletion {
+            stage: HostPath::new(&stage.path)?,
+            slot: HostPath::new(&stage.target)?,
+            identity: Identity::metadata(&after),
+            bytes: after.len(),
+            sha256: hex::encode(hash.finalize()),
+        };
+        let mut tx = self.lease.0.namespace.transaction()?;
+        let journal = tx
+            .operation_mut(&self.lease.0.id)?
+            .journals
+            .iter_mut()
+            .find(|j| j.id == self.id)
+            .ok_or_else(|| invalid("ImagePair journal missing"))?;
+        if journal
+            .stage_completions
+            .iter()
+            .any(|c| c.stage == completion.stage)
+        {
+            return Err(invalid("stage completion already consumed"));
+        }
+        if journal.stage_completions.len() >= 256 {
+            return Err(limit());
+        }
+        journal.stage_completions.push(completion);
+        tx.save()
+    }
     fn discard_file_inner(&mut self, stage: StagedFile) -> io::Result<()> {
         self.checkpoint()?;
         let stage = settle_cache_stage(stage)?;
@@ -1143,6 +1217,7 @@ impl MutationGuard {
             ));
         }
         self.target(&stage.target)?;
+        self.record_stage_completion(&stage)?;
         if self.spool.as_ref().is_some_and(|p| p != &stage.target) {
             return Err(invalid(
                 "EROFS discard is restricted to its exact spool slot",
@@ -1286,6 +1361,29 @@ impl MutationGuard {
         }
         stage.file.sync_all()?;
         let stage = settle_cache_stage(stage)?;
+        if self.plan == "image-pair" {
+            let image = self.root.join("image.erofs");
+            let id = self.root.join("image.id");
+            let spool = self.root.join("image.spool");
+            let tx = self.lease.0.namespace.transaction()?;
+            let journal = tx
+                .operation(&self.lease.0.id)?
+                .journals
+                .iter()
+                .find(|j| j.id == self.id)
+                .ok_or_else(|| invalid("ImagePair journal missing"))?;
+            if (stage.target == image || stage.target == id)
+                && journal
+                    .disposals
+                    .iter()
+                    .any(|d| !d.discarded && d.slot.get().is_ok_and(|p| p == spool))
+            {
+                return Err(invalid(
+                    "ImagePair cannot publish while its spool discard is unresolved",
+                ));
+            }
+        }
+        self.record_stage_completion(&stage)?;
         self.publish(
             &stage.owner,
             &stage.token,
@@ -1433,6 +1531,24 @@ impl MutationGuard {
             return Err(invalid("unpublished stages remain"));
         }
         self.checkpoint()?;
+        // The ImagePair proof rereads and hashes the published pair BEFORE the
+        // commit transaction, so file I/O never runs under the catalog mutex. The
+        // commit then binds exactly the journal state that proof was derived from.
+        let pair = if self.plan == "image-pair" {
+            let snapshot = {
+                let tx = self.lease.0.namespace.transaction()?;
+                tx.operation(&self.lease.0.id)?
+                    .journals
+                    .iter()
+                    .find(|j| j.id == self.id)
+                    .cloned()
+                    .ok_or_else(|| invalid("missing journal"))?
+            };
+            let proof = super::image_pair::completed_pair(&snapshot)?;
+            Some((super::recovery::digest(&snapshot)?, proof))
+        } else {
+            None
+        };
         let mut tx = self.lease.0.namespace.transaction()?;
         let op = tx.operation_mut(&self.lease.0.id)?;
         if op.uncertain {
@@ -1466,6 +1582,12 @@ impl MutationGuard {
             return Err(invalid("unresolved stage discard"));
         }
         let disposals = journal.disposals.clone();
+        if let Some((snapshot, proof)) = pair {
+            if super::recovery::digest(&*journal)? != snapshot {
+                return Err(invalid("ImagePair journal changed during completion proof"));
+            }
+            journal.image_pair = proof;
+        }
         journal.committed = true;
         op.holds.retain(|h| h.id != self.id);
         tx.save()?;

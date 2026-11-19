@@ -808,6 +808,30 @@ impl Drop for RuntimeChild {
         }
     }
 }
+#[cfg(test)]
+impl RuntimeChild {
+    /// Explicit own-context activation for core test modules outside `runtime`:
+    /// imports the ACTUAL inherited runtime OFD in-process, exactly like the
+    /// existing `runtime_tests` wait fixture. It mints no receipt; the real
+    /// `wait` still issues retirement. Not evidence of the production
+    /// cross-exec import journey.
+    pub(super) fn activate_own_context_for_test(&self) -> io::Result<()> {
+        let exported = self.lease.export_child()?;
+        let context = super::AdmissionContext {
+            namespace: self.lease.0.namespace.clone(),
+        };
+        let imported = context.import_child(exported.duplicate_for_exec()?)?;
+        let sentinel = self
+            .sentinel
+            .as_ref()
+            .ok_or_else(|| invalid("runtime sentinel already released"))?;
+        let writer = import_runtime_writer(&imported, duplicate(sentinel)?)?;
+        drop(writer);
+        drop(imported);
+        drop(exported);
+        Ok(())
+    }
+}
 pub(crate) fn import_runtime_writer(admission: &Lease, fd: OwnedFd) -> io::Result<RuntimeWriter> {
     let file = File::from(fd);
     let identity = Identity::of(&file)?;

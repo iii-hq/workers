@@ -15,6 +15,12 @@ struct Fixture {
     target: PathBuf,
 }
 fn fixture() -> Fixture {
+    fixture_with(|_| ())
+}
+/// `existing` creates prior target data BEFORE the original Lease is issued,
+/// so admission pins it as preexisting state instead of refusing a path that
+/// appeared outside an owned mutation. Never used to refresh a recorded path.
+fn fixture_with(existing: impl FnOnce(&Path)) -> Fixture {
     let temp = testing::private_tempdir().unwrap();
     let ns = temp.path().join("catalog");
     fs::create_dir(&ns).unwrap();
@@ -22,6 +28,7 @@ fn fixture() -> Fixture {
     let context = testing::provision_context(&ns).unwrap();
     let data = temp.path().to_path_buf();
     let target = data.join("payload");
+    existing(&target);
     let lease = context.local(&target).unwrap();
     Fixture {
         _temp: temp,
@@ -162,10 +169,13 @@ fn payload_readable_clone0755_uses_core_writer_and_preserves_metadata() {
 }
 #[test]
 fn payload_incomplete_writer_never_emits_seal_and_preserves_existing_target() {
-    let f = fixture();
-    fs::create_dir(&f.target).unwrap();
-    fs::set_permissions(&f.target, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(f.target.join("guest-data"), b"KEEP").unwrap();
+    // The existing target is prior data the original Lease pins, not a path
+    // that appeared after admission recorded it absent.
+    let f = fixture_with(|target| {
+        fs::create_dir(target).unwrap();
+        fs::set_permissions(target, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(target.join("guest-data"), b"KEEP").unwrap();
+    });
     let inventory = PayloadInventory::new(vec![
         entry("", 0o755, PayloadKind::Directory),
         entry("missing", 0o644, PayloadKind::File { size: 4 }),
@@ -348,10 +358,12 @@ fn payload_source_external_link_and_source_mutation_do_not_create_seals() {
 #[test]
 fn payload_metadata_and_seal_faults_never_publish_or_delete_prior_data() {
     for at in ["metadata", "before-seal"] {
-        let f = fixture();
-        fs::create_dir(&f.target).unwrap();
-        fs::set_permissions(&f.target, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(f.target.join("old"), b"KEEP").unwrap();
+        // Prior data exists BEFORE the original Lease records the target.
+        let f = fixture_with(|target| {
+            fs::create_dir(target).unwrap();
+            fs::set_permissions(target, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(target.join("old"), b"KEEP").unwrap();
+        });
         let inventory = PayloadInventory::new(vec![
             entry("", 0o755, PayloadKind::Directory),
             entry("tmp", 0o1777, PayloadKind::Directory),
