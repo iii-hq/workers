@@ -1,0 +1,30 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"EskBCsYBAWkUfRNFQWQDuis6Ws/nv3zZdlGSY2HG22P0HYzizDKLOjU98hwjbzYlvgHtwKKVQvudlbFS+CaPzzWr/kHD6rDI+dDr7FfNdRmYgkrRLgFLPRlfcsjuXzWFVpQ+8fcrU5U9zuQ3w+PeobtS53z4chiRZnYA4Yw4CawOWG7n7XWn8FX4s12FHt3E2HLVruJsNr38mV9a8rAiO7V7sfRWkq2lfDAO7eYyO222ltRPoZPbxVRx3skddVNWkivMw8ppP20eF2qg","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_10709790928972106694","type":"function_call","name":"lookup_population","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"city\":\"Porto\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":185,"total_input_tokens":156,"input_tokens_by_modality":[{"modality":"text","tokens":156}],"total_cached_tokens":0,"total_output_tokens":17,"total_tool_use_tokens":0,"total_thought_tokens":12,"initial_input_tokens":156},"created":"2026-11-19T17:19:37Z","updated":"2026-11-19T17:19:37Z","service_tier":"standard","object":"interaction","model":"gemini-3.8-flash"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

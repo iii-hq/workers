@@ -1,0 +1,246 @@
+//! Boot wiring: function surface, the router::on-ready observer, and the
+//! declare-with-backoff loop (spec § Registration lifecycle).
+use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS, upstream_timeout};
+use crate::discovery::{make_refresh_models, refresh_models};
+use crate::errors::invalid_request_from_serde;
+use crate::stream_fn::make_stream;
+use crate::surface;
+use crate::{PROVIDER_ID, router_client, state};
+use iii_sdk::errors::Error;
+use iii_sdk::{IIIClient, RegisterFunction};
+use llm_router::provider_scaffold::aborts::{StreamAborts, make_abort};
+use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
+use llm_router::types::router::{
+    ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
+};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+/// Env var the router (and, as a fallback, this provider) reads for the key.
+pub const CREDENTIAL_ENV_VAR: &str = "GEMINI_API_KEY";
+
+pub fn declaration() -> ProviderDeclaration {
+    ProviderDeclaration {
+        id: PROVIDER_ID.into(),
+        display_name: Some("Google Gemini".into()),
+        credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
+        defaults: Some(ProviderDefaults {
+            api_url: Some(DEFAULT_API_URL.into()),
+            max_tokens: Some(DEFAULT_MAX_TOKENS),
+            extra: BTreeMap::new(),
+        }),
+        config_schema: None, // the router's default {api_key, api_url, max_tokens}
+        // `GET /models` exists upstream; this also gates the router's
+        // refresh-on-config-change call, which must fire so the slice appears
+        // the moment an operator adds a key.
+        supports_model_listing: Some(true),
+        // Feeds router::provider::list `default_model`: the router ranks the
+        // variants these name (`flash`, then `hydrogen`) and takes the newest
+        // slice model of the best one, listed or not.
+        default_models: Some(vec![
+            "gemini-3.8-flash".into(),
+            "gemini-3.6-flash".into(),
+            "gemini-4-hydrogen".into(),
+        ]),
+        default_thinking_level: None,
+        context_overflow_hint: None,
+        credential_optional: None,
+        // No static slice: refresh_models discovers the catalog right after
+        // registration (see declare_and_refresh), gated on a configured
+        // credential — no key → empty slice, so the picker never shows
+        // unusable rows.
+        models: None,
+        // Self-reported; availability mapping only, never authorization.
+        worker_id: Some("provider-gemini".into()),
+        // The mark the console paints beside this provider's models; the
+        // router carries it verbatim in `router::provider::list`.
+        icon_svg: Some(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
+        ),
+    }
+}
+
+/// One registration attempt: declare (with the persisted token when present)
+/// and persist the token the router returns.
+pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
+    let token = state::load_token(iii).await;
+    let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
+    if let Some(t) = &token {
+        payload["token"] = json!(t);
+    }
+    let resp = router_client::register(iii, payload).await?;
+    if let Some(t) = resp.get("registration_token").and_then(Value::as_str)
+        && token.as_deref() != Some(t)
+    {
+        persist_registration_token(iii, t).await?;
+    }
+    Ok(())
+}
+
+async fn persist_registration_token(iii: &IIIClient, token: &str) -> Result<(), Error> {
+    let mut delay = Duration::from_millis(200);
+    for attempt in 0..5 {
+        match state::store_token(iii, token).await {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < 4 => {
+                eprintln!(
+                    "[provider-gemini] store registration_token failed ({e}); retrying in {delay:?}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(2));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("persist_registration_token loop always returns");
+}
+
+/// Retry until acknowledged: covers provider-before-router boot order.
+/// A token mismatch also lands here — it never resolves on its own and
+/// needs the operator to clear the binding (logged every attempt).
+pub async fn declare_with_backoff(iii: IIIClient) {
+    let mut delay = Duration::from_millis(500);
+    loop {
+        match declare_once(&iii).await {
+            Ok(()) => {
+                println!("[provider-gemini] registered with llm-router");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[provider-gemini] register failed ({e}); retrying in {delay:?}");
+            }
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(10));
+    }
+}
+
+/// Register, then discover the catalog. The declaration carries no models, so
+/// the slice is empty until this refresh lands; failures are logged and left
+/// to the next config-change refresh.
+pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
+    declare_with_backoff(iii.clone()).await;
+    match refresh_models(&iii, &http).await {
+        Ok(count) => println!("[provider-gemini] catalog refreshed: {count} models"),
+        Err(e) => eprintln!("[provider-gemini] post-register refresh failed ({e})"),
+    }
+}
+
+pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
+    // Shared per-process cache for the registration token and the resolve
+    // response (see llm_router::provider_scaffold::cache). Invalidated on
+    // router::on-ready — a restarted router may carry new config and reissues
+    // declare/refresh anyway — and on upstream auth errors (stream_fn).
+    let cache = ScaffoldCache::new();
+    // Streaming uses no total timeout (the router owns stream budgets), but
+    // reads are silence-bounded: a stalled upstream otherwise pings the router
+    // past its idle guard until the engine kills the call at stream_timeout.
+    // Keepalive comments count as reads, so upstream.rs also enforces this
+    // budget until generation actually starts.
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(upstream_timeout())
+        .build()
+        .expect("reqwest client");
+
+    // request_id → live upstream cancel, shared by stream (registers) and
+    // abort (signals) — see llm_router::provider_scaffold::aborts.
+    let aborts = StreamAborts::new();
+
+    iii.register_function(
+        surface::STREAM_ID,
+        typed_async_with_bad_request(
+            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
+            invalid_request_from_serde,
+        )
+        .description(surface::STREAM_DESC)
+        .metadata(json!({ "internal": true })),
+    );
+    iii.register_function(
+        surface::ABORT_ID,
+        typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
+            .description(surface::ABORT_DESC)
+            .metadata(json!({ "internal": true })),
+    );
+    iii.register_function(
+        surface::REFRESH_MODELS_ID,
+        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone()))
+            .description(surface::REFRESH_MODELS_DESC)
+            .metadata(json!({ "internal": true })),
+    );
+
+    // Re-declare whenever the router starts: this handler is the target of
+    // the worker's observer of router::on-ready (observed below).
+    {
+        let iii_ready = iii.clone();
+        let http_ready = http.clone();
+        let cache_ready = cache.clone();
+        iii.register_function(
+            surface::ON_ROUTER_READY_ID,
+            RegisterFunction::new_async(move |_event: RouterReadyEvent| {
+                let (iii, http) = (iii_ready.clone(), http_ready.clone());
+                cache_ready.invalidate();
+                async move {
+                    tokio::spawn(declare_and_refresh(iii, http));
+                    Ok::<_, Error>(ProviderReadyAck { ok: true })
+                }
+            })
+            .description(surface::ON_ROUTER_READY_DESC)
+            .metadata(json!({ "internal": true })),
+        );
+    }
+    // The observer outlives router restarts: it waits `pending` while
+    // llm-router is down, and every router start's ready event reaches it.
+    observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
+
+    // Boot declare, off the boot path (a missing router must not block boot).
+    tokio::spawn(declare_and_refresh(iii, http));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declaration;
+
+    #[test]
+    fn declaration_uses_credential_env_var_const() {
+        assert_eq!(super::CREDENTIAL_ENV_VAR, "GEMINI_API_KEY");
+        assert_eq!(
+            declaration().credential_env_var.as_deref(),
+            Some(super::CREDENTIAL_ENV_VAR)
+        );
+    }
+
+    #[test]
+    fn declaration_defaults_point_at_the_documented_endpoint() {
+        let defaults = declaration().defaults.expect("declared defaults");
+        assert_eq!(
+            defaults.api_url.as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/interactions")
+        );
+        assert_eq!(declaration().supports_model_listing, Some(true));
+        assert!(declaration().models.is_none(), "catalog comes from refresh");
+    }
+
+    #[test]
+    fn declaration_names_gemini_with_its_default_models() {
+        let d = declaration();
+        assert_eq!(d.id, "gemini");
+        assert_eq!(d.display_name.as_deref(), Some("Google Gemini"));
+        assert_eq!(
+            d.default_models.as_deref(),
+            Some(
+                &[
+                    "gemini-3.8-flash".to_string(),
+                    "gemini-3.6-flash".to_string(),
+                    "gemini-4-hydrogen".to_string(),
+                ][..]
+            )
+        );
+        assert_eq!(d.default_thinking_level, None);
+        assert_eq!(d.worker_id.as_deref(), Some("provider-gemini"));
+    }
+}

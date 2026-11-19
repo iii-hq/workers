@@ -1,0 +1,36 @@
+event: interaction.created
+data: {"interaction":{"object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.created"}
+
+event: interaction.status_update
+data: {"status":"in_progress","event_type":"interaction.status_update"}
+
+event: step.start
+data: {"index":0,"step":{"type":"thought"},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":0,"delta":{"content":{"text":"**Defining the Lisbon Route**\n\nI'm focusing now on understanding the user's ultimate goal: crafting a perfect one-day Lisbon walking route. I need to balance scenic beauty, historical interest, and ease of navigation, all while considering potential weather impacts. Using the `get_weather` tool seems crucial for a safe and enjoyable journey.\n\n\n","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"content":{"text":"**Analyzing Route Priorities**\n\nI'm now deep-diving into the practicalities. The \"City of Seven Hills\" is a very real factor. Cobblestone streets and the spread-out neighborhoods are all key. I'm weighing the value of a Belém visit (Jerónimos, Tower) against a focused historic core walking tour (Alfama, Baixa, Chiado, Bairro Alto). I need to highlight the uphill versus downhill challenges.\n\n\n","type":"text"},"type":"thought_summary"},"event_type":"step.delta"}
+
+event: step.delta
+data: {"index":0,"delta":{"signature":"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","type":"thought_signature"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":0,"event_type":"step.stop"}
+
+event: step.start
+data: {"index":1,"step":{"id":"call_15365121779638325276","type":"function_call","name":"get_weather","arguments":{}},"event_type":"step.start"}
+
+event: step.delta
+data: {"index":1,"delta":{"arguments":"{\"city\":\"Lisbon\"}","type":"arguments_delta"},"event_type":"step.delta"}
+
+event: step.stop
+data: {"index":1,"event_type":"step.stop"}
+
+event: interaction.completed
+data: {"interaction":{"status":"requires_action","usage":{"total_tokens":642,"total_input_tokens":121,"input_tokens_by_modality":[{"modality":"text","tokens":121}],"total_cached_tokens":0,"total_output_tokens":23,"output_tokens_by_modality":[{"modality":"text","tokens":23}],"total_tool_use_tokens":0,"total_thought_tokens":498,"initial_input_tokens":121},"created":"2026-11-19T17:18:40Z","updated":"2026-11-19T17:18:40Z","service_tier":"standard","object":"interaction","model":"gemini-4-hydrogen"},"event_type":"interaction.completed"}
+
+event: done
+data: [DONE]
+

@@ -1,0 +1,3 @@
+event: error
+data: {"error":{"message":"Request contains an invalid argument.","code":"invalid_request"},"event_type":"error"}
+

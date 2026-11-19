@@ -1,0 +1,1 @@
+{"error":{"message":"Model 'gemini-no-such-model-1' not found. Did you mean 'gemini-flash-latest'? Please verify the model name against the supported list: https://ai.google.dev/gemini-api/docs/models","code":"not_found"}}

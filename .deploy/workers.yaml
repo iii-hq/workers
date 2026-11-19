@@ -1572,6 +1572,18 @@ workers:
       binary: provider-elevenlabs
       targets: *id001
     publish: true
+  provider-gemini:
+    source:
+      path: provider-gemini
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-gemini
+      targets: *id001
+    publish: true
   provider-github-copilot:
     source:
       path: provider-github-copilot
