@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4
+
+- **A one-line description in the agent picker.** The `deepwork` profile's description explained the whole run (tickets, leads, waves, rounds, the dev flow) and filled the composer's agent picker with a truncated paragraph. It now says when to pick it: "Use for big goals: plans tickets, runs agents in parallel, reviews the work." The kit's own description and the README keep the full explanation.
+
 ## 0.7.3
 
 - **A short example in the empty composer.** The placeholder listed every argument with its default, and without the `args:` prefix the orchestrator reads. It now shows one example goal: "Describe the goal, e.g. “Add retries to the webhook sender, with tests”". The arguments stay in the README.
