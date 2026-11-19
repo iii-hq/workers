@@ -11,6 +11,12 @@ const mocks = vi.hoisted(() => ({
   activateWorkingDir: vi.fn(),
   composerWorkingDir: undefined as string | null | undefined,
   composerModel: undefined as string | null | undefined,
+  composerSubmit: undefined as
+    | undefined
+    | ((payload: { text: string; attachments: [] }) => Promise<void>),
+  stream: vi.fn(async function* () {}),
+  setDraftText: vi.fn(),
+  setDraftAttachments: vi.fn(),
 }))
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({ call: mocks.call }),
@@ -30,6 +36,8 @@ vi.mock('@/lib/conversations-context', async (importOriginal) => ({
     },
     getDraftText: () => undefined,
     getDraftAttachments: () => undefined,
+    setDraftText: mocks.setDraftText,
+    setDraftAttachments: mocks.setDraftAttachments,
     shellAvailable: true,
     worktreeAvailable: false,
     memoryAvailable: false,
@@ -41,9 +49,14 @@ vi.mock('@/lib/working-dir', async (importOriginal) => ({
   activateWorkingDir: mocks.activateWorkingDir,
 }))
 vi.mock('./Composer', () => ({
-  Composer: (props: { workingDir?: string | null; model?: string | null }) => {
+  Composer: (props: {
+    workingDir?: string | null
+    model?: string | null
+    onSubmit?: typeof mocks.composerSubmit
+  }) => {
     mocks.composerWorkingDir = props.workingDir
     mocks.composerModel = props.model
+    mocks.composerSubmit = props.onSubmit
     return <textarea />
   },
 }))
@@ -91,7 +104,9 @@ async function open(
       <TooltipProvider>
         <ChatView
           conversation={session}
-          backend={{ id: 'real' } as ChatBackend}
+          backend={
+            { id: 'real', stream: mocks.stream } as unknown as ChatBackend
+          }
           modelOptions={modelOptions}
           catalogLoading={false}
           onUpdateModel={noop}
@@ -121,6 +136,8 @@ beforeEach(() => {
     .mockResolvedValue({ status: 'recovered', path: '/home/default' })
   mocks.composerWorkingDir = undefined
   mocks.composerModel = undefined
+  mocks.composerSubmit = undefined
+  mocks.stream.mockClear()
   onUpdateWorkingDir.mockReset()
   onAppendMessage.mockReset()
   host = document.createElement('div')
@@ -154,4 +171,52 @@ it('shows a profile plain router model as its catalog entry', async () => {
     { id: 'anthropic::claude-opus-5-5', label: 'Opus 5.5' },
   ])
   expect(mocks.composerModel).toBe('anthropic::claude-opus-5-5')
+})
+
+it('does not send a sub-agent whose folder is gone; it asks for a folder', async () => {
+  await open(conversation('parent'))
+  await act(async () => {
+    await mocks.composerSubmit?.({ text: 'continue', attachments: [] })
+  })
+  expect(mocks.stream).not.toHaveBeenCalled()
+  expect(onUpdateWorkingDir).not.toHaveBeenCalled()
+  const notice = onAppendMessage.mock.calls.at(-1)?.[1] as { content: string }
+  expect(notice.content).toContain(WORKTREE)
+  expect(notice.content).toContain('Pick a folder')
+  // The text is not lost: it goes back into the composer.
+  expect(mocks.setDraftText).toHaveBeenCalledWith('child', 'continue')
+})
+
+it('sends a sub-agent whose folder still exists, in that folder', async () => {
+  mocks.activateWorkingDir.mockResolvedValue({
+    status: 'valid',
+    path: WORKTREE,
+  })
+  await open(conversation('parent'))
+  await act(async () => {
+    await mocks.composerSubmit?.({ text: 'continue', attachments: [] })
+  })
+  expect(mocks.stream).toHaveBeenCalledTimes(1)
+  expect(mocks.stream.mock.calls[0]?.[2]).toMatchObject({
+    workingDir: WORKTREE,
+  })
+})
+
+it('sends a profile plain router model as its catalog key', async () => {
+  // The backend guesses a provider for ids that are not catalog keys
+  // (`claude…` → anthropic), which failed `claude-code/…` profile models.
+  mocks.activateWorkingDir.mockResolvedValue({
+    status: 'valid',
+    path: WORKTREE,
+  })
+  await open(
+    { ...conversation('parent'), model: 'claude-code/claude-haiku-5-5' },
+    [{ id: 'claude-code::claude-code/claude-haiku-5-5', label: 'Haiku 5.5' }],
+  )
+  await act(async () => {
+    await mocks.composerSubmit?.({ text: 'pong?', attachments: [] })
+  })
+  expect(mocks.stream.mock.calls[0]?.[1]).toBe(
+    'claude-code::claude-code/claude-haiku-5-5',
+  )
 })

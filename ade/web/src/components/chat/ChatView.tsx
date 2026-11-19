@@ -532,7 +532,7 @@ export function ChatView({
   const workingDirActivationRef = useRef<{
     path: string
     token: symbol
-    promise: Promise<string | null>
+    promise: Promise<string | null | undefined>
   } | null>(null)
   const [workingDirResolving, setWorkingDirResolving] = useState(false)
   const harnessBlocked = conversationsCtx
@@ -1462,8 +1462,12 @@ export function ChatView({
     conversation.id,
   ])
 
+  // A sub-agent's folder is the one its spawn chose (often a run worktree):
+  // when it is gone, the chat is never moved to the default project behind
+  // the person's back. `undefined` tells the caller the folder is missing.
+  const keepMissingWorkingDir = Boolean(conversation.parentId)
   const reconcileWorkingDir = useCallback(
-    (dir: string): Promise<string | null> => {
+    (dir: string): Promise<string | null | undefined> => {
       const active = workingDirActivationRef.current
       if (active?.path === dir) return active.promise
 
@@ -1475,6 +1479,9 @@ export function ChatView({
 
           const next = result.path
           if (result.status === 'unavailable') return next
+          if (result.status === 'recovered' && keepMissingWorkingDir) {
+            return undefined
+          }
           if (result.status === 'recovered') setDefaultWorkingDir(next)
           if (next !== null) void syncEditorWorkspace(next)
           if (result.status === 'recovered' || next !== dir) {
@@ -1505,7 +1512,13 @@ export function ChatView({
       workingDirActivationRef.current = { path: dir, token, promise }
       return promise
     },
-    [conversation.draft, conversation.id, onAppendMessage, onUpdateWorkingDir],
+    [
+      conversation.draft,
+      conversation.id,
+      keepMissingWorkingDir,
+      onAppendMessage,
+      onUpdateWorkingDir,
+    ],
   )
 
   // Temporary Harness projects can disappear between turns. Reconcile only
@@ -1752,8 +1765,11 @@ export function ChatView({
       }
 
       // Steering a discovered/sub-agent session: inherit the model the
-      // transcript shows when the conversation carries none of its own.
-      const model = conversation.model ?? effectiveModel
+      // transcript shows when the conversation carries none of its own. The
+      // catalog-resolved id goes first: a profile's plain router id
+      // (`claude-code/claude-haiku-5-5`) would otherwise reach the backend
+      // without its provider, which then guesses one from the name.
+      const model = effectiveModel ?? conversation.model
       if (!model) {
         onAppendMessage(
           conversationId,
@@ -1784,7 +1800,21 @@ export function ChatView({
 
       let workingDirForSend = conversation.workingDir
       if (workingDirEnabled && workingDirForSend) {
-        workingDirForSend = await reconcileWorkingDir(workingDirForSend)
+        const reconciled = await reconcileWorkingDir(workingDirForSend)
+        if (reconciled === undefined) {
+          // A sub-agent's folder is gone: nothing is sent, the text goes
+          // back into the composer, and the person picks where it runs.
+          restoreDraft(payload)
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `this sub-agent's folder no longer exists (${workingDirForSend}). Pick a folder in the composer to continue.`,
+              'warn',
+            ),
+          )
+          return
+        }
+        workingDirForSend = reconciled
       }
 
       // `harness::send` carries `idempotency_key: messageId`, so the harness
