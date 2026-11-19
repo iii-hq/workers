@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.0
+
+A run can end at a pull request without a person carrying it there. Before, `approve=auto` kept the branch, and people opened the PR, squashed, rebased and fixed the title themselves (KAN-29).
+
+- **`finish=pr` and `finish=pr-merge`.** They are the Finish answers "Push and open a PR" and "Open a PR and merge when CI is green", given when the run starts, so no Finish card is asked. The run rebases its branch on the current base first; a conflict stops it `blocked`, with nothing pushed. The PR opens ready for review, the existing CI watch and `Fix CI` round follow, and `pr-merge` removes the worktree once the PR is merged. `finish=keep`, the default, is unchanged.
+- **In review.** A run whose PR waits for review moves its run ticket to In review (when the board has that column) with a `PR #<n>` pill, instead of Done.
+- **Commits that read like the repository's.** The PR title is the commit a squash merge keeps: `<type>(<scope>): <what changed>`, in the repository's style, never `deepwork: …`. Batch test commits use the cards' scope, `test(<scope>): cover …`, instead of `test(deepwork)`.
+- **No renames to satisfy a grep.** Cards' grep checks match whole words, and review fails a rename that no card asks for whose only effect is that a grep stops matching (KAN-29 renamed `TierNotSupported` because `NotSupported\b` matched it).
+- **Compatibility.** The orchestrator and `deepwork-verifier` changed. Install between runs: a running run's checkers load the new verifier at their next spawn.
+
 ## 0.9.0
 
 A run nobody watches in a chat can now ask a person. A session started from the CLI, the board or another worker has no chat: its `harness::ask` card was accepted and waited forever, unseen, while the run sat In progress.
