@@ -2435,6 +2435,12 @@ export interface ModelPickerProps {
   placeholder?: string
   showProviderConfiguration?: boolean
   showReasoningEffort?: boolean
+  /**
+   * A choice that stores no model (the worker resolves one itself). It leads
+   * the list, is selected while `value` is null, and its label is the trigger
+   * whenever `value` is null, loading and empty catalogs included.
+   */
+  automatic?: { label: string; onSelect: () => void }
   className?: string
 }
 /** The Console's responsive searchable model catalog picker. */

@@ -4,7 +4,7 @@ import type { ProviderListEntry } from '@/lib/models-catalog'
 import type { RegistryWorker } from '@/lib/workers-registry'
 import type { ModelId, ModelOption, ThinkingLevel } from '@/types/chat'
 import { AddProviderPanel } from './AddProviderPanel'
-import { ModelPickerPanel } from './ModelPicker'
+import { ModelPicker, ModelPickerPanel } from './ModelPicker'
 import { ReasoningEffortSlider } from './ReasoningEffortSlider'
 
 /* Two real marks (Simple Icons, CC0) so the rail shows worker-declared SVGs
@@ -185,11 +185,13 @@ function InteractivePanel({
   initialModel = 'openai::gpt-5',
   initialEffort = 'medium',
   showReasoningEffort = true,
+  automaticLabel,
 }: {
   width?: number
   initialModel?: ModelId | null
   initialEffort?: ThinkingLevel
   showReasoningEffort?: boolean
+  automaticLabel?: string
 }) {
   const [model, setModel] = useState<ModelId | null>(initialModel)
   const [effort, setEffort] = useState<ThinkingLevel>(initialEffort)
@@ -205,8 +207,43 @@ function InteractivePanel({
         onConfigureProvider={() => {}}
         onAddProvider={() => {}}
         showReasoningEffort={showReasoningEffort}
+        automatic={
+          automaticLabel === undefined
+            ? undefined
+            : { label: automaticLabel, onSelect: () => setModel(null) }
+        }
       />
     </PanelFrame>
+  )
+}
+
+/** A worker form's model field: the trigger with an Automatic choice. */
+function AutomaticField({
+  label,
+  options = OPTIONS,
+  loading = false,
+}: {
+  label: string
+  options?: ModelOption[]
+  loading?: boolean
+}) {
+  const [model, setModel] = useState<ModelId | null>(null)
+  return (
+    <div className="w-[280px]">
+      <ModelPicker
+        value={model}
+        options={options}
+        providers={PROVIDERS}
+        thinkingLevel="default"
+        onChange={setModel}
+        onThinkingLevelChange={() => {}}
+        automatic={{ label, onSelect: () => setModel(null) }}
+        loading={loading}
+        showRefresh={false}
+        showProviderConfiguration={false}
+        showReasoningEffort={false}
+      />
+    </div>
   )
 }
 
@@ -264,6 +301,33 @@ export const Empty: Story = {
       />
     </PanelFrame>
   ),
+}
+
+/** Unset and resolved: Automatic leads the list, selected, naming its model. */
+export const AutomaticResolved: Story = {
+  render: () => (
+    <div className="flex flex-col gap-6">
+      <AutomaticField label="Automatic · claude opus 4.7" />
+      <InteractivePanel
+        initialModel={null}
+        initialEffort="default"
+        showReasoningEffort={false}
+        automaticLabel="Automatic · claude opus 4.7"
+      />
+    </div>
+  ),
+}
+
+/** Unset with no usable provider: the trigger says so instead of "No models". */
+export const AutomaticNothingUsable: Story = {
+  render: () => (
+    <AutomaticField label="Automatic · no usable model" options={[]} />
+  ),
+}
+
+/** While the catalog loads, the trigger already reads Automatic. */
+export const AutomaticLoading: Story = {
+  render: () => <AutomaticField label="Automatic" options={[]} loading />,
 }
 
 /** The registry page: installed workers are left out, the rest offer Add. */

@@ -704,15 +704,21 @@
 /* Configuration uses Inter for UI chrome; Monaco only on code surfaces. */
 .configuration-surface {
   font-family: var(--font-inter);
+  /* Read by worker forms (ade/ui styles.css) with their own values as
+     fallbacks: rows here have no side padding, so nothing is inset. */
+  --settings-section-gap: 3rem;
+  --settings-row-inset: 0px;
+  --settings-sublist-fill: transparent;
 }
 
-/* Injected worker forms keep the shared settings recipes; inside the
-   settings page those recipes read on the redesign's scale — Inter, 16px
-   medium section titles, 14px everything else — and its neutral group. */
+/* Injected worker forms keep the shared settings recipes. Inside the
+   settings page those recipes read on the redesign's scale: Inter, 16px
+   semibold section titles (one step above the medium labels), 14px for
+   everything else, and its neutral group. */
 .configuration-surface .iii-ui-settings-section__title {
   font-family: var(--font-inter);
   font-size: 1rem;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.5rem;
 }
 
@@ -727,8 +733,10 @@
   line-height: 1.25rem;
 }
 
+/* Rhythm: 20px heading to list, 24px label to control, 4px label to
+   description (the scale is in ade/ui styles.css). */
 .configuration-surface .iii-ui-settings-section {
-  gap: 0.75rem;
+  gap: 1.25rem;
 }
 
 .configuration-surface .iii-ui-settings-list {
@@ -738,13 +746,20 @@
   background: transparent;
 }
 
-.configuration-surface .iii-ui-settings-row + .iii-ui-settings-row {
+.configuration-surface .iii-ui-settings-row + .iii-ui-settings-row,
+.configuration-surface .iii-ui-settings-list[data-dividers="all"] > * + * {
   border-top-color: var(--muted);
 }
 
 .configuration-surface .iii-ui-settings-row__inner {
   min-height: 4.5rem;
+  gap: 1.5rem;
   padding: 1.25rem 0;
+}
+
+.configuration-surface .iii-ui-settings-row__description,
+.configuration-surface .iii-ui-settings-row__meta {
+  margin-top: 0.25rem;
 }
 
 .configuration-surface .iii-ui-settings-row__label {
@@ -783,7 +798,12 @@
 [data-theme="dark"]
   .configuration-surface
   .iii-ui-settings-row
-  + .iii-ui-settings-row {
+  + .iii-ui-settings-row,
+[data-theme="dark"]
+  .configuration-surface
+  .iii-ui-settings-list[data-dividers="all"]
+  > *
+  + * {
   border-top-color: var(--border);
 }
 

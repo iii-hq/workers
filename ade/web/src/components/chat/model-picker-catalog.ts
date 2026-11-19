@@ -64,6 +64,24 @@ export function filterWordsOf(filter: string): string[] {
   return filter.toLowerCase().split(/\s+/).filter(Boolean)
 }
 
+/** The nav key of the Automatic row; model ids are `provider::id`, never this. */
+export const AUTOMATIC_ROW = ':automatic'
+
+/** A picker choice that stores no model: the worker resolves one itself. */
+export interface ModelPickerAutomatic {
+  label: string
+  onSelect: () => void
+}
+
+/** Every filter word appears in the Automatic label, the way a model row matches. */
+export function automaticMatches(
+  automatic: ModelPickerAutomatic | undefined,
+  words: readonly string[],
+): automatic is ModelPickerAutomatic {
+  const label = automatic?.label.toLowerCase()
+  return label !== undefined && words.every((word) => label.includes(word))
+}
+
 /**
  * The groups a picker renders for `filter`: each provider's matching
  * models, plus the model-less providers that still need attention.
