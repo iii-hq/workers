@@ -50,6 +50,8 @@
 }
 
 [data-iii-ui="kanban"] .kb-chart {
+  /* A chart, not a document: dragging pans and a click opens a chat, so nothing on it selects as text. */
+  user-select: none;
   /* The card and the connector geometry: the stack spine runs under the card's tile. */
   --kb-node-w: 248px;
   --kb-node-mid: calc(var(--kb-node-w) / 2);

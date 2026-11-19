@@ -20,7 +20,6 @@ import {
   Network,
   Palette,
   Plus,
-  RefreshCw,
   Search,
   SquareKanban,
   Terminal,
@@ -138,6 +137,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const [toggled, setToggled] = usePaneState<Record<string, boolean>>(`kanban:tree-open:${paneKey}`, {})
   const [activeId, setActiveId] = useState<string | null>(null)
   const chartRef = useRef<HTMLDivElement | null>(null)
+  /** Where the last press on the canvas began: a click that did not move is not a pan. */
+  const pressedAt = useRef<{ x: number; y: number } | null>(null)
   // Beside a chat the tree's pane is narrow: the toolbar keeps its controls and drops their words.
   const { ref: narrowRef, narrow } = useContainerNarrow({ below: 900 })
   // Live lines ("Thinking · 12s") tick while agents run; nothing ticks when nothing runs.
@@ -445,6 +446,10 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         if (node.kind !== 'ticket' || event.metaKey || event.ctrlKey || event.altKey) return
         onOpenTicket(node.ticket.key)
         break
+      case 'Escape':
+        if (!selectedId) return
+        setSelectedId(null)
+        break
       case '*': {
         // Open every sibling of the focused card (WAI-ARIA tree).
         const siblings = parent ? kidsOf(parent) : []
@@ -590,9 +595,6 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         <IconAction label="Collapse all" onClick={() => setAll(false)}>
           <ChevronsDownUp size={16} />
         </IconAction>
-        <IconAction label="Refresh agents" onClick={() => void reload()}>
-          <RefreshCw size={16} />
-        </IconAction>
       </div>
       {error ? (
         <Notice
@@ -603,9 +605,19 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
         />
       ) : null}
       {charted && root ? (
+        // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: Escape in the tree deselects too
         <div
           className="kb-chart-scroll"
           data-panning={camera.panning ? 'true' : undefined}
+          onClick={(event) => {
+            // A click on the empty canvas (not a pan) clears the selection.
+            const down = pressedAt.current
+            const still = down && Math.hypot(event.clientX - down.x, event.clientY - down.y) < 4
+            if (still && !(event.target as HTMLElement).closest('.kb-chart__card')) setSelectedId(null)
+          }}
+          onPointerDownCapture={(event) => {
+            pressedAt.current = { x: event.clientX, y: event.clientY }
+          }}
           ref={camera.viewportRef}
           {...camera.handlers}
         >
@@ -744,7 +756,8 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
               node={kid}
               position={index + 1}
               setSize={kids.length}
-              spine={layout === 'single'}
+              // Each project starts its own chart: under "All projects" it lays out as it does on its own.
+              spine={layout === 'single' || node.kind === 'group'}
             />
           ))}
         </div>
