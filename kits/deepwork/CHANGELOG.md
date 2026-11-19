@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+
+- **Every wake says what it waits for.** The chat showed a wake by its label, such as `dw KAN-38 r1 w2`. Each `harness::observe` now also passes `action`, a plain sentence the chat shows instead: `KAN-12 and KAN-13 finished`, `Code for KAN-12 written`, `CI checks on PR #42 finished`, `Test suite finished`. Labels are unchanged, and wakes are still matched by them.
+
 ## 0.8.1
 
 - **A dev run starts from the remote's default branch, not from the branch you are on.** Before, the base was the branch `git status` named. A run started on a branch already merged five days earlier built on code 30 commits behind `main`: its research read an email path `main` had already replaced, and its commits conflicted when moved onto `main` for the PR.

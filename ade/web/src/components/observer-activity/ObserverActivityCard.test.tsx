@@ -55,7 +55,7 @@ describe('ObserverActivityCard', () => {
       }),
     )
     expect(html).toContain('Observer fired')
-    expect(html).toContain('deploy-ready')
+    expect(html).toContain('State updated')
     expect(html).toContain('this chat')
     expect(html).toContain('ONCE · consumed')
     expect(html).toContain('removed automatically')
@@ -192,6 +192,42 @@ describe('ObserverActivityCard', () => {
     expect(failed).not.toContain('Waiting on condition')
   })
 
+  it('describes what a coded-label observer heard, never showing the label', () => {
+    const registration = registrationFromCall({
+      id: 'call-1',
+      observerId: 'obs_1',
+      input: {
+        function_id: 'state::on-changed',
+        filters: { 'input.scope': { $eq: 'run-r1-w2' } },
+        label: 'dw KAN-38 r1 w2',
+        conditions: [
+          {
+            function_id: 'state::barrier',
+            config: { id: 'run-r1-w2', expect: ['KAN-41', 'KAN-42'] },
+          },
+        ],
+      },
+    })
+    const html = renderToStaticMarkup(
+      createElement(ObserverActivityCard, {
+        record: record('e_obsfired_obs_1_1', {
+          observer_id: 'obs_1',
+          function_id: 'state::on-changed',
+          label: 'dw KAN-38 r1 w2',
+          target: 'harness::send',
+          once: true,
+          fires: 1,
+          retired: true,
+          fired_at: 1,
+          outcome: 'delivered',
+        }),
+        registration,
+      }),
+    )
+    expect(html).toContain('Results in from KAN-41, KAN-42')
+    expect(html).not.toContain('>dw KAN-38 r1 w2<')
+  })
+
   it('shows a generic source for any worker-defined function', () => {
     const registration = registrationFromCall({
       id: 'call-1',
@@ -293,7 +329,7 @@ describe('ObserverActivityCard', () => {
     expect(html).toContain('iii-ui-collapsible-card__content')
     expect(html).toContain('aria-hidden="true"')
     expect(html).toContain('Observer fired')
-    expect(html).toContain('explorer-messages</span>')
+    expect(html).not.toContain('explorer-messages</span>')
   })
 
   it('preserves actionable non-fire notification prose', () => {
