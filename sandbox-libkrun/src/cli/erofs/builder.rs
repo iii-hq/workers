@@ -82,6 +82,31 @@ pub fn build_erofs(src: &Path, out: &Path) -> Result<(), String> {
     result
 }
 
+/// Descriptor-only worker writers: stages stay owned by the mutation until
+/// all clones/spool readers are closed and the core validates publication.
+pub(crate) fn build_erofs_to_files(src: &Path, output: File, spool: File) -> Result<(), String> {
+    let mut spool = DataSpool::from_file(spool).map_err(|e| e.to_string())?;
+    let mut tree = FileTree::new();
+    tree.root.metadata = inode_metadata(&fs::symlink_metadata(src).map_err(|e| e.to_string())?);
+    let mut hardlinks = HashMap::new();
+    add_dir(&mut tree, &mut spool, &mut hardlinks, src, src)?;
+    super::write_erofs_to_file_cancellable(&tree, output, &|| false).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn build_erofs_from_tar_to_files(
+    tar: File,
+    output: File,
+    spool: File,
+    extra: &[ImageFile<'_>],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let mut spool = DataSpool::from_file(spool).map_err(|e| e.to_string())?;
+    let tree = tar_tree(tar, &mut spool, extra, cancelled)?;
+    super::write_erofs_to_file_cancellable(&tree, output, cancelled).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// A file the host lays over whatever the tar holds at `path`, e.g. the base
 /// image's `.oci-config.json`, so a build cannot change what the run reads there.
 pub struct ImageFile<'a> {

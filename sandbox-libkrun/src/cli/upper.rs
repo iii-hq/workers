@@ -95,11 +95,52 @@ pub fn ensure_upper_ext4(managed_dir: &Path) -> io::Result<PathBuf> {
     Ok(dest)
 }
 
+/// Owned worker path: publication and identity changes belong to the core.
+/// Existing upper contents are never replaced merely to satisfy admission.
+pub(crate) fn ensure_upper_admitted(
+    lease: &crate::worker_admission::Lease,
+    managed_dir: &Path,
+) -> io::Result<PathBuf> {
+    let dest = managed_dir.join(UPPER_NAME);
+    {
+        let used = lease.use_path(&dest)?;
+        if std::fs::symlink_metadata(used.path()).is_ok_and(|m| m.is_file()) {
+            used.revalidate()?;
+            return Ok(dest);
+        }
+    }
+    let mut mutation = lease.begin(crate::worker_admission::MutationPlan::Create {
+        root: managed_dir.to_path_buf(),
+    })?;
+    mutation.create_dir_all(managed_dir, 0o700)?;
+    let mut stage = mutation.stage_file(&dest, 0o600)?;
+    write_sparse_image_to_file(GOLDEN, stage.file_mut())?;
+    mutation.checkpoint()?;
+    mutation.publish_file(stage)?;
+    mutation.commit()?;
+    Ok(dest)
+}
+
 /// Decode a gzip'd sparse-extent stream and write it to a new sparse file at
 /// `dest`: each `(offset, block)` record is written at its offset; the gaps
 /// between records stay unallocated (holes). The file's logical size is set
 /// to the stored `total_len`.
 fn write_sparse_image(gz: &[u8], dest: &Path) -> io::Result<()> {
+    write_sparse_image_with(gz, || File::create(dest))
+}
+
+fn write_sparse_image_to_file(gz: &[u8], out: &mut File) -> io::Result<()> {
+    if !out.metadata()?.is_file() || out.metadata()?.len() != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "upper stage must be an empty regular file",
+        ));
+    }
+    out.seek(SeekFrom::Start(0))?;
+    write_sparse_image_with(gz, || out.try_clone())
+}
+
+fn write_sparse_image_with(gz: &[u8], open: impl FnOnce() -> io::Result<File>) -> io::Result<()> {
     let mut r = BufReader::new(GzDecoder::new(gz));
 
     let mut magic = [0u8; 8];
@@ -123,7 +164,7 @@ fn write_sparse_image(gz: &[u8], dest: &Path) -> io::Result<()> {
         ));
     }
 
-    let mut out = File::create(dest)?;
+    let mut out = open()?;
     let mut block = vec![0u8; block_size];
     // A clean EOF on the offset field marks the end of the record stream.
     while let Some(offset) = read_u64_opt(&mut r)? {
@@ -228,6 +269,46 @@ fn read_u64_opt<R: Read>(r: &mut R) -> io::Result<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_upper_publication_preserves_clones_and_existing_data() {
+        let t = tempfile::tempdir().unwrap();
+        let catalog = t.path().join("catalog");
+        std::fs::create_dir(&catalog).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let root = t.path().join("state");
+        let lease = context.local(&root).unwrap();
+        let upper = root.join(UPPER_NAME);
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[
+                crate::worker_admission::PathRequest {
+                    path: &root,
+                    role: crate::worker_admission::PathRole::MutableTree,
+                },
+                crate::worker_admission::PathRequest {
+                    path: &upper,
+                    role: crate::worker_admission::PathRole::MutableFile,
+                },
+            ],
+        )
+        .unwrap();
+        let clone = lease.clone();
+        assert_eq!(ensure_upper_admitted(&lease, &root).unwrap(), upper);
+        clone.revalidate().unwrap();
+        let old = std::fs::metadata(&upper).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(ensure_upper_admitted(&clone, &root).unwrap(), upper);
+        assert_eq!(std::fs::metadata(&upper).unwrap().ino(), old.ino());
+        assert_eq!(std::fs::metadata(&upper).unwrap().len(), old.len());
+        let replacement = root.join("external");
+        std::fs::write(&replacement, b"foreign").unwrap();
+        std::fs::rename(&replacement, &upper).unwrap();
+        assert!(clone.revalidate().is_err());
+        assert!(ensure_upper_admitted(&clone, &root).is_err());
+    }
 
     #[test]
     fn golden_is_embedded() {

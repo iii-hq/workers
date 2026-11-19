@@ -194,6 +194,34 @@ pub fn write_erofs_cancellable(
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(output)?;
+    write_erofs_to_file_cancellable(tree, file, cancelled)
+}
+
+/// Serialize into the already-created stage inode. Never reopen or truncate it.
+/// try_clone shares an offset, so explicitly rewind before the first write.
+pub(crate) fn write_erofs_to_file_cancellable(
+    tree: &FileTree,
+    mut file: std::fs::File,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ErofsDataMap, ErofsError> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    // SAFETY: the borrowed descriptor is owned for this entire call.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.len() != 0
+        || flags & libc::O_ACCMODE == libc::O_RDONLY
+        || flags & libc::O_APPEND != 0
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "erofs output must be an empty, single-link, writable regular descriptor without append").into());
+    }
+    file.seek(SeekFrom::Start(0))?;
     let mut file = BufWriter::new(CancellableFile { file, cancelled });
     let mut state = LayoutState::new();
 
@@ -1401,4 +1429,59 @@ fn write_superblock(file: &mut (impl Write + Seek), state: &LayoutState) -> Resu
 fn align_to_block(offset: u64) -> u64 {
     let blksiz = EROFS_BLKSIZ as u64;
     offset.div_ceil(blksiz) * blksiz
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn descriptor_serializer_preserves_stage_inode_layout_and_cancellation() {
+        let tree = FileTree::new();
+        let t = tempfile::tempdir().unwrap();
+        let expected = t.path().join("path-image");
+        write_erofs_cancellable(&tree, &expected, &|| false).unwrap();
+        let named = tempfile::NamedTempFile::new().unwrap();
+        let mut stage = named.reopen().unwrap();
+        let inode = stage.metadata().unwrap().ino();
+        stage.seek(SeekFrom::Start(4096)).unwrap();
+        write_erofs_to_file_cancellable(&tree, stage.try_clone().unwrap(), &|| false).unwrap();
+        stage.seek(SeekFrom::Start(0)).unwrap();
+        let mut got = Vec::new();
+        stage.read_to_end(&mut got).unwrap();
+        assert_eq!(got, std::fs::read(expected).unwrap());
+        assert_eq!(stage.metadata().unwrap().ino(), inode);
+        let cancelled_stage = tempfile::NamedTempFile::new().unwrap();
+        let cancelled = cancelled_stage.reopen().unwrap();
+        assert!(
+            write_erofs_to_file_cancellable(&tree, cancelled.try_clone().unwrap(), &|| true)
+                .is_err()
+        );
+        assert_eq!(cancelled.metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn descriptor_serializer_refuses_nonempty_readonly_and_append_fds() {
+        let tree = FileTree::new();
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("image");
+        std::fs::write(&path, b"keep").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(write_erofs_to_file_cancellable(&tree, file, &|| false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        let empty = t.path().join("empty");
+        std::fs::write(&empty, []).unwrap();
+        assert!(
+            write_erofs_to_file_cancellable(&tree, std::fs::File::open(&empty).unwrap(), &|| false)
+                .is_err()
+        );
+        let append = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&empty)
+            .unwrap();
+        assert!(write_erofs_to_file_cancellable(&tree, append, &|| false).is_err());
+        assert_eq!(std::fs::metadata(empty).unwrap().len(), 0);
+    }
 }

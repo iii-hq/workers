@@ -72,6 +72,15 @@ impl Checkpoint {
     }
 
     pub(crate) fn with_valid<T>(&self, effect: impl FnOnce() -> T) -> Result<T, AdmissionRefused> {
+        self.with_io(|| Ok(effect()))
+    }
+
+    /// Restricted diagnostic operations can fail after validation. Latch that
+    /// failure too, without a second evaluation or a cleanup recovery attempt.
+    pub(crate) fn with_io<T>(
+        &self,
+        effect: impl FnOnce() -> std::io::Result<T>,
+    ) -> Result<T, AdmissionRefused> {
         let mut failure = match self.state.failure.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -94,7 +103,14 @@ impl Checkpoint {
         }
         // Keep the mutex through diagnostic mutation: a concurrent refusal
         // cannot be recorded before a supposedly-authorized cleanup/write.
-        Ok(effect())
+        match effect() {
+            Ok(value) => Ok(value),
+            Err(cause) => {
+                let error = AdmissionRefused(std::sync::Arc::new(cause));
+                *failure = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -189,6 +205,55 @@ pub(crate) fn checked_cache_lock(
         })?
         .with_context(|| format!("could not lock {}", path.display()))?;
     Ok(held)
+}
+
+/// Diagnostic adapter for the v2 writer conversion. Not yet wired into the
+/// worker pipeline: those callsites must be converted as one operation, without
+/// using the legacy File route as a fallback after a refused mutation.
+pub(crate) struct MutationLock {
+    lock: Option<crate::worker_admission::DiagnosticLock>,
+    checkpoint: Checkpoint,
+}
+impl MutationLock {
+    pub(crate) fn acquire(
+        mut lock: crate::worker_admission::DiagnosticLock,
+        checkpoint: Checkpoint,
+        write_pid: bool,
+    ) -> Result<Self> {
+        checkpoint.check()?;
+        if !checkpoint.with_io(|| lock.try_lock_exclusive())? {
+            #[cfg(test)]
+            if let Some(notify) = &checkpoint.on_contention {
+                notify();
+            }
+            // Neither the terminal mutex nor a mutation/catalog mutex is held.
+            let acquired = lock.lock_exclusive();
+            checkpoint.with_io(|| acquired)?;
+        }
+        checkpoint.with_io(|| -> std::io::Result<()> {
+            lock.revalidate()?;
+            if write_pid {
+                lock.write_pid(std::process::id())?;
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            lock: Some(lock),
+            checkpoint,
+        })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<()> {
+        if let Some(mut lock) = self.lock.take() {
+            self.checkpoint.with_io(|| -> std::io::Result<()> {
+                lock.revalidate()?;
+                lock.clear()
+            })?;
+            drop(lock); // Must precede MutationGuard::commit.
+        }
+        Ok(())
+    }
+    // Drop intentionally performs no diagnostic write or pathname cleanup.
 }
 
 /// Canonical cache root. All new pulls land under here, keyed by
@@ -650,6 +715,26 @@ mod tests {
         assert!(exclusive(&lock_path));
         assert!(checkpoint.check().is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn diagnostic_effect_error_latches_without_callback_recovery() {
+        let checkpoint = Checkpoint::new(|| Ok(()));
+        let result: Result<(), AdmissionRefused> = checkpoint.with_io(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "diagnostic write failed",
+            ))
+        });
+        assert_eq!(result.unwrap_err().0.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(checkpoint.clone().check().is_err());
+        assert!(
+            checkpoint
+                .with_io(|| -> std::io::Result<()> {
+                    panic!("must not retry cleanup after diagnostic failure")
+                })
+                .is_err()
+        );
     }
 
     fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
