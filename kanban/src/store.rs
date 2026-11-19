@@ -53,6 +53,13 @@ pub struct Activity {
     pub changes: Option<Vec<Change>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_id: Option<String>,
+    /// The agent session whose turn made this change (`iii.session.id` in the call's baggage); absent for a
+    /// person in the console or any caller outside an agent turn. See `session_links`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The turn of that session (`iii.message.id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 /// One badge on a ticket: a lucide icon name (`alarm-clock`, `calendar`,

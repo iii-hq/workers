@@ -35,7 +35,7 @@ use crate::store::{
     Activity, Board, BoardStore, Comment, ConfigCell, Pill, Ticket, config_snapshot,
 };
 
-pub const FUNCTION_IDS: [&str; 28] = [
+pub const FUNCTION_IDS: [&str; 29] = [
     "kanban::config::info",
     "kanban::board::get",
     "kanban::ticket::create",
@@ -49,6 +49,7 @@ pub const FUNCTION_IDS: [&str; 28] = [
     "kanban::comment::create",
     "kanban::comment::list",
     "kanban::activity::list",
+    "kanban::sessions::links",
     "kanban::agent::list",
     "kanban::project::list",
     "kanban::project::create",
@@ -310,6 +311,19 @@ pub struct ActivityListInput {
     pub since: Option<String>,
     #[serde(default)]
     pub limit: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct SessionLinksInput {
+    /// One project's tickets (id or name); an empty string: the tickets in no project.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// One ticket, by uuid or human-readable key (KAN-1, case-insensitive).
+    #[serde(default)]
+    pub ticket_id: Option<String>,
+    /// One agent session's tickets.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -575,6 +589,12 @@ pub struct CommentList {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ActivityList {
     pub activity: Vec<Activity>,
+    pub count: u64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SessionLinks {
+    pub links: Vec<crate::session_links::SessionLink>,
     pub count: u64,
 }
 
@@ -1197,6 +1217,41 @@ async fn activity_list(ctx: Arc<Ctx>, input: ActivityListInput) -> Result<Activi
     })
 }
 
+async fn sessions_links(ctx: Arc<Ctx>, input: SessionLinksInput) -> Result<SessionLinks, Error> {
+    let board = read(&ctx).await?;
+    // A ticket or project that names nothing on the board matches nothing, rather than everything.
+    let ticket_id = match input
+        .ticket_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => Some(board::resolve_id(&board, id).unwrap_or_default()),
+        None => None,
+    };
+    let project_id = match input.project_id.as_deref().map(str::trim) {
+        Some("") => Some(String::new()),
+        Some(reference) => Some(
+            board::find_project(&board, reference)
+                .map(|project| project.id.clone())
+                .unwrap_or_else(|| "\u{0}unknown".to_string()),
+        ),
+        None => None,
+    };
+    let links = crate::session_links::links(
+        &board,
+        &crate::session_links::LinksFilter {
+            project_id,
+            ticket_id,
+            session_id: input.session_id.filter(|id| !id.trim().is_empty()),
+        },
+    );
+    Ok(SessionLinks {
+        count: links.len() as u64,
+        links,
+    })
+}
+
 async fn agent_list(ctx: Arc<Ctx>, _: Empty) -> Result<AgentList, Error> {
     let dir = config_snapshot(&ctx.config).agents_path_resolved();
     Ok(agents::list_agents(&ctx.iii, &dir).await)
@@ -1528,6 +1583,12 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
         "kanban::activity::list",
         "Read a ticket's activity timeline: field changes, lane moves, deletion and comment events, oldest first.",
         activity_list,
+    );
+    register(
+        ctx,
+        "kanban::sessions::links",
+        "Which agent sessions changed which tickets: one row per ticket and session (first and latest change, how many, the latest kind and turn), recorded from the session of the agent turn that made each change. Filter by project (id or name; an empty string = no project), by ticket (uuid or key) or by session. Changes made outside an agent turn (a person in the console) carry no session.",
+        sessions_links,
     );
     register(
         ctx,

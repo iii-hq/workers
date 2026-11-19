@@ -90,6 +90,7 @@ human decisions; fewer comments must not hide failures or open questions.
 - `kanban::comment::create` — comment or reply (`parent_id`); replies stay one level deep.
 - `kanban::comment::list` — comments filtered by author, excluded author, root only, or since a timestamp.
 - `kanban::activity::list` — the ticket's timeline, oldest first, optionally narrowed by type or time.
+- `kanban::sessions::links` — which agent sessions changed which tickets (first and latest change, how many, the latest kind and turn), by project, ticket or session. Each change records the session of the agent turn that made it.
 - `kanban::agent::list` — assignable agent profiles and their ids.
 - `kanban::project::list` — projects with status, totals and per-column counts; `include_archived` adds the archived ones.
 - `kanban::release::list` — releases with derived status (planned, active, released), totals, counts and a per-project breakdown.

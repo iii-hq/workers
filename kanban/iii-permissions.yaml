@@ -48,4 +48,5 @@ rules:
   - kanban::comment::create
   - kanban::comment::list
   - kanban::activity::list
+  - kanban::sessions::links
   - kanban::agent::list
