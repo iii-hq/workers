@@ -2,48 +2,25 @@ import type { Host } from '@iii-dev/console-ui'
 
 /**
  * The chat beside the tree. Every ticket and session the tree opens shows in ONE column to the right of the
- * Kanban pane: the conversation pinned there (`chat:<session>`), swapped in place for the next one
- * (`panels.openScreen({ replaces })`), so clicking ticket after ticket never piles up columns and the tree never
- * leaves the screen. The workspace's own chat column, wherever it is, is left alone.
+ * Kanban pane: the session chat (`chat:<session>`) directly beside this page takes the next one
+ * (`panels.openScreen({ reuseBeside })`), so clicking ticket after ticket never piles up columns and the tree never
+ * leaves the screen. The column is found from the shared layout itself, so another browser, or this one after a
+ * reload, reuses it too. The workspace's own chat column (`chat`) is never taken.
  *
  * `beside` is this page's own screen (`ext:kanban-board` / `ext:kanban-projects`).
  */
 
-/**
- * The side-chat column each Kanban page opened last (its screen), so the next one takes its place. Kept in this
- * browser: the workspace layout outlives a reload, and so must the column's identity, or a reload would add a
- * second side chat instead of reusing the first.
- */
-const lastShown = {
-  key: (beside: string) => `kanban:side-chat:${beside}`,
-  get(beside: string): string | undefined {
-    try {
-      return localStorage.getItem(this.key(beside)) ?? undefined
-    } catch {
-      return undefined
-    }
-  },
-  set(beside: string, screen: string) {
-    try {
-      localStorage.setItem(this.key(beside), screen)
-    } catch {
-      // Private mode: the next reload adds a column; nothing worse.
-    }
-  },
-}
-
-function showBeside(host: Host, beside: string, conversationId: string): boolean {
+function showBeside(host: Host, beside: string, conversationId: string, draft?: { text: string; title?: string }) {
   const open = host.panels?.openScreen
   if (!open) return false
-  const screen = `chat:${conversationId}`
-  const previous = lastShown.get(beside)
   open({
-    screen,
+    screen: `chat:${conversationId}`,
     relativeTo: beside,
     direction: 'right',
-    ...(previous && previous !== screen ? { replaces: previous } : {}),
+    reuseBeside: true,
+    // An unsent draft travels with the layout: a reload or another browser opens the same draft, not a missing chat.
+    ...(draft ? { draft } : {}),
   })
-  lastShown.set(beside, screen)
   return true
 }
 
@@ -65,7 +42,7 @@ export function draftChatBeside(host: Host, beside: string, draft: { text: strin
   const chat = host.chat
   if (chat?.openDraft) {
     const id = chat.openDraft(draft, { show: false })
-    if (typeof id === 'string' && id && showBeside(host, beside, id)) return true
+    if (typeof id === 'string' && id && showBeside(host, beside, id, draft)) return true
     if (typeof id === 'string') chat.selectConversation?.(id)
     return true
   }

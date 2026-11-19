@@ -6,6 +6,7 @@ import {
   formatSpan,
   modelName,
   type SessionRow,
+  sessionState,
   type TreeTicket,
   ticketKeyOf,
   toAgentSession,
@@ -119,7 +120,7 @@ assert.equal(toAgentSession({ ...row, metadata: null, title: '' }).name, 'kan12-
   // KAN-5 sits in To do, but an agent worked it (done): stays pending; KAN-12 active.
   assert.equal(k5.state, 'pending')
   assert.equal(k12.state, 'active')
-  assert.deepEqual(tree.stats, { tickets: 2, sessions: 4, running: 1, failed: 1 })
+  assert.deepEqual(tree.stats, { tickets: 2, sessions: 4, running: 1, failed: 1, waiting: 0 })
   assert.equal(
     tree.roots.some((node) => node.sessions.some((s) => s.session.id === 'console-unrelated')),
     false,
@@ -311,6 +312,23 @@ assert.equal(modelName(null), null)
   )
   assert.equal(tree.stats.sessions, 5, 'a session under two tickets counts once')
   assert.equal(tree.stats.running, 1)
+}
+
+// ── a question waiting on the person ────────────────────────────────────
+{
+  assert.equal(sessionState(session('q', 'Asks', { status: 'done', statusReason: 'awaiting answer' })), 'waiting')
+  assert.equal(sessionState(session('d', 'Done', { status: 'done' })), 'done', 'a finished turn is not waiting')
+  const tree = buildTree({
+    tickets: [ticket('KAN-70', 'in_progress')],
+    sessions: [session('kan70-lead', 'KAN-70 · Lead', { status: 'done', statusReason: 'awaiting answer' })],
+    prefix: 'KAN',
+    columns,
+    doneStatus: 'done',
+    canceledStatus: 'canceled',
+  })
+  assert.equal(tree.roots[0].sessions[0].state, 'waiting')
+  assert.equal(tree.stats.waiting, 1)
+  assert.equal(tree.stats.running, 0)
 }
 
 console.log('tree.check: ok')

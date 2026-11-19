@@ -8,6 +8,7 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   CircleDashed,
+  CircleHelp,
   ClipboardCheck,
   Code2,
   Database,
@@ -110,6 +111,7 @@ const SESSION_ICONS: Record<string, LucideIcon> = {
 const STATE_LABEL: Record<WorkState, string> = {
   active: 'Running',
   pending: 'Pending',
+  waiting: 'Needs answer',
   done: 'Done',
   failed: 'Failed',
   canceled: 'Canceled',
@@ -273,7 +275,8 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const needsEyes = useMemo(() => {
     const ids = new Set<string>()
     const visit = (node: Node): boolean => {
-      let flagged = node.kind !== 'group' && (node.state === 'active' || node.state === 'failed')
+      let flagged =
+        node.kind !== 'group' && (node.state === 'active' || node.state === 'failed' || node.state === 'waiting')
       for (const kid of kidsOf(node)) if (visit(kid)) flagged = true
       if (flagged) ids.add(node.id)
       return flagged
@@ -294,7 +297,9 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
   const defaultOpen = useCallback(
     (node: Node) => {
       const known = firstSeen.current.get(node.id)
-      if (known !== undefined) return known
+      // Folded at first sight, it still opens when work under it starts, fails or needs an answer: nobody should
+      // have to open a branch to learn an agent is waiting on them. (A branch folded by hand stays folded.)
+      if (known !== undefined) return known || needsEyes.has(node.id)
       const open =
         node.kind === 'group' || needsEyes.has(node.id) || (node.state !== 'done' && node.state !== 'canceled')
       // Not before the sessions are read: a failed agent under a finished ticket must still open it.
@@ -580,6 +585,7 @@ export function TreeView({ host, data, project, agents, paneKey, onOpenTicket, o
           {stats.running > 0 ? (
             <span className="tw:shrink-0 tw:font-medium tw:text-glyph-blue">{stats.running} running</span>
           ) : null}
+          {stats.waiting > 0 ? <span className="kb-tree-waiting">{stats.waiting} waiting</span> : null}
           {stats.failed > 0 ? (
             <span className="tw:shrink-0 tw:font-medium tw:text-alert">{stats.failed} failed</span>
           ) : null}
@@ -791,6 +797,7 @@ const ChartItem = memo(function ChartItem(props: ItemProps) {
       data-node-id={node.id}
       data-spine={spine ? 'true' : undefined}
       data-live={agentsAtWork(node) ? 'true' : undefined}
+      data-waiting={!agentsAtWork(node) && waitsOnYou(node) ? 'true' : undefined}
       data-selected={node.id === props.selectedId ? 'true' : undefined}
       data-state={node.kind === 'group' ? undefined : node.state}
       onFocus={(event) => {
@@ -925,7 +932,9 @@ function StateBadge({ state, label, step }: { state: WorkState; label?: string; 
           ? X
           : state === 'pending'
             ? CircleDashed
-            : null
+            : state === 'waiting'
+              ? CircleHelp
+              : null
   return (
     <span className="kb-node__badge" data-kind={label ? 'column' : 'session'} data-state={state} data-step={step}>
       {label ? null : state === 'active' ? (
@@ -1041,6 +1050,7 @@ function TicketCard({
   const doneSubs = node.subtasks.filter((sub) => sub.state === 'done').length
   const agentsHere = countSessions(node.sessions)
   const working = workingUnder(node.sessions)
+  const waiting = waitingUnder(node.sessions)
   const live =
     working.length > 0 ? (
       <>
@@ -1049,6 +1059,15 @@ function TicketCard({
           {working.length === 1 ? '1 agent working' : `${working.length} agents working`}
           {' · '}
           {activityLabel(working[0].statusReason)}
+        </span>
+      </>
+    ) : waiting.length > 0 ? (
+      <>
+        <span aria-hidden="true" className="kb-node__pulse" data-tone="waiting" />
+        <span>
+          {waiting.length === 1
+            ? 'An agent is waiting for your answer'
+            : `${waiting.length} agents are waiting for your answer`}
         </span>
       </>
     ) : null
@@ -1129,7 +1148,7 @@ function SessionCard({
   // Only while it has not finished: a quick agent that is already done says so instead.
   const finished = session.status === 'done' || session.status === 'error'
   const justPrompted = !finished && promptedAt !== undefined && now - promptedAt < PROMPT_FRESH_MS
-  const awaiting = session.status === 'done' && session.statusReason === 'awaiting answer'
+  const awaiting = node.state === 'waiting'
   const live = justPrompted ? (
     <>
       <span aria-hidden="true" className="kb-node__pulse iii-ui-pulse" data-tone="prompt" />
@@ -1203,9 +1222,9 @@ function agentsAtWork(node: Node): boolean {
   return node.children.some(agentsAtWork)
 }
 
-/** How long a prompt counts as "just" reaching a session. */
 /** How long a clicked card holds the keys against the chat it opened (its composer focuses as it mounts). */
 const FOCUS_HOLD_MS = 1500
+/** How long a prompt counts as "just" reaching a session. */
 const PROMPT_FRESH_MS = 8000
 
 /** The sessions at work under a ticket (one each, however often drawn), the latest active first. */
@@ -1215,6 +1234,22 @@ function workingUnder(nodes: readonly SessionNode[]): AgentSession[] {
     if (n.kind === 'session' && n.session.status === 'working') found.set(n.session.id, n.session)
   })
   return [...found.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** The sessions under a ticket blocked on the person's answer (one each). */
+function waitingUnder(nodes: readonly SessionNode[]): AgentSession[] {
+  const found = new Map<string, AgentSession>()
+  walk(nodes, (n) => {
+    if (n.kind === 'session' && n.state === 'waiting') found.set(n.session.id, n.session)
+  })
+  return [...found.values()]
+}
+
+/** A question waits on the person at or under this card (and no agent there is at work). */
+function waitsOnYou(node: Node): boolean {
+  if (node.kind === 'session') return node.state === 'waiting' || node.children.some(waitsOnYou)
+  if (node.kind === 'ticket') return node.sessions.some(waitsOnYou) || node.subtasks.some(waitsOnYou)
+  return node.children.some(waitsOnYou)
 }
 
 function countSessions(nodes: readonly SessionNode[]): number {

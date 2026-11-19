@@ -67,7 +67,8 @@ export type TreeTicket = {
 }
 
 /** Where a piece of work stands, for the badge and the "hide done" switch. */
-export type WorkState = 'active' | 'pending' | 'done' | 'failed' | 'canceled'
+/** `waiting`: a session whose turn ended on a question to the person (the harness's "awaiting answer"). */
+export type WorkState = 'active' | 'pending' | 'waiting' | 'done' | 'failed' | 'canceled'
 
 export type SessionNode = {
   kind: 'session'
@@ -99,6 +100,8 @@ export type TreeStats = {
   sessions: number
   running: number
   failed: number
+  /** Sessions blocked on the person's answer. */
+  waiting: number
 }
 
 export type ProjectTree = {
@@ -147,10 +150,13 @@ export function ticketKeyOf(session: Pick<AgentSession, 'id' | 'name'>, prefix: 
   return null
 }
 
+/** The harness's `done` reason for a turn that ended on a question (`harness::ask`). */
+export const AWAITING_ANSWER = 'awaiting answer'
+
 export function sessionState(session: AgentSession): WorkState {
   if (session.status === 'working') return 'active'
   if (session.status === 'error') return 'failed'
-  if (session.status === 'done') return 'done'
+  if (session.status === 'done') return session.statusReason === AWAITING_ANSWER ? 'waiting' : 'done'
   // Idle: answered and waiting, or never started.
   return session.messageCount > 0 ? 'done' : 'pending'
 }
@@ -336,7 +342,7 @@ export function buildTree(input: BuildInput): ProjectTree {
     childrenOf.set(ticket.parent_id, list)
   }
 
-  const stats: TreeStats = { tickets: 0, sessions: 0, running: 0, failed: 0 }
+  const stats: TreeStats = { tickets: 0, sessions: 0, running: 0, failed: 0, waiting: 0 }
   // A session drawn under two tickets is still one session.
   const counted = new Set<string>()
   const count = (node: SessionNode) => {
@@ -345,6 +351,7 @@ export function buildTree(input: BuildInput): ProjectTree {
       stats.sessions += 1
       if (node.session.status === 'working') stats.running += 1
       if (node.session.status === 'error') stats.failed += 1
+      if (node.state === 'waiting') stats.waiting += 1
     }
     node.children.forEach(count)
   }

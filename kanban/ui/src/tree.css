@@ -391,6 +391,11 @@
   --kb-badge: var(--kb-status-failed);
 }
 
+/* Blocked on the person's answer: the review green, as on its "Waiting for your answer" line. */
+[data-iii-ui="kanban"] .kb-node__badge[data-kind="session"][data-state="waiting"] {
+  --kb-badge: var(--kb-status-review);
+}
+
 /* A ticket's column badge leads with a dot of its colour (the glyph on the left says the shape). */
 [data-iii-ui="kanban"] .kb-node__badge[data-kind="column"]::before {
   width: 6px;
@@ -553,6 +558,22 @@
 }
 
 [data-iii-ui="kanban"] .kb-node__live:has(> .kb-node__pulse[data-tone="waiting"]) {
+  color: var(--kb-status-review);
+}
+
+/* A card with a question waiting on the person at or under it wears the review green on its edge; its wire too
+   (still: nothing is moving, someone is needed). */
+[data-iii-ui="kanban"] .kb-chart__item[data-waiting="true"] > .kb-chart__card > .kb-node {
+  border-color: color-mix(in srgb, var(--kb-status-review) 45%, transparent);
+}
+
+[data-iii-ui="kanban"] .kb-chart__wire[data-waiting] {
+  stroke: var(--kb-status-review);
+}
+
+[data-iii-ui="kanban"] .kb-tree-waiting {
+  flex-shrink: 0;
+  font-weight: 500;
   color: var(--kb-status-review);
 }
 
