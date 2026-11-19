@@ -44,6 +44,30 @@ fn same_read(a: &Entry, b: &Entry) -> bool {
             .iter()
             .all(|(path, id)| b.pins.iter().any(|(other, now)| path == other && id == now))
 }
+/// A recorded pin against a FRESH observation of the same path, by the same
+/// identity relation as `validate_entry`: device, inode, owner and full mode
+/// exact; link count exact for non-directories (a new hardlink), ignored for
+/// directories. A directory's link count moves whenever any subdirectory of it
+/// is created or removed (a sibling cache image, an unrelated tempdir under an
+/// ancestor), which neither replaces nor rebinds the recorded path.
+fn same_pin(recorded: &Identity, observed: &Identity) -> bool {
+    recorded.same_inode(observed)
+        && (recorded.mode & libc::S_IFMT == libc::S_IFDIR || recorded.links == observed.links)
+}
+/// A recorded Strict read still observed, now, at the same path with the same
+/// pins. Recorded-vs-recorded comparisons keep using exact `same_read`.
+fn still_read(recorded: &Entry, observed: &Entry) -> bool {
+    recorded.path == observed.path
+        && recorded.role == PathRole::Strict
+        && observed.role == PathRole::Strict
+        && recorded.pins.len() == observed.pins.len()
+        && recorded.pins.iter().all(|(path, id)| {
+            observed
+                .pins
+                .iter()
+                .any(|(other, now)| path == other && same_pin(id, now))
+        })
+}
 fn exact_cached_read(op: &Operation, entry: &Entry) -> io::Result<bool> {
     if entry.role != PathRole::Strict {
         return Ok(false);
@@ -140,7 +164,7 @@ fn record(
                 && exact_cached_read(op, existing)?
             {
                 let observed = super::entry(proposed, PathRole::Strict)?;
-                if same_read(existing, &observed) {
+                if still_read(existing, &observed) {
                     continue;
                 }
                 return Err(invalid("old cache selection identity changed"));
@@ -740,11 +764,9 @@ fn transfer(
             .ok_or_else(|| invalid("handoff read was not protected by preparation"))?;
         if previous.pins.len() != read.pins.len()
             || !previous.pins.iter().all(|(p, id)| {
-                read.pins.iter().any(|(q, current)| {
-                    p == q
-                        && id.same_inode(current)
-                        && (id.mode & libc::S_IFMT == libc::S_IFDIR || id.links == current.links)
-                })
+                read.pins
+                    .iter()
+                    .any(|(q, current)| p == q && same_pin(id, current))
             })
         {
             return Err(invalid("cache identity changed during handoff validation"));
@@ -764,7 +786,7 @@ fn transfer(
     for read in &entries {
         if let Some(existing) = combined.iter().find(|e| e.path == read.path) {
             if continuation.is_none()
-                || !same_read(existing, read)
+                || !still_read(existing, read)
                 || !exact_cached_read(tx.operation(&consumer.0.id)?, existing)?
             {
                 return Err(invalid(

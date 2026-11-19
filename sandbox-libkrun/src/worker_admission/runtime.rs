@@ -3,6 +3,9 @@
 //! A real owned wait plus independently free runtime OFD proves writer retirement,
 //! never guest flush, application consistency or migration authority.
 #[cfg(test)]
+#[path = "runtime_cache_continuation_tests.rs"]
+mod cache_continuation_tests;
+#[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
 use super::{
