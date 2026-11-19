@@ -3,9 +3,11 @@
 ## 0.8.1
 
 - **A dev run starts from the remote's default branch, not from the branch you are on.** Before, the base was the branch `git status` named. A run started on a branch already merged five days earlier built on code 30 commits behind `main`: its research read an email path `main` had already replaced, and its commits conflicted when moved onto `main` for the PR.
-  - The base is `git symbolic-ref refs/remotes/origin/HEAD` (e.g. `origin/main`), fetched right before the worktree is created, which no longer tracks it (`--no-track`). Without an `origin`, the base stays the branch `git status` names.
+  - The base is `git symbolic-ref refs/remotes/origin/HEAD` (e.g. `origin/main`), else `origin/main` when it exists, else (no `origin`) the branch `git status` names.
+  - It is fetched to `refs/remotes/<base>` with an explicit refspec right before the worktree is created, so a narrow `remote.origin.fetch` can't leave it stale; the run branch doesn't track it (`--no-track`).
   - The PR targets, and the merge option merges into, the base without its `origin/` prefix (`main`).
-  - The Plan card, or the run ticket, says when your uncommitted changes or your branch's own commits are left out.
+  - The Plan card, or the run ticket, says when your uncommitted changes are left out; the run ticket says when commits of your checkout (unpushed, or on an unmerged branch) are.
+  - The merge option says it merges into your `main` checkout, and asks you to check it out when root is on another branch.
   - A run from before 0.8.1 resumes on the `Base:` its ticket names.
 
 ## 0.8.0
