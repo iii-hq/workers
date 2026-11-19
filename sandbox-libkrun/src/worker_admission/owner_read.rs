@@ -289,11 +289,12 @@ impl OwnerReadGuard {
         lease.revalidate()?;
         let mut tx = lease.0.namespace.transaction()?;
         let op = tx.operation_mut(&lease.0.id)?;
-        if !op
-            .entries
-            .iter()
-            .any(|e| e.role == PathRole::ManagedCacheRead && e.path.get().is_ok_and(|p| p == root))
-            || op.closed
+        if !op.entries.iter().any(|e| {
+            (e.role == PathRole::ManagedCacheRead
+                || (e.role == PathRole::MutableTree
+                    && super::shared_cache::managed_root(op, &root)))
+                && e.path.get().is_ok_and(|p| p == root)
+        }) || op.closed
             || op.uncertain
         {
             return Err(invalid(
@@ -301,7 +302,11 @@ impl OwnerReadGuard {
             ));
         }
         if op.entries.iter().any(|e| {
-            e.role != PathRole::ManagedCacheRead && e.path.get().is_ok_and(|p| overlaps(&p, &root))
+            e.role != PathRole::ManagedCacheRead
+                && !(e.role == PathRole::MutableTree
+                    && e.path.get().is_ok_and(|p| p == root)
+                    && super::shared_cache::managed_root(op, &root))
+                && e.path.get().is_ok_and(|p| overlaps(&p, &root))
         }) || op
             .holds
             .iter()

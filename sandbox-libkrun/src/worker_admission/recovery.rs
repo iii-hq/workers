@@ -203,6 +203,17 @@ fn recover_inner(
     match request.action {
         RecoveryAction::ArchiveCompleted => archive(ns, &mut tx, &original, fault)?,
         RecoveryAction::ReconcileVerified => {
+            if original
+                .cache
+                .as_ref()
+                .is_some_and(|c| c.phase == super::catalog::CachePhase::Preparing)
+            {
+                return report(
+                    ns,
+                    &tx.catalog,
+                    "unresolved: abandoned cache preparation requires explicit producer recovery; no read transfer is inferred",
+                );
+            }
             if original.holders > 1
                 || original
                     .holds

@@ -24,6 +24,8 @@ pub(crate) use runtime::{
     RuntimeActivity, RuntimeChild, RuntimeCompletion, RuntimeLaunch, RuntimePath, RuntimePathKind,
     RuntimeSpawnError, RuntimeWriter, import_runtime_writer,
 };
+mod shared_cache;
+pub(crate) use shared_cache::{CacheEntry, CachePreparation, CacheProbe};
 mod storage;
 use catalog::{Entry, Hold, HoldKind, Namespace, overlaps};
 pub(crate) use catalog::{bootstrap_for_uid, check_installation};
@@ -250,6 +252,18 @@ impl Lease {
     }
     pub(crate) fn export_child(&self) -> io::Result<ChildAdmission> {
         self.revalidate()?;
+        if self
+            .0
+            .namespace
+            .transaction()?
+            .operation(&self.0.id)?
+            .cache
+            .is_some()
+        {
+            return Err(invalid(
+                "cache preparation/probe cannot export writer authority",
+            ));
+        }
         Ok(ChildAdmission {
             lease: self.clone(),
         })
@@ -374,6 +388,14 @@ impl Lease {
     fn finish_hold(&self, id: &str, uncertain: bool) -> io::Result<()> {
         let mut tx = self.0.namespace.transaction()?;
         let op = tx.operation_mut(&self.0.id)?;
+        if op.cache.as_ref().is_some_and(|c| {
+            matches!(
+                c.phase,
+                catalog::CachePhase::Transferred | catalog::CachePhase::Cancelled
+            )
+        }) {
+            return Err(invalid("closed cache generation cannot settle old effects"));
+        }
         if uncertain {
             op.uncertain = true;
         } else {
@@ -649,6 +671,11 @@ pub(crate) fn with_paths(lease: Lease, paths: &[PathRequest<'_>]) -> io::Result<
         .collect::<io::Result<_>>()?;
     let mut tx = lease.0.namespace.transaction()?;
     let op = tx.operation(&lease.0.id)?;
+    if op.cache.is_some() {
+        return Err(invalid(
+            "cache capability cannot be extended through generic paths",
+        ));
+    }
     if op.closed || op.uncertain {
         return Err(refused());
     }

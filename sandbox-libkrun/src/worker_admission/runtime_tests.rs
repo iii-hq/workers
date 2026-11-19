@@ -1692,3 +1692,66 @@ async fn g_cross_exec_pending_activity_never_gets_endpoint_retirement_authority(
     assert!(endpoint.exists());
     drop(_temp);
 }
+
+#[test]
+fn h_two_runtime_consumers_hold_same_cache_reads_independently() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, data) = fixture();
+    let cache = data.join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let root = cache.join("image");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("content"), b"SOURCE").unwrap();
+    let lower = cache.join("image.erofs");
+    std::fs::write(&lower, b"LOWER").unwrap();
+    std::fs::write(cache.join("image.digest"), b"sha256:fixture").unwrap();
+    let a = context.local(&data.join("a")).unwrap();
+    let a = a
+        .probe_cache(&[CacheEntry { root: &root }])
+        .unwrap()
+        .handoff(&a, &root)
+        .unwrap();
+    let b = context.local(&data.join("b")).unwrap();
+    let b = b
+        .probe_cache(&[CacheEntry { root: &root }])
+        .unwrap()
+        .handoff(&b, &root)
+        .unwrap();
+    let a_launch = a.prepare_runtime(&[]).unwrap();
+    let a_export = a.export_child().unwrap();
+    let a_import = context
+        .import_child(a_export.duplicate_for_exec().unwrap())
+        .unwrap();
+    let a_writer = import_runtime_writer(
+        &a_import,
+        duplicate(a_launch.sentinel.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let b_launch = b.prepare_runtime(&[]).unwrap();
+    let b_export = b.export_child().unwrap();
+    let b_import = context
+        .import_child(b_export.duplicate_for_exec().unwrap())
+        .unwrap();
+    let b_writer = import_runtime_writer(
+        &b_import,
+        duplicate(b_launch.sentinel.as_ref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let a_read = a_writer.use_path(&lower).unwrap();
+    let b_read = b_writer.use_path(&lower).unwrap();
+    a_read.revalidate().unwrap();
+    b_read.revalidate().unwrap();
+    let competitor = context.local(&data.join("writer")).unwrap();
+    assert!(
+        competitor
+            .prepare_cache(&[CacheEntry { root: &root }])
+            .is_err()
+    );
+    drop(a_read);
+    assert!(
+        competitor
+            .prepare_cache(&[CacheEntry { root: &root }])
+            .is_err()
+    );
+    drop(b_read);
+}

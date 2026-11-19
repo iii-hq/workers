@@ -57,6 +57,7 @@ pub(crate) struct StagedFile {
     parent: Directory,
     file: File,
     identity: Identity,
+    cache_writer_fence: bool,
 }
 pub(crate) struct StagedTree {
     owner: String,
@@ -81,6 +82,52 @@ impl StagedTree {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+}
+fn settle_cache_stage(stage: StagedFile) -> io::Result<StagedFile> {
+    if !stage.cache_writer_fence {
+        return Ok(stage);
+    }
+    let StagedFile {
+        owner,
+        operation,
+        namespace,
+        token,
+        target,
+        path,
+        parent,
+        file,
+        identity,
+        cache_writer_fence,
+    } = stage;
+    parent.revalidate()?;
+    if Identity::of(&file)? != identity {
+        return Err(invalid("cache stage inode changed"));
+    }
+    // Clones share the original OFD locks. Closing only our descriptor cannot
+    // retire a still-owned writer. Independent nonblocking lock must succeed.
+    drop(file);
+    let file = open_at(
+        &parent.file,
+        path.file_name().ok_or_else(|| invalid("stage leaf"))?,
+        libc::O_RDWR | libc::O_NONBLOCK,
+        0,
+    )?;
+    if Identity::of(&file)? != identity {
+        return Err(invalid("cache stage substituted before completion"));
+    }
+    sentinel(&file)?;
+    Ok(StagedFile {
+        owner,
+        operation,
+        namespace,
+        token,
+        target,
+        path,
+        parent,
+        file,
+        identity,
+        cache_writer_fence,
+    })
 }
 fn fingerprint(path: &Path) -> io::Result<Option<Identity>> {
     match std::fs::symlink_metadata(path) {
@@ -137,7 +184,42 @@ impl MutationGuard {
                 "Remove requires core-issued retirement or never-spawned receipt",
             ));
         }
-        Self::begin_inner(lease, plan, None)
+        Self::begin_inner(lease, plan, None, None)
+    }
+    pub(super) fn begin_cache_entry(
+        lease: Lease,
+        root: &Path,
+        paths: &[PathBuf],
+    ) -> io::Result<Self> {
+        let root = absolute(root)?;
+        let mut digest = root
+            .file_name()
+            .ok_or_else(|| invalid("cache root name"))?
+            .to_os_string();
+        digest.push(".digest");
+        let mut lock = root
+            .file_name()
+            .ok_or_else(|| invalid("cache root name"))?
+            .to_os_string();
+        lock.push(".lock");
+        let exact = vec![
+            root.clone(),
+            root.with_file_name(digest),
+            root.with_file_name(lock),
+        ];
+        if paths != exact.as_slice() {
+            return Err(invalid(
+                "cache-entry footprint must be exact root/digest/lock",
+            ));
+        }
+        Self::begin_inner(
+            lease,
+            MutationPlan::Cache {
+                root: root.to_path_buf(),
+            },
+            None,
+            Some(paths.to_vec()),
+        )
     }
     // Only the private receipt module calls this; no crate-visible metadata
     // constructor grants removal. Validation and hold acquisition share one tx.
@@ -155,6 +237,7 @@ impl MutationGuard {
             lease,
             plan,
             Some((epoch, bindings, lineage, runtime, sentinel, never_spawned)),
+            None,
         )
     }
     fn begin_inner(
@@ -168,6 +251,7 @@ impl MutationGuard {
             &Identity,
             bool,
         )>,
+        cache_footprint: Option<Vec<PathBuf>>,
     ) -> io::Result<Self> {
         let removing = matches!(&plan, MutationPlan::Remove { .. });
         let control = matches!(&plan, MutationPlan::ControlFiles { .. });
@@ -252,9 +336,14 @@ impl MutationGuard {
             }
         };
         let root = absolute(&root)?;
+        let cache_entry = cache_footprint.is_some();
         let mut footprint = remove_targets.unwrap_or_else(|| vec![root.clone()]);
         if removing {
             label = "remove";
+        }
+        if let Some(exact) = cache_footprint {
+            label = "cache-entry";
+            footprint = exact;
         }
         if control {
             label = "control-files";
@@ -324,6 +413,11 @@ impl MutationGuard {
             }
         }
         let op = tx.operation_mut(&lease.0.id)?;
+        if cache_entry && !super::shared_cache::managed_root(op, &root) {
+            return Err(invalid(
+                "cache entry plan has no private preparation capability",
+            ));
+        }
         if op.uncertain
             || op.closed
             || op.holds.len() + footprint.len() > 256
@@ -362,7 +456,7 @@ impl MutationGuard {
         }
         for path in &footprint {
             if !op.entries.iter().any(|e| {
-                (e.role == role || (removing && e.role == PathRole::MutableFile))
+                (e.role == role || ((removing || cache_entry) && e.role == PathRole::MutableFile))
                     && e.path.get().is_ok_and(|p| {
                         p == *path
                             || (spool.is_none()
@@ -466,6 +560,14 @@ impl MutationGuard {
     }
     fn target(&self, path: &Path) -> io::Result<PathBuf> {
         let path = absolute(path)?;
+        if self.plan == "cache-entry" {
+            if path != self.root && !self.footprint.contains(&path) {
+                return Err(invalid(
+                    "cache preparation cannot mutate arbitrary descendants or siblings",
+                ));
+            }
+            return Ok(path);
+        }
         if !self.footprint.iter().any(|p| {
             path == *p
                 || (self.plan != "erofs"
@@ -648,6 +750,9 @@ impl MutationGuard {
             return Err(invalid("exact file/removal plan cannot create directories"));
         }
         let target = self.target(target)?;
+        if self.plan == "cache-entry" && target != self.root {
+            return Err(invalid("cache directory creation cannot target a sidecar"));
+        }
         self.artifacts_started = true;
         if mode & !0o777 != 0 || mode & 0o022 != 0 {
             return Err(invalid("unsafe output directory mode"));
@@ -716,6 +821,15 @@ impl MutationGuard {
         Ok((target, parent, stage, token))
     }
     fn stage_file_inner(&mut self, target: &Path, mode: u32) -> io::Result<StagedFile> {
+        if self.plan == "cache-entry" {
+            let mut name = self.root.as_os_str().to_os_string();
+            name.push(".digest");
+            if absolute(target)? != PathBuf::from(name) {
+                return Err(invalid(
+                    "cache-entry file staging is restricted to its digest sidecar",
+                ));
+            }
+        }
         if mode & !0o777 != 0 || mode & 0o022 != 0 {
             return Err(invalid("unsafe staged file mode"));
         }
@@ -734,6 +848,17 @@ impl MutationGuard {
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
             mode,
         )?;
+        let cache_writer_fence = self
+            .lease
+            .0
+            .namespace
+            .transaction()?
+            .operation(&self.lease.0.id)?
+            .cache
+            .is_some();
+        if cache_writer_fence {
+            sentinel(&file)?;
+        }
         let identity = Identity::of(&file)?;
         parent.file.sync_all()?;
         self.complete_intent(&intent, Some(identity.clone()))?;
@@ -747,9 +872,15 @@ impl MutationGuard {
             parent,
             file,
             identity,
+            cache_writer_fence,
         })
     }
     fn stage_tree_inner(&mut self, target: &Path) -> io::Result<StagedTree> {
+        if self.plan == "cache-entry" && absolute(target)? != self.root {
+            return Err(invalid(
+                "cache tree stage must target its exact source root",
+            ));
+        }
         if self.plan == "control-files" || self.plan == "erofs" {
             return Err(invalid("file plan cannot stage a tree"));
         }
@@ -993,6 +1124,7 @@ impl MutationGuard {
     }
     fn discard_file_inner(&mut self, stage: StagedFile) -> io::Result<()> {
         self.checkpoint()?;
+        let stage = settle_cache_stage(stage)?;
         if !Arc::ptr_eq(&stage.namespace, &self.lease.0.namespace)
             || stage.operation != self.lease.0.id
             || stage.owner != self.id
@@ -1146,6 +1278,7 @@ impl MutationGuard {
             return Err(invalid("staged file changed"));
         }
         stage.file.sync_all()?;
+        let stage = settle_cache_stage(stage)?;
         self.publish(
             &stage.owner,
             &stage.token,
@@ -1459,6 +1592,11 @@ impl MutationGuard {
             return Err(invalid("diagnostic aliases an EROFS artifact"));
         }
         let related = match self.plan.as_str() {
+            "cache-entry" => {
+                let mut name = self.root.as_os_str().to_os_string();
+                name.push(".lock");
+                path == PathBuf::from(name)
+            }
             "erofs" => path == PathBuf::from(sidecar),
             "cache" | "image-pair" => path.starts_with(&self.root) && path != self.root,
             _ => false,

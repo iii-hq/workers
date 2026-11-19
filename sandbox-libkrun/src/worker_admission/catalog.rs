@@ -116,6 +116,35 @@ pub(super) struct Disposal {
     pub file: Identity,
     pub discarded: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum CachePhase {
+    Probe,
+    Preparing,
+    Transferred,
+    Cancelled,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CacheRecord {
+    pub phase: CachePhase,
+    pub consumer: String,
+    pub consumer_sentinel: Identity,
+    pub consumer_epoch: u64,
+    pub consumer_entries_sha256: String,
+    pub roots: Vec<HostPath>,
+    pub files: Vec<HostPath>,
+    pub reads: Vec<HostPath>,
+    pub transferred_epoch: Option<u64>,
+    pub transferred_reads: Vec<Entry>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CacheReadReceipt {
+    pub preparation: String,
+    pub preparation_sentinel: Identity,
+    pub epoch: u64,
+    pub entries: Vec<Entry>,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Operation {
@@ -131,6 +160,10 @@ pub(super) struct Operation {
     pub holds: Vec<Hold>,
     pub journals: Vec<Journal>,
     pub recovery: Option<RecoveryIntent>,
+    #[serde(default)]
+    pub cache: Option<CacheRecord>,
+    #[serde(default)]
+    pub cache_reads: Vec<CacheReadReceipt>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -408,7 +441,19 @@ impl Namespace {
         base: Option<HostPath>,
         transition: bool,
     ) -> io::Result<(String, File)> {
+        self.start_with_cache(entries, base, transition, None)
+    }
+    pub(super) fn start_with_cache(
+        self: &Arc<Self>,
+        entries: Vec<Entry>,
+        base: Option<HostPath>,
+        transition: bool,
+        cache: Option<CacheRecord>,
+    ) -> io::Result<(String, File)> {
         let mut tx = self.transaction()?;
+        if let Some(cache) = &cache {
+            super::shared_cache::validate_consumer(&tx, cache)?;
+        }
         // Completed evidence is removed only by explicit administrative archival.
         if tx.catalog.operations.len() >= MAX_OPS {
             return Err(limit());
@@ -460,6 +505,8 @@ impl Namespace {
             holds: Vec::new(),
             journals: Vec::new(),
             recovery: None,
+            cache,
+            cache_reads: Vec::new(),
         });
         tx.save()?;
         self.directory.file.sync_all()?;
@@ -479,7 +526,12 @@ impl Namespace {
         }
         let mut tx = self.transaction()?;
         let op = tx.operation_mut(&record.id)?;
-        if op.sentinel != identity || op.closed || op.uncertain || op.transition {
+        if op.sentinel != identity
+            || op.closed
+            || op.uncertain
+            || op.transition
+            || op.cache.is_some()
+        {
             return Err(invalid("child operation mismatch"));
         }
         let independent = self.directory.file(&format!("op-{}", record.id), false)?;
@@ -515,6 +567,13 @@ impl Namespace {
             .any(|h| h.owner.as_ref().is_none_or(|o| o.holder == holder))
         {
             return Ok(());
+        }
+        if op
+            .cache
+            .as_ref()
+            .is_some_and(|c| c.phase == CachePhase::Preparing)
+        {
+            op.uncertain = true;
         }
         op.holder_ids.remove(index);
         op.holders = op.holder_ids.len() as u32;
@@ -698,6 +757,60 @@ impl Transaction<'_> {
             }
         }
         for op in &self.catalog.operations {
+            super::shared_cache::validate_record(op)?;
+            if op.cache_reads.len() > 16 {
+                return Err(limit());
+            }
+            for receipt in &op.cache_reads {
+                if !id_valid(&receipt.preparation)
+                    || receipt.preparation == op.id
+                    || receipt.entries.len() > 12
+                    || receipt
+                        .entries
+                        .iter()
+                        .any(|e| e.role != PathRole::Strict || e.pins.len() > 128)
+                {
+                    return Err(invalid("invalid cache read receipt"));
+                }
+                receipt.preparation_sentinel.regular(self.namespace.uid)?;
+                for entry in &receipt.entries {
+                    entry.path.get()?;
+                    for (p, _) in &entry.pins {
+                        p.get()?;
+                    }
+                }
+                if let Some(source) = self
+                    .catalog
+                    .operations
+                    .iter()
+                    .find(|p| p.id == receipt.preparation)
+                {
+                    if source.sentinel != receipt.preparation_sentinel
+                        || source.cache.as_ref().is_none_or(|c| {
+                            c.phase != CachePhase::Transferred
+                                || c.consumer != op.id
+                                || c.transferred_epoch != Some(receipt.epoch)
+                        })
+                    {
+                        return Err(invalid("cache transfer sides disagree"));
+                    }
+                    let cache = source
+                        .cache
+                        .as_ref()
+                        .ok_or_else(|| invalid("cache transfer record missing"))?;
+                    if super::recovery::digest(&cache.transferred_reads)?
+                        != super::recovery::digest(&receipt.entries)?
+                    {
+                        return Err(invalid("cache transfer read identities disagree"));
+                    }
+                } else if !self.catalog.archives.iter().any(|a| {
+                    a.operation == receipt.preparation
+                        && a.complete
+                        && a.sentinel == receipt.preparation_sentinel
+                }) {
+                    return Err(invalid("cache read proof lost its preparation evidence"));
+                }
+            }
             if !id_valid(&op.id)
                 || !ids.insert(&op.id)
                 || op.entries.len() > MAX_PATHS
@@ -845,6 +958,7 @@ impl Transaction<'_> {
                         "remove",
                         "owner-read",
                         "control-files",
+                        "cache-entry",
                     ]
                     .contains(&journal.plan.as_str())
                     || journal.disposals.len() > 256
@@ -875,6 +989,7 @@ impl Transaction<'_> {
                 if journal.plan != "erofs"
                     && journal.plan != "remove"
                     && journal.plan != "control-files"
+                    && journal.plan != "cache-entry"
                     && journal.footprint.len() != 1
                 {
                     return Err(invalid("invalid tree footprint"));
@@ -1025,6 +1140,16 @@ impl Transaction<'_> {
             .iter_mut()
             .find(|op| op.id == id)
             .ok_or_else(|| invalid("missing operation"))
+    }
+    #[cfg(test)]
+    pub(super) fn fault_partial_save(&mut self) -> io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        // Isolated test namespace only. Preserve catalog.previous; a torn current
+        // record is evidence, never an excuse to infer a successful handoff.
+        self.file.write_all_at(b"{partial-cache-transfer", 0)?;
+        self.file.set_len(23)?;
+        self.file.sync_all()?;
+        Err(io::Error::other("injected torn cache catalog save"))
     }
     pub(super) fn save(&mut self) -> io::Result<()> {
         self.namespace.validate()?;

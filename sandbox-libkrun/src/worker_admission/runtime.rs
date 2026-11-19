@@ -257,6 +257,9 @@ impl RuntimeLaunch {
             return Err(limit());
         }
         let op = tx.operation_mut(&lease.0.id)?;
+        if op.cache.is_some() {
+            return Err(invalid("cache preparation cannot become a runtime writer"));
+        }
         if op.closed || op.uncertain || op.holds.len() + entries.len() > 256 {
             return Err(invalid("runtime operation unavailable"));
         }

@@ -1,4 +1,14 @@
-# Admission v2 core: runtime exit resources G source candidate
+# Admission v2 core: shared cache H source candidate
+
+H is incremental on consolidated `099a9d128aee96e28f9d7db72f446dbaec64aab7`,
+not a reset of F/G. [SHARED-CACHE-H.md](SHARED-CACHE-H.md) provides the concrete
+cache-specific probe/preparation/handoff APIs and caller routing examples.
+Warm lifecycle claims are exact Strict roots/lower/digest; writers live in a
+separate private preparation, and one catalog transaction installs consumer reads
+while retiring only that preparation. No persistent cache-parent MutableTree,
+generic downgrade or ManagedCacheRead-sharing exception was added. Production
+caller routing and the36 scenario fixtures remain B's next step; this source
+increment alone does not claim two-sandbox runtime PASS.
 
 The G1/G2/G4 increment after `71e7d6660b746bf51ed6981f67185c36cba262f0`
 adds exact runtime-owned read/endpoint guards and parent-side endpoint settlement
