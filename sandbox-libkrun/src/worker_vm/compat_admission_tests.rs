@@ -32,8 +32,8 @@ fn write_private_fixture(path: &Path, bytes: &[u8]) {
     file.write_all(bytes).unwrap();
 }
 fn setup(compat: bool) -> Setup {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Created private: never chmod or repair an inherited-umask root.
+    let root = crate::worker_admission::testing::private_tempdir().unwrap();
     let base = root.path().join("workers");
     private(&base);
     let vm = base.join(vm_id("key"));

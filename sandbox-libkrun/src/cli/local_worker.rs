@@ -2017,7 +2017,7 @@ mod tests {
         PathBuf,
         crate::worker_admission::Lease,
     ) {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let owner = t.path().join("owner");
         private_dir_all(&owner);
         let input = owner.join("input");
@@ -2225,7 +2225,7 @@ mod tests {
 
     #[test]
     fn independent_image_run_refuses_before_creating_root_or_reading_image_env() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let base = t.path().join("workers");
         let id = "c".repeat(32);
         let foreign = base.join(&id).join("root");
@@ -2235,8 +2235,8 @@ mod tests {
         private_file(&custody.join("active.json"), b"{corrupt");
         let root = t.path().join("normal-root");
         let source = t.path().join("normal-source");
-        std::fs::create_dir(&source).unwrap();
-        let namespace = tempfile::tempdir().unwrap();
+        private_dir_all(&source);
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
         let context =
             crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
         let project = project_with("", "");
@@ -3478,7 +3478,8 @@ resources:
         over: VmOverride<'_>,
         run: Option<&str>,
     ) -> Result<super::super::worker_manager::libkrun::VmCommand, String> {
-        let catalog = tempfile::tempdir().unwrap();
+        // The namespace must be exactly 0700: never the umask-derived default.
+        let catalog = crate::worker_admission::testing::private_tempdir().unwrap();
         let context = crate::worker_admission::testing::provision_context(catalog.path()).unwrap();
         let lease = context.local(&over.state_dir).map_err(|e| e.to_string())?;
         start_worker_resolved(name, Path::new(path), package, over, run, None, Some(lease)).await
@@ -3499,7 +3500,7 @@ resources:
         let yaml = "name: w\nscripts:\n  start: \"node server.js\"\ntypo_key: 1\n";
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
-        let state = tempfile::tempdir().unwrap();
+        let state = crate::worker_admission::testing::private_tempdir().unwrap();
         let err = start_worker_test(
             "iii-cov-test-start-unknown-key",
             dir.path().to_str().unwrap(),
@@ -3523,7 +3524,7 @@ resources:
         assert!(yaml.len() as u64 > super::super::project::MAX_LOCAL_MANIFEST_BYTES);
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
-        let state = tempfile::tempdir().unwrap();
+        let state = crate::worker_admission::testing::private_tempdir().unwrap();
         let err = start_worker_test(
             "iii-cov-test-start-oversize",
             dir.path().to_str().unwrap(),
@@ -3542,7 +3543,7 @@ resources:
     async fn start_rejects_a_missing_manifest_before_boot() {
         let dir = tempfile::tempdir().unwrap();
 
-        let state = tempfile::tempdir().unwrap();
+        let state = crate::worker_admission::testing::private_tempdir().unwrap();
         let err = start_worker_test(
             "iii-cov-test-start-no-manifest",
             dir.path().to_str().unwrap(),
@@ -3567,7 +3568,7 @@ resources:
                     scripts:\n  install: \"true\"\n  start: \"node server.js\"\n";
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
-        let state = tempfile::tempdir().unwrap();
+        let state = crate::worker_admission::testing::private_tempdir().unwrap();
         let err = start_worker_test(
             "iii-cov-test-start-bad-kind",
             dir.path().to_str().unwrap(),
@@ -3593,7 +3594,7 @@ resources:
                     scripts:\n  start: \"node bundle.js\"\n";
         std::fs::write(dir.path().join(WORKER_MANIFEST), yaml).unwrap();
 
-        let state = tempfile::tempdir().unwrap();
+        let state = crate::worker_admission::testing::private_tempdir().unwrap();
         let err = start_worker_test(
             "compose-key",
             dir.path().to_str().unwrap(),

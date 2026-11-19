@@ -4308,7 +4308,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_ops_answer_s505_without_the_token() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         // An adapter started without a token (or with an empty one) must refuse
@@ -4341,7 +4341,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_status_stop_destroy_cycle() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let started = vms
@@ -4368,7 +4368,7 @@ mod tests {
     /// even when the destroying daemon never booted the VM itself.
     #[tokio::test]
     async fn instance_survives_a_destroy() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let first = vms(t.path(), Some("t"), vec![]);
         let id = first
             .launch("k", sh("exit 0"), Vec::new(), None)
@@ -4388,7 +4388,7 @@ mod tests {
 
     #[tokio::test]
     async fn instance_survives_an_adapter_restart() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![]);
         let id = first
@@ -4410,7 +4410,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_escalates_to_sigkill_after_grace() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
@@ -4434,7 +4434,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_running_vm_refuses_start_and_destroy() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let id = vms
@@ -4459,7 +4459,7 @@ mod tests {
     /// has ended, so the retry never builds into the same state alongside it.
     #[tokio::test]
     async fn stop_cancels_a_start_still_preparing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vm_id("k");
         // Start call 7, still building.
@@ -4496,7 +4496,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_vm_being_destroyed_is_busy_to_start_and_gone_to_status() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let id = vm_id("k");
@@ -4514,7 +4514,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_destroy_keeps_the_exited_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
@@ -4537,7 +4537,7 @@ mod tests {
     #[tokio::test]
     async fn a_partly_failed_destroy_keeps_the_instance_order() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 0"), Vec::new(), None)
@@ -4565,7 +4565,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_vm_is_s504() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = Arc::new(vms(t.path(), Some("t"), vec![]));
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         assert_eq!(code(vms.status(status_req("t", "nope", 1))), "S504");
@@ -4578,7 +4578,7 @@ mod tests {
 
     #[tokio::test]
     async fn exit_code_is_recorded() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 7"), Vec::new(), None)
@@ -4591,7 +4591,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rejected_source_is_s501_and_leaves_the_key_startable() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let empty = t.join("empty");
         std::fs::create_dir(&empty).unwrap();
@@ -4606,7 +4606,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_refuses_a_symlinked_console_log() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let dir = t.join("workers").join(vm_id("k"));
         private_dirs(&dir);
@@ -4625,7 +4625,7 @@ mod tests {
     /// must leave the previous instance readable, not an empty file.
     #[tokio::test]
     async fn state_json_is_replaced_not_rewritten_in_place() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 0"), Vec::new(), None)
@@ -4649,7 +4649,7 @@ mod tests {
 
     #[tokio::test]
     async fn console_log_rotates_past_the_cap() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![]);
         let id = vms
@@ -4672,7 +4672,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_paths_outside_the_roots_answer_s501() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         std::os::unix::fs::symlink("/etc", t.join("esc")).unwrap();
         let t_str = t.display().to_string();
@@ -4693,7 +4693,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_host_path_says_so_not_outside_the_roots() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let err = prepare_err(
             &vms(t, Some("t"), vec![t.into()]),
@@ -4709,7 +4709,7 @@ mod tests {
 
     #[test]
     fn host_roots_accept_a_path_under_a_symlinked_root() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         std::fs::create_dir_all(t.join("real/w")).unwrap();
         std::os::unix::fs::symlink(t.join("real"), t.join("link")).unwrap();
@@ -4731,7 +4731,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bundle_naming_another_package_is_s501() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let bundle = t.join("bundle");
         std::fs::create_dir(&bundle).unwrap();
@@ -4752,7 +4752,7 @@ mod tests {
 
     #[test]
     fn records_resume_from_a_cursor() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let text = concat!(
             r#"{"stream":"stdout","line":"a","ts_ms":1}"#,
             "\n",
@@ -4784,7 +4784,7 @@ mod tests {
 
     #[test]
     fn a_partial_last_line_is_left_for_the_next_read() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let whole = r#"{"stream":"stdout","line":"a","ts_ms":1}"#;
         let console = console_over(t.path(), "", &format!("{whole}\n{{\"stream\":\"std"));
 
@@ -4818,7 +4818,7 @@ mod tests {
 
     #[tokio::test]
     async fn retirement_survives_final_console_and_retention_without_deleting_data() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, dir) = admitted_console_lease(t.path(), b"");
         let control = t.path().join("endpoints");
         std::fs::create_dir(&control).unwrap();
@@ -4880,7 +4880,7 @@ mod tests {
     /// once the new file has grown past the cursor's position in the old one.
     #[test]
     fn a_cursor_survives_a_rotation() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let old = ["a", "b", "c"].map(record).concat();
         let new = ["d", "e", "f", "g", "h"].map(record).concat();
         let console = console_over(t.path(), &old, &new);
@@ -4971,7 +4971,7 @@ mod tests {
 
     #[tokio::test]
     async fn r1_three_hundred_console_records_rotate_and_retire_with_bounded_history() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, dir) = admitted_console_lease(t.path(), b"");
         let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
         let mut create = lease
@@ -5085,7 +5085,7 @@ mod tests {
 
     #[test]
     fn r1_concurrent_valid_console_writers_preserve_all_records_and_bound_catalog() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (_lease, console) = admitted_console_fixture(t.path(), b"");
         let console = Arc::new(Mutex::new(console));
         let initial = r1_catalog_inventory(&t.path().join("catalog"));
@@ -5206,7 +5206,7 @@ mod tests {
     /// destroy succeed because the waiter finished the one writer.
     #[tokio::test]
     async fn r1_routed_launch_logs_beyond_256_lines_then_stop_and_destroy_succeed() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let namespace = t.path().join("admission-catalog");
         let admission = vms.admission(Some("k")).unwrap();
@@ -5255,7 +5255,7 @@ mod tests {
     /// successful receipt exists, and destroy keeps the tree and foreign bytes.
     #[tokio::test]
     async fn r1_routed_foreign_console_replacement_fails_closed_and_retains_cleanup() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let namespace = t.path().join("admission-catalog");
         let admission = vms.admission(Some("k")).unwrap();
@@ -5284,7 +5284,7 @@ mod tests {
     /// refusing on the finished ledger's old identities.
     #[tokio::test]
     async fn r1_gate_relaunch_after_destroy_reissues_the_console_writer() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let namespace = t.path().join("admission-catalog");
         let admission = vms.admission(Some("k")).unwrap();
@@ -5305,7 +5305,7 @@ mod tests {
     #[test]
     fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, mut console) = admitted_console_fixture(t.path(), b"");
         let guest = console.dir.join("root");
         let runtime = lease
@@ -5353,7 +5353,7 @@ mod tests {
     #[test]
     fn admitted_console_rotation_publishes_private_files_before_advancing_cursor() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
         let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
         let inodes = [CONSOLE_LOG, CONSOLE_LOG_OLD]
@@ -5393,7 +5393,7 @@ mod tests {
         // Real faults at the caller boundary: a foreign current inode, a
         // foreign rotation target, and bytes written outside the owned writer.
         for fault in ["current", "previous", "external-bytes"] {
-            let t = tempfile::tempdir().unwrap();
+            let t = crate::worker_admission::testing::private_tempdir().unwrap();
             let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
             let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
             let current = console.dir.join(CONSOLE_LOG);
@@ -5447,7 +5447,7 @@ mod tests {
 
     #[test]
     fn admitted_console_refuses_replacement_without_copying_into_it() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (_lease, mut console) = admitted_console_fixture(t.path(), b"old\n");
         let path = console.dir.join(CONSOLE_LOG);
         std::fs::rename(&path, console.dir.join("held-old")).unwrap();
@@ -5471,7 +5471,7 @@ mod tests {
     /// every record after its cursor, in order.
     #[test]
     fn a_reader_behind_a_rotation_loses_no_record() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (_lease, console) = admitted_console_fixture(t.path(), b"");
         let console = Mutex::new(console);
         let append = |line: &str| {
@@ -5498,7 +5498,7 @@ mod tests {
 
     #[tokio::test]
     async fn follow_streams_until_the_instance_ends() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; sleep 0.3; echo b >&2"), Vec::new(), None)
@@ -5515,7 +5515,7 @@ mod tests {
 
     #[tokio::test]
     async fn follow_on_an_exited_instance_drains_and_returns() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a"), Vec::new(), None)
@@ -5534,7 +5534,7 @@ mod tests {
     /// The env reaches `__vm-boot` on stdin, never argv (MOT-5492).
     #[tokio::test]
     async fn launch_writes_the_env_frame_to_the_vm_stdin() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let env = vec![("API_KEY".to_string(), "sk-secret".to_string())];
         let frame = iii_supervisor::env_channel::encode_frame(&env).unwrap();
@@ -5550,7 +5550,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pump_resumes_after_the_cursor_and_ends_without_follow() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; echo b; sleep 30"), Vec::new(), None)
@@ -5569,7 +5569,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sink_error_ends_the_pump() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("echo a; sleep 30"), Vec::new(), None)
@@ -5589,7 +5589,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_scoped_token_controls_its_vm_and_no_other() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![t.into()]));
         let iii = IIIClient::new("ws://127.0.0.1:9");
@@ -5639,7 +5639,7 @@ mod tests {
     /// An empty project token's MAC anyone can compute.
     #[tokio::test]
     async fn no_token_derives_from_an_absent_or_empty_project_token() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         for token in [None, Some("")] {
             let vms = vms(t.path(), token, vec![t.path().into()]);
             let id = vms
@@ -5655,7 +5655,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_scoped_prepare_needs_its_own_state_key() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let empty = t.join("empty");
         std::fs::create_dir(&empty).unwrap();
@@ -5682,7 +5682,7 @@ mod tests {
     #[tokio::test]
     async fn a_scoped_token_without_the_vms_record_is_refused() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vms
             .launch("k", sh("exit 0"), Vec::new(), None)
@@ -5705,11 +5705,11 @@ mod tests {
     /// is the guest's: nothing planted there may open a call, or even be read.
     #[tokio::test]
     async fn a_scoped_token_reads_no_record_outside_a_vms_own_dir() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let share = t.path().join("workers").join(vm_id("k")).join("root");
-        std::fs::create_dir_all(&share).unwrap();
-        std::fs::write(share.join(STATE_KEY_FILE), "k").unwrap();
+        private_dirs(&share);
+        write_private(&share.join(STATE_KEY_FILE), "k");
         let token = scoped_auth_token("t", "k");
         let planted = format!("{}/root", vm_id("k"));
         assert_eq!(code(vms.status(status_req(&token, &planted, 1))), "S505");
@@ -5776,7 +5776,7 @@ mod tests {
     /// writer's stream when this adapter goes away, and a supervisor waits on that end.
     #[tokio::test]
     async fn a_quiet_vm_connects_its_followers_writer_at_once() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5798,7 +5798,7 @@ mod tests {
     /// the follower, not for the engine to answer the upgrade.
     #[tokio::test]
     async fn a_stalled_channel_handshake_does_not_hold_the_follower_back() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let mut vms = vms(t, Some("t"), vec![]);
         vms.lease_grace = Duration::from_millis(900);
@@ -5825,7 +5825,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_end_starts_after_the_last_record_and_names_it() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -5857,7 +5857,7 @@ mod tests {
     /// An empty log has no last record, and what comes next is the stream's first.
     #[tokio::test]
     async fn from_end_on_an_empty_log_names_nothing_and_loses_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -5879,7 +5879,7 @@ mod tests {
     /// record `read_records` does.
     #[test]
     fn the_end_of_a_rotated_log_is_a_read_cursor() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let console = console_over(t.path(), &record("a"), &record("b"));
         let (all, _) = read_records(&console, 0).unwrap();
         let end = console.lock().unwrap().end();
@@ -5889,7 +5889,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_from_end_the_stream_honours_the_cursor_and_names_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = Arc::new(vms(t, Some("t"), vec![]));
         let (iii, mut frames, _) = channel_engine().await;
@@ -5923,7 +5923,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lease_stops_a_vm_nothing_follows() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(200));
         let status = wait_ended(&vms, &id, 1).await;
         assert!(matches!(status.state, State::Stopped), "{status:?}");
@@ -5933,7 +5933,7 @@ mod tests {
     /// A guest that ignores SIGTERM cannot outlive its lease.
     #[tokio::test]
     async fn a_lease_kills_a_vm_that_ignores_its_stop() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(
             t.path(),
             "trap '' TERM; echo ready; sleep 60",
@@ -5946,7 +5946,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_follower_holds_a_lease_and_its_end_starts_the_grace() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
         follow_for(&vms, &id, Duration::from_millis(1000)).await;
         let status = vms.status(status_req("t", &id, 1)).unwrap();
@@ -5959,7 +5959,7 @@ mod tests {
     /// The last of several followers ending is what starts the grace.
     #[tokio::test]
     async fn a_lease_waits_for_the_last_follower() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(300));
         tokio::join!(
             follow_for(&vms, &id, Duration::from_millis(100)),
@@ -5972,7 +5972,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_reattach_within_the_grace_keeps_the_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(1000));
         follow_for(&vms, &id, Duration::from_millis(100)).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -5985,7 +5985,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failing_sink_counts_as_a_gone_follower() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "echo a; sleep 30", Duration::from_millis(300));
         wait_record(&t.path().join("workers").join(&id), "a").await;
         let ended = vms
@@ -6003,7 +6003,7 @@ mod tests {
     /// writer's socket, and only a write can find out.
     #[tokio::test]
     async fn a_quiet_follower_whose_reader_left_counts_as_gone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "sleep 30", Duration::from_millis(900));
         let (iii, mut frames, reader_left) = channel_engine().await;
         vms.logs(&iii, logs_req("t", &id, true)).await.unwrap();
@@ -6022,7 +6022,7 @@ mod tests {
     /// Only records reach a stream of a VM without a lease, whatever it waits for.
     #[tokio::test]
     async fn a_vm_without_a_lease_is_left_alone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mut vms = vms(t.path(), Some("t"), vec![]);
         vms.lease_grace = Duration::from_millis(100);
         let vms = Arc::new(vms);
@@ -6045,7 +6045,7 @@ mod tests {
     /// An exit that needed no lease reads as the guest's own.
     #[tokio::test]
     async fn a_lease_leaves_an_exited_vm_alone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (vms, id) = leased(t.path(), "exit 3", Duration::from_millis(100));
         let status = wait_ended(&vms, &id, 1).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -6058,7 +6058,7 @@ mod tests {
     /// A 0.26 overlay VM dir: its disk in the trampoline `root/`.
     #[test]
     fn a_pre_build_overlay_disk_is_kept_beside_root() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         std::fs::create_dir_all(vm_dir.join("root/runtime")).unwrap();
         std::fs::write(vm_dir.join("root/upper.ext4"), "0.26 data").unwrap();
@@ -6094,7 +6094,7 @@ mod tests {
     /// A legacy VM dir: `root/` is the rootfs clone holding the guest's data.
     #[test]
     fn a_legacy_rootfs_clone_is_kept_as_root_pre_build() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         for dir in ["root/bin", "root/usr/lib", "root/var/lib/app"] {
             std::fs::create_dir_all(vm_dir.join(dir)).unwrap();
@@ -6123,7 +6123,7 @@ mod tests {
     /// A name already taken is never overwritten.
     #[test]
     fn a_kept_disk_never_replaces_another() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vm_dir = t.path().join("vm");
         std::fs::create_dir_all(vm_dir.join("root")).unwrap();
         std::fs::write(vm_dir.join(PRE_BUILD_DISK), "older").unwrap();
@@ -6147,7 +6147,7 @@ mod tests {
 
     #[test]
     fn a_start_of_a_build_checks_image_id_and_refuses_with_s508() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let dir = t.join(".build/w");
@@ -6209,7 +6209,7 @@ mod tests {
 
     #[test]
     fn one_build_per_state_key_and_no_destroy_under_it() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![]);
         let id = vm_id("k");
         let held = vms.hold_build(&id).unwrap();
@@ -6228,7 +6228,7 @@ mod tests {
     /// one a link redirected since.
     #[test]
     fn an_output_dir_is_planned_under_the_host_roots_and_created_after() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let project = t.join("project");
         std::fs::create_dir(&project).unwrap();
@@ -6283,7 +6283,7 @@ mod tests {
     #[test]
     fn a_scoped_token_never_takes_a_dir_another_vm_recorded() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b, dir_c] = build_dirs(t, ["a", "b", "c"]);
         let [a, b, c, d, f] = ["a", "b", "c", "d", "f"].map(|key| scoped_auth_token("t", key));
@@ -6336,7 +6336,7 @@ mod tests {
     /// directory and kept the old one).
     #[test]
     fn a_vm_moves_to_another_dir_and_releases_the_old_one() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [old, new] = build_dirs(t, ["old", "new"]);
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
@@ -6358,7 +6358,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn another_spelling_of_a_recorded_dir_is_still_that_vms() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_b] = build_dirs(t, ["b"]);
         let alias = PathBuf::from(format!("/proc/self/root{}", dir_b.display()));
@@ -6379,7 +6379,7 @@ mod tests {
     /// symlink to one, holds nothing, and a claim replaces the link itself.
     #[test]
     fn a_transplanted_or_linked_record_counts_for_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b, dir_c, dir_x] = build_dirs(t, ["a", "b", "c", "x"]);
         let [a, b, c, d] = ["a", "b", "c", "d"].map(|key| scoped_auth_token("t", key));
@@ -6414,7 +6414,7 @@ mod tests {
     /// VM's directory stays out of reach.
     #[test]
     fn a_scoped_destroy_frees_only_its_own_dir() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
@@ -6437,7 +6437,7 @@ mod tests {
     /// other S505, every time.
     #[test]
     fn two_claims_of_one_dir_at_once_give_it_to_one_vm() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let first = vms(t, Some("t"), vec![t.into()]);
         let second = vms(t, Some("t"), vec![t.into()]);
@@ -6473,7 +6473,7 @@ mod tests {
     /// (a symlink, `..`) are refused by input admission before the claim.
     #[test]
     fn a_scoped_start_boots_no_other_vms_build_dir() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let [dir_a, dir_b] = build_dirs(t, ["a", "b"]);
@@ -6515,7 +6515,7 @@ mod tests {
     /// Use the claim helper directly: an empty source now refuses BEFORE a claim.
     #[test]
     fn a_scoped_build_claim_still_refuses_another_vms_directory() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let vms = vms(t.path(), Some("t"), vec![t.path().into()]);
         let out = t.path().join("output");
         std::fs::create_dir(&out).unwrap();
@@ -6580,7 +6580,7 @@ mod tests {
     /// the build directory is free.
     #[test]
     fn a_destroy_without_prune_keeps_the_data_for_the_next_start() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = vm_with_data(t, &vms, "k");
@@ -6632,7 +6632,7 @@ mod tests {
     /// With `prune`, destroy leaves nothing, the data and the record included.
     #[test]
     fn a_destroy_with_prune_leaves_nothing() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = vm_with_data(t, &vms, "k");
@@ -6649,7 +6649,7 @@ mod tests {
     /// build start would have.
     #[tokio::test]
     async fn a_destroy_without_prune_keeps_only_what_holds_data() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let id = vms
@@ -6705,7 +6705,7 @@ mod tests {
     #[test]
     fn a_binary_package_runs_its_executable_and_nothing_else() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let project = validate_binary(&pkg, "pkg", "bin/worker").unwrap();
@@ -6789,7 +6789,7 @@ mod tests {
     /// `build`, are S501 before anything is read.
     #[tokio::test]
     async fn a_binary_package_is_neither_prepared_nor_started_without_a_build() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let source = binary_package(&t.join("pkg"));
@@ -6816,7 +6816,7 @@ mod tests {
             eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
             return;
         }
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let iii = IIIClient::new("ws://127.0.0.1:9");
@@ -6860,7 +6860,7 @@ mod tests {
     /// worker's manifest leave `runtime.base_image` out; nothing else does.
     #[test]
     fn a_local_manifest_needs_no_base_image_when_the_request_names_one() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let dir = t.path().join("w");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -6879,7 +6879,7 @@ mod tests {
     /// to the next pre-build name and lists it, never deletes it.
     #[tokio::test]
     async fn a_second_destroy_keeps_what_a_start_without_build_wrote() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = vm_with_data(t, &vms, "k");
@@ -6917,7 +6917,7 @@ mod tests {
     /// name, so no clone is ever deleted.
     #[test]
     fn a_destroy_without_prune_in_legacy_mode_keeps_every_clone() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = t.join("workers").join(vm_id("legacy"));
@@ -6953,7 +6953,7 @@ mod tests {
             eprintln!("[skip] a start of a build needs the overlay rootfs (an embedded iii-init)");
             return;
         }
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms(t, Some("t"), vec![t.into()]);
         let [dir] = build_dirs(t, ["b"]);
@@ -6974,7 +6974,7 @@ mod tests {
     #[test]
     fn an_executable_through_a_linked_dir_or_under_iii_is_refused() {
         use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let outside = t.path().join("outside");
@@ -7006,7 +7006,7 @@ mod tests {
     /// symlink, and never past 64 KiB.
     #[test]
     fn a_binary_manifest_is_a_small_regular_file() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let pkg = t.path().join("pkg");
         binary_package(&pkg);
         let elsewhere = t.path().join("manifest.yaml");
@@ -7029,7 +7029,7 @@ mod tests {
     /// read: missing, or outside the host roots, it still gets that S501.
     #[tokio::test]
     async fn a_binary_outside_a_build_is_refused_before_its_path_is_read() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let vms = vms_without_roots(t);
         let real = t.join("pkg");
@@ -7105,7 +7105,7 @@ mod tests {
 
     #[test]
     fn an_image_lands_with_its_id_and_a_cancelled_one_leaves_the_previous_pair() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, state) = image_write(t, "v1", BUILD_RUNNING);
         let id = write.write().unwrap();
@@ -7142,7 +7142,7 @@ mod tests {
     /// previous build or of the new one is S508, until a rebuild completes.
     #[test]
     fn a_crash_between_the_renames_leaves_no_id_and_a_start_gets_s508() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, _) = image_write(t, "v1", BUILD_RUNNING);
         let previous = write.write().unwrap();
@@ -7217,7 +7217,7 @@ mod tests {
     /// build reports the image it installed.
     #[tokio::test]
     async fn a_build_dropped_after_its_commit_still_has_its_build_id() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, state) = image_write(t, "v1", BUILD_RUNNING);
         let slot = WriterSlot::default();
@@ -7246,7 +7246,7 @@ mod tests {
 
     #[test]
     fn build_scratch_is_preserved_without_owned_removal_authority() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mine = t.path().join(format!("build-{}-0", std::process::id()));
         let stale = t.path().join("build-1-0");
         let root = t.path().join("root");
@@ -7267,7 +7267,7 @@ mod tests {
     /// for the next process to remove it by filename or diagnostic PID.
     #[test]
     fn the_next_build_preserves_unrelated_partial_image_evidence() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let mine = format!("{}-3", std::process::id());
         let names = [
             ".image.erofs.1-0.partial".to_string(),
@@ -7315,7 +7315,7 @@ mod tests {
     /// previous pair stays.
     #[tokio::test]
     async fn a_build_cancelled_while_writing_its_image_waits_for_the_writer() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let t = t.path();
         let (write, _) = image_write(t, "v1", BUILD_RUNNING);
         let id = write.write().unwrap();

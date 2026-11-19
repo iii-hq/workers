@@ -1764,7 +1764,9 @@ mod tests {
         crate::worker_admission::AdmissionContext,
         PathBuf,
     ) {
-        let temp = tempfile::tempdir().unwrap();
+        // `cache` is created under this root by a core Create mutation whose
+        // footprint is the root itself: it must be private, never the umask.
+        let temp = crate::worker_admission::testing::private_tempdir().unwrap();
         let ns = temp.path().join("catalog");
         std::fs::create_dir(&ns).unwrap();
         use std::os::unix::fs::PermissionsExt;
