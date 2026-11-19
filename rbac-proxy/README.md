@@ -153,6 +153,19 @@ grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
 namespaces a connection may declare, and `allowed_functions` applies in
 `default` only.
 
+A connection's own functions are exempt from these rules for that
+connection: its calls of them, observers of them and the frames it sends as
+their host. A function is its own once the engine confirms the registration
+(`functionregistered`, which the engine sends only to the connection that
+owns the function, naming the namespace it lives in), not when the proxy
+forwards it: the engine may refuse the id, which is then somebody else's. A
+call or an observe sent right after a registration waits for that answer, up
+to 6 s; without one the function is gated like any other. The engine
+confirms registrations only to a connection that declares `observe.v1` (the
+iii SDKs do), so a connection that does not gets no exemption. As in the
+engine, a connection's namespace is the first it declares (`default` when
+that declaration names none), and a later declaration does not move it.
+
 The auth function receives `{ headers, query_params, ip_address, endpoint }`,
 `endpoint` being the path being opened (`"/"` or `"/otel"`), so it can grant
 an endpoint per credential.

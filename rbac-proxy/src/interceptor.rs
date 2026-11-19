@@ -48,7 +48,7 @@ use std::sync::Arc;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
@@ -153,6 +153,17 @@ const INVALID_ARGS: &str = "INVALID_ARGS";
 /// the client keeps its own timeout.
 const MIDDLEWARE_TIMEOUT_MS: u64 = 610_000;
 
+/// How long a call or an observe naming one of the connection's pending
+/// registrations waits for the engine's answer ([`Interceptor::settle`]). The
+/// engine holds a connection's registrations until its namespace is known,
+/// for up to `REGISTRATION_NAMESPACE_GRACE` (5 s), then answers them; past
+/// that and a margin, the registration is not the connection's own.
+const REGISTRATION_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// The protocol features with which the engine confirms a connection's
+/// registrations (`functionregistered`).
+const CONFIRMING_FEATURES: &[&str] = &["observe.v1", "observe.v2"];
+
 /// What the downstream→engine pump should do with a frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownstreamAction {
@@ -256,18 +267,35 @@ pub struct Interceptor {
     pub catalog: Arc<CatalogCache>,
     /// Boundaries derived for this connection by the auth function.
     pub session: Arc<ProxySession>,
-    /// Engine ids (prefixed where applicable) this session registered on this
-    /// connection — the own-vs-foreign discriminator for calls and for an
-    /// observer's source and target.
-    registered_ids: Mutex<HashSet<String>>,
-    /// The engine ids among `registered_ids` registered `private: true`. Only
-    /// their host may call them, and the middleware runs on the control
+    /// The functions this connection hosts, as the engine confirmed them:
+    /// `functionregistered` reaches only the connection that owns the
+    /// function, with the namespace it lives in. The own-vs-foreign
+    /// discriminator for calls and for an observer's source and target. A
+    /// registration the proxy forwarded is not one of them until the engine
+    /// says so: the engine may refuse it (the id is someone else's) or put it
+    /// in another namespace than the one the worker last declared.
+    owned: Mutex<HashSet<FnKey>>,
+    /// Engine ids (prefixed where applicable) this connection asked to
+    /// register that the engine has neither confirmed nor refused yet. A call
+    /// or an observe naming one waits for the answer ([`Self::settle`]).
+    pending: Mutex<HashSet<String>>,
+    /// Woken whenever a pending registration is answered.
+    settled: Notify,
+    /// Whether the engine will confirm this connection's registrations: it
+    /// sends `functionregistered` only to a connection that declared
+    /// `observe.v1` (or `observe.v2`), and the first declaration that lists
+    /// features fixes them. `None` until one does.
+    confirms_registrations: Mutex<Option<bool>>,
+    /// The engine ids this connection registered `private: true`. Only their
+    /// host may call them, and the middleware runs on the control
     /// connection, so this connection's calls to them skip the middleware,
     /// and `functionregistered` keeps offering them `local_dispatch`.
     private_ids: Mutex<HashSet<String>>,
-    /// The namespace this connection declared on `engine::workers::register`
-    /// (`None` until it does, which the engine treats as `default`). Its own
-    /// registrations live there, so an id is "own" only in this namespace.
+    /// The namespace this connection's registrations live in: the first one
+    /// it declared on `engine::workers::register` (the engine fixes a
+    /// connection's namespace once; a later declaration does not move it),
+    /// corrected by the namespace the engine confirms a registration in.
+    /// `None` until either, which the engine treats as `default`.
     connection_namespace: Mutex<Option<String>>,
     /// `invocation_id → engine:: discovery fn` for results to rewrite.
     pending_overrides: Mutex<HashMap<Uuid, String>>,
@@ -301,7 +329,10 @@ impl Interceptor {
             config,
             catalog,
             session,
-            registered_ids: Mutex::new(HashSet::new()),
+            owned: Mutex::new(HashSet::new()),
+            pending: Mutex::new(HashSet::new()),
+            settled: Notify::new(),
+            confirms_registrations: Mutex::new(None),
             private_ids: Mutex::new(HashSet::new()),
             connection_namespace: Mutex::new(None),
             pending_overrides: Mutex::new(HashMap::new()),
@@ -373,21 +404,75 @@ impl Interceptor {
     /// namespace, else the canonical (foreign) id. See spec *Prefix
     /// resolution*.
     async fn resolve_target(&self, namespace: &str, function_id: &str) -> String {
-        if self.prefix().is_some() && namespace == self.own_namespace().await {
+        if self.prefix().is_some() {
             let candidate = self.apply_prefix(function_id);
-            if self.registered_ids.lock().await.contains(&candidate) {
+            if self.is_own(namespace, &candidate).await {
                 return candidate;
             }
         }
         function_id.to_string()
     }
 
-    /// Is `engine_id`, reached in `namespace`, a function this session
-    /// registered on this connection? The same id in another namespace is
-    /// somebody else's.
+    /// Is `engine_id`, reached in `namespace`, a function the engine
+    /// confirmed this connection hosts there? The same id in another
+    /// namespace is somebody else's, and so is one the engine has not
+    /// confirmed.
     async fn is_own(&self, namespace: &str, engine_id: &str) -> bool {
-        namespace == self.own_namespace().await
-            && self.registered_ids.lock().await.contains(engine_id)
+        self.owned
+            .lock()
+            .await
+            .contains(&(namespace.to_string(), engine_id.to_string()))
+    }
+
+    /// Wait, up to [`REGISTRATION_ANSWER_WAIT`], for the engine's answer to
+    /// this connection's pending registrations of `function_ids` (bare, as
+    /// the worker names them), so a call or an observe sent right after a
+    /// registration sees whether the function is the connection's own. A
+    /// registration with no answer is not own: a connection the engine
+    /// confirms nothing to (it declared no `observe.v1`) never waits, and a
+    /// registration still unanswered at the deadline stops being waited for.
+    async fn settle(&self, function_ids: &[&str]) {
+        let candidates: Vec<String> = function_ids
+            .iter()
+            .flat_map(|id| [self.apply_prefix(id), (*id).to_string()])
+            .collect();
+        let deadline = tokio::time::Instant::now() + REGISTRATION_ANSWER_WAIT;
+        loop {
+            // Registered before the state is read, so an answer that lands in
+            // between still wakes this wait.
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if *self.confirms_registrations.lock().await == Some(false) {
+                return;
+            }
+            {
+                let pending = self.pending.lock().await;
+                if !candidates.iter().any(|id| pending.contains(id)) {
+                    return;
+                }
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                let mut pending = self.pending.lock().await;
+                for id in &candidates {
+                    if pending.remove(id) {
+                        tracing::warn!(
+                            function_id = %id,
+                            "the engine did not answer this connection's registration in time; \
+                             it is not treated as the connection's own"
+                        );
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    /// The engine answered (or the worker withdrew) this connection's
+    /// registration of `engine_id`: it is no longer pending.
+    async fn answered(&self, engine_id: &str) {
+        self.pending.lock().await.remove(engine_id);
+        self.settled.notify_waiters();
     }
 
     /// The engine id of a function this connection registered, named by the
@@ -492,7 +577,13 @@ impl Interceptor {
                 // unregister via resolve_registration_id, so the proxy must too.
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
                     let engine_id = self.apply_prefix(id);
-                    self.registered_ids.lock().await.remove(&engine_id);
+                    // A connection's functions all live in one namespace, so
+                    // the id stops being own wherever it was confirmed.
+                    self.owned
+                        .lock()
+                        .await
+                        .retain(|(_, owned)| *owned != engine_id);
+                    self.answered(&engine_id).await;
                     self.private_ids.lock().await.remove(&engine_id);
                     let key = (self.own_namespace().await, engine_id.clone());
                     self.observers
@@ -598,7 +689,19 @@ impl Interceptor {
             tracing::warn!("refusing to register {SESSION_PROBE_ID}: the proxy answers it itself");
             return DownstreamAction::Drop;
         }
-        self.registered_ids.lock().await.insert(engine_id.clone());
+        // Own only once the engine confirms it (`functionregistered`): until
+        // then the id may be someone else's, and the engine refuses it. A
+        // function the engine already confirmed this connection hosts stays
+        // its own while the connection registers it again.
+        if !self
+            .owned
+            .lock()
+            .await
+            .iter()
+            .any(|(_, owned)| *owned == engine_id)
+        {
+            self.pending.lock().await.insert(engine_id.clone());
+        }
         {
             let mut private_ids = self.private_ids.lock().await;
             if is_private(&v) {
@@ -652,6 +755,10 @@ impl Interceptor {
                 .await;
         };
 
+        // A worker observes its own functions right after registering them:
+        // the engine's answer to those registrations decides what is own.
+        self.settle(&[&source_id, &target_id]).await;
+
         // The hook gets compatible bare IDs plus canonical identities resolved
         // from this connection's actual registrations in each namespace;
         // an object answer may rewrite the registration, anything else denies.
@@ -690,6 +797,8 @@ impl Interceptor {
             }
         }
 
+        // The hook may have named other functions.
+        self.settle(&[&source_id, &target_id]).await;
         let source = self.resolve_target(&source_ns, &source_id).await;
         let target = self.resolve_target(&target_ns, &target_id).await;
 
@@ -975,7 +1084,9 @@ impl Interceptor {
         };
 
         // Resolve own-vs-foreign target (engine:: ids are never own; resolve
-        // is a no-op for them).
+        // is a no-op for them), once the engine has answered a registration
+        // of it this connection is waiting on.
+        self.settle(&[&function_id]).await;
         let target = self.resolve_target(&namespace, &function_id).await;
 
         // Access resolution (forbidden > scoped grant > allowed > carve-out >
@@ -1181,13 +1292,36 @@ impl Interceptor {
             }
         }
 
-        // The engine keeps the last namespace a worker declared; a declaration
-        // without one leaves it unchanged.
-        if let Some(namespace) = declared {
-            *self.connection_namespace.lock().await = Some(namespace);
+        // The engine fixes a connection's namespace at its first declaration
+        // (absent: `default`) and keeps it: a later declaration naming
+        // another one does not move the connection or its functions. A blank
+        // namespace is refused by the engine and fixes nothing.
+        let refused_by_engine = declared.as_deref().is_some_and(|ns| ns.trim().is_empty());
+        if !refused_by_engine {
+            let mut namespace = self.connection_namespace.lock().await;
+            if namespace.is_none() {
+                *namespace = Some(declared.unwrap_or_else(|| DEFAULT_NAMESPACE.to_string()));
+            }
         }
         if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
             retain_supported_features(data);
+            // The first declaration that lists features fixes them in the
+            // engine, and with them whether it confirms registrations.
+            if let Some(features) = data
+                .get("features")
+                .and_then(Value::as_array)
+                .filter(|_| !refused_by_engine)
+            {
+                let mut confirms = self.confirms_registrations.lock().await;
+                if confirms.is_none() && !features.is_empty() {
+                    *confirms = Some(
+                        features
+                            .iter()
+                            .any(|f| f.as_str().is_some_and(|f| CONFIRMING_FEATURES.contains(&f))),
+                    );
+                    self.settled.notify_waiters();
+                }
+            }
             // The name carries `rbac-proxy:` and the session prefix: a proxied
             // worker never holds a trusted worker's name, and another
             // prefix's session declaring the same name is another worker, to
@@ -1377,7 +1511,8 @@ impl Interceptor {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                 {
-                    self.registered_ids.lock().await.remove(&fid);
+                    self.owned.lock().await.retain(|(_, owned)| *owned != fid);
+                    self.answered(&fid).await;
                     self.private_ids.lock().await.remove(&fid);
                     v["function_id"] = Value::String(self.strip_prefix(&fid));
                 }
@@ -1537,10 +1672,29 @@ impl Interceptor {
     /// `local_dispatch` stays `true` only for a function the connection hosts
     /// privately (decision 46): its own calls of any other function run on
     /// the wire, through the middleware.
+    ///
+    /// It is also what makes the function this connection's own: the engine
+    /// sends it only to the connection that owns the function, in the
+    /// namespace it was registered in, which is the connection's namespace.
     async fn on_function_registered(&self, mut v: Value) -> UpstreamAction {
         let mut local_dispatch = false;
         if let Some(engine_id) = v.get("id").and_then(Value::as_str) {
             let key = (frame_namespace(&v), engine_id.to_string());
+            self.owned.lock().await.insert(key.clone());
+            {
+                let mut namespace = self.connection_namespace.lock().await;
+                if namespace.as_deref() != Some(key.0.as_str()) {
+                    if let Some(declared) = namespace.as_deref() {
+                        tracing::debug!(
+                            declared = %declared,
+                            confirmed = %key.0,
+                            "the engine registered this connection's function in another namespace than the one it declared"
+                        );
+                    }
+                    *namespace = Some(key.0.clone());
+                }
+            }
+            self.answered(engine_id).await;
             local_dispatch = self.local_dispatch(&key.0, engine_id).await;
             let ids: Vec<String> = v
                 .get("observers")
@@ -1928,9 +2082,24 @@ mod tests {
         serde_json::from_str(&text).unwrap()
     }
 
+    /// Register `id` on `i` and answer it as the engine does: a
+    /// `functionregistered` in the connection's namespace.
     async fn register(i: &Interceptor, id: &str) {
         let frame = json!({ "type": "registerfunction", "id": id });
-        forwarded(i.handle_downstream(&frame.to_string()).await);
+        let sent = forwarded(i.handle_downstream(&frame.to_string()).await);
+        confirm(i, sent["id"].as_str().unwrap()).await;
+    }
+
+    /// The engine's `functionregistered` for `engine_id`, in the namespace
+    /// the connection declared.
+    async fn confirm(i: &Interceptor, engine_id: &str) {
+        let ack = json!({
+            "type": "functionregistered",
+            "id": engine_id,
+            "namespace": i.own_namespace().await,
+            "revision": 1,
+        });
+        i.handle_upstream(&ack.to_string()).await;
     }
 
     #[tokio::test]
@@ -2247,7 +2416,11 @@ mod tests {
         let frame = json!({"type":"registerfunction","id":"foo","request_format":null,"response_format":null});
         let o = forwarded(i.handle_downstream(&frame.to_string()).await);
         assert_eq!(o["id"], "tenant1::foo");
-        assert!(i.registered_ids.lock().await.contains("tenant1::foo"));
+        assert!(i.pending.lock().await.contains("tenant1::foo"));
+        assert!(!i.is_own("default", "tenant1::foo").await);
+        confirm(&i, "tenant1::foo").await;
+        assert!(i.is_own("default", "tenant1::foo").await);
+        assert!(i.pending.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -2332,6 +2505,7 @@ mod tests {
         );
         let private = json!({ "type": "registerfunction", "id": "source", "private": true });
         forwarded(i.handle_downstream(&private.to_string()).await);
+        confirm(&i, "tenant1::source").await;
         register(&i, "plain").await;
 
         let call = |id: &str| {
@@ -2582,11 +2756,8 @@ mod tests {
         assert_eq!(o["local_dispatch"], false);
 
         // The same id in another namespace is not the connection's.
-        let o = forwarded_up(
-            i.handle_upstream(&ack("tenant1::ledger::on-posted", "orders", true))
-                .await,
-        );
-        assert_eq!(o["local_dispatch"], false);
+        assert!(i.is_own("default", "tenant1::ledger::on-posted").await);
+        assert!(!i.is_own("orders", "tenant1::ledger::on-posted").await);
 
         // Registered again without `private`: an ordinary function.
         register(&i, "ledger::on-posted").await;
@@ -3778,6 +3949,234 @@ mod tests {
         assert!(matches!(
             i.handle_downstream(&frame.to_string()).await,
             DownstreamAction::Drop
+        ));
+    }
+
+    // --- own registrations: what the engine confirms -----------------------
+
+    /// `engine::workers::register`, declaring `namespace` and `features`.
+    fn declare(namespace: Option<&str>, features: &[&str]) -> String {
+        let mut data = json!({ "name": "w", "runtime": "node" });
+        if let Some(namespace) = namespace {
+            data["namespace"] = json!(namespace);
+        }
+        if !features.is_empty() {
+            data["features"] = json!(features);
+        }
+        json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": data,
+            "action": { "type": "void" }
+        })
+        .to_string()
+    }
+
+    fn call_in(namespace: &str, function_id: &str) -> String {
+        json!({
+            "type": "invokefunction",
+            "invocation_id": Uuid::new_v4().to_string(),
+            "function_id": function_id,
+            "namespace": namespace,
+            "data": {}
+        })
+        .to_string()
+    }
+
+    fn register_frame(id: &str) -> String {
+        json!({ "type": "registerfunction", "id": id }).to_string()
+    }
+
+    fn forbidding(function_id: &str) -> Arc<ProxySession> {
+        Arc::new(ProxySession {
+            forbidden_functions: vec![function_id.to_string()],
+            ..ProxySession::permissive("127.0.0.1".to_string())
+        })
+    }
+
+    fn forbidden(action: DownstreamAction) -> bool {
+        reply(action)["error"]["code"] == "FORBIDDEN"
+    }
+
+    #[tokio::test]
+    async fn a_later_declaration_does_not_move_the_connections_functions() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            forbidding("secrets::resolve"),
+        );
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "secrets::resolve"))
+                .await
+        ));
+        // Registered in `x`, where the engine confirms it.
+        forwarded(
+            i.handle_downstream(&declare(Some("x"), &["observe.v1"]))
+                .await,
+        );
+        register(&i, "secrets::resolve").await;
+        assert!(i.is_own("x", "secrets::resolve").await);
+        // The engine keeps `x` when the worker declares `default` next, and so
+        // does the proxy: the function in `default` is still somebody else's.
+        forwarded(i.handle_downstream(&declare(Some("default"), &[])).await);
+        assert_eq!(i.own_namespace().await, "x");
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "secrets::resolve"))
+                .await
+        ));
+        // Its own, in its own namespace, is its own.
+        let o = forwarded(i.handle_downstream(&call_in("x", "secrets::resolve")).await);
+        assert_eq!(o["namespace"], "x");
+    }
+
+    #[tokio::test]
+    async fn the_first_declaration_fixes_the_connection_namespace() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        // A blank namespace is refused by the engine and fixes nothing.
+        forwarded(
+            i.handle_downstream(&declare(Some(" "), &["observe.v1"]))
+                .await,
+        );
+        assert!(i.connection_namespace.lock().await.is_none());
+        assert!(i.confirms_registrations.lock().await.is_none());
+        forwarded(i.handle_downstream(&declare(Some("orders"), &[])).await);
+        forwarded(i.handle_downstream(&declare(Some("billing"), &[])).await);
+        assert_eq!(i.own_namespace().await, "orders");
+
+        // No namespace on the first declaration is `default`, for good.
+        let j = interceptor(config_with(expose(&[]), None), session(None));
+        forwarded(j.handle_downstream(&declare(None, &[])).await);
+        forwarded(j.handle_downstream(&declare(Some("orders"), &[])).await);
+        assert_eq!(j.own_namespace().await, "default");
+
+        // Where the engine confirms a registration is where the connection is.
+        forwarded(j.handle_downstream(&register_frame("a")).await);
+        let ack =
+            json!({ "type": "functionregistered", "id": "a", "namespace": "late", "revision": 1 });
+        j.handle_upstream(&ack.to_string()).await;
+        assert_eq!(j.own_namespace().await, "late");
+        assert!(j.is_own("late", "a").await);
+        assert!(!j.is_own("default", "a").await);
+    }
+
+    #[tokio::test]
+    async fn a_call_waits_for_the_engine_to_refuse_a_registration() {
+        let i = Arc::new(interceptor(
+            config_with(expose(&[]), None),
+            forbidding("secrets::resolve"),
+        ));
+        forwarded(i.handle_downstream(&declare(None, &["observe.v1"])).await);
+        // Registering an id that is somebody else's, then calling it at once.
+        forwarded(
+            i.handle_downstream(&register_frame("secrets::resolve"))
+                .await,
+        );
+        let call = {
+            let i = i.clone();
+            tokio::spawn(async move {
+                i.handle_downstream(&call_in("default", "secrets::resolve"))
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!call.is_finished(), "the call did not wait for the engine");
+        let rejected = json!({
+            "type": "registrationrejected",
+            "function_id": "secrets::resolve",
+            "code": "FUNCTION_NAMESPACE_CONFLICT",
+            "namespace": "default"
+        });
+        i.handle_upstream(&rejected.to_string()).await;
+        assert!(forbidden(call.await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_call_right_after_a_registration_is_own_once_the_engine_confirms_it() {
+        let i = Arc::new(interceptor(
+            config_with(expose(&[]), None),
+            session(Some("tenant1")),
+        ));
+        forwarded(i.handle_downstream(&declare(None, &["observe.v2"])).await);
+        forwarded(i.handle_downstream(&register_frame("echo")).await);
+        let call = {
+            let i = i.clone();
+            tokio::spawn(async move { i.handle_downstream(&call_in("default", "echo")).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!call.is_finished(), "the call did not wait for the engine");
+        confirm(&i, "tenant1::echo").await;
+        let o = forwarded(call.await.unwrap());
+        assert_eq!(o["function_id"], "tenant1::echo");
+    }
+
+    #[tokio::test]
+    async fn an_observe_right_after_a_registration_waits_for_the_confirmation() {
+        let i = Arc::new(interceptor(config_with(expose(&[]), None), session(None)));
+        forwarded(i.handle_downstream(&declare(None, &["observe.v1"])).await);
+        forwarded(i.handle_downstream(&register_frame("orders::placed")).await);
+        forwarded(i.handle_downstream(&register_frame("orders::sink")).await);
+        let observing = {
+            let i = i.clone();
+            tokio::spawn(async move {
+                i.handle_downstream(&observe("orders::placed", "orders::sink").to_string())
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !observing.is_finished(),
+            "the observe did not wait for the engine"
+        );
+        confirm(&i, "orders::placed").await;
+        confirm(&i, "orders::sink").await;
+        forwarded(observing.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_registration_is_not_own() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        forwarded(i.handle_downstream(&register_frame("echo")).await);
+        let started = tokio::time::Instant::now();
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "echo")).await
+        ));
+        assert!(started.elapsed() >= REGISTRATION_ANSWER_WAIT);
+        // Not waited for twice.
+        let started = tokio::time::Instant::now();
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "echo")).await
+        ));
+        assert!(started.elapsed() < REGISTRATION_ANSWER_WAIT);
+        // A confirmation that comes late still counts.
+        confirm(&i, "echo").await;
+        forwarded(i.handle_downstream(&call_in("default", "echo")).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_observe_a_registration_is_never_own_and_never_waited_for() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        // The engine confirms nothing to a connection that does not speak
+        // observe.
+        forwarded(
+            i.handle_downstream(&declare(None, &["local-dispatch.v1"]))
+                .await,
+        );
+        forwarded(i.handle_downstream(&register_frame("echo")).await);
+        let started = tokio::time::Instant::now();
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "echo")).await
+        ));
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_function_stops_being_own() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        register(&i, "echo").await;
+        forwarded(i.handle_downstream(&call_in("default", "echo")).await);
+        let unregister = json!({ "type": "unregisterfunction", "id": "echo" });
+        forwarded(i.handle_downstream(&unregister.to_string()).await);
+        assert!(forbidden(
+            i.handle_downstream(&call_in("default", "echo")).await
         ));
     }
 }
