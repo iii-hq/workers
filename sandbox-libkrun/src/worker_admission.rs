@@ -13,7 +13,8 @@ pub(crate) use recovery::{
     RecoveryAction, RecoveryReport, RecoveryRequest, inspect_recovery_for_uid, recover_for_uid,
 };
 pub(crate) use runtime::{
-    RuntimeChild, RuntimeLaunch, RuntimePath, RuntimePathKind, RuntimeWriter, import_runtime_writer,
+    RuntimeActivity, RuntimeChild, RuntimeLaunch, RuntimePath, RuntimePathKind, RuntimeWriter,
+    import_runtime_writer,
 };
 mod storage;
 use catalog::{Entry, Hold, HoldKind, Namespace, overlaps};
@@ -66,6 +67,9 @@ pub(crate) enum MutationPlan {
     Remove {
         root: PathBuf,
         targets: Vec<PathBuf>,
+    },
+    ControlFiles {
+        files: Vec<PathBuf>,
     },
 }
 #[derive(Clone)]

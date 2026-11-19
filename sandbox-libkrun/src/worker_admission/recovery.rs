@@ -330,7 +330,10 @@ fn recover_inner(
     report(ns, &tx.catalog, "completed")
 }
 fn verify_journal(j: &mut super::catalog::Journal) -> io::Result<bool> {
-    if j.permissions.iter().any(|p| !p.restored) {
+    if j.permissions
+        .iter()
+        .any(|p| !p.restored || !p.acl_captured || !p.acl_before_grant)
+    {
         return Ok(false);
     }
     if j.intents.is_empty()

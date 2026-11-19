@@ -1907,3 +1907,168 @@ fn amendment_d_remove_nested_symlink_never_follows_external_tree() {
     remove.commit().unwrap();
     assert_eq!(std::fs::read(foreign.join("data")).unwrap(), b"KEEP");
 }
+
+#[test]
+fn amendment_e_control_files_exact_roles_duplicates_aliases_and_siblings_refuse() {
+    let f = fixture();
+    let a = f.data.join("console.log");
+    let b = f.data.join("console.log.1");
+    let lease = with_paths(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &[
+            PathRequest {
+                path: &a,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &b,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(
+        lease
+            .begin(MutationPlan::ControlFiles { files: Vec::new() })
+            .is_err()
+    );
+    assert!(
+        lease
+            .begin(MutationPlan::ControlFiles {
+                files: vec![a.clone(), a.clone()]
+            })
+            .is_err()
+    );
+    assert!(
+        lease
+            .begin(MutationPlan::ControlFiles {
+                files: vec![PathBuf::from("relative")]
+            })
+            .is_err()
+    );
+    let mut control = lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![a.clone(), b],
+        })
+        .unwrap();
+    assert!(
+        control
+            .stage_file(&f.data.join("not-declared"), 0o600)
+            .is_err()
+    );
+    assert!(control.commit().is_err());
+    let f = fixture();
+    let a = f.data.join("a");
+    let b = f.data.join("b");
+    std::fs::write(&a, b"old").unwrap();
+    std::fs::hard_link(&a, &b).unwrap();
+    assert!(
+        with_paths(
+            f.context.local(&f.data.join("state")).unwrap(),
+            &[
+                PathRequest {
+                    path: &a,
+                    role: PathRole::MutableFile
+                },
+                PathRequest {
+                    path: &b,
+                    role: PathRole::MutableFile
+                }
+            ]
+        )
+        .is_err()
+    );
+}
+#[test]
+fn amendment_e_control_files_partial_publication_keeps_uncertainty_and_prior_log() {
+    let f = fixture();
+    let a = f.data.join("console.log");
+    let b = f.data.join("console.log.1");
+    std::fs::write(&a, b"old-current").unwrap();
+    std::fs::write(&b, b"old-rotated").unwrap();
+    let lease = with_paths(
+        f.context.local(&f.data.join("state")).unwrap(),
+        &[
+            PathRequest {
+                path: &a,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &b,
+                role: PathRole::MutableFile,
+            },
+        ],
+    )
+    .unwrap();
+    let mut control = lease
+        .begin(MutationPlan::ControlFiles {
+            files: vec![a.clone(), b.clone()],
+        })
+        .unwrap();
+    let mut first = control.stage_file(&b, 0o600).unwrap();
+    first.file_mut().write_all(b"old-current").unwrap();
+    control.publish_file(first).unwrap();
+    let second = control.stage_file(&a, 0o600).unwrap();
+    std::fs::rename(&a, f.data.join("retained-current")).unwrap();
+    std::fs::write(&a, b"external").unwrap();
+    assert!(control.publish_file(second).is_err());
+    assert!(control.commit().is_err());
+    assert!(lease.revalidate().is_err());
+    assert_eq!(std::fs::read(&b).unwrap(), b"old-current");
+    assert_eq!(std::fs::read(&a).unwrap(), b"external");
+    assert_eq!(
+        std::fs::read(f.data.join("retained-current")).unwrap(),
+        b"old-current"
+    );
+}
+
+#[test]
+fn amendment_e_control_publication_each_boundary_remains_terminal() {
+    for second in [false, true] {
+        for boundary in ["before-rename", "after-rename"] {
+            let f = fixture();
+            let current = f.data.join("console.log");
+            let rotated = f.data.join("console.log.1");
+            std::fs::write(&current, b"current").unwrap();
+            std::fs::write(&rotated, b"prior").unwrap();
+            let lease = with_paths(
+                f.context.local(&f.data.join("state")).unwrap(),
+                &[
+                    PathRequest {
+                        path: &current,
+                        role: PathRole::MutableFile,
+                    },
+                    PathRequest {
+                        path: &rotated,
+                        role: PathRole::MutableFile,
+                    },
+                ],
+            )
+            .unwrap();
+            let mut guard = lease
+                .begin(MutationPlan::ControlFiles {
+                    files: vec![current.clone(), rotated.clone()],
+                })
+                .unwrap();
+            let mut first = guard.stage_file(&rotated, 0o600).unwrap();
+            first.file_mut().write_all(b"current").unwrap();
+            if second {
+                guard.publish_file(first).unwrap();
+                let next = guard.stage_file(&current, 0o600).unwrap();
+                guard.fault_publish_at(boundary);
+                assert!(guard.publish_file(next).is_err());
+            } else {
+                guard.fault_publish_at(boundary);
+                assert!(guard.publish_file(first).is_err());
+            }
+            assert!(guard.commit().is_err());
+            assert!(lease.revalidate().is_err());
+            assert!(
+                std::fs::read_dir(&f.data)
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .any(|e| e.file_name().to_string_lossy().starts_with(".iii-prior-"))
+            );
+        }
+    }
+}

@@ -1,12 +1,13 @@
-# Admission v2 core: amendments C and D source candidate
+# Admission v2 core: amendment E source candidate
 
-Incremental after `ec1a2fd785b35396f9366b6d22e81446f86cd8c0` (tree
-`3c479a715a240ce3691566daf84c4979feb7b6ee`), itself on consolidated `4dc14174`.
-Prior implementation/review results remain historical, not acceptance. This is
-SOURCE ONLY: no compiler, Rust test, process/socket/VM, mount, syncfs, bootstrap,
-network, cleanup or administrative recovery was executed. Formatting/static checks
-are not typecheck or runtime proof. The complete caller/core candidate still needs
-fan-in, admitted tests and ONE independent integrated review/Workers PR.
+Incremental after `d556cda04ebb1885a35cb9b3840dfd52a26a33b3` (tree
+`a9bab8b238469c4f71810bb90db695ab07a30be8`). C/D and earlier commits are preserved.
+This increment addresses only E1 ACL-before-grant, E2 owned activity outcome and
+E4 exact ControlFiles. E3 sandbox/caller routing belongs to Stream B. SOURCE ONLY:
+no compiler, Rust test, process/socket/VM, mount, syncfs, bootstrap, networking or
+administrative recovery was run. Formatting/static checks are not typecheck,
+kernel support, normal-mode acceptance or migration proof. Fan-in, admitted tests,
+ONE integrated independent review and ONE Workers PR remain mandatory.
 
 ## Stable catalog and original C1–C6
 
@@ -105,7 +106,7 @@ and previous are integrity-wrapped, fixed-inode records; both remain evidence.
 
 `RuntimePathKind::{GuestTree,UpperImage,ActivityStamp}`, RuntimePath,
 `Lease::prepare_runtime`, `RuntimeLaunch::spawn`, RuntimeChild pipe/id/wait,
-`import_runtime_writer`, RuntimeWriter clone/checkpoint/open_activity_file exist.
+`import_runtime_writer`, RuntimeWriter clone/checkpoint/activity and RuntimeActivity::touch_at exist.
 Exact declared roles/types/owner/ancestry are checked; GuestTree roots and upper
 files must already exist. A missing exact ActivityStamp is EXCL-created only after
 Preparing record publication; a crash gap remains unresolved. Root and protected
@@ -124,14 +125,32 @@ which runs no Drop), never other child holders. Unknown spawn/wait/cancel retain
 uncertainty. Receipt says writer-retired, explicitly NOT guest/application-consistent.
 Actual descendants must retain this same sentinel; no arbitrary signal permission.
 
-Activity file is exact, owned, regular nlink1, no-follow and nontruncating. The
-callback must retain a RuntimeWriter clone and fail terminally. **Residual seam:**
-`open_activity_file -> File` plus a BEFORE-write callback cannot notify core of a
-later FD write failure by itself. The consumer must retain that failure in a
-shared terminal checkpoint visible to finalization; if current caller API cannot,
-minimum amendment is a narrow `RuntimeWriter::record_activity_failure` or owned
-activity handle. No broad writer refresh is proposed or implemented. Until this
-seam is demonstrated, a clean beacon-retirement claim is not justified.
+### E2 owned activity outcome (supersedes raw File precheck seam)
+
+`RuntimeWriter::activity(path) -> RuntimeActivity` opens the exact declared
+ActivityStamp-kind inode, verified owner/type/nlink/parent and record binding.
+RuntimeActivity is cloneable but has NO File/AsFd/try_clone escape. `touch_at(when)`
+owns terminal precheck, one durable Pending slot, actual retained-FD set_modified,
+and durable Clean/Failed resolution. The admitted `open_activity_file` escape was
+removed; callers must capture RuntimeActivity in iii-network::ActivityStamp's
+`from_updater` closure, never fall back to an independent raw-file constructor.
+
+All activity handles and writer clones share one mutex and typed first-failure
+latch. Order is activity mutex -> short catalog transaction; the catalog mutex is
+released before set_modified and there are no user callbacks under either lock.
+A reusable sequence/path/phase/failure slot is bounded: no journal row per packet.
+The first syscall/checkpoint/persistence error is terminal. A failure to persist
+failure after an effect leaves durable Pending; crash between effect and outcome
+also stays Pending. RuntimeChild::wait checks this slot before clean retirement.
+
+Additionally, the exact inherited sentinel OFD's unused cursor is a sticky local
+failure mark (catalog uses positional I/O only). The core-owned parent checks it
+BEFORE releasing its duplicate, so even a pre-Pending refusal during catalog Busy
+survives child `_exit` until the actual waiter. It is not PID authority, not a
+replacement for durable Pending/Failed, and never unlocks the shared OFD. Failed
+RuntimeWriter Drop conservatively retains that descriptor. Outcome failure never
+clears a prior error; payload bytes are unchanged and replacement paths receive no
+write. These are source invariants; actual parent/child/crash behavior is NOTRUN.
 
 ### D4 managed cache owner read
 
@@ -140,28 +159,57 @@ cache-selection declaration. OwnerReadGuard registers an exclusive hold, invento
 owned no-follow objects, preserves ORIGINAL Metadata, counts internal hardlinks
 against nlink and refuses external links. Directory traversal may need temporary
 owner r/x before enumeration; no file mode grant occurs before link inventory.
-Only owner read/traverse bits change; POSIX ACL_USER_OBJ is mapped back to original
-mode, mask/group/other/named entries are preserved and compared on finish. Original
-ctime cannot be restored and is recorded as changed, never claimed byte-identical.
+Only owner read/traverse bits change. Original ctime cannot be restored and is
+recorded as changed, never claimed byte-identical.
 
-**Residual ACL-intent gap:** for a mode0000 inode, the current implementation
-records original mode/identity before grant, then obtains ACL bytes through the
-newly readable verified FD and reconstructs ACL_USER_OBJ from original mode. If
-it fails in that gap, `acl_captured=false` keeps recovery unresolved. This is
-fail-closed but does not satisfy the stronger requirement to persist the complete
-original ACL BEFORE granting access. A retained-FD ACL-query primitive (for example
-an explicitly supported getxattrat/AT_EMPTY_PATH kernel contract) must be validated
-and approved, or this unreadable-ACL case remains blocked. No pathname/procfd
-fallback or assumed no-ACL mode is used.
+### E1 exact ACL evidence BEFORE grant
 
-Linux O_PATH + fchmodat2(AT_EMPTY_PATH) is required for inode-bound mode changes,
-with no `/proc/self/fd`, pathname chmod or root escalation fallback. Kernel/filesystem
-support and ACL behavior require real unprivileged validation. read_dir/open_file/
-original_metadata are limited to inventoried entries. finish restores children
-before parents, verifies modes/ACLs and records completion; Drop/error leaves an
-unresolved fenced journal, not best-effort pathname cleanup. Returned readable FDs
-must be closed by the caller before finish/guard release; raw File escape makes
-this a caller lifetime obligation, not a core-observed FD-count proof.
+The coordinator verified Linux v6.13 UAPI/source: empty-path getxattrat through
+an O_PATH FD is NOT assumed usable. The implementation uses a retained, verified
+accessible PARENT directory FD, one exact leaf and AT_SYMLINK_NOFOLLOW; the child
+is independently pinned by O_PATH and compared before/after bounded ACL size/read.
+A repr(C, align(8)) xattr_args has u64 value/u32 size/u32 flags and compile-time
+size16/alignment8 checks. Only libc::SYS_getxattrat is used, guarded to Linux
+x86_64/aarch64; no guessed syscall number, header installation or procfd path.
+The existing locked libc version is0.2.191; compilation remains a coordinator gate.
+
+Original system.posix_acl_access and directory system.posix_acl_default presence
+AND bytes are retained in PermissionIntent with acl_captured/acl_before_grant=true
+and fsynced BEFORE fchmodat2. Recheck exact ACL bytes after intent persistence and
+before chmod. ENODATA alone means absent; ENOTSUP/ENOSYS/EINVAL/EBADF/EACCES and
+ERANGE/size races are errors BEFORE grant, not an absent-ACL fallback. Require
+actual Linux6.13 getxattrat + fchmodat2 semantics; no uname check or root privilege
+substitutes for runtime capability tests. Existing accessible paths can avoid a
+permission change; inaccessible parents outside the managed tree still refuse.
+
+Post-grant comparison uses saved ORIGINAL ACL bytes and the narrowly permitted
+owner-bit delta; it never reconstructs an alleged original from post-grant bytes.
+Restore child-before-parent using retained inode and saved mode, then compare full
+access/default ACL bytes again through the same parent-relative helper. Group,
+mask/named/default entries cannot change unnoticed. Each inode also retains its
+parent descriptor; FD budget is therefore up to two descriptors per4096 objects.
+Internal hardlinks share one original/restoration; external hardlinks refuse.
+Recovery refuses old acl_before_grant=false or acl_captured=false intents rather
+than blessing them. Incomplete failures remain fenced, with no pathname restore.
+Returned read File lifetime remains a caller obligation: finish follows closure
+of spool/read users, not a PID/FD-count guess.
+
+### E4 exact control files, not VM-directory authority
+
+`MutationPlan::ControlFiles { files }` is a nonempty bounded set of absolute,
+unique, nonoverlapping MutableFile declarations. Existing inode aliases, strict
+aliases, unsafe parent, directory targets and wildcard/third siblings refuse.
+Holds for the complete set are acquired atomically; only those files may be staged
+and published. No MutableTree parent or directory creation is inferred. Thus
+vm_dir/console.log and console.log.1 can be updated while a disjoint GuestTree
+vm_dir/root is active, without dropping runtime fences or weakening its pins.
+
+The existing opaque stage/publication/prior/journal/commit machinery is reused.
+Partial multi-publication returns error/uncertainty; callers must not update log
+cursor/len/base or switch handles until commit succeeds. Tests cover both publish
+boundaries, foreign replacement and disjoint active runtime; actual console JSONL,
+rotation/cursor correctness and copy-entire-log-per-append cost are caller/fan-in
+gates. No in-place write or unbounded-pruning optimization was introduced.
 
 ### D5 exact authenticated normal removal
 
@@ -186,21 +234,23 @@ Staged-tree sync4096 entries/depth64; removal256 entries/depth64. Catalog envelo
 4MiB/payload2MiB. Archives512 operations and128MiB metadata, explicit full error,
 never silent prune. Archive scans/validation are bounded but cost grows to that
 limit; unsupported fchmodat2/statx/OFD/NOREPLACE fails closed, never counted as PASS.
-Owner-read retains one FD per object; deployment must admit that FD budget.
+Owner-read retains child+parent FDs per object; deployment must admit that FD budget.
 
-Existing43 tests remain (API-migrated); total73 tests are authored. C/D add exact unions, mixed endpoint,
-recovery CAS/gaps, >256 explicit archives, runtime descriptor/activation controls,
-0000/internal-hardlink restoration and exact removal controls. Every fixture is
-AUTHORED_NOTRUN. Unprivileged0000 test explicitly refuses to masquerade under uid0.
-A real process negative fixture is authored but NOT RUN. Positive cross-exec `_exit`,
-parent crash/descendant retention, beacon failure propagation, ACL filesystem matrix
-and public B1–B3/normal cold-warm-rebuild-retain/prune remain integration gates.
-No partial source claim replaces the required full normal-mode validation.
-Executed source checks: rustfmt and rustfmt --check exit0, git diff --check exit0,
-Python static ownership/API/old-test-name checks exit0. These did not compile any
-Rust or execute a fixture. The complete C/D contract is still BLOCKED by the
-beacon error-propagation and pre-grant ACL-intent seams above; the code is delivered
-incrementally for fan-in and continuation, not a complete normal-mode approval.
+All73 previous test names remain (API-migrated where E replaced the beacon
+escape); total89 tests are AUTHORED_NOTRUN. E adds ACL UAPI/0000/default/named-entry
+fixtures, pregrant syscall/read/journal faults and replacement refusal; actual
+mtime-syscall failure, bounded outcomes, clone/thread/transient-failure controls;
+and exact ControlFiles concurrent with an active GuestTree plus publish faults.
+Unprivileged ACL fixtures refuse to masquerade under uid0. No test was compiled
+or run; ENOSYS/unsupported filesystem is not a skipped PASS.
+
+The two prior source seams (post-write beacon outcome and ACL-before-grant evidence)
+are implemented, not an assertion of complete caller routing. Remaining gates:
+libc target-symbol/typecheck, Linux6.13+ syscall/ACL filesystem matrix, positive
+cross-exec `_exit`/descendant lifetime, B sandbox launch/reap bookkeeping, beacon
+from_updater wiring, console cost/cursor behavior and full normal cold/warm/rebuild/
+retain/prune campaigns. RuntimeChild::wait still distinguishes success only after
+catalog retirement; no forged ExitStatus or PID-based retirement API was added.
 
 Coordinator owns CLI/admin/install wiring and caller operation reuse; no caller,
 Cargo/dependency, compat_generation, auth/wire or root-document edits here.

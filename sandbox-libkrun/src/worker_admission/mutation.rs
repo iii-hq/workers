@@ -44,6 +44,8 @@ pub(crate) struct MutationGuard {
     artifacts_started: bool,
     #[cfg(test)]
     discard_fault: Option<&'static str>,
+    #[cfg(test)]
+    publish_fault: Option<&'static str>,
 }
 pub(crate) struct StagedFile {
     owner: String,
@@ -131,7 +133,41 @@ fn no_replace(from: &Directory, source: &Path, to: &Directory, target: &Path) ->
 impl MutationGuard {
     pub(super) fn begin(lease: Lease, plan: MutationPlan) -> io::Result<Self> {
         let removing = matches!(&plan, MutationPlan::Remove { .. });
+        let control = matches!(&plan, MutationPlan::ControlFiles { .. });
         let (plan, remove_targets) = match plan {
+            MutationPlan::ControlFiles { files } => {
+                if files.is_empty() || files.len() > 256 || files.iter().any(|p| !p.is_absolute()) {
+                    return Err(invalid(
+                        "ControlFiles requires a bounded nonempty absolute set",
+                    ));
+                }
+                let mut exact = files
+                    .iter()
+                    .map(|p| absolute(p))
+                    .collect::<io::Result<Vec<_>>>()?;
+                exact.sort();
+                if exact
+                    .iter()
+                    .enumerate()
+                    .any(|(i, a)| exact[i + 1..].iter().any(|b| overlaps(a, b)))
+                {
+                    return Err(invalid("control files must be distinct and nonoverlapping"));
+                }
+                for path in &exact {
+                    let parent =
+                        Directory::open(path.parent().ok_or_else(|| invalid("control parent"))?)?;
+                    let id = Identity::of(&parent.file)?;
+                    if id.uid != uid() || id.mode & 0o022 != 0 {
+                        return Err(invalid("control parent must be owned/protected"));
+                    }
+                }
+                (
+                    MutationPlan::Create {
+                        root: exact[0].clone(),
+                    },
+                    Some(exact),
+                )
+            }
             MutationPlan::Remove { root, targets } => {
                 let root = absolute(&root)?;
                 if targets.is_empty() || targets.len() > 256 {
@@ -155,7 +191,7 @@ impl MutationGuard {
             }
             other => (other, None),
         };
-        let (root, spool, mut label, role) = match plan {
+        let (root, spool, mut label, mut role) = match plan {
             MutationPlan::Create { root } => (root, None, "create", PathRole::MutableTree),
             MutationPlan::Adopt { root } => (root, None, "adopt", PathRole::MutableTree),
             MutationPlan::Reclone { root } => (root, None, "reclone", PathRole::MutableTree),
@@ -174,12 +210,18 @@ impl MutationGuard {
             MutationPlan::ImagePair { directory } => {
                 (directory, None, "image-pair", PathRole::MutableTree)
             }
-            MutationPlan::Remove { .. } => return Err(invalid("unresolved remove plan")),
+            MutationPlan::Remove { .. } | MutationPlan::ControlFiles { .. } => {
+                return Err(invalid("unresolved exact plan"));
+            }
         };
         let root = absolute(&root)?;
         let mut footprint = remove_targets.unwrap_or_else(|| vec![root.clone()]);
         if removing {
             label = "remove";
+        }
+        if control {
+            label = "control-files";
+            role = PathRole::MutableFile;
         }
         if let Some(spool) = &spool {
             if overlaps(&root, spool) {
@@ -208,7 +250,7 @@ impl MutationGuard {
         {
             return Err(invalid("mutable footprint is not owned/protected"));
         }
-        if spool.is_some()
+        if (spool.is_some() || control)
             && identities
                 .iter()
                 .flatten()
@@ -216,13 +258,15 @@ impl MutationGuard {
         {
             return Err(invalid("EROFS requires regular file targets"));
         }
-        if identities.len() == 2
-            && identities[0]
-                .as_ref()
-                .zip(identities[1].as_ref())
-                .is_some_and(|(a, b)| a.dev == b.dev && a.ino == b.ino)
-        {
-            return Err(invalid("EROFS output/spool inode alias"));
+        if identities.iter().enumerate().any(|(i, a)| {
+            a.as_ref().is_some_and(|a| {
+                identities[i + 1..]
+                    .iter()
+                    .flatten()
+                    .any(|b| a.dev == b.dev && a.ino == b.ino)
+            })
+        }) {
+            return Err(invalid("mutation footprints alias one inode"));
         }
         for path in &footprint {
             if !op.entries.iter().any(|e| {
@@ -320,12 +364,18 @@ impl MutationGuard {
             artifacts_started: false,
             #[cfg(test)]
             discard_fault: None,
+            #[cfg(test)]
+            publish_fault: None,
         })
     }
     fn target(&self, path: &Path) -> io::Result<PathBuf> {
         let path = absolute(path)?;
         if !self.footprint.iter().any(|p| {
-            path == *p || (self.plan != "erofs" && self.plan != "remove" && path.starts_with(p))
+            path == *p
+                || (self.plan != "erofs"
+                    && self.plan != "remove"
+                    && self.plan != "control-files"
+                    && path.starts_with(p))
         }) {
             return Err(invalid("mutation exceeds declared footprint"));
         }
@@ -494,8 +544,8 @@ impl MutationGuard {
         Ok(())
     }
     fn create_dir_all_inner(&mut self, target: &Path, mode: u32) -> io::Result<()> {
-        if self.plan == "remove" {
-            return Err(invalid("Remove plan cannot create payload"));
+        if self.plan == "remove" || self.plan == "control-files" {
+            return Err(invalid("exact file/removal plan cannot create directories"));
         }
         let target = self.target(target)?;
         self.artifacts_started = true;
@@ -600,6 +650,9 @@ impl MutationGuard {
         })
     }
     fn stage_tree_inner(&mut self, target: &Path) -> io::Result<StagedTree> {
+        if self.plan == "control-files" || self.plan == "erofs" {
+            return Err(invalid("file plan cannot stage a tree"));
+        }
         let (target, parent, path, token) = self.staging(target)?;
         let intent = self.intent(
             super::catalog::EffectKind::Stage,
@@ -697,7 +750,15 @@ impl MutationGuard {
             }
             self.changed(backup, None, old.clone())?;
         }
+        #[cfg(test)]
+        if self.publish_fault == Some("before-rename") {
+            return Err(io::Error::other("injected publication boundary"));
+        }
         no_replace(parent, stage, parent, target)?;
+        #[cfg(test)]
+        if self.publish_fault == Some("after-rename") {
+            return Err(io::Error::other("injected publication boundary"));
+        }
         parent.file.sync_all()?;
         if !fingerprint(target)?.is_some_and(|id| identity.same_inode(&id)) {
             return Err(invalid("published target replaced"));
@@ -937,6 +998,10 @@ impl MutationGuard {
         }
         let _ = boundary;
         Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn fault_publish_at(&mut self, boundary: &'static str) {
+        self.publish_fault = Some(boundary);
     }
     #[cfg(test)]
     pub(super) fn fault_discard_at(&mut self, boundary: &'static str) {

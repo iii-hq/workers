@@ -7,6 +7,7 @@
 mod tests;
 use super::{
     Lease, PathRole,
+    catalog::{ActivityFailure, ActivityOutcome, ActivityPhase},
     catalog::{Hold, HoldKind, Namespace, RuntimeEntry, RuntimeRecord, RuntimeState, overlaps},
     storage::*,
 };
@@ -18,11 +19,12 @@ use std::{
         fd::{AsRawFd, OwnedFd},
         unix::fs::MetadataExt,
     },
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::SystemTime,
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum RuntimePathKind {
@@ -61,8 +63,62 @@ pub(crate) struct RuntimeWriter(Arc<WriterHeld>);
 struct WriterHeld {
     lease: Lease,
     id: String,
-    sentinel: File,
+    sentinel: std::mem::ManuallyDrop<File>,
     failed: AtomicBool,
+    activity: Mutex<ActivityLatch>,
+}
+impl Drop for WriterHeld {
+    fn drop(&mut self) {
+        // A locally terminal session cannot shed its last writer fence just
+        // because persisting the failure also failed. Process exit still needs
+        // the durable Pending/Failed outcome check in the real owned waiter.
+        if !self.failed.load(Ordering::Acquire) {
+            unsafe {
+                std::mem::ManuallyDrop::drop(&mut self.sentinel);
+            }
+        }
+    }
+}
+#[derive(Default)]
+struct ActivityLatch {
+    failure: Option<ActivityFailure>,
+    #[cfg(test)]
+    fault: Option<ActivityFault>,
+}
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum ActivityFault {
+    Pending,
+    Syscall,
+    Outcome,
+    FailurePersistence,
+}
+#[derive(Clone)]
+pub(crate) struct RuntimeActivity(Arc<ActivityHeld>);
+struct ActivityHeld {
+    writer: RuntimeWriter,
+    file: File,
+    parent: Directory,
+    path: PathBuf,
+    identity: Identity,
+}
+// Coordination files use positional read/write only. The inherited sentinel
+// OFD cursor is a bounded sticky failure latch, retained by the real parent FD
+// even after child _exit. No disk write or catalog lock is needed to set it.
+fn failed_ofd(file: &File) -> io::Result<bool> {
+    let offset = unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+    if offset < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(offset != 0)
+}
+fn mark_failed_ofd(file: &File) {
+    // The private owned regular FD cannot be closed/replaced by the consumer.
+    // Failure to inspect this cursor is itself refusal in the owned waiter.
+    let _ = unsafe { libc::lseek(file.as_raw_fd(), 1, libc::SEEK_SET) };
+}
+fn activity_ready(record: &RuntimeRecord) -> bool {
+    record.activity.phase == ActivityPhase::Clean && record.activity.failure.is_none()
 }
 pub(super) fn validate_sentinel(ns: &Namespace, record: &RuntimeRecord) -> io::Result<File> {
     let n = format!("rt-{}", record.id);
@@ -212,6 +268,12 @@ impl RuntimeLaunch {
             writer_retired: false,
             guest_consistent: false,
             admission_holder: None,
+            activity: ActivityOutcome {
+                sequence: 0,
+                path: None,
+                phase: ActivityPhase::Clean,
+                failure: None,
+            },
         });
         tx.save()?;
         lease.0.namespace.directory.file.sync_all()?;
@@ -397,6 +459,15 @@ impl RuntimeChild {
             .await?;
         // No LOCK_UN on the child-shared OFD. Closing our duplicate precedes
         // the independent nonblocking lock test for every descendant writer.
+        if failed_ofd(
+            self.sentinel
+                .as_ref()
+                .ok_or_else(|| invalid("runtime sentinel missing before wait"))?,
+        )? {
+            return Err(invalid(
+                "runtime shared description recorded terminal failure",
+            ));
+        }
         drop(self.sentinel.take());
         let mut tx = self.lease.0.namespace.transaction()?;
         let record = tx
@@ -408,7 +479,10 @@ impl RuntimeChild {
             .clone();
         let free = validate_sentinel(&self.lease.0.namespace, &record)?;
         sentinel(&free)?;
-        if record.state != RuntimeState::Active || tx.operation(&self.lease.0.id)?.uncertain {
+        if record.state != RuntimeState::Active
+            || !activity_ready(&record)
+            || tx.operation(&self.lease.0.id)?.uncertain
+        {
             return Err(invalid("runtime did not activate or checkpoint failed"));
         }
         validate_paths(&record)?;
@@ -494,7 +568,7 @@ pub(crate) fn import_runtime_writer(admission: &Lease, fd: OwnedFd) -> io::Resul
         return Err(invalid("runtime state mismatch"));
     }
     let independent = validate_sentinel(&admission.0.namespace, &record)?;
-    if ofd(&independent, true)? || !ofd(&file, true)? {
+    if ofd(&independent, true)? || !ofd(&file, true)? || failed_ofd(&file)? {
         return Err(invalid("runtime requires inherited sentinel OFD"));
     }
     validate_paths(&record)?;
@@ -515,13 +589,24 @@ pub(crate) fn import_runtime_writer(admission: &Lease, fd: OwnedFd) -> io::Resul
     Ok(RuntimeWriter(Arc::new(WriterHeld {
         lease: admission.clone(),
         id: binding.id,
-        sentinel: file,
+        sentinel: std::mem::ManuallyDrop::new(file),
         failed: AtomicBool::new(false),
+        activity: Mutex::new(ActivityLatch::default()),
     })))
 }
 impl RuntimeWriter {
-    pub(crate) fn checkpoint(&self) -> io::Result<()> {
-        if self.0.failed.load(Ordering::Acquire) {
+    fn activity_lock(&self) -> io::Result<std::sync::MutexGuard<'_, ActivityLatch>> {
+        match self.0.activity.lock() {
+            Ok(latch) => Ok(latch),
+            Err(poison) => {
+                let mut latch = poison.into_inner();
+                self.fail_activity(&mut latch, ActivityFailure::Poisoned);
+                Err(invalid("runtime activity mutex poisoned"))
+            }
+        }
+    }
+    fn checkpoint_locked(&self) -> io::Result<()> {
+        if self.0.failed.load(Ordering::Acquire) || failed_ofd(&self.0.sentinel)? {
             return Err(invalid("runtime checkpoint is terminal"));
         }
         let result = (|| -> io::Result<()> {
@@ -533,6 +618,7 @@ impl RuntimeWriter {
                 .find(|r| r.id == self.0.id)
                 .ok_or_else(|| invalid("runtime missing"))?;
             if record.state != RuntimeState::Active
+                || !activity_ready(record)
                 || record.sentinel != Identity::of(&self.0.sentinel)?
                 || tx.operation(&self.0.lease.0.id)?.uncertain
             {
@@ -551,54 +637,194 @@ impl RuntimeWriter {
         }
         result
     }
-    pub(crate) fn open_activity_file(&self, path: &Path) -> io::Result<File> {
-        let result = self.open_activity_file_inner(path);
+    pub(crate) fn checkpoint(&self) -> io::Result<()> {
+        let mut latch = self.activity_lock()?;
+        if latch.failure.is_some() {
+            return Err(invalid("runtime activity failed terminally"));
+        }
+        let result = self.checkpoint_locked();
         if result.is_err() {
-            self.0.failed.store(true, Ordering::Release);
-            if let Ok(mut tx) = self.0.lease.0.namespace.transaction() {
-                if let Some(r) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.0.id) {
-                    r.state = RuntimeState::Uncertain;
-                    let _ = tx.save();
-                }
-            }
+            self.fail_activity(&mut latch, ActivityFailure::Checkpoint);
         }
         result
     }
-    fn open_activity_file_inner(&self, path: &Path) -> io::Result<File> {
-        self.checkpoint()?;
-        let path = absolute(path)?;
-        let tx = self.0.lease.0.namespace.transaction()?;
-        let record = tx
-            .catalog
-            .runtimes
-            .iter()
-            .find(|r| r.id == self.0.id)
-            .ok_or_else(|| invalid("runtime missing"))?;
-        let declared = record
-            .paths
-            .iter()
-            .find(|r| {
-                r.kind == RuntimePathKind::ActivityStamp
-                    && r.entry.path.get().is_ok_and(|p| p == path)
-            })
-            .ok_or_else(|| invalid("activity path not registered"))?;
-        let parent = Directory::open(path.parent().ok_or_else(|| invalid("activity parent"))?)?;
-        let file = open_at(
-            &parent.file,
-            path.file_name().ok_or_else(|| invalid("activity name"))?,
-            libc::O_RDWR | libc::O_NONBLOCK,
-            0,
-        )?;
-        let identity = Identity::of(&file)?;
-        if !declared
-            .entry
-            .pins
-            .iter()
-            .any(|(p, id)| p.get().is_ok_and(|p| p == path) && id.same_inode(&identity))
-            || identity.links != 1
-        {
-            return Err(invalid("activity inode replaced"));
+    fn fail_activity(&self, latch: &mut ActivityLatch, reason: ActivityFailure) {
+        let first = *latch.failure.get_or_insert(reason);
+        self.0.failed.store(true, Ordering::Release);
+        mark_failed_ofd(&self.0.sentinel);
+        // When this persistence fails, an already durable Pending slot remains
+        // nonclean. The shared in-process latch never retries the effect.
+        if let Ok(mut tx) = self.0.lease.0.namespace.transaction() {
+            if let Some(r) = tx.catalog.runtimes.iter_mut().find(|r| r.id == self.0.id) {
+                r.activity.phase = ActivityPhase::Failed;
+                r.activity.failure = Some(first);
+                r.state = RuntimeState::Uncertain;
+                let _ = tx.save();
+            }
         }
-        Ok(file)
+    }
+    pub(crate) fn activity(&self, path: &Path) -> io::Result<RuntimeActivity> {
+        let mut latch = self.activity_lock()?;
+        if latch.failure.is_some() {
+            return Err(invalid("runtime activity is terminal"));
+        }
+        let result = (|| -> io::Result<RuntimeActivity> {
+            self.checkpoint_locked()?;
+            let path = absolute(path)?;
+            let tx = self.0.lease.0.namespace.transaction()?;
+            let record = tx
+                .catalog
+                .runtimes
+                .iter()
+                .find(|r| r.id == self.0.id)
+                .ok_or_else(|| invalid("runtime missing"))?;
+            let declared = record
+                .paths
+                .iter()
+                .find(|r| {
+                    r.kind == RuntimePathKind::ActivityStamp
+                        && r.entry.path.get().is_ok_and(|p| p == path)
+                })
+                .ok_or_else(|| invalid("activity path not registered"))?;
+            let parent = Directory::open(path.parent().ok_or_else(|| invalid("activity parent"))?)?;
+            let file = open_at(
+                &parent.file,
+                path.file_name().ok_or_else(|| invalid("activity name"))?,
+                libc::O_RDWR | libc::O_NONBLOCK,
+                0,
+            )?;
+            let identity = Identity::of(&file)?;
+            if identity.uid != uid()
+                || identity.mode & libc::S_IFMT != libc::S_IFREG
+                || identity.links != 1
+                || !declared
+                    .entry
+                    .pins
+                    .iter()
+                    .any(|(p, id)| p.get().is_ok_and(|p| p == path) && id.same_inode(&identity))
+            {
+                return Err(invalid("activity inode replaced"));
+            }
+            Ok(RuntimeActivity(Arc::new(ActivityHeld {
+                writer: self.clone(),
+                file,
+                parent,
+                path,
+                identity,
+            })))
+        })();
+        if result.is_err() {
+            self.fail_activity(&mut latch, ActivityFailure::Identity);
+        }
+        result
+    }
+}
+impl RuntimeActivity {
+    fn validate(&self) -> io::Result<()> {
+        self.0.parent.revalidate()?;
+        let held = Identity::of(&self.0.file)?;
+        let named = Identity::metadata(&std::fs::symlink_metadata(&self.0.path)?);
+        if held != self.0.identity || named != self.0.identity {
+            return Err(invalid("activity inode/type/owner changed"));
+        }
+        Ok(())
+    }
+    pub(crate) fn touch_at(&self, when: SystemTime) -> io::Result<()> {
+        let writer = &self.0.writer;
+        // Shared across ALL activity handles and writer clones. Lock order is
+        // activity mutex -> short catalog transaction, never a callback or wait
+        // under the catalog mutex. No application callback executes in core.
+        let mut latch = writer.activity_lock()?;
+        if latch.failure.is_some() || writer.0.failed.load(Ordering::Acquire) {
+            return Err(invalid("runtime activity is terminal"));
+        }
+        let precheck = writer.checkpoint_locked().and_then(|_| self.validate());
+        if let Err(error) = precheck {
+            writer.fail_activity(&mut latch, ActivityFailure::Checkpoint);
+            return Err(error);
+        }
+        let pending = (|| -> io::Result<u64> {
+            let mut tx = writer.0.lease.0.namespace.transaction()?;
+            let record = tx
+                .catalog
+                .runtimes
+                .iter_mut()
+                .find(|r| r.id == writer.0.id)
+                .ok_or_else(|| invalid("runtime missing"))?;
+            if record.state != RuntimeState::Active || !activity_ready(record) {
+                return Err(invalid("activity already pending or failed"));
+            }
+            let sequence = record.activity.sequence.checked_add(1).ok_or_else(limit)?;
+            record.activity = ActivityOutcome {
+                sequence,
+                path: Some(HostPath::new(&self.0.path)?),
+                phase: ActivityPhase::Pending,
+                failure: None,
+            };
+            tx.save()?;
+            Ok(sequence)
+        })();
+        let sequence = match pending {
+            Ok(n) => n,
+            Err(e) => {
+                writer.fail_activity(&mut latch, ActivityFailure::PendingPersistence);
+                return Err(e);
+            }
+        };
+        #[cfg(test)]
+        if matches!(latch.fault, Some(ActivityFault::Pending)) {
+            writer.fail_activity(&mut latch, ActivityFailure::PendingPersistence);
+            return Err(io::Error::other("injected pending boundary"));
+        }
+        let effect = (|| -> io::Result<()> {
+            self.validate()?;
+            #[cfg(test)]
+            if matches!(
+                latch.fault,
+                Some(ActivityFault::Syscall) | Some(ActivityFault::FailurePersistence)
+            ) {
+                // Fault is at the owned write boundary, NOT a checkpoint refusal.
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            self.0.file.set_modified(when)
+        })();
+        if let Err(error) = effect {
+            #[cfg(test)]
+            if matches!(latch.fault, Some(ActivityFault::FailurePersistence)) {
+                latch.failure = Some(ActivityFailure::Syscall);
+                writer.0.failed.store(true, Ordering::Release);
+                mark_failed_ofd(&writer.0.sentinel);
+                return Err(error); // Durable Pending deliberately remains.
+            }
+            writer.fail_activity(&mut latch, ActivityFailure::Syscall);
+            return Err(error);
+        }
+        let outcome = (|| -> io::Result<()> {
+            #[cfg(test)]
+            if matches!(latch.fault, Some(ActivityFault::Outcome)) {
+                return Err(io::Error::other("injected outcome persistence"));
+            }
+            self.validate()?;
+            let mut tx = writer.0.lease.0.namespace.transaction()?;
+            let record = tx
+                .catalog
+                .runtimes
+                .iter_mut()
+                .find(|r| r.id == writer.0.id)
+                .ok_or_else(|| invalid("runtime missing"))?;
+            if record.state != RuntimeState::Active
+                || record.activity.phase != ActivityPhase::Pending
+                || record.activity.sequence != sequence
+                || record.activity.path != Some(HostPath::new(&self.0.path)?)
+            {
+                return Err(invalid("activity outcome cannot overwrite changed ledger"));
+            }
+            record.activity.phase = ActivityPhase::Clean;
+            tx.save()
+        })();
+        if outcome.is_err() {
+            writer.fail_activity(&mut latch, ActivityFailure::OutcomePersistence);
+        }
+        outcome
     }
 }

@@ -84,7 +84,11 @@ pub(super) struct PermissionIntent {
     pub original: Identity,
     pub granted_mode: u32,
     pub acl: Option<String>,
+    #[serde(default)]
+    pub default_acl: Option<String>,
     pub acl_captured: bool,
+    #[serde(default)]
+    pub acl_before_grant: bool,
     pub restored: bool,
     pub ctime_changed: bool,
 }
@@ -155,6 +159,30 @@ pub(super) struct RuntimeRecord {
     pub writer_retired: bool,
     pub guest_consistent: bool,
     pub admission_holder: Option<String>,
+    pub activity: ActivityOutcome,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum ActivityFailure {
+    Checkpoint,
+    Identity,
+    PendingPersistence,
+    Syscall,
+    OutcomePersistence,
+    Poisoned,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum ActivityPhase {
+    Clean,
+    Pending,
+    Failed,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ActivityOutcome {
+    pub sequence: u64,
+    pub path: Option<HostPath>,
+    pub phase: ActivityPhase,
+    pub failure: Option<ActivityFailure>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum RuntimeState {
@@ -499,6 +527,24 @@ impl Transaction<'_> {
         }
         let mut runtime_ids = std::collections::HashSet::new();
         for runtime in &self.catalog.runtimes {
+            if (runtime.activity.phase == ActivityPhase::Failed)
+                != (runtime.activity.failure.is_some())
+                || (runtime.activity.phase == ActivityPhase::Pending
+                    && runtime.activity.path.is_none())
+                || (runtime.state == RuntimeState::Retired
+                    && runtime.activity.phase != ActivityPhase::Clean)
+            {
+                return Err(invalid("invalid activity outcome"));
+            }
+            if let Some(path) = &runtime.activity.path {
+                path.get()?;
+                if !runtime.paths.iter().any(|p| {
+                    p.kind == super::runtime::RuntimePathKind::ActivityStamp
+                        && &p.entry.path == path
+                }) {
+                    return Err(invalid("activity outcome outside declared footprint"));
+                }
+            }
             if runtime.writer_retired != (runtime.state == RuntimeState::Retired)
                 || runtime
                     .admission_holder
@@ -707,6 +753,7 @@ impl Transaction<'_> {
                         "image-pair",
                         "remove",
                         "owner-read",
+                        "control-files",
                     ]
                     .contains(&journal.plan.as_str())
                     || journal.disposals.len() > 256
@@ -720,8 +767,23 @@ impl Transaction<'_> {
                 {
                     return Err(invalid("invalid EROFS union"));
                 }
+                if journal.plan == "control-files" {
+                    let paths = journal
+                        .footprint
+                        .iter()
+                        .map(|p| p.get())
+                        .collect::<io::Result<Vec<_>>>()?;
+                    if paths
+                        .iter()
+                        .enumerate()
+                        .any(|(i, p)| paths[i + 1..].iter().any(|q| overlaps(p, q)))
+                    {
+                        return Err(invalid("invalid ControlFiles footprint"));
+                    }
+                }
                 if journal.plan != "erofs"
                     && journal.plan != "remove"
+                    && journal.plan != "control-files"
                     && journal.footprint.len() != 1
                 {
                     return Err(invalid("invalid tree footprint"));
@@ -740,6 +802,10 @@ impl Transaction<'_> {
                     if intent.original.uid != self.namespace.uid
                         || intent.granted_mode & !0o7777 != 0
                         || intent.acl.as_ref().is_some_and(|a| a.len() > 131072)
+                        || intent
+                            .default_acl
+                            .as_ref()
+                            .is_some_and(|a| a.len() > 131072)
                     {
                         return Err(invalid("invalid permission intent"));
                     }
