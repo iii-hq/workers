@@ -34,16 +34,25 @@ fn private(path: &Path) {
     fs::create_dir(path).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
+/// Exact modes, never the process umask.
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+    fs::write(path, bytes).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
 fn populate(root: &Path) {
-    fs::create_dir(root).unwrap();
-    fs::write(root.join("content"), b"SOURCE").unwrap();
+    private(root);
+    write_mode(&root.join("content"), b"SOURCE", 0o600);
     let name = root.file_name().unwrap().to_string_lossy().into_owned();
-    fs::write(root.with_file_name(format!("{name}.erofs")), b"LOWER").unwrap();
-    fs::write(
-        root.with_file_name(format!("{name}.digest")),
+    write_mode(
+        &root.with_file_name(format!("{name}.erofs")),
+        b"LOWER",
+        0o600,
+    );
+    write_mode(
+        &root.with_file_name(format!("{name}.digest")),
         b"sha256:fixture",
-    )
-    .unwrap();
+        0o600,
+    );
 }
 /// Same declaration shape as the build: the output tree plus its exact
 /// `image.erofs`/`image.id`/`image.spool` slots, and a console log pair. Cache

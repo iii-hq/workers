@@ -19,6 +19,12 @@ fn private(path: &Path) {
     std::fs::create_dir(path).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
+/// A fixture file with the exact mode the scenario intends, never the process
+/// umask: core correctly refuses group/other-writable mutable objects.
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+    std::fs::write(path, bytes).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
 fn fixture() -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let catalog = temp.path().join("catalog");
@@ -194,7 +200,7 @@ fn c3_local_new_state_runtime_and_cold_cache_slugs_use_stable_intervals() {
 fn c4_warm_file_publication_retains_old_copy_and_updates_only_owned_epoch() {
     let f = fixture();
     let output = f.data.join("image.erofs");
-    std::fs::write(&output, b"OLD").unwrap();
+    write_mode(&output, b"OLD", 0o600);
     let lease = f.context.local(&f.data.join("state")).unwrap();
     let lease = mutable(lease, &output, PathRole::MutableFile);
     let clone = lease.clone();
@@ -225,7 +231,7 @@ fn c4_warm_file_publication_retains_old_copy_and_updates_only_owned_epoch() {
 fn c4_external_replacement_poison_is_terminal_and_never_refreshes_strict_input() {
     let f = fixture();
     let output = f.data.join("image");
-    std::fs::write(&output, b"OLD").unwrap();
+    write_mode(&output, b"OLD", 0o600);
     let lease = mutable(
         f.context.local(&f.data.join("state")).unwrap(),
         &output,
@@ -244,7 +250,7 @@ fn c4_external_replacement_poison_is_terminal_and_never_refreshes_strict_input()
     let mut stage = guard.stage_file(&output, 0o600).unwrap();
     stage.file_mut().write_all(b"NEW").unwrap();
     std::fs::rename(&output, f.data.join("retained-old")).unwrap();
-    std::fs::write(&output, b"FOREIGN").unwrap();
+    write_mode(&output, b"FOREIGN", 0o600);
     assert!(guard.publish_file(stage).is_err());
     assert!(guard.checkpoint().is_err());
     drop(guard);
@@ -261,7 +267,7 @@ fn c4_adopt_preserves_root_and_descendant_pins_then_allows_new_root_creation() {
     let root = vm.join("root");
     private(&root);
     let upper = root.join("upper.ext4");
-    std::fs::write(&upper, b"OLD").unwrap();
+    write_mode(&upper, b"OLD", 0o600);
     let lease = f.context.local(&vm).unwrap();
     let lease = mutable(lease, &upper, PathRole::MutableFile);
     let lease = mutable(lease, &root, PathRole::MutableTree);
@@ -290,7 +296,7 @@ fn c4_reclone_tree_uses_owned_stage_and_refuses_other_mutations_stage() {
         .begin(MutationPlan::Reclone { root: root.clone() })
         .unwrap();
     let stage = guard.stage_tree(&root).unwrap();
-    std::fs::write(stage.path().join("new"), b"NEW").unwrap();
+    write_mode(&stage.path().join("new"), b"NEW", 0o600);
     guard.publish_tree(stage).unwrap();
     guard.commit().unwrap();
     lease.revalidate().unwrap();
@@ -595,7 +601,7 @@ fn diagnostic_pid_clear_preserves_inode_and_requires_owned_flock() {
     let root = f.data.join("cache");
     private(&root);
     let lock = root.join("image.lock");
-    std::fs::write(&lock, b"long prior diagnostic contents").unwrap();
+    write_mode(&lock, b"long prior diagnostic contents", 0o600);
     let before = std::fs::metadata(&lock).unwrap().ino();
     let lease = mutable(
         f.context.local(&root).unwrap(),
@@ -621,7 +627,7 @@ fn diagnostic_contention_returns_false_without_write_or_mutex_retention() {
     let root = f.data.join("cache");
     private(&root);
     let lock = root.join("image.lock");
-    std::fs::write(&lock, b"owner").unwrap();
+    write_mode(&lock, b"owner", 0o600);
     let held = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -791,7 +797,7 @@ fn discard_own_spool_preserves_target_and_allows_image_publication() {
         let spool = root.join("spool-slot");
         let image = root.join("image.erofs");
         if existing {
-            std::fs::write(&spool, b"OLD TARGET").unwrap();
+            write_mode(&spool, b"OLD TARGET", 0o600);
         }
         let before = std::fs::symlink_metadata(&spool).ok().map(|m| m.ino());
         let lease = with_paths(
@@ -1098,8 +1104,8 @@ fn amendment_c_erofs_exact_union_blocks_readers_of_either_then_resolves_both() {
     let f = fixture();
     let output = f.data.join("image.erofs");
     let spool = f.data.join("spool");
-    std::fs::write(&output, b"OLD").unwrap();
-    std::fs::write(&spool, b"OLD SPOOL SLOT").unwrap();
+    write_mode(&output, b"OLD", 0o600);
+    write_mode(&spool, b"OLD SPOOL SLOT", 0o600);
     let lease = erofs_lease(&f, &output, &spool);
     for path in [&output, &spool] {
         let read = lease.use_path(path).unwrap();
@@ -1184,7 +1190,7 @@ fn amendment_c_erofs_missing_wrong_role_equal_alias_and_third_sibling_refuse() {
     let f = fixture();
     let output = f.data.join("image");
     let spool = f.data.join("spool");
-    std::fs::write(&output, b"OLD").unwrap();
+    write_mode(&output, b"OLD", 0o600);
     std::fs::hard_link(&output, &spool).unwrap();
     assert!(
         with_paths(
@@ -1420,7 +1426,7 @@ fn amendment_c_recovery_accepts_proven_new_publication_and_preserves_old_prior()
     let f = fixture();
     let output = f.data.join("image");
     let spool = f.data.join("spool");
-    std::fs::write(&output, b"OLD").unwrap();
+    write_mode(&output, b"OLD", 0o600);
     let lease = erofs_lease(&f, &output, &spool);
     let operation = lease.0.id.clone();
     let mut guard = lease
@@ -1544,7 +1550,7 @@ fn amendment_c_recovery_proves_publication_gap_but_refuses_external_new_replacem
         let f = fixture();
         let output = f.data.join("image");
         let spool = f.data.join("spool");
-        std::fs::write(&output, b"OLD").unwrap();
+        write_mode(&output, b"OLD", 0o600);
         let lease = erofs_lease(&f, &output, &spool);
         let operation = lease.0.id.clone();
         let mut guard = lease
@@ -1576,7 +1582,7 @@ fn amendment_c_recovery_proves_publication_gap_but_refuses_external_new_replacem
         }
         if replace {
             std::fs::rename(&output, f.data.join("retained-new")).unwrap();
-            std::fs::write(&output, b"FOREIGN").unwrap();
+            write_mode(&output, b"FOREIGN", 0o600);
         }
         let result = testing::recover(
             &f.context,
@@ -1687,7 +1693,7 @@ fn amendment_d_runtime_prepare_cancel_and_exact_activity_file() {
     let root = f.data.join("guest");
     private(&root);
     let upper = f.data.join("upper.ext4");
-    std::fs::write(&upper, b"disk").unwrap();
+    write_mode(&upper, b"disk", 0o600);
     let activity = f.data.join("activity");
     let lease = with_paths(
         f.context.local(&root).unwrap(),
@@ -1832,7 +1838,7 @@ fn amendment_d_owner_read_external_links_and_strict_roles_refuse() {
     let cache = f.data.join("cache");
     private(&cache);
     let file = cache.join("file");
-    std::fs::write(&file, b"data").unwrap();
+    write_mode(&file, b"data", 0o600);
     std::fs::hard_link(&file, f.data.join("external")).unwrap();
     let lease = mutable(
         f.context.local(&f.data.join("state")).unwrap(),
@@ -1852,7 +1858,7 @@ fn amendment_d_owner_read_cancel_and_replacement_retain_fence() {
     let cache = f.data.join("cache");
     private(&cache);
     let file = cache.join("file");
-    std::fs::write(&file, b"old").unwrap();
+    write_mode(&file, b"old", 0o600);
     let lease = mutable(
         f.context.local(&f.data.join("state")).unwrap(),
         &cache,
@@ -1860,7 +1866,7 @@ fn amendment_d_owner_read_cancel_and_replacement_retain_fence() {
     );
     let mut read = lease.owner_read_cache(&cache).unwrap();
     std::fs::rename(&file, cache.join("retained")).unwrap();
-    std::fs::write(&file, b"foreign").unwrap();
+    write_mode(&file, b"foreign", 0o600);
     assert!(read.open_file(&file).is_err());
     assert!(read.finish().is_err());
     assert!(lease.revalidate().is_err());
@@ -2046,8 +2052,8 @@ fn amendment_e_control_files_partial_publication_keeps_uncertainty_and_prior_log
     let f = fixture();
     let a = f.data.join("console.log");
     let b = f.data.join("console.log.1");
-    std::fs::write(&a, b"old-current").unwrap();
-    std::fs::write(&b, b"old-rotated").unwrap();
+    write_mode(&a, b"old-current", 0o600);
+    write_mode(&b, b"old-rotated", 0o600);
     let lease = with_paths(
         f.context.local(&f.data.join("state")).unwrap(),
         &[
@@ -2072,7 +2078,7 @@ fn amendment_e_control_files_partial_publication_keeps_uncertainty_and_prior_log
     control.publish_file(first).unwrap();
     let second = control.stage_file(&a, 0o600).unwrap();
     std::fs::rename(&a, f.data.join("retained-current")).unwrap();
-    std::fs::write(&a, b"external").unwrap();
+    write_mode(&a, b"external", 0o600);
     assert!(control.publish_file(second).is_err());
     assert!(control.commit().is_err());
     assert!(lease.revalidate().is_err());
@@ -2091,8 +2097,8 @@ fn amendment_e_control_publication_each_boundary_remains_terminal() {
             let f = fixture();
             let current = f.data.join("console.log");
             let rotated = f.data.join("console.log.1");
-            std::fs::write(&current, b"current").unwrap();
-            std::fs::write(&rotated, b"prior").unwrap();
+            write_mode(&current, b"current", 0o600);
+            write_mode(&rotated, b"prior", 0o600);
             let lease = with_paths(
                 f.context.local(&f.data.join("state")).unwrap(),
                 &[
@@ -2215,7 +2221,7 @@ fn f_receipt_is_stale_after_owned_target_mutation_without_new_runtime() {
         .begin(MutationPlan::Reclone { root: root.clone() })
         .unwrap();
     let stage = mutation.stage_tree(&root).unwrap();
-    std::fs::write(stage.path().join("data"), b"NEW").unwrap();
+    write_mode(&stage.path().join("data"), b"NEW", 0o600);
     mutation.publish_tree(stage).unwrap();
     mutation.commit().unwrap();
     assert!(proof.begin_remove(&lease, &root, &[&root]).is_err());
@@ -2228,7 +2234,7 @@ fn f_lineage_never_spawned_follows_owned_publication_but_not_legacy_replacement(
         let f = fixture();
         let file = f.data.join("control");
         if legacy {
-            std::fs::write(&file, b"LEGACY").unwrap();
+            write_mode(&file, b"LEGACY", 0o600);
         }
         let lease = with_paths(
             f.context.local(&f.data.join("state")).unwrap(),

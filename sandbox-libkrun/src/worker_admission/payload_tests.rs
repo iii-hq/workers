@@ -17,6 +17,15 @@ struct Fixture {
 fn fixture() -> Fixture {
     fixture_with(|_| ())
 }
+/// Fixture objects get exact modes, never the process umask.
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+    fs::write(path, bytes).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+fn dir_mode(path: &Path, mode: u32) {
+    fs::create_dir(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
 /// `existing` creates prior target data BEFORE the original Lease is issued,
 /// so admission pins it as preexisting state instead of refusing a path that
 /// appeared outside an owned mutation. Never used to refresh a recorded path.
@@ -139,7 +148,7 @@ fn payload_readable_clone0755_uses_core_writer_and_preserves_metadata() {
     fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir(source.join("tmp")).unwrap();
     fs::set_permissions(source.join("tmp"), fs::Permissions::from_mode(0o1777)).unwrap();
-    fs::write(source.join("data"), b"DATA").unwrap();
+    write_mode(&source.join("data"), b"DATA", 0o644);
     fs::hard_link(source.join("data"), source.join("hard")).unwrap();
     let lease = with_paths(
         f.lease.clone(),
@@ -174,7 +183,7 @@ fn payload_incomplete_writer_never_emits_seal_and_preserves_existing_target() {
     let f = fixture_with(|target| {
         fs::create_dir(target).unwrap();
         fs::set_permissions(target, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(target.join("guest-data"), b"KEEP").unwrap();
+        write_mode(&target.join("guest-data"), b"KEEP", 0o644);
     });
     let inventory = PayloadInventory::new(vec![
         entry("", 0o755, PayloadKind::Directory),
@@ -319,8 +328,8 @@ fn payload_cache_entry_seals_source_then_digest_commits_in_same_guard() {
 fn payload_source_external_link_and_source_mutation_do_not_create_seals() {
     let f = fixture();
     let source = f.data.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("data"), b"DATA").unwrap();
+    dir_mode(&source, 0o755);
+    write_mode(&source.join("data"), b"DATA", 0o644);
     fs::hard_link(source.join("data"), f.data.join("external")).unwrap();
     let lease = with_paths(
         f.lease.clone(),
@@ -334,8 +343,8 @@ fn payload_source_external_link_and_source_mutation_do_not_create_seals() {
     assert!(!f.target.exists());
     let f = fixture();
     let source = f.data.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("data"), b"DATA").unwrap();
+    dir_mode(&source, 0o755);
+    write_mode(&source.join("data"), b"DATA", 0o644);
     let lease = with_paths(
         f.lease.clone(),
         &[PathRequest {
@@ -362,7 +371,7 @@ fn payload_metadata_and_seal_faults_never_publish_or_delete_prior_data() {
         let f = fixture_with(|target| {
             fs::create_dir(target).unwrap();
             fs::set_permissions(target, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::write(target.join("old"), b"KEEP").unwrap();
+            write_mode(&target.join("old"), b"KEEP", 0o644);
         });
         let inventory = PayloadInventory::new(vec![
             entry("", 0o755, PayloadKind::Directory),

@@ -38,7 +38,7 @@ fn prepare(prep: &CachePreparation, root: &Path) {
     lock.lock_exclusive().unwrap();
     lock.write_pid(1).unwrap();
     let tree = root_write.stage_tree(root).unwrap();
-    fs::write(tree.path().join("content"), b"SOURCE").unwrap();
+    write_mode(&tree.path().join("content"), b"SOURCE", 0o600);
     root_write.publish_tree(tree).unwrap();
     let mut digest = root_write
         .stage_file(&sibling(root, ".digest").unwrap(), 0o600)
@@ -66,11 +66,21 @@ fn prepare(prep: &CachePreparation, root: &Path) {
     drop(lock);
     erofs.commit().unwrap();
 }
+/// Fixture objects get the exact modes the scenario intends, never the process
+/// umask: core correctly refuses group/other-writable mutable or owner-read objects.
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
+    fs::write(path, bytes).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+fn dir_mode(path: &Path, mode: u32) {
+    fs::create_dir(path).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
 fn populated(root: &Path) {
-    fs::create_dir(root).unwrap();
-    fs::write(root.join("content"), b"SOURCE").unwrap();
-    fs::write(sibling(root, ".erofs").unwrap(), b"LOWER").unwrap();
-    fs::write(sibling(root, ".digest").unwrap(), b"sha256:fixture").unwrap();
+    dir_mode(root, 0o700);
+    write_mode(&root.join("content"), b"SOURCE", 0o600);
+    write_mode(&sibling(root, ".erofs").unwrap(), b"LOWER", 0o600);
+    write_mode(&sibling(root, ".digest").unwrap(), b"sha256:fixture", 0o600);
 }
 #[test]
 fn h_cold_first_reader_then_warm_second_reader_share_and_exclude_writer() {
@@ -482,9 +492,9 @@ fn h_partial_transfer_save_refuses_all_followup_without_previous_snapshot_fallba
 fn h_unpinned_warm_hit_may_hold_absent_digest_without_creating_it() {
     let f = fixture();
     let root = f.cache.join("image");
-    fs::create_dir(&root).unwrap();
-    fs::write(root.join("content"), b"SOURCE").unwrap();
-    fs::write(sibling(&root, ".erofs").unwrap(), b"LOWER").unwrap();
+    dir_mode(&root, 0o700);
+    write_mode(&root.join("content"), b"SOURCE", 0o600);
+    write_mode(&sibling(&root, ".erofs").unwrap(), b"LOWER", 0o600);
     let a = consumer(&f, "a");
     let probe = a.probe_cache(&[CacheEntry { root: &root }]).unwrap();
     assert!(!probe.exists(&sibling(&root, ".digest").unwrap()).unwrap());
