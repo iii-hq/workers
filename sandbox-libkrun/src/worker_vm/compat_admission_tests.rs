@@ -1717,10 +1717,11 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
 
 async fn install_retired_fixture(s: &Setup) {
     let lease = s.vms.admission(Some("key")).unwrap();
-    // The real launcher creates the console before spawning. Seed it through
-    // the same admitted helper before the receipt captures lifecycle identities.
-    let console_bytes = b"fixture log\n";
-    write_control_admitted(&lease, &s.vm, CONSOLE_LOG, console_bytes).unwrap();
+    // The real launcher issues the exact console pair's one log writer before
+    // spawning; its waiter finishes that last clone after every pump joined and
+    // before the receipt is stored, so Remove/H1 see only Finished logs.
+    let mut console = open_console(&lease, &s.vm).unwrap();
+    console.append(&LogStream::Stdout, b"fixture log").unwrap();
     let session = crate::sandbox_daemon::adapters::runtime_test_session(
         lease.clone(),
         &s._root.path().join("catalog"),
@@ -1729,15 +1730,8 @@ async fn install_retired_fixture(s: &Setup) {
     .await;
     let (status, receipt) = session.wait().await;
     let receipt = receipt.unwrap();
+    console.finish().unwrap();
     session.finish_resources(&receipt).await.unwrap();
-    let console = Console {
-        admission: Some(lease.clone()),
-        failed: false,
-        dir: s.vm.clone(),
-        file: File::open(s.vm.join(CONSOLE_LOG)).unwrap(),
-        len: console_bytes.len() as u64,
-        base: 0,
-    };
     let vm = Arc::new(Vm {
         instance: 7,
         pid: Pid::from_raw(0),

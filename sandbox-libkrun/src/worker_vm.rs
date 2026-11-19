@@ -1470,14 +1470,7 @@ impl WorkerVms {
             spawn_admitted(&admission, &dir, state_key, instance, cmd, runtime_paths).map_err(
                 |e| SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display())),
             )?;
-        let console = Arc::new(Mutex::new(Console {
-            admission: Some(admission.clone()),
-            failed: false,
-            dir,
-            file: console,
-            len: 0,
-            base: 0,
-        }));
+        let console = Arc::new(Mutex::new(console));
         #[cfg(test)]
         let pid = Pid::from_raw(child.id().expect("a spawned child has a diagnostic id") as i32);
         let stdin = child.take_stdin();
@@ -1554,13 +1547,18 @@ impl WorkerVms {
                     }
                 }
             }
-            if waited
+            // Every pump has joined (or was aborted and joined), so the console
+            // owns the last writer clone: finish it before any receipt can reach
+            // Remove or H1. A failed/unfinished log keeps the record uncertain.
+            let finished = waited
                 .console
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .failed
-            {
-                retirement = Err("console publication failed; cleanup retained".into());
+                .finish();
+            if let Err(error) = finished {
+                retirement = Err(format!(
+                    "console log did not finish; cleanup retained: {error}"
+                ));
             }
             if let (Ok(Some(receipt)), Some(session)) = (&retirement, &waited.lifecycle) {
                 if let Err(error) = session.finish_resources(receipt).await {
@@ -3688,7 +3686,7 @@ fn spawn_admitted(
     instance: u64,
     mut cmd: Command,
     runtime_paths: Option<Vec<(PathBuf, crate::worker_admission::RuntimePathKind)>>,
-) -> io::Result<(File, Lifeline, LaunchedChild, Option<String>)> {
+) -> io::Result<(Console, Lifeline, LaunchedChild, Option<String>)> {
     write_control_admitted(lease, dir, STATE_KEY_FILE, state_key.as_bytes())?;
     write_control_admitted(
         lease,
@@ -3696,42 +3694,54 @@ fn spawn_admitted(
         STATE_FILE,
         &serde_json::to_vec(&StateFile { instance })?,
     )?;
-    write_control_admitted(lease, dir, CONSOLE_LOG, b"")?;
-    let console = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(dir.join(CONSOLE_LOG))?;
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
-    let mut startup_error = None;
-    let child = match runtime_paths {
-        Some(paths) => {
-            let paths: Vec<_> = paths
-                .iter()
-                .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
-                .collect();
-            match lease.prepare_runtime(&paths)?.spawn(cmd) {
-                Ok(child) => LaunchedChild::Runtime(child),
-                Err(error) => {
-                    let (cause, child) = error.into_parts();
-                    match child {
-                        Some(child) => {
-                            startup_error = Some(cause.to_string());
-                            LaunchedChild::Runtime(child)
+    // The exact console pair gets ONE core log writer before launch; each new
+    // instance explicitly resets its ordinary retention (offsets start at 0).
+    let mut console = open_console(lease, dir)?;
+    console.reset_instance()?;
+    let launched = (|| -> io::Result<(Lifeline, LaunchedChild, Option<String>)> {
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
+        let mut startup_error = None;
+        let child = match runtime_paths {
+            Some(paths) => {
+                let paths: Vec<_> = paths
+                    .iter()
+                    .map(|(path, kind)| crate::worker_admission::RuntimePath { path, kind: *kind })
+                    .collect();
+                match lease.prepare_runtime(&paths)?.spawn(cmd) {
+                    Ok(child) => LaunchedChild::Runtime(child),
+                    Err(error) => {
+                        let (cause, child) = error.into_parts();
+                        match child {
+                            Some(child) => {
+                                startup_error = Some(cause.to_string());
+                                LaunchedChild::Runtime(child)
+                            }
+                            None => return Err(cause),
                         }
-                        None => return Err(cause),
                     }
                 }
             }
-        }
-        #[cfg(test)]
-        None => LaunchedChild::Fixture(cmd.spawn()?),
-        #[cfg(not(test))]
-        None => return Err(io::Error::other("runtime launch footprint is required")),
-    };
-    Ok((console, lifeline, child, startup_error))
+            #[cfg(test)]
+            None => LaunchedChild::Fixture(cmd.spawn()?),
+            #[cfg(not(test))]
+            None => return Err(io::Error::other("runtime launch footprint is required")),
+        };
+        Ok((lifeline, child, startup_error))
+    })();
+    match launched {
+        Ok((lifeline, child, startup_error)) => Ok((console, lifeline, child, startup_error)),
+        // Nothing was spawned, so no pump owns the writer: settle it now so a
+        // never-spawned rollback is not blocked by an unfinished log record.
+        Err(error) => match console.finish() {
+            Ok(()) => Err(error),
+            Err(finish) => Err(io::Error::other(format!(
+                "{error}; console log retained unfinished: {finish}"
+            ))),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -3755,110 +3765,108 @@ fn spawn(
 /// A VM's `console.log`, rotated to `console.log.1` past `CONSOLE_LOG_CAP`.
 ///
 /// A log offset counts every byte this instance logged, across rotations: the
-/// current file holds the offsets from `base` on, the rotated one those below.
+/// current file holds the offsets from `base` on, the rotated one those from
+/// `oldest` up to `base`. While the instance lives, every append, in-place
+/// rotation and read goes through the ONE core-issued writer of the exact
+/// declared pair (stable descriptors, no per-record stage, prior or journal).
+/// Once that writer finished, the pair no longer changes and is read through
+/// the last completed cursor only.
 struct Console {
-    admission: Option<crate::worker_admission::Lease>,
-    /// Once publication/commit outcome is uncertain, never append from stale cursors.
-    failed: bool,
     dir: PathBuf,
-    file: File,
-    len: u64,
+    /// `None` once finished, or for a read-only view of a settled pair.
+    writer: Option<crate::worker_admission::LogWriter>,
+    /// Sticky once an append, read or finish outcome is not proven complete:
+    /// the core keeps the record uncertain, so nothing retries from old offsets.
+    failed: bool,
+    oldest: u64,
     base: u64,
+    len: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConsoleBoundary {
-    Prepared,
-    BeforeRotation,
-    AfterRotation,
-    BeforeCurrent,
-    AfterCurrent,
-    BeforeCommit,
+/// The largest window one core log read returns (its record bound).
+const CONSOLE_READ_CHUNK: usize = 1024 * 1024;
+
+/// Create the exact console pair once and issue its one bounded log writer.
+/// Only MISSING members are created, through one owned ControlFiles mutation;
+/// an existing member is never replaced or truncated here, and the core proves
+/// its admitted identity (or the finished ledger of this same operation).
+fn open_console(lease: &crate::worker_admission::Lease, dir: &Path) -> io::Result<Console> {
+    let current = dir.join(CONSOLE_LOG);
+    let previous = dir.join(CONSOLE_LOG_OLD);
+    let mut missing = Vec::new();
+    for path in [&current, &previous] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(path.clone()),
+            Err(error) => return Err(error),
+        }
+    }
+    if !missing.is_empty() {
+        let mut init = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+            files: missing.clone(),
+        })?;
+        for path in &missing {
+            let stage = init.stage_file(path, 0o600)?;
+            init.publish_file(stage)?;
+        }
+        init.commit()?;
+    }
+    let writer = lease.open_log(crate::worker_admission::LogSpec {
+        current: &current,
+        previous: Some(&previous),
+        cap_bytes: CONSOLE_LOG_CAP,
+    })?;
+    let cursor = writer.cursor()?;
+    let mut console = Console {
+        dir: dir.to_path_buf(),
+        writer: Some(writer),
+        failed: false,
+        oldest: 0,
+        base: 0,
+        len: 0,
+    };
+    console.track(&cursor);
+    Ok(console)
 }
 
 impl Console {
-    fn append_admitted(
-        &mut self,
-        record: &[u8],
-        mut boundary: impl FnMut(ConsoleBoundary) -> io::Result<()>,
-    ) -> io::Result<()> {
-        if self.failed {
-            return Err(io::Error::other(
-                "console mutation requires verified recovery",
-            ));
-        }
-        // Failure is sticky even if no publication occurred: this avoids retrying
-        // a poisoned mutation or copying the old snapshot after partial success.
-        self.failed = true;
-        let lease = self
-            .admission
-            .as_ref()
-            .ok_or_else(|| io::Error::other("console admission missing"))?;
-        let current = self.dir.join(CONSOLE_LOG);
-        let old = self.dir.join(CONSOLE_LOG_OLD);
-        let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
-            files: vec![current.clone(), old.clone()],
-        })?;
-        use std::os::unix::fs::MetadataExt;
-        let held = self.file.metadata()?;
-        let current_identity = std::fs::symlink_metadata(&current)?;
-        if !current_identity.is_file()
-            || held.dev() != current_identity.dev()
-            || held.ino() != current_identity.ino()
-        {
-            return Err(io::Error::other(
-                "console readable handle no longer names the admitted current log",
-            ));
-        }
-        let mut stage = guard.stage_file(&current, 0o600)?;
-        self.file.seek(SeekFrom::Start(0))?;
-        io::copy(&mut self.file, stage.file_mut())?;
-        stage.file_mut().write_all(record)?;
-        stage.file_mut().sync_all()?;
-        let accumulated = self
-            .len
-            .checked_add(record.len() as u64)
-            .ok_or_else(|| io::Error::other("console size overflow"))?;
-        let (next_len, next_base) = if accumulated > CONSOLE_LOG_CAP {
-            (
-                0,
-                self.base
-                    .checked_add(accumulated)
-                    .ok_or_else(|| io::Error::other("console cursor overflow"))?,
-            )
-        } else {
-            (accumulated, self.base)
-        };
-        boundary(ConsoleBoundary::Prepared)?;
-        if next_len == 0 {
-            let mut rotated = guard.stage_file(&old, 0o600)?;
-            stage.file_mut().seek(SeekFrom::Start(0))?;
-            io::copy(stage.file_mut(), rotated.file_mut())?;
-            rotated.file_mut().sync_all()?;
-            guard.discard_file(stage)?;
-            boundary(ConsoleBoundary::BeforeRotation)?;
-            guard.publish_file(rotated)?;
-            boundary(ConsoleBoundary::AfterRotation)?;
-            stage = guard.stage_file(&current, 0o600)?;
-        }
-        boundary(ConsoleBoundary::BeforeCurrent)?;
-        guard.publish_file(stage)?;
-        boundary(ConsoleBoundary::AfterCurrent)?;
-        boundary(ConsoleBoundary::BeforeCommit)?;
-        guard.commit()?;
-        let readable = open_private(&current, false)?;
-        // Do not change any cursor or handle until committed publication AND
-        // the replacement readable handle are available.
-        self.file = readable;
-        self.len = next_len;
-        self.base = next_base;
-        self.failed = false;
-        Ok(())
+    /// Cursors move only from a completed core outcome.
+    fn track(&mut self, cursor: &crate::worker_admission::LogCursor) {
+        self.oldest = cursor.previous_base;
+        self.base = cursor.base;
+        self.len = cursor.len;
     }
 
-    /// The log offset after the last record: `append` writes whole lines under this lock.
+    fn settle<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn live(&self) -> io::Result<&crate::worker_admission::LogWriter> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console log outcome is uncertain; retained for explicit recovery",
+            ));
+        }
+        self.writer
+            .as_ref()
+            .ok_or_else(|| io::Error::other("console log writer already finished"))
+    }
+
+    /// The log offset after the last record: whole records only, from the
+    /// last completed core outcome.
     fn end(&self) -> u64 {
         self.base + self.len
+    }
+
+    /// Explicit ordinary-retention reset of the exact pair for a new instance.
+    fn reset_instance(&mut self) -> io::Result<()> {
+        let result = self.live()?.reset_instance();
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
+        Ok(())
     }
 
     /// Append one `{stream, line, ts_ms}` JSON line.
@@ -3869,19 +3877,88 @@ impl Console {
             "ts_ms": now_ms(),
         }))?;
         record.push(b'\n');
-        if self.admission.is_some() {
-            return self.append_admitted(&record, |_| Ok(()));
-        }
-        self.file.write_all(&record)?;
-        self.len += record.len() as u64;
-        if self.len > CONSOLE_LOG_CAP {
-            let path = self.dir.join(CONSOLE_LOG);
-            std::fs::rename(&path, self.dir.join(CONSOLE_LOG_OLD))?;
-            self.file = open_private(&path, true)?;
-            self.base += self.len;
-            self.len = 0;
-        }
+        let result = self.live()?.append(&record);
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
         Ok(())
+    }
+
+    /// Finish the writer: only after every pump joined (this owner is the
+    /// last clone). A failed writer is dropped unfinished, so the core keeps
+    /// the record uncertain and Remove/H1 stay blocked; never reported as done.
+    fn finish(&mut self) -> io::Result<()> {
+        let Some(writer) = self.writer.take() else {
+            if self.failed {
+                return Err(io::Error::other("console log failed; record retained"));
+            }
+            return Ok(());
+        };
+        if self.failed {
+            drop(writer);
+            return Err(io::Error::other(
+                "console log failed; record retained as uncertain",
+            ));
+        }
+        let result = writer.finish();
+        let cursor = self.settle(result)?;
+        self.track(&cursor);
+        Ok(())
+    }
+
+    /// At most `max` bytes from log offset `offset` (clamped to the oldest
+    /// retained byte and the end): through the live writer, which serializes
+    /// with appends and in-place rotation, else from the settled pair.
+    fn read(&mut self, offset: u64, max: usize) -> io::Result<crate::worker_admission::LogRead> {
+        if self.failed {
+            return Err(io::Error::other(
+                "console log outcome is uncertain; retained for explicit recovery",
+            ));
+        }
+        if let Some(writer) = &self.writer {
+            let result = writer.read(offset, max);
+            return self.settle(result);
+        }
+        self.read_settled(offset, max)
+    }
+
+    /// A settled pair: no writer rotates it any more, so the last completed
+    /// cursor names exactly which bytes of which file are this instance's.
+    fn read_settled(
+        &self,
+        offset: u64,
+        max: usize,
+    ) -> io::Result<crate::worker_admission::LogRead> {
+        use std::os::unix::fs::FileExt;
+        let mut at = offset.max(self.oldest).min(self.end());
+        let mut bytes = Vec::new();
+        for (name, start, len) in [
+            (CONSOLE_LOG_OLD, self.oldest, self.base - self.oldest),
+            (CONSOLE_LOG, self.base, self.len),
+        ] {
+            if len == 0 || at >= start + len || bytes.len() >= max {
+                continue;
+            }
+            if at < start {
+                break;
+            }
+            let file = open_private(&self.dir.join(name), false)?;
+            let from = at - start;
+            let available = len.min(file.metadata()?.len()).saturating_sub(from);
+            let n = available.min((max - bytes.len()) as u64) as usize;
+            let old = bytes.len();
+            bytes.resize(old + n, 0);
+            file.read_exact_at(&mut bytes[old..], from)?;
+            at += n as u64;
+            if (n as u64) < len - from {
+                break;
+            }
+        }
+        Ok(crate::worker_admission::LogRead {
+            bytes,
+            next: at,
+            end: self.end(),
+            oldest: self.oldest,
+        })
     }
 }
 
@@ -3929,68 +4006,57 @@ struct Entry {
 /// the last whole line read. Offsets survive a rotation: a cursor into the
 /// rotated file reads its rest, then the new file. A cursor past the end is
 /// another instance's, so it reads from the oldest record kept. A partial last
-/// line waits for its newline; a line that does not parse is skipped.
+/// line waits for its newline; a line that does not parse is skipped. Each
+/// bounded window is read under the console lock through the live core writer
+/// (never an independent path reader racing its in-place rotation).
 fn read_records(console: &Mutex<Console>, from: u64) -> io::Result<(Vec<LogRecord>, u64)> {
-    // Opened under the lock, so no rotation falls between the opens and `base`.
-    let (rotated, current, base) = {
-        let console = console.lock().unwrap_or_else(PoisonError::into_inner);
-        let rotated = (console.base > 0)
-            .then(|| open_private(&console.dir.join(CONSOLE_LOG_OLD), false))
-            .transpose()?;
-        let current = open_private(&console.dir.join(CONSOLE_LOG), false)?;
-        (rotated, current, console.base)
+    let read = |offset: u64| {
+        console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .read(offset, CONSOLE_READ_CHUNK)
     };
-    let mut from = if from > base + current.metadata()?.len() {
-        0
-    } else {
-        from
-    };
+    let first = read(from)?;
+    let mut window = if from > first.end { read(0)? } else { first };
+    let mut at = window.next - window.bytes.len() as u64;
+    let mut end = at;
+    let mut pending = Vec::new();
     let mut records = Vec::new();
-    if let Some(rotated) = rotated
-        && from < base
-    {
-        let start = base.saturating_sub(rotated.metadata()?.len());
-        read_lines(rotated, start, from.max(start), &mut records)?;
-        // Nothing more is written to a rotated file: its rest is done.
-        from = base;
-    }
-    let end = read_lines(current, base, from.max(base), &mut records)?;
-    Ok((records, end))
-}
-
-/// Append to `records` the whole lines of `file`, which holds the log offsets
-/// from `start` on, from offset `from`; returns the offset after the last one.
-fn read_lines(
-    mut file: File,
-    start: u64,
-    from: u64,
-    records: &mut Vec<LogRecord>,
-) -> io::Result<u64> {
-    file.seek(SeekFrom::Start(from - start))?;
-    // Bounded: `Console` rotates the file past `CONSOLE_LOG_CAP`.
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let mut end = from;
-    for raw in bytes.split_inclusive(|&b| b == b'\n') {
-        if !raw.ends_with(b"\n") {
-            break;
+    loop {
+        let start = window.next - window.bytes.len() as u64;
+        if start != at {
+            // Retention moved past the unread bytes between two windows; the
+            // oldest kept byte is a record boundary (rotation is per record).
+            pending.clear();
+            end = start;
         }
-        end += raw.len() as u64;
-        if let Ok(Entry {
-            stream,
-            line,
-            ts_ms,
-        }) = serde_json::from_slice(raw)
-        {
-            records.push(LogRecord {
+        pending.extend_from_slice(&window.bytes);
+        at = window.next;
+        let mut consumed = 0;
+        while let Some(n) = pending[consumed..].iter().position(|&b| b == b'\n') {
+            let raw = &pending[consumed..consumed + n + 1];
+            consumed += n + 1;
+            end += raw.len() as u64;
+            if let Ok(Entry {
                 stream,
                 line,
                 ts_ms,
-                cursor: end,
-            });
+            }) = serde_json::from_slice(raw)
+            {
+                records.push(LogRecord {
+                    stream,
+                    line,
+                    ts_ms,
+                    cursor: end,
+                });
+            }
         }
+        pending.drain(..consumed);
+        if window.bytes.is_empty() || at >= window.end {
+            return Ok((records, end));
+        }
+        window = read(at)?;
     }
-    Ok(end)
 }
 
 fn now_ms() -> u64 {
@@ -4513,7 +4579,8 @@ mod tests {
         let id = vms
             .launch(
                 "k",
-                sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#),
+                // ~12 MB in 200 whole lines: past the cap with every record durable.
+                sh(r#"yes "$(printf %060000d 0)" | head -n 200"#),
                 Vec::new(),
                 None,
             )
@@ -4656,27 +4723,27 @@ mod tests {
         format!("{record}\n")
     }
 
-    /// A `Console` over `dir` that rotated out `rotated` (never, when empty)
-    /// and holds `current` now.
+    /// A settled `Console` over `dir` that rotated out `rotated` (never, when
+    /// empty) and holds `current` now: no writer, the completed cursor only.
     fn console_over(dir: &Path, rotated: &str, current: &str) -> Mutex<Console> {
         if !rotated.is_empty() {
             std::fs::write(dir.join(CONSOLE_LOG_OLD), rotated).unwrap();
         }
         std::fs::write(dir.join(CONSOLE_LOG), current).unwrap();
         Mutex::new(Console {
-            admission: None,
-            failed: false,
             dir: dir.to_path_buf(),
-            file: File::open(dir.join(CONSOLE_LOG)).unwrap(),
-            len: current.len() as u64,
+            writer: None,
+            failed: false,
+            oldest: 0,
             base: rotated.len() as u64,
+            len: current.len() as u64,
         })
     }
 
     #[tokio::test]
     async fn retirement_survives_final_console_and_retention_without_deleting_data() {
         let t = tempfile::tempdir().unwrap();
-        let (lease, mut console) = admitted_console_fixture(t.path(), b"");
+        let (lease, dir) = admitted_console_lease(t.path(), b"");
         let control = t.path().join("endpoints");
         std::fs::create_dir(&control).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -4690,7 +4757,6 @@ mod tests {
             }],
         )
         .unwrap();
-        let dir = console.dir.clone();
         let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
         let mut create = lease
             .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
@@ -4699,6 +4765,8 @@ mod tests {
         image.file_mut().write_all(b"guest-data").unwrap();
         create.publish_file(image).unwrap();
         create.commit().unwrap();
+        // The launch path issues the console writer before the runtime starts.
+        let mut console = open_console(&lease, &dir).unwrap();
         let session = crate::sandbox_daemon::adapters::runtime_test_session_resources(
             lease.clone(),
             &t.path().join("catalog"),
@@ -4715,6 +4783,9 @@ mod tests {
         console
             .append(&LogStream::Stdout, b"last line after OS wait")
             .unwrap();
+        // As the waiter does once every pump joined: finish the last clone
+        // before endpoint retirement and the receipt's Remove.
+        console.finish().unwrap();
         session.finish_resources(&receipt).await.unwrap();
         assert!(!endpoint.exists());
         let (removed, kept) =
@@ -4752,10 +4823,12 @@ mod tests {
         assert_eq!(read_records(&console, end + 1).unwrap().0.len(), 8);
     }
 
-    fn admitted_console_fixture(
+    /// The real per-key operation over `<base>/<vm_id>/` with its declared
+    /// control files; `initial` pre-exists as `console.log`, pinned at admission.
+    fn admitted_console_lease(
         t: &Path,
         initial: &[u8],
-    ) -> (crate::worker_admission::Lease, Console) {
+    ) -> (crate::worker_admission::Lease, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let catalog = t.join("catalog");
         std::fs::create_dir(&catalog).unwrap();
@@ -4764,6 +4837,8 @@ mod tests {
         let base = t.join("workers");
         let dir = base.join(vm_id("console"));
         std::fs::create_dir_all(dir.join("root")).unwrap();
+        // As `write_control_admitted` creates it: a private log parent.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(dir.join(CONSOLE_LOG), initial).unwrap();
         std::fs::set_permissions(
             dir.join(CONSOLE_LOG),
@@ -4772,14 +4847,16 @@ mod tests {
         .unwrap();
         let lease =
             admit_control_files(context.worker(&base, Some("console")).unwrap(), &dir).unwrap();
-        let console = Console {
-            admission: Some(lease.clone()),
-            failed: false,
-            file: open_private(&dir.join(CONSOLE_LOG), false).unwrap(),
-            dir,
-            len: initial.len() as u64,
-            base: 0,
-        };
+        (lease, dir)
+    }
+
+    /// The exact pair the launch path opens, through the same `open_console`.
+    fn admitted_console_fixture(
+        t: &Path,
+        initial: &[u8],
+    ) -> (crate::worker_admission::Lease, Console) {
+        let (lease, dir) = admitted_console_lease(t, initial);
+        let console = open_console(&lease, &dir).unwrap();
         (lease, console)
     }
 
@@ -4819,8 +4896,7 @@ mod tests {
     #[tokio::test]
     async fn r1_three_hundred_console_records_rotate_and_retire_with_bounded_history() {
         let t = tempfile::tempdir().unwrap();
-        let (lease, console) = admitted_console_fixture(t.path(), b"");
-        let dir = console.dir.clone();
+        let (lease, dir) = admitted_console_lease(t.path(), b"");
         let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
         let mut create = lease
             .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
@@ -4832,6 +4908,8 @@ mod tests {
             .unwrap();
         create.publish_file(stage).unwrap();
         create.commit().unwrap();
+        // The launch path issues the console writer before the runtime starts.
+        let console = open_console(&lease, &dir).unwrap();
         let evidence = t.path().join(".iii-prior-unrelated-evidence");
         std::fs::write(&evidence, b"not log retention").unwrap();
         let session = crate::sandbox_daemon::adapters::runtime_test_session(
@@ -4902,6 +4980,7 @@ mod tests {
             data_bytes <= 2 * CONSOLE_LOG_CAP + 4 * MAX_LINE,
             "ordinary log history is not bounded on disk: {data_bytes}"
         );
+        console.lock().unwrap().finish().unwrap(); // last writer finished before H1/cleanup
         let cache = t.path().join("unrelated-cache");
         std::fs::create_dir(&cache).unwrap();
         receipt
@@ -4965,9 +5044,190 @@ mod tests {
         r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
     }
 
+    /// A real owned runtime child for `launch_admitted`: after an optional
+    /// release file it prints `lines` stdout records (and every odd one on
+    /// stderr), then activates as the runtime fixture and exits or holds.
+    fn owned_console_child(
+        lease: &crate::worker_admission::Lease,
+        namespace: &Path,
+        lines: usize,
+        release: Option<&Path>,
+        live: bool,
+    ) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+            binary=$1; count=$2; release=$3; shift 3
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                  --admission-fd) export III_TEST_ADMISSION_FD="$2"; shift 2;;
+                  --runtime-write-fd) export III_TEST_RUNTIME_FD="$2"; shift 2;;
+                  *) exit 91;;
+                esac
+            done
+            if [ -n "$release" ]; then
+                while [ ! -e "$release" ]; do sleep 0.05; done
+                echo after-release
+            fi
+            i=0
+            while [ "$i" -lt "$count" ]; do
+                echo "console-line-$i"
+                [ $((i % 2)) -eq 0 ] || echo "console-err-$i" >&2
+                i=$((i + 1))
+            done
+            exec "$binary" --exact sandbox_daemon::adapters::tests::runtime_owned_child_fixture --nocapture
+        "#,
+            )
+            .arg("owned-console-fixture")
+            .arg(std::env::current_exe().unwrap())
+            .arg(lines.to_string())
+            .arg(release.map_or_else(String::new, |p| p.display().to_string()));
+        command
+            .env("III_TEST_ADMISSION_NAMESPACE", namespace)
+            .env("III_TEST_RUNTIME_LIVE", if live { "1" } else { "0" })
+            .env(
+                "III_TEST_RUNTIME_RESOURCES",
+                serde_json::to_string(&crate::sandbox_daemon::adapters::RuntimeTestResources {
+                    exit_without_drop: true,
+                    ..Default::default()
+                })
+                .unwrap(),
+            );
+        crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, lease).unwrap();
+        command
+    }
+
+    fn owned_launch(
+        vms: &WorkerVms,
+        admission: &crate::worker_admission::Lease,
+        command: tokio::process::Command,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        vms.launch_admitted(
+            "k",
+            command,
+            Vec::new(),
+            None,
+            admission.clone(),
+            Vec::new(),
+            Some(Vec::new()),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    fn console_lines(records: &[LogRecord], prefix: &str) -> Vec<String> {
+        records
+            .iter()
+            .filter(|record| record.line.starts_with(prefix))
+            .map(|record| record.line.clone())
+            .collect()
+    }
+
+    /// R1 through the production launch/waiter/destroy path: more records
+    /// than the old 256-path/journal bound, read while live, then stop and
+    /// destroy succeed because the waiter finished the one writer.
+    #[tokio::test]
+    async fn r1_routed_launch_logs_beyond_256_lines_then_stop_and_destroy_succeed() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let initial = r1_catalog_inventory(&namespace);
+        let child = owned_console_child(&admission, &namespace, 300, None, true);
+        let started = owned_launch(&vms, &admission, child).unwrap();
+        let id = started.vm_id.clone();
+        let dir = t.path().join("workers").join(&id);
+        let expected: Vec<_> = (0..300).map(|i| format!("console-line-{i}")).collect();
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            seen = pumped(&vms, &logs_req("t", &id, false)).await;
+            if console_lines(&seen, "console-line-").len() == 300 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(console_lines(&seen, "console-line-"), expected);
+        assert_eq!(console_lines(&seen, "console-err-").len(), 150);
+        assert!(seen.windows(2).all(|pair| pair[0].cursor < pair[1].cursor));
+        r1_assert_bounded(initial, r1_catalog_inventory(&namespace));
+
+        let status = vms
+            .stop(stop_req("t", &id, started.instance, 0))
+            .await
+            .unwrap();
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        wait_ended(&vms, &id, started.instance).await;
+        // The settled pair still serves every record through its cursor.
+        let settled = pumped(&vms, &logs_req("t", &id, false)).await;
+        assert_eq!(console_lines(&settled, "console-line-"), expected);
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
+        r1_assert_bounded(initial, r1_catalog_inventory(&namespace));
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!dir.exists());
+    }
+
+    /// R1 fault: a foreign writer swaps the admitted console inode while the
+    /// VM runs. The append fails closed, the waiter cannot finish the log, no
+    /// successful receipt exists, and destroy keeps the tree and foreign bytes.
+    #[tokio::test]
+    async fn r1_routed_foreign_console_replacement_fails_closed_and_retains_cleanup() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let release = t.path().join("release");
+        let child = owned_console_child(&admission, &namespace, 4, Some(&release), false);
+        let started = owned_launch(&vms, &admission, child).unwrap();
+        let dir = t.path().join("workers").join(&started.vm_id);
+        let current = dir.join(CONSOLE_LOG);
+        std::fs::rename(&current, dir.join("held-console")).unwrap();
+        std::fs::write(&current, b"FOREIGN\n").unwrap();
+        std::fs::write(&release, b"").unwrap();
+        wait_ended(&vms, &started.vm_id, started.instance).await;
+        assert_eq!(std::fs::read(&current).unwrap(), b"FOREIGN\n");
+        assert!(
+            std::fs::read(dir.join("held-console")).unwrap().is_empty(),
+            "no record may land in the displaced inode after the fault"
+        );
+        assert!(vms.destroy(destroy_req("t", "k")).is_err());
+        assert!(dir.exists());
+        assert_eq!(std::fs::read(&current).unwrap(), b"FOREIGN\n");
+    }
+
+    /// R1 gate (expected FAIL until the core gate in the routing report is
+    /// delivered): after destroy removed the exact pair, a relaunch on the SAME
+    /// operation must re-issue one writer for the re-created pair instead of
+    /// refusing on the finished ledger's old identities.
+    #[tokio::test]
+    async fn r1_gate_relaunch_after_destroy_reissues_the_console_writer() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let namespace = t.path().join("admission-catalog");
+        let admission = vms.admission(Some("k")).unwrap();
+        let child = owned_console_child(&admission, &namespace, 3, None, false);
+        let first = owned_launch(&vms, &admission, child).unwrap();
+        wait_ended(&vms, &first.vm_id, first.instance).await;
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        let child = owned_console_child(&admission, &namespace, 3, None, false);
+        let again = owned_launch(&vms, &admission, child).unwrap();
+        wait_ended(&vms, &again.vm_id, again.instance).await;
+        let records = pumped(&vms, &logs_req("t", &again.vm_id, false)).await;
+        assert_eq!(
+            console_lines(&records, "console-line-"),
+            ["console-line-0", "console-line-1", "console-line-2"]
+        );
+    }
+
     #[test]
     fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
-        use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let (lease, mut console) = admitted_console_fixture(t.path(), b"");
@@ -4981,8 +5241,6 @@ mod tests {
         console.append(&LogStream::Stdout, b"first").unwrap();
         assert_eq!(console.base, 0);
         assert!(console.len > 0);
-        let flags = unsafe { libc::fcntl(console.file.as_raw_fd(), libc::F_GETFL) };
-        assert_eq!(flags & libc::O_ACCMODE, libc::O_RDONLY);
         assert_eq!(
             std::fs::metadata(console.dir.join(CONSOLE_LOG))
                 .unwrap()
@@ -4991,13 +5249,22 @@ mod tests {
                 & 0o777,
             0o600
         );
+        // The live writer is the pair's only effect: no second mutation of the
+        // exact files is issued while it holds them.
+        assert!(
+            lease
+                .begin(crate::worker_admission::MutationPlan::ControlFiles {
+                    files: vec![
+                        console.dir.join(CONSOLE_LOG),
+                        console.dir.join(CONSOLE_LOG_OLD),
+                    ],
+                })
+                .is_err()
+        );
         let third = console.dir.join("not-declared");
         let mut exact = lease
             .begin(crate::worker_admission::MutationPlan::ControlFiles {
-                files: vec![
-                    console.dir.join(CONSOLE_LOG),
-                    console.dir.join(CONSOLE_LOG_OLD),
-                ],
+                files: vec![console.dir.join(STATE_FILE)],
             })
             .unwrap();
         assert!(exact.stage_file(&third, 0o600).is_err());
@@ -5009,10 +5276,12 @@ mod tests {
 
     #[test]
     fn admitted_console_rotation_publishes_private_files_before_advancing_cursor() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let t = tempfile::tempdir().unwrap();
         let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
         let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
+        let inodes = [CONSOLE_LOG, CONSOLE_LOG_OLD]
+            .map(|name| std::fs::metadata(console.dir.join(name)).unwrap().ino());
         console.append(&LogStream::Stderr, b"rotate").unwrap();
         let old = std::fs::read(console.dir.join(CONSOLE_LOG_OLD)).unwrap();
         assert!(old.starts_with(&initial));
@@ -5025,52 +5294,78 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        for name in [CONSOLE_LOG, CONSOLE_LOG_OLD] {
-            assert_eq!(
-                std::fs::metadata(console.dir.join(name))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+        for (name, inode) in [CONSOLE_LOG, CONSOLE_LOG_OLD].into_iter().zip(inodes) {
+            let meta = std::fs::metadata(console.dir.join(name)).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            // In-place bounded rotation: the exact admitted inodes, no new
+            // publication and no `.iii-*` stage/prior evidence per record.
+            assert_eq!(meta.ino(), inode);
         }
+        assert!(!std::fs::read_dir(&console.dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".iii-")
+        }));
+        console.finish().unwrap();
     }
 
     #[test]
     fn admitted_console_failures_never_advance_cursor_or_swap_the_readable_handle() {
         use std::os::unix::fs::MetadataExt;
-        for fail_at in [
-            ConsoleBoundary::Prepared,
-            ConsoleBoundary::BeforeRotation,
-            ConsoleBoundary::AfterRotation,
-            ConsoleBoundary::BeforeCurrent,
-            ConsoleBoundary::AfterCurrent,
-            ConsoleBoundary::BeforeCommit,
-        ] {
+        // Real faults at the caller boundary: a foreign current inode, a
+        // foreign rotation target, and bytes written outside the owned writer.
+        for fault in ["current", "previous", "external-bytes"] {
             let t = tempfile::tempdir().unwrap();
             let initial = vec![b'x'; CONSOLE_LOG_CAP as usize];
             let (_lease, mut console) = admitted_console_fixture(t.path(), &initial);
-            let inode = console.file.metadata().unwrap().ino();
-            let error = console
-                .append_admitted(b"line\n", |at| {
-                    if at == fail_at {
-                        Err(io::Error::other("injected publication boundary failure"))
-                    } else {
-                        Ok(())
-                    }
-                })
-                .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::Other);
-            assert_eq!(console.len, CONSOLE_LOG_CAP);
-            assert_eq!(console.base, 0);
-            assert_eq!(console.file.metadata().unwrap().ino(), inode);
-            assert!(console.failed);
+            let current = console.dir.join(CONSOLE_LOG);
+            let previous = console.dir.join(CONSOLE_LOG_OLD);
+            let held = console.dir.join("held");
+            let inode = std::fs::metadata(&current).unwrap().ino();
+            match fault {
+                "current" => {
+                    std::fs::rename(&current, &held).unwrap();
+                    std::fs::write(&current, b"").unwrap();
+                }
+                "previous" => {
+                    std::fs::rename(&previous, &held).unwrap();
+                    std::fs::write(&previous, b"").unwrap();
+                }
+                _ => {
+                    std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&current)
+                        .unwrap()
+                        .write_all(b"foreign\n")
+                        .unwrap();
+                }
+            }
+            assert!(
+                console.append(&LogStream::Stderr, b"line").is_err(),
+                "{fault}"
+            );
+            assert_eq!(console.len, CONSOLE_LOG_CAP, "{fault}");
+            assert_eq!(console.base, 0, "{fault}");
+            assert!(console.failed, "{fault}");
+            // The admitted inode was neither written nor swapped for another.
+            let (kept, expected) = match fault {
+                "current" => (held.clone(), initial.clone()),
+                "previous" => (current.clone(), initial.clone()),
+                _ => (current.clone(), [&initial[..], &b"foreign\n"[..]].concat()),
+            };
+            assert_eq!(std::fs::metadata(&kept).unwrap().ino(), inode, "{fault}");
+            assert_eq!(std::fs::read(&kept).unwrap(), expected, "{fault}");
+            if fault == "previous" {
+                assert!(std::fs::read(&held).unwrap().is_empty());
+            }
             assert!(
                 console
                     .append(&LogStream::Stdout, b"must not retry")
                     .is_err()
             );
+            assert!(console.finish().is_err(), "{fault}");
         }
     }
 
@@ -5083,8 +5378,17 @@ mod tests {
         std::fs::write(&path, b"external\n").unwrap();
         assert!(console.append(&LogStream::Stdout, b"forbidden").is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"external\n");
+        assert_eq!(
+            std::fs::read(console.dir.join("held-old")).unwrap(),
+            b"old\n"
+        );
         assert_eq!(console.len, 4);
         assert_eq!(console.base, 0);
+        assert!(console.failed);
+        assert!(
+            console.finish().is_err(),
+            "a refused writer is never reported finished"
+        );
     }
 
     /// Through `Console::append`: a reader a whole rotation behind still gets
@@ -5092,23 +5396,18 @@ mod tests {
     #[test]
     fn a_reader_behind_a_rotation_loses_no_record() {
         let t = tempfile::tempdir().unwrap();
-        let console = Mutex::new(Console {
-            admission: None,
-            failed: false,
-            dir: t.path().to_path_buf(),
-            file: open_private(&t.path().join(CONSOLE_LOG), true).unwrap(),
-            len: 0,
-            base: 0,
-        });
+        let (_lease, console) = admitted_console_fixture(t.path(), b"");
+        let console = Mutex::new(console);
         let append = |line: &str| {
             let mut console = console.lock().unwrap();
             console.append(&LogStream::Stdout, line.as_bytes()).unwrap();
         };
         append("first");
         let (_, cursor) = read_records(&console, 0).unwrap();
-        // About 11.5 MB: past CONSOLE_LOG_CAP once.
-        let filler = "x".repeat(1000);
-        let n = 11_000;
+        // About 12 MB of whole records: past CONSOLE_LOG_CAP once. Fewer,
+        // larger lines keep every record durable through the core writer.
+        let filler = "x".repeat(30_000);
+        let n = 400;
         for i in 0..n {
             append(&format!("{i} {filler}"));
         }
@@ -5118,6 +5417,7 @@ mod tests {
         assert_eq!(recs.len(), n);
         assert!(recs[0].line.starts_with("0 "));
         assert!(recs[n - 1].line.starts_with(&format!("{} ", n - 1)));
+        console.lock().unwrap().finish().unwrap();
     }
 
     #[tokio::test]
