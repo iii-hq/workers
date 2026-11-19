@@ -518,13 +518,23 @@ describe('OpenAiConfigForm credential source', () => {
     expect(alert.textContent).toContain('provider-openai-codex')
   })
 
-  it('confirms only the saved credential source: an unsaved switch asks to save first', async () => {
-    const { container, iii } = await mount({ api_key: 'fixture-only' })
-    expect(container.querySelector('[data-chip="success"]')?.textContent).toContain('Key accepted')
+  it.each([
+    [{ api_key: 'fixture-only' }, { api_key: 'fixture-only', auth: 'codex' }],
+    [{ auth: 'codex' }, { auth: 'api_key' }],
+  ])('confirms only the saved credential source, also after Refresh (%j → %j)', async (saved, draft) => {
+    const { container, iii } = await mount(saved)
+    expect(container.querySelector('[data-chip="success"]')).not.toBeNull()
     await act(async () =>
-      root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={{ api_key: 'fixture-only', auth: 'codex' }} onChange={vi.fn()} iii={iii} />),
+      root!.render(<OpenAiConfigForm id="judge-openai" schema={{}} value={draft} onChange={vi.fn()} iii={iii} />),
     )
-    expect(container.querySelector('[data-chip="success"]')).toBeNull()
-    expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Save to check this credential source')
+    const pending = () => {
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Save to check this credential source')
+    }
+    pending()
+    const refresh = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Refresh')!
+    await act(async () => refresh.click())
+    expect(iii.call).toHaveBeenCalledTimes(2)
+    pending()
   })
 })

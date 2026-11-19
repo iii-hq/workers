@@ -94,14 +94,14 @@ export function OpenAiConfigForm({
   // null = a listing is in flight, so an empty catalog always comes from a reply.
   const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
-  // The listing reads the saved entry: remember which credential source it checked.
+  // The listing reads the saved entry: track the saved credential source, which
+  // only mount and a save change (a Refresh still lists the saved source).
   const authNow = useRef(authOf(props.value))
   authNow.current = authOf(props.value)
   const [checkedAuth, setCheckedAuth] = useState(authNow.current)
   const refresh = useCallback(() => {
     setCatalog(null)
     setCatalogError(null)
-    setCheckedAuth(authNow.current)
     listModels(iii)
       .then(setCatalog)
       .catch((error: unknown) => {
@@ -125,6 +125,7 @@ export function OpenAiConfigForm({
     const offHandler = iii.on<{ id?: unknown }>(handler, (event) => {
       if (event?.id !== configurationId) return
       clearTimeout(timer)
+      setCheckedAuth(authNow.current)
       timer = setTimeout(refresh, SAVE_SETTLE_MS)
     })
     let offObserver = () => {}
