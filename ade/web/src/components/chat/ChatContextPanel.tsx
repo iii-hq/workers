@@ -1551,7 +1551,14 @@ function WorkflowPhaseRow({
       label={
         <span className={cn(!current && 'text-ink-faint')}>{phase.phase}</span>
       }
-      ariaLabel={`${phase.phase} phase, ${phase.done} of ${phase.total} done (${state})`}
+      ariaLabel={[
+        `${phase.phase} phase`,
+        phase.failed > 0 && `${phase.failed} failed`,
+        phase.cancelled > 0 && `${phase.cancelled} cancelled`,
+        `${phase.done} of ${phase.total} done (${state})`,
+      ]
+        .filter(Boolean)
+        .join(', ')}
       aria-expanded={open}
       aria-current={mark === 'running' ? 'step' : undefined}
       data-workflow-phase={state}

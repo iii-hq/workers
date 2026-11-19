@@ -59,8 +59,8 @@ pub struct StatusResponse {
     pub result_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// Node uid counts per definition `phase` (`failed` includes cancelled); nodes
-    /// without a phase are left out. Omitted when empty.
+    /// Node uid counts per definition `phase` (`failed` includes `cancelled`);
+    /// nodes without a phase are left out. Omitted when empty.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub phases: BTreeMap<String, PhaseCounts>,
     /// Only with `details: true`: per-node detail keyed by node uid.
@@ -75,7 +75,10 @@ pub struct StatusResponse {
 pub struct PhaseCounts {
     pub total: u32,
     pub done: u32,
+    /// Failed and cancelled nodes.
     pub failed: u32,
+    /// The cancelled ones among `failed`.
+    pub cancelled: u32,
     pub running: u32,
 }
 
@@ -183,7 +186,11 @@ fn phase_counts(
         c.total += 1;
         match state {
             NodeState::Done => c.done += 1,
-            NodeState::Failed | NodeState::Cancelled => c.failed += 1,
+            NodeState::Failed => c.failed += 1,
+            NodeState::Cancelled => {
+                c.failed += 1;
+                c.cancelled += 1;
+            }
             NodeState::Running => c.running += 1,
             NodeState::Pending => {}
         }
@@ -489,6 +496,7 @@ mod tests {
                 total: 2,
                 done: 1,
                 failed: 0,
+                cancelled: 0,
                 running: 1,
             },
         );
@@ -620,6 +628,7 @@ mod tests {
                 total: 4,
                 done: 1,
                 failed: 1,
+                cancelled: 1,
                 running: 1
             }
         );
@@ -649,6 +658,7 @@ mod tests {
                 total: 3,
                 done: 1,
                 failed: 1,
+                cancelled: 0,
                 running: 1
             }
         );

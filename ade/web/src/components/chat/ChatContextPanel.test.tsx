@@ -1046,7 +1046,7 @@ describe('ChatContextPanel', () => {
       expect(read('refute')).toEqual(['pending', 'false', 'refute0/2', false])
       expect(read('plan')).toEqual(['pending', null, 'planpending', false])
       expect(phaseHeader('design')?.getAttribute('aria-label')).toBe(
-        'design phase, 0 of 2 done (running)',
+        'design phase, 1 failed, 0 of 2 done (running)',
       )
       // The current phase leads with a spinner, still under reduced motion.
       const spinner = phaseHeader('design')?.querySelector(
@@ -1131,8 +1131,8 @@ describe('ChatContextPanel', () => {
         },
         phases: {
           ...KIT.phases,
-          design: { total: 2, done: 0, failed: 2, running: 0 },
-          refute: { total: 2, done: 0, failed: 2, running: 0 },
+          design: { total: 2, done: 0, failed: 2, cancelled: 1, running: 0 },
+          refute: { total: 2, done: 0, failed: 2, cancelled: 2, running: 0 },
         },
         node_details: {
           ...KIT.node_details,
@@ -1157,6 +1157,9 @@ describe('ChatContextPanel', () => {
       expect(design?.getAttribute('data-workflow-phase')).toBe('failed')
       expect(design?.getAttribute('aria-expanded')).toBe('true')
       expect(design?.textContent).toContain('1 failed · 1 cancelled · 0/2')
+      expect(design?.getAttribute('aria-label')).toBe(
+        'design phase, 1 failed, 1 cancelled, 0 of 2 done (failed)',
+      )
       expect(design?.querySelector('.text-alert')).not.toBeNull()
       // A phase the stop cancelled outright reads cancelled, folded.
       const refute = phaseHeader('refute')

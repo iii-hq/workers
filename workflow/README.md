@@ -339,7 +339,8 @@ field of its JSON result equals a string, as a do-while:
   array lists nothing. Each loop pass is listed under its own `<id>#it<k>` uid,
   in `nodes`, `node_errors`, `node_results` and `node_details`.
 - `phases` counts node uids per `phase`: `{"code": {"total": 2, "done": 0,
-  "failed": 0, "running": 1}}`. `failed` includes cancelled. Nodes without a
+  "failed": 0, "cancelled": 0, "running": 1}}`. `failed` includes the
+  `cancelled` ones. Nodes without a
   phase are left out, and the map is omitted when empty. Each loop pass counts
   once, so `total` grows with every repeat.
 

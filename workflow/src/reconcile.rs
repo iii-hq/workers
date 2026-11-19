@@ -430,8 +430,9 @@ async fn send_due_retries(
         let Some(cp) = record.nodes.get_mut(&uid) else {
             continue;
         };
+        // The reads before this one took time: check the window as of now.
         match status {
-            Ok(resp) if still_due(cp, &resp, timeout_ms, now) => {}
+            Ok(resp) if still_due(cp, &resp, timeout_ms, deps.now_ms()) => {}
             Ok(_) => continue,
             Err(e) => {
                 tracing::warn!(run_id = %run_id, node = %uid, error = %e, "reconcile: status read before a transient retry failed; retrying next pass");

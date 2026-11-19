@@ -741,7 +741,7 @@ describe('phase rows', () => {
         nodes: { ...KIT.nodes, 'design-minimal': 'cancelled' },
         phases: {
           ...KIT.phases,
-          design: { total: 2, done: 0, failed: 2, running: 0 },
+          design: { total: 2, done: 0, failed: 2, cancelled: 1, running: 0 },
         },
         node_details: {
           ...KIT.node_details,
@@ -765,7 +765,7 @@ describe('phase rows', () => {
       nodes: { ...KIT_NEXT.nodes, 'refute-minimal': 'cancelled' },
       phases: {
         ...KIT_NEXT.phases,
-        refute: { total: 2, done: 0, failed: 1, running: 0 },
+        refute: { total: 2, done: 0, failed: 1, cancelled: 1, running: 0 },
       },
       node_details: {
         ...KIT_NEXT.node_details,
@@ -798,21 +798,29 @@ describe('phase rows', () => {
     ])
     expect(phaseOf(cut, 'explore').nodes).toEqual([])
     expect(read(cut, 'explore')).toEqual(['done', false, false, '2/2'])
-    // Nodes left out of a stopped run count as cancelled.
-    const stopped = view({
-      ...KIT_NEXT,
-      status: 'cancelled',
-      phases: {
-        ...KIT_NEXT.phases,
-        explore: { total: 2, done: 1, failed: 1, running: 0 },
-      },
-      node_details: listed,
-    })
-    expect(read(stopped, 'explore')).toEqual([
+    // The status tells a left-out node that failed from one the stop
+    // cancelled, whatever the run's own end.
+    const stopped = (cancelled: number) =>
+      view({
+        ...KIT_NEXT,
+        status: 'cancelled',
+        phases: {
+          ...KIT_NEXT.phases,
+          explore: { total: 2, done: 1, failed: 1, cancelled, running: 0 },
+        },
+        node_details: listed,
+      })
+    expect(read(stopped(1), 'explore')).toEqual([
       'cancelled',
       false,
       false,
       '1 cancelled · 1/2',
+    ])
+    expect(read(stopped(0), 'explore')).toEqual([
+      'failed',
+      false,
+      true,
+      '1 failed · 1/2',
     ])
     // A read without details shows no phases yet.
     expect(view({ ...KIT_NEXT, node_details: null }).phases).toEqual([])

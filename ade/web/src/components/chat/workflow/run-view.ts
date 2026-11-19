@@ -57,6 +57,7 @@ const phaseCountsSchema = z
     total: z.number(),
     done: z.number(),
     failed: count,
+    cancelled: count,
     running: count,
   })
   .passthrough()
@@ -352,24 +353,20 @@ export function buildRunView(
         .filter((name) => !phases.some((group) => group.phase === name))
         .map(phaseView),
     )
-  const stopped = status.status === 'cancelled'
   for (const group of phases) {
-    const tally = tallyNodes(
-      Object.fromEntries(group.nodes.map((node) => [node.uid, node.state])),
-    )
+    const listed = status.phases?.[group.phase]
     // Nodes without a phase are not in the status's `phases`: count them here.
-    const counted = status.phases?.[group.phase] ?? tally
-    // The status counts cancelled nodes as failed: the listed nodes tell them
-    // apart, and how the run ended names the rest (nodes it left out).
-    const rest = Math.max(
-      0,
-      (counted.failed ?? 0) - tally.failed - tally.cancelled,
-    )
+    const counted = listed
+      ? // The status's `failed` includes its `cancelled`.
+        { ...listed, failed: (listed.failed ?? 0) - (listed.cancelled ?? 0) }
+      : tallyNodes(
+          Object.fromEntries(group.nodes.map((node) => [node.uid, node.state])),
+        )
     group.total = counted.total
     group.done = counted.done
     group.running = counted.running ?? 0
-    group.failed = tally.failed + (stopped ? 0 : rest)
-    group.cancelled = tally.cancelled + (stopped ? rest : 0)
+    group.failed = counted.failed
+    group.cancelled = counted.cancelled ?? 0
   }
 
   const nodeCount = Object.keys(status.nodes).length
