@@ -14,7 +14,12 @@ const mocks = vi.hoisted(() => ({
   composerSubmit: undefined as
     | undefined
     | ((payload: { text: string; attachments: [] }) => Promise<void>),
-  stream: vi.fn(async function* () {}),
+  // The backend's stream signature, so the tests can read what was sent.
+  stream: vi.fn(async function* (
+    _prompt: string,
+    _model: string,
+    _opts?: { workingDir?: string | null },
+  ) {}),
   setDraftText: vi.fn(),
   setDraftAttachments: vi.fn(),
 }))
