@@ -162,6 +162,34 @@ pub(crate) mod testing {
             namespace: Namespace::open_test(root)?,
         })
     }
+    /// Cleanup for a fixture DIRECTORY that a scenario makes owner-inaccessible
+    /// (mode 0000, 0500, ...). On Drop it adds owner rwx back, so the enclosing
+    /// TempDir can remove the tree whether the test passed or panicked. Arm it
+    /// BEFORE the chmod and bind it to a named local AFTER the TempDir: locals
+    /// drop in reverse order, so it acts after every assertion of its scope and
+    /// after the product's own guards, and before the TempDir removal. It never
+    /// asserts or panics, so it cannot mask an oracle, including the product's
+    /// exact restore of the original mode.
+    #[must_use = "bind to a named local so it lives until scope end"]
+    pub(crate) struct OwnerAccessOnDrop(PathBuf);
+    impl OwnerAccessOnDrop {
+        pub(crate) fn arm(directory: &Path) -> Self {
+            Self(directory.to_path_buf())
+        }
+    }
+    impl Drop for OwnerAccessOnDrop {
+        fn drop(&mut self) {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            // lstat: never follow a symlink a scenario left at this path.
+            if let Ok(meta) = std::fs::symlink_metadata(&self.0) {
+                if meta.is_dir() {
+                    let mode = (meta.mode() & 0o7777) | 0o700;
+                    let _ =
+                        std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(mode));
+                }
+            }
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Lease(Arc<Held>);

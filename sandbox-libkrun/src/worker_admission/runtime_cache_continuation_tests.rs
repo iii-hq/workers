@@ -157,6 +157,8 @@ async fn h1_replaced_rechmodded_or_hardlinked_proved_read_still_refuses_continua
         append_shared(&r, &shared);
         let pinned = r.data.join("pinned");
         populate(&pinned);
+        // Bound after `r` (its TempDir): restores owner access at iteration end.
+        let _access = (change == "chmod").then(|| testing::OwnerAccessOnDrop::arm(&shared));
         let expected = match change {
             "replace" => {
                 std::fs::rename(&shared, r.data.join("retained")).unwrap();
@@ -185,8 +187,5 @@ async fn h1_replaced_rechmodded_or_hardlinked_proved_read_still_refuses_continua
             "{change}"
         );
         drop(tx);
-        if change == "chmod" {
-            std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
     }
 }
