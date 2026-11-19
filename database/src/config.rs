@@ -31,14 +31,17 @@ pub struct WorkerConfig {
     pub databases: HashMap<String, DatabaseConfig>,
     /// Maximum entries kept per database in the console query history
     /// (`database::history`, stored on the `state` worker). Oldest entries
-    /// are dropped first. `0` disables history recording. Applied live.
+    /// are dropped first. Default `0`: history is off, so a query costs no
+    /// `state::get`/`state::set`; set a positive number to record it. Applied
+    /// live.
     #[serde(default = "default_history_max_entries")]
     pub history_max_entries: usize,
     /// Maximum JSON-serialized size in bytes of one database's stored query
     /// history; oldest entries are dropped until the list fits. The hard
     /// guard that keeps history from growing into a value large enough to
     /// break the `state` worker's connection. `0` disables history
-    /// recording. Applied live.
+    /// recording; it only applies when `history_max_entries` is above `0`.
+    /// Applied live.
     #[serde(default = "default_history_max_bytes")]
     pub history_max_bytes: usize,
     /// Entries left out because they do not parse or validate, by name, with
@@ -941,11 +944,20 @@ fn default_idle_timeout_ms() -> u64 {
 fn default_acquire_timeout_ms() -> u64 {
     5_000
 }
+// History is off unless asked for: recording costs a `state::get` and a
+// `state::set` (plus engine hops) on every query.
 fn default_history_max_entries() -> usize {
-    200
+    0
 }
 fn default_history_max_bytes() -> usize {
     262_144
+}
+
+impl WorkerConfig {
+    /// Whether `query` records into `database::history`.
+    pub fn records_history(&self) -> bool {
+        self.history_max_entries > 0 && self.history_max_bytes > 0
+    }
 }
 
 impl Default for WorkerConfig {
@@ -1361,13 +1373,18 @@ mod tests {
     #[test]
     fn history_caps_default_and_override() {
         let d = cfg("databases:\n  p:\n    url: postgres://u@h/db\n");
-        assert_eq!(d.history_max_entries, 200);
+        assert_eq!(d.history_max_entries, 0);
+        assert!(
+            !d.records_history(),
+            "a plain query must not write to state"
+        );
         assert_eq!(d.history_max_bytes, 262_144);
 
         let c = cfg("databases:\n  p:\n    url: postgres://u@h/db\n\
              history_max_entries: 25\nhistory_max_bytes: 4096\n");
         assert_eq!(c.history_max_entries, 25);
         assert_eq!(c.history_max_bytes, 4096);
+        assert!(c.records_history());
     }
 
     /// Regenerate the e2e harness schema fixture when `WorkerConfig` changes:

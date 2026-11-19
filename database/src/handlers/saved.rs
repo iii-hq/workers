@@ -13,7 +13,10 @@
 //! (`history_max_entries` / `history_max_bytes`) — an unbounded value grows
 //! until the `state` worker can no longer serve it over its engine
 //! connection, which takes `state::*` down for everyone. History is a
-//! convenience, not an audit log — for an audit trail, observe
+//! convenience, not an audit log. It is off by default (`history_max_entries`
+//! is `0`) because each recorded query costs a `state::get` and a
+//! `state::set`, often more than the query itself; set it above `0` to turn
+//! it on — for an audit trail, observe
 //! `database::on-row-changed` instead.
 
 use super::query::err_to_str;

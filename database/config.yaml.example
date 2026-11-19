@@ -69,8 +69,9 @@ databases:
   #     passphrase: secret://BASTION_KEY_PASSPHRASE
   #     host_key: "SHA256:…"                     # pin; omit to accept and read it from testConnection
 
-# Console query history caps (per database, stored on the `state` worker).
-# Whichever cap hits first, oldest entries are dropped; 0 disables recording.
-# Defaults shown.
-# history_max_entries: 200
+# Query history (`database::history`, per database, stored on the `state`
+# worker). Off by default: each recorded query costs a state read and write.
+# Set history_max_entries above 0 to record. Whichever cap hits first, oldest
+# entries are dropped. Defaults shown.
+# history_max_entries: 0
 # history_max_bytes: 262144

@@ -73,11 +73,11 @@ databases:
     url: ${ANALYTICS_URL:postgres://localhost/analytics}
     tls: { mode: disable }    # a local server without TLS; see "TLS" below
     pool: { max: 5 }
-history_max_entries: 200 # console query history caps, defaults shown
-history_max_bytes: 262144 # 0 disables recording
+history_max_entries: 200 # query history is off (0) unless set; 200 turns it on
+history_max_bytes: 262144 # per-database size cap, default shown
 ```
 
-`history_max_entries` / `history_max_bytes` cap the per-database console query history stored on the [`state`](../state) worker — whichever cap hits first, oldest entries are dropped. Applied live.
+`history_max_entries` / `history_max_bytes` cap the per-database query history stored on the [`state`](../state) worker — whichever cap hits first, oldest entries are dropped. History is **off by default** (`history_max_entries: 0`), so a query makes no `state` call; set `history_max_entries` above `0` to record. Applied live.
 
 Env placeholders use **`${VAR:default}`** syntax. The configuration worker expands them on every `configuration::get` call, so env changes propagate without a restart.
 
@@ -323,7 +323,7 @@ The web console's snippet list, stored in the [`state`](https://github.com/iii-h
 | `database::saveQuery` | Save a named snippet to the console's list (not a file). Saving under an existing name replaces it. |
 | `database::listSavedQueries` | Saved queries for a database, sorted by name. |
 | `database::deleteSavedQuery` | Delete by id or by name. |
-| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail observe `database::on-row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
+| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail observe `database::on-row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, default 0 entries = off, 256KB — set `history_max_entries` above `0` to record; oldest dropped first) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
 
 ### Chat mentions
 

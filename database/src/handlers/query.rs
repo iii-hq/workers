@@ -100,6 +100,7 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     let row_count = result.rows.len();
     // Fire and forget — a history line must never fail the query.
     if req.record_history
+        && state.config.read().await.records_history()
         && let Some(iii) = state.client()
     {
         crate::handlers::saved::record(
