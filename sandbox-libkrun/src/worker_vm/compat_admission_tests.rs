@@ -1741,7 +1741,7 @@ async fn install_retired_fixture(s: &Setup) {
     session.finish_resources(&receipt).await.unwrap();
     let vm = Arc::new(Vm {
         instance: 7,
-        pid: Pid::from_raw(0),
+        fixture_pidfd: None,
         lifecycle: Some(session),
         admission: lease,
         retirement: Mutex::new(Some(Ok(receipt))),

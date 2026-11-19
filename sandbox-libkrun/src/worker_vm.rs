@@ -21,10 +21,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use hmac::{Hmac, KeyInit, Mac};
 use iii_sdk::IIIClient;
 use iii_sdk::channels::ChannelWriter;
-#[cfg(test)]
-use nix::sys::signal::{Signal, kill};
-#[cfg(test)]
-use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
@@ -188,8 +184,10 @@ enum Slot {
 
 struct Vm {
     instance: u64,
+    /// Test fixtures only: the pidfd taken at spawn, before any waiter could
+    /// reap the child, so a stop can never signal a reused PID.
     #[cfg(test)]
-    pid: Pid,
+    fixture_pidfd: Option<std::os::fd::OwnedFd>,
     lifecycle: Option<Arc<crate::sandbox_daemon::adapters::RuntimeSession>>,
     admission: crate::worker_admission::Lease,
     retirement: Mutex<Option<Result<crate::worker_admission::WriterRetirement, String>>>,
@@ -1472,7 +1470,7 @@ impl WorkerVms {
             )?;
         let console = Arc::new(Mutex::new(console));
         #[cfg(test)]
-        let pid = Pid::from_raw(child.id().expect("a spawned child has a diagnostic id") as i32);
+        let fixture_pidfd = child.take_fixture_pidfd();
         let stdin = child.take_stdin();
         let stdout = child.take_stdout().expect("stdout is piped");
         let stderr = child.take_stderr().expect("stderr is piped");
@@ -1480,7 +1478,7 @@ impl WorkerVms {
         let vm = Arc::new(Vm {
             instance,
             #[cfg(test)]
-            pid,
+            fixture_pidfd,
             lifecycle,
             admission: admission.clone(),
             retirement: Mutex::new(None),
@@ -3195,6 +3193,14 @@ impl Vm {
             )),
         }
     }
+    /// Fixture-only stop signal through the spawn-time pidfd: after the child
+    /// exited it yields ESRCH from that pidfd, never another process.
+    #[cfg(test)]
+    fn signal_fixture(&self, signal: libc::c_int) {
+        if let Some(pidfd) = &self.fixture_pidfd {
+            let _ = crate::sandbox_daemon::adapters::test_pidfd_signal(pidfd, signal);
+        }
+    }
     async fn stop(&self, grace: Duration) -> io::Result<()> {
         self.stopping.store(true, Ordering::SeqCst);
         if let Some(session) = &self.lifecycle {
@@ -3219,12 +3225,12 @@ impl Vm {
         {
             if !self.reaped.load(Ordering::SeqCst) {
                 if !grace.is_zero() {
-                    let _ = kill(self.pid, Signal::SIGTERM);
+                    self.signal_fixture(libc::SIGTERM);
                     let mut ended = self.ended.subscribe();
                     let _ = tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await;
                 }
                 if !self.reaped.load(Ordering::SeqCst) {
-                    let _ = kill(self.pid, Signal::SIGKILL);
+                    self.signal_fixture(libc::SIGKILL);
                 }
             }
             let mut ended = self.ended.subscribe();
@@ -3610,36 +3616,46 @@ fn lock_unsupported(e: &io::Error) -> bool {
 /// with piped stdin (the env frame) and output, and a lifeline.
 enum LaunchedChild {
     Runtime(crate::worker_admission::RuntimeChild),
+    /// A test-only plain child and the pidfd taken right after its spawn.
     #[cfg(test)]
-    Fixture(Child),
+    Fixture(Child, Option<std::os::fd::OwnedFd>),
 }
 impl LaunchedChild {
     fn id(&self) -> Option<u32> {
         match self {
             Self::Runtime(child) => child.id(),
             #[cfg(test)]
-            Self::Fixture(child) => child.id(),
+            Self::Fixture(child, _) => child.id(),
+        }
+    }
+    /// The fixture's spawn-time pidfd (an owned runtime child is signalled
+    /// only through the core's child-issued pidfd instead).
+    #[cfg(test)]
+    fn take_fixture_pidfd(&mut self) -> Option<std::os::fd::OwnedFd> {
+        match self {
+            Self::Runtime(_) => None,
+            Self::Fixture(_, pidfd) => pidfd.take(),
         }
     }
     fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
         match self {
             Self::Runtime(child) => child.take_stdin(),
             #[cfg(test)]
-            Self::Fixture(child) => child.stdin.take(),
+            Self::Fixture(child, _) => child.stdin.take(),
         }
     }
     fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
         match self {
             Self::Runtime(child) => child.take_stdout(),
             #[cfg(test)]
-            Self::Fixture(child) => child.stdout.take(),
+            Self::Fixture(child, _) => child.stdout.take(),
         }
     }
     fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
         match self {
             Self::Runtime(child) => child.take_stderr(),
             #[cfg(test)]
-            Self::Fixture(child) => child.stderr.take(),
+            Self::Fixture(child, _) => child.stderr.take(),
         }
     }
     fn supervise(
@@ -3666,7 +3682,7 @@ impl LaunchedChild {
                 (Some(session), task)
             }
             #[cfg(test)]
-            Self::Fixture(mut child) => (
+            Self::Fixture(mut child, _pidfd) => (
                 None,
                 tokio::spawn(async move {
                     match child.wait().await {
@@ -3725,7 +3741,25 @@ fn spawn_admitted(
                 }
             }
             #[cfg(test)]
-            None => LaunchedChild::Fixture(cmd.spawn()?),
+            None => {
+                let mut child = cmd.spawn()?;
+                // Taken while this Child is still owned and unwaited: the pidfd
+                // can only name this process. Fixture stops never use a raw PID.
+                let pidfd = child
+                    .id()
+                    .ok_or_else(|| io::Error::other("fixture child has no pid"))
+                    .and_then(crate::sandbox_daemon::adapters::test_pidfd_open);
+                match pidfd {
+                    Ok(pidfd) => LaunchedChild::Fixture(child, Some(pidfd)),
+                    Err(error) => {
+                        // No signalable handle: reap it, never signal by PID.
+                        tokio::spawn(async move {
+                            let _ = child.wait().await;
+                        });
+                        return Err(error);
+                    }
+                }
+            }
             #[cfg(not(test))]
             None => return Err(io::Error::other("runtime launch footprint is required")),
         };
