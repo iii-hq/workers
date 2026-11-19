@@ -141,6 +141,7 @@ struct Held {
     id: String,
     sentinel: File,
     holder: String,
+    continuation: Option<retirement::CacheContinuation>,
 }
 impl Drop for Held {
     fn drop(&mut self) {
@@ -185,6 +186,7 @@ fn import_in(namespace: Arc<Namespace>, fd: OwnedFd) -> io::Result<Lease> {
         id,
         sentinel,
         holder,
+        continuation: None,
     }));
     lease.revalidate()?;
     Ok(lease)
@@ -232,8 +234,20 @@ impl Drop for UseGuard {
     }
 }
 impl Lease {
+    fn validate_continuation(&self, tx: &catalog::Transaction<'_>) -> io::Result<()> {
+        if let Some(capability) = &self.0.continuation {
+            let cache = tx
+                .operation(&self.0.id)?
+                .cache
+                .as_ref()
+                .ok_or_else(|| invalid("continuation cache record missing"))?;
+            capability.validate_record(cache, tx)?;
+        }
+        Ok(())
+    }
     pub(crate) fn revalidate(&self) -> io::Result<()> {
         let tx = self.0.namespace.transaction()?;
+        self.validate_continuation(&tx)?;
         let op = tx.operation(&self.0.id)?;
         if op.closed || op.uncertain || op.sentinel != Identity::of(&self.0.sentinel)? {
             return Err(refused());
@@ -314,6 +328,7 @@ impl Lease {
     ) -> io::Result<String> {
         self.revalidate()?;
         let mut tx = self.0.namespace.transaction()?;
+        self.validate_continuation(&tx)?;
         let owner = if let Some(runtime) = runtime {
             runtime.resource_owner(self, &tx)?
         } else {
@@ -624,6 +639,7 @@ fn start(
     Ok(Lease(Arc::new(Held {
         namespace,
         holder: id.clone(),
+        continuation: None,
         id,
         sentinel,
     })))

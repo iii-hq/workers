@@ -1,5 +1,11 @@
 # H: exact shared cache with one-transaction read handoff
 
+H1 adds a separate receipt-issued continuation for a new cache reference AFTER
+proven retirement on the SAME lifecycle. See CACHE-CONTINUATION-H1.md. The Lease
+entry points below retain their original pre-runtime requirement; only the current
+private WriterRetirement can select the continuation route. Existing signatures
+and the initial-consumer behavior described here are unchanged.
+
 SOURCE candidate on consolidated base `099a9d128aee96e28f9d7db72f446dbaec64aab7`,
 tree `a493d0039e4f06c5f0d43826ee2a8ee338612e99`. Source contract SHA:
 `3c532b6b9fd2e6986ea78776def2f201551654e3a4905858d23ee00f75339cae`.

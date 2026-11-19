@@ -288,6 +288,7 @@ impl OwnerReadGuard {
         let root = absolute(root)?;
         lease.revalidate()?;
         let mut tx = lease.0.namespace.transaction()?;
+        lease.validate_continuation(&tx)?;
         let op = tx.operation_mut(&lease.0.id)?;
         if !op.entries.iter().any(|e| {
             (e.role == PathRole::ManagedCacheRead
@@ -513,6 +514,7 @@ impl OwnerReadGuard {
     }
     fn checkpoint_inner(&self) -> io::Result<()> {
         let tx = self.lease.0.namespace.transaction()?;
+        self.lease.validate_continuation(&tx)?;
         let op = tx.operation(&self.lease.0.id)?;
         if op.uncertain
             || op.closed

@@ -357,6 +357,7 @@ impl MutationGuard {
         }
         lease.revalidate()?;
         let mut tx = lease.0.namespace.transaction()?;
+        lease.validate_continuation(&tx)?;
         if removing {
             let (epoch, bindings, lineage, runtime, sentinel, never_spawned) =
                 authority.ok_or_else(|| invalid("missing cleanup receipt"))?;
@@ -584,6 +585,7 @@ impl MutationGuard {
             return Err(invalid("diagnostic checkpoint is terminal"));
         }
         let tx = self.lease.0.namespace.transaction()?;
+        self.lease.validate_continuation(&tx)?;
         let op = tx.operation(&self.lease.0.id)?;
         if op.uncertain
             || op.closed
@@ -1753,8 +1755,9 @@ impl DiagnosticLock {
                 return Err(invalid("diagnostic inode replaced"));
             }
             let tx = self.lease.0.namespace.transaction()?;
+            self.lease.validate_continuation(&tx)?;
             let op = tx.operation(&self.lease.0.id)?;
-            if op.uncertain || !op.holds.iter().any(|h| h.id == self.mutation) {
+            if op.closed || op.uncertain || !op.holds.iter().any(|h| h.id == self.mutation) {
                 return Err(invalid("diagnostic mutation no longer active"));
             }
             Ok(())

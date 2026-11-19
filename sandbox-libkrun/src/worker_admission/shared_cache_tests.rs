@@ -491,3 +491,30 @@ fn h_unpinned_warm_hit_may_hold_absent_digest_without_creating_it() {
     let _a = probe.handoff(&a, &root).unwrap();
     assert!(!sibling(&root, ".digest").unwrap().exists());
 }
+
+#[test]
+fn h1_serialized_continuation_metadata_does_not_authorize_issuance() {
+    let f = fixture();
+    let root = f.cache.join("image");
+    populated(&root);
+    let a = consumer(&f, "a");
+    let probe = a.probe_cache(&[CacheEntry { root: &root }]).unwrap();
+    let mut cache = f
+        .context
+        .namespace
+        .transaction()
+        .unwrap()
+        .operation(&probe.lease.0.id)
+        .unwrap()
+        .cache
+        .clone()
+        .unwrap();
+    drop(probe);
+    cache.continuation = Some(super::super::catalog::CacheContinuationBinding {
+        runtime: "0".repeat(32),
+        runtime_epoch: 0,
+        runtime_history_sha256: "0".repeat(64),
+        consumer_state_sha256: "0".repeat(64),
+    });
+    assert!(issue(a, cache, None).is_err());
+}

@@ -1,4 +1,12 @@
-# Admission v2 core: shared cache H source candidate
+# Admission v2 core: cache continuation H1 source candidate
+
+H1 after `d5fd9971c7066bb81af5a1ad2e3e5d9e3d09fc50` adds only
+WriterRetirement::probe_cache/prepare_cache for the same original retired lifecycle.
+[CACHE-CONTINUATION-H1.md](CACHE-CONTINUATION-H1.md) contains exact signatures,
+new-reference examples, capability revocation and the supported/blocked overlap
+matrix. Existing H/F/G APIs and Remove one-shot semantics remain unchanged.
+A serialized runtime status/digest is not an issuer; the private current receipt
+must survive and revalidate through issuance and atomic transfer.
 
 H is incremental on consolidated `099a9d128aee96e28f9d7db72f446dbaec64aab7`,
 not a reset of F/G. [SHARED-CACHE-H.md](SHARED-CACHE-H.md) provides the concrete

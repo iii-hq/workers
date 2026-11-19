@@ -1755,3 +1755,785 @@ fn h_two_runtime_consumers_hold_same_cache_reads_independently() {
     );
     drop(b_read);
 }
+
+fn h1_populate(root: &Path) {
+    std::fs::create_dir(root).unwrap();
+    std::fs::write(root.join("content"), b"SOURCE").unwrap();
+    std::fs::write(
+        root.with_file_name(format!(
+            "{}.erofs",
+            root.file_name().unwrap().to_string_lossy()
+        )),
+        b"LOWER",
+    )
+    .unwrap();
+    std::fs::write(
+        root.with_file_name(format!(
+            "{}.digest",
+            root.file_name().unwrap().to_string_lossy()
+        )),
+        b"sha256:fixture",
+    )
+    .unwrap();
+}
+fn h1_prepare(prep: &crate::worker_admission::CachePreparation, root: &Path) {
+    use std::io::Write;
+    let digest = root.with_file_name(format!(
+        "{}.digest",
+        root.file_name().unwrap().to_string_lossy()
+    ));
+    let lower = root.with_file_name(format!(
+        "{}.erofs",
+        root.file_name().unwrap().to_string_lossy()
+    ));
+    let spool = root.with_file_name(format!(
+        "{}.erofs.spool",
+        root.file_name().unwrap().to_string_lossy()
+    ));
+    let mut write = prep.begin_entry(root).unwrap();
+    let tree = write.stage_tree(root).unwrap();
+    std::fs::write(tree.path().join("content"), b"SOURCE B").unwrap();
+    write.publish_tree(tree).unwrap();
+    let mut metadata = write.stage_file(&digest, 0o600).unwrap();
+    metadata.file_mut().write_all(b"sha256:b").unwrap();
+    write.publish_file(metadata).unwrap();
+    write.commit().unwrap();
+    let mut image = prep.begin_erofs(root).unwrap();
+    let mut output = image.stage_file(&lower, 0o600).unwrap();
+    output.file_mut().write_all(b"LOWER B").unwrap();
+    let temporary = image.stage_file(&spool, 0o600).unwrap();
+    image.discard_file(temporary).unwrap();
+    image.publish_file(output).unwrap();
+    image.commit().unwrap();
+}
+async fn h1_retire(lease: &Lease, input: &Path, endpoint: Option<&Path>) -> WriterRetirement {
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    // Actual runtime importer uses the inherited OFD and an imported holder.
+    // Resources close normally in this fixture; G's existing cross-exec tests
+    // separately exercise _exit without Drops using the production child path.
+    let runtime = g_local_runtime(&child);
+    let read = runtime.use_path(input).unwrap();
+    let bound = endpoint.map(|p| runtime.endpoint(p).unwrap().bind().unwrap());
+    read.revalidate().unwrap();
+    drop(read);
+    if let Some(endpoint) = bound {
+        endpoint.close().unwrap();
+    }
+    drop(runtime);
+    let completion = child.wait().await;
+    assert!(completion.os_status().unwrap().success());
+    completion.retirement().unwrap().clone()
+}
+#[tokio::test]
+async fn h1_owned_retirement_warm_and_cold_new_reference_keeps_original_arc_and_old_cache() {
+    use crate::worker_admission::CacheEntry;
+    for cold in [false, true] {
+        let (_temp, context, data) = fixture();
+        let cache = data.join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let a = cache.join("a");
+        let b = cache.join("b");
+        h1_populate(&a);
+        if !cold {
+            h1_populate(&b);
+        }
+        let private = data.join("control");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = private.join("shell.sock");
+        let original = with_paths(
+            context.local(&data.join("vm")).unwrap(),
+            &[PathRequest {
+                path: &socket,
+                role: PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        // H initial consumer excludes endpoint *records*, not declared paths.
+        let lease = original
+            .probe_cache(&[CacheEntry { root: &a }])
+            .unwrap()
+            .handoff(&original, &a)
+            .unwrap();
+        let receipt = h1_retire(&lease, &a, Some(&socket)).await;
+        receipt
+            .retire_runtime_endpoints(&lease, &[&socket])
+            .unwrap();
+        let probe = receipt
+            .probe_cache(&lease, &[CacheEntry { root: &b }])
+            .unwrap();
+        let lease_b = if cold {
+            assert!(!probe.exists(&b).unwrap());
+            let prep = probe.prepare().unwrap();
+            h1_prepare(&prep, &b);
+            prep.handoff(&lease, &b).unwrap()
+        } else {
+            assert!(probe.exists(&b).unwrap());
+            let read = probe.use_path(&b).unwrap();
+            read.revalidate().unwrap();
+            drop(read);
+            probe.handoff(&lease, &b).unwrap()
+        };
+        assert!(Arc::ptr_eq(&lease_b.0, &original.0));
+        let read_a = lease_b.use_path(&a).unwrap();
+        read_a.revalidate().unwrap();
+        drop(read_a);
+        let outsider = context.local(&data.join("other")).unwrap();
+        assert!(outsider.prepare_cache(&[CacheEntry { root: &a }]).is_err());
+        assert!(outsider.prepare_cache(&[CacheEntry { root: &b }]).is_err());
+        let next = h1_retire(&lease_b, &b, None).await;
+        assert!(
+            receipt
+                .probe_cache(
+                    &lease_b,
+                    &[CacheEntry {
+                        root: &cache.join("stale")
+                    }]
+                )
+                .is_err()
+        );
+        let third = cache.join("c");
+        h1_populate(&third);
+        next.probe_cache(&lease_b, &[CacheEntry { root: &third }])
+            .unwrap()
+            .handoff(&lease_b, &third)
+            .unwrap();
+        assert!(lease_b.use_path(&a).is_ok());
+    }
+}
+#[tokio::test]
+async fn h1_same_exact_strict_selection_is_verified_deduplicated_never_upgraded() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, data) = fixture();
+    let cache = data.join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    let root = cache.join("image");
+    h1_populate(&root);
+    let lease = context.local(&data.join("vm")).unwrap();
+    let lease = lease
+        .probe_cache(&[CacheEntry { root: &root }])
+        .unwrap()
+        .handoff(&lease, &root)
+        .unwrap();
+    let receipt = h1_retire(&lease, &root, None).await;
+    let before = context
+        .namespace
+        .transaction()
+        .unwrap()
+        .operation(&lease.0.id)
+        .unwrap()
+        .entries
+        .len();
+    let probe = receipt
+        .probe_cache(&lease, &[CacheEntry { root: &root }])
+        .unwrap();
+    let read = probe.use_path(&root).unwrap();
+    read.revalidate().unwrap();
+    drop(read);
+    probe.handoff(&lease, &root).unwrap();
+    assert_eq!(
+        context
+            .namespace
+            .transaction()
+            .unwrap()
+            .operation(&lease.0.id)
+            .unwrap()
+            .entries
+            .len(),
+        before
+    );
+    assert!(
+        receipt
+            .prepare_cache(&lease, &[CacheEntry { root: &root }])
+            .is_err()
+    );
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &root }])
+            .unwrap()
+            .prepare()
+            .is_err()
+    );
+    assert!(lease.use_path(&root).is_ok());
+}
+#[tokio::test]
+async fn h1_exact_parent_or_child_overlap_without_cache_binding_refuses() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, data) = fixture();
+    let old = data.join("old");
+    std::fs::create_dir(&old).unwrap();
+    let lease = with_paths(
+        context.local(&data.join("vm")).unwrap(),
+        &[PathRequest {
+            path: &old,
+            role: PathRole::Strict,
+        }],
+    )
+    .unwrap();
+    let receipt = h1_retire(&lease, &old, None).await;
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &old }])
+            .is_err()
+    );
+    assert!(
+        receipt
+            .probe_cache(
+                &lease,
+                &[CacheEntry {
+                    root: &old.join("child")
+                }]
+            )
+            .is_err()
+    );
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &data }])
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn h1_current_receipt_continues_after_owned_control_lineage_and_retention() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, data) = fixture();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let log = vm.join("console.log");
+    std::fs::write(&log, b"OLD").unwrap();
+    let root = vm.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let retained = vm.join("root.pre-build");
+    let source = data.join("source");
+    std::fs::write(&source, b"READ").unwrap();
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[
+            PathRequest {
+                path: &log,
+                role: PathRole::MutableFile,
+            },
+            PathRequest {
+                path: &root,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &retained,
+                role: PathRole::MutableTree,
+            },
+            PathRequest {
+                path: &source,
+                role: PathRole::Strict,
+            },
+        ],
+    )
+    .unwrap();
+    let receipt = h1_retire(&lease, &source, None).await;
+    publish_control(&lease, &log, b"FINAL");
+    let mut retain = lease
+        .begin(MutationPlan::Adopt { root: vm.clone() })
+        .unwrap();
+    retain.rename_preserving(&root, &retained).unwrap();
+    retain.commit().unwrap();
+    let new = data.join("new-cache");
+    h1_populate(&new);
+    receipt
+        .probe_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap()
+        .handoff(&lease, &new)
+        .unwrap();
+    assert!(receipt.begin_remove(&lease, &data, &[&new]).is_err());
+    let mut cleanup = receipt.begin_remove(&lease, &vm, &[&root, &log]).unwrap();
+    cleanup.remove_path(&root).unwrap();
+    cleanup.remove_path(&log).unwrap();
+    cleanup.commit().unwrap();
+    assert!(retained.exists());
+    assert!(new.exists());
+}
+
+async fn h1_ready() -> (
+    tempfile::TempDir,
+    crate::worker_admission::AdmissionContext,
+    Lease,
+    WriterRetirement,
+    PathBuf,
+) {
+    let (temp, context, data) = fixture();
+    let input = data.join("input");
+    std::fs::write(&input, b"READ").unwrap();
+    let vm = data.join("vm");
+    std::fs::create_dir(&vm).unwrap();
+    let lease = with_paths(
+        context.local(&vm).unwrap(),
+        &[PathRequest {
+            path: &input,
+            role: PathRole::Strict,
+        }],
+    )
+    .unwrap();
+    let receipt = h1_retire(&lease, &input, None).await;
+    (temp, context, lease, receipt, data)
+}
+#[tokio::test]
+async fn h1_foreign_used_hold_and_imported_holder_do_not_issue_continuation() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let other = context.local(&data.join("other")).unwrap();
+    assert!(
+        receipt
+            .probe_cache(&other, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    let hold = lease.use_path(&data.join("input")).unwrap();
+    assert!(
+        receipt
+            .prepare_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    drop(hold);
+    let export = lease.export_child().unwrap();
+    let imported = context
+        .import_child(export.duplicate_for_exec().unwrap())
+        .unwrap();
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    drop(imported);
+    drop(export);
+    let vm = data.join("vm");
+    let mut remove = receipt.begin_remove(&lease, &vm, &[&vm]).unwrap();
+    remove.remove_path(&vm).unwrap();
+    remove.commit().unwrap();
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn h1_probe_and_preparation_remain_bound_after_receipt_use_or_new_runtime() {
+    use crate::worker_admission::CacheEntry;
+    for used in [false, true] {
+        let (_temp, _context, lease, receipt, data) = h1_ready().await;
+        let new = data.join("cache");
+        h1_populate(&new);
+        let prep = receipt
+            .prepare_cache(&lease, &[CacheEntry { root: &new }])
+            .unwrap();
+        let clone = prep.clone();
+        if used {
+            let vm = data.join("vm");
+            let mut remove = receipt.begin_remove(&lease, &vm, &[&vm]).unwrap();
+            remove.remove_path(&vm).unwrap();
+            remove.commit().unwrap();
+        } else {
+            drop(lease.prepare_runtime(&[]).unwrap());
+        }
+        assert!(clone.checkpoint().is_err());
+        assert!(prep.handoff(&lease, &new).is_err());
+        assert!(clone.begin_entry(&new).is_err());
+    }
+}
+#[tokio::test]
+async fn h1_issued_probe_refuses_even_completed_consumer_mutation_before_transfer() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let probe = receipt
+        .probe_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap();
+    lease
+        .begin(MutationPlan::Create {
+            root: data.join("vm"),
+        })
+        .unwrap()
+        .commit()
+        .unwrap();
+    assert!(probe.handoff(&lease, &new).is_err());
+    receipt
+        .probe_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap()
+        .handoff(&lease, &new)
+        .unwrap();
+}
+#[tokio::test]
+async fn h1_unfinished_ownerread_journal_or_recovery_never_authorizes_continuation() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, data) = fixture();
+    let source = data.join("managed");
+    std::fs::create_dir(&source).unwrap();
+    let input = data.join("input");
+    std::fs::write(&input, b"READ").unwrap();
+    let lease = with_paths(
+        context.local(&data.join("vm")).unwrap(),
+        &[
+            PathRequest {
+                path: &source,
+                role: PathRole::ManagedCacheRead,
+            },
+            PathRequest {
+                path: &input,
+                role: PathRole::Strict,
+            },
+        ],
+    )
+    .unwrap();
+    let receipt = h1_retire(&lease, &input, None).await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let read = lease.owner_read_cache(&source).unwrap();
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    read.finish().unwrap();
+    let mutation = lease
+        .begin(MutationPlan::Create {
+            root: data.join("vm"),
+        })
+        .unwrap();
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    drop(mutation);
+    {
+        let mut tx = context.namespace.transaction().unwrap();
+        tx.operation_mut(&lease.0.id).unwrap().recovery =
+            Some(super::super::catalog::RecoveryIntent {
+                record_sha256: "0".repeat(64),
+                completed: false,
+            });
+        tx.save().unwrap();
+    }
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn h1_endpoint_must_be_exactly_retired_before_continuation() {
+    use crate::worker_admission::CacheEntry;
+    let GFixture {
+        _temp,
+        lease,
+        child,
+        endpoint,
+        data,
+        ..
+    } = g_spawn(false);
+    let completion = child.wait().await;
+    let receipt = completion.retirement().unwrap();
+    let new = data.join("cache");
+    h1_populate(&new);
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    receipt
+        .retire_runtime_endpoints(&lease, &[&endpoint])
+        .unwrap();
+    receipt
+        .probe_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap()
+        .handoff(&lease, &new)
+        .unwrap();
+}
+#[tokio::test]
+async fn h1_faulted_transfer_preserves_old_cache_claims_and_rejects_repeat_on_stale_prep() {
+    use crate::worker_admission::CacheEntry;
+    for fault in ["before-save", "after-save", "partial-save"] {
+        let (_temp, context, lease, receipt, data) = h1_ready().await;
+        let new = data.join("cache");
+        h1_populate(&new);
+        let prep = receipt
+            .prepare_cache(&lease, &[CacheEntry { root: &new }])
+            .unwrap();
+        assert!(prep.handoff_fault(&lease, &new, fault).is_err());
+        if fault == "before-save" {
+            prep.handoff(&lease, &new).unwrap();
+            assert!(prep.handoff(&lease, &new).is_err());
+        } else {
+            assert!(prep.handoff(&lease, &new).is_err());
+        }
+        assert_eq!(std::fs::read(data.join("input")).unwrap(), b"READ");
+        let contender = context.local(&data.join("contender"));
+        if let Ok(contender) = contender {
+            assert!(
+                contender
+                    .prepare_cache(&[CacheEntry { root: &new }])
+                    .is_err()
+            );
+        }
+    }
+}
+#[tokio::test]
+async fn h1_stale_receipt_after_new_actual_retirement_is_not_revalidated_by_status() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, old, data) = h1_ready().await;
+    let next = h1_retire(&lease, &data.join("input"), None).await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    assert!(
+        old.probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    next.probe_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap()
+        .handoff(&lease, &new)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn h1_cancelled_probe_preserves_receipt_and_abandoned_prep_preserves_fence() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, lease, receipt, data) = h1_ready().await;
+    let warm = data.join("warm");
+    h1_populate(&warm);
+    receipt
+        .probe_cache(&lease, &[CacheEntry { root: &warm }])
+        .unwrap()
+        .cancel()
+        .unwrap();
+    let prep = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &warm }])
+        .unwrap();
+    let clone = prep.clone();
+    drop(prep);
+    clone.handoff(&lease, &warm).unwrap();
+    assert!(clone.checkpoint().is_err());
+    let cold = data.join("cold");
+    let abandoned = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &cold }])
+        .unwrap();
+    drop(abandoned);
+    let other = context.local(&data.join("other")).unwrap();
+    assert!(other.prepare_cache(&[CacheEntry { root: &cold }]).is_err());
+    assert!(lease.use_path(&warm).is_ok());
+}
+#[tokio::test]
+async fn h1_concurrent_remove_and_cache_transfer_have_only_catalog_ordered_outcomes() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let prep = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap();
+    let vm = data.join("vm");
+    let receipt_clone = receipt.clone();
+    let consumer_clone = lease.clone();
+    let prep_clone = prep.clone();
+    let read_target = new.clone();
+    let (removal, handoff) = std::thread::scope(|scope| {
+        let remove = scope.spawn(|| receipt_clone.begin_remove(&lease, &vm, &[&vm]));
+        let transfer = scope.spawn(|| prep_clone.handoff(&consumer_clone, &read_target));
+        (remove.join().unwrap(), transfer.join().unwrap())
+    });
+    if let Ok(mut guard) = removal {
+        guard.remove_path(&vm).unwrap();
+        guard.commit().unwrap();
+    }
+    let tx = context.namespace.transaction().unwrap();
+    let op = tx.operation(&lease.0.id).unwrap();
+    if handoff.is_ok() {
+        assert!(
+            op.entries
+                .iter()
+                .any(|e| e.path.get().unwrap() == new && e.role == PathRole::Strict)
+        );
+    }
+    drop(tx);
+    assert!(
+        receipt
+            .probe_cache(
+                &lease,
+                &[CacheEntry {
+                    root: &data.join("never")
+                }]
+            )
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn h1_overlapping_proved_candidate_and_new_pinned_candidate_allow_warm_append_only() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, receipt, data) = h1_ready().await;
+    let shared = data.join("shared");
+    h1_populate(&shared);
+    receipt
+        .probe_cache(&lease, &[CacheEntry { root: &shared }])
+        .unwrap()
+        .handoff(&lease, &shared)
+        .unwrap();
+    let pinned = data.join("pinned");
+    h1_populate(&pinned);
+    let probe = receipt
+        .probe_cache(
+            &lease,
+            &[CacheEntry { root: &shared }, CacheEntry { root: &pinned }],
+        )
+        .unwrap();
+    probe.handoff(&lease, &pinned).unwrap();
+    assert!(
+        receipt
+            .prepare_cache(
+                &lease,
+                &[CacheEntry { root: &shared }, CacheEntry { root: &pinned }]
+            )
+            .is_err()
+    );
+    assert!(lease.use_path(&shared).is_ok());
+    assert!(lease.use_path(&pinned).is_ok());
+}
+
+#[tokio::test]
+async fn h1_issued_preparation_rechecks_imports_and_replacement_before_transfer() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let prep = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap();
+    let export = lease.export_child().unwrap();
+    let imported = context
+        .import_child(export.duplicate_for_exec().unwrap())
+        .unwrap();
+    assert!(prep.handoff(&lease, &new).is_err());
+    drop(imported);
+    drop(export);
+    std::fs::rename(&new, data.join("retained-cache")).unwrap();
+    std::fs::create_dir(&new).unwrap();
+    assert!(prep.handoff(&lease, &new).is_err());
+    assert!(data.join("retained-cache").exists());
+}
+#[tokio::test]
+async fn h1_receipt_does_not_authorize_new_mutable_lifecycle_declarations() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, receipt, data) = h1_ready().await;
+    let extra = data.join("unproved-layout");
+    with_paths(
+        lease.clone(),
+        &[PathRequest {
+            path: &extra,
+            role: PathRole::MutableTree,
+        }],
+    )
+    .unwrap();
+    let new = data.join("cache");
+    h1_populate(&new);
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    assert!(!extra.exists());
+}
+#[tokio::test]
+async fn h1_prior_receipt_refuses_while_new_sibling_runtime_is_active() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, receipt, data) = h1_ready().await;
+    let child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(simple_command("exit 0"))
+        .unwrap();
+    let runtime = g_local_runtime(&child);
+    let new = data.join("cache");
+    h1_populate(&new);
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+    drop(runtime);
+    let done = child.wait().await;
+    assert!(done.retirement().is_ok());
+    assert!(
+        receipt
+            .probe_cache(&lease, &[CacheEntry { root: &new }])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn h1_cache_guard_and_diagnostic_recheck_consumed_receipt_before_effects() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, _context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let prep = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap();
+    let mut guard = prep.begin_entry(&new).unwrap();
+    let lock = new.with_file_name("cache.lock");
+    let mut diagnostic = guard.diagnostic_lock(&lock).unwrap();
+    diagnostic.lock_exclusive().unwrap();
+    let vm = data.join("vm");
+    let mut remove = receipt.begin_remove(&lease, &vm, &[&vm]).unwrap();
+    remove.remove_path(&vm).unwrap();
+    remove.commit().unwrap();
+    assert!(diagnostic.write_pid(123).is_err());
+    assert!(guard.checkpoint().is_err());
+    assert!(prep.handoff(&lease, &new).is_err());
+}
+#[tokio::test]
+async fn h1_runtime_creation_and_handoff_are_catalog_serialized_without_read_gap() {
+    use crate::worker_admission::CacheEntry;
+    let (_temp, context, lease, receipt, data) = h1_ready().await;
+    let new = data.join("cache");
+    h1_populate(&new);
+    let prep = receipt
+        .prepare_cache(&lease, &[CacheEntry { root: &new }])
+        .unwrap();
+    let (runtime, transfer) = std::thread::scope(|scope| {
+        let start = scope.spawn(|| lease.prepare_runtime(&[]));
+        let handoff = scope.spawn(|| prep.handoff(&lease, &new));
+        (start.join().unwrap(), handoff.join().unwrap())
+    });
+    let tx = context.namespace.transaction().unwrap();
+    let op = tx.operation(&lease.0.id).unwrap();
+    if transfer.is_ok() {
+        assert!(
+            op.entries
+                .iter()
+                .any(|e| e.path.get().unwrap() == new && e.role == PathRole::Strict)
+        );
+    } else {
+        assert!(tx.catalog.operations.iter().any(|candidate| {
+            candidate.cache.as_ref().is_some_and(|c| {
+                c.consumer == lease.0.id && c.phase == super::super::catalog::CachePhase::Preparing
+            })
+        }));
+    }
+    drop(tx);
+    let started = runtime.is_ok();
+    drop(runtime);
+    let other = context.local(&data.join("other")).unwrap();
+    assert!(other.prepare_cache(&[CacheEntry { root: &new }]).is_err());
+    if started {
+        assert!(
+            receipt
+                .probe_cache(
+                    &lease,
+                    &[CacheEntry {
+                        root: &data.join("later")
+                    }]
+                )
+                .is_err()
+        );
+    }
+}

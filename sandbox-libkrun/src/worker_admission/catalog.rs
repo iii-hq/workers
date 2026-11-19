@@ -125,8 +125,18 @@ pub(super) enum CachePhase {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct CacheContinuationBinding {
+    pub runtime: String,
+    pub runtime_epoch: u64,
+    pub runtime_history_sha256: String,
+    pub consumer_state_sha256: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CacheRecord {
     pub phase: CachePhase,
+    #[serde(default)]
+    pub continuation: Option<CacheContinuationBinding>,
     pub consumer: String,
     pub consumer_sentinel: Identity,
     pub consumer_epoch: u64,
@@ -441,7 +451,7 @@ impl Namespace {
         base: Option<HostPath>,
         transition: bool,
     ) -> io::Result<(String, File)> {
-        self.start_with_cache(entries, base, transition, None)
+        self.start_with_cache(entries, base, transition, None, None)
     }
     pub(super) fn start_with_cache(
         self: &Arc<Self>,
@@ -449,10 +459,16 @@ impl Namespace {
         base: Option<HostPath>,
         transition: bool,
         cache: Option<CacheRecord>,
+        continuation: Option<&super::retirement::CacheContinuation>,
     ) -> io::Result<(String, File)> {
+        // Same ordering as receipt Remove/endpoint settlement: private gate,
+        // then catalog. Never carry either lock into caller work or async waits.
+        let _gate = continuation.map(|c| c.lock()).transpose()?;
         let mut tx = self.transaction()?;
         if let Some(cache) = &cache {
-            super::shared_cache::validate_consumer(&tx, cache)?;
+            super::shared_cache::validate_consumer(&tx, cache, continuation)?;
+        } else if continuation.is_some() {
+            return Err(invalid("continuation without cache scope"));
         }
         // Completed evidence is removed only by explicit administrative archival.
         if tx.catalog.operations.len() >= MAX_OPS {

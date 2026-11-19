@@ -22,6 +22,7 @@ struct RemovalAuthority {
     lease: Lease,
     runtime: String,
     epoch: u64,
+    runtime_history: String,
     entries: Vec<Entry>,
     lineage: super::lineage::Anchor,
     sentinel: Identity,
@@ -30,7 +31,125 @@ struct RemovalAuthority {
     endpoints: Vec<super::catalog::EndpointRecord>,
     endpoint_gate: Mutex<()>,
 }
+#[derive(Clone)]
+pub(super) struct CacheContinuation {
+    receipt: WriterRetirement,
+    consumer: Lease,
+    binding: super::catalog::CacheContinuationBinding,
+}
+fn runtime_history(tx: &super::catalog::Transaction<'_>, operation: &str) -> io::Result<String> {
+    super::recovery::digest(
+        &tx.catalog
+            .runtimes
+            .iter()
+            .filter(|r| r.operation == operation)
+            .collect::<Vec<_>>(),
+    )
+}
+fn consumer_history(tx: &super::catalog::Transaction<'_>, lease: &Lease) -> io::Result<String> {
+    let op = tx.operation(&lease.0.id)?;
+    let endpoints = tx
+        .catalog
+        .endpoints
+        .iter()
+        .filter(|e| e.operation == op.id)
+        .collect::<Vec<_>>();
+    super::recovery::digest(&(
+        op.epoch,
+        &op.entries,
+        &op.journals,
+        &op.cache_reads,
+        &op.recovery,
+        &op.holder_ids,
+        &op.holds,
+        runtime_history(tx, &op.id)?,
+        endpoints,
+    ))
+}
+impl CacheContinuation {
+    pub(super) fn binding(&self) -> super::catalog::CacheContinuationBinding {
+        self.binding.clone()
+    }
+    pub(super) fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, ()>> {
+        self.receipt
+            .0
+            .endpoint_gate
+            .lock()
+            .map_err(|_| invalid("retirement continuation mutex poisoned"))
+    }
+    pub(super) fn validate(
+        &self,
+        consumer: &Lease,
+        tx: &super::catalog::Transaction<'_>,
+    ) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.consumer.0, &consumer.0) {
+            return Err(invalid(
+                "cache continuation requires original lifecycle Arc",
+            ));
+        }
+        self.receipt.0.validate_cache_continuation(consumer, tx)?;
+        if runtime_history(tx, &consumer.0.id)? != self.binding.runtime_history_sha256
+            || consumer_history(tx, consumer)? != self.binding.consumer_state_sha256
+        {
+            return Err(invalid("cache continuation snapshot became stale"));
+        }
+        Ok(())
+    }
+    pub(super) fn validate_record(
+        &self,
+        cache: &super::catalog::CacheRecord,
+        tx: &super::catalog::Transaction<'_>,
+    ) -> io::Result<()> {
+        let metadata = cache
+            .continuation
+            .as_ref()
+            .ok_or_else(|| invalid("continuation metadata missing"))?;
+        if cache.consumer != self.consumer.0.id
+            || metadata.runtime != self.receipt.0.runtime
+            || metadata.runtime_epoch != self.receipt.0.epoch
+            || super::recovery::digest(metadata)? != super::recovery::digest(&self.binding)?
+        {
+            return Err(invalid("cache continuation private binding mismatch"));
+        }
+        self.validate(&self.consumer, tx)
+    }
+}
 impl WriterRetirement {
+    pub(crate) fn probe_cache(
+        &self,
+        lease: &Lease,
+        entries: &[super::CacheEntry<'_>],
+    ) -> io::Result<super::CacheProbe> {
+        let capability = self.cache_continuation(lease)?;
+        super::shared_cache::probe_continuation(lease, entries, capability)
+    }
+    pub(crate) fn prepare_cache(
+        &self,
+        lease: &Lease,
+        entries: &[super::CacheEntry<'_>],
+    ) -> io::Result<super::CachePreparation> {
+        let capability = self.cache_continuation(lease)?;
+        super::shared_cache::prepare_continuation(lease, entries, capability)
+    }
+    fn cache_continuation(&self, lease: &Lease) -> io::Result<CacheContinuation> {
+        let _gate = self
+            .0
+            .endpoint_gate
+            .lock()
+            .map_err(|_| invalid("retirement continuation mutex poisoned"))?;
+        let tx = lease.0.namespace.transaction()?;
+        self.0.validate_cache_continuation(lease, &tx)?;
+        Ok(CacheContinuation {
+            receipt: self.clone(),
+            consumer: lease.clone(),
+            binding: super::catalog::CacheContinuationBinding {
+                runtime: self.0.runtime.clone(),
+                runtime_epoch: self.0.epoch,
+                runtime_history_sha256: runtime_history(&tx, &lease.0.id)?,
+                consumer_state_sha256: consumer_history(&tx, lease)?,
+            },
+        })
+    }
     pub(super) fn issue(lease: &Lease, runtime: &str) -> io::Result<Self> {
         Ok(Self(Arc::new(RemovalAuthority::issue(
             lease, runtime, false,
@@ -82,6 +201,164 @@ impl NeverSpawned {
     }
 }
 impl RemovalAuthority {
+    fn validate_cache_continuation(
+        &self,
+        lease: &Lease,
+        tx: &super::catalog::Transaction<'_>,
+    ) -> io::Result<()> {
+        if self.never_spawned
+            || self.used.load(Ordering::Acquire)
+            || !Arc::ptr_eq(&self.lease.0, &lease.0)
+            || lease.0.holder != lease.0.id
+        {
+            return Err(invalid(
+                "cache continuation needs current unused private retirement",
+            ));
+        }
+        let op = tx.operation(&lease.0.id)?;
+        if op.closed
+            || op.uncertain
+            || op.transition
+            || op.cache.is_some()
+            || op.sentinel != self.sentinel
+            || Identity::of(&lease.0.sentinel)? != self.sentinel
+            || op.holder_ids != vec![lease.0.holder.clone()]
+            || op.holders != 1
+            || !op.holds.is_empty()
+            || op.recovery.as_ref().is_some_and(|r| !r.completed)
+        {
+            return Err(invalid(
+                "retired lifecycle has unresolved ownership or recovery",
+            ));
+        }
+        let runtimes = tx
+            .catalog
+            .runtimes
+            .iter()
+            .filter(|r| r.operation == op.id)
+            .collect::<Vec<_>>();
+        if runtimes.iter().map(|r| r.epoch).max() != Some(self.epoch)
+            || runtime_history(tx, &op.id)? != self.runtime_history
+        {
+            return Err(invalid(
+                "a later or altered runtime invalidates cache continuation",
+            ));
+        }
+        let current = runtimes
+            .iter()
+            .find(|r| r.id == self.runtime)
+            .ok_or_else(|| invalid("retirement runtime missing"))?;
+        if current.state != RuntimeState::Retired
+            || !current.writer_retired
+            || current.epoch != self.epoch
+        {
+            return Err(invalid(
+                "receipt does not represent latest actual retirement",
+            ));
+        }
+        for r in runtimes {
+            let clean = r.activity.phase == super::catalog::ActivityPhase::Clean
+                && r.activity.failure.is_none()
+                && !r.guest_consistent;
+            let verified = match r.state {
+                RuntimeState::Retired => r.writer_retired && r.admission_holder.is_some(),
+                RuntimeState::Cancelled => {
+                    !r.writer_retired && r.admission_holder.is_none() && r.activity.sequence == 0
+                }
+                _ => false,
+            };
+            if !clean || !verified {
+                return Err(invalid(
+                    "unverified terminal runtime in continuation history",
+                ));
+            }
+        }
+        if tx
+            .catalog
+            .endpoints
+            .iter()
+            .filter(|e| e.operation == op.id)
+            .any(|e| {
+                e.state != super::catalog::EndpointState::Retired
+                    || e.owner.is_none()
+                    || e.hold_id.is_none()
+                    || e.identity.is_none()
+            })
+        {
+            return Err(invalid(
+                "all exact endpoints must retire before cache continuation",
+            ));
+        }
+        if op.journals.iter().any(|j| {
+            !j.committed
+                || j.intents.iter().any(|i| !i.completed || i.cancelled)
+                || j.disposals.iter().any(|d| !d.discarded)
+                || j.permissions
+                    .iter()
+                    .any(|p| !p.restored || !p.acl_captured || !p.acl_before_grant)
+        }) {
+            return Err(invalid(
+                "unfinished mutation or permission restoration blocks cache continuation",
+            ));
+        }
+        let targets = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e.role, PathRole::MutableTree | PathRole::MutableFile))
+            .map(|e| e.path.get())
+            .collect::<io::Result<Vec<_>>>()?;
+        super::lineage::validate(&self.lineage, &self.entries, op, &targets, false)?;
+        // Strict facts in the original receipt cannot be rewritten by a later
+        // cache append. Current added facts remain separately protected/proven.
+        for old in self.entries.iter().filter(|e| e.role == PathRole::Strict) {
+            if !op
+                .entries
+                .iter()
+                .any(|e| e.role == PathRole::Strict && e.path == old.path && e.pins == old.pins)
+            {
+                return Err(invalid("original Strict claim changed after retirement"));
+            }
+        }
+        for entry in &op.entries {
+            if !self
+                .entries
+                .iter()
+                .any(|original| original.path == entry.path && original.role == entry.role)
+            {
+                let proved = entry.role == PathRole::Strict
+                    && op.cache_reads.iter().any(|receipt| {
+                        receipt.entries.iter().any(|read| {
+                            read.path == entry.path
+                                && read.role == PathRole::Strict
+                                && read.pins == entry.pins
+                        })
+                    });
+                let artifact = entry.role == PathRole::MutableTree
+                    && op.journals.iter().any(|j| {
+                        j.committed
+                            && j.artifacts.contains(&entry.path)
+                            && j.intents.iter().any(|i| {
+                                i.completed
+                                    && !i.cancelled
+                                    && (i.to == entry.path || i.prior.as_ref() == Some(&entry.path))
+                            })
+                            && entry.path.get().is_ok_and(|p| {
+                                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                                    n.starts_with(&format!(".iii-stage-{}-", j.id))
+                                        || n.starts_with(&format!(".iii-prior-{}-", j.id))
+                                })
+                            })
+                    });
+                if !proved && !artifact {
+                    return Err(invalid(
+                        "cache continuation cannot bless a new mutable or unproved lifecycle declaration",
+                    ));
+                }
+            }
+            super::validate_entry(entry)?;
+        }
+        Ok(())
+    }
     fn issue(lease: &Lease, runtime: &str, never_spawned: bool) -> io::Result<Self> {
         let tx = lease.0.namespace.transaction()?;
         let op = tx.operation(&lease.0.id)?;
@@ -135,6 +412,7 @@ impl RemovalAuthority {
         Ok(Self {
             lease: lease.clone(),
             runtime: runtime.into(),
+            runtime_history: runtime_history(&tx, &lease.0.id)?,
             epoch: tx
                 .catalog
                 .runtimes

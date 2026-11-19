@@ -19,11 +19,13 @@ pub(crate) struct CacheEntry<'a> {
 pub(crate) struct CacheProbe {
     lease: Lease,
     consumer: Lease,
+    continuation: Option<super::retirement::CacheContinuation>,
 }
 #[derive(Clone)]
 pub(crate) struct CachePreparation {
     lease: Lease,
     consumer: Lease,
+    continuation: Option<super::retirement::CacheContinuation>,
 }
 fn sibling(root: &Path, suffix: &str) -> io::Result<PathBuf> {
     let mut name = root
@@ -33,16 +35,40 @@ fn sibling(root: &Path, suffix: &str) -> io::Result<PathBuf> {
     name.push(suffix);
     Ok(root.with_file_name(name))
 }
+fn same_read(a: &Entry, b: &Entry) -> bool {
+    a.path == b.path
+        && a.role == PathRole::Strict
+        && b.role == PathRole::Strict
+        && a.pins.len() == b.pins.len()
+        && a.pins
+            .iter()
+            .all(|(path, id)| b.pins.iter().any(|(other, now)| path == other && id == now))
+}
+fn exact_cached_read(op: &Operation, entry: &Entry) -> io::Result<bool> {
+    if entry.role != PathRole::Strict {
+        return Ok(false);
+    }
+    super::validate_entry(entry)?;
+    Ok(op
+        .cache_reads
+        .iter()
+        .any(|receipt| receipt.entries.iter().any(|e| same_read(e, entry))))
+}
 fn record(
     consumer: &Lease,
     entries: &[CacheEntry<'_>],
     phase: CachePhase,
+    continuation: Option<&super::retirement::CacheContinuation>,
 ) -> io::Result<CacheRecord> {
     if entries.is_empty() || entries.len() > MAX_IMAGES {
         return Err(limit());
     }
     consumer.revalidate()?;
+    let _gate = continuation.map(|c| c.lock()).transpose()?;
     let tx = consumer.0.namespace.transaction()?;
+    if let Some(capability) = continuation {
+        capability.validate(consumer, &tx)?;
+    }
     let op = tx.operation(&consumer.0.id)?;
     if consumer.0.holder != consumer.0.id
         || op.cache.is_some()
@@ -51,8 +77,9 @@ fn record(
         || op.uncertain
         || op.holders != 1
         || !op.holds.is_empty()
-        || tx.catalog.runtimes.iter().any(|r| r.operation == op.id)
-        || tx.catalog.endpoints.iter().any(|e| e.operation == op.id)
+        || (continuation.is_none()
+            && (tx.catalog.runtimes.iter().any(|r| r.operation == op.id)
+                || tx.catalog.endpoints.iter().any(|e| e.operation == op.id)))
     {
         return Err(invalid(
             "cache admission requires original pre-runtime lifecycle",
@@ -98,7 +125,25 @@ fn record(
     }
     for existing in &op.entries {
         let p = existing.path.get()?;
-        if all.iter().any(|q| overlaps(&p, q)) {
+        for proposed in &all {
+            if !overlaps(&p, proposed) {
+                continue;
+            }
+            if continuation.is_some()
+                && phase == CachePhase::Probe
+                && p == *proposed
+                && reads.contains(&existing.path)
+                && exact_cached_read(op, existing)?
+            {
+                let observed = super::entry(proposed, PathRole::Strict)?;
+                if same_read(existing, &observed) {
+                    continue;
+                }
+                return Err(invalid("old cache selection identity changed"));
+            }
+            if existing.role == PathRole::Strict {
+                return Err(busy());
+            }
             return Err(invalid(
                 "lifecycle already claims cache or broad cache ancestor",
             ));
@@ -106,6 +151,7 @@ fn record(
     }
     Ok(CacheRecord {
         phase,
+        continuation: continuation.map(|c| c.binding()),
         consumer: op.id.clone(),
         consumer_sentinel: op.sentinel.clone(),
         consumer_epoch: op.epoch,
@@ -117,7 +163,11 @@ fn record(
         transferred_reads: Vec::new(),
     })
 }
-fn issue(consumer: Lease, cache: CacheRecord) -> io::Result<Lease> {
+fn issue(
+    consumer: Lease,
+    cache: CacheRecord,
+    continuation: Option<&super::retirement::CacheContinuation>,
+) -> io::Result<Lease> {
     let entries = if cache.phase == CachePhase::Probe {
         cache
             .reads
@@ -136,29 +186,57 @@ fn issue(consumer: Lease, cache: CacheRecord) -> io::Result<Lease> {
         entries
     };
     let namespace = consumer.0.namespace.clone();
-    let (id, sentinel) = namespace.start_with_cache(entries, None, false, Some(cache))?;
+    let (id, sentinel) =
+        namespace.start_with_cache(entries, None, false, Some(cache), continuation)?;
     Ok(Lease(Arc::new(Held {
         namespace,
         holder: id.clone(),
         id,
         sentinel,
+        continuation: continuation.cloned(),
     })))
 }
 impl Lease {
     pub(crate) fn probe_cache(&self, entries: &[CacheEntry<'_>]) -> io::Result<CacheProbe> {
-        let cache = record(self, entries, CachePhase::Probe)?;
+        let cache = record(self, entries, CachePhase::Probe, None)?;
         Ok(CacheProbe {
-            lease: issue(self.clone(), cache)?,
+            lease: issue(self.clone(), cache, None)?,
             consumer: self.clone(),
+            continuation: None,
         })
     }
     pub(crate) fn prepare_cache(&self, entries: &[CacheEntry<'_>]) -> io::Result<CachePreparation> {
-        let cache = record(self, entries, CachePhase::Preparing)?;
+        let cache = record(self, entries, CachePhase::Preparing, None)?;
         Ok(CachePreparation {
-            lease: issue(self.clone(), cache)?,
+            lease: issue(self.clone(), cache, None)?,
             consumer: self.clone(),
+            continuation: None,
         })
     }
+}
+pub(super) fn probe_continuation(
+    consumer: &Lease,
+    entries: &[CacheEntry<'_>],
+    capability: super::retirement::CacheContinuation,
+) -> io::Result<CacheProbe> {
+    let cache = record(consumer, entries, CachePhase::Probe, Some(&capability))?;
+    Ok(CacheProbe {
+        lease: issue(consumer.clone(), cache, Some(&capability))?,
+        consumer: consumer.clone(),
+        continuation: Some(capability),
+    })
+}
+pub(super) fn prepare_continuation(
+    consumer: &Lease,
+    entries: &[CacheEntry<'_>],
+    capability: super::retirement::CacheContinuation,
+) -> io::Result<CachePreparation> {
+    let cache = record(consumer, entries, CachePhase::Preparing, Some(&capability))?;
+    Ok(CachePreparation {
+        lease: issue(consumer.clone(), cache, Some(&capability))?,
+        consumer: consumer.clone(),
+        continuation: Some(capability),
+    })
 }
 impl CacheProbe {
     pub(crate) fn exists(&self, path: &Path) -> io::Result<bool> {
@@ -175,7 +253,14 @@ impl CacheProbe {
         check(&self.lease, CachePhase::Probe)
     }
     pub(crate) fn handoff(self, consumer: &Lease, selected_root: &Path) -> io::Result<Lease> {
-        transfer(&self.lease, &self.consumer, consumer, selected_root, None)
+        transfer(
+            &self.lease,
+            &self.consumer,
+            consumer,
+            selected_root,
+            self.continuation.as_ref(),
+            None,
+        )
     }
     pub(crate) fn cancel(self) -> io::Result<()> {
         if Arc::strong_count(&self.lease.0) != 1 {
@@ -202,7 +287,9 @@ impl CacheProbe {
         if Arc::strong_count(&self.lease.0) != 1 {
             return Err(invalid("provisional read still in use"));
         }
+        let gate = self.continuation.as_ref().map(|c| c.lock()).transpose()?;
         let mut tx = self.lease.0.namespace.transaction()?;
+        self.lease.validate_continuation(&tx)?;
         let op = tx.operation(&self.lease.0.id)?;
         validate_phase(op, CachePhase::Probe)?;
         if !op.holds.is_empty() || !op.journals.is_empty() {
@@ -221,11 +308,13 @@ impl CacheProbe {
             .phase = CachePhase::Cancelled;
         tx.save()?;
         drop(tx);
+        drop(gate);
         cache.phase = CachePhase::Preparing;
-        let lease = issue(self.consumer.clone(), cache)?;
+        let lease = issue(self.consumer.clone(), cache, self.continuation.as_ref())?;
         Ok(CachePreparation {
             lease,
             consumer: self.consumer.clone(),
+            continuation: self.continuation.clone(),
         })
     }
 }
@@ -262,7 +351,14 @@ impl CachePreparation {
         OwnerReadGuard::begin(self.lease.clone(), root)
     }
     pub(crate) fn handoff(&self, consumer: &Lease, selected_root: &Path) -> io::Result<Lease> {
-        transfer(&self.lease, &self.consumer, consumer, selected_root, None)
+        transfer(
+            &self.lease,
+            &self.consumer,
+            consumer,
+            selected_root,
+            self.continuation.as_ref(),
+            None,
+        )
     }
     #[cfg(test)]
     pub(super) fn handoff_fault(
@@ -271,7 +367,14 @@ impl CachePreparation {
         root: &Path,
         at: &str,
     ) -> io::Result<Lease> {
-        transfer(&self.lease, &self.consumer, consumer, root, Some(at))
+        transfer(
+            &self.lease,
+            &self.consumer,
+            consumer,
+            root,
+            self.continuation.as_ref(),
+            Some(at),
+        )
     }
 }
 fn exact_read(lease: &Lease, path: &Path) -> io::Result<()> {
@@ -322,7 +425,20 @@ pub(super) fn managed_root(op: &Operation, path: &Path) -> bool {
     }) && !op.closed
         && !op.uncertain
 }
-pub(super) fn validate_consumer(tx: &Transaction<'_>, cache: &CacheRecord) -> io::Result<()> {
+pub(super) fn validate_consumer(
+    tx: &Transaction<'_>,
+    cache: &CacheRecord,
+    continuation: Option<&super::retirement::CacheContinuation>,
+) -> io::Result<()> {
+    match (&cache.continuation, continuation) {
+        (Some(_), Some(cap)) => cap.validate_record(cache, tx)?,
+        (None, None) => (),
+        _ => {
+            return Err(invalid(
+                "serialized cache continuation is not private authority",
+            ));
+        }
+    }
     let op = tx.operation(&cache.consumer)?;
     if op.closed
         || op.uncertain
@@ -334,8 +450,10 @@ pub(super) fn validate_consumer(tx: &Transaction<'_>, cache: &CacheRecord) -> io
         || super::recovery::digest(&op.entries)? != cache.consumer_entries_sha256
         || !op.holds.is_empty()
         || op.journals.iter().any(|j| !j.committed)
-        || tx.catalog.runtimes.iter().any(|r| r.operation == op.id)
-        || tx.catalog.endpoints.iter().any(|e| e.operation == op.id)
+        || op.recovery.as_ref().is_some_and(|r| !r.completed)
+        || (continuation.is_none()
+            && (tx.catalog.runtimes.iter().any(|r| r.operation == op.id)
+                || tx.catalog.endpoints.iter().any(|e| e.operation == op.id)))
     {
         return Err(invalid("cache handoff consumer changed or already active"));
     }
@@ -358,6 +476,19 @@ pub(super) fn validate_record(op: &Operation) -> io::Result<()> {
         || c.consumer_entries_sha256.len() != 64
     {
         return Err(invalid("invalid bounded cache operation"));
+    }
+    if let Some(binding) = &c.continuation {
+        if !id_valid(&binding.runtime)
+            || binding.runtime_epoch > c.consumer_epoch
+            || [
+                binding.runtime_history_sha256.as_str(),
+                binding.consumer_state_sha256.as_str(),
+            ]
+            .iter()
+            .any(|d| d.len() != 64 || !d.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(invalid("invalid cache continuation binding"));
+        }
     }
     let mut files = Vec::new();
     let mut reads = Vec::new();
@@ -472,6 +603,7 @@ fn transfer(
     bound_consumer: &Lease,
     consumer: &Lease,
     selected_root: &Path,
+    continuation: Option<&super::retirement::CacheContinuation>,
     fault: Option<&str>,
 ) -> io::Result<Lease> {
     if !Arc::ptr_eq(&bound_consumer.0, &consumer.0)
@@ -481,6 +613,7 @@ fn transfer(
             "cache transfer requires original consumer operation/context",
         ));
     }
+    let _gate = continuation.map(|c| c.lock()).transpose()?;
     let mut tx = prep.0.namespace.transaction()?;
     let source = tx.operation(&prep.0.id)?;
     let cache = source
@@ -491,7 +624,7 @@ fn transfer(
         return Err(invalid("cache transfer already consumed"));
     }
     validate_phase(source, cache.phase)?;
-    validate_consumer(&tx, &cache)?;
+    validate_consumer(&tx, &cache, continuation)?;
     if Identity::of(&consumer.0.sentinel)? != cache.consumer_sentinel
         || consumer.0.holder != consumer.0.id
     {
@@ -620,7 +753,20 @@ fn transfer(
         op.closed = true;
     }
     let mut combined = tx.operation(&consumer.0.id)?.entries.clone();
-    combined.extend(entries.clone());
+    for read in &entries {
+        if let Some(existing) = combined.iter().find(|e| e.path == read.path) {
+            if continuation.is_none()
+                || !same_read(existing, read)
+                || !exact_cached_read(tx.operation(&consumer.0.id)?, existing)?
+            {
+                return Err(invalid(
+                    "cache handoff cannot change or rebind an existing read",
+                ));
+            }
+        } else {
+            combined.push(read.clone());
+        }
+    }
     let checked = tx.check_conflicts(Some(&consumer.0.id), &combined, false);
     {
         let op = tx.operation_mut(&prep.0.id)?;
