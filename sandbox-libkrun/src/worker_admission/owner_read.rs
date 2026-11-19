@@ -284,6 +284,9 @@ enum GrantFault {
     DefaultRead,
     Journal,
     AfterIntent,
+    PostChmod,
+    InodeSync,
+    AfterInodeSync,
 }
 impl OwnerReadGuard {
     pub(super) fn begin(lease: Lease, root: &Path) -> io::Result<Self> {
@@ -353,6 +356,8 @@ impl OwnerReadGuard {
             intents: Vec::new(),
             permissions: Vec::new(),
             payload: None,
+            stage_completions: Vec::new(),
+            image_pair: None,
             epoch,
             committed: false,
             changes: Vec::new(),
@@ -677,7 +682,25 @@ impl OwnerReadGuard {
             if restored.access != p.acl || restored.default != p.default_acl {
                 return Err(invalid("cache ACL restoration failed"));
             }
-            readable.sync_all()?;
+            #[cfg(test)]
+            if matches!(self.fault, Some(GrantFault::PostChmod)) {
+                return Err(io::Error::other(
+                    "injected restoration post-chmod/pre-inode-sync",
+                ));
+            }
+            sync_restored_inode(
+                &readable,
+                &p.fd,
+                &p.identity,
+                #[cfg(test)]
+                matches!(self.fault, Some(GrantFault::InodeSync)),
+            )?;
+            #[cfg(test)]
+            if matches!(self.fault, Some(GrantFault::AfterInodeSync)) {
+                return Err(io::Error::other(
+                    "injected restoration after-inode-sync/before-completion",
+                ));
+            }
             let mut tx = self.lease.0.namespace.transaction()?;
             let journal = tx
                 .operation_mut(&self.lease.0.id)?
@@ -735,6 +758,27 @@ impl OwnerReadGuard {
         self.terminal(self.original_metadata_inner(path))
     }
 }
+fn sync_restored_inode(
+    readable: &File,
+    pinned: &File,
+    expected: &Identity,
+    #[cfg(test)] fail: bool,
+) -> io::Result<()> {
+    if Identity::of(readable)? != *expected || Identity::of(pinned)? != *expected {
+        return Err(invalid(
+            "restoration sync descriptor is not the exact restored inode",
+        ));
+    }
+    #[cfg(test)]
+    if fail {
+        return Err(io::Error::other("injected exact-inode fsync failure"));
+    }
+    readable.sync_all()?;
+    if Identity::of(readable)? != *expected || Identity::of(pinned)? != *expected {
+        return Err(invalid("restored inode changed across fsync"));
+    }
+    Ok(())
+}
 pub(super) fn restore_verified(
     journal: &mut super::catalog::Journal,
     expected_uid: u32,
@@ -784,6 +828,51 @@ pub(super) fn restore_verified(
             {
                 return Ok(false);
             }
+            // `restored` is persisted only AFTER `sync_restored_inode` flushed
+            // this exact inode (live `finish` or the branches below). That
+            // recorded barrier, not the current observation, is the durability
+            // proof; observation only confirms nothing changed it since.
+            if intent.restored {
+                continue;
+            }
+            // Mode/ACL equality without the record proves observation, not
+            // durability (crash after chmod, before or after an unrecorded
+            // fsync). After restart a 0000 inode has no retained syncable FD.
+            // Never regrant permissions to turn observation into proof: keep
+            // the journal unresolved instead.
+            let readable = match open_at(
+                &parent.file,
+                leaf,
+                libc::O_RDONLY
+                    | libc::O_NONBLOCK
+                    | if id.mode & libc::S_IFMT == libc::S_IFDIR {
+                        libc::O_DIRECTORY
+                    } else {
+                        0
+                    },
+                0,
+            ) {
+                Ok(file) => file,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+                    ) =>
+                {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            };
+            sync_restored_inode(
+                &readable,
+                &fd,
+                &intent.original,
+                #[cfg(test)]
+                false,
+            )?;
+            if capture_acls(&parent, leaf, &fd, &intent.original)? != original {
+                return Err(invalid("restored ACL changed across inode sync"));
+            }
             parent.file.sync_all()?;
             intent.restored = true;
             continue;
@@ -812,7 +901,16 @@ pub(super) fn restore_verified(
         if capture_acls(&parent, leaf, &fd, &intent.original)? != original {
             return Err(invalid("permission recovery ACL mismatch"));
         }
-        readable.sync_all()?;
+        sync_restored_inode(
+            &readable,
+            &fd,
+            &intent.original,
+            #[cfg(test)]
+            false,
+        )?;
+        if capture_acls(&parent, leaf, &fd, &intent.original)? != original {
+            return Err(invalid("restored ACL changed across inode sync"));
+        }
         parent.file.sync_all()?;
         intent.restored = true;
     }
@@ -825,3 +923,7 @@ impl Drop for OwnerReadGuard {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "restore_durability_tests.rs"]
+mod correction_tests;

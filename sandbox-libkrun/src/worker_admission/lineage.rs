@@ -492,8 +492,13 @@ pub(super) fn validate(
         {
             continue;
         }
-        if !["control-files", "adopt", "create"].contains(&journal.plan.as_str())
-            || !journal.permissions.is_empty()
+        if journal.plan == "image-pair" {
+            super::image_pair::validate_lineage(journal, original)?;
+        }
+        if (!matches!(
+            journal.plan.as_str(),
+            "control-files" | "adopt" | "create" | "image-pair"
+        )) || !journal.permissions.is_empty()
         {
             return Err(invalid("unsupported mutation of retired receipt target"));
         }

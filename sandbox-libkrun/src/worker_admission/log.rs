@@ -101,12 +101,60 @@ fn log_stamp(file: &File) -> io::Result<LogStamp> {
         ctime_ns: m.ctime_nsec(),
     })
 }
+/// Per-instance typed fault phases (cfg(test) only, no process-global flag).
+/// Writer phases fail the operation immediately AFTER the named step, so each
+/// leaves a distinct durable state for caller oracles; `Reopen` and the
+/// `Recovery*` phases fail AT the named step of reopen or recovery reconcile.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LogFaultPhase {
+    /// Pending intent durable in the catalog; no byte effect yet.
+    Intent,
+    /// Record bytes written to `current`, not yet fsynced.
+    Append,
+    /// `current` fsynced (effect durable); no rotation step, outcome pending.
+    CurrentSync,
+    /// Rotation copied `current` into `previous`, not yet fsynced.
+    RotationCopy,
+    /// `previous` fsynced; `current` not yet truncated.
+    RotationSync,
+    /// `current` truncated by rotation, not yet fsynced.
+    CurrentReset,
+    /// Truncation fsynced; outcome still pending.
+    ResetSync,
+    /// Effect durable and revalidated; the outcome transaction never ran.
+    Outcome,
+    /// `finish` fsynced both files; the Finished record never ran.
+    FinishSync,
+    /// `Lease::open_log_fault` refuses to reopen an actually Finished log.
+    Reopen,
+    /// Recovery reconcile failed before observing the log files.
+    RecoveryObserve,
+    /// Recovery proved the bytes; the exact-inode fsync failed.
+    RecoverySync,
+    /// Recovery fsynced the exact inodes; marking Finished never ran.
+    RecoveryOutcome,
+}
+#[cfg(test)]
+fn test_boundary(local: &mut Local, phase: LogFaultPhase) -> io::Result<()> {
+    if local.phases.len() < 64 {
+        local.phases.push(phase);
+    }
+    if local.typed_fault == Some(phase) {
+        return Err(io::Error::other(format!("injected log phase {phase:?}")));
+    }
+    Ok(())
+}
 struct Local {
     hasher: Sha256,
     failed: bool,
     finished: bool,
     #[cfg(test)]
     fault: Option<&'static str>,
+    #[cfg(test)]
+    typed_fault: Option<LogFaultPhase>,
+    #[cfg(test)]
+    phases: Vec<LogFaultPhase>,
 }
 pub(crate) struct LogRead {
     pub bytes: Vec<u8>,
@@ -159,6 +207,29 @@ fn copy(src: &File, dst: &File, size: u64) -> io::Result<()> {
     dst.set_len(size)
 }
 impl Lease {
+    #[cfg(test)]
+    pub(crate) fn open_log_fault(
+        &self,
+        spec: LogSpec<'_>,
+        phase: LogFaultPhase,
+    ) -> io::Result<LogWriter> {
+        if phase == LogFaultPhase::Reopen {
+            let tx = self.0.namespace.transaction()?;
+            let path = HostPath::new(spec.current)?;
+            if !tx
+                .operation(&self.0.id)?
+                .logs
+                .iter()
+                .any(|r| r.current == path && r.phase == LogPhase::Finished)
+            {
+                return Err(invalid("reopen fault requires actual finished log"));
+            }
+            return Err(io::Error::other("injected log reopen boundary"));
+        }
+        let writer = self.open_log(spec)?;
+        writer.inject_fault(phase);
+        Ok(writer)
+    }
     pub(crate) fn open_log(&self, spec: LogSpec<'_>) -> io::Result<LogWriter> {
         if spec.cap_bytes == 0 || spec.cap_bytes > MAX_CAP {
             return Err(invalid("log cap must be1..64MiB"));
@@ -363,6 +434,10 @@ impl Lease {
                 finished: false,
                 #[cfg(test)]
                 fault: None,
+                #[cfg(test)]
+                typed_fault: None,
+                #[cfg(test)]
+                phases: Vec::new(),
             }),
         }));
         let record = result.0.validate()?;
@@ -530,8 +605,14 @@ impl LogWriter {
             if local.fault == Some("intent") {
                 return Err(io::Error::other("injected log intent"));
             }
+            #[cfg(test)]
+            test_boundary(&mut local, LogFaultPhase::Intent)?;
             self.0.current.write_all_at(record, before.cursor.len)?;
+            #[cfg(test)]
+            test_boundary(&mut local, LogFaultPhase::Append)?;
             self.0.current.sync_all()?;
+            #[cfg(test)]
+            test_boundary(&mut local, LogFaultPhase::CurrentSync)?;
             #[cfg(test)]
             if local.fault == Some("append") {
                 return Err(io::Error::other("injected log append"));
@@ -539,13 +620,21 @@ impl LogWriter {
             if rotate {
                 let old = self.0.previous.as_ref().unwrap();
                 copy(&self.0.current, old, size)?;
+                #[cfg(test)]
+                test_boundary(&mut local, LogFaultPhase::RotationCopy)?;
                 old.sync_all()?;
+                #[cfg(test)]
+                test_boundary(&mut local, LogFaultPhase::RotationSync)?;
                 #[cfg(test)]
                 if local.fault == Some("rotation") {
                     return Err(io::Error::other("injected log rotation"));
                 }
                 self.0.current.set_len(0)?;
+                #[cfg(test)]
+                test_boundary(&mut local, LogFaultPhase::CurrentReset)?;
                 self.0.current.sync_all()?;
+                #[cfg(test)]
+                test_boundary(&mut local, LogFaultPhase::ResetSync)?;
             }
             #[cfg(test)]
             if local.fault == Some("outcome") {
@@ -568,6 +657,8 @@ impl LogWriter {
             {
                 return Err(invalid("log effect size mismatch"));
             }
+            #[cfg(test)]
+            test_boundary(&mut local, LogFaultPhase::Outcome)?;
             let mut tx = self.0.lease.0.namespace.transaction()?;
             let row = tx
                 .operation_mut(&self.0.lease.0.id)?
@@ -778,6 +869,8 @@ impl LogWriter {
         if let Some(old) = &self.0.previous {
             old.sync_all()?;
         }
+        #[cfg(test)]
+        test_boundary(&mut local, LogFaultPhase::FinishSync)?;
         let mut tx = self.0.lease.0.namespace.transaction()?;
         let op = tx.operation_mut(&self.0.lease.0.id)?;
         op.logs
@@ -794,6 +887,14 @@ impl LogWriter {
     #[cfg(test)]
     pub(super) fn fault(&self, at: &'static str) {
         self.0.state.lock().unwrap().fault = Some(at);
+    }
+    #[cfg(test)]
+    pub(crate) fn inject_fault(&self, phase: LogFaultPhase) {
+        self.0.state.lock().unwrap().typed_fault = Some(phase);
+    }
+    #[cfg(test)]
+    pub(crate) fn observed_phases(&self) -> Vec<LogFaultPhase> {
+        self.0.state.lock().unwrap().phases.clone()
     }
 }
 impl Drop for LogHeld {
@@ -907,9 +1008,30 @@ pub(super) fn validate_record(op: &super::catalog::Operation) -> io::Result<()> 
     Ok(())
 }
 pub(super) fn reconcile(op: &mut super::catalog::Operation) -> io::Result<bool> {
+    reconcile_inner(
+        op,
+        #[cfg(test)]
+        None,
+    )
+}
+#[cfg(test)]
+pub(super) fn reconcile_fault(
+    op: &mut super::catalog::Operation,
+    phase: LogFaultPhase,
+) -> io::Result<bool> {
+    reconcile_inner(op, Some(phase))
+}
+fn reconcile_inner(
+    op: &mut super::catalog::Operation,
+    #[cfg(test)] fault: Option<LogFaultPhase>,
+) -> io::Result<bool> {
     for row in &mut op.logs {
         if row.phase == LogPhase::Finished {
             continue;
+        }
+        #[cfg(test)]
+        if fault == Some(LogFaultPhase::RecoveryObserve) {
+            return Err(io::Error::other("injected log recovery observation"));
         }
         let path = row.current.get()?;
         let parent = Directory::open(
@@ -956,9 +1078,17 @@ pub(super) fn reconcile(op: &mut super::catalog::Operation) -> io::Result<bool> 
             {
                 return Ok(false);
             }
+            #[cfg(test)]
+            if fault == Some(LogFaultPhase::RecoverySync) {
+                return Err(io::Error::other("injected log recovery inode sync"));
+            }
             current.sync_all()?;
             if let Some(old) = &old {
                 old.sync_all()?;
+            }
+            #[cfg(test)]
+            if fault == Some(LogFaultPhase::RecoveryOutcome) {
+                return Err(io::Error::other("injected log recovery completion"));
             }
             row.phase = LogPhase::Finished;
             op.holds
@@ -982,7 +1112,15 @@ pub(super) fn reconcile(op: &mut super::catalog::Operation) -> io::Result<bool> 
             }
             old.sync_all()?;
         }
+        #[cfg(test)]
+        if fault == Some(LogFaultPhase::RecoverySync) {
+            return Err(io::Error::other("injected log recovery inode sync"));
+        }
         current.sync_all()?;
+        #[cfg(test)]
+        if fault == Some(LogFaultPhase::RecoveryOutcome) {
+            return Err(io::Error::other("injected log recovery completion"));
+        }
         row.cursor = pending.next.clone();
         row.chain = pending.chain.clone();
         row.sequence = row.sequence.checked_add(1).ok_or_else(limit)?;

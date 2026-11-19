@@ -4,11 +4,14 @@
 //! implicit bootstrap, environment override, or permission to boot custody.
 mod catalog;
 mod endpoint;
+mod image_pair;
 mod lineage;
 mod log;
 mod mutation;
 mod payload;
 mod payload_fs;
+#[cfg(test)]
+pub(crate) use log::LogFaultPhase;
 pub(crate) use log::{LogCursor, LogRead, LogSpec, LogWriter};
 pub(crate) use payload::{
     PayloadBuilder, PayloadEntry, PayloadInventory, PayloadKind, PayloadMetadata, PayloadSeal,
@@ -144,6 +147,15 @@ pub(crate) mod testing {
         request: RecoveryRequest,
     ) -> io::Result<RecoveryReport> {
         recovery::recover_test(context, request)
+    }
+    /// Recovery with one per-call typed ordinary-log reconcile fault
+    /// (`RecoveryObserve`, `RecoverySync`, `RecoveryOutcome`).
+    pub(crate) fn recover_log_fault(
+        context: &AdmissionContext,
+        request: RecoveryRequest,
+        phase: LogFaultPhase,
+    ) -> io::Result<RecoveryReport> {
+        recovery::recover_log_fault_test(context, request, phase)
     }
     pub(crate) fn open_context(root: &Path) -> io::Result<AdmissionContext> {
         Ok(AdmissionContext {

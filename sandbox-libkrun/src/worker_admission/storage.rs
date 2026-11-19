@@ -284,7 +284,7 @@ pub(super) fn read_json<T: DeserializeOwned>(file: &File) -> io::Result<T> {
     serde_json::from_str(&envelope.payload)
         .map_err(|_| invalid("invalid versioned admission record"))
 }
-pub(super) fn write_json<T: Serialize>(file: &File, value: &T) -> io::Result<()> {
+fn encoded_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
     use sha2::{Digest, Sha256};
     let payload = serde_json::to_string(value).map_err(io::Error::other)?;
     if payload.len() > MAX_BYTES / 2 {
@@ -299,10 +299,18 @@ pub(super) fn write_json<T: Serialize>(file: &File, value: &T) -> io::Result<()>
     if bytes.len() > MAX_BYTES {
         return Err(limit());
     }
+    Ok(bytes)
+}
+pub(super) fn json_bytes<T: Serialize>(value: &T) -> io::Result<usize> {
+    Ok(encoded_json(value)?.len())
+}
+pub(super) fn write_json<T: Serialize>(file: &File, value: &T) -> io::Result<()> {
+    let bytes = encoded_json(value)?;
     file.write_all_at(&bytes, 0)?;
     file.set_len(bytes.len() as u64)?;
     file.sync_all()
 }
+
 /// Serialize short catalog transactions, not lifetime/authority sentinels.
 /// Wait before inspecting catalog contents; an interrupted wait has no effects.
 /// No transaction holder may await external work or reacquire this mutex.

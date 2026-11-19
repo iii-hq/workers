@@ -63,11 +63,37 @@ pub(super) struct Journal {
     pub permissions: Vec<PermissionIntent>,
     #[serde(default)]
     pub payload: Option<PayloadRecord>,
+    // Absent/empty ImagePair evidence serializes exactly like the pre-R7
+    // journal, so digests of journals that never use it stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_completions: Vec<StageCompletion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_pair: Option<ImagePairProof>,
     pub epoch: u64,
     pub committed: bool,
     pub changes: Vec<Change>,
     pub artifacts: Vec<HostPath>,
     pub disposals: Vec<Disposal>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct StageCompletion {
+    pub stage: HostPath,
+    pub slot: HostPath,
+    pub identity: Identity,
+    pub bytes: u64,
+    pub sha256: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ImagePairProof {
+    pub image: HostPath,
+    pub id: HostPath,
+    pub spool: HostPath,
+    pub image_stage: HostPath,
+    pub id_stage: HostPath,
+    pub spool_stage: HostPath,
+    pub image_sha256: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,6 +308,11 @@ pub(super) struct RecoveryIntent {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct ArchiveReservation {
+    pub names: std::collections::BTreeMap<String, u64>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ArchiveRecord {
     pub operation: String,
     pub digest: String,
@@ -290,6 +321,8 @@ pub(super) struct ArchiveRecord {
     pub endpoints: Vec<EndpointRecord>,
     pub runtimes: Vec<RuntimeRecord>,
     pub complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation: Option<ArchiveReservation>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -953,6 +986,47 @@ impl Transaction<'_> {
             let mut journals = std::collections::HashSet::new();
             for journal in &op.journals {
                 journal.root.get()?;
+                if journal.stage_completions.len() > 256
+                    || (journal.plan != "image-pair" && !journal.stage_completions.is_empty())
+                {
+                    return Err(invalid("stage completions belong only to ImagePair"));
+                }
+                let mut completions = std::collections::HashSet::new();
+                for done in &journal.stage_completions {
+                    let path = done.stage.get()?;
+                    done.slot.get()?;
+                    if !completions.insert(path)
+                        || !journal.artifacts.contains(&done.stage)
+                        || done.sha256.len() != 64
+                        || !done.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                        || done.identity.mode & libc::S_IFMT != libc::S_IFREG
+                        || done.identity.links != 1
+                    {
+                        return Err(invalid("invalid stage completion"));
+                    }
+                }
+                if let Some(pair) = &journal.image_pair {
+                    if journal.plan != "image-pair"
+                        || !journal.committed
+                        || pair.image_sha256.len() != 64
+                        || !pair.image_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                        || [&pair.image_stage, &pair.id_stage, &pair.spool_stage]
+                            .iter()
+                            .any(|s| !journal.stage_completions.iter().any(|c| &&c.stage == s))
+                    {
+                        return Err(invalid("invalid paired publication proof"));
+                    }
+                    for p in [
+                        &pair.image,
+                        &pair.id,
+                        &pair.spool,
+                        &pair.image_stage,
+                        &pair.id_stage,
+                        &pair.spool_stage,
+                    ] {
+                        p.get()?;
+                    }
+                }
                 if let Some(payload) = &journal.payload {
                     if payload.inventory.len() != 64
                         || payload.entries > 262144
