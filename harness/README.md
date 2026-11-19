@@ -78,7 +78,8 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 A pattern is `<namespace>/<pattern>` to match the id only in that namespace, or a bare
 `<pattern>` to match the id in every namespace; for example `laptop/shell::*`. A namespace
 qualifier must be a plain namespace (no glob characters, and not empty as in `/shell::exec`) and
-must be followed by an id pattern, otherwise the policy is rejected and every call is denied.
+must be followed by an id pattern that does not start with `/` (as in `laptop//shell::exec`),
+otherwise the policy is rejected and every call is denied.
 A sandbox operation answers as the router's `sandbox::<op>` and as the adapter's own
 `<adapter>::<op>` (`sandbox-libkrun`, or the adapter `sandbox::adapter::info` reports). A
 `functions.deny` glob or a hook's `functions` glob matching either id covers both;
@@ -689,9 +690,9 @@ outcome. Its deliver hook runs the chain: the observers whose `sessions` and
 `priority` order (ties by target), each called through its observer with the
 input as the previous one left it. A `<namespace>/<pattern>` entry in
 `functions` matches one engine namespace; a bare pattern matches every
-namespace. A qualifier with glob characters or an empty one (`*/shell::*`,
-`/shell::*`) reads as bare, with a one-time warning, so the hook still runs
-in every namespace. A harness older than this one matches no call for a
+namespace. A qualifier with glob characters, an empty one or a doubled slash
+(`*/shell::*`, `/shell::*`, `laptop//shell::*`) reads as bare, with a one-time
+warning, so the hook still runs in every namespace. A harness older than this one matches no call for a
 `<namespace>/<pattern>` entry and skips the hook; register one only after a
 hook input carried `own_namespace`. A target answers
 `{ decision, reason?, mutations?, annotations? }`.

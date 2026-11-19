@@ -283,10 +283,11 @@ fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
             );
             return None;
         }
-        if namespace.is_some() && id.is_empty() {
+        // A doubled `/` (`laptop//shell::exec`) leaves a leading `/` in the id, which matches no call.
+        if namespace.is_some() && (id.is_empty() || id.starts_with('/')) {
             tracing::warn!(
                 pattern = %p,
-                "rejecting policy: pattern {p} names a namespace but no function id"
+                "rejecting policy: pattern {p} must name a function id right after the namespace qualifier"
             );
             return None;
         }
@@ -836,6 +837,17 @@ mod tests {
         // A `/` inside the id part is no qualifier.
         let id = CompiledPolicy::from(Some(&policy(&["openai-codex::codex/gpt"], &[])));
         assert!(id.allows_in("desk", "openai-codex::codex/gpt"));
+    }
+
+    // `laptop//shell::exec` leaves `/shell::exec` as the id, which matches no call.
+    #[test]
+    fn a_doubled_slash_after_a_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "laptop//shell::exec"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["laptop//shell::exec"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
     }
 
     #[test]
