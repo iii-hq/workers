@@ -1,6 +1,6 @@
 iii: v1
 name: iii/workflow
-version: 0.1.6
+version: 0.1.7
 iii_engine_version: ">=0.26.0"
 description: "Multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get one worktree per ticket, one tests-and-check run per integrated wave and a kept branch. Installs beside iii/deepwork."
 license: Apache-2.0
@@ -34,3 +34,8 @@ workers:
   # fp::pipe + fp::get read node_errors when a workflow::status reply is too large to return.
   # No caret: harness pulls fp@latest.
   fp: ">=0.3.0"
+  # Not listed, on purpose: `browser` is optional. A run calls browser::chromium::status once (the
+  # newest call a page check needs, so an older browser worker reads as absent). When it finds a
+  # Chromium, a card that changes a web page is verified in a tab; otherwise the run says pages
+  # were not checked. Listing it would install the worker, and maybe a Chromium, for every run
+  # that never opens a page.
