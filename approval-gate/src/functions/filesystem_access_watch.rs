@@ -103,8 +103,16 @@ async fn evaluate(deps: &Deps, input: &HookInput, hint: AccessRequest) -> HookOu
     // failed after resolve — see resolve.rs's "retry or purge will collect
     // it" path) must not be silently reused for a genuinely new root/path,
     // or the attempt cap (step 7) and the console never learn about it.
+    // A post_call naming a namespace the record does not hold is not a
+    // redelivery either: it goes the stale way, so a record held without
+    // one (older harness) costs one extra attempt and pending_created.
     match pending::get(iii, &input.session_id, &call.id).await {
-        Ok(Some(existing)) if existing.access_request.as_ref() == Some(&hint) => {
+        Ok(Some(existing))
+            if existing.access_request.as_ref() == Some(&hint)
+                && (call.namespace.is_none() || existing.namespace == call.namespace)
+                && (call.implicit_namespace.is_none()
+                    || existing.implicit_namespace == call.implicit_namespace) =>
+        {
             return HookOutput::Hold;
         }
         Ok(Some(existing))
@@ -821,7 +829,16 @@ mod tests {
             let out = handle(&stack.deps, carries_laptop("c_2", "/c/d")).await;
             assert_eq!(out.unwrap(), HookOutput::Hold);
 
-            for call_id in ["c_1", "c_2"] {
+            // Same-hint arm: the same root held for (default, default).
+            let mut first = jail_input("s_1", "c_3", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("default".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_3", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            for call_id in ["c_1", "c_2", "c_3"] {
                 let key = format!("s_1/{call_id}");
                 let current = state_get(&stack.iii, PENDING_SCOPE, &key).await;
                 assert_eq!(current["kind"], json!("filesystem_access"), "{call_id}");
