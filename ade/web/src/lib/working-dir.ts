@@ -65,7 +65,9 @@ export type WorkspaceValidation =
 export type WorkingDirActivation =
   | { status: 'valid'; path: string }
   | { status: 'recovered'; path: string | null }
-  | { status: 'unavailable'; path: string }
+  /** `missing`: the saved folder is confirmed gone, but no fallback could be
+   * resolved either (as opposed to the check itself being unavailable). */
+  | { status: 'unavailable'; path: string; missing?: true }
 
 export function workingDirRecoveryNotice(
   savedDir: string,
@@ -231,7 +233,7 @@ export async function activateWorkingDir(
 
   const fallback = await resolveLiveDefaultWorkingDir()
   if (fallback.status === 'unavailable') {
-    return { status: 'unavailable', path: savedDir }
+    return { status: 'unavailable', path: savedDir, missing: true }
   }
   defaultWorkingDirPromise = Promise.resolve(fallback.path)
   return { status: 'recovered', path: fallback.path }

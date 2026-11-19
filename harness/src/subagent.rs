@@ -682,9 +682,6 @@ async fn seed_child(
     }
     let title = display.as_ref().map(|value| value.name.as_str());
     let mut reused = false;
-    // The stored metadata of a reused session, so its `fs_scope` can follow
-    // the root this spawn runs the child in.
-    let mut reused_metadata = None;
     let child_session_id = match &req.session_id {
         Some(id) if reuse_only => {
             let metadata = session.metadata_of(id).await?.ok_or_else(|| {
@@ -703,7 +700,6 @@ async fn seed_child(
                 )?;
             }
             reused = true;
-            reused_metadata = Some(metadata);
             id.clone()
         }
         Some(id) => {
@@ -730,7 +726,6 @@ async fn seed_child(
                     )?;
                 }
                 reused = true;
-                reused_metadata = Some(ensured.metadata);
                 tracing::info!(
                     child_session_id = %id,
                     "harness::spawn reused an existing session — prior transcript and parent linkage retained"
@@ -746,20 +741,6 @@ async fn seed_child(
         }
     };
 
-    // Merged right after the read and under the topology lock, like `send`'s
-    // agent/language mirror. The turn record already runs the child in this
-    // root; only the session's display copy would be stale, so a failed write
-    // is logged and the spawn goes on.
-    if let Some(stored) = reused_metadata
-        && let Some(merged) = rescoped_session_metadata(stored, child_scope.as_ref())
-        && let Err(error) = session.set_metadata(&child_session_id, merged).await
-    {
-        tracing::warn!(
-            child_session_id = %child_session_id,
-            error = %error,
-            "could not store the spawn's filesystem root in the reused session's metadata"
-        );
-    }
     drop(topology);
     let previous_child = if reused {
         crate::state::get_turn(&deps.iii, &child_session_id, cfg.session_timeout_ms).await?
@@ -837,6 +818,37 @@ async fn seed_child(
         },
     )
     .await?;
+
+    // A reused session's project follows the root only once a turn really
+    // runs there: after every fallible step above, and only for a freshly
+    // seeded turn (a merge, queue or duplicate leaves the running turn in its
+    // old root). Re-read under the topology lock, like `send`'s mirrors, so
+    // a concurrent metadata write is not lost. The turn record already holds
+    // the root; a failed display write is logged and the spawn stands.
+    if reused && !outcome.merged && !outcome.queued && !outcome.deduplicated {
+        let _topology = deps.topology.lock().await;
+        let stored = match session.metadata_of(&child_session_id).await {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::warn!(
+                    child_session_id = %child_session_id,
+                    error = %error,
+                    "could not read the reused session's metadata to store the spawn's filesystem root"
+                );
+                None
+            }
+        };
+        if let Some(merged) =
+            stored.and_then(|stored| rescoped_session_metadata(stored, child_scope.as_ref()))
+            && let Err(error) = session.set_metadata(&child_session_id, merged).await
+        {
+            tracing::warn!(
+                child_session_id = %child_session_id,
+                error = %error,
+                "could not store the spawn's filesystem root in the reused session's metadata"
+            );
+        }
+    }
 
     Ok(ChildIds {
         session_id: outcome.session_id,

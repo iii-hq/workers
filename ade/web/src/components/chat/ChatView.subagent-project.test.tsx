@@ -14,12 +14,8 @@ const mocks = vi.hoisted(() => ({
   composerSubmit: undefined as
     | undefined
     | ((payload: { text: string; attachments: [] }) => Promise<void>),
-  // The backend's stream signature, so the tests can read what was sent.
-  stream: vi.fn(async function* (
-    _prompt: string,
-    _model: string,
-    _opts?: { workingDir?: string | null },
-  ) {}),
+  // The backend's own signature, so the tests can read what was sent.
+  stream: vi.fn<ChatBackend['stream']>(async function* () {}),
   setDraftText: vi.fn(),
   setDraftAttachments: vi.fn(),
 }))
@@ -224,4 +220,34 @@ it('sends a profile plain router model as its catalog key', async () => {
   expect(mocks.stream.mock.calls[0]?.[1]).toBe(
     'claude-code::claude-code/claude-haiku-5-5',
   )
+})
+
+it('does not send a sub-agent whose folder is gone even when no fallback resolves', async () => {
+  mocks.activateWorkingDir.mockResolvedValue({
+    status: 'unavailable',
+    path: WORKTREE,
+    missing: true,
+  })
+  await open(conversation('parent'))
+  await act(async () => {
+    await mocks.composerSubmit?.({ text: 'continue', attachments: [] })
+  })
+  expect(mocks.stream).not.toHaveBeenCalled()
+  expect(mocks.setDraftText).toHaveBeenCalledWith('child', 'continue')
+})
+
+it('still sends a sub-agent when the folder check itself is unavailable', async () => {
+  // A worker outage is not a missing folder: the saved scope stands.
+  mocks.activateWorkingDir.mockResolvedValue({
+    status: 'unavailable',
+    path: WORKTREE,
+  })
+  await open(conversation('parent'))
+  await act(async () => {
+    await mocks.composerSubmit?.({ text: 'continue', attachments: [] })
+  })
+  expect(mocks.stream).toHaveBeenCalledTimes(1)
+  expect(mocks.stream.mock.calls[0]?.[2]).toMatchObject({
+    workingDir: WORKTREE,
+  })
 })

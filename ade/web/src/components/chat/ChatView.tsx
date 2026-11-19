@@ -1477,11 +1477,17 @@ export function ChatView({
         .then((result) => {
           if (workingDirRef.current !== dir) return workingDirRef.current
 
-          const next = result.path
-          if (result.status === 'unavailable') return next
-          if (result.status === 'recovered' && keepMissingWorkingDir) {
+          // Confirmed gone, whether or not a fallback resolved: a
+          // sub-agent's send stops here.
+          if (
+            keepMissingWorkingDir &&
+            (result.status === 'recovered' ||
+              (result.status === 'unavailable' && result.missing))
+          ) {
             return undefined
           }
+          const next = result.path
+          if (result.status === 'unavailable') return next
           if (result.status === 'recovered') setDefaultWorkingDir(next)
           if (next !== null) void syncEditorWorkspace(next)
           if (result.status === 'recovered' || next !== dir) {
