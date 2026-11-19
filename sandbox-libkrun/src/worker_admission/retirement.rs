@@ -59,6 +59,7 @@ fn consumer_history(tx: &super::catalog::Transaction<'_>, lease: &Lease) -> io::
         &op.entries,
         &op.journals,
         &op.cache_reads,
+        &op.logs,
         &op.recovery,
         &op.holder_ids,
         &op.holds,
@@ -288,6 +289,13 @@ impl RemovalAuthority {
             return Err(invalid(
                 "all exact endpoints must retire before cache continuation",
             ));
+        }
+        if op
+            .logs
+            .iter()
+            .any(|r| r.phase != super::log::LogPhase::Finished || r.pending.is_some())
+        {
+            return Err(invalid("log writers must finish before cache continuation"));
         }
         if op.journals.iter().any(|j| {
             !j.committed

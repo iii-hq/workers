@@ -294,7 +294,21 @@ fn recover_inner(
                     .retain(|e| !(e.role == super::PathRole::Endpoint && e.path == endpoint.path));
             }
             tx.save()?;
+            if !super::log::reconcile(&mut resolved)? {
+                return report(
+                    ns,
+                    &tx.catalog,
+                    "unresolved: ordinary log outcome lacks exact proof",
+                );
+            }
             for journal in &mut resolved.journals {
+                if !journal.committed && journal.payload.is_some() {
+                    return report(
+                        ns,
+                        &tx.catalog,
+                        "unresolved: payload producer completion cannot be recreated by recovery",
+                    );
+                }
                 if journal.committed {
                     continue;
                 } // Historical lineage, not old pathname equality.

@@ -1,4 +1,12 @@
-# Admission v2 core: cache continuation H1 source candidate
+# Admission v2 core: R1–R4 correction source candidate
+
+[REVIEW-R1-R4.md](REVIEW-R1-R4.md) describes the new bounded stable-inode LogWriter
+and exact inventory/core-producer PayloadBuilder/PayloadSeal interfaces on35e5.
+These replace per-line generic publication and externally mutated payload stages
+only when the caller routes are updated by their owner. No caller production,
+B-owned runtime_tests.rs, Cargo/dependency or compatibility custody change is part
+of this source increment. R1–R5 remain review findings until integrated tested
+corrections and the same independent reviewer close them.
 
 H1 after `d5fd9971c7066bb81af5a1ad2e3e5d9e3d09fc50` adds only
 WriterRetirement::probe_cache/prepare_cache for the same original retired lifecycle.

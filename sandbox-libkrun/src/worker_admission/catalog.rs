@@ -43,6 +43,7 @@ pub(super) enum HoldKind {
     Endpoint,
     Runtime,
     OwnerRead,
+    Log,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,11 +61,22 @@ pub(super) struct Journal {
     pub footprint: Vec<HostPath>,
     pub intents: Vec<EffectIntent>,
     pub permissions: Vec<PermissionIntent>,
+    #[serde(default)]
+    pub payload: Option<PayloadRecord>,
     pub epoch: u64,
     pub committed: bool,
     pub changes: Vec<Change>,
     pub artifacts: Vec<HostPath>,
     pub disposals: Vec<Disposal>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PayloadRecord {
+    pub inventory: String,
+    pub entries: usize,
+    pub bytes: u64,
+    pub metadata_bytes: usize,
+    pub seal: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,6 +186,8 @@ pub(super) struct Operation {
     pub cache: Option<CacheRecord>,
     #[serde(default)]
     pub cache_reads: Vec<CacheReadReceipt>,
+    #[serde(default)]
+    pub logs: Vec<super::log::LogRecord>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -523,6 +537,7 @@ impl Namespace {
             recovery: None,
             cache,
             cache_reads: Vec::new(),
+            logs: Vec::new(),
         });
         tx.save()?;
         self.directory.file.sync_all()?;
@@ -774,6 +789,7 @@ impl Transaction<'_> {
         }
         for op in &self.catalog.operations {
             super::shared_cache::validate_record(op)?;
+            super::log::validate_record(op)?;
             if op.cache_reads.len() > 16 {
                 return Err(limit());
             }
@@ -937,6 +953,17 @@ impl Transaction<'_> {
             let mut journals = std::collections::HashSet::new();
             for journal in &op.journals {
                 journal.root.get()?;
+                if let Some(payload) = &journal.payload {
+                    if payload.inventory.len() != 64
+                        || payload.entries > 262144
+                        || payload.metadata_bytes > 64 * 1024 * 1024
+                        || payload.bytes > 64 * 1024 * 1024 * 1024
+                        || payload.seal.as_ref().is_some_and(|s| s.len() != 64)
+                        || (journal.committed && payload.seal.is_none())
+                    {
+                        return Err(invalid("invalid payload producer receipt"));
+                    }
+                }
                 if journal.footprint.is_empty()
                     || journal.footprint.len() > 256
                     || journal.intents.len() > 512

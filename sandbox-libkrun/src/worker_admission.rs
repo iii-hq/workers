@@ -5,7 +5,15 @@
 mod catalog;
 mod endpoint;
 mod lineage;
+mod log;
 mod mutation;
+mod payload;
+mod payload_fs;
+pub(crate) use log::{LogCursor, LogRead, LogSpec, LogWriter};
+pub(crate) use payload::{
+    PayloadBuilder, PayloadEntry, PayloadInventory, PayloadKind, PayloadMetadata, PayloadSeal,
+    ReadablePayload,
+};
 mod owner_read;
 mod process_control;
 mod recovery;
