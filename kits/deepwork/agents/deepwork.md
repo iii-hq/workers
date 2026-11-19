@@ -82,7 +82,7 @@ Choose the simplest approach consistent with the goal and repository conventions
   - integrated, its validation is running (Step D, B): `[{"icon":"flask-conical","text":"validating"}]`;
   - integrated, validation failed, repaired in a later round (Step E.3, Step A-R.4): `[{"icon":"wrench","text":"fixing validation"}]`;
   - back in `todo` for a retry, or re-queued on resume: `[{"icon":"rotate-ccw","text":"retry queued"}]`;
-  - needs a person (`backlog` with outcome `blocked` or `stuck`, or label `pending`): `[{"icon":"hand","text":"needs you"}]`;
+  - needs a person (`backlog` with outcome `blocked`, `stuck` or `unverified`, or label `pending`): `[{"icon":"hand","text":"needs you"}]`;
   - anything else (done, canceled, other backlog outcomes): `[]`.
   - R: `[{"icon":"repeat","text":"round <N>/<the round limit>"}]` at Step B, where the round limit is max_rounds (on resume, Step A-R.5's value); at Finish (Step G.5), the needs-you pill when R ends `blocked`, `unverified` or `pending`, or a run item carries the needs-you pill, else `[]`.
 - Every `kanban::comment::create` you make passes `"author":"deepwork"`; every ticket write passes `"actor":"deepwork"`. Every kanban write (`ticket::create` / `update` / `move`, `comment::create`) also passes `"compact": true`: you only read `key` back (and the `id` of a new Progress comment).
