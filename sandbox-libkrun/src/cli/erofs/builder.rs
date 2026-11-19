@@ -1087,14 +1087,17 @@ mod tests {
     #[test]
     fn admitted_erofs_cold_then_hit_keeps_operation_and_source_identity() {
         use crate::worker_admission::{PathRequest, PathRole};
-        let t = tempfile::tempdir().unwrap();
+        // The EROFS output, spool and lock are published into this directory
+        // and core refuses a group/other-writable publication parent.
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let catalog = t.path().join("catalog");
         fs::create_dir(&catalog).unwrap();
         fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
         let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         let state = t.path().join("state");
         let source = t.path().join("source");
-        fs::create_dir(&source).unwrap();
+        // make_src creates the source itself with explicit private modes: the
+        // owner-read scan refuses any group/other-writable cache object.
         make_src(&source);
         let output = base_erofs_path(&source);
         let spool = PathBuf::from(format!("{}.spool", output.display()));
@@ -1136,17 +1139,20 @@ mod tests {
 
     fn staged_operation(t: &Path) -> (crate::worker_admission::Lease, PathBuf, PathBuf) {
         use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::DirBuilderExt;
+        // Exact private modes, never the host umask: core refuses a
+        // group/other-writable EROFS footprint and stage/discard parent.
         let catalog = t.join("catalog");
         fs::create_dir(&catalog).unwrap();
         fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
         let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         let root = t.join("payload");
-        fs::create_dir(&root).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let out = root.join("image.erofs");
         let spool = root.join("image.erofs.spool");
         let lock = root.join("image.erofs.lock");
-        fs::write(&out, b"old-image").unwrap();
-        fs::write(&spool, b"old-target").unwrap();
+        write_private(&out, b"old-image");
+        write_private(&spool, b"old-target");
         let lease = context.local(&root).unwrap();
         let lease = crate::worker_admission::with_paths(
             lease,
@@ -1175,7 +1181,7 @@ mod tests {
 
     #[test]
     fn owned_spool_disposal_precedes_image_publication_and_preserves_spool_target() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, out, spool_target) = staged_operation(t.path());
         let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
             &lease,
@@ -1202,7 +1208,7 @@ mod tests {
 
     #[test]
     fn replaced_spool_stage_refuses_before_output_promotion() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, out, spool_target) = staged_operation(t.path());
         let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
             &lease,
@@ -1219,7 +1225,7 @@ mod tests {
         image.file_mut().write_all(b"new-image").unwrap();
         let staged_path = spool.path().to_path_buf();
         fs::rename(&staged_path, staged_path.with_extension("held")).unwrap();
-        fs::write(&staged_path, b"replacement").unwrap();
+        write_private(&staged_path, b"replacement");
         assert!(publish_after_spool(&mutation, image, spool).is_err());
         assert!(mutation.commit().is_err());
         assert_eq!(fs::read(out).unwrap(), b"old-image");
@@ -1228,7 +1234,7 @@ mod tests {
 
     #[test]
     fn cancelled_descriptor_writer_does_not_discard_or_promote_owned_stages() {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let (lease, out, spool_target) = staged_operation(t.path());
         let mutation = crate::cli::rootfs_cache::MutationWriter::begin(
             &lease,
@@ -1358,13 +1364,16 @@ mod tests {
     #[test]
     fn owner_read_requires_managed_provenance_and_refuses_external_hardlinks() {
         use crate::worker_admission::{PathRequest, PathRole};
-        let t = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::DirBuilderExt;
+        let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let catalog = t.path().join("catalog");
         fs::create_dir(&catalog).unwrap();
         fs::set_permissions(&catalog, fs::Permissions::from_mode(0o700)).unwrap();
         let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
+        let mut dirs = fs::DirBuilder::new();
+        dirs.mode(0o700);
         let project = t.path().join("project");
-        fs::create_dir(&project).unwrap();
+        dirs.create(&project).unwrap();
         fs::write(project.join("private"), b"keep").unwrap();
         fs::set_permissions(project.join("private"), fs::Permissions::from_mode(0)).unwrap();
         let strict = crate::worker_admission::with_paths(
@@ -1381,7 +1390,16 @@ mod tests {
             0
         );
         drop(strict);
+        // ManagedCacheRead pins an EXISTING owned directory when declared, and
+        // core can neither begin a Cache mutation on a ManagedCacheRead-only
+        // root (its footprint needs MutableTree) nor sync a mode-0 staged
+        // file. As in the core owner-read fixtures, the managed tree therefore
+        // exists, with the exact modes the scenario intends, BEFORE it is
+        // declared; that explicit declaration is the managed provenance.
         let managed = t.path().join("managed");
+        dirs.create(&managed).unwrap();
+        fs::write(managed.join("private"), b"owned").unwrap();
+        fs::set_permissions(managed.join("private"), fs::Permissions::from_mode(0)).unwrap();
         let lease = crate::worker_admission::with_paths(
             context.local(&t.path().join("state-b")).unwrap(),
             &[PathRequest {
@@ -1390,16 +1408,9 @@ mod tests {
             }],
         )
         .unwrap();
-        let mut mutation = lease
-            .begin(crate::worker_admission::MutationPlan::Cache {
-                root: managed.clone(),
-            })
-            .unwrap();
-        let tree = mutation.stage_tree(&managed).unwrap();
-        fs::write(tree.path().join("private"), b"owned").unwrap();
-        fs::set_permissions(tree.path().join("private"), fs::Permissions::from_mode(0)).unwrap();
-        mutation.publish_tree(tree).unwrap();
-        mutation.commit().unwrap();
+        // Positive control: the same declaration reads the tree while every
+        // link is internal, so the refusal below belongs to the external link.
+        lease.owner_read_cache(&managed).unwrap().finish().unwrap();
         fs::hard_link(managed.join("private"), t.path().join("external-link")).unwrap();
         let refused = match lease.owner_read_cache(&managed) {
             Err(_) => true,
@@ -1415,11 +1426,38 @@ mod tests {
         );
     }
 
+    /// A tiny rootfs created with explicit private modes, never the host umask:
+    /// the admitted owner-read scan refuses group/other-writable objects.
     fn make_src(dir: &Path) {
-        fs::create_dir_all(dir.join("bin")).unwrap();
-        let mut f = File::create(dir.join("bin/sh")).unwrap();
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir.join("bin"))
+            .unwrap();
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(dir.join("bin/sh"))
+            .unwrap();
         f.write_all(b"#!/bin/sh\necho hi\n").unwrap();
         std::os::unix::fs::symlink("sh", dir.join("bin/ash")).unwrap();
+    }
+
+    /// Create a NEW regular file with the exact private mode 0600, never the
+    /// host umask: core refuses group/other-writable mutable footprints.
+    fn write_private(path: &Path, bytes: &[u8]) {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
     }
 
     /// A header with every numeric field set, as iii-init's export writes them.
