@@ -230,6 +230,7 @@ rules:
   # project). Any other create matches no rule and waits for a person.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
+  - '!kanban::dispatch::on-turn-completed'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
   - function: kanban::project::create

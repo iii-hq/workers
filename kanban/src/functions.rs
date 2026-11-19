@@ -70,6 +70,8 @@ pub struct Ctx {
     pub iii: Arc<IIIClient>,
     pub store: BoardStore,
     pub config: ConfigCell,
+    /// Board dispatch ([`crate::dispatch`]): poked after every write.
+    pub dispatch: crate::dispatch::Dispatcher,
 }
 
 /* ── requests ─────────────────────────────────────────────────────────── */
@@ -658,7 +660,7 @@ pub fn change_events(
 /// The events are built only for a function that is observed: the change
 /// events (and the releases they select observers by) under the lock, after
 /// one `is_observed` load; the comment event after the write.
-async fn apply<T>(
+pub(crate) async fn apply<T>(
     ctx: &Ctx,
     event: &str,
     run: impl FnOnce(&mut Board, &BoardContext, &str) -> Result<Outcome<T>, String>,
@@ -689,6 +691,7 @@ async fn apply<T>(
     if let Some(event) = comment_event(&ctx.iii, &outcome, at) {
         emit_comment(&ctx.iii, &event).await;
     }
+    ctx.dispatch.poke();
     Ok(outcome)
 }
 
@@ -1125,7 +1128,10 @@ async fn ticket_restore(ctx: Arc<Ctx>, input: TicketRefInput) -> Result<TicketVi
     outcome.result.ok_or_else(|| not_found(&input.id))
 }
 
-async fn comment_create(ctx: Arc<Ctx>, input: CommentCreateInput) -> Result<CommentCreated, Error> {
+pub(crate) async fn comment_create(
+    ctx: Arc<Ctx>,
+    input: CommentCreateInput,
+) -> Result<CommentCreated, Error> {
     let compact = input.compact;
     let create = CreateCommentInput {
         ticket_id: input.ticket_id.clone(),

@@ -87,8 +87,10 @@ async fn main() -> Result<()> {
         iii: iii.clone(),
         store: BoardStore::new(config.clone()),
         config: config.clone(),
+        dispatch: Default::default(),
     });
     functions::register_functions(&ctx);
+    iii_kanban::dispatch::register(&ctx);
 
     configuration::register(&iii, seed)
         .await
@@ -98,6 +100,9 @@ async fn main() -> Result<()> {
     // Closes the boot gap: fetch the authoritative value through the same
     // serialized path every later update takes.
     reload.run().await;
+    // Finish claims a restart interrupted, park cards whose session ended
+    // meanwhile, then start what the rules call for.
+    tokio::spawn(iii_kanban::dispatch::boot(ctx.clone()));
 
     ui::register(&iii);
     // Native app for the iii app (kanban::native-ui); the handle lives as long as the worker.

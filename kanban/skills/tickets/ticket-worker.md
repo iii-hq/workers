@@ -6,8 +6,8 @@ type: how-to
 
 # Working a ticket you own
 
-You were dispatched onto a ticket by someone who cannot talk to you: this engine has no
-`harness::send` (confirm with `engine::functions::list { "prefix": "harness::" }`). Every
+You were dispatched onto a ticket by someone who cannot talk to you: agents cannot call
+`harness::send` (it is internal, and denied to agents by policy). Every
 instruction you get arrived in your task or in a ticket comment, and every answer you give has
 to land as a ticket comment. Your chat is not a channel.
 
@@ -169,7 +169,7 @@ kanban::comment::list {
 - **You reported on the parent.** Symptom: the dispatcher's wake on the parent fires with your
   report mixed into the feature's thread, and your own ticket's reviewer sees nothing. Fix:
   `ticket_id` is always your ticket.
-- **You reached for a function that does not exist.** There is no `harness::send`; the wire is
+- **You reached for a function that does not exist.** Agents cannot call `harness::send`; the wire is
   the ticket. Fix: `engine::functions::list` / `directory::search_functions` before naming an id.
 
 ## Checklist

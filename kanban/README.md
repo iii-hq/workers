@@ -16,6 +16,7 @@ tickets on this board.
 - [Quickstart](#quickstart)
 - [Configuration](#configuration)
 - [Subtasks, releases and projects](#subtasks-releases-and-projects)
+- [Board dispatch](#board-dispatch)
 - [Event functions](#event-functions)
 - [Console pages](#console-pages)
 - [Native app](#native-app)
@@ -278,6 +279,62 @@ returns `projects` and `releases` next to its columns. Agents read projects and
 releases and can set `parent`, `project` and `release` on tickets; planning
 them is a human's call in the console, which `iii-permissions.yaml` enforces
 (the one exception: a deepwork run creates its own project).
+
+## Board dispatch
+
+Off by default. With `dispatch` rules in the configuration, moving a card to
+To do starts the agent it is assigned to, with no chat: the kanban worker calls
+`harness::send` itself. Only a person edits the configuration (agents are
+denied `configuration::set`), so the rules decide which projects run agents,
+in which repository, on which model and how many at once.
+
+```yaml
+dispatch:
+  - assignee: deepwork               # cards assigned to this profile id start a session
+    agent: deepwork                  # the session's agent profile (default: the assignee)
+    model: claude-code/claude-sonnet-5-5   # required: the deepwork profile pins none
+    args: finish=pr                  # extra args for the first message (optional)
+    actors: [user]                   # whose move, assignment or create starts a card (default [user])
+    max_total_tokens: 3000000        # hard token budget of the whole session tree (optional)
+    projects:
+      - project: Assistente DevOps   # project id or name
+        root: /home/me/src/iii-cloud # absolute repository root the session works in
+        max_running: 1               # cards of this rule In progress at once (default 1)
+```
+
+A card starts when it is top-level (not a subtask), in `todo`, assigned to the
+rule's `assignee`, in one of its projects, and its newest create, move to To do
+or assignment was written by one of its `actors`. The dispatcher claims it
+(moves it to In progress with the `starting` pill, as actor `kanban-dispatch`)
+and sends its first message: the card key, then
+`args: project=<its project> ask=board <args>` (`resume=<KEY>` first when the
+card carries `dw:run`, so dragging a finished or stopped deepwork run back to
+To do resumes it). The session is an `automation` session titled
+`<KEY> · <title>`, rooted at the project's `root`, with every function allowed
+as in a console session; the card gets `▶ Started deepwork — session …`.
+
+- **Queue.** A card past `max_running` stays in To do with the `queued` pill
+  and starts, in board order, when a running card of the same root leaves In
+  progress.
+- **A session that stops.** When a dispatched session's final turn ends
+  (`harness::on-turn-completed` with `terminal: true`) and its card is still In
+  progress (failed, cancelled, out of budget, or ended without finishing it),
+  the card moves to Backlog with `unfinished`, the `needs you` pill and a
+  comment naming the session and the cause. Nothing restarts on its own: move
+  the card to To do to resume it. A refused `harness::send` parks the card the
+  same way, labelled `blocked`.
+- **Restarts.** Session ids are `dispatch-<key>-<claim seq>` and double as the
+  send's idempotency key, so a claim interrupted by a restart is sent again on
+  boot without starting a second session, and a late event from an earlier
+  claim changes nothing. On boot the worker also asks `harness::status` about
+  every dispatched card still In progress and parks the ones whose session is
+  gone.
+- **Trust.** `actors` compares the activity `actor`, which callers set
+  themselves: it keeps agents' writes from starting runs by accident, not an
+  agent that pretends to be `user`. Map only projects whose cards you would run.
+
+A rule takes effect from the next board write. Rules that cannot run (no
+assignee or model, no project with an absolute root) are dropped on load.
 
 ## Event functions
 

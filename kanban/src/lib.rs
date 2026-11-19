@@ -9,6 +9,7 @@
 //! - [`events`] — the two event functions, their observers and delivery.
 //! - [`functions`] — the typed `kanban::*` function catalog.
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
+//! - [`dispatch`] — opt-in: start the agent assigned to a To do card.
 //! - [`mentions`] — the `@kanban(id=…)` chat mention provider.
 //! - [`ui`] — the injected console UI; [`native_ui`] — the app for the iii app.
 
@@ -16,6 +17,7 @@ pub mod agents;
 pub mod board;
 pub mod config;
 pub mod configuration;
+pub mod dispatch;
 pub mod events;
 pub mod functions;
 pub mod mentions;

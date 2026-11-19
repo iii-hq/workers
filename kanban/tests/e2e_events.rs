@@ -109,6 +109,7 @@ fn boot_owner(iii: &Arc<IIIClient>, folder: &std::path::Path) {
         iii: iii.clone(),
         store: BoardStore::new(config.clone()),
         config,
+        dispatch: Default::default(),
     }));
 }
 
