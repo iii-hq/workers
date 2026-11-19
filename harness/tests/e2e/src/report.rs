@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use harness::functions::metrics::SessionMetricsResponseV1;
+use harness::functions::metrics::{SessionMetricsResponseV1, SessionUsageTotalsV1};
 use harness::types::model::Model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -185,11 +185,17 @@ impl E2eRunReport {
         self.status = status;
     }
 
-    pub fn update_cost(&mut self, judge_expected: bool) {
-        let subject_usd = self
-            .metrics
+    /// Token and cost totals, `None` while a generation reported no usage at
+    /// all: then every counter is a lower bound, not the run's spend.
+    pub fn measured_usage(&self) -> Option<&SessionUsageTotalsV1> {
+        self.metrics
             .as_ref()
-            .and_then(|metrics| metrics.totals.cost_usd);
+            .map(|metrics| &metrics.totals)
+            .filter(|totals| totals.unreported_generations == 0)
+    }
+
+    pub fn update_cost(&mut self, judge_expected: bool) {
+        let subject_usd = self.measured_usage().and_then(|totals| totals.cost_usd);
         let judge_skipped = !judge_expected || self.status == RunStatus::HardGateFailed;
         let judge_usd = if judge_skipped {
             Some(0.0)
@@ -483,6 +489,31 @@ mod tests {
         assert!((report.aggregate.cost.subject_usd.unwrap() - 0.3).abs() < f64::EPSILON);
         assert_eq!(report.aggregate.cost.judge_usd, None);
         assert_eq!(report.aggregate.cost.total_usd, None);
+    }
+
+    #[test]
+    fn a_generation_without_usage_leaves_the_subject_cost_unknown() {
+        let mut report = run(90, true);
+        report.metrics = Some(SessionMetricsResponseV1 {
+            root_session_id: "session".into(),
+            complete: true,
+            totals: SessionUsageTotalsV1 {
+                cost_usd: Some(0.4),
+                ..Default::default()
+            },
+            by_session: Vec::new(),
+            traces: None,
+        });
+        report.update_cost(false);
+        assert_eq!(report.cost.subject_usd, Some(0.4));
+
+        if let Some(metrics) = report.metrics.as_mut() {
+            metrics.totals.unreported_generations = 2;
+        }
+        report.update_cost(false);
+        assert_eq!(report.cost.subject_usd, None, "a lower bound is no spend");
+        assert_eq!(report.cost.total_usd, None);
+        assert!(report.measured_usage().is_none());
     }
 
     #[test]

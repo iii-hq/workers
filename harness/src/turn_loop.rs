@@ -26,7 +26,8 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{AgentMessage, AssistantMessage, empty_assistant};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnFailure,
+    TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -38,6 +39,16 @@ struct FailureInfo<'a> {
     detail: Option<&'a str>,
     provider: Option<&'a str>,
     model: Option<&'a str>,
+}
+
+impl FailureInfo<'_> {
+    /// What the turn record keeps, for `harness::status`.
+    fn stored(&self) -> TurnFailure {
+        TurnFailure {
+            code: self.code.to_string(),
+            retryable: self.retryable,
+        }
+    }
 }
 
 const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -3292,6 +3303,7 @@ async fn finalize_failed(
     record.exchange_finished = terminal;
     record.continues = woke;
     record.result_error = Some(summary.clone());
+    record.failure = Some(failure.stored());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
@@ -6102,6 +6114,32 @@ mod tests {
         assert_eq!(failure.provider, Some("openai"));
         assert_eq!(failure.model, Some("gpt-test"));
         assert_eq!(super::failure_class(failure), "llm.transient");
+    }
+
+    #[test]
+    fn a_stored_failure_keeps_the_code_and_whether_a_retry_may_succeed() {
+        let error = ChatError {
+            code: Some("router/provider_transient".into()),
+            message: "The provider temporarily failed.".into(),
+            detail: None,
+            kind: Some(ErrorKind::Transient),
+            retryable: None,
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, None);
+        assert_eq!(
+            failure.stored(),
+            crate::types::turn::TurnFailure {
+                code: "router/provider_transient".into(),
+                retryable: true,
+            }
+        );
+        assert_eq!(
+            super::INTERNAL_FAILURE.stored(),
+            crate::types::turn::TurnFailure {
+                code: "harness.turn_internal".into(),
+                retryable: false,
+            }
+        );
     }
 
     #[test]

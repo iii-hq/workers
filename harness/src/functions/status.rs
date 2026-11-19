@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::types::turn::TurnStatus;
+use crate::types::turn::{TurnFailure, TurnStatus};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct StatusRequest {
@@ -67,6 +67,11 @@ pub struct StatusReport {
     /// budget from a finished task.
     #[serde(default)]
     pub stop_reason: Option<String>,
+    /// Why a `failed` turn failed: `code`, and `retryable` when the failure is
+    /// temporary, so a later send into this session may succeed. Present in the
+    /// lean report too, only on a failed turn.
+    #[serde(default)]
+    pub failure: Option<TurnFailure>,
     /// The last generate step's context accounting (budget, categories,
     /// provider-exact usage once it lands) — what a UI meter should show
     /// instead of re-estimating the transcript. Verbose only; absent before
@@ -149,6 +154,7 @@ impl Serialize for StatusReport {
             report.serialize_entry("result_error", &self.result_error)?;
         }
         serialize_optional(&mut report, "stop_reason", &self.stop_reason)?;
+        serialize_optional(&mut report, "failure", &self.failure)?;
 
         report.end()
     }
@@ -273,6 +279,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         result: record.result.clone(),
         result_error: record.result_error.clone(),
         stop_reason: record.stop_reason.clone(),
+        failure: record.failure.clone(),
         expects_wake,
         armed_wakes,
         context,
@@ -367,6 +374,19 @@ mod tests {
         assert_eq!(serialized["status"], "completed");
         assert!(serialized["result_error"].is_null());
         assert_eq!(serialized["stop_reason"], "max_turns");
+    }
+
+    #[test]
+    fn a_failed_turn_reports_its_failure_lean_and_verbose() {
+        let failure = json!({"code": "router/provider_transient", "retryable": true});
+        let mut report = lean_report(None);
+        report.status = TurnStatus::Failed;
+        report.result_error = Some("The provider temporarily failed.".into());
+        report.failure = Some(serde_json::from_value(failure.clone()).unwrap());
+        assert_eq!(serde_json::to_value(&report).unwrap()["failure"], failure);
+
+        report.pending_function_calls = Some(Vec::new());
+        assert_eq!(serde_json::to_value(&report).unwrap()["failure"], failure);
     }
 
     #[test]

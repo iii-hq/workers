@@ -1143,6 +1143,7 @@ mod tests {
             result: None,
             result_error: None,
             stop_reason: None,
+            failure: None,
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,

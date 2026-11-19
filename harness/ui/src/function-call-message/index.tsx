@@ -25,6 +25,7 @@ import {
 } from '@iii-dev/console-ui'
 import { formatCost, formatTokens } from '../lib/format'
 import {
+  lowerBound,
   type MetricsResponse,
   type SessionUsage,
   parseMetrics,
@@ -35,15 +36,16 @@ const METRICS_ID = 'harness::metrics'
 
 function totalsItems(metrics: MetricsResponse): MetaRowItem[] {
   const totals = metrics.totals
+  const ge = lowerBound(totals)
   const items: MetaRowItem[] = [
     { label: 'sessions', value: String(totals.sessions ?? 0) },
     { label: 'turns', value: String(totals.turns ?? 0) },
   ]
-  if (totals.input_tokens != null) items.push({ label: 'in', value: formatTokens(totals.input_tokens) })
-  if (totals.output_tokens != null) items.push({ label: 'out', value: formatTokens(totals.output_tokens) })
+  if (totals.input_tokens != null) items.push({ label: 'in', value: ge + formatTokens(totals.input_tokens) })
+  if (totals.output_tokens != null) items.push({ label: 'out', value: ge + formatTokens(totals.output_tokens) })
   if (totals.cache_read_tokens != null)
-    items.push({ label: 'cache', value: formatTokens(totals.cache_read_tokens) })
-  if (totals.cost_usd != null) items.push({ label: 'cost', value: formatCost(totals.cost_usd) })
+    items.push({ label: 'cache', value: ge + formatTokens(totals.cache_read_tokens) })
+  if (totals.cost_usd != null) items.push({ label: 'cost', value: ge + formatCost(totals.cost_usd) })
   return items
 }
 
@@ -66,6 +68,7 @@ function MiniUsageBar({ total, usable }: { total: number; usable: number }) {
 }
 
 function SessionRow({ row }: { row: SessionUsage }) {
+  const ge = lowerBound(row)
   return (
     <TableRow>
       <TableCell className="harness-ui-sid">
@@ -75,13 +78,13 @@ function SessionRow({ row }: { row: SessionUsage }) {
       </TableCell>
       <TableCell className="harness-ui-num">{row.turns ?? 0}</TableCell>
       <TableCell className="harness-ui-num">
-        {row.input_tokens != null ? formatTokens(row.input_tokens) : '—'}
+        {row.input_tokens != null ? ge + formatTokens(row.input_tokens) : '—'}
       </TableCell>
       <TableCell className="harness-ui-num">
-        {row.output_tokens != null ? formatTokens(row.output_tokens) : '—'}
+        {row.output_tokens != null ? ge + formatTokens(row.output_tokens) : '—'}
       </TableCell>
       <TableCell className="harness-ui-num">
-        {row.cost_usd != null ? formatCost(row.cost_usd) : '—'}
+        {row.cost_usd != null ? ge + formatCost(row.cost_usd) : '—'}
       </TableCell>
       <TableCell>
         {row.context ? (
