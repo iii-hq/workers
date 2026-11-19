@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
@@ -66,13 +68,33 @@ function render() {
   )
 }
 
-/** Where `text` sits relative to the footer's composer column. */
+/**
+ * Where the status panel holding `text` sits: parsed, so a panel right after
+ * the composer column's closing tag reads as outside it.
+ */
 function placement(html: string, text: string) {
-  const footer = html.lastIndexOf('<footer')
-  const column = html.indexOf('mx-auto max-w-[760px]', footer)
-  const at = html.indexOf(text)
-  return { found: at >= 0, inColumn: footer >= 0 && column >= 0 && at > column }
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const column = doc.querySelector('footer > div[class~="max-w-[760px]"]')
+  const panel = [
+    ...doc.querySelectorAll('[role="status"], [role="alert"]'),
+  ].find((element) => element.textContent?.includes(text))
+  return {
+    found: panel !== undefined,
+    inColumn: column !== null && panel !== undefined && column.contains(panel),
+  }
 }
+
+it('reads a panel after the composer column as outside it', () => {
+  const panel = '<div role="status">Switching models</div>'
+  const column = '<div class="mx-auto max-w-[760px]"><textarea></textarea>'
+
+  expect(
+    placement(`<footer>${column}${panel}</div></footer>`, 'Switching models'),
+  ).toEqual({ found: true, inColumn: true })
+  expect(
+    placement(`<footer>${column}</div>${panel}</footer>`, 'Switching models'),
+  ).toEqual({ found: true, inColumn: false })
+})
 
 beforeEach(() => {
   modelSwitch.state.pending = true
