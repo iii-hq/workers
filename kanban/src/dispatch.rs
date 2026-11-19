@@ -668,6 +668,32 @@ async fn park_stopped(ctx: &Arc<Ctx>, key: &str, reason: &str) {
     }
 }
 
+/// The fields of `harness::on-turn-completed` the dispatcher reads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TurnCompleted {
+    pub session_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub terminal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// What the observer delivers (`capture: input`): the event as `input`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TurnCompletedDelivery {
+    #[serde(default)]
+    pub input: Option<TurnCompleted>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Ack {
+    pub ok: bool,
+}
+
 /// Register the final-turn sink and observe `harness::on-turn-completed` for
 /// dispatched sessions. The observer stays pending while no harness runs.
 pub fn register(ctx: &Arc<Ctx>) {
@@ -675,16 +701,17 @@ pub fn register(ctx: &Arc<Ctx>) {
     let handler_ctx = ctx.clone();
     ctx.iii.register_function(
         ON_TURN_COMPLETED_FN,
-        RegisterFunction::new_async(move |observed: Value| {
+        RegisterFunction::new_async(move |delivery: TurnCompletedDelivery| {
             let ctx = handler_ctx.clone();
             async move {
-                let event = observed.get("input").cloned().unwrap_or(observed);
-                if let Ok(board) = ctx.store.read().await
+                if let Some(event) = delivery.input
+                    && let Ok(event) = serde_json::to_value(event)
+                    && let Ok(board) = ctx.store.read().await
                     && let Some((key, reason)) = stopped_reason(&board, &event)
                 {
                     park_stopped(&ctx, &key, &reason).await;
                 }
-                Ok::<Value, Error>(json!({ "ok": true }))
+                Ok::<Ack, Error>(Ack { ok: true })
             }
         })
         .description(
