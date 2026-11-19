@@ -391,6 +391,35 @@ mod tests {
     }
 
     #[test]
+    fn a_doubled_slash_after_a_namespace_qualifier_is_an_error() {
+        let structured = RuleSpec::Structured {
+            rule_id: None,
+            function: "laptop//shell::exec".into(),
+            action: Action::Deny,
+            modes: None,
+            args: Default::default(),
+        };
+        for spec in [
+            RuleSpec::Shorthand("!laptop//shell::exec".into()),
+            RuleSpec::Shorthand("laptop//shell::exec".into()),
+            structured,
+        ] {
+            let err = compile_rule(&spec, 0).unwrap_err().to_string();
+            assert!(
+                err.contains("namespace qualifier must be a plain namespace"),
+                "{err}"
+            );
+        }
+        assert!(
+            compile_rule(
+                &RuleSpec::Shorthand("laptop/openai-codex::codex/gpt".into()),
+                0
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn split_namespace_pattern_takes_a_plain_prefix_before_the_first_slash() {
         assert_eq!(
             split_namespace_pattern("laptop/shell::*"),

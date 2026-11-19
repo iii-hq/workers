@@ -89,7 +89,7 @@ fn compile_constraint(
     }
 }
 
-/// A glob or empty qualifier would silently match nothing (`!*/x` and `!/x`
+/// A glob, empty or doubled-slash qualifier would silently match nothing (`!*/x` and `!/x`
 /// denied nothing).
 fn check_namespace_qualifier(
     pattern: &str,
@@ -98,7 +98,10 @@ fn check_namespace_qualifier(
 ) -> Result<(), CompileError> {
     let bad = match namespace {
         None if pattern.starts_with('/') => Some(""),
-        ns => ns.filter(|ns| ns.contains(['*', '?', '[', '{'])),
+        Some(ns) if ns.contains(['*', '?', '[', '{']) => Some(ns),
+        // `laptop//x` splits to the literal id `/x`, which no call carries.
+        Some(ns) if pattern[ns.len() + 1..].starts_with('/') => Some(&pattern[..ns.len() + 2]),
+        _ => None,
     };
     match bad {
         Some(ns) => Err(CompileError::Rule {

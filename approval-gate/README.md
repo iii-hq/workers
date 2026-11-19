@@ -97,7 +97,7 @@ worker seeds/backfills the stored entry so `rules` are editable in the console.
 Rule patterns may name an engine namespace: prefix `<namespace>/` to match
 one namespace (`laptop/shell::*`); a bare pattern matches every namespace.
 The qualifier must be a plain, non-empty namespace: `*/shell::exec` or
-`/shell::exec` is a compile error, and the whole rule list is then dropped
+`/shell::exec` is a compile error, as is a doubled slash (`laptop//shell::exec`), and the whole rule list is then dropped
 (an empty policy): every deny becomes a hold a person can approve, and nothing
 becomes an automatic allow.
 For a call that names no namespace (an older harness), a qualified `deny`
