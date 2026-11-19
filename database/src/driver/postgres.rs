@@ -141,6 +141,7 @@ impl ToSql for PgBind {
         }
         if matches!(*base, Type::JSON | Type::JSONB) {
             let doc = match self {
+                PgBind::Json(v) => return v.to_sql(base, out),
                 PgBind::Null => return Ok(postgres_types::IsNull::Yes),
                 PgBind::Text(s) => {
                     if *base == Type::JSONB {
@@ -154,41 +155,40 @@ impl ToSql for PgBind {
                 PgBind::Float(f) => serde_json::Number::from_f64(*f)
                     .map(JsonValue::Number)
                     .ok_or("a non-finite number is not JSON")?,
-                PgBind::Json(v) => v.clone(),
             };
             return doc.to_sql(base, out);
         }
         match self {
             PgBind::Null => Ok(postgres_types::IsNull::Yes),
-            PgBind::Bool(b) => b.to_sql(ty, out),
-            PgBind::Int(i) => match *ty {
+            PgBind::Bool(b) => b.to_sql(base, out),
+            PgBind::Int(i) => match *base {
                 // Reject overflow rather than silently wrapping. Without
                 // try_from, `(*i as i16)` truncates 40000 → -25536 and writes
                 // it to the column; that's silent data corruption with no
                 // server-side error since the wire bytes are technically valid.
                 Type::INT2 => i16::try_from(*i)
                     .map_err(|_| format!("value {i} out of range for INT2 (i16)").into())
-                    .and_then(|v: i16| v.to_sql(ty, out)),
+                    .and_then(|v: i16| v.to_sql(base, out)),
                 Type::INT4 => i32::try_from(*i)
                     .map_err(|_| format!("value {i} out of range for INT4 (i32)").into())
-                    .and_then(|v: i32| v.to_sql(ty, out)),
-                Type::INT8 => i.to_sql(ty, out),
-                Type::FLOAT4 => (*i as f32).to_sql(ty, out),
-                Type::FLOAT8 => (*i as f64).to_sql(ty, out),
-                _ => i.to_sql(ty, out),
+                    .and_then(|v: i32| v.to_sql(base, out)),
+                Type::INT8 => i.to_sql(base, out),
+                Type::FLOAT4 => (*i as f32).to_sql(base, out),
+                Type::FLOAT8 => (*i as f64).to_sql(base, out),
+                _ => i.to_sql(base, out),
             },
-            PgBind::Float(f) => match *ty {
-                Type::FLOAT4 => (*f as f32).to_sql(ty, out),
-                _ => f.to_sql(ty, out),
+            PgBind::Float(f) => match *base {
+                Type::FLOAT4 => (*f as f32).to_sql(base, out),
+                _ => f.to_sql(base, out),
             },
-            PgBind::Text(s) => s.to_sql(ty, out),
+            PgBind::Text(s) => s.to_sql(base, out),
             // A JSON array for an array parameter (`$1::int[]`) is the array
             // itself, not a json document.
-            PgBind::Json(v @ JsonValue::Array(_)) => match ty.kind() {
+            PgBind::Json(v @ JsonValue::Array(_)) => match base.kind() {
                 postgres_types::Kind::Array(member) => encode_pg_array(member, v, out),
-                _ => v.to_sql(ty, out),
+                _ => v.to_sql(base, out),
             },
-            PgBind::Json(v) => v.to_sql(ty, out),
+            PgBind::Json(v) => v.to_sql(base, out),
         }
     }
 
@@ -325,8 +325,9 @@ fn map_err_read_only(e: tokio_postgres::Error) -> DbError {
 
 /// The server's own words for a database error — message, detail, hint and
 /// the object it concerns — instead of tokio-postgres' bare "db error".
-/// Only what the server or the encoder reports; no parameter is echoed beyond
-/// what an encoder message (e.g. an out-of-range number) says.
+/// Only what the server or the encoder reports. That can quote the caller's own
+/// values (an out-of-range number, `Token "x" is invalid`, a unique
+/// violation's `Key (…)=(…)`); nothing else is added.
 pub(crate) fn pg_error_text(e: &tokio_postgres::Error) -> String {
     let Some(db) = e.as_db_error() else {
         // Client-side failures (a parameter that cannot be encoded) keep
@@ -1797,6 +1798,44 @@ mod tests {
                 other => panic!("expected DriverError, got {other:?}"),
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_error_text_includes_the_encoder_cause() {
+        let Some(p) = fresh_pool().await else { return };
+        let m = driver_message(
+            query(&p, "SELECT $1::int2", &[JsonParam::Int(40000)], opts())
+                .await
+                .unwrap_err(),
+        );
+        assert!(m.contains("out of range for INT2"), "{m}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_domains_over_arrays_and_ints_bind_like_their_base() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_dja", &[], &[]).await;
+        let _ = execute(&p, "DROP DOMAIN IF EXISTS db_di", &[], &[]).await;
+        execute(&p, "CREATE DOMAIN db_dja AS int4[]", &[], &[])
+            .await
+            .unwrap();
+        execute(&p, "CREATE DOMAIN db_di AS int4", &[], &[])
+            .await
+            .unwrap();
+        let r = query(
+            &p,
+            "SELECT $1::db_dja AS a, $2::db_di AS i",
+            &[
+                JsonParam::Json(serde_json::json!([1, 2])),
+                JsonParam::Int(7),
+            ],
+            opts(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&r.rows[0].0[1], RowValue::Int(7)));
+        let _ = execute(&p, "DROP DOMAIN db_dja", &[], &[]).await;
+        let _ = execute(&p, "DROP DOMAIN db_di", &[], &[]).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
