@@ -380,6 +380,8 @@ pub(crate) fn reserve(record: &mut WorkflowRunRecord, uid: &str) -> Reserve {
         state: NodeState::Pending,
         session_id: Some(sid),
         retries: cp.retries,
+        // The uid's one transient retry spans its attempts.
+        transient_retries: cp.transient_retries,
         ..Default::default()
     };
     match old {
@@ -1409,6 +1411,8 @@ mod tests {
             session_id: Some("wf_run_test_plan@r0".into()),
             turn_id: Some("t0".into()),
             pending_at: Some(5),
+            transient_retries: 1,
+            retry_at: Some(60_005),
             ..Default::default()
         };
         crate::timeout::mark_refire(&mut cp, 1);
@@ -1418,12 +1422,14 @@ mod tests {
             reserve(&mut record, "plan"),
             Reserve::Replaces("wf_run_test_plan@r0".into())
         );
+        // The used transient retry carries over; a pending continue does not.
         assert_eq!(
             record.nodes["plan"],
             NodeCheckpoint {
                 state: NodeState::Pending,
                 session_id: Some("wf_run_test_plan@r1".into()),
                 retries: 1,
+                transient_retries: 1,
                 ..Default::default()
             }
         );

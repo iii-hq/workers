@@ -64,7 +64,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             run.expect_message_counts(2, 4, 0)?;
             run.expect_no_duplicate_messages()?;
             anyhow::ensure!(
-                run.status["transient_resumes"] == 3 && run.status["result"] == PARTIAL,
+                run.status["transient_resumes"] == 3
+                    && run.status["result"] == PARTIAL
+                    && run.status["failure"]["retryable"] == true,
                 "{}",
                 run.status
             );

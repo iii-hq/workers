@@ -43,6 +43,9 @@ const nodeDetailSchema = z
         cache_read_tokens: count,
         cache_write_tokens: count,
         cost_usd: count,
+        sessions: count,
+        turns: count,
+        unreported_generations: count,
       })
       .passthrough()
       .nullish(),
@@ -50,7 +53,13 @@ const nodeDetailSchema = z
   .passthrough()
 
 const phaseCountsSchema = z
-  .object({ total: z.number(), done: z.number() })
+  .object({
+    total: z.number(),
+    done: z.number(),
+    failed: count,
+    cancelled: count,
+    running: count,
+  })
   .passthrough()
 
 export const runDetailsSchema = statusResponseSchema.extend({
@@ -180,6 +189,8 @@ export interface WorkflowNodeView {
   model?: string
   profile?: string
   sessionId?: string
+  /** A session was reserved for it: a pending node with one is between attempts. */
+  reserved: boolean
   startedAt?: number
   finishedAt?: number
   lastGenerateAt?: number
@@ -189,6 +200,8 @@ export interface WorkflowNodeView {
   awaitingFunctions: boolean
   tokens: number | null
   costUsd: number | null
+  /** A settled node has a generation that reported no usage: tokens and cost are lower bounds. */
+  atLeast: boolean
   error?: string
 }
 
@@ -196,6 +209,10 @@ export interface WorkflowPhaseView {
   phase: string
   done: number
   total: number
+  failed: number
+  cancelled: number
+  running: number
+  /** Empty for a phase whose nodes the status left out. */
   nodes: WorkflowNodeView[]
 }
 
@@ -210,21 +227,30 @@ export interface WorkflowRunView {
   tokens: number | null
   costUsd: number | null
   error?: string
-  /** In order of first appearance; empty until a read with details. */
+  /** Phases with no listed node first, then in order of first appearance; empty until a read with details. */
   phases: WorkflowPhaseView[]
   nodeCount: number
   /** Nodes the status left without details (it describes at most 100). */
   unlisted: number
 }
 
+const sum = (values: (number | null)[]): number | null => {
+  const known = values.filter((value) => value !== null)
+  return known.length ? known.reduce((a, b) => a + b, 0) : null
+}
+
 function usageTokens(usage: NodeDetail['usage']): number | null {
   if (!usage) return null
-  return (
-    (usage.input_tokens ?? 0) +
-    (usage.output_tokens ?? 0) +
-    (usage.cache_read_tokens ?? 0) +
-    (usage.cache_write_tokens ?? 0)
-  )
+  // Nothing generated in a session that was read: a measured zero. A session
+  // the metrics could not find (`sessions: 0`) is an unknown count.
+  if (usage.turns === 0 && (usage.sessions ?? 1) > 0) return 0
+  // No counter known is an unknown count, never 0.
+  return sum([
+    usage.input_tokens ?? null,
+    usage.output_tokens ?? null,
+    usage.cache_read_tokens ?? null,
+    usage.cache_write_tokens ?? null,
+  ])
 }
 
 /**
@@ -249,11 +275,6 @@ export function labelTitle(
   return shared.length >= 3 ? shared : `${labels[0]} +${labels.length - 1}`
 }
 
-const sum = (values: (number | null)[]): number | null => {
-  const known = values.filter((value) => value !== null)
-  return known.length ? known.reduce((a, b) => a + b, 0) : null
-}
-
 export function buildRunView(
   ref: WorkflowRunRef,
   status: RunDetails & { status: RunStatus },
@@ -276,6 +297,7 @@ export function buildRunView(
           detail.started_at != null
             ? (detail.session_id ?? undefined)
             : undefined,
+        reserved: detail.session_id != null,
         startedAt: detail.started_at ?? undefined,
         finishedAt: detail.finished_at ?? undefined,
         lastGenerateAt: detail.last_generate_at ?? undefined,
@@ -283,6 +305,11 @@ export function buildRunView(
         awaitingFunctions: detail.harness_status === 'awaiting_functions',
         tokens: usageTokens(detail.usage),
         costUsd: detail.usage?.cost_usd ?? null,
+        // A running node's in-flight generation has no usage until it lands:
+        // its counts grow anyway, so only a settled node reads as a bound.
+        atLeast:
+          detail.state !== 'running' &&
+          (detail.usage?.unreported_generations ?? 0) > 0,
         error: status.node_errors?.[uid],
       }
       return { view, base, index, depth: depths[base] ?? 0 }
@@ -298,26 +325,48 @@ export function buildRunView(
     )
     .map((node) => node.view)
 
+  const phaseView = (phase: string): WorkflowPhaseView => ({
+    phase,
+    done: 0,
+    total: 0,
+    failed: 0,
+    cancelled: 0,
+    running: 0,
+    nodes: [],
+  })
   const phases: WorkflowPhaseView[] = []
   for (const node of nodes) {
     let group = phases.find((phase) => phase.phase === node.phase)
     if (!group) {
-      const counted = status.phases?.[node.phase]
-      group = {
-        phase: node.phase,
-        done: counted?.done ?? 0,
-        total: counted?.total ?? 0,
-        nodes: [],
-      }
+      group = phaseView(node.phase)
       phases.push(group)
     }
     group.nodes.push(node)
   }
-  // Nodes without a phase are not in the status's `phases`: count them here.
+  // The status describes at most 100 nodes, done ones last: a phase none of
+  // them names still gets its header, ahead of the phases that started later.
+  // shortcut: such phases keep the status's key order, not the run's; order
+  // them by the definition if several missing at once read out of order.
+  if (details.length > 0)
+    phases.unshift(
+      ...Object.keys(status.phases ?? {})
+        .filter((name) => !phases.some((group) => group.phase === name))
+        .map(phaseView),
+    )
   for (const group of phases) {
-    if (group.total > 0) continue
-    group.total = group.nodes.length
-    group.done = group.nodes.filter((node) => node.state === 'done').length
+    const listed = status.phases?.[group.phase]
+    // Nodes without a phase are not in the status's `phases`: count them here.
+    const counted = listed
+      ? // The status's `failed` includes its `cancelled`.
+        { ...listed, failed: (listed.failed ?? 0) - (listed.cancelled ?? 0) }
+      : tallyNodes(
+          Object.fromEntries(group.nodes.map((node) => [node.uid, node.state])),
+        )
+    group.total = counted.total
+    group.done = counted.done
+    group.running = counted.running ?? 0
+    group.failed = counted.failed
+    group.cancelled = counted.cancelled ?? 0
   }
 
   const nodeCount = Object.keys(status.nodes).length
@@ -402,10 +451,88 @@ const facts = (parts: (string | null | undefined | false)[]) =>
 
 /** `codex/gpt-6-luna · 36k tokens · $0.42`; the profile goes in the row's tooltip. */
 export function nodeFacts(node: WorkflowNodeView): string {
+  const atLeast = node.atLeast ? '≥' : ''
   return facts([
     node.model,
-    node.tokens !== null && `${formatTokenCount(node.tokens)} tokens`,
-    node.costUsd !== null && node.costUsd > 0 && formatUsd(node.costUsd),
+    node.tokens !== null && `${atLeast}${formatTokenCount(node.tokens)} tokens`,
+    node.costUsd !== null &&
+      node.costUsd > 0 &&
+      `${atLeast}${formatUsd(node.costUsd)}`,
+  ])
+}
+
+/**
+ * A run lists its nodes under a header per phase once two phases name them. It
+ * rests on the definition's phases alone, so a loop pass never flips the list.
+ */
+export const groupsByPhase = (run: WorkflowRunView): boolean =>
+  run.phases.filter((phase) => phase.phase).length > 1
+
+/** The phase a live run is at: started, not all settled. Its name is in ink. */
+export const phaseCurrent = (run: WorkflowRunView, phase: WorkflowPhaseView) =>
+  run.live &&
+  phase.done + phase.failed + phase.cancelled < phase.total &&
+  // A node a retry put back to pending keeps its session: its phase stays current.
+  (phase.done + phase.failed + phase.cancelled + phase.running > 0 ||
+    phase.nodes.some((node) => node.reserved))
+
+/** A phase opens by itself while current, or to show why a node of it failed. */
+export const phaseOpens = (run: WorkflowRunView, phase: WorkflowPhaseView) =>
+  phaseCurrent(run, phase) || phase.failed > 0
+
+/** A phase header's mark: going while a node runs, then failed, cancelled or done. */
+export function phaseState(phase: WorkflowPhaseView) {
+  if (phase.running > 0) return 'running'
+  if (phase.failed > 0) return 'failed'
+  if (phase.cancelled > 0) return 'cancelled'
+  return phase.done === phase.total ? 'done' : 'pending'
+}
+
+/** The mark a phase leads with: its state, and the going one while a live run waits at it between attempts. */
+export const phaseMark = (run: WorkflowRunView, phase: WorkflowPhaseView) => {
+  const state = phaseState(phase)
+  // Only a retry's wait holds a session; a loop's next pass or a DAG wait does not.
+  return state === 'pending' &&
+    run.live &&
+    phase.nodes.some((node) => node.state === 'pending' && node.reserved)
+    ? 'running'
+    : state
+}
+
+/** `1 failed · 1 cancelled · 1/3` at a phase header's end. */
+export function phaseFacts(phase: WorkflowPhaseView): string {
+  return facts([
+    phase.failed > 0 && `${phase.failed} failed`,
+    phase.cancelled > 0 && `${phase.cancelled} cancelled`,
+    `${phase.done}/${phase.total}`,
+  ])
+}
+
+/** A label under its phase header, the phase left out: `explore:code` under `explore` reads `code`. */
+export function underPhase(label: string, phase: string): string {
+  if (!phase || !label.toLowerCase().startsWith(phase.toLowerCase()))
+    return label
+  const rest = label.slice(phase.length)
+  const cut = rest.replace(/^[\s·:,;-]+/, '')
+  // Only a separator ends the phase: `tests` under `test` keeps its name.
+  return cut && cut !== rest ? cut : label
+}
+
+/** The one node of a phase that has nothing else to show: its header and its row read as one line. */
+export const solePhaseNode = (
+  phase: WorkflowPhaseView,
+): WorkflowNodeView | null =>
+  phase.total === 1 && phase.nodes.length === 1 ? phase.nodes[0] : null
+
+/** A one-node phase's line: the node's own name first when the phase does not already say it, then its facts. */
+export function phaseNodeLine(
+  run: WorkflowRunView,
+  node: WorkflowNodeView,
+): string {
+  const own = underPhase(nodeLabel(run, node), node.phase)
+  return facts([
+    own.toLowerCase() !== node.phase.toLowerCase() && own,
+    nodeFacts(node),
   ])
 }
 
@@ -468,13 +595,17 @@ export function nodeLine(run: WorkflowRunView, node: WorkflowNodeView): string {
 export function runFacts(run: WorkflowRunView): string {
   const { counts } = run
   const failed = counts.failed + counts.cancelled
-  // Totals cover only the described nodes (at most 100) whose usage was read:
-  // a started node without usage had its live read fail.
+  // Totals cover only the described nodes (at most 100) whose usage is
+  // known: a started node without a token count had its live read fail or
+  // reported none, and one with a generation that reported no usage is
+  // itself a lower bound.
   const atLeast =
     run.unlisted > 0 ||
     run.phases.some((phase) =>
       phase.nodes.some(
-        (node) => node.startedAt !== undefined && node.tokens === null,
+        (node) =>
+          node.atLeast ||
+          (node.startedAt !== undefined && node.tokens === null),
       ),
     )
       ? '≥'
