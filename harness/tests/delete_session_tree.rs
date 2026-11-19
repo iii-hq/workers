@@ -1916,25 +1916,27 @@ async fn ordinary_stop_kills_the_stopped_subtree_background_jobs() {
 async fn ordinary_stop_sweeps_background_jobs_in_another_namespace() {
     let stack = Stack::new("running").await;
     let own = harness::clients::engine::resolve_namespace("shell::exec_bg", None);
+    // Never equal to `own`, whatever III_NAMESPACE the run inherits.
+    let other = format!("{own}-other");
     let exec_bg = |namespace: &str| harness::clients::engine::FunctionDescriptor {
         function_id: "shell::exec_bg".into(),
         namespace: namespace.into(),
         description: None,
         parameters: None,
     };
-    harness::discovery::apply(&stack.deps.functions, vec![exec_bg(&own), exec_bg("zz-a")]).await;
+    harness::discovery::apply(&stack.deps.functions, vec![exec_bg(&own), exec_bg(&other)]).await;
     ordinary_stop(&stack, "child2").await;
     let calls = stack.store.lock().unwrap().calls.clone();
     let sweeps = calls
         .iter()
         .filter(|(id, _)| id == "shell::kill-session-jobs")
         .count();
-    assert_eq!(sweeps, 2, "own namespace and zz-a: {calls:?}");
-    let to_zz_a = calls
+    assert_eq!(sweeps, 2, "own namespace and {other}: {calls:?}");
+    let to_other = calls
         .iter()
-        .filter(|(id, ns)| id == "namespace of shell::kill-session-jobs" && ns == "zz-a")
+        .filter(|(id, ns)| id == "namespace of shell::kill-session-jobs" && *ns == other)
         .count();
-    assert_eq!(to_zz_a, 1, "{calls:?}");
+    assert_eq!(to_other, 1, "{calls:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
