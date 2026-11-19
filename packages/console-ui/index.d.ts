@@ -467,6 +467,8 @@ export interface ContextSectionSummary {
   tone?: 'accent' | 'alert' | 'warn' | 'ok'
   /** Nothing to show: the section is left out until this turns false. */
   empty?: boolean
+  /** Work under way (`2 running`), with a pulsing dot, folded or not. */
+  live?: string
 }
 
 /** Props a worker's section in the chat's Context panel receives. */
@@ -476,6 +478,8 @@ export interface ContextSectionProps {
   workingDir?: string
   /** The panel is open: read only while it is. */
   active: boolean
+  /** The section is unfolded; absent (older consoles) means it is. */
+  open?: boolean
   /** A turn is running; read again when it ends. */
   isStreaming: boolean
   /** The header's count and brief; `empty` leaves the section out. */
@@ -484,10 +488,10 @@ export interface ContextSectionProps {
 
 /**
  * A section of the chat's Context side panel. The console draws its header
- * (title, worker, count, brief, fold and drag handle) and keeps where the
- * user put it, folded or hidden; the render draws the body, and stays
- * mounted while folded so its summary keeps up. Duplicate `id`: last
- * registration wins.
+ * (title, worker unless it reads the same, count, brief, live mark, fold and
+ * drag handle) and keeps where the user put it, folded or hidden; the
+ * render draws the body, and stays mounted while folded so its summary
+ * keeps up. Duplicate `id`: last registration wins.
  */
 export interface ContextSectionRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
@@ -495,7 +499,7 @@ export interface ContextSectionRegistration {
   title: string
   /**
    * Its first place among the panel's sections, whose own run from 100
-   * (Project) to 700 (Links) in steps of 100; 1000 when left out. The
+   * (Project) to 800 (Tracking) in steps of 100; 1000 when left out. The
    * order the user drags wins.
    */
   order?: number
@@ -826,6 +830,11 @@ export interface Host {
     registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void
+    /**
+     * Open this session in a new pane beside the chat, the way a sub-agent
+     * row does. Feature-detect on older consoles.
+     */
+    openConversation?(sessionId: string): void
     /**
      * Ask the mounted conversation to adopt a validated working directory.
      * Call this only from an explicit user action, such as the user picking
@@ -1767,7 +1776,7 @@ export declare const SettingsField: React.ComponentType<
 export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
 
 export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
-  tone?: 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
+  tone?: 'accent' | 'alert' | 'warn' | 'ink' | 'ok' | 'ghost'
   pulse?: boolean
 }
 export declare const StatusDot: React.ComponentType<StatusDotProps>

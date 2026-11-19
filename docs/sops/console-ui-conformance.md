@@ -108,6 +108,7 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `vscode` | yes | Shared page chrome, `List`/`ListItem`, `IconButton`, `StatusPanel`; `lucide-react` | Embedded VS Code workbench frame |
 | `web` | yes | Minimal shared renderer; container query | HTTP response payload |
 | `whatsapp` | yes | Shared page chrome, session list, controls, configuration fields, overlays, live hooks and pane navigation; instance configuration identity | Separate linked-phone and Meta Cloud API setup, local QR pairing, text/template/attachment tests, message/group archives and bounded activity feed |
+| `workflow` | yes | Chat cards on `MetaRow`/`Badge`/`Chip`/`Eyebrow`/`ActionLine`, `uiClasses.pulse`, `unwrapEnvelope`; Context section on `uiClasses.tree*` + `StatusDot`, feature-detected `chat.registerContextSection`; `lucide-react` | DAG summary, run progress board, per-node rows |
 | `worktree` | yes | Migrated: `useWorkerLive`, `useContainerNarrow`, `lucide-react`, `useCopyFlash`, `IconButton`, `Skeleton`, `uiClasses.spin`, `Eyebrow`, `--color-*-strong`; graph `<svg>` and 10px edge labels allowlisted | Worktree ownership and graph semantics |
 
 ## Native Console sweep

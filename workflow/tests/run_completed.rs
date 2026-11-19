@@ -148,6 +148,7 @@ fn record(run_id: &str, status: RunStatus) -> WorkflowRunRecord {
         notify: None,
         caller_session_id: None,
         caller_fs_root: None,
+        title: None,
         idem_key: None,
         created_at: 0,
         updated_at: 0,

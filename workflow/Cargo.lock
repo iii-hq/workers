@@ -731,6 +731,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-console-ui"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-filter"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2447,6 +2459,7 @@ dependencies = [
  "async-trait",
  "clap",
  "iii-config-client",
+ "iii-console-ui",
  "iii-helpers",
  "iii-sdk",
  "jsonschema",

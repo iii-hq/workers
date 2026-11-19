@@ -127,6 +127,7 @@ for each moved key.
 | `max_concurrency` | no cap | Live node sessions at once (running, or reserved for a send). At least 1. |
 | `default_functions` | everything except `workflow::*`, `configuration::*`, `approval::*`, `harness::hook::*` and `harness::send` | Dispatch policy of every node without `functions`. |
 | `idempotency_key`, `notify` | none | See [Getting the result back](#getting-the-result-back-dont-poll). |
+| `title` | the call's description | Display title of the run, returned by `workflow::list` and `workflow::status`. Trimmed and cut to 80 characters; blank counts as omitted. When an agent omits it, the pre-call hook fills it from the description the agent gave its `workflow::start` call. A repeated `idempotency_key` returns the original run with its original title. |
 
 | Node key | Default | Meaning |
 |---|---|---|
@@ -330,8 +331,8 @@ field of its JSON result equals a string, as a do-while:
 
 ## `workflow::status`
 
-`workflow::status { run_id, details? }` returns `run_id`, `status`, `nodes`
-(uid → state), `node_errors`, `node_results`, `result`, `result_error`,
+`workflow::status { run_id, details? }` returns `run_id`, `status`, `title`
+(when the run has one), `nodes` (uid → state), `node_errors`, `node_results`, `result`, `result_error`,
 `created_at`, `updated_at` and `phases`.
 
 - `nodes` also lists the nodes that have not started as `pending`. An
@@ -357,8 +358,14 @@ when it cut the list:
   "usage": {"complete": true, "sessions": 3, "turns": 12, "function_calls": 40,
             "function_call_errors": 0, "input_tokens": 1, "output_tokens": 1,
             "cache_read_tokens": 1, "cache_write_tokens": 1,
-            "reasoning_tokens": null, "cost_usd": 0.42}}}
+            "reasoning_tokens": null, "cost_usd": 0.42},
+  "depth": 2}}
 ```
+
+`depth` is the longest `depends_on` path from a source to the node in the
+definition: 0 for a node with no dependencies, and for every node once the
+definition is gone. A fanout copy and a loop pass take their node's depth. The
+console orders nodes that have not started by it.
 
 `usage` comes from `harness::metrics` over the node session's tree, and `model`
 and `last_generate_at` from its context snapshots. `harness_status` and
@@ -377,6 +384,17 @@ model. Callers compute idle time from `last_generate_at`.
 against, so harness queue wait, parked time and the 2 s settle poll are
 included. It covers the current attempt: a timeout refire starts it again, and
 `attempt` counts those; each earlier attempt ran the full `timeout_ms`.
+
+## `workflow::list`
+
+`workflow::list { caller_session_id }` returns `{ runs: [{ run_id, status,
+title?, created_at, updated_at }] }`, newest `created_at` first, `status` as
+`workflow::status` gives it. It lists the runs started from that session or
+from any session in its `harness::session-tree` (its sub-agents), or from the
+session alone when the tree read fails. A run stays listed until it is
+collected, 24 h after it ended. For an agent's call the pre-call hook
+overwrites `caller_session_id` with the agent's own session, so an agent lists
+only its own runs. The console's Workflow section calls it.
 
 ## Limits
 
@@ -498,7 +516,7 @@ to wait for one run, use args, never filters.
 |---|---|---|---|
 | `cron::on-tick` | args `{ expression: <sweep_expression> }` | `workflow::sweep` | the tick (`capture: [output]`, read as `payload.output`) |
 | `harness::on-turn-completed` | filters `{ "input.session_id": { "$prefix": "wf_" } }` | `workflow::wake` | `TurnCompletedEvent` of a node session (`capture: [output]`, read as `payload.output`) |
-| `harness::hook::on-pre-call` | args `{ functions: ["workflow::start"], on_error: "fail_closed", timeout_ms: 30000 }` | `workflow::stamp-reply` | the pre-call hook input; returns the hook decision. A hook error or timeout refuses the agent's `workflow::start` |
+| `harness::hook::on-pre-call` | args `{ functions: ["workflow::start", "workflow::list", "workflow-result::submit"], on_error: "fail_closed", timeout_ms: 30000 }` | `workflow::stamp-reply` | the pre-call hook input; returns the hook decision, with the caller's session stamped as `caller_session_id` and, on `workflow::start` without a `title`, the call's `description` as `title`. A hook error or timeout refuses the agent's call |
 | `harness::hook::on-post-turn` | args `{ sessions: ["wf_*"], on_error: "fail_open", timeout_ms: 30000, retry_prompt: <answer-format nudge> }` | `workflow::validate-result` | the post-turn hook input; returns `deny` with a reason for a JSON node's answer that is not a JSON value matching its schema, unless a wake is armed. An error or timeout passes the turn, and reconcile still checks the result |
 | `harness::hook::on-pre-generate` | args `{ on_error: "fail_open", inject_prompt: <workflow guidance> }`, only while `inject_guidance` is on | `workflow::inject-guidance` | not called: the harness joins `inject_prompt` into the system prompt |
 | `configuration::on-updated` | filters on `input.id` and `input.event_type` (through `iii-config-client`) | `workflow::on-config-change` | the configuration event (`capture: [output]`, read as `payload.output`) |
@@ -506,6 +524,18 @@ to wait for one run, use args, never filters.
 A `sweep_expression` change observes the new expression first, then disposes
 the old observer; if the cron worker refuses the new expression
 (`INVALID_CRON_EXPRESSION`), the old observer and schedule stay.
+
+## Console UI
+
+The worker ships its console UI into any running console (the injectable-UI
+protocol): a Workflow section in the chat's Context panel, which lists the
+chat's runs with `workflow::list` and follows each with `workflow::status`, and
+the chat cards for `workflow::start`, `workflow::status`, `workflow::stop` and
+`workflow::node-result`. It is built from `ui/` (`build.rs` runs `pnpm install
+&& pnpm build` when `ui/dist/` is missing or stale; `SKIP_UI_BUILD=1` uses it
+as is) and embedded in the binary (`src/ui.rs`). For the dev loop, set
+`III_WORKFLOW_UI_WATCH` to the build output directory (or `1` for `ui/dist`)
+to hot-swap the assets in open consoles.
 
 ---
 

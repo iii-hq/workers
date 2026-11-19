@@ -8,6 +8,7 @@ use crate::config::WorkerConfig;
 use crate::locks::WorkflowLocks;
 
 pub mod inject_guidance;
+pub mod list;
 pub mod node_result;
 pub mod stamp_reply;
 pub mod start;
@@ -77,14 +78,7 @@ where
     Fut: std::future::Future<Output = Result<serde_json::Value, Error>>,
 {
     // Tree first: a session a finishing spawn adds later is not flagged by the stop, so disposing its wake starts a turn.
-    let tree = serde_json::json!({ "root_session_id": session_id });
-    let sessions = match call("harness::session-tree", tree).await {
-        Ok(resp) => listed_ids(&resp, "sessions", "session_id"),
-        Err(error) => {
-            tracing::warn!(session_id, %error, "harness::session-tree failed; root only");
-            vec![session_id.to_string()]
-        }
-    };
+    let sessions = session_tree(session_id, call).await;
     let stop = serde_json::json!({ "session_id": session_id, "quiet_deadlines": true });
     if let Err(error) = call("harness::stop", stop).await {
         // A wake disposed from a session the stop did not flag wakes it with a new turn.
@@ -92,6 +86,23 @@ where
         return None;
     }
     Some(sessions)
+}
+
+/// The sessions of `harness::session-tree` under `session_id`, or the root alone when
+/// the read fails.
+async fn session_tree<F, Fut>(session_id: &str, call: &F) -> Vec<String>
+where
+    F: Fn(&'static str, serde_json::Value) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, Error>>,
+{
+    let tree = serde_json::json!({ "root_session_id": session_id });
+    match call("harness::session-tree", tree).await {
+        Ok(resp) => listed_ids(&resp, "sessions", "session_id"),
+        Err(error) => {
+            tracing::warn!(session_id, %error, "harness::session-tree failed; root only");
+            vec![session_id.to_string()]
+        }
+    }
 }
 
 /// Dispose every observer of `sessions` (read before the stop), then stop the root again.
@@ -279,6 +290,15 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              `notify` to workflow::start, to be pushed the outcome.",
         ),
     );
+    let d = deps.clone();
+    iii.register_function(
+        list::LIST_ID,
+        RegisterFunction::new_async(move |req: list::ListRequest| {
+            let d = d.clone();
+            async move { list::handle(&d, req).await.map_err(Error::from) }
+        })
+        .description(list::LIST_DESC),
+    );
 
     let d = deps.clone();
     iii.register_function(
@@ -332,8 +352,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             stamp_reply::handle(event).await
         })
         .description(
-            "Internal pre_call hook on workflow::start: stamps the caller's session and folder \
-             into the arguments. Always continues; not called directly.",
+            "Internal pre_call hook on workflow::start, workflow::list and workflow-result::submit: \
+             stamps the caller's session and folder into the arguments. Always continues; not \
+             called directly.",
         ),
     );
 
