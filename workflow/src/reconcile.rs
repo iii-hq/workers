@@ -1,10 +1,11 @@
 use serde_json::{Value, json};
 
 use crate::{
+    config::WorkerConfig,
     error::WorkflowError,
     ids::node_result_key,
     state,
-    types::{NodeState, WorkflowDef, WorkflowRunRecord},
+    types::{NodeCheckpoint, NodeState, WorkflowDef, WorkflowRunRecord},
 };
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,9 @@ pub enum NodeOutcome {
     StillRunning,
     Done(Value),
     Failed(String),
+    /// A failed turn the harness marks `failure.retryable`: the provider failed
+    /// temporarily, so a later send into the session may succeed.
+    Transient(String),
     Cancelled,
 }
 
@@ -217,6 +221,240 @@ async fn correct_json_node(
 }
 
 // ---------------------------------------------------------------------------
+// Transient-failure retry of read-only nodes
+// ---------------------------------------------------------------------------
+
+/// Transient-failure continues a read-only node uid gets, over all its attempts.
+const MAX_TRANSIENT_RETRIES: u32 = 1;
+
+/// Wait before the continue. The harness's own resumes run back to back, so they
+/// all fall in the same outage; provider rate-limit windows are per minute.
+const TRANSIENT_RETRY_DELAY_MS: i64 = 60_000;
+
+/// The default `sweep_expression` period. Only the schedule-time estimate of the
+/// send assumes it; the send-time check holds whatever the sweep runs at.
+const SWEEP_PERIOD_MS: i64 = 60_000;
+
+/// What a continue must have left of the node's `timeout_ms` window when sent: it
+/// reloads the whole transcript, so one the timeout stops at once is paid for nothing.
+const MIN_CONTINUE_MS: i64 = 300_000;
+
+/// What continues a read-only node's failed turn, in its own session.
+const CONTINUE_PROMPT: &str = "The provider failed temporarily and your previous turn ended \
+    before you delivered your result. Continue from where you stopped: everything above still \
+    stands, so do not repeat calls that already returned. Then deliver the complete result as \
+    your opening message asks.";
+
+/// The node's own `timeout_ms`, else the worker default. Pure.
+fn node_timeout_ms(def: &WorkflowDef, cfg: &WorkerConfig, uid: &str) -> u64 {
+    crate::timeout::node_limits(
+        def,
+        uid,
+        cfg.default_pending_timeout_ms,
+        cfg.max_node_retries,
+    )
+    .0
+}
+
+/// At least `MIN_CONTINUE_MS` of the node's window, `timeout_ms` from its
+/// attempt's send, is left at `at`. Pure.
+fn continue_fits(cp: &NodeCheckpoint, timeout_ms: u64, at: i64) -> bool {
+    let deadline = cp
+        .pending_at
+        .unwrap_or(at)
+        .saturating_add(i64::try_from(timeout_ms).unwrap_or(i64::MAX));
+    deadline.saturating_sub(at) >= MIN_CONTINUE_MS
+}
+
+/// Schedule the continue of a node whose turn failed transiently: true when it
+/// is read-only, the run is not stopping, its uid has not used its retry, and
+/// the continue, sent by the first sweep after the wait, still fits in its
+/// `timeout_ms` window (`continue_fits`). Pure.
+fn schedule_transient_retry(
+    def: &WorkflowDef,
+    uid: &str,
+    cp: &mut NodeCheckpoint,
+    abort: bool,
+    timeout_ms: u64,
+    now: i64,
+) -> bool {
+    let read_only = def
+        .nodes
+        .get(uid.split('#').next().unwrap_or(uid))
+        .is_some_and(|n| n.read_only);
+    let sent_by = now + TRANSIENT_RETRY_DELAY_MS + SWEEP_PERIOD_MS;
+    if abort
+        || !read_only
+        || cp.transient_retries >= MAX_TRANSIENT_RETRIES
+        || !continue_fits(cp, timeout_ms, sent_by)
+    {
+        return false;
+    }
+    cp.transient_retries += 1;
+    cp.retry_at = Some(now + TRANSIENT_RETRY_DELAY_MS);
+    true
+}
+
+/// The outcome of a node `uid` whose turn failed transiently with `err` and
+/// delivered nothing: still running when its continue is scheduled
+/// (`schedule_transient_retry`, against the node's own `timeout_ms`), else failed.
+/// Pure.
+fn transient_outcome(
+    def: &WorkflowDef,
+    cfg: &WorkerConfig,
+    record: &mut WorkflowRunRecord,
+    uid: &str,
+    err: String,
+    now: i64,
+) -> NodeOutcome {
+    let timeout_ms = node_timeout_ms(def, cfg, uid);
+    let abort = record.abort;
+    let scheduled = record
+        .nodes
+        .get_mut(uid)
+        .is_some_and(|cp| schedule_transient_retry(def, uid, cp, abort, timeout_ms, now));
+    if scheduled {
+        tracing::info!(run_id = %record.run_id, node = %uid, "reconcile: read-only node failed transiently; continuing it in a minute");
+        NodeOutcome::StillRunning
+    } else {
+        NodeOutcome::Failed(err)
+    }
+}
+
+/// The node waits for a continue that is due. Pure.
+fn retry_due(cp: &NodeCheckpoint, now: i64) -> bool {
+    cp.state == NodeState::Running && cp.retry_at.is_some_and(|at| at <= now)
+}
+
+/// Whether to send a due node's continue, by its session's `harness::status`
+/// reply. A session that moved on (a person or another sender continued it)
+/// stops waiting, so the normal poll settles it. One still on the transient
+/// failure but past `continue_fits` (a slower sweep, a held run lock) fails
+/// with that error. Pure.
+fn still_due(cp: &mut NodeCheckpoint, resp: &Value, timeout_ms: u64, now: i64) -> bool {
+    let NodeOutcome::Transient(err) = status_outcome(resp, false, cp.submitted) else {
+        cp.retry_at = None;
+        return false;
+    };
+    if continue_fits(cp, timeout_ms, now) {
+        return true;
+    }
+    cp.retry_at = None;
+    cp.state = NodeState::Failed;
+    cp.result_error = Some(stored_error(&err).to_string());
+    false
+}
+
+/// The `harness::send` payload that continues a node's session. It names no
+/// options, so the turn inherits the session's model, profile, functions and
+/// folder; the key makes a resend after a lost reply a harness no-op. Pure.
+fn continue_payload(session_id: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "idempotency_key": format!("{session_id}#transient-retry"),
+        "message": CONTINUE_PROMPT,
+    })
+}
+
+/// A continue's `harness::send` reply (`Ok` with the new turn id) applied to the
+/// node: sent, it is no longer waiting and keeps its attempt's `pending_at`, so
+/// the continued turn runs in what is left of `timeout_ms`; refused outright, it
+/// fails; any other error leaves it due for the next pass. Pure.
+fn apply_continue_reply(cp: &mut NodeCheckpoint, reply: Result<Option<String>, String>) {
+    match reply {
+        Ok(turn_id) => {
+            cp.retry_at = None;
+            cp.turn_id = turn_id;
+        }
+        Err(e) if crate::timeout::is_permanent_send_error(&e) => {
+            cp.state = NodeState::Failed;
+            cp.result_error = Some(format!("transient retry refused: {e}"));
+        }
+        Err(_) => {}
+    }
+}
+
+/// `harness::status` of the caller's session reads `cancelled`.
+async fn caller_cancelled(
+    deps: &crate::functions::Deps,
+    caller: &str,
+    timeout_ms: u64,
+) -> Result<bool, iii_sdk::Error> {
+    let resp = deps
+        .iii
+        .call(iii_sdk::CallRequest {
+            function_id: "harness::status".into(),
+            payload: json!({ "session_id": caller }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await?;
+    Ok(resp["status"] == "cancelled")
+}
+
+/// Send the continue of every node whose retry is due, on a run not stopping.
+/// Each node's session is read first (`still_due`). A failed read or send leaves
+/// the node due; a later pass fails it once too little of its window is left.
+async fn send_due_retries(
+    deps: &crate::functions::Deps,
+    def: &WorkflowDef,
+    cfg: &WorkerConfig,
+    record: &mut WorkflowRunRecord,
+    now: i64,
+) {
+    if record.abort {
+        return;
+    }
+    let due: Vec<(String, String)> = record
+        .nodes
+        .iter()
+        .filter(|(_, cp)| retry_due(cp, now))
+        .filter_map(|(uid, cp)| cp.session_id.clone().map(|sid| (uid.clone(), sid)))
+        .collect();
+    let run_id = record.run_id.clone();
+    let call = |function_id: &str, payload: Value| {
+        deps.iii.call(iii_sdk::CallRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(cfg.dispatch_timeout_ms),
+        })
+    };
+    for (uid, sid) in due {
+        let status = call(
+            "harness::status",
+            json!({ "session_id": sid, "verbose": true }),
+        )
+        .await;
+        let timeout_ms = node_timeout_ms(def, cfg, &uid);
+        let Some(cp) = record.nodes.get_mut(&uid) else {
+            continue;
+        };
+        match status {
+            Ok(resp) if still_due(cp, &resp, timeout_ms, now) => {}
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(run_id = %run_id, node = %uid, error = %e, "reconcile: status read before a transient retry failed; retrying next pass");
+                continue;
+            }
+        }
+        let reply = call("harness::send", continue_payload(&sid))
+            .await
+            .map(|resp| resp["turn_id"].as_str().map(str::to_string))
+            .map_err(|e| e.to_string());
+        match &reply {
+            Ok(_) => {
+                tracing::info!(run_id = %run_id, node = %uid, "reconcile: continued a read-only node after a transient provider failure")
+            }
+            Err(e) => {
+                tracing::warn!(run_id = %run_id, node = %uid, error = %e, "reconcile: transient retry send failed")
+            }
+        }
+        apply_continue_reply(cp, reply);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // classify_terminal (pure)
 // ---------------------------------------------------------------------------
 
@@ -286,6 +524,10 @@ pub(crate) fn status_outcome(resp: &Value, abort: bool, submitted: bool) -> Node
     match classify_terminal(status, resp.get("result").cloned(), result_error) {
         // A stopped parked node reads its wiring ack until the harness records the cancel.
         NodeOutcome::Done(_) if abort => NodeOutcome::StillRunning,
+        // An older harness reports no `failure`: the turn fails the node.
+        NodeOutcome::Failed(err) if status == "failed" && resp["failure"]["retryable"] == true => {
+            NodeOutcome::Transient(err)
+        }
         outcome => outcome,
     }
 }
@@ -294,10 +536,12 @@ pub(crate) fn status_outcome(resp: &Value, abort: bool, submitted: bool) -> Node
 // reconcile_run
 // ---------------------------------------------------------------------------
 
-/// The caller session to ask `harness::status` when this pass cancelled an
-/// `on_error: continue` node of a run not already stopping. Stopping the caller
-/// cancels every node in its tree, and a tolerant node would otherwise settle as
-/// null and let its consumers fire. Pure.
+/// The caller session to ask `harness::status` on a run not already stopping,
+/// when this pass cancelled an `on_error: continue` node or a node waits for its
+/// transient continue. Stopping the caller cancels every in-flight node in its
+/// tree: a tolerant node would otherwise settle as null and let its consumers
+/// fire, and the stop skips a waiting node, whose turn already ended, so every
+/// pass checks while one waits. Pure.
 fn caller_to_check<'a>(
     def: &WorkflowDef,
     record: &'a WorkflowRunRecord,
@@ -306,10 +550,30 @@ fn caller_to_check<'a>(
     let tolerant = cancelled
         .iter()
         .any(|uid| crate::dag::tolerant(def, uid.split('#').next().unwrap_or(uid)));
+    let waiting = record
+        .nodes
+        .values()
+        .any(|cp| cp.state == NodeState::Running && cp.retry_at.is_some());
     record
         .caller_session_id
         .as_deref()
-        .filter(|_| tolerant && !record.abort)
+        .filter(|_| (tolerant || waiting) && !record.abort)
+}
+
+/// The `(uid, session_id, submitted)` of every node to poll: Running with a
+/// session, and not waiting for a transient continue (`send_due_retries` reads
+/// that one when it is due). Pure.
+fn pollable(record: &WorkflowRunRecord) -> Vec<(String, String, bool)> {
+    record
+        .nodes
+        .iter()
+        .filter(|(_, cp)| cp.state == NodeState::Running && cp.retry_at.is_none())
+        .filter_map(|(uid, cp)| {
+            cp.session_id
+                .as_ref()
+                .map(|sid| (uid.clone(), sid.clone(), cp.submitted))
+        })
+        .collect()
 }
 
 /// For each `Running` checkpoint that has a `session_id`, poll
@@ -322,25 +586,20 @@ fn caller_to_check<'a>(
 /// has the run written, then its session stopped so the wake never runs. A
 /// tolerant node cancelled by a stop of the caller's turn aborts the run
 /// (`caller_to_check`); a failed caller poll defers that cancel to the next pass.
+/// A read-only node whose turn failed transiently waits for its continue
+/// (`transient_outcome`) and is not polled (`pollable`) until `send_due_retries`
+/// sends it; while it waits, a stopped caller turn aborts the run, and a failed
+/// caller poll holds every continue for the next pass.
 pub async fn reconcile_run(
     deps: &crate::functions::Deps,
     def: &WorkflowDef,
     record: &mut WorkflowRunRecord,
 ) -> Result<(), WorkflowError> {
-    // Collect the (uid, session_id, submitted) tuples for all Running nodes so we
-    // don't hold a &mut reference across .await points.
-    let running: Vec<(String, String, bool)> = record
-        .nodes
-        .iter()
-        .filter(|(_, cp)| cp.state == NodeState::Running)
-        .filter_map(|(uid, cp)| {
-            cp.session_id
-                .as_ref()
-                .map(|sid| (uid.clone(), sid.clone(), cp.submitted))
-        })
-        .collect();
+    // Owned, so no &mut reference is held across .await points.
+    let running = pollable(record);
 
-    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    let cfg = deps.cfg().await;
+    let timeout_ms = cfg.dispatch_timeout_ms;
     let (iii, run_id) = (&deps.iii, &record.run_id);
     // A transient/timeout error polling ONE node must NOT abort reconciliation of
     // the rest of the run (which previously bubbled up, failed the whole tick, and
@@ -394,11 +653,18 @@ pub async fn reconcile_run(
             },
             // A turn that fails after its result was accepted (its closing line, say)
             // still delivered: settle with that result.
-            NodeOutcome::Failed(err) => match submitted_result(deps, record, &uid).await {
-                Err(_) => NodeOutcome::StillRunning,
-                Ok(Some(value)) => NodeOutcome::Done(value),
-                Ok(None) => NodeOutcome::Failed(err),
-            },
+            outcome @ (NodeOutcome::Failed(_) | NodeOutcome::Transient(_)) => {
+                match submitted_result(deps, record, &uid).await {
+                    Err(_) => NodeOutcome::StillRunning,
+                    Ok(Some(value)) => NodeOutcome::Done(value),
+                    Ok(None) => match outcome {
+                        NodeOutcome::Transient(err) => {
+                            transient_outcome(def, &cfg, record, &uid, err, now)
+                        }
+                        failed => failed,
+                    },
+                }
+            }
             other => other,
         };
         // Left armed, the wake would run a turn in the session of a settled node.
@@ -421,7 +687,7 @@ pub async fn reconcile_run(
                     crate::telemetry::record_node_terminal(true, dur);
                 }
             }
-            NodeOutcome::Failed(err) => {
+            NodeOutcome::Failed(err) | NodeOutcome::Transient(err) => {
                 if let Some(cp) = record.nodes.get_mut(&uid) {
                     cp.result_error = Some(stored_error(&err).to_string());
                     cp.state = NodeState::Failed;
@@ -442,19 +708,11 @@ pub async fn reconcile_run(
         }
     }
 
+    let mut caller_unread = false;
     if let Some(caller) = caller_to_check(def, record, &cancelled).map(str::to_string) {
-        match deps
-            .iii
-            .call(iii_sdk::CallRequest {
-                function_id: "harness::status".into(),
-                payload: json!({ "session_id": caller }),
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
-            .await
-        {
-            Ok(resp) if resp["status"] == "cancelled" => record.abort = true,
-            Ok(_) => {}
+        match caller_cancelled(deps, &caller, timeout_ms).await {
+            Ok(true) => record.abort = true,
+            Ok(false) => {}
             Err(e) => {
                 tracing::warn!(
                     run_id = %record.run_id,
@@ -463,8 +721,14 @@ pub async fn reconcile_run(
                     "reconcile: caller status poll failed; re-checking next pass"
                 );
                 defer_tolerant_cancels(def, record, &cancelled);
+                caller_unread = true;
             }
         }
+    }
+
+    // The caller may have stopped: no continue goes out until a pass reads it.
+    if !caller_unread {
+        send_due_retries(deps, def, &cfg, record, now).await;
     }
 
     if !leftover.is_empty() {
@@ -1113,6 +1377,395 @@ mod tests {
                 ("cancel".to_string(), NodeOutcome::Cancelled, true)
             ]
         );
+    }
+
+    fn transient() -> Value {
+        json!({"status": "failed", "result_error": "The provider temporarily failed.",
+               "failure": {"code": "router/provider_transient", "retryable": true},
+               "expects_wake": false})
+    }
+
+    #[test]
+    fn a_retryable_failure_is_transient_only_when_the_harness_says_so() {
+        let err = || "The provider temporarily failed.".to_string();
+        assert_eq!(
+            status_outcome(&transient(), false, false),
+            NodeOutcome::Transient(err())
+        );
+        // An older harness reports no `failure`.
+        let mut older = transient();
+        older.as_object_mut().unwrap().remove("failure");
+        assert_eq!(
+            status_outcome(&older, false, false),
+            NodeOutcome::Failed(err())
+        );
+        let mut permanent = transient();
+        permanent["failure"]["retryable"] = json!(false);
+        assert_eq!(
+            status_outcome(&permanent, false, false),
+            NodeOutcome::Failed(err())
+        );
+        // Only a failed turn: a completed one with an error is the node's own failure.
+        let mut completed = transient();
+        completed["status"] = json!("completed");
+        assert_eq!(
+            status_outcome(&completed, false, false),
+            NodeOutcome::Failed(err())
+        );
+        // A parked node keeps waiting on its wake.
+        let mut armed = transient();
+        armed["expects_wake"] = json!(true);
+        assert_eq!(
+            status_outcome(&armed, false, false),
+            NodeOutcome::StillRunning
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_settles_only_from_the_confirming_poll() {
+        let (outcomes, polled, confirms) = settle(
+            vec![
+                ("a", vec![Some(transient()), Some(transient())]),
+                ("b", vec![Some(transient()), running()]),
+            ],
+            false,
+        )
+        .await;
+        assert_eq!(confirms, 1);
+        assert_eq!(polled, ["a", "b", "a", "b"]);
+        assert_eq!(
+            outcomes,
+            [
+                (
+                    "a".to_string(),
+                    NodeOutcome::Transient("The provider temporarily failed.".into())
+                ),
+                ("b".to_string(), NodeOutcome::StillRunning)
+            ]
+        );
+    }
+
+    /// `ro` read-only, `rw` not; `ro` fans out, and a loop pass of it reads as `ro#it1`.
+    fn retry_def() -> WorkflowDef {
+        serde_json::from_value(json!({
+            "nodes": {
+                "ro": {"agent": {"model": "m"}, "input": {"from": "fanout_item"},
+                       "fanout": {"items": [1, 2, 3]}, "read_only": true},
+                "rw": {"agent": {"model": "m"}, "input": {"from": "run_input"}}
+            },
+            "output": {"from": ["node:ro", "node:rw"]}
+        }))
+        .expect("def")
+    }
+
+    fn bare_record() -> WorkflowRunRecord {
+        serde_json::from_value(json!({
+            "run_id": "r", "step": 0, "status": "awaiting_nodes", "def_ref": "r",
+            "input": {}, "created_at": 0, "updated_at": 0
+        }))
+        .expect("record")
+    }
+
+    fn running_since(pending_at: i64) -> crate::types::NodeCheckpoint {
+        crate::types::NodeCheckpoint {
+            state: NodeState::Running,
+            session_id: Some("wf_r_ro@r0".into()),
+            turn_id: Some("t1".into()),
+            pending_at: Some(pending_at),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_a_read_only_node_with_its_retry_and_time_left_is_scheduled() {
+        let def = retry_def();
+        let timeout = 600_000;
+        let now = 1_000;
+        for uid in ["ro", "ro#2", "ro#it1"] {
+            let mut cp = running_since(0);
+            assert!(
+                schedule_transient_retry(&def, uid, &mut cp, false, timeout, now),
+                "{uid}"
+            );
+            assert_eq!(cp.transient_retries, 1);
+            assert_eq!(cp.retry_at, Some(now + TRANSIENT_RETRY_DELAY_MS));
+            // The budget is spent: a second failure fails the node, untouched.
+            let spent = cp.clone();
+            assert!(!schedule_transient_retry(
+                &def,
+                uid,
+                &mut cp,
+                false,
+                timeout,
+                now + 90_000
+            ));
+            assert_eq!(cp, spent);
+        }
+        // Not read-only, a node the definition lacks, a stopping run: never.
+        for (uid, abort) in [("rw", false), ("gone", false), ("ro", true)] {
+            let mut cp = running_since(0);
+            assert!(
+                !schedule_transient_retry(&def, uid, &mut cp, abort, timeout, now),
+                "{uid}"
+            );
+            assert_eq!(cp, running_since(0));
+        }
+    }
+
+    #[test]
+    fn a_retry_without_time_to_work_is_not_scheduled() {
+        let def = retry_def();
+        // The wait, one sweep period and the continue's own minimum must fit in
+        // what is left of the window.
+        let needed = TRANSIENT_RETRY_DELAY_MS + SWEEP_PERIOD_MS + MIN_CONTINUE_MS;
+        let timeout = 1_200_000;
+        let mut cp = running_since(0);
+        assert!(!schedule_transient_retry(
+            &def,
+            "ro",
+            &mut cp,
+            false,
+            timeout,
+            1_200_000 - needed + 1
+        ));
+        assert_eq!(cp, running_since(0));
+        assert!(schedule_transient_retry(
+            &def,
+            "ro",
+            &mut cp,
+            false,
+            timeout,
+            1_200_000 - needed
+        ));
+        // A 40-minute node (timeout_ms 42 min) whose harness resumes give up at
+        // minute 40 fails at once: its continue would be stopped as it starts.
+        let mut cp = running_since(0);
+        assert!(!schedule_transient_retry(
+            &def, "ro", &mut cp, false, 2_520_000, 2_400_000
+        ));
+        assert_eq!(cp, running_since(0));
+    }
+
+    #[test]
+    fn a_transient_failure_keeps_a_read_only_node_running_under_its_own_timeout() {
+        let mut def = retry_def();
+        def.nodes.get_mut("ro").unwrap().timeout_ms = Some(2_520_000);
+        // Neither the worker default nor the dispatch timeout leaves room.
+        let cfg = WorkerConfig {
+            default_pending_timeout_ms: 1_000,
+            dispatch_timeout_ms: 30_000,
+            ..Default::default()
+        };
+        let mut record = bare_record();
+        record.nodes.insert("ro#2".into(), running_since(0));
+        record.nodes.insert("rw".into(), running_since(0));
+        let err = || "The provider temporarily failed.".to_string();
+        let now = 60_000;
+
+        assert_eq!(
+            transient_outcome(&def, &cfg, &mut record, "ro#2", err(), now),
+            NodeOutcome::StillRunning
+        );
+        assert_eq!(
+            record.nodes["ro#2"].retry_at,
+            Some(now + TRANSIENT_RETRY_DELAY_MS)
+        );
+        // The second transient failure fails it.
+        assert_eq!(
+            transient_outcome(&def, &cfg, &mut record, "ro#2", err(), now + 200_000),
+            NodeOutcome::Failed(err())
+        );
+        // Not read-only: fails. A stopping run: fails.
+        assert_eq!(
+            transient_outcome(&def, &cfg, &mut record, "rw", err(), now),
+            NodeOutcome::Failed(err())
+        );
+        record.nodes.insert("ro#1".into(), running_since(0));
+        record.abort = true;
+        assert_eq!(
+            transient_outcome(&def, &cfg, &mut record, "ro#1", err(), now),
+            NodeOutcome::Failed(err())
+        );
+        assert_eq!(record.nodes["ro#1"], running_since(0));
+    }
+
+    #[test]
+    fn a_node_waiting_for_its_continue_is_not_polled() {
+        let mut record = bare_record();
+        let sid = |uid: &str| Some(format!("wf_r_{uid}@r0"));
+        for (uid, cp) in [
+            (
+                "a",
+                NodeCheckpoint {
+                    session_id: sid("a"),
+                    ..running_since(0)
+                },
+            ),
+            (
+                "b",
+                NodeCheckpoint {
+                    session_id: sid("b"),
+                    retry_at: Some(5_000),
+                    ..running_since(0)
+                },
+            ),
+            (
+                "c",
+                NodeCheckpoint {
+                    session_id: sid("c"),
+                    submitted: true,
+                    ..running_since(0)
+                },
+            ),
+            (
+                "d",
+                NodeCheckpoint {
+                    session_id: None,
+                    ..running_since(0)
+                },
+            ),
+            (
+                "e",
+                NodeCheckpoint {
+                    session_id: sid("e"),
+                    state: NodeState::Done,
+                    ..running_since(0)
+                },
+            ),
+        ] {
+            record.nodes.insert(uid.into(), cp);
+        }
+        assert_eq!(
+            pollable(&record),
+            [
+                ("a".to_string(), "wf_r_a@r0".to_string(), false),
+                ("c".to_string(), "wf_r_c@r0".to_string(), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn caller_checked_on_every_pass_while_a_node_waits() {
+        let def = retry_def();
+        let mut record = WorkflowRunRecord {
+            caller_session_id: Some("S".into()),
+            ..bare_record()
+        };
+        record.nodes.insert(
+            "ro".into(),
+            NodeCheckpoint {
+                retry_at: Some(5_000),
+                ..running_since(0)
+            },
+        );
+        assert_eq!(caller_to_check(&def, &record, &[]), Some("S"));
+        record.abort = true;
+        assert_eq!(caller_to_check(&def, &record, &[]), None);
+        record.abort = false;
+        // Continued: its turn is in flight again, so a caller stop cancels it.
+        record.nodes.get_mut("ro").unwrap().retry_at = None;
+        assert_eq!(caller_to_check(&def, &record, &[]), None);
+    }
+
+    #[test]
+    fn a_retry_is_due_from_its_time_on_a_running_node() {
+        let mut cp = running_since(0);
+        assert!(!retry_due(&cp, 5_000), "no retry scheduled");
+        cp.retry_at = Some(5_000);
+        assert!(!retry_due(&cp, 4_999));
+        assert!(retry_due(&cp, 5_000));
+        assert!(retry_due(&cp, 9_000));
+        cp.state = NodeState::Cancelled;
+        assert!(!retry_due(&cp, 9_000));
+    }
+
+    #[test]
+    fn a_session_that_moved_on_stops_waiting_for_its_retry() {
+        let waiting = || crate::types::NodeCheckpoint {
+            retry_at: Some(5_000),
+            ..running_since(0)
+        };
+        let mut cp = waiting();
+        assert!(still_due(&mut cp, &transient(), 600_000, 5_000));
+        assert_eq!(cp.retry_at, Some(5_000));
+        // Someone continued the session, it already finished, or it is gone:
+        // the normal poll settles the node from here.
+        for resp in [
+            running().unwrap(),
+            completed(json!("done")).unwrap(),
+            Value::Null,
+        ] {
+            let mut cp = waiting();
+            assert!(!still_due(&mut cp, &resp, 600_000, 5_000), "{resp}");
+            assert_eq!(cp.retry_at, None);
+            assert!(!retry_due(&cp, 9_000));
+            assert_eq!(cp.state, NodeState::Running);
+        }
+    }
+
+    #[test]
+    fn a_late_pass_fails_the_node_instead_of_sending_its_continue() {
+        let waiting = || crate::types::NodeCheckpoint {
+            transient_retries: 1,
+            retry_at: Some(5_000),
+            ..running_since(0)
+        };
+        let last = 600_000 - MIN_CONTINUE_MS;
+        let mut cp = waiting();
+        assert!(still_due(&mut cp, &transient(), 600_000, last));
+        assert_eq!(cp, waiting());
+        // A slower sweep reached it later: the continue would have no time to work.
+        let mut cp = waiting();
+        assert!(!still_due(&mut cp, &transient(), 600_000, last + 1));
+        assert_eq!(cp.state, NodeState::Failed);
+        assert_eq!(
+            cp.result_error.as_deref(),
+            Some("The provider temporarily failed.")
+        );
+        assert_eq!(cp.retry_at, None);
+    }
+
+    #[test]
+    fn continue_payload_names_no_options_under_one_key_per_session() {
+        let payload = continue_payload("wf_r_ro#2@r0");
+        assert_eq!(
+            payload,
+            json!({
+                "session_id": "wf_r_ro#2@r0",
+                "idempotency_key": "wf_r_ro#2@r0#transient-retry",
+                "message": CONTINUE_PROMPT
+            })
+        );
+    }
+
+    #[test]
+    fn a_continue_reply_clears_the_wait_fails_the_node_or_leaves_it_due() {
+        let waiting = || crate::types::NodeCheckpoint {
+            transient_retries: 1,
+            retry_at: Some(5_000),
+            ..running_since(7)
+        };
+        let mut cp = waiting();
+        apply_continue_reply(&mut cp, Ok(Some("t2".into())));
+        assert_eq!(cp.retry_at, None);
+        assert_eq!(cp.turn_id.as_deref(), Some("t2"));
+        // The continued turn runs in what is left of the attempt's window.
+        assert_eq!(cp.pending_at, Some(7));
+        assert_eq!(cp.state, NodeState::Running);
+
+        let mut cp = waiting();
+        let refused = "remote error (invocation_failed): harness/invalid_request: bad";
+        apply_continue_reply(&mut cp, Err(refused.into()));
+        assert_eq!(cp.state, NodeState::Failed);
+        assert_eq!(
+            cp.result_error.as_deref(),
+            Some(&*format!("transient retry refused: {refused}"))
+        );
+
+        let mut cp = waiting();
+        apply_continue_reply(&mut cp, Err("invocation timed out".into()));
+        assert_eq!(cp, waiting());
+        assert!(retry_due(&cp, 5_000));
     }
 
     #[tokio::test]

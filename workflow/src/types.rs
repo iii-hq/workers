@@ -144,11 +144,18 @@ pub struct NodeDef {
     /// the worker's `default_pending_timeout_ms`. Fanout items use the node's value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// Refires after a timeout, each in a new session; a failed turn is never
-    /// retried. At most 10; the default refires once, and a refire repeats the
-    /// node's side effects. `0` fails the node at its first timeout.
+    /// Refires after a timeout, each in a new session; a failed turn is not
+    /// refired (see `read_only`). At most 10; the default refires once, and a
+    /// refire repeats the node's side effects. `0` fails the node at its first
+    /// timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retries: Option<u32>,
+    /// The node has no side effects, so a turn that fails on a transient provider
+    /// failure is continued once, in the same session, a minute later. The author
+    /// states it; the worker neither checks nor enforces it (`functions` still
+    /// decides what the node may call).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     /// `"fail"` (default): a failed or cancelled node fails the run when the output
     /// needs it. `"continue"`: it counts as finished with a `null` result, so
     /// consumers still fire and the run can complete; the error stays in
@@ -432,6 +439,17 @@ pub struct NodeCheckpoint {
     /// When the node reached Done, Failed or Cancelled (stamped on the next write).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<i64>,
+    /// Transient-failure continues sent for this node uid, over all its attempts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub transient_retries: u32,
+    /// Epoch ms the continue of a read-only node's transient failure is due; the
+    /// node stays Running and is not polled until it is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl NodeCheckpoint {
@@ -560,8 +578,10 @@ mod tests {
         assert_eq!(def.nodes["a"].timeout_ms, None);
         assert_eq!(def.nodes["a"].retries, None);
         assert_eq!(def.nodes["a"].loop_spec, None);
+        assert!(!def.nodes["a"].read_only);
         let out = serde_json::to_value(&def).unwrap();
         assert!(out["nodes"]["a"].get("loop").is_none(), "{out}");
+        assert!(out["nodes"]["a"].get("read_only").is_none(), "{out}");
     }
 
     #[test]
@@ -609,12 +629,11 @@ mod tests {
         .expect("deserialize old checkpoint");
         assert_eq!(cp.state, NodeState::Running);
         assert_eq!(cp.retries, 1);
-        assert!(
-            serde_json::to_value(&cp)
-                .unwrap()
-                .get("pending_timeout_ms")
-                .is_none()
-        );
+        assert_eq!((cp.transient_retries, cp.retry_at), (0, None));
+        let out = serde_json::to_value(&cp).unwrap();
+        for gone in ["pending_timeout_ms", "transient_retries", "retry_at"] {
+            assert!(out.get(gone).is_none(), "{out}");
+        }
     }
 
     #[test]
@@ -626,7 +645,8 @@ mod tests {
                 "input": {"from": "run_input"},
                 "depends_on": [],
                 "timeout_ms": 120_000,
-                "retries": 0
+                "retries": 0,
+                "read_only": true
             }},
             "output": {"from": "node:a"},
             "max_concurrency": 3
@@ -635,6 +655,7 @@ mod tests {
         assert_eq!(def.max_concurrency, Some(3));
         assert_eq!(def.nodes["a"].timeout_ms, Some(120_000));
         assert_eq!(def.nodes["a"].retries, Some(0));
+        assert!(def.nodes["a"].read_only);
         assert_eq!(serde_json::to_value(&def).unwrap(), v);
     }
 

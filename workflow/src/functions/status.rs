@@ -114,6 +114,10 @@ pub struct NodeDetail {
     /// `harness::status` turn status; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_status: Option<String>,
+    /// Epoch ms the continue of the node's transient provider failure is due;
+    /// while set, `harness_status` reads the failed turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
     /// The session waits on an armed wake; running nodes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expects_wake: Option<bool>,
@@ -235,6 +239,9 @@ fn node_detail(
             .filter(|_| state != NodeState::Pending)
             .and_then(|cp| Some((cp.finished_at.unwrap_or(now) - cp.pending_at?).max(0))),
         harness_status: live.harness_status,
+        retry_at: cp
+            .filter(|_| state == NodeState::Running)
+            .and_then(|cp| cp.retry_at),
         expects_wake: live.expects_wake,
         last_generate_at: live.last_generate_at,
         usage: live.usage,
@@ -699,6 +706,28 @@ mod tests {
         assert_eq!(sum.state, NodeState::Pending);
         assert_eq!((sum.session_id.as_ref(), sum.attempt), (None, None));
         assert!(!resp.details_truncated);
+    }
+
+    #[test]
+    fn a_node_waiting_for_its_transient_retry_runs_without_an_error() {
+        let rec = record(json!({
+            "plan": {"state": "running", "session_id": "wf_r_1_plan@r0", "pending_at": 5,
+                     "transient_retries": 1, "retry_at": 60_005}
+        }));
+        let live = BTreeMap::from([(
+            "plan".to_string(),
+            LiveNode {
+                harness_status: Some("failed".into()),
+                ..Default::default()
+            },
+        )]);
+        let resp = build_status(rec, Some(&def()), &live, true, 100);
+        assert_eq!(resp.nodes["plan"], NodeState::Running);
+        assert_eq!(resp.phases["code"].running, 1);
+        assert!(resp.node_errors.is_empty(), "{:?}", resp.node_errors);
+        let plan = &resp.node_details["plan"];
+        assert_eq!(plan.retry_at, Some(60_005));
+        assert_eq!(plan.harness_status.as_deref(), Some("failed"));
     }
 
     #[test]
