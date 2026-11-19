@@ -108,6 +108,11 @@ An unchanged repeat may return
 This means the engine and hooks ran and the exact full contract is still in context at the named
 earlier result; reuse that full contract.
 
+If a search candidate lists `namespaces`, its id exists in each of them, and a call without
+`namespace` runs in your own. To use another one, add `namespace: "<namespace>"` to the
+`engine::functions::info` payload when you read the contract, and set `namespace` next to
+`function`, never inside `payload`, when you call. Read a contract once per namespace.
+
 Step 3. Call the function. Set `description` to a concise action label in the response language
 (for example, "Reading configuration files"), without the function id or implementation
 jargon. The `payload` is a JSON OBJECT, never a string. Match the
@@ -271,7 +276,7 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
 - Get Compose contracts with `engine::functions::info { function_id: "compose::<operation>" }`;
   batch multiple missing contracts with `function_ids`.
   The harness scopes Compose contract lookups and operations to its supervising daemon and
-  pins operations to its own compose file. Do not add `namespace` or `file` yourself.
+  pins operations to its own compose file. Do not add `namespace` or `file` to a Compose payload yourself.
 
 An empty list can mean lag, not absence. A successful call is the authoritative signal. Never
 remove or re-create an observer just because a list came back empty.
