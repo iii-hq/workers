@@ -293,14 +293,28 @@ async fn r7_finished_log_after_wait_coexists_with_exact_pair_but_not_altered_ima
         }
         // A successful log finish neither substitutes for the pair proof nor
         // refreshes the image identity.
-        assert_eq!(continue_to_b(&f, &receipt).is_ok(), !altered);
+        let continued = continue_to_b(&f, &receipt);
+        assert_eq!(continued.is_ok(), !altered);
         if altered {
+            assert_eq!(
+                continued.err().expect("H1 refused").kind(),
+                io::ErrorKind::PermissionDenied
+            );
             assert_eq!(fs::read(&f.image).unwrap(), b"not original");
-            assert!(receipt.begin_remove(&f.lease, &f.out, &[&f.image]).is_err());
+            let removal = receipt
+                .begin_remove(&f.lease, &f.out, &[&f.image])
+                .err()
+                .expect("cleanup must refuse the replaced image");
+            assert_eq!(removal.kind(), io::ErrorKind::PermissionDenied);
             assert_eq!(fs::read(&f.image).unwrap(), b"not original");
         }
     }
 }
+/// Lease-wide fail closed: `Lease::revalidate`, which every new hold runs first
+/// (`hold_owned`, unchanged since 35e5), refuses the whole lifecycle once ANY
+/// declared path was replaced outside an owned mutation, until explicit
+/// recovery. A's claim stays recorded, so nobody else can take it, and the
+/// replacement is neither blessed by H1 nor deleted by cleanup.
 #[tokio::test]
 async fn r7_external_imagepair_replacement_is_not_blessed_by_the_old_retirement() {
     let f = fixture();
@@ -308,22 +322,62 @@ async fn r7_external_imagepair_replacement_is_not_blessed_by_the_old_retirement(
     write_pair(&f.lease, &f.out, b"owned image");
     fs::rename(&f.image, f.out.join("held-old")).unwrap();
     fs::write(&f.image, b"external replacement").unwrap();
-    assert!(continue_to_b(&f, &receipt).is_err());
-    {
-        // B was never claimed by the original lifecycle; A still is.
+    let refused = continue_to_b(&f, &receipt)
+        .err()
+        .expect("H1 must refuse the replaced image");
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+    let a = HostPath::new(&f.a).unwrap();
+    let b = HostPath::new(&f.b).unwrap();
+    let claims_unchanged = || {
         let tx = f.context.namespace.transaction().unwrap();
         let op = tx.operation(&f.lease.0.id).unwrap();
-        let b = HostPath::new(&f.b).unwrap();
+        // B was never claimed by the original lifecycle.
         assert!(!op.entries.iter().any(|e| e.path == b));
-    }
-    f.lease.use_path(&f.a).unwrap().revalidate().unwrap();
+        // A's claim is still recorded for this operation: a Strict entry whose
+        // admitted pins still match A on disk, and its read receipt.
+        let claim = op
+            .entries
+            .iter()
+            .find(|e| e.path == a && e.role == PathRole::Strict)
+            .expect("A claim retained");
+        crate::worker_admission::validate_entry(claim).unwrap();
+        assert!(
+            op.cache_reads
+                .iter()
+                .any(|r| r.entries.iter().any(|e| e.path == a))
+        );
+        // Refusals had no effect: no hold issued, nothing settled or closed.
+        assert!(op.holds.is_empty());
+        assert!(!op.uncertain && !op.closed);
+    };
+    claims_unchanged();
+    // Fail closed for the whole Lease: even untouched A cannot get a new hold.
+    let held = f
+        .lease
+        .use_path(&f.a)
+        .err()
+        .expect("a tampered lifecycle must refuse every new hold");
+    assert_eq!(held.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        held.to_string(),
+        "admitted identity changed outside an owned mutation"
+    );
+    claims_unchanged();
+    // Outsiders still cannot take A.
+    let outsider = f.context.local(&f.data.join("other")).unwrap();
     assert!(
-        receipt
-            .begin_remove(&f.lease, &f.out, &[&f.image, &f.id])
+        outsider
+            .prepare_cache(&[CacheEntry { root: &f.a }])
             .is_err()
     );
+    let removal = receipt
+        .begin_remove(&f.lease, &f.out, &[&f.image, &f.id])
+        .err()
+        .expect("cleanup must refuse the replaced image");
+    assert_eq!(removal.kind(), io::ErrorKind::PermissionDenied);
     assert_eq!(fs::read(&f.image).unwrap(), b"external replacement");
     assert_eq!(fs::read(f.out.join("held-old")).unwrap(), b"owned image");
+    assert!(f.a.exists());
 }
 #[tokio::test]
 async fn r7_partial_pair_without_id_publication_gets_no_post_retirement_authority() {
