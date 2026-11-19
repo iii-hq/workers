@@ -48,7 +48,7 @@ fn setup(compat: bool) -> Setup {
     if compat {
         private(custody.parent().unwrap());
         private(&custody);
-        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        write_private_fixture(&custody.join("active.json"), b"{corrupt");
     }
     let catalog = root.path().join("catalog");
     private(&catalog);
@@ -978,7 +978,8 @@ async fn r6_owned_image_cannot_cross_state_keys_or_read_an_external_replacement(
         req.build = Some(build);
         if replace {
             std::fs::rename(&path, path.with_extension("held")).unwrap();
-            std::fs::write(&path, b"foreign bytes").unwrap();
+            // Owner-private like the original: refused by identity, not mode.
+            write_private_fixture(&path, b"foreign bytes");
         } else {
             req.state_key = "other".into();
             req.auth = crate::wire::scoped_auth_token("token", "other");
@@ -1007,7 +1008,8 @@ async fn r7_external_imagepair_replacement_is_not_blessed_by_the_old_retirement(
     let (build, a) = r6_real_publication(&s).await;
     let image = PathBuf::from(&build.build_dir).join(IMAGE_FILE);
     std::fs::rename(&image, image.with_extension("held-old")).unwrap();
-    std::fs::write(&image, b"external replacement").unwrap();
+    // Owner-private like the original: refused by identity, not mode.
+    write_private_fixture(&image, b"external replacement");
     let error = match h1_prepare(&s, H1_B, true).await {
         Ok(_) => panic!("an external image replacement must not be blessed"),
         Err(error) => error,
@@ -1298,11 +1300,11 @@ fn enrolled_other_root(s: &Setup) -> PathBuf {
     private(&vm);
     let root = vm.join("root");
     private(&root);
-    std::fs::write(root.join("original"), b"B-original").unwrap();
+    write_private_fixture(&root.join("original"), b"B-original");
     let custody = crate::worker_admission::custody(&s.vms.base, &id).unwrap();
     private(custody.parent().unwrap());
     private(&custody);
-    std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+    write_private_fixture(&custody.join("active.json"), b"{corrupt");
     root
 }
 
@@ -1568,11 +1570,11 @@ async fn build_cache_refusal_precedes_claim_output_sweeps_and_scratch_allocation
             let out = s.vm.join("build-output");
             if !missing_output {
                 private(&out);
-                std::fs::write(out.join(".image.erofs.1-0.partial"), b"keep-partial").unwrap();
+                write_private_fixture(&out.join(".image.erofs.1-0.partial"), b"keep-partial");
             }
             let stale = s.vm.join("build-1-0");
             private(&stale);
-            std::fs::write(stale.join("sentinel"), b"keep-scratch").unwrap();
+            write_private_fixture(&stale.join("sentinel"), b"keep-scratch");
             let checked = std::cell::Cell::new(false);
             let iii = IIIClient::new("ws://127.0.0.1:1/ws");
             let req = WorkerBuildRequest {
@@ -1630,9 +1632,9 @@ async fn symlink_image_id_refuses_external_start_and_internal_claim_before_effec
     valid_project(&s);
     let dir = s._root.path().join("build-image");
     private(&dir);
-    std::fs::write(dir.join(IMAGE_FILE), b"normal-image").unwrap();
+    write_private_fixture(&dir.join(IMAGE_FILE), b"normal-image");
     let target = s._root.path().join("id-target");
-    std::fs::write(&target, b"sha256:fixture\n").unwrap();
+    write_private_fixture(&target, b"sha256:fixture\n");
     std::os::unix::fs::symlink(&target, dir.join(IMAGE_ID_FILE)).unwrap();
     let build = WorkerBuildRef {
         build_dir: dir.display().to_string(),
@@ -1696,8 +1698,8 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
     valid_project(&s);
     let dir = s._root.path().join("claimed-image");
     private(&dir);
-    std::fs::write(dir.join(IMAGE_FILE), b"fixture-image-not-booted").unwrap();
-    std::fs::write(dir.join(IMAGE_ID_FILE), b"sha256:fixture\n").unwrap();
+    write_private_fixture(&dir.join(IMAGE_FILE), b"fixture-image-not-booted");
+    write_private_fixture(&dir.join(IMAGE_ID_FILE), b"sha256:fixture\n");
     let other = crate::wire::scoped_auth_token("token", "other");
     s.vms
         .claim_build_dir(&other, "other", &dir, "output_dir")
@@ -1741,7 +1743,7 @@ async fn install_retired_fixture(s: &Setup) {
     session.finish_resources(&receipt).await.unwrap();
     let vm = Arc::new(Vm {
         instance: 7,
-        pid: Pid::from_raw(0),
+        fixture_pidfd: None,
         lifecycle: Some(session),
         admission: lease,
         retirement: Mutex::new(Some(Ok(receipt))),
@@ -1765,7 +1767,7 @@ async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm
     let s = setup(false);
     let backup = s._root.path().join("independent-backup");
     private(&backup);
-    std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+    write_private_fixture(&backup.join("sentinel"), b"protected");
     install_retired_fixture(&s).await;
     let retained = s
         .vms

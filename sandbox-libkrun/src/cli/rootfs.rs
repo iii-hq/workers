@@ -57,6 +57,17 @@ pub(crate) fn clone_rootfs_admitted(
 mod tests {
     use super::*;
 
+    /// Exact fixture modes, independent of the host umask: readable source
+    /// data is 0644/0755 (as the core payload tests), private data 0600.
+    fn r4_write(path: &std::path::Path, bytes: &[u8], mode: u32) {
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    }
+    fn r4_mkdir(path: &std::path::Path, mode: u32) {
+        std::fs::create_dir(path).unwrap();
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    }
+
     fn r4_admitted_clone_fixture(existing: bool) {
         use crate::worker_admission::{PathRequest, PathRole};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -82,7 +93,7 @@ mod tests {
         let old_identity = if existing {
             std::fs::create_dir(&dest).unwrap();
             std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o700)).unwrap();
-            std::fs::write(dest.join("OLD"), b"prior guest data").unwrap();
+            r4_write(&dest.join("OLD"), b"prior guest data", 0o600);
             Some(std::fs::metadata(&dest).unwrap())
         } else {
             None
@@ -177,8 +188,8 @@ mod tests {
         std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
         let context = crate::worker_admission::testing::provision_context(&namespace).unwrap();
         let source = t.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("data"), b"original").unwrap();
+        r4_mkdir(&source, 0o755);
+        r4_write(&source.join("data"), b"original", 0o644);
         let dest = t.path().join("destination");
         let lease = crate::worker_admission::with_paths(
             context.local(&dest).unwrap(),
@@ -195,8 +206,8 @@ mod tests {
         )
         .unwrap();
         std::fs::rename(&source, t.path().join("held-source")).unwrap();
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("data"), b"foreign").unwrap();
+        r4_mkdir(&source, 0o755);
+        r4_write(&source.join("data"), b"foreign", 0o644);
         assert!(clone_rootfs_admitted(&lease, &source, &dest).is_err());
         assert!(!dest.exists());
         assert_eq!(
@@ -270,7 +281,7 @@ mod tests {
             std::fs::Permissions::from_mode(0o777),
         )
         .unwrap();
-        std::fs::write(source.join("data"), b"linked bytes").unwrap();
+        r4_write(&source.join("data"), b"linked bytes", 0o644);
         std::fs::hard_link(source.join("data"), source.join("shared/alias")).unwrap();
         {
             use std::io::{Seek, SeekFrom, Write};
@@ -278,6 +289,9 @@ mod tests {
             sparse.seek(SeekFrom::Start(8 * 1024 * 1024)).unwrap();
             sparse.write_all(b"tail").unwrap();
             sparse.set_len(16 * 1024 * 1024).unwrap();
+            sparse
+                .set_permissions(std::fs::Permissions::from_mode(0o644))
+                .unwrap();
         }
         let source_extents = r4_data_extents(&source.join("sparse"));
         let source_modes: Vec<_> = ["", "tmp", "shared", "data", "sparse"]
@@ -336,8 +350,8 @@ mod tests {
         );
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let source = t.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("data"), b"shared").unwrap();
+        r4_mkdir(&source, 0o755);
+        r4_write(&source.join("data"), b"shared", 0o644);
         // Already shared as 0000 when this operation admitted it as Strict.
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o000)).unwrap();
         let dest = t.path().join("managed");
@@ -357,8 +371,8 @@ mod tests {
     fn r4_clone_refuses_a_source_hardlink_outside_the_captured_tree() {
         let t = crate::worker_admission::testing::private_tempdir().unwrap();
         let source = t.path().join("source");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::write(source.join("data"), b"linked").unwrap();
+        r4_mkdir(&source, 0o755);
+        r4_write(&source.join("data"), b"linked", 0o644);
         std::fs::hard_link(source.join("data"), t.path().join("external")).unwrap();
         let dest = t.path().join("managed");
         let lease = r4_clone_lease(t.path(), &source, &dest);

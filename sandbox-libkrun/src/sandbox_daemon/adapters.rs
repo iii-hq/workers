@@ -1144,19 +1144,83 @@ impl ShellRunner for ShellProtoRunner {
     }
 }
 
-/// Pids of the VMs this process spawned and has not reaped yet. The stopper
-/// signals only these: once reaped, a pid may name another process. Global
-/// because every handler builds its own `SignalStopper`.
+/// Test-only race-free process handle: `pidfd_open` of a child this process
+/// still owns and has NOT reaped, taken right after spawn and before any
+/// waiter can reap it, so it can only ever name that process.
 #[cfg(test)]
-static UNREAPED_VMS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+pub(crate) fn test_pidfd_open(pid: u32) -> std::io::Result<std::os::fd::OwnedFd> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::FromRawFd;
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fixture signals require a Linux pidfd",
+        ))
+    }
+}
+
+/// Signal only through a spawn-time pidfd; never `kill(pid)`. ESRCH (the
+/// process already exited) is success: the pidfd cannot reach a reused PID.
+#[cfg(test)]
+pub(crate) fn test_pidfd_signal(
+    pidfd: &std::os::fd::OwnedFd,
+    signal: libc::c_int,
+) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let sent = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if sent < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pidfd, signal);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "fixture signals require a Linux pidfd",
+        ))
+    }
+}
+
+/// The VMs this process spawned and has not reaped yet, each with the pidfd
+/// taken before its waiter existed. The stopper signals only these, and only
+/// through that pidfd. Global because every handler builds its own
+/// `SignalStopper`.
+#[cfg(test)]
+static UNREAPED_VMS: Mutex<Vec<(u32, std::os::fd::OwnedFd)>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
-fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
+fn unreaped_vms() -> MutexGuard<'static, Vec<(u32, std::os::fd::OwnedFd)>> {
     UNREAPED_VMS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Hand the VM `child` (pid `pid`) to a task that reaps it on exit, and keep
-/// its pid signalable until then.
+/// it signalable through its pidfd until then. The pidfd is opened here,
+/// while `child` is still owned and unwaited, so it names exactly this child;
+/// if it cannot be opened the VM is simply not signalable (no PID fallback).
 ///
 /// Admission-v2 integration boundary: RuntimeChild::wait performs OS reap and
 /// THEN fallible/possibly waiting catalog finalization. Substituting that wait
@@ -1165,20 +1229,25 @@ fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
 /// neither a caller bool nor a final wait error can supply that evidence.
 #[cfg(test)]
 fn watch_vm(mut child: tokio::process::Child, pid: u32) {
-    unreaped_vms().push(pid);
+    if child.id() == Some(pid) {
+        if let Ok(pidfd) = test_pidfd_open(pid) {
+            unreaped_vms().push((pid, pidfd));
+        }
+    }
     tokio::spawn(async move {
         let _ = child.wait().await;
-        unreaped_vms().retain(|&p| p != pid);
+        unreaped_vms().retain(|(p, _)| *p != pid);
     });
 }
 
-/// Send `signal` to `pid` if it is a VM not reaped yet.
-/// shortcut: a VM reaped but not yet removed from the list can still be
-/// signaled in that microsecond gap; move to a pidfd if that ever matters.
+/// Send `signal` to the VM `pid` names if it is a VM not reaped yet, through
+/// its spawn-time pidfd. A VM reaped but not yet removed from the list only
+/// yields ESRCH from its own pidfd; no other process can be reached.
 #[cfg(test)]
 fn signal_vm(pid: u32, signal: nix::sys::signal::Signal) {
-    if unreaped_vms().contains(&pid) {
-        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal);
+    let vms = unreaped_vms();
+    if let Some((_, pidfd)) = vms.iter().find(|(p, _)| *p == pid) {
+        let _ = test_pidfd_signal(pidfd, signal as libc::c_int);
     }
 }
 
@@ -1522,6 +1591,12 @@ mod tests {
         let protected = root.join(".iii-prior-unrelated-evidence");
         // The entry exists before runtime issuance; no proof says it is log retention.
         std::fs::write(&protected, b"OLD must not disappear").unwrap();
+        // Owner-private evidence: Remove must refuse it as evidence, not by mode.
+        std::fs::set_permissions(
+            &protected,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
         let stderr = root.join("vm-boot.stderr.log");
         let lease = crate::worker_admission::with_paths(
             lease,
@@ -1636,6 +1711,9 @@ mod tests {
         let held = root.join("held-stderr");
         std::fs::rename(&stderr, &held).unwrap();
         std::fs::write(&stderr, b"FOREIGN\n").unwrap();
+        // Owner-private like the original: refused by identity, not mode.
+        std::fs::set_permissions(&stderr, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
         let mut writer = r2_stderr_writer("echo late-after-reap >&2");
         session.pump_stderr(writer.stderr.take(), log);
         assert!(writer.wait().await.unwrap().success());
@@ -2142,9 +2220,11 @@ mod tests {
             .arg("30")
             .spawn()
             .unwrap();
+        // Own unwaited child: its pidfd, taken now, is the only signal path.
+        let other_pidfd = test_pidfd_open(other.id()).unwrap();
         SignalStopper.stop(other.id()).await.unwrap();
         let untouched = other.try_wait().unwrap().is_none();
-        other.kill().unwrap();
+        test_pidfd_signal(&other_pidfd, libc::SIGKILL).unwrap();
         other.wait().unwrap();
         assert!(untouched, "signaled a pid that is no live VM");
 
@@ -2156,7 +2236,7 @@ mod tests {
         watch_vm(vm, pid);
         SignalStopper.stop(pid).await.unwrap();
         for _ in 0..100 {
-            if !unreaped_vms().contains(&pid) {
+            if !unreaped_vms().iter().any(|(p, _)| *p == pid) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
