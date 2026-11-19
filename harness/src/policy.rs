@@ -271,7 +271,12 @@ fn build_set(patterns: &[String]) -> Option<(GlobSet, Vec<Option<String>>)> {
     let mut qualifiers = Vec::with_capacity(patterns.len());
     for p in patterns {
         let (namespace, id) = split_namespace_pattern(p);
-        if let Some(ns) = namespace.filter(|ns| ns.contains(['*', '?', '[', '{'])) {
+        // An empty qualifier (`/shell::exec`) stays in the id and matches no call.
+        let bad_qualifier = match namespace {
+            None if p.starts_with('/') => Some(""),
+            ns => ns.filter(|ns| ns.contains(['*', '?', '[', '{'])),
+        };
+        if let Some(ns) = bad_qualifier {
             tracing::warn!(
                 pattern = %p,
                 "rejecting policy: namespace qualifier must be a plain namespace, got {ns:?}; a bare pattern already matches every namespace"
@@ -816,6 +821,21 @@ mod tests {
         );
         let deny = CompiledPolicy::from(Some(&policy(&["*"], &["laptop/"])));
         assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
+    }
+
+    // Same rule as approval-gate: `/shell::exec` would match no id, so a deny
+    // of it would deny nothing.
+    #[test]
+    fn an_empty_namespace_qualifier_denies_everything() {
+        let allow = CompiledPolicy::from(Some(&policy(&["*", "/shell::exec"], &[])));
+        assert!(
+            !allow.allows_in("laptop", "shell::exec") && !allow.allows_in("desk", "state::get")
+        );
+        let deny = CompiledPolicy::from(Some(&policy(&["*"], &["/shell::exec"])));
+        assert!(!deny.allows_in("laptop", "shell::exec") && !deny.allows_in("desk", "state::get"));
+        // A `/` inside the id part is no qualifier.
+        let id = CompiledPolicy::from(Some(&policy(&["openai-codex::codex/gpt"], &[])));
+        assert!(id.allows_in("desk", "openai-codex::codex/gpt"));
     }
 
     #[test]

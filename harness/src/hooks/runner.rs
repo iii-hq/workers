@@ -1344,27 +1344,36 @@ pub(super) fn functions_match(binding: &HookBinding, namespace: &str, function_i
     };
     let ids: Vec<String> = globs
         .iter()
-        .filter_map(|glob| match crate::policy::split_namespace_pattern(glob) {
-            // A qualifier with no id compiles to a glob that matches no id (a policy
-            // rejects it); with no error path here it reads as `*` in every namespace.
-            (Some(_), "") => {
-                warn_filter_once(
-                    glob,
-                    "names a namespace but no function id; reading it as `*`, which matches every call in every namespace",
-                );
-                Some("*".to_string())
+        .filter_map(|glob| {
+            // `split_namespace_pattern` leaves an empty qualifier (`/shell::*`) in the id.
+            let split = match glob.strip_prefix('/') {
+                Some(id) => (Some(""), id),
+                None => crate::policy::split_namespace_pattern(glob),
+            };
+            match split {
+                // A qualifier with no id compiles to a glob that matches no id (a policy
+                // rejects it); with no error path here it reads as `*` in every namespace.
+                (Some(_), "") => {
+                    warn_filter_once(
+                        glob,
+                        "names a namespace but no function id; reading it as `*`, which matches every call in every namespace",
+                    );
+                    Some("*".to_string())
+                }
+                // No error path here, so a glob or empty qualifier (approval-gate
+                // rejects both) reads as bare rather than silently skipping the guard.
+                (Some(qualifier), id)
+                    if qualifier.is_empty() || qualifier.contains(['*', '?', '[', '{']) =>
+                {
+                    warn_filter_once(
+                        glob,
+                        "namespace qualifier must be a plain namespace; reading it as bare, which matches every namespace",
+                    );
+                    Some(id.to_string())
+                }
+                (Some(qualifier), _) if qualifier != namespace => None,
+                (_, id) => Some(id.to_string()),
             }
-            // No error path here, so a glob qualifier (approval-gate rejects
-            // one) reads as bare rather than silently skipping the guard.
-            (Some(qualifier), id) if qualifier.contains(['*', '?', '[', '{']) => {
-                warn_filter_once(
-                    glob,
-                    "namespace qualifier must be a plain namespace; reading it as bare, which matches every namespace",
-                );
-                Some(id.to_string())
-            }
-            (Some(qualifier), _) if qualifier != namespace => None,
-            (_, id) => Some(id.to_string()),
         })
         .collect();
     // An empty list reads as "no filter" in `globs_match`.
@@ -1760,8 +1769,8 @@ mod tests {
     }
 
     #[test]
-    fn a_glob_namespace_qualifier_reads_as_bare() {
-        for glob in ["*/shell::*", "lap*/shell::*", "{a,b}/shell::*"] {
+    fn a_glob_or_empty_namespace_qualifier_reads_as_bare() {
+        for glob in ["*/shell::*", "lap*/shell::*", "{a,b}/shell::*", "/shell::*"] {
             let gate = HookBinding {
                 functions: Some(vec![glob.into()]),
                 ..binding("gate", 0)
@@ -1769,7 +1778,7 @@ mod tests {
             assert!(functions_match(&gate, "desk", "shell::exec"), "{glob}");
             assert!(!functions_match(&gate, "desk", "fs::read"), "{glob}");
         }
-        for glob in ["laptop/", "*/"] {
+        for glob in ["laptop/", "*/", "/"] {
             let gate = HookBinding {
                 functions: Some(vec![glob.into()]),
                 ..binding("gate", 0)
