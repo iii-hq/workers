@@ -30,8 +30,12 @@ use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
 use crate::cli::local_worker::{
-    BootImage, VmOverride, binary_vm_command, bundle_vm_command, image_build_command,
-    local_vm_command, open_build_export, validate_binary, validate_source, validate_source_with,
+    BootImage, VmOverride, WorkerProject, open_build_export, validate_source,
+};
+#[cfg(test)]
+use crate::cli::local_worker::{
+    binary_vm_command, bundle_vm_command, image_build_command, local_vm_command, validate_binary,
+    validate_source_with,
 };
 use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
@@ -222,23 +226,36 @@ impl WorkerVms {
             ));
         }
         let dir = self.admit(source.host_path)?;
-        crate::worker_admission::reject_retained_path(&dir)
-            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _admission =
+            crate::worker_admission::with_inputs(_admission, &[Path::new(source.host_path), &dir])
+                .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let (project, kind) = validate_source(&dir, source.package, source.run_override)
             .map_err(SandboxError::SourceRejected)?;
-        let rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
-            .await
-            .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
+        let _admission = crate::cli::local_worker::admit_base_image_inputs(
+            _admission,
+            &kind,
+            project.base_image.as_deref(),
+        )
+        .map_err(SandboxError::PrepareFailed)?;
+        let rootfs = crate::cli::local_worker::prepare_admitted_rootfs(
+            &_admission,
+            &kind,
+            project.base_image.as_deref(),
+        )
+        .await
+        .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
         if crate::cli::overlay::overlay_active() {
             let writer_admission = _admission.clone();
             tokio::task::spawn_blocking(move || {
-                let _admission = writer_admission;
-                crate::cli::erofs::ensure_base_erofs(&rootfs)
+                crate::cli::local_worker::write_admitted_erofs(writer_admission, &rootfs)
             })
             .await
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
             .map_err(SandboxError::PrepareFailed)?;
         }
+        _admission
+            .revalidate()
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
             let vm_dir = self.base.join(vm_id(state_key));
@@ -256,6 +273,18 @@ impl WorkerVms {
         &self,
         req: WorkerStartRequest,
     ) -> Result<WorkerStartResponse, SandboxError> {
+        self.start_with_cache_admission(req, WorkerProject::admit_cache)
+            .await
+    }
+
+    async fn start_with_cache_admission(
+        &self,
+        req: WorkerStartRequest,
+        admit_cache: impl FnOnce(
+            &WorkerProject,
+            crate::worker_admission::Lease,
+        ) -> Result<crate::worker_admission::Lease, String>,
+    ) -> Result<WorkerStartResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
         let admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
@@ -268,12 +297,51 @@ impl WorkerVms {
             ));
         }
         let dir = self.admit(source.host_path)?;
-        crate::worker_admission::reject_retained_path(&dir)
+        // Admit the supplied spellings as well as authorized canonical paths:
+        // canonicalization must not hide symlinks or traversal from admission.
+        let mut inputs = vec![PathBuf::from(source.host_path), dir.clone()];
+        let id = vm_id(&req.state_key);
+        let vm_dir = self.base.join(&id);
+        inputs.push(vm_dir.join("root"));
+        inputs.push(vm_dir.join("root").join(crate::cli::upper::UPPER_NAME));
+        inputs.push(vm_dir.join(
+            if req.build.is_some() || crate::cli::overlay::overlay_active() {
+                "root/runtime"
+            } else {
+                "root/opt/iii"
+            },
+        ));
+        inputs.push(vm_dir.join(crate::cli::upper::UPPER_NAME));
+        if let Some(build) = &req.build {
+            let build_dir = self.admit(&build.build_dir)?;
+            inputs.push(PathBuf::from(&build.build_dir));
+            inputs.push(build_dir.join(IMAGE_FILE));
+            inputs.push(build_dir.join(IMAGE_ID_FILE));
+            inputs.push(build_dir);
+        }
+        let inputs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
+        let admission = crate::worker_admission::with_inputs(admission, &inputs)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         if req.build.is_some() && !crate::cli::overlay::overlay_active() {
             return Err(SandboxError::BootFailed(LEGACY_NO_BUILD.to_string()));
         }
-        let id = vm_id(&req.state_key);
+        let resolved = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            None,
+            req.build.is_none(),
+        )
+        .map_err(SandboxError::SourceRejected)?;
+        let admission = if req.build.is_none() {
+            admit_cache(&resolved, admission).map_err(SandboxError::BootFailed)?
+        } else {
+            admission
+        };
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let start = self.starts.fetch_add(1, Ordering::SeqCst);
         {
             let mut slots = self.slots();
@@ -288,8 +356,7 @@ impl WorkerVms {
             Some(build) => Some(self.admit_build(&req.auth, &req.state_key, build)?),
             None => None,
         };
-        // A build's image is made: its base image no longer matters.
-        source.validate(&dir, req.build.is_none())?;
+        // Use the project selected before reservation; do not re-read its manifest.
         let mut notes = Vec::new();
         let image = match image {
             Some(image) => {
@@ -315,14 +382,10 @@ impl WorkerVms {
             extra_env: req.env.into_iter().collect(),
             image,
         };
-        let built = match (source.package, source.executable) {
-            (Some(package), Some(executable)) => {
-                binary_vm_command(package, executable, &req.worker_name, &dir, over).await
-            }
-            (Some(package), None) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
-            (None, _) => local_vm_command(&req.worker_name, &dir, source.run_override, over).await,
-        }
-        .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
+        let built = resolved
+            .start(&req.worker_name, &dir, source.package, over)
+            .await
+            .map_err(|e| SandboxError::BootFailed(with_notes(e, &notes)))?;
         let started = self
             .launch_admitted(
                 &req.state_key,
@@ -368,8 +431,20 @@ impl WorkerVms {
         build: &WorkerBuildRef,
     ) -> Result<PathBuf, SandboxError> {
         let dir = self.admit(&build.build_dir)?;
-        crate::worker_admission::reject_retained_path(&dir)
+        // The start caller retains its composite through the waiter. Keep an
+        // independent guard here too, through the claim and image inspection.
+        let admission = crate::worker_admission::worker(&self.base, Some(state_key))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let _admission = crate::worker_admission::with_inputs(
+            admission,
+            &[
+                Path::new(&build.build_dir),
+                &dir,
+                &dir.join(IMAGE_FILE),
+                &dir.join(IMAGE_ID_FILE),
+            ],
+        )
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         self.claim_build_dir(auth, state_key, &dir, "build_dir")?;
         let wanted = build.build_id.trim();
         match read_image_id(&dir) {
@@ -409,22 +484,70 @@ impl WorkerVms {
         iii: &IIIClient,
         req: WorkerBuildRequest,
     ) -> Result<WorkerBuildResponse, SandboxError> {
+        self.build_with_cache_admission(iii, req, WorkerProject::admit_cache)
+            .await
+    }
+
+    async fn build_with_cache_admission(
+        &self,
+        iii: &IIIClient,
+        req: WorkerBuildRequest,
+        admit_cache: impl FnOnce(
+            &WorkerProject,
+            crate::worker_admission::Lease,
+        ) -> Result<crate::worker_admission::Lease, String>,
+    ) -> Result<WorkerBuildResponse, SandboxError> {
         self.authorize(&req.auth, Some(&req.state_key))?;
         let _admission = crate::worker_admission::worker(&self.base, Some(&req.state_key))
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        if !crate::cli::overlay::overlay_active() {
-            return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
-        }
         let source = Source::of(&req.source);
         let base_image = build_base_image(req.base_image.as_deref(), source.executable.is_some())?;
         let dir = self.admit(source.host_path)?;
-        crate::worker_admission::reject_retained_path(&dir)
-            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         let planned = self.plan_output(&req.output_dir)?;
-        crate::worker_admission::reject_retained_path(&planned)
-            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        let output_admission = _admission.clone();
+        let _admission = crate::worker_admission::with_inputs(
+            _admission,
+            &[
+                Path::new(source.host_path),
+                &dir,
+                Path::new(&req.output_dir),
+                &planned,
+                &planned.join(IMAGE_FILE),
+                &planned.join(IMAGE_ID_FILE),
+            ],
+        )
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let resolved = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            base_image,
+            true,
+        )
+        .map_err(SandboxError::SourceRejected)?;
+        let _admission = admit_cache(&resolved, _admission).map_err(SandboxError::BuildFailed)?;
+        if !crate::cli::overlay::overlay_active() {
+            return Err(SandboxError::BuildFailed(LEGACY_NO_BUILD.to_string()));
+        }
         let id = vm_id(&req.state_key);
+        let vm_dir = self.base.join(&id);
+        let tag = format!(
+            "{}-{}",
+            std::process::id(),
+            self.build_seq.fetch_add(1, Ordering::SeqCst)
+        );
+        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
+        let _admission = crate::worker_admission::with_inputs(
+            _admission,
+            &[
+                &scratch,
+                &scratch.join("root"),
+                &scratch.join("root/runtime"),
+                &scratch.join(crate::cli::upper::UPPER_NAME),
+            ],
+        )
+        .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let output_admission = _admission.clone();
         // Dropped last of the locals below: the key is free only once the
         // writer stopped and the scratch dir is gone.
         let _held = self.hold_build(&id)?;
@@ -432,17 +555,9 @@ impl WorkerVms {
         // writes, and before the directory exists: a refused token creates nothing.
         self.claim_build_dir(&req.auth, &req.state_key, &planned, "output_dir")?;
         let out = self.create_output(&planned, &req.output_dir)?;
-        // A base image in the request stands in for the manifest's.
-        source.validate(&dir, base_image.is_none())?;
-        let vm_dir = self.base.join(&id);
+        // Project/cache selection was completed before claims and output creation.
         sweep_build_scratch(&vm_dir);
         sweep_image_partials(&out);
-        let tag = format!(
-            "{}-{}",
-            std::process::id(),
-            self.build_seq.fetch_add(1, Ordering::SeqCst)
-        );
-        let scratch = vm_dir.join(format!("{BUILD_SCRATCH_PREFIX}{tag}"));
         let _scratch = RemoveOnDrop(scratch.clone());
         let writer = ChannelWriter::new(iii.address(), &req.logs);
         let mut log = BuildLog::new(&writer);
@@ -454,8 +569,8 @@ impl WorkerVms {
             admission: _admission.clone(),
             output_admission,
             dir: &dir,
-            source,
-            base_image,
+            resolved,
+            package: source.package,
             out: &out,
             scratch: &scratch,
             tag: &tag,
@@ -1099,9 +1214,8 @@ struct BuildJob<'a> {
     admission: crate::worker_admission::Lease,
     output_admission: crate::worker_admission::Lease,
     dir: &'a Path,
-    source: Source<'a>,
-    /// The request's base image, over the manifest's; a binary package's.
-    base_image: Option<&'a str>,
+    resolved: WorkerProject,
+    package: Option<&'a str>,
     out: &'a Path,
     scratch: &'a Path,
     /// Names the temporary image files: `<pid>-<seq>`.
@@ -1124,6 +1238,9 @@ struct BuildDone {
 
 impl BuildJob<'_> {
     async fn run(self, log: &mut BuildLog<'_>) -> Result<WorkerBuildResponse, SandboxError> {
+        self.admission
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
         std::fs::create_dir_all(self.scratch).map_err(|e| {
             SandboxError::BuildFailed(format!("cannot create {}: {e}", self.scratch.display()))
         })?;
@@ -1133,17 +1250,14 @@ impl BuildJob<'_> {
             self.dir.display()
         ))
         .await?;
-        let vm = image_build_command(
-            self.dir,
-            self.source.package,
-            self.source.run_override,
-            self.source.executable,
-            self.base_image,
-            self.scratch,
-            self.env,
-        )
-        .await
-        .map_err(SandboxError::BuildFailed)?;
+        self.admission
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        let mut vm = self
+            .resolved
+            .build(self.dir, self.package, self.scratch, self.env)
+            .await
+            .map_err(SandboxError::BuildFailed)?;
         self.done
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1153,6 +1267,12 @@ impl BuildJob<'_> {
         });
         log.note(format!("iii: build VM on {}", vm.reference))
             .await?;
+        // A dropped build future must not release source/output fences while
+        // its VM may still write. Transfer the outer composite to WriterLease.
+        vm.command
+            .lifecycle_leases
+            .extend([self.admission.clone(), self.output_admission.clone()]);
+        let image_admissions = vm.command.lifecycle_leases.clone();
         let status = run_build_vm(vm.command, log).await?;
         if !status.success() {
             let how = match (status.code(), status.signal()) {
@@ -1167,11 +1287,16 @@ impl BuildJob<'_> {
             )));
         }
         log.note("iii: writing the image".to_string()).await?;
+        for lease in &image_admissions {
+            lease
+                .revalidate()
+                .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        }
         let export = open_build_export(&vm.root).map_err(|e| {
             SandboxError::BuildFailed(format!("the build VM left no image root: {e}"))
         })?;
         let image = ImageWrite {
-            _admissions: vec![self.admission.clone(), self.output_admission.clone()],
+            _admissions: image_admissions,
             export,
             out: self.out.to_path_buf(),
             spool: self.scratch.join("image.spool"),
@@ -1290,6 +1415,11 @@ async fn run_build_vm(
     // Cancellation may drop this future before Child::wait: retain their shared
     // leases conservatively unless successful wait proves the writer is gone.
     let lifecycle_leases = vm.lifecycle_leases;
+    for lease in &lifecycle_leases {
+        lease
+            .revalidate()
+            .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+    }
     let mut cmd = vm.command;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1431,6 +1561,9 @@ impl ImageWrite {
     /// last ([`swap_image`], [`commit_image_id`]). A build cancelled before that
     /// leaves the previous pair; returns the build id.
     fn write(self) -> Result<String, String> {
+        for lease in &self._admissions {
+            lease.revalidate().map_err(|e| e.to_string())?;
+        }
         let tmp_image = self.out.join(format!(".{IMAGE_FILE}.{}.partial", self.tag));
         let tmp_id = self
             .out
@@ -1825,20 +1958,6 @@ impl<'a> Source<'a> {
                 executable: Some(executable),
             },
         }
-    }
-
-    /// The checks of the source in `dir`, its admitted `host_path`: S501 when
-    /// it fails them. `need_base_image: false` lets a local worker's manifest
-    /// leave its base image out (a build that names one, a start of a build).
-    fn validate(&self, dir: &Path, need_base_image: bool) -> Result<(), SandboxError> {
-        match (self.package, self.executable) {
-            (Some(package), Some(executable)) => {
-                validate_binary(dir, package, executable).map(drop)
-            }
-            _ => validate_source_with(dir, self.package, self.run_override, need_base_image)
-                .map(drop),
-        }
-        .map_err(SandboxError::SourceRejected)
     }
 }
 
@@ -3791,7 +3910,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, dir.join(IMAGE_ID_FILE)).unwrap();
         assert_eq!(
             code(vms.admit_build("t", "k", &build_ref(&dir, &id))),
-            "S508"
+            "S300"
         );
         std::fs::remove_file(dir.join(IMAGE_ID_FILE)).unwrap();
         // The matching id, but no image.
@@ -4078,8 +4197,8 @@ mod tests {
     }
 
     /// `worker::start` takes `build_dir` through the same claim, before it
-    /// reads image.id: another VM's image is S505, whatever the id, and so is
-    /// any other path to it (a symlink, `..`).
+    /// reads image.id: another VM's image is S505, whatever the id. Aliases
+    /// (a symlink, `..`) are refused by input admission before the claim.
     #[test]
     fn a_scoped_start_boots_no_other_vms_build_dir() {
         let t = tempfile::tempdir().unwrap();
@@ -4095,10 +4214,16 @@ mod tests {
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
 
         vms.admit_build(&b, "b", &build_ref(&dir_b, &id)).unwrap();
-        for path in [&dir_b, &link, &dotdot] {
+        assert_eq!(
+            code(vms.admit_build(&a, "a", &build_ref(&dir_b, &id))),
+            "S505"
+        );
+        // Admission now rejects aliases/traversal before claims, without
+        // canonicalizing them into a spelling that evades the input fence.
+        for path in [&link, &dotdot] {
             assert_eq!(
                 code(vms.admit_build(&a, "a", &build_ref(path, &id))),
-                "S505"
+                "S300"
             );
         }
         assert_eq!(
@@ -4114,68 +4239,26 @@ mod tests {
         vms.admit_build("t", "a", &build_ref(&dir_b, &id)).unwrap();
     }
 
-    /// `worker::build` claims `output_dir` under its key's hold, before it
-    /// creates it or reads the source: a refused token creates nothing, by any
-    /// path to the other VM's directory, even one that is gone from disk.
-    #[tokio::test]
-    async fn a_scoped_build_writes_no_other_vms_build_dir() {
-        if !crate::cli::overlay::overlay_active() {
-            eprintln!("[skip] a build needs the overlay rootfs (an embedded iii-init)");
-            return;
-        }
+    /// Claims still reject another VM with S505 after complete preflight.
+    /// Use the claim helper directly: an empty source now refuses BEFORE a claim.
+    #[test]
+    fn a_scoped_build_claim_still_refuses_another_vms_directory() {
         let t = tempfile::tempdir().unwrap();
-        let t = t.path();
-        let empty = t.join("empty");
-        std::fs::create_dir(&empty).unwrap();
-        let vms = vms(t, Some("t"), vec![t.into()]);
-        let iii = IIIClient::new("ws://127.0.0.1:9");
-        let build = |auth: &str, state_key: &str, out: &Path| {
-            vms.build(
-                &iii,
-                WorkerBuildRequest {
-                    auth: auth.to_string(),
-                    state_key: state_key.to_string(),
-                    worker_name: "w".to_string(),
-                    source: local(&empty),
-                    output_dir: out.display().to_string(),
-                    env: Default::default(),
-                    logs: StreamChannelRef {
-                        channel_id: "c".to_string(),
-                        access_key: "k".to_string(),
-                        direction: ChannelDirection::Write,
-                    },
-                    base_image: None,
-                },
-            )
-        };
-        let (out_a, out_b) = (t.join("project/a"), t.join("project/b"));
-        let link = t.join("project/link-to-b");
+        let vms = vms(t.path(), Some("t"), vec![t.path().into()]);
+        let out = t.path().join("output");
+        std::fs::create_dir(&out).unwrap();
         let (a, b) = (scoped_auth_token("t", "a"), scoped_auth_token("t", "b"));
-        // S501, not S505: past the claim, to the empty source.
-        assert_eq!(code(build(&b, "b", &out_b).await), "S501");
-        std::os::unix::fs::symlink(&out_b, &link).unwrap();
-        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
-        assert_eq!(code(build(&a, "a", &link).await), "S505");
-        // `..` is refused before any claim.
-        let dotdot = PathBuf::from(format!("{}/../b", out_a.display()));
-        assert_eq!(code(build(&a, "a", &dotdot).await), "S501");
-        assert!(!out_a.exists());
-        assert_eq!(std::fs::read_dir(&out_b).unwrap().count(), 0);
-        // B's directory, deleted, is still B's: A gets S505 and creates nothing.
-        std::fs::remove_dir(&out_b).unwrap();
-        assert_eq!(code(build(&a, "a", &out_b).await), "S505");
-        assert!(!out_b.exists());
-        assert_eq!(code(build(&a, "a", &out_a).await), "S501");
-        assert!(out_a.is_dir());
-        // Under a file it cannot be created: refused at the plan, A keeps its record.
-        std::fs::write(t.join("project/file"), "").unwrap();
+        let admission = crate::worker_admission::worker(&vms.base, Some("b")).unwrap();
+        let admission = crate::worker_admission::with_inputs(admission, &[&out]).unwrap();
+        claim(&vms, &b, "b", &out).unwrap();
+        assert_eq!(code(claim(&vms, &a, "a", &out)), "S505");
+        assert!(!vms.base.join(vm_id("a")).join(BUILD_DIR_RECORD).exists());
         assert_eq!(
-            code(build(&a, "a", &t.join("project/file/w")).await),
-            "S501"
+            read_build_dir(&vms.base, &vm_id("b"), "t"),
+            Some(out.clone())
         );
-        let own = read_build_dir(&t.join("workers"), &vm_id("a"), "t");
-        assert_eq!(own, Some(out_a.canonicalize().unwrap()));
-        assert_eq!(code(build("t", "a", &out_b).await), "S501");
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+        drop(admission);
     }
 
     /// A VM dir as a VM that booted builds leaves it, the earlier adapter's

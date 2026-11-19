@@ -668,6 +668,230 @@ pub struct BootImage {
     pub upper: PathBuf,
 }
 
+/// Admit every caller-supplied boot input before validation or provisioning.
+/// image_run_command repeats this guard because it also has independent callers.
+fn admit_worker_inputs(
+    source: &Path,
+    over: &VmOverride<'_>,
+) -> Result<crate::worker_admission::Lease, String> {
+    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
+    let default_upper = over.state_dir.join(super::upper::UPPER_NAME);
+    let script_dir = over.state_dir.join(
+        if over.image.is_some() || super::overlay::overlay_active() {
+            "runtime"
+        } else {
+            "opt/iii"
+        },
+    );
+    let mut paths = vec![source, over.state_dir.as_path(), script_dir.as_path()];
+    if let Some(image) = &over.image {
+        paths.extend([image.image.as_path(), image.upper.as_path()]);
+    } else {
+        paths.push(&default_upper);
+    }
+    crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())
+}
+
+/// Owned, validated project selection. Remote admission and the eventual
+/// builder consume the SAME value; no manifest re-read can select another cache.
+pub(crate) struct WorkerProject {
+    project: ProjectInfo,
+    kind: String,
+}
+impl WorkerProject {
+    pub(crate) fn resolve(
+        source: &Path,
+        package: Option<&str>,
+        run_override: Option<&str>,
+        executable: Option<&str>,
+        base_image: Option<&str>,
+        needs_cache: bool,
+    ) -> Result<Self, String> {
+        let (mut project, kind) = match (package, executable) {
+            (Some(package), Some(executable)) => {
+                (validate_binary(source, package, executable)?, String::new())
+            }
+            _ => validate_source_with(
+                source,
+                package,
+                run_override,
+                needs_cache && base_image.is_none(),
+            )?,
+        };
+        if let Some(image) = base_image {
+            project.base_image = Some(image.to_string());
+        }
+        if needs_cache {
+            project.base_image = Some(super::worker_manager::oci::base_image_ref(
+                &kind,
+                project.base_image.as_deref(),
+            ));
+        }
+        Ok(Self { project, kind })
+    }
+
+    pub(crate) fn admit_cache(
+        &self,
+        admission: crate::worker_admission::Lease,
+    ) -> Result<crate::worker_admission::Lease, String> {
+        admit_base_image_inputs(admission, &self.kind, self.project.base_image.as_deref())
+    }
+
+    pub(crate) async fn start(
+        self,
+        worker_name: &str,
+        source: &Path,
+        package: Option<&str>,
+        over: VmOverride<'_>,
+    ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+        start_worker_resolved(worker_name, source, package, over, None, Some(self)).await
+    }
+
+    pub(crate) async fn build(
+        self,
+        source: &Path,
+        package: Option<&str>,
+        scratch: &Path,
+        env: HashMap<String, String>,
+    ) -> Result<BuildVm, String> {
+        image_build_resolved(source, package, None, None, None, scratch, env, Some(self)).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admit_cache_at(
+        &self,
+        admission: crate::worker_admission::Lease,
+        cache: &Path,
+    ) -> Result<crate::worker_admission::Lease, String> {
+        admit_cache_paths(
+            admission,
+            self.project.base_image.as_deref().expect("resolved cache"),
+            cache,
+        )
+    }
+}
+
+/// The cache may choose a different digest directory under its pull lock.
+/// Fence its parent and both possible roots/lowers before any
+/// pull, erofs writer or firmware provisioning. No cache entry is created here.
+pub(crate) fn admit_base_image_inputs(
+    admission: crate::worker_admission::Lease,
+    kind: &str,
+    base_image: Option<&str>,
+) -> Result<crate::worker_admission::Lease, String> {
+    let reference = super::worker_manager::oci::base_image_ref(kind, base_image);
+    // Match prepare_rootfs's spelling before canonical_cache_key strips pins.
+    let reference = base_image
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&reference);
+    // Same root as rootfs_cache; selecting both slug variants needs no cache
+    // read, mkdir, pull or sidecar lookup before those paths are admitted.
+    let cache = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".iii/cache");
+    admit_cache_paths(admission, reference, &cache)
+}
+
+fn admit_cache_paths(
+    admission: crate::worker_admission::Lease,
+    reference: &str,
+    cache: &Path,
+) -> Result<crate::worker_admission::Lease, String> {
+    let shared = cache.join(super::worker_manager::oci::rootfs_slug_for_image(
+        super::oci_ref::canonical_cache_key(reference),
+    ));
+    let pinned = cache.join(super::worker_manager::oci::rootfs_slug_for_image(reference));
+    let mut paths = vec![cache.to_path_buf()];
+    // canonical_path can switch under the pull lock. Admit both possible
+    // selections, their lower files and sidecars, not just today's cache hit.
+    for root in [shared.as_path(), pinned.as_path()] {
+        paths.push(root.to_path_buf());
+        for suffix in [".erofs", ".erofs.lock", ".digest", ".lock"] {
+            let mut name = root
+                .file_name()
+                .ok_or("the cache root has no name")?
+                .to_os_string();
+            name.push(suffix);
+            paths.push(root.with_file_name(name));
+        }
+    }
+    let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())
+}
+
+/// A cancelled caller must not drop the fences of the cache lock's blocking
+/// writer. The owned task finishes the pull; abort/panic retains conservatively.
+/// The cache lock task is joined inside prepare_rootfs before it returns.
+pub(crate) async fn prepare_admitted_rootfs(
+    admission: &crate::worker_admission::Lease,
+    kind: &str,
+    base_image: Option<&str>,
+) -> Result<PathBuf, String> {
+    let kind = kind.to_string();
+    let base_image = base_image.map(str::to_string);
+    let fence = admission.clone();
+    let checkpoint: super::rootfs_cache::Checkpoint =
+        super::rootfs_cache::Checkpoint::new(move || fence.revalidate());
+    run_cache_writer(admission.clone(), move || async move {
+        super::worker_manager::oci::prepare_rootfs_checked(&kind, base_image.as_deref(), checkpoint)
+            .await
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+}
+
+// Revalidation is a cooperative boundary check, not an atomic guarantee
+// against a nonparticipating rename between this check and a pathname syscall.
+fn begin_writer(
+    admission: crate::worker_admission::Lease,
+) -> Result<crate::worker_admission::WriterLease, String> {
+    // Failure here must release normally: there is no possibly-live writer yet.
+    admission.revalidate().map_err(|e| e.to_string())?;
+    Ok(crate::worker_admission::WriterLease::new(vec![admission]))
+}
+
+async fn run_cache_writer<T, F, Fut>(
+    admission: crate::worker_admission::Lease,
+    writer: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let held = begin_writer(admission)?;
+        let result = writer().await;
+        held.reaped();
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub(crate) fn write_admitted_erofs(
+    admission: crate::worker_admission::Lease,
+    root: &Path,
+) -> Result<PathBuf, String> {
+    let fence = admission.clone();
+    let checkpoint: super::rootfs_cache::Checkpoint =
+        super::rootfs_cache::Checkpoint::new(move || fence.revalidate());
+    run_erofs_writer(admission, || {
+        super::erofs::ensure_base_erofs_checked(root, &checkpoint).map_err(|e| format!("{e:#}"))
+    })
+}
+
+fn run_erofs_writer<T>(
+    admission: crate::worker_admission::Lease,
+    writer: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let held = begin_writer(admission)?;
+    let result = writer();
+    held.reaped();
+    result
+}
+
 /// iii-init's build-mode switch (`iii_init::export`). Only the host sets it, on
 /// a build VM: a caller's env never carries it into a VM.
 const BUILD_EXPORT_ENV: &str = "III_BUILD_EXPORT";
@@ -709,47 +933,82 @@ pub(crate) async fn image_build_command(
     scratch: &Path,
     env: HashMap<String, String>,
 ) -> Result<BuildVm, String> {
+    image_build_resolved(
+        worker_dir,
+        package,
+        run_override,
+        executable,
+        base_image,
+        scratch,
+        env,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn image_build_resolved(
+    worker_dir: &Path,
+    package: Option<&str>,
+    run_override: Option<&str>,
+    executable: Option<&str>,
+    base_image: Option<&str>,
+    scratch: &Path,
+    env: HashMap<String, String>,
+    resolved: Option<WorkerProject>,
+) -> Result<BuildVm, String> {
     use super::worker_manager::oci;
     let admission = crate::worker_admission::local(scratch).map_err(|e| e.to_string())?;
-    crate::worker_admission::reject_retained_path(worker_dir).map_err(|e| e.to_string())?;
+    let admission = crate::worker_admission::with_inputs(
+        admission,
+        &[
+            worker_dir,
+            scratch,
+            &scratch.join("root"),
+            &scratch.join("root/runtime"),
+            &scratch.join(super::upper::UPPER_NAME),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
 
-    let (mut project, kind) = match (package, executable) {
-        (Some(package), Some(executable)) => (
-            validate_binary(worker_dir, package, executable)?,
-            String::new(),
-        ),
-        // A base image in the request stands in for the manifest's.
-        _ => validate_source_with(worker_dir, package, run_override, base_image.is_none())?,
+    let resolved = match resolved {
+        Some(project) => project,
+        None => WorkerProject::resolve(
+            worker_dir,
+            package,
+            run_override,
+            executable,
+            base_image,
+            true,
+        )?,
     };
-    if let Some(image) = base_image {
-        project.base_image = Some(image.to_string());
-    }
+    let admission = resolved.admit_cache(admission)?;
+    let WorkerProject { project, kind } = resolved;
     // A binary package is copied whole, as a bundle is.
     let is_bundle = package.is_some();
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
+    admission.revalidate().map_err(|e| e.to_string())?;
     if !super::worker_manager::libkrun::libkrun_available() {
         return Err("No runtime available.\n  \
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
             .to_string());
     }
     let reference = oci::base_image_ref(&kind, project.base_image.as_deref());
-    let base_rootfs = oci::prepare_rootfs(&kind, project.base_image.as_deref())
+    let base_rootfs = prepare_admitted_rootfs(&admission, &kind, project.base_image.as_deref())
         .await
         .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
     let lower = {
         let base = base_rootfs.clone();
         let writer_admission = admission.clone();
-        tokio::task::spawn_blocking(move || {
-            let _admission = writer_admission;
-            crate::cli::erofs::ensure_base_erofs(&base)
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("failed to build base erofs: {e}"))?
+        tokio::task::spawn_blocking(move || write_admitted_erofs(writer_admission, &base))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("failed to build base erofs: {e}"))?
     };
 
+    admission.revalidate().map_err(|e| e.to_string())?;
     let root = scratch.join("root");
     std::fs::create_dir_all(&root)
         .and_then(|()| oci::ensure_rootfs_dir_no_follow(&root, "workspace").map(drop))
@@ -826,11 +1085,8 @@ fn image_run_command(
     is_bundle: bool,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
+    let admission = admit_worker_inputs(project_path, &over)?;
     let BootImage { image, upper } = over.image.expect("a build to boot");
-    for path in [project_path, &image, &upper] {
-        crate::worker_admission::reject_retained_path(path).map_err(|e| e.to_string())?;
-    }
     if !crate::cli::overlay::overlay_active() {
         return Err(
             "booting a build needs the overlay rootfs mode; this adapter runs in \
@@ -1175,8 +1431,7 @@ pub async fn binary_vm_command(
     package_dir: &Path,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
-    crate::worker_admission::reject_retained_path(package_dir).map_err(|e| e.to_string())?;
+    let admission = admit_worker_inputs(package_dir, &over)?;
     let project = validate_binary(package_dir, package, executable)?;
     if over.image.is_none() {
         return Err(format!(
@@ -1187,6 +1442,7 @@ pub async fn binary_vm_command(
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
+    admission.revalidate().map_err(|e| e.to_string())?;
     if !super::worker_manager::libkrun::libkrun_available() {
         return Err("No runtime available.\n  \
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
@@ -1214,20 +1470,53 @@ pub(crate) async fn start_worker_impl(
     over: VmOverride<'_>,
     run_override: Option<&str>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    let admission = crate::worker_admission::local(&over.state_dir).map_err(|e| e.to_string())?;
-    let project_path = Path::new(worker_path);
-    crate::worker_admission::reject_retained_path(project_path).map_err(|e| e.to_string())?;
-    // A build's image is made: the manifest need not name its base image.
-    let (project, kind) =
-        validate_source_with(project_path, package, run_override, over.image.is_none())?;
+    start_worker_resolved(
+        worker_name,
+        Path::new(worker_path),
+        package,
+        over,
+        run_override,
+        None,
+    )
+    .await
+}
+
+async fn start_worker_resolved(
+    worker_name: &str,
+    project_path: &Path,
+    package: Option<&str>,
+    over: VmOverride<'_>,
+    run_override: Option<&str>,
+    resolved: Option<WorkerProject>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    let admission = admit_worker_inputs(project_path, &over)?;
+    let resolved = match resolved {
+        Some(project) => project,
+        None => WorkerProject::resolve(
+            project_path,
+            package,
+            run_override,
+            None,
+            None,
+            over.image.is_none(),
+        )?,
+    };
+    let WorkerProject { project, kind } = resolved;
     let kind = kind.as_str();
     let is_bundle = package.is_some();
+
+    let admission = if over.image.is_none() {
+        admit_base_image_inputs(admission, kind, project.base_image.as_deref())?
+    } else {
+        admission
+    };
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
         tracing::warn!(error = %e, "failed to ensure libkrunfw");
     }
 
+    admission.revalidate().map_err(|e| e.to_string())?;
     if !super::worker_manager::libkrun::libkrun_available() {
         return Err("No runtime available.\n  \
              Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/"
@@ -1293,14 +1582,13 @@ pub(crate) async fn start_worker_impl(
             ));
         }
         let base_rootfs =
-            match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref())
-                .await
-            {
+            match prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await {
                 Ok(p) => p,
                 Err(e) => {
                     return Err(e.to_string());
                 }
             };
+        admission.revalidate().map_err(|e| e.to_string())?;
         if let Err(e) = clone_rootfs(&base_rootfs, &managed_dir) {
             return Err(format!("Failed to create project rootfs: {}", e));
         }
@@ -1331,13 +1619,13 @@ pub(crate) async fn start_worker_impl(
     let mut env = build_local_env(over.engine_url, worker_name, &combined_project_env);
 
     let base_rootfs =
-        match super::worker_manager::oci::prepare_rootfs(kind, project.base_image.as_deref()).await
-        {
+        match prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await {
             Ok(p) => p,
             Err(e) => {
                 return Err(e.to_string());
             }
         };
+    admission.revalidate().map_err(|e| e.to_string())?;
     let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
@@ -1379,6 +1667,7 @@ pub(crate) async fn start_worker_impl(
         }
     };
 
+    admission.revalidate().map_err(|e| e.to_string())?;
     if !iii_filesystem::init::has_init() {
         // The share is guest-writable, so init.krun may be a planted symlink: never copy through it.
         let dest = managed_dir.join("init.krun");
@@ -1420,7 +1709,7 @@ pub(crate) async fn start_worker_impl(
     // fails the start cleanly (rather than inside the detached __vm-boot child),
     // and never silently falls back to a per-worker clone.
     let (rootfs_lower, rootfs_mode, rootfs_upper) = if overlay {
-        let erofs_img = match crate::cli::erofs::ensure_base_erofs(&base_rootfs) {
+        let erofs_img = match write_admitted_erofs(admission.clone(), &base_rootfs) {
             Ok(s) => s,
             Err(e) => {
                 return Err(format!("failed to build base erofs: {}", e));
@@ -1468,6 +1757,186 @@ pub(crate) async fn start_worker_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn writer_fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        crate::worker_admission::Lease,
+    ) {
+        let t = tempfile::tempdir().unwrap();
+        let owner = t.path().join("owner");
+        std::fs::create_dir(&owner).unwrap();
+        let input = owner.join("input");
+        std::fs::create_dir(&input).unwrap();
+        let lease = crate::worker_admission::local(&input).unwrap();
+        (t, owner, input, lease)
+    }
+
+    fn exclusive_available(path: &Path) -> bool {
+        use std::os::fd::AsRawFd;
+        let directory = std::fs::File::open(path).unwrap();
+        // Tests only the advisory domain lock, never creates migration authority.
+        unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+
+    #[tokio::test]
+    async fn cache_task_revalidates_at_entry_and_releases_pre_writer_failure() {
+        let (_t, owner, input, lease) = writer_fixture();
+        assert!(!exclusive_available(&owner));
+        let sentinel = owner.join("cache-writer-ran");
+        let written = sentinel.clone();
+        let task = run_cache_writer(lease, move || async move {
+            std::fs::write(written, b"effect").unwrap();
+            Ok(())
+        });
+        // A real pinned path is invalidated, not a mocked admission/grant.
+        std::fs::rename(&input, owner.join("moved")).unwrap();
+        std::fs::create_dir(&input).unwrap();
+        assert!(task.await.is_err());
+        assert!(!sentinel.exists());
+        assert!(
+            exclusive_available(&owner),
+            "no writer started: no conservative leak"
+        );
+    }
+
+    #[test]
+    fn erofs_entry_revalidates_and_releases_before_any_writer_effect() {
+        let (_t, owner, input, lease) = writer_fixture();
+        assert!(!exclusive_available(&owner));
+        std::fs::rename(&input, owner.join("moved")).unwrap();
+        std::fs::create_dir(&input).unwrap();
+        let sentinel = owner.join("erofs-writer-ran");
+        let result = run_erofs_writer(lease, || {
+            std::fs::write(&sentinel, b"effect").unwrap();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!sentinel.exists());
+        assert!(exclusive_available(&owner));
+    }
+
+    #[tokio::test]
+    async fn completed_writers_hold_the_domain_during_effects_then_release() {
+        let (_t, owner, _input, lease) = writer_fixture();
+        let checked = owner.clone();
+        run_cache_writer(lease, move || async move {
+            assert!(!exclusive_available(&checked));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(exclusive_available(&owner));
+        let lease = crate::worker_admission::local(&owner.join("input")).unwrap();
+        let result: Result<(), String> = run_erofs_writer(lease, || {
+            assert!(!exclusive_available(&owner));
+            Err("completed writer error".into())
+        });
+        assert!(result.is_err());
+        assert!(exclusive_available(&owner));
+    }
+
+    #[test]
+    fn resolved_project_keeps_reference_and_scripts_after_manifest_changes() {
+        let t = tempfile::tempdir().unwrap();
+        let manifest = t.path().join(WORKER_MANIFEST);
+        std::fs::write(&manifest, "name: w\nruntime:\n  base_image: docker.io/library/alpine:3.20\nscripts:\n  start: echo first\n").unwrap();
+        let resolved = WorkerProject::resolve(t.path(), None, None, None, None, true).unwrap();
+        std::fs::write(&manifest, "name: w\nruntime:\n  base_image: docker.io/library/alpine:3.21\nscripts:\n  start: echo changed\n").unwrap();
+        assert_eq!(
+            resolved.project.base_image.as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        assert_eq!(resolved.project.run_cmd, "echo first");
+        let overridden = WorkerProject::resolve(
+            t.path(),
+            None,
+            None,
+            None,
+            Some("docker.io/library/alpine:3.19"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            overridden.project.base_image.as_deref(),
+            Some("docker.io/library/alpine:3.19")
+        );
+    }
+
+    #[test]
+    fn replaced_existing_cache_lower_refuses_the_next_writer() {
+        let (_t, owner, _input, lease) = writer_fixture();
+        let cache = owner.join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let reference = "docker.io/library/alpine:3.20";
+        let slug = super::super::worker_manager::oci::rootfs_slug_for_image(reference);
+        let lower = cache.join(format!("{slug}.erofs"));
+        std::fs::write(&lower, b"old").unwrap();
+        let lease = admit_cache_paths(lease, reference, &cache).unwrap();
+        let replacement = cache.join("replacement");
+        std::fs::write(&replacement, b"new").unwrap();
+        std::fs::rename(replacement, &lower).unwrap();
+        let result: Result<(), String> =
+            run_erofs_writer(lease, || panic!("must refuse before the next writer"));
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&lower).unwrap(), b"new");
+        assert!(exclusive_available(&owner));
+        assert!(exclusive_available(&cache));
+        // Integration seam: the current core pins existing file identities,
+        // including intentional cache/EROFS replacement. This is NOT a warm
+        // cache rebuild PASS; caller-side reacquisition would lose the fence.
+    }
+
+    #[test]
+    fn cold_generic_cache_parent_refuses_without_creating_hierarchy() {
+        let (_t, owner, _input, lease) = writer_fixture();
+        let cache = owner.join("missing/cache");
+        assert!(admit_cache_paths(lease, "docker.io/library/alpine:3.20", &cache).is_err());
+        assert!(!owner.join("missing").exists());
+        assert!(exclusive_available(&owner));
+    }
+
+    #[test]
+    fn independent_image_run_refuses_before_creating_root_or_reading_image_env() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().join("workers");
+        let id = "c".repeat(32);
+        let foreign = base.join(&id).join("root");
+        std::fs::create_dir_all(&foreign).unwrap();
+        let custody = crate::worker_admission::custody(&base, &id).unwrap();
+        std::fs::create_dir_all(&custody).unwrap();
+        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        let root = t.path().join("normal-root");
+        let source = t.path().join("normal-source");
+        std::fs::create_dir(&source).unwrap();
+        let project = project_with("", "");
+        for retained_lower in [false, true] {
+            let over = VmOverride {
+                state_dir: root.clone(),
+                engine_url: "ws://127.0.0.1:1/ws",
+                extra_env: Default::default(),
+                image: Some(BootImage {
+                    image: if retained_lower {
+                        foreign.join("image.erofs")
+                    } else {
+                        source.join("image.erofs")
+                    },
+                    upper: if retained_lower {
+                        root.join("upper.ext4")
+                    } else {
+                        foreign.join("upper.ext4")
+                    },
+                }),
+            };
+            let error = image_run_command("w", &source, &project, false, over)
+                .err()
+                .unwrap();
+            assert!(error.contains("compatibility custody"), "{error}");
+            assert!(!root.exists());
+            assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+        }
+    }
 
     /// A guest that ran `ln -sf ~/.bashrc /opt/iii/dev-run.sh` (or symlinked
     /// `opt` itself) must not get the host file overwritten on the next start.

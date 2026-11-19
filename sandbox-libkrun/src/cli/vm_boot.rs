@@ -723,6 +723,78 @@ fn validate_cmdline_env(env: &[(String, String)]) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse exactly the mounts boot_vm will attach and fence every host input.
+/// This does no provisioning, copying, mount creation, KVM access or spawning.
+/// It also accepts absent output tails so builders can use it before writes.
+pub(crate) fn admit_boot_inputs(
+    root: &std::path::Path,
+    lower: Option<&std::path::Path>,
+    upper: Option<&std::path::Path>,
+    mounts: &[String],
+    source_sync: Option<&std::path::Path>,
+    source_readonly: Option<&std::path::Path>,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    let plan = build_virtiofs_mount_plan(mounts)?;
+    let admission = crate::worker_admission::local(root).map_err(|e| e.to_string())?;
+    let mut paths = vec![root];
+    paths.extend(lower);
+    paths.extend(upper);
+    paths.extend(source_sync);
+    paths.extend(source_readonly);
+    paths.extend(
+        plan.entries
+            .iter()
+            .map(|entry| std::path::Path::new(&entry.host_path)),
+    );
+    let admission =
+        crate::worker_admission::with_inputs(admission, &paths).map_err(|e| e.to_string())?;
+    Ok((admission, plan))
+}
+
+/// Side-effect-free entry gate for the hidden CLI. Keep its lease alive across
+/// boot_vm, including every source export and all post-pivot mount setup.
+fn preflight_boot(
+    args: &VmBootArgs,
+) -> Result<(crate::worker_admission::Lease, VirtiofsMountPlan), String> {
+    use std::path::Path;
+    let (admission, plan) = admit_boot_inputs(
+        Path::new(&args.rootfs),
+        args.rootfs_lower.as_deref().map(Path::new),
+        args.rootfs_upper.as_deref().map(Path::new),
+        &args.mount,
+        args.source_sync.as_deref().map(Path::new),
+        args.source_readonly.as_deref().map(Path::new),
+    )?;
+    let outputs: Vec<&Path> = args
+        .shell_sock
+        .iter()
+        .chain(args.net_activity_file.iter())
+        .map(|path| Path::new(path))
+        .collect();
+    let admission =
+        crate::worker_admission::with_inputs(admission, &outputs).map_err(|e| e.to_string())?;
+    if !Path::new(&args.rootfs).exists() {
+        return Err(format!("rootfs path does not exist: {}", args.rootfs));
+    }
+    if !iii_filesystem::init::has_init() && !Path::new(&args.rootfs).join("init.krun").exists() {
+        return Err(format!(
+            "No init binary available. /init.krun not found in rootfs '{}' \
+             and no init binary is embedded in this build.\n\
+             Hint: rebuild sandbox-libkrun with --features embed-init.",
+            args.rootfs
+        ));
+    }
+    if args.vcpus > u8::MAX as u32 {
+        return Err(format!(
+            "vcpus {} exceeds maximum {} for VmBuilder",
+            args.vcpus,
+            u8::MAX
+        ));
+    }
+    admission.revalidate().map_err(|e| e.to_string())?;
+    Ok((admission, plan))
+}
+
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
 /// This function does NOT return -- `krun_start_enter` replaces the process.
 pub fn run(args: &VmBootArgs) -> ! {
@@ -740,30 +812,17 @@ pub fn run(args: &VmBootArgs) -> ! {
         Vec::new()
     };
 
-    // Independent __vm-boot callers must also refuse compatibility custody.
-    // Retain the shared admission for the process lifetime before boot_vm can
-    // alter the trampoline, copy source or mount an upper. This is NOT authority.
-    let _admission = match crate::worker_admission::local(std::path::Path::new(&args.rootfs)) {
-        Ok(lease) => lease,
+    // Drain stdin first as before, but perform no boot effects until ALL host
+    // paths pass admission. The guard stays here until this process exits.
+    let (_admission, mount_plan) = match preflight_boot(args) {
+        Ok(preflight) => preflight,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
 
-    for path in args.rootfs_lower.iter().chain(args.rootfs_upper.iter()) {
-        if let Err(e) = crate::worker_admission::reject_retained_path(std::path::Path::new(path)) {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    }
-
-    if !std::path::Path::new(&args.rootfs).exists() {
-        eprintln!("error: rootfs path does not exist: {}", args.rootfs);
-        std::process::exit(1);
-    }
-
-    match boot_vm(args, stdin_env) {
+    match boot_vm(args, stdin_env, mount_plan) {
         Ok(infallible) => match infallible {},
         Err(e) => {
             eprintln!("error: VM execution failed: {}", e);
@@ -775,6 +834,7 @@ pub fn run(args: &VmBootArgs) -> ! {
 fn boot_vm(
     args: &VmBootArgs,
     stdin_env: Vec<(String, String)>,
+    mount_plan: VirtiofsMountPlan,
 ) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
 
@@ -791,27 +851,6 @@ fn boot_vm(
         .filter_map(|kv| kv.split_once('='))
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .chain(stdin_env);
-
-    // Pre-boot validation: ensure init binary is available either embedded or on-disk
-    if !iii_filesystem::init::has_init() {
-        let init_on_disk = std::path::Path::new(&args.rootfs).join("init.krun");
-        if !init_on_disk.exists() {
-            return Err(format!(
-                "No init binary available. /init.krun not found in rootfs '{}' \
-                 and no init binary is embedded in this build.\n\
-                 Hint: rebuild sandbox-libkrun with --features embed-init.",
-                args.rootfs
-            ));
-        }
-    }
-
-    if args.vcpus > u8::MAX as u32 {
-        return Err(format!(
-            "vcpus {} exceeds maximum {} for VmBuilder",
-            args.vcpus,
-            u8::MAX
-        ));
-    }
 
     let passthrough_fs = root_share(args)?;
 
@@ -840,7 +879,6 @@ fn boot_vm(
         })
         .fs(move |fs| fs.tag("/dev/root").custom(Box::new(passthrough_fs)));
 
-    let mount_plan = build_virtiofs_mount_plan(&args.mount)?;
     let virtiofs_mount_env = mount_plan.env_var.clone();
     // Per-mount DAX window. 0 (the CLI default) skips the call so
     // msb_krun's built-in default applies; any positive value is
@@ -1317,6 +1355,106 @@ fn shut_down_vm(trigger: impl FnOnce(), why: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn admission_args(root: &std::path::Path) -> VmBootArgs {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+        Cli::parse_from([
+            "test",
+            "--rootfs",
+            root.to_str().unwrap(),
+            "--exec",
+            "/bin/false",
+        ])
+        .args
+    }
+
+    fn enrolled_input(parent: &std::path::Path) -> std::path::PathBuf {
+        let base = parent.join("workers");
+        let id = "b".repeat(32);
+        let root = base.join(&id).join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let custody = crate::worker_admission::custody(&base, &id).unwrap();
+        std::fs::create_dir_all(&custody).unwrap();
+        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        root
+    }
+
+    #[test]
+    fn preflight_rejects_each_foreign_host_input_before_root_or_init_effects() {
+        let t = tempfile::tempdir().unwrap();
+        let retained = enrolled_input(t.path());
+        // Missing normal root would fail later, but no fallback/root creation
+        // may run before retained inputs are inspected.
+        let normal = t.path().join("normal-root");
+        for field in ["lower", "upper", "mount", "sync", "readonly"] {
+            let mut args = admission_args(&normal);
+            let path = retained.join("absent/input").display().to_string();
+            match field {
+                "lower" => args.rootfs_lower = Some(path),
+                "upper" => args.rootfs_upper = Some(path),
+                "mount" => args.mount = vec![format!("{path}:/mnt/host-src")],
+                "sync" => args.source_sync = Some(path),
+                "readonly" => args.source_readonly = Some(path),
+                _ => unreachable!(),
+            }
+            let error = preflight_boot(&args).err().unwrap();
+            assert!(error.contains("compatibility custody"), "{field}: {error}");
+            assert!(!normal.exists());
+            assert!(!retained.join("absent").exists());
+        }
+    }
+
+    #[test]
+    fn preflight_uses_the_real_mount_parser_before_boot_setup() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("root");
+        for mount in ["missing-colon", ":/guest", "/host:"] {
+            let mut args = admission_args(&root);
+            args.mount.push(mount.into());
+            let expected = build_virtiofs_mount_plan(&args.mount).unwrap_err();
+            assert_eq!(preflight_boot(&args).err().unwrap(), expected);
+            assert!(!root.exists());
+        }
+    }
+
+    #[test]
+    fn normal_preflight_preserves_the_mount_plan_and_creates_nothing() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("normal-root");
+        std::fs::create_dir(&root).unwrap();
+        // Merely a file-existence sentinel; never executed as guest init.
+        std::fs::write(root.join("init.krun"), b"not-executable").unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let mut args = admission_args(&root);
+        args.mount
+            .push(format!("{}:/mnt/host-src", source.display()));
+        args.source_sync = Some(source.display().to_string());
+        let expected = build_virtiofs_mount_plan(&args.mount).unwrap();
+        let (lease, plan) = preflight_boot(&args).unwrap();
+        assert_eq!(plan, expected);
+        lease.revalidate().unwrap();
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&source).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn preflight_refuses_symlink_input_without_canonicalizing_it_away() {
+        let t = tempfile::tempdir().unwrap();
+        let source = t.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let alias = t.path().join("alias");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        let root = t.path().join("root");
+        let args = [format!("{}:/workspace", alias.display())];
+        assert!(admit_boot_inputs(&root, None, None, &args, None, None).is_err());
+        assert!(!root.exists());
+    }
 
     #[test]
     fn nested_virt_is_dropped_when_the_host_cannot_provide_it() {

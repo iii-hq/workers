@@ -1,112 +1,148 @@
 # Worker lifecycle compatibility admission
 
-This boundary refuses unsafe NORMAL operations; it does not enable migration or
-booting an old root. No request/marker/hash/token can issue TransitionAuthority,
-BootAuthority or OfflineGrant. All constructors remain private/unimplemented in
-production. A valid active selector is still unavailable until authentic local
-owner/provenance/retirement/sanitization/profile admission exists.
+Source-only Stream A, incremental on `0608e54e220999b61a94bc617f65f4aaab2f803c`.
+This boundary refuses unsafe NORMAL operations; it does not enable migration,
+authorize an owner, retire a writer or boot an old root. No marker, name, hash,
+path or legacy token issues TransitionAuthority, BootAuthority or OfflineGrant.
+The private authority constructors still have no production issuer. The offline
+Store/tree/fs, G1/G2/G3 and A4 retained transition-proof lifetime are unchanged.
 
-## Deterministic custody and binding
+## Fixed composite contract
 
-For adapter base `<parent>/<base-name>` and existing SHA256(state_key)[0..32] vm_id,
-compatibility custody is `<parent>/.<base-name>-compat/<vm_id>`. This is outside the
-VM directory and guest root, so ordinary destroy/prune cannot remove its records,
-candidates, selection or offline data. The full record binding must begin with
-that vm_id; its exact full binding and environment are retained by the future
-private handoff. The coordinator must use the same path/identity protocol and
-resolve aliases/host shares before enrollment; no arbitrary request path is accepted.
+```rust
+pub(crate) fn with_inputs(admission: Lease, paths: &[&Path]) -> io::Result<Lease>;
+```
 
-Any per-VM custody entry (including empty, corrupt, symlink, wrong owner/mode,
-partial staging or missing active selector) refuses. Valid active state is read
-through the existing offline Dir/record validators: no-follow chains, private0700
-custody,0600 single-link bounded records, version/binding/operation/generation/hash
-agreement. Unknown version and malformed records never fall back to normal mode.
-Legacy `<vm>/compat`, `compat-mode` and `compat-generation` markers also refuse
-without interpreting marker content as authority. Keyless prepare refuses when
-an enrollment registry exists, because it cannot identify a safe VM scope.
+An empty slice returns the original Arc unchanged. Otherwise, the returned lease
+owns the original admission and every input admission. Every input is checked
+before success; failure drops the partial batch and cannot perform downstream
+work. Clones keep the complete object graph alive until the last clone drops.
+`revalidate()` traverses every retained lease, pinned identity and discovery
+check, not just the last input or the output's owner. Existing worker/local/
+transition/revalidate/WriterLease call shapes are unchanged.
 
-Sources/build paths and local boot roots pointing inside a generation/backup
-(receipt.json/backup.json/active.json or reserved `.<base>-compat` ancestry) also
-refuse. This protects retained data from being repurposed as a normal source/upper.
-Normal paths with no compatibility intent do not create a marker, state file or
-lockfile. Normal build-dir claim/S505 semantics and explicit prune behavior remain;
-only participating unsafe custody paths get the existing operation error category
-(S300/S301/S507/S400 wrapper), not a new wire code or capability feature.
+The caller must admit its ORIGINAL host paths before canonicalization, claims,
+state allocation, cache/download, firmware, copies, mounts or spawning. Relative
+inputs are anchored once to the current directory; `..` is refused, including
+in absent tails. Existing directories are traversed with descriptor-relative
+O_DIRECTORY/O_NOFOLLOW opens; a final regular file is identified without opening
+its content. Symlinks, special files, inaccessible components and replaced pinned
+inodes refuse. Revalidation also walks newly created tails and rediscovers
+custody; it is not a substitute for a retained fence. Callers must not change
+cwd or reinterpret the admitted spelling while using it.
 
-## Participating callsite matrix
+`reject_retained_path` is only a read-only rejection helper. It retains no fence
+and must not substitute for `with_inputs` when a path remains in use.
 
-| Entry | Guard before | Lease lifetime |
-| --- | --- | --- |
-| WorkerVms.prepare | source preparation, rootfs pull/cache/EROFS, state-key directory | request plus blocking EROFS task |
-| WorkerVms.start | source mutation, next_instance/Preparing, build claim, adopt_build_mode, scripts/upper | request -> launch waiter -> confirmed child wait |
-| WorkerVms.build/rebuild | output claim/create, scratch sweeps, setup/install VM, image publish | request + local VM + blocking image writer |
-| WorkerVms.destroy(prune false/true) | Destroying slot, stored-instance read, retain/archive or deletion | entire synchronous mutation |
-| WorkerVms.launch direct | next_instance/console/state/process spawn | confirmed child wait |
-| local/bundle/binary command builders | firmware/cache, clone/reclone cleanup, workspace/scripts, ensure_base/upper | VmCommand carried lease, owning waiter consumes |
-| image_build_command | firmware/rootfs/image/scratch effects | VmCommand and blocking base-image preparation |
-| __vm-boot | boot_vm/rootfs mutation after draining stdin env frame | local process never-returning lifetime |
-| read/status/logs and authorized stop | unchanged: not boot/capture admission | normal control behavior retained |
+## A1: a domain cannot move as hierarchy appears
 
-The final boot guard also rejects retained lower/upper paths. Source copy-in and
-watcher behavior is behind an admitted normal VM lifetime; no compat guest/source
-sync is started. Stop remains available to quiesce a live normal VM and is not
-misrepresented as credential retirement. Explicit destroy/prune on a compat entry
-is refused pending negotiated intent instead of silently retaining/deleting data.
+For a worker base B, the fence is EXACTLY `B.parent()`. That directory must already
+exist in full, must not be `/`, and must remain the same inode. Admission refuses
+before normal effects if it does not exist. It does not lock the deepest existing
+prefix and does not create/provision directories. The administrator/caller must
+provision the owner directory separately BEFORE asking to use it; no permission
+to make that change is implied by refusal.
 
-## Shared/exclusive transition fence
+Normal operations take SH, transition takes nonblocking EX on that same domain.
+Once admitted, B, its vm_id directories, scratch, root and image tails may be
+created without changing the fence. A transition still conflicts until the last
+lease clone releases. The private transition API still requires real authority;
+the tests exercise only its internal exclusion primitive, not fabricated proofs.
 
-Normal operations hold shared flock on every EXISTING ancestor through
-`base.parent`, not base itself (base's existing exclusive build-claim lock is
-untouched). Direct local worker roots locate the same parent by vm_id ancestry;
-other local roots use their own existing ancestor chain. This lets a transition
-exclusively lock the final stable parent before creating/enrolling custody and
-prevents a check-absence -> marker-created race. If parents are missing, their
-existing ancestors are pinned/locked; no directories are created by admission.
-The transition API requires a private TransitionAuthority with no producer.
+Only the exact domain is flocked. Other ancestor descriptors pin identities but
+carry NO flock. There is no root-wide EX (or SH), no lockfile, and no flock on B,
+whose exclusive build-dir claims remain independent. Distinct owner domains can
+operate while another domain has EX; owners sharing a domain conservatively
+serialize transitions. Unsupported directory locking is fail-closed.
 
-Limits are deliberate: this is coarse parent-wide exclusion, not per-VM concurrency.
-A transition may wait/refuse because another VM under the same owner parent is
-active. An overly broad base (or missing hierarchy) can conservatively lock a broad
-ancestor. Directory-lock-unsupported filesystems fail closed, not warning/fallback.
-Normal concurrent operations keep shared locks and existing slot/build mutex rules.
-No parent lock is taken on the build-claim base directory, avoiding self-deadlock.
+This deliberately narrows cold-start compatibility: missing owner parents and
+root-level bases refuse rather than accepting an unfenced operation. A missing B
+with an existing owner is still normal and causes no admission writes.
 
-Lease handles are Arc-owned and cross async/blocking-task boundaries. A normal
-VM request cannot release them while its child still writes. A successful wait
-releases leases; an unknown wait leaks those descriptors conservatively for the
-adapter lifetime. A build future dropped after child spawn but before successful
-wait likewise retains its leases for that process lifetime, rather than reporting
-quiescence while existing kill_on_drop/reaping is uncertain. This can block future
-compatibility transitions after a cancelled build until a controlled adapter
-shutdown; it does not authorize stopping it, sending new signals or claiming no
-writer. Existing child kill/stop semantics were not changed. __vm-boot additionally
-holds its own normal guard. Blocking writers retain cloned guards until finished.
+## A2: original VM storage, inputs and future enrollment
 
-Direct command consumers outside WorkerVms must retain the command's private
-leases (in-tree owning waiters do); __vm-boot rechecks before effects. A future
-transition must still prove all old/uncooperative writers gone. Alternate bases,
-unregistered aliases, arbitrary host/guest writes, and old binaries do not become
-cooperative through this guard. No all-world or crash-surviving authority claim.
+Custody for `<parent>/<base-name>/<vm_id>` is the sibling namespace
+`<parent>/.<base-name>-compat/<vm_id>`. Every id-shaped ancestor of an input is a
+CANDIDATE address, including absent directories. Each candidate consults its own
+sibling registry, so normal A cannot use original storage belonging to enrolled B,
+even across different bases and with an absent root/image. All candidate domains
+are retained before admission succeeds, blocking future participating enrollment
+of those VM addresses while the source/output/image remains in use. An input
+that names an entire base also checks that base's derived sibling registry.
 
-## Private CURRENT handoff
+The original admission and the complete input batch supply known bases before
+locks are acquired; input order cannot turn another input's base into a claim
+lock. A whole known-base/ancestor input checks all its enrollment scopes. An input
+under a known base but outside a VM uses that base's domain, not its claim flock.
+Ambiguous nested layouts where a selected domain equals a known claim base are
+refused instead of risking a blocking claim later. Generic paths with no VM or
+known-base relation use their immediate parent as domain; it must already exist.
+Missing arbitrary intermediate parents therefore refuse, but a new plain image
+in an existing directory and absent VM hierarchies under an existing owner work.
 
-`compat_generation::admission::handoff` takes an existing Store, private
-BootAuthority and TransitionAuthority; acquires the exclusive parent lease, calls
-Store::selected (current generation, immutable lower validation) and checks full
-binding/environment against both proofs. The returned private Handoff retains
-Selected/store lease, boot-proof lifetime and transition lease together. No
-normal call can construct it or pass it as a bool. It does not contain a guessed
-mount profile or execute commands. The offline G1 parent-current-data checks,
-G2 syncfs and G3 recovery barriers are untouched.
+Any addressed per-VM custody entry refuses, including empty/corrupt/symlinked
+entries and valid selectors. Existing offline validators remain diagnostic, never
+a grant. Derived registry paths must be directories, private0700 and owned by the
+effective user; unknown registry entry names refuse. Keyless preparation refuses
+any registry, even empty. A normal keyed A remains usable when only B is enrolled
+and none of A's admitted inputs touch B or a whole shared base.
 
-Remaining seam: local OS-peer issuer, old-writer and token/session/observer
-retirement, secret sanitation and actual supported per-VM profile must be supplied
-and independently reviewed before any boot/rebuild consumer exists. The tests'
-private synthetic issuer is not product authority. Partial refusal is not the
-original data-preserving upgrade goal and does not certify a guest migration.
+## A3: application data is not a migration marker
 
-New tests are authored only: guard lifetime/collision/normal behavior, valid and
-invalid custody, real request methods refusing before effects, existing admin
-semantics without compat, local builders, and CURRENT/NEW handoff. No VM/socket/
-process test or offline syncfs was run in this source increment. Historical34
-source-approved offline tests remain unchanged and unexecuted.
+`active.json`, `receipt.json` and `backup.json` are NOT global markers. A generic
+`compat` directory or compat-mode/compat-generation file in a project or unrelated
+ancestor is normal application data. Discovery reserves only the derived
+`.<base>-compat` namespace and contextual legacy VM markers.
+
+For worker(base,key), the VM address is explicit. Local/input discovery consults
+all candidate sibling registries, but applies legacy `<vm>/compat`, compat-mode
+and compat-generation checks only with the canonical `<id>/root`, `<id>/upper.ext4`
+or `<id>/build-*` runtime layout, or a derived registry. A hex-named project alone
+is not a legacy VM. Legacy markers are checked at the VM directory, not in its
+root/application children. Names/layout are conservative discovery, NOT proof of
+ownership or authorization. Generic records outside a bound custody namespace
+cannot identify retained data by themselves.
+
+## Lifetime and integration boundary
+
+WriterLease is unchanged: explicit successful reap releases; cancellation or an
+unknown wait conservatively leaks retained leases for the adapter process lifetime.
+That can prevent later transitions until a controlled shutdown. Drop, a selector,
+a successful wait of one child or an error return proves no global retirement.
+
+Stream B owns caller coverage and pre-effect ordering: WorkerVms.prepare/start/
+build/destroy/launch; local, bundle, binary and image builders; and __vm-boot's
+root/lower/upper, mount, source_sync and source_readonly inputs. This commit does
+NOT establish those callers use the composite. Retention through blocking tasks,
+VmCommand and successful wait must be reviewed in the integrated delta. Existing
+stop/status/logs, auth, build claims, prune and wire behavior are not edited here.
+
+Cooperative advisory exclusion does not inventory arbitrary directory descendants,
+external build claims, bind mounts, hardlink aliases, alternate base spellings or
+unregistered host exports. The coordinator must bind/inventory actual original,
+source and independent backup storage before authorizing enrollment, and ensure
+shared directories cannot expose other enrolled subtrees. A plain backup.json
+outside a bound namespace is intentionally not an ownership registry. Nonparticipant
+renames/writes, old binaries and process crash still require real all-writer
+quiescence, alias inventory and retirement; revalidation cannot make them safe.
+
+Remaining gates: independent core/Stream B seam review; authorized compilation and
+focused tests on supported locking filesystems (including normal cold-start and
+relative-path regressions); real local OS-peer issuer/provenance; all-writer and
+consumer/credential retirement; secret sanitation; exact historical boot profile;
+administrative intent and authorized CURRENT/rebuild handoff; then eight origins
+by two guest campaigns. No production issuer, compatibility boot consumer, remote
+migration endpoint, OLD-over-NEW reimport, publishing or release is added.
+
+## Evidence level
+
+The core suite is authored only. It covers missing-domain refusal, creation after
+admission, distinct owners, claim noninterference in both input orders, sibling
+B enrollment, absent inputs, whole-base input, symlink/corrupt/unknown namespace,
+application marker positives, clone/last-drop/empty batch, partial failure cleanup,
+all-component revalidation and explicit WriterLease reap. Own-temp fixtures do
+not spawn processes, mount or invoke the offline Store/syncfs, but they have NOT
+been executed or typechecked. Source formatting and static/diff checks are the
+only permitted checks in this increment. Historical34 offline tests and the
+base's28 lifecycle tests are historical authored counts, not runtime evidence.
+Nothing here certifies a full migration or a guest runtime PASS.

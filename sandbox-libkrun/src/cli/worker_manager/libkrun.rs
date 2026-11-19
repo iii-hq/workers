@@ -143,6 +143,20 @@ pub fn build_vm_command(
     source_sync: Option<&Path>,
     source_readonly: Option<&Path>,
 ) -> Result<VmCommand, String> {
+    // Independent callers get the same parser and fences as __vm-boot,
+    // before even platform provisioning (codesigning on macOS).
+    let mount_args: Vec<String> = mounts
+        .iter()
+        .map(|(host, guest)| format!("{host}:{guest}"))
+        .collect();
+    let (admission, _) = crate::cli::vm_boot::admit_boot_inputs(
+        &rootfs,
+        rootfs_lower.as_deref(),
+        rootfs_upper.as_deref(),
+        &mount_args,
+        source_sync,
+        source_readonly,
+    )?;
     let env = build_vm_env(env);
 
     let self_exe = vm_boot_program()?;
@@ -202,7 +216,7 @@ pub fn build_vm_command(
     Ok(VmCommand {
         command: cmd,
         env_stdin,
-        lifecycle_leases: Vec::new(),
+        lifecycle_leases: vec![admission],
     })
 }
 
@@ -283,6 +297,44 @@ fn vm_boot_args_dev(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn independent_builder_refuses_mount_and_source_exports_before_provisioning() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().join("workers");
+        let id = "d".repeat(32);
+        let retained = base.join(&id).join("root");
+        std::fs::create_dir_all(&retained).unwrap();
+        let custody = crate::worker_admission::custody(&base, &id).unwrap();
+        std::fs::create_dir_all(&custody).unwrap();
+        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        let root = t.path().join("normal-root");
+        for field in ["lower", "upper", "mount", "sync", "readonly"] {
+            let mounts = if field == "mount" {
+                vec![(retained.display().to_string(), "/workspace".to_string())]
+            } else {
+                Vec::new()
+            };
+            let error = build_vm_command(
+                "/bin/false",
+                &[],
+                HashMap::new(),
+                1,
+                128,
+                root.clone(),
+                (field == "lower").then(|| retained.join("image.erofs")),
+                "overlay".into(),
+                (field == "upper").then(|| retained.join("upper.ext4")),
+                &mounts,
+                (field == "sync").then_some(retained.as_path()),
+                (field == "readonly").then_some(retained.as_path()),
+            )
+            .err()
+            .unwrap();
+            assert!(error.contains("compatibility custody"), "{field}: {error}");
+            assert!(!root.exists());
+        }
+    }
 
     #[test]
     fn vm_boot_program_is_the_running_binary() {
