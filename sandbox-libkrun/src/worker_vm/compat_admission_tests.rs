@@ -19,6 +19,18 @@ struct Setup {
     custody: PathBuf,
     source: PathBuf,
 }
+fn write_private_fixture(path: &Path, bytes: &[u8]) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .unwrap();
+    file.write_all(bytes).unwrap();
+}
 fn setup(compat: bool) -> Setup {
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -27,11 +39,11 @@ fn setup(compat: bool) -> Setup {
     let vm = base.join(vm_id("key"));
     private(&vm);
     private(&vm.join("root"));
-    std::fs::write(vm.join("root/upper.ext4"), b"OLD-do-not-archive").unwrap();
-    std::fs::write(vm.join("state.json"), b"{\"instance\":7}").unwrap();
+    write_private_fixture(&vm.join("root/upper.ext4"), b"OLD-do-not-archive");
+    write_private_fixture(&vm.join("state.json"), b"{\"instance\":7}");
     let source = root.path().join("source");
     private(&source);
-    std::fs::write(source.join("iii.worker.yaml"), b"not-valid-yaml: [").unwrap();
+    write_private_fixture(&source.join("iii.worker.yaml"), b"not-valid-yaml: [");
     let custody = crate::worker_admission::custody(&base, &vm_id("key")).unwrap();
     if compat {
         private(custody.parent().unwrap());
@@ -1121,6 +1133,10 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
 
 async fn install_retired_fixture(s: &Setup) {
     let lease = s.vms.admission(Some("key")).unwrap();
+    // The real launcher creates the console before spawning. Seed it through
+    // the same admitted helper before the receipt captures lifecycle identities.
+    let console_bytes = b"fixture log\n";
+    write_control_admitted(&lease, &s.vm, CONSOLE_LOG, console_bytes).unwrap();
     let session = crate::sandbox_daemon::adapters::runtime_test_session(
         lease.clone(),
         &s._root.path().join("catalog"),
@@ -1135,7 +1151,7 @@ async fn install_retired_fixture(s: &Setup) {
         failed: false,
         dir: s.vm.clone(),
         file: File::open(s.vm.join(CONSOLE_LOG)).unwrap(),
-        len: 12,
+        len: console_bytes.len() as u64,
         base: 0,
     };
     let vm = Arc::new(Vm {
