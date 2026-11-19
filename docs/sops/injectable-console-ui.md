@@ -65,14 +65,25 @@ fn main() {
 - watches every input with `rerun-if-changed`: the top-level files of `ui/`
   and its `src/` tree, the same for `packages/console-ui` (its `/format`,
   `/hooks` and `/ui-classes` subpaths are bundled into `page.js`), and the
-  root `pnpm-lock.yaml`. It never enters `node_modules`, `dist` or dot
-  directories, so the build does not loop on its own output;
-- returns early when every asset is at least as new as every input;
-- otherwise runs `pnpm install` then `pnpm build` inside `ui/`. A failed
-  build deletes the assets (the shared builder checks its output after
-  esbuild wrote it, so a retry would otherwise accept it), and an asset still
-  missing after a successful build panics;
-- honours `SKIP_UI_BUILD=1` (use the existing `dist/` as-is, panic if an
+  root `pnpm-lock.yaml` and `pnpm-workspace.yaml`. It never enters
+  `node_modules`, `dist` or dot directories, so the build does not loop on
+  its own output. It also watches each asset, so deleting one rebuilds it;
+- returns early when every asset exists and `ui/.ui-build`, the marker a
+  successful build writes, lists the current inputs and is newer than all
+  of them (an added or deleted input, or an unreadable directory, is
+  stale). Without a marker, as after a plain `pnpm build` (CI pre-builds
+  that way), the assets must be newer than every input instead;
+- otherwise marks the build as running and runs `pnpm install` then
+  `pnpm build` inside `ui/`, then writes the marker dated to the start of
+  the build, so an input saved meanwhile rebuilds next time. A failed or
+  interrupted build leaves the assets in place and the marker saying
+  "building", so the next build runs pnpm again (the shared builder checks
+  its output after esbuild wrote it), and an asset still missing after a
+  successful build panics. Builds of one checkout from several cargo
+  processes (another target dir, rust-analyzer) take turns on the
+  gitignored `.ui-build.lock` at the repo root;
+- honours `SKIP_UI_BUILD=1` (use whatever `dist/` was last written, even by
+  a build whose checks failed, as release jobs restore it; panic if an
   asset is missing) and `PNPM=<path>` when pnpm is not on `PATH`.
 
 List every embedded asset (`canvas/build.rs` lists four). A project in

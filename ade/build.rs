@@ -26,6 +26,8 @@ fn main() {
         extra: &[
             "web/public",
             "web/.env.production",
+            // `prebuild` runs scripts/generate-vendor-shims.mjs.
+            "web/scripts",
             "../cursor/src/provider-icon.ts",
             "../provider-anthropic/assets/icon.svg",
             "../provider-claude-code/assets/icon.svg",

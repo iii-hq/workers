@@ -202,13 +202,18 @@ ui_build::ensure_built(&ui_build::Frontend {
 ```
 
 - inputs are the top-level files of `native-ui/` and its `src/` tree, the
-  same for each `packages` entry, the root lockfile and each `extra` path
-  (a directory is walked), each with `rerun-if-changed`; `node_modules`,
-  `dist` and dot directories are never entered;
-- return early when the bundle is at least as new as every input;
-- otherwise `pnpm install` then `pnpm build` inside `native-ui/`; a failed
-  build deletes `dist/native.js`, and a missing one after success panics;
-- honour `SKIP_UI_BUILD` (any non-empty value: use the existing `dist/`
+  same for each `packages` entry, the root lockfile and workspace manifest
+  and each `extra` path (a directory is walked), each with
+  `rerun-if-changed`, as is `dist/native.js`; `node_modules`, `dist` and dot
+  directories are never entered;
+- return early when the bundle exists and the `native-ui/.ui-build` marker
+  of the last successful build lists the current inputs and is newer than
+  them (without a marker, when the bundle is newer than every input);
+- otherwise mark the build as running, `pnpm install` then `pnpm build`
+  inside `native-ui/`, and write the marker; a failed build keeps
+  `dist/native.js` with the marker saying "building", so it is rebuilt next
+  time, and a missing one after success panics;
+- honour `SKIP_UI_BUILD` (any non-empty value: use the last written `dist/`
   as-is, and panic if it is missing) and `PNPM=<path>`, the same switches
   as the console UI.
 
