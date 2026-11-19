@@ -89,9 +89,18 @@ fn compile_constraint(
     }
 }
 
-/// A glob in the qualifier would silently match nothing (`!*/x` denied nothing).
-fn check_namespace_qualifier(namespace: Option<&str>, index: usize) -> Result<(), CompileError> {
-    match namespace.filter(|ns| ns.contains(['*', '?', '[', '{'])) {
+/// A glob or empty qualifier would silently match nothing (`!*/x` and `!/x`
+/// denied nothing).
+fn check_namespace_qualifier(
+    pattern: &str,
+    namespace: Option<&str>,
+    index: usize,
+) -> Result<(), CompileError> {
+    let bad = match namespace {
+        None if pattern.starts_with('/') => Some(""),
+        ns => ns.filter(|ns| ns.contains(['*', '?', '[', '{'])),
+    };
+    match bad {
         Some(ns) => Err(CompileError::Rule {
             index,
             message: format!(
@@ -118,7 +127,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
                 ),
             };
             let (namespace, id) = split_namespace_pattern(pattern);
-            check_namespace_qualifier(namespace, index)?;
+            check_namespace_qualifier(pattern, namespace, index)?;
             // A bare empty allow `""` compiles as it always did.
             if id.is_empty() && (namespace.is_some() || action == Action::Deny) {
                 return Err(CompileError::Rule {
@@ -145,7 +154,7 @@ pub fn compile_rule(spec: &RuleSpec, index: usize) -> Result<CompiledRule, Compi
             args,
         } => {
             let (namespace, id) = split_namespace_pattern(function);
-            check_namespace_qualifier(namespace, index)?;
+            check_namespace_qualifier(function, namespace, index)?;
             if id.is_empty() {
                 return Err(CompileError::Rule {
                     index,

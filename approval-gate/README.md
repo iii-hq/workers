@@ -96,6 +96,8 @@ worker seeds/backfills the stored entry so `rules` are editable in the console.
 
 Rule patterns may name an engine namespace: prefix `<namespace>/` to match
 one namespace (`laptop/shell::*`); a bare pattern matches every namespace.
+The qualifier must be a plain, non-empty namespace: `*/shell::exec` or
+`/shell::exec` is a compile error.
 For a call that names no namespace (an older harness), a qualified `deny`
 still matches and a qualified `allow` does not, so it fails closed.
 "Approve always" grants take no `<namespace>/` qualifier: the namespace is a

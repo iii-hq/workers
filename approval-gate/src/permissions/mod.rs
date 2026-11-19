@@ -367,6 +367,30 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_namespace_qualifier_is_an_error() {
+        let structured = RuleSpec::Structured {
+            rule_id: None,
+            function: "/shell::exec".into(),
+            action: Action::Deny,
+            modes: None,
+            args: Default::default(),
+        };
+        for spec in [
+            RuleSpec::Shorthand("!/shell::exec".into()),
+            RuleSpec::Shorthand("/shell::exec".into()),
+            structured,
+        ] {
+            let err = compile_rule(&spec, 0).unwrap_err().to_string();
+            assert!(
+                err.contains("namespace qualifier must be a plain namespace"),
+                "{err}"
+            );
+        }
+        assert!(compile_rule(&RuleSpec::Shorthand(String::new()), 0).is_ok());
+        assert!(compile_rule(&RuleSpec::Shorthand("openai-codex::codex/gpt".into()), 0).is_ok());
+    }
+
+    #[test]
     fn split_namespace_pattern_takes_a_plain_prefix_before_the_first_slash() {
         assert_eq!(
             split_namespace_pattern("laptop/shell::*"),
