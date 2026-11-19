@@ -4112,6 +4112,33 @@ mod tests {
     use tokio::sync::{Notify, mpsc};
     use tokio_tungstenite::tungstenite::Message;
 
+    /// Umask-independent fixtures: every MISSING component of `path` is created
+    /// private (0700), as admitted worker bases and VM dirs are; an existing
+    /// ancestor is never chmodded or repaired.
+    fn private_dirs(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut missing = Vec::new();
+        let mut cursor = Some(path);
+        while let Some(dir) = cursor {
+            if dir.exists() {
+                break;
+            }
+            missing.push(dir.to_path_buf());
+            cursor = dir.parent();
+        }
+        for dir in missing.into_iter().rev() {
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    /// A private (0600) fixture file, independent of the host umask.
+    fn write_private(path: &Path, bytes: impl AsRef<[u8]>) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
         use std::os::unix::fs::PermissionsExt;
         let catalog = t.join("admission-catalog");
@@ -4507,8 +4534,8 @@ mod tests {
         wait_ended(&vms, &id, 1).await;
         // A non-empty read-only dir in the guest's share: unremovable unless root.
         let stuck = t.path().join("workers").join(&id).join("root").join("ro");
-        std::fs::create_dir_all(&stuck).unwrap();
-        std::fs::write(stuck.join("f"), "").unwrap();
+        private_dirs(&stuck);
+        write_private(&stuck.join("f"), "");
         std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let destroyed = vms.destroy(destroy_req("t", "k"));
@@ -4567,7 +4594,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let dir = t.join("workers").join(vm_id("k"));
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dirs(&dir);
         std::fs::write(t.join("target"), "keep").unwrap();
         std::os::unix::fs::symlink(t.join("target"), dir.join("console.log")).unwrap();
 
@@ -4870,7 +4897,7 @@ mod tests {
         let context = crate::worker_admission::testing::provision_context(&catalog).unwrap();
         let base = t.join("workers");
         let dir = base.join(vm_id("console"));
-        std::fs::create_dir_all(dir.join("root")).unwrap();
+        private_dirs(&dir.join("root"));
         // As `write_control_admitted` creates it: a private log parent.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(dir.join(CONSOLE_LOG), initial).unwrap();
@@ -5016,7 +5043,7 @@ mod tests {
         );
         console.lock().unwrap().finish().unwrap(); // last writer finished before H1/cleanup
         let cache = t.path().join("unrelated-cache");
-        std::fs::create_dir(&cache).unwrap();
+        private_dirs(&cache); // a cache parent must be owned/protected
         receipt
             .probe_cache(
                 &lease,
@@ -5223,7 +5250,7 @@ mod tests {
         let dir = t.path().join("workers").join(&started.vm_id);
         let current = dir.join(CONSOLE_LOG);
         std::fs::rename(&current, dir.join("held-console")).unwrap();
-        std::fs::write(&current, b"FOREIGN\n").unwrap();
+        write_private(&current, b"FOREIGN\n");
         std::fs::write(&release, b"").unwrap();
         wait_ended(&vms, &started.vm_id, started.instance).await;
         assert_eq!(std::fs::read(&current).unwrap(), b"FOREIGN\n");
@@ -5361,11 +5388,11 @@ mod tests {
             match fault {
                 "current" => {
                     std::fs::rename(&current, &held).unwrap();
-                    std::fs::write(&current, b"").unwrap();
+                    write_private(&current, b"");
                 }
                 "previous" => {
                     std::fs::rename(&previous, &held).unwrap();
-                    std::fs::write(&previous, b"").unwrap();
+                    write_private(&previous, b"");
                 }
                 _ => {
                     std::fs::OpenOptions::new()
@@ -5409,7 +5436,7 @@ mod tests {
         let (_lease, mut console) = admitted_console_fixture(t.path(), b"old\n");
         let path = console.dir.join(CONSOLE_LOG);
         std::fs::rename(&path, console.dir.join("held-old")).unwrap();
-        std::fs::write(&path, b"external\n").unwrap();
+        write_private(&path, b"external\n");
         assert!(console.append(&LogStream::Stdout, b"forbidden").is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"external\n");
         assert_eq!(
@@ -6226,7 +6253,7 @@ mod tests {
     fn build_dirs<const N: usize>(t: &Path, names: [&str; N]) -> [PathBuf; N] {
         names.map(|name| {
             let dir = t.join("project/build").join(name);
-            std::fs::create_dir_all(&dir).unwrap();
+            private_dirs(&dir);
             dir.canonicalize().unwrap()
         })
     }
@@ -6345,7 +6372,7 @@ mod tests {
         let base = t.join("workers");
 
         claim(&vms, &b, "b", &dir_b).unwrap();
-        std::fs::create_dir_all(base.join(vm_id("a"))).unwrap();
+        private_dirs(&base.join(vm_id("a")));
         std::fs::copy(record_of(t, "b"), record_of(t, "a")).unwrap();
         assert_eq!(read_build_dir(&base, &vm_id("a"), "t"), None);
         // Read as VM a's, the copy would refuse B its own directory.
@@ -6495,9 +6522,9 @@ mod tests {
     /// disks kept beside it, and its runtime state.
     fn vm_with_data(t: &Path, vms: &WorkerVms, key: &str) -> PathBuf {
         let vm = t.join("workers").join(vm_id(key));
-        std::fs::create_dir_all(vm.join("root/opt/iii")).unwrap();
-        std::fs::create_dir_all(vm.join("root.pre-build/bin")).unwrap();
-        std::fs::create_dir_all(vm.join("build-1-2/root")).unwrap();
+        private_dirs(&vm.join("root/opt/iii"));
+        private_dirs(&vm.join("root.pre-build/bin"));
+        private_dirs(&vm.join("build-1-2/root"));
         for (name, body) in [
             ("upper.ext4", "data"),
             ("upper.ext4.pre-build", "0.26 disk"),
@@ -6509,10 +6536,10 @@ mod tests {
             ("state_key", key),
             ("root/opt/iii/run.sh", "script"),
         ] {
-            std::fs::write(vm.join(name), body).unwrap();
+            write_private(&vm.join(name), body);
         }
         let dir = t.join("project/build").join(key);
-        std::fs::create_dir_all(&dir).unwrap();
+        private_dirs(&dir);
         claim(
             vms,
             &scoped_auth_token("t", key),
@@ -6624,9 +6651,9 @@ mod tests {
 
         // A 0.26 overlay VM: its disk is `root/upper.ext4`, no seal yet.
         let old = t.join("workers").join(vm_id("old"));
-        std::fs::create_dir_all(old.join("root")).unwrap();
-        std::fs::write(old.join("root/upper.ext4"), "0.26 data").unwrap();
-        std::fs::write(old.join("console.log"), "log").unwrap();
+        private_dirs(&old.join("root"));
+        write_private(&old.join("root/upper.ext4"), "0.26 data");
+        write_private(&old.join("console.log"), "log");
         assert!(vms.destroy(keep_req("t", "old")).unwrap().destroyed);
         assert_eq!(names_in(&old), ["build-mode", "upper.ext4.pre-build"]);
         assert_eq!(
@@ -6635,8 +6662,8 @@ mod tests {
         );
         // A legacy rootfs clone: `root/` is the data.
         let legacy = t.join("workers").join(vm_id("legacy"));
-        std::fs::create_dir_all(legacy.join("root/bin")).unwrap();
-        std::fs::write(legacy.join("root/bin/x"), "x").unwrap();
+        private_dirs(&legacy.join("root/bin"));
+        write_private(&legacy.join("root/bin/x"), "x");
         // Nothing but data there: the clone moves aside, and no runtime state goes.
         assert!(!vms.destroy(keep_req("t", "legacy")).unwrap().destroyed);
         assert_eq!(names_in(&legacy), ["build-mode", "root.pre-build"]);
@@ -6880,9 +6907,9 @@ mod tests {
         let vms = vms(t, Some("t"), vec![t.into()]);
         let vm = t.join("workers").join(vm_id("legacy"));
         let clone = |body: &str| {
-            std::fs::create_dir_all(vm.join("root/bin")).unwrap();
-            std::fs::write(vm.join("root/bin/data"), body).unwrap();
-            std::fs::write(vm.join("console.log"), "log").unwrap();
+            private_dirs(&vm.join("root/bin"));
+            write_private(&vm.join("root/bin/data"), body);
+            write_private(&vm.join("console.log"), "log");
         };
         clone("first");
         let reply = vms.destroy(keep_req("t", "legacy")).unwrap();

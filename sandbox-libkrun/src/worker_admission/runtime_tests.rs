@@ -5,6 +5,17 @@
 use super::*;
 use crate::worker_admission::{MutationPlan, PathRequest, testing, with_paths};
 use std::os::unix::fs::PermissionsExt;
+/// Umask-independent fixture objects: the core refuses group/other-writable
+/// footprints, runtime roots, control parents and staged content by design,
+/// so every created fixture gets the exact mode its scenario intends.
+fn mkdir_mode(path: impl AsRef<Path>, mode: u32) {
+    std::fs::create_dir(path.as_ref()).unwrap();
+    std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(mode)).unwrap();
+}
+fn write_mode(path: impl AsRef<Path>, bytes: &[u8], mode: u32) {
+    std::fs::write(path.as_ref(), bytes).unwrap();
+    std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(mode)).unwrap();
+}
 fn fixture() -> (
     tempfile::TempDir,
     crate::worker_admission::AdmissionContext,
@@ -24,7 +35,7 @@ fn fixture() -> (
 fn runtime_imported_writer_allows_bytes_but_not_root_replacement() {
     let (_temp, context, data) = fixture();
     let upper = data.join("upper");
-    std::fs::write(&upper, b"OLD").unwrap();
+    write_mode(&upper, b"OLD", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -48,10 +59,10 @@ fn runtime_imported_writer_allows_bytes_but_not_root_replacement() {
         duplicate(launch.sentinel.as_ref().unwrap()).unwrap(),
     )
     .unwrap();
-    std::fs::write(&upper, b"NEW").unwrap();
+    std::fs::write(&upper, b"NEW").unwrap(); // in place: the admitted inode keeps 0600
     writer.checkpoint().unwrap();
     std::fs::rename(&upper, data.join("retained")).unwrap();
-    std::fs::write(&upper, b"FOREIGN").unwrap();
+    write_mode(&upper, b"FOREIGN", 0o600);
     assert!(writer.checkpoint().is_err());
     std::fs::remove_file(&upper).unwrap();
     std::fs::rename(data.join("retained"), &upper).unwrap();
@@ -61,7 +72,7 @@ fn runtime_imported_writer_allows_bytes_but_not_root_replacement() {
 fn runtime_guest_tree_descendants_change_and_activity_opens_exact_registered_file() {
     let (_temp, context, data) = fixture();
     let tree = data.join("tree");
-    std::fs::create_dir(&tree).unwrap();
+    mkdir_mode(&tree, 0o700);
     let activity = data.join("activity");
     let lease = with_paths(
         context.local(&tree).unwrap(),
@@ -92,8 +103,8 @@ fn runtime_guest_tree_descendants_change_and_activity_opens_exact_registered_fil
         duplicate(launch.sentinel.as_ref().unwrap()).unwrap(),
     )
     .unwrap();
-    std::fs::create_dir(tree.join("child")).unwrap();
-    std::fs::write(tree.join("child/data"), b"NEW").unwrap();
+    mkdir_mode(tree.join("child"), 0o700);
+    write_mode(tree.join("child/data"), b"NEW", 0o600);
     writer.checkpoint().unwrap();
     let approved = writer.activity(&activity).unwrap();
     let before = std::fs::metadata(&activity).unwrap().ino();
@@ -106,7 +117,7 @@ fn runtime_guest_tree_descendants_change_and_activity_opens_exact_registered_fil
 async fn runtime_real_owned_wait_without_child_activation_refuses_retirement() {
     let (_temp, context, data) = fixture();
     let tree = data.join("tree");
-    std::fs::create_dir(&tree).unwrap();
+    mkdir_mode(&tree, 0o700);
     let lease = context.local(&tree).unwrap();
     let launch = lease
         .prepare_runtime(&[RuntimePath {
@@ -160,7 +171,7 @@ fn activity_fixture() -> (
 #[test]
 fn e_activity_success_is_bounded_and_never_changes_payload_bytes() {
     let (_temp, context, _launch, writer, path) = activity_fixture();
-    std::fs::write(&path, b"payload").unwrap();
+    write_mode(&path, b"payload", 0o600);
     let activity = writer.activity(&path).unwrap();
     for n in 1..=12 {
         activity
@@ -266,7 +277,7 @@ fn e_activity_path_replacement_never_receives_an_mtime_write() {
     let (_temp, _context, _launch, writer, path) = activity_fixture();
     let activity = writer.activity(&path).unwrap();
     std::fs::rename(&path, path.with_extension("retained")).unwrap();
-    std::fs::write(&path, b"foreign").unwrap();
+    write_mode(&path, b"foreign", 0o600);
     let before = std::fs::metadata(&path).unwrap().modified().unwrap();
     assert!(activity.touch_at(SystemTime::UNIX_EPOCH).is_err());
     assert_eq!(
@@ -279,10 +290,10 @@ fn e_activity_path_replacement_never_receives_an_mtime_write() {
 fn e_control_files_publish_beside_active_guest_tree_without_parent_authority() {
     let (_temp, context, data) = fixture();
     let tree = data.join("root");
-    std::fs::create_dir(&tree).unwrap();
+    mkdir_mode(&tree, 0o700);
     let log = data.join("console.log");
     let rotated = data.join("console.log.1");
-    std::fs::write(&log, b"old-log").unwrap();
+    write_mode(&log, b"old-log", 0o600);
     let lease = with_paths(
         context.local(&tree).unwrap(),
         &[
@@ -718,7 +729,7 @@ fn activate_for_wait_fixture(child: &RuntimeChild) {
 async fn f_real_wait_with_free_sentinel_issues_only_same_layout_one_shot_receipt() {
     let (_temp, context, data) = fixture();
     let root = data.join("vm");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let lease = context.local(&root).unwrap();
     let child = lease
         .prepare_runtime(&[])
@@ -792,10 +803,10 @@ fn publish_control(lease: &Lease, path: &Path, bytes: &[u8]) {
 async fn f_lineage_real_wait_then_final_console_rotation_and_multi_step_remove() {
     let (_temp, context, data) = fixture();
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let log = vm.join("console.log");
     let rotated = vm.join("console.log.1");
-    std::fs::write(&log, b"running").unwrap();
+    write_mode(&log, b"running", 0o600);
     let lease = with_paths(
         context.local(&vm).unwrap(),
         &[
@@ -842,16 +853,16 @@ async fn f_lineage_real_wait_then_final_console_rotation_and_multi_step_remove()
 async fn f_lineage_real_wait_then_retain_adopt_removes_runtime_only() {
     let (_temp, context, data) = fixture();
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let root = vm.join("root");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let upper = root.join("upper.ext4");
-    std::fs::write(&upper, b"GUEST DATA").unwrap();
-    std::fs::write(root.join("guest-file"), b"KEEP").unwrap();
+    write_mode(&upper, b"GUEST DATA", 0o600);
+    write_mode(root.join("guest-file"), b"KEEP", 0o600);
     let kept_upper = vm.join("upper.pre-build.ext4");
     let kept_root = vm.join("root.pre-build");
     let log = vm.join("console.log");
-    std::fs::write(&log, b"log").unwrap();
+    write_mode(&log, b"log", 0o600);
     let lease = with_paths(
         context.local(&vm).unwrap(),
         &[
@@ -901,7 +912,7 @@ async fn f_lineage_real_wait_then_retain_adopt_removes_runtime_only() {
 async fn f_lineage_external_replacement_after_owned_control_is_not_blessed() {
     let (_temp, context, data) = fixture();
     let log = data.join("console.log");
-    std::fs::write(&log, b"OLD").unwrap();
+    write_mode(&log, b"OLD", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -913,7 +924,7 @@ async fn f_lineage_external_replacement_after_owned_control_is_not_blessed() {
     let receipt = lineage_retired(&lease).await;
     publish_control(&lease, &log, b"OWNED");
     std::fs::rename(&log, data.join("retained-owned")).unwrap();
-    std::fs::write(&log, b"FOREIGN").unwrap();
+    write_mode(&log, b"FOREIGN", 0o600);
     assert!(receipt.begin_remove(&lease, &data, &[&log]).is_err());
     assert_eq!(std::fs::read(&log).unwrap(), b"FOREIGN");
 }
@@ -921,7 +932,7 @@ async fn f_lineage_external_replacement_after_owned_control_is_not_blessed() {
 async fn f_lineage_incomplete_control_consumes_receipt_without_removal() {
     let (_temp, context, data) = fixture();
     let log = data.join("log");
-    std::fs::write(&log, b"OLD").unwrap();
+    write_mode(&log, b"OLD", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -947,7 +958,7 @@ async fn f_lineage_incomplete_control_consumes_receipt_without_removal() {
 async fn f_lineage_newly_declared_target_cannot_extend_the_original_receipt() {
     let (_temp, context, data) = fixture();
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let lease = context.local(&vm).unwrap();
     let receipt = lineage_retired(&lease).await;
     let added = vm.join("later");
@@ -968,7 +979,7 @@ async fn f_lineage_old_new_corruption_and_epoch_reordering_refuse() {
     for reverse in [false, true] {
         let (_temp, context, data) = fixture();
         let log = data.join("log");
-        std::fs::write(&log, b"OLD").unwrap();
+        write_mode(&log, b"OLD", 0o600);
         let lease = with_paths(
             context.local(&data.join("state")).unwrap(),
             &[PathRequest {
@@ -1005,7 +1016,7 @@ async fn f_lineage_console_guard_open_at_wait_completes_multiple_owned_effects()
     use std::io::Write;
     let (_temp, context, data) = fixture();
     let log = data.join("console.log");
-    std::fs::write(&log, b"OLD").unwrap();
+    write_mode(&log, b"OLD", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -1044,7 +1055,7 @@ async fn f_lineage_console_guard_open_at_wait_completes_multiple_owned_effects()
 async fn f_lineage_endpoint_close_does_not_invalidate_disjoint_cleanup_receipt() {
     let (_temp, context, data) = fixture();
     let root = data.join("state");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let control_dir = data.join("private-control");
     std::fs::create_dir(&control_dir).unwrap();
     std::fs::set_permissions(&control_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1070,7 +1081,7 @@ async fn f_lineage_endpoint_close_does_not_invalidate_disjoint_cleanup_receipt()
 async fn f_lineage_new_runtime_after_committed_console_still_invalidates_receipt() {
     let (_temp, context, data) = fixture();
     let log = data.join("log");
-    std::fs::write(&log, b"OLD").unwrap();
+    write_mode(&log, b"OLD", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -1089,9 +1100,9 @@ async fn f_lineage_new_runtime_after_committed_console_still_invalidates_receipt
 async fn f_lineage_retained_destination_replacement_is_not_safe_absence() {
     let (_temp, context, data) = fixture();
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let root = vm.join("root");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let kept = vm.join("retained");
     let lease = with_paths(
         context.local(&vm).unwrap(),
@@ -1114,7 +1125,7 @@ async fn f_lineage_retained_destination_replacement_is_not_safe_absence() {
     retain.rename_preserving(&root, &kept).unwrap();
     retain.commit().unwrap();
     std::fs::rename(&kept, vm.join("actual-data")).unwrap();
-    std::fs::create_dir(&kept).unwrap();
+    mkdir_mode(&kept, 0o700);
     assert!(receipt.begin_remove(&lease, &vm, &[&root]).is_err());
     assert!(vm.join("actual-data").exists());
 }
@@ -1242,15 +1253,15 @@ fn g_spawn_scenario(explicit_close: bool, scenario: &str) -> GFixture {
     let (temp, context, data) = fixture();
     let namespace = temp.path().join("catalog");
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let root = vm.join("root");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("data"), b"KEEP").unwrap();
+    mkdir_mode(&root, 0o700);
+    write_mode(root.join("data"), b"KEEP", 0o600);
     let kept = vm.join("root.pre-build");
     let log = vm.join("console.log");
-    std::fs::write(&log, b"before").unwrap();
+    write_mode(&log, b"before", 0o600);
     let source = data.join("source");
-    std::fs::write(&source, b"LOWER").unwrap();
+    write_mode(&source, b"LOWER", 0o600);
     let control = data.join("private-control");
     std::fs::create_dir(&control).unwrap();
     std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1550,6 +1561,8 @@ async fn g_foreign_receipt_replacement_and_new_runtime_refuse_endpoint_cleanup()
     );
     std::fs::rename(&endpoint, endpoint.with_extension("retained")).unwrap();
     let replacement = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+    // A foreign socket of the owner's own mode: refused by identity, not mode.
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(
         receipt
             .retire_runtime_endpoints(&lease, &[&endpoint])
@@ -1595,7 +1608,7 @@ fn g_local_runtime(child: &RuntimeChild) -> RuntimeWriter {
 async fn g_runtime_read_guard_retains_writer_sentinel_after_writer_drop() {
     let (_temp, context, data) = fixture();
     let source = data.join("source");
-    std::fs::write(&source, b"data").unwrap();
+    write_mode(&source, b"data", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -1621,9 +1634,9 @@ async fn g_runtime_read_guard_retains_writer_sentinel_after_writer_drop() {
 async fn g_unbound_legacy_read_is_preserved_and_prevents_cleanup() {
     let (_temp, context, data) = fixture();
     let root = data.join("state");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let source = data.join("source");
-    std::fs::write(&source, b"data").unwrap();
+    write_mode(&source, b"data", 0o600);
     let lease = with_paths(
         context.local(&root).unwrap(),
         &[PathRequest {
@@ -1666,7 +1679,7 @@ async fn g_unbound_legacy_read_is_preserved_and_prevents_cleanup() {
 async fn g_mismatched_runtime_epoch_is_corrupt_not_retired_by_wait() {
     let (_temp, context, data) = fixture();
     let source = data.join("source");
-    std::fs::write(&source, b"data").unwrap();
+    write_mode(&source, b"data", 0o600);
     let lease = with_paths(
         context.local(&data.join("state")).unwrap(),
         &[PathRequest {
@@ -1890,13 +1903,13 @@ fn h_two_runtime_consumers_hold_same_cache_reads_independently() {
     use crate::worker_admission::CacheEntry;
     let (_temp, context, data) = fixture();
     let cache = data.join("cache");
-    std::fs::create_dir(&cache).unwrap();
+    mkdir_mode(&cache, 0o700);
     let root = cache.join("image");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("content"), b"SOURCE").unwrap();
+    mkdir_mode(&root, 0o700);
+    write_mode(root.join("content"), b"SOURCE", 0o600);
     let lower = cache.join("image.erofs");
-    std::fs::write(&lower, b"LOWER").unwrap();
-    std::fs::write(cache.join("image.digest"), b"sha256:fixture").unwrap();
+    write_mode(&lower, b"LOWER", 0o600);
+    write_mode(cache.join("image.digest"), b"sha256:fixture", 0o600);
     let a = context.local(&data.join("a")).unwrap();
     let a = a
         .probe_cache(&[CacheEntry { root: &root }])
@@ -1949,24 +1962,24 @@ fn h_two_runtime_consumers_hold_same_cache_reads_independently() {
 }
 
 fn h1_populate(root: &Path) {
-    std::fs::create_dir(root).unwrap();
-    std::fs::write(root.join("content"), b"SOURCE").unwrap();
-    std::fs::write(
+    mkdir_mode(root, 0o700);
+    write_mode(root.join("content"), b"SOURCE", 0o600);
+    write_mode(
         root.with_file_name(format!(
             "{}.erofs",
             root.file_name().unwrap().to_string_lossy()
         )),
         b"LOWER",
-    )
-    .unwrap();
-    std::fs::write(
+        0o600,
+    );
+    write_mode(
         root.with_file_name(format!(
             "{}.digest",
             root.file_name().unwrap().to_string_lossy()
         )),
         b"sha256:fixture",
-    )
-    .unwrap();
+        0o600,
+    );
 }
 fn h1_prepare(prep: &crate::worker_admission::CachePreparation, root: &Path) {
     use std::io::Write;
@@ -1984,7 +1997,7 @@ fn h1_prepare(prep: &crate::worker_admission::CachePreparation, root: &Path) {
     ));
     let mut write = prep.begin_entry(root).unwrap();
     let tree = write.stage_tree(root).unwrap();
-    std::fs::write(tree.path().join("content"), b"SOURCE B").unwrap();
+    write_mode(tree.path().join("content"), b"SOURCE B", 0o600);
     write.publish_tree(tree).unwrap();
     let mut metadata = write.stage_file(&digest, 0o600).unwrap();
     metadata.file_mut().write_all(b"sha256:b").unwrap();
@@ -2026,7 +2039,7 @@ async fn h1_owned_retirement_warm_and_cold_new_reference_keeps_original_arc_and_
     for cold in [false, true] {
         let (_temp, context, data) = fixture();
         let cache = data.join("cache");
-        std::fs::create_dir(&cache).unwrap();
+        mkdir_mode(&cache, 0o700);
         let a = cache.join("a");
         let b = cache.join("b");
         h1_populate(&a);
@@ -2102,7 +2115,7 @@ async fn h1_same_exact_strict_selection_is_verified_deduplicated_never_upgraded(
     use crate::worker_admission::CacheEntry;
     let (_temp, context, data) = fixture();
     let cache = data.join("cache");
-    std::fs::create_dir(&cache).unwrap();
+    mkdir_mode(&cache, 0o700);
     let root = cache.join("image");
     h1_populate(&root);
     let lease = context.local(&data.join("vm")).unwrap();
@@ -2157,7 +2170,7 @@ async fn h1_exact_parent_or_child_overlap_without_cache_binding_refuses() {
     use crate::worker_admission::CacheEntry;
     let (_temp, context, data) = fixture();
     let old = data.join("old");
-    std::fs::create_dir(&old).unwrap();
+    mkdir_mode(&old, 0o700);
     let lease = with_paths(
         context.local(&data.join("vm")).unwrap(),
         &[PathRequest {
@@ -2193,14 +2206,14 @@ async fn h1_current_receipt_continues_after_owned_control_lineage_and_retention(
     use crate::worker_admission::CacheEntry;
     let (_temp, context, data) = fixture();
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let log = vm.join("console.log");
-    std::fs::write(&log, b"OLD").unwrap();
+    write_mode(&log, b"OLD", 0o600);
     let root = vm.join("root");
-    std::fs::create_dir(&root).unwrap();
+    mkdir_mode(&root, 0o700);
     let retained = vm.join("root.pre-build");
     let source = data.join("source");
-    std::fs::write(&source, b"READ").unwrap();
+    write_mode(&source, b"READ", 0o600);
     let lease = with_paths(
         context.local(&vm).unwrap(),
         &[
@@ -2255,9 +2268,9 @@ async fn h1_ready() -> (
 ) {
     let (temp, context, data) = fixture();
     let input = data.join("input");
-    std::fs::write(&input, b"READ").unwrap();
+    write_mode(&input, b"READ", 0o600);
     let vm = data.join("vm");
-    std::fs::create_dir(&vm).unwrap();
+    mkdir_mode(&vm, 0o700);
     let lease = with_paths(
         context.local(&vm).unwrap(),
         &[PathRequest {
@@ -2361,9 +2374,9 @@ async fn h1_unfinished_ownerread_journal_or_recovery_never_authorizes_continuati
     use crate::worker_admission::CacheEntry;
     let (_temp, context, data) = fixture();
     let source = data.join("managed");
-    std::fs::create_dir(&source).unwrap();
+    mkdir_mode(&source, 0o700);
     let input = data.join("input");
-    std::fs::write(&input, b"READ").unwrap();
+    write_mode(&input, b"READ", 0o600);
     let lease = with_paths(
         context.local(&data.join("vm")).unwrap(),
         &[
@@ -2608,7 +2621,7 @@ async fn h1_issued_preparation_rechecks_imports_and_replacement_before_transfer(
     drop(imported);
     drop(export);
     std::fs::rename(&new, data.join("retained-cache")).unwrap();
-    std::fs::create_dir(&new).unwrap();
+    mkdir_mode(&new, 0o700);
     assert!(prep.handoff(&lease, &new).is_err());
     assert!(data.join("retained-cache").exists());
 }

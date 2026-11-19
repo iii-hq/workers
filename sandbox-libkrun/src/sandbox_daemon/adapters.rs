@@ -1591,6 +1591,12 @@ mod tests {
         let protected = root.join(".iii-prior-unrelated-evidence");
         // The entry exists before runtime issuance; no proof says it is log retention.
         std::fs::write(&protected, b"OLD must not disappear").unwrap();
+        // Owner-private evidence: Remove must refuse it as evidence, not by mode.
+        std::fs::set_permissions(
+            &protected,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
         let stderr = root.join("vm-boot.stderr.log");
         let lease = crate::worker_admission::with_paths(
             lease,
@@ -1705,6 +1711,9 @@ mod tests {
         let held = root.join("held-stderr");
         std::fs::rename(&stderr, &held).unwrap();
         std::fs::write(&stderr, b"FOREIGN\n").unwrap();
+        // Owner-private like the original: refused by identity, not mode.
+        std::fs::set_permissions(&stderr, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
         let mut writer = r2_stderr_writer("echo late-after-reap >&2");
         session.pump_stderr(writer.stderr.take(), log);
         assert!(writer.wait().await.unwrap().success());

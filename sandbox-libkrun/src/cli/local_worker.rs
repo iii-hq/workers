@@ -1985,6 +1985,32 @@ pub(crate) async fn test_build_command(
 mod tests {
     use super::*;
 
+    /// Umask-independent fixtures: each missing component of `path` is a
+    /// private 0700 directory, as admitted payload/cache parents must be.
+    fn private_dir_all(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut missing = Vec::new();
+        let mut cursor = Some(path);
+        while let Some(dir) = cursor {
+            if dir.exists() {
+                break;
+            }
+            missing.push(dir.to_path_buf());
+            cursor = dir.parent();
+        }
+        for dir in missing.into_iter().rev() {
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    /// A private (0600) fixture file, independent of the host umask.
+    fn private_file(path: &Path, bytes: &[u8]) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
     fn writer_fixture() -> (
         tempfile::TempDir,
         PathBuf,
@@ -1993,9 +2019,9 @@ mod tests {
     ) {
         let t = tempfile::tempdir().unwrap();
         let owner = t.path().join("owner");
-        std::fs::create_dir(&owner).unwrap();
+        private_dir_all(&owner);
         let input = owner.join("input");
-        std::fs::create_dir(&input).unwrap();
+        private_dir_all(&input);
         let catalog = t.path().join("catalog");
         std::fs::create_dir(&catalog).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -2027,7 +2053,7 @@ mod tests {
         });
         // A real pinned path is invalidated, not a mocked admission/grant.
         std::fs::rename(&input, owner.join("moved")).unwrap();
-        std::fs::create_dir(&input).unwrap();
+        private_dir_all(&input);
         assert!(task.await.is_err());
         assert!(!sentinel.exists());
         assert!(
@@ -2044,7 +2070,7 @@ mod tests {
             "v2 never flocks payload directories"
         );
         std::fs::rename(&input, owner.join("moved")).unwrap();
-        std::fs::create_dir(&input).unwrap();
+        private_dir_all(&input);
         let sentinel = owner.join("erofs-writer-ran");
         let result = run_erofs_writer(lease, || {
             std::fs::write(&sentinel, b"effect").unwrap();
@@ -2111,17 +2137,18 @@ mod tests {
     fn replaced_existing_cache_lower_refuses_the_next_writer() {
         let (_t, owner, _input, lease) = writer_fixture();
         let cache = owner.join("cache");
-        std::fs::create_dir(&cache).unwrap();
+        private_dir_all(&cache); // a cache parent must be owned/protected
         let reference = "docker.io/library/alpine:3.20";
         let slug = super::super::worker_manager::oci::rootfs_slug_for_image(reference);
         let lower = cache.join(format!("{slug}.erofs"));
-        std::fs::write(&lower, b"old").unwrap();
+        private_file(&lower, b"old");
         let root = cache.join(&slug);
         let probe = lease
             .probe_cache(&[crate::worker_admission::CacheEntry { root: &root }])
             .unwrap();
         let replacement = cache.join("replacement");
-        std::fs::write(&replacement, b"new").unwrap();
+        // Owner-private like the original: refused by identity, not mode.
+        private_file(&replacement, b"new");
         std::fs::rename(replacement, &lower).unwrap();
         assert!(probe.checkpoint().is_err());
         assert!(
@@ -2202,10 +2229,10 @@ mod tests {
         let base = t.path().join("workers");
         let id = "c".repeat(32);
         let foreign = base.join(&id).join("root");
-        std::fs::create_dir_all(&foreign).unwrap();
+        private_dir_all(&foreign);
         let custody = crate::worker_admission::custody(&base, &id).unwrap();
-        std::fs::create_dir_all(&custody).unwrap();
-        std::fs::write(custody.join("active.json"), b"{corrupt").unwrap();
+        private_dir_all(&custody);
+        private_file(&custody.join("active.json"), b"{corrupt");
         let root = t.path().join("normal-root");
         let source = t.path().join("normal-source");
         std::fs::create_dir(&source).unwrap();
