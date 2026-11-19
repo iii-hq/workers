@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0
+
+The board is for the people following the run. Before, a run ticket carried comments such as `r1: done 0 · retry 0 · parked 0 · new 0 · loose 0 · cost unknown`, and its evidence was a `state::get` reference nobody could open. A card that stayed In progress for three rounds while its validation was repaired looked the same as one being coded.
+
+- **Comments say something a person needs to know, with evidence they can open.**
+  - What remains: a card's outcome, once (`✅ Verified — <what changed>`, then `Evidence` bullets with each command and its result, the commit, and a last `Raw:` state reference); `⛔ Needs you — …` with a recommendation; the Progress thread; a base branch that already fails; plan changes, cancellations, CI and merge results; and the final report.
+  - No comment for a retry, a deferral, a resume re-queue, a green base check or a tier fallback. Retries and fallbacks go in the report.
+  - Comments, titles and pills never use the run's own words (wave, batch `r<N>w<b>`, parked, loose end, critic, scope, tree).
+- **Bookkeeping moved from comments to state.** The run pointer gets a `progress` document with the rounds, the branch review passes, the base check, the landed commits and the Progress thread id. Resume and cleanup read it instead of counting `r<n>: done`, `critic pass`, `baseline:` and `landed:` comments. A run from before 0.8.0 is read from its comments once, and resume writes the document.
+- **One Progress thread on the run ticket.** A round that changed something a person wants to know adds one reply, `Round <N>/<limit> — <what changed> · next: <what happens next>`. A round that only retried for the same cause adds nothing, and the last round leaves it to the report.
+- **Pills show what a card is doing now**: `working`, `validating`, `fixing validation`, `retry queued`, `needs you` (blocked, stuck or pending). The run ticket shows `round N/M`. Cards go In progress with `kanban::ticket::update`, because `kanban::ticket::move` takes no pills.
+- **Tickets read from the top.**
+  - The run ticket opens with the goal and the design. Args, sessions, models, base, branch and worktree move to the end under `## Run details`. Resume still finds them by their line names.
+  - Every card opens with one or two plain sentences on what changes and why, before its contract lines.
+  - The final report runs Result, Cards, Needs you, How to continue, Evidence, Plan, Run details.
+- **Resume before the baseline.** A run stopped before its base check (a full disk) now hands its run pointer to the resuming session before running the check, so the check's wake reaches it. Before, the old owner kept the pointer and the resumed session ended on `adopted by <old>`.
+- **Compatibility.** No other profile changed. Comments written by older runs stay as they are.
+
 ## 0.7.3
 
 - **A short example in the empty composer.** The placeholder listed every argument with its default, and without the `args:` prefix the orchestrator reads. It now shows one example goal: "Describe the goal, e.g. “Add retries to the webhook sender, with tests”". The arguments stay in the README.
