@@ -785,6 +785,61 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_namespace_the_post_call_carries_wins_over_the_held_one() {
+        with_stack(BootOpts::needs_approval(), |stack| async move {
+            register_workspace_fakes(&stack, vec![]);
+            let carries_laptop = |call_id: &str, root: &str| {
+                let mut input = jail_input("s_1", call_id, root);
+                let call = input.call.as_mut().unwrap();
+                call.namespace = Some("laptop".into());
+                call.implicit_namespace = Some("default".into());
+                input
+            };
+            let always_without_echo = |call_id: &str| crate::types::ResolveRequest {
+                session_id: "s_1".into(),
+                function_call_id: call_id.into(),
+                decision: crate::types::ResolveDecision::Allow,
+                reason: None,
+                access_duration: Some(crate::types::AccessDuration::Always),
+                namespace: None,
+            };
+
+            // Generic-record arm: held for (default, default).
+            seed_laptop_generic(&stack).await;
+            let mut held = state_get(&stack.iii, PENDING_SCOPE, "s_1/c_1").await;
+            held["namespace"] = json!("default");
+            state_set(&stack.iii, PENDING_SCOPE, "s_1/c_1", held).await;
+            let out = handle(&stack.deps, carries_laptop("c_1", "/a/b")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            // Stale-record arm: a first failure held for (default, default).
+            let mut first = jail_input("s_1", "c_2", "/a/b");
+            let call = first.call.as_mut().unwrap();
+            call.namespace = Some("default".into());
+            call.implicit_namespace = Some("default".into());
+            assert_eq!(handle(&stack.deps, first).await.unwrap(), HookOutput::Hold);
+            let out = handle(&stack.deps, carries_laptop("c_2", "/c/d")).await;
+            assert_eq!(out.unwrap(), HookOutput::Hold);
+
+            for call_id in ["c_1", "c_2"] {
+                let key = format!("s_1/{call_id}");
+                let current = state_get(&stack.iii, PENDING_SCOPE, &key).await;
+                assert_eq!(current["kind"], json!("filesystem_access"), "{call_id}");
+                assert_eq!(current["namespace"], json!("laptop"), "{call_id}");
+                assert_eq!(current["implicit_namespace"], json!("default"), "{call_id}");
+                let out =
+                    crate::functions::resolve::handle(&stack.deps, always_without_echo(call_id))
+                        .await;
+                assert!(
+                    matches!(out, Err(crate::error::ApprovalError::InvalidPayload(_))),
+                    "{call_id}: {out:?}"
+                );
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn invalid_ids_fail_open_to_continue() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             register_workspace_fakes(&stack, vec![]);
