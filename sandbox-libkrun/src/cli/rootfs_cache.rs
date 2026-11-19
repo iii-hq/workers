@@ -257,9 +257,14 @@ impl MutationLock {
 
 /// One caller-owned core mutation. The callback checks THIS guard's original
 /// proofs during staging, not stale pre-publication inode pins on a fresh lease.
+/// While the guard is lent to its own core payload producer (`take_guard`),
+/// no checkpoint may run: one would fail closed and latch the refusal.
 pub(crate) struct MutationWriter {
-    guard: std::sync::Arc<std::sync::Mutex<crate::worker_admission::MutationGuard>>,
+    guard: std::sync::Arc<std::sync::Mutex<Option<crate::worker_admission::MutationGuard>>>,
     pub(crate) checkpoint: Checkpoint,
+}
+fn lent() -> std::io::Error {
+    std::io::Error::other("mutation guard is lent to its payload producer")
 }
 impl MutationWriter {
     pub(crate) fn begin(
@@ -270,12 +275,14 @@ impl MutationWriter {
     }
 
     pub(crate) fn from_guard(guard: crate::worker_admission::MutationGuard) -> Self {
-        let guard = std::sync::Arc::new(std::sync::Mutex::new(guard));
+        let guard = std::sync::Arc::new(std::sync::Mutex::new(Some(guard)));
         let checked = guard.clone();
         let checkpoint = Checkpoint::new(move || {
             checked
                 .lock()
                 .map_err(|_| std::io::Error::other("mutation poisoned"))?
+                .as_ref()
+                .ok_or_else(lent)?
                 .checkpoint()
         });
         Self { guard, checkpoint }
@@ -291,7 +298,7 @@ impl MutationWriter {
                     .guard
                     .lock()
                     .map_err(|_| std::io::Error::other("mutation poisoned"))?;
-                effect(&mut guard)
+                effect(guard.as_mut().ok_or_else(lent)?)
             })
             .map_err(Into::into)
     }
@@ -303,16 +310,56 @@ impl MutationWriter {
         self.apply(|guard| guard.diagnostic_lock(path))
     }
 
+    /// Lend the SAME original guard to its core payload producer (which
+    /// consumes and returns it through `publish_into_guard`).
+    pub(crate) fn take_guard(&self) -> Result<crate::worker_admission::MutationGuard> {
+        self.checkpoint.check()?;
+        let guard = self
+            .guard
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?
+            .take()
+            .ok_or_else(lent)?;
+        Ok(guard)
+    }
+
+    /// Return the producer's guard; only the one lent above can come back.
+    pub(crate) fn restore_guard(
+        &self,
+        guard: crate::worker_admission::MutationGuard,
+    ) -> Result<()> {
+        let mut slot = self
+            .guard
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?;
+        anyhow::ensure!(slot.is_none(), "mutation guard was never lent");
+        *slot = Some(guard);
+        drop(slot);
+        self.checkpoint.check()?;
+        Ok(())
+    }
+
     pub(crate) fn commit(self) -> Result<()> {
         self.checkpoint.check()?;
         drop(self.checkpoint);
         let guard = std::sync::Arc::try_unwrap(self.guard)
             .map_err(|_| anyhow::anyhow!("mutation still has checkpoint/writer references"))?
             .into_inner()
-            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?;
+            .map_err(|_| anyhow::anyhow!("mutation poisoned"))?
+            .ok_or_else(lent)?;
         guard.commit()?;
         Ok(())
     }
+}
+
+/// The FINAL planned payload of one cache entry: inventory data plus the
+/// producer-owned inputs that feed the core writer. Never a stage pathname,
+/// writable descriptor, PID or alleged completion boolean.
+pub(crate) struct CachePayload {
+    pub(crate) entries: Vec<crate::worker_admission::PayloadEntry>,
+    pub(crate) digests: Vec<String>,
+    pub(crate) write:
+        Box<dyn FnOnce(&mut crate::worker_admission::PayloadBuilder) -> std::io::Result<()> + Send>,
 }
 
 /// Canonical cache root. All new pulls land under here, keyed by
@@ -759,21 +806,16 @@ impl CacheRequest {
         allow_pull: bool,
         on_pull: impl FnOnce() + Send + 'static,
     ) -> Result<Option<PreparedCache>> {
-        self.resolve_with(
-            allow_pull,
-            on_pull,
-            |reference, stage, checkpoint| async move {
-                crate::cli::worker_manager::oci::pull_into_stage_checked(
-                    &reference, &stage, checkpoint,
-                )
-                .await
-            },
-        )
+        self.resolve_with(allow_pull, on_pull, |reference, checkpoint| async move {
+            crate::cli::worker_manager::oci::pull_payload_checked(&reference, checkpoint).await
+        })
         .await
     }
 
     // The producer boundary is the only substituted work in source-authored
-    // cold fixtures. Admission, recheck, staging, EROFS and handoff stay real.
+    // cold fixtures. Admission, recheck, core production, EROFS and handoff
+    // stay real. A producer returns the FINAL inventory and its own readers;
+    // it never receives a stage pathname or a writable descriptor.
     async fn resolve_with<F, Fut>(
         self,
         allow_pull: bool,
@@ -781,8 +823,8 @@ impl CacheRequest {
         pull: F,
     ) -> Result<Option<PreparedCache>>
     where
-        F: FnOnce(String, PathBuf, Checkpoint) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Vec<String>>> + Send + 'static,
+        F: FnOnce(String, Checkpoint) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<CachePayload>> + Send + 'static,
     {
         // The task owns both capabilities through blocking/async work even if
         // the requesting future is dropped. No helper can issue a writer lease.
@@ -821,19 +863,29 @@ impl CacheRequest {
                 mutation.checkpoint.check()?;
                 // Exact candidate selection was rechecked under exclusive prep;
                 // raw external edits are caught by guard checkpoints after waits.
-                let stage = mutation.apply(|g| g.stage_tree(&state.root))?;
-                let digests = pull(
-                    self.reference.clone(),
-                    stage.path().to_path_buf(),
-                    mutation.checkpoint.clone(),
-                )
-                .await?;
+                let produced = pull(self.reference.clone(), mutation.checkpoint.clone()).await?;
+                // The whole final inventory is admitted before any stage effect.
+                let inventory = crate::worker_admission::PayloadInventory::new(produced.entries)?;
+                let digests = produced.digests;
+                let write = produced.write;
+                let root = state.root.clone();
+                let guard = mutation.take_guard()?;
+                // One actual owned blocking task, joined here: the core creates
+                // every object, the producer only supplies declared bytes, and
+                // the seal binds the result to the SAME original guard.
+                let guard = tokio::task::spawn_blocking(move || {
+                    let mut builder = guard.produce_payload(&root, inventory)?;
+                    write(&mut builder)?;
+                    builder.seal()?.publish_into_guard()
+                })
+                .await
+                .context("cache payload producer task failed")??;
+                mutation.restore_guard(guard)?;
                 let mut digest =
                     mutation.apply(|g| g.stage_file(&digest_path(&state.root), 0o600))?;
                 use std::io::Write;
                 digest.file_mut().write_all(digests.join("\n").as_bytes())?;
                 digest.file_mut().sync_all()?;
-                mutation.apply(|g| g.publish_tree(stage))?;
                 mutation.apply(|g| g.publish_file(digest))?;
                 lock.finish()?;
                 mutation.commit()?;
@@ -870,10 +922,26 @@ impl CacheRequest {
         self.resolve_with(
             true,
             || {},
-            |_, stage, checkpoint| async move {
+            |_, checkpoint| async move {
                 checkpoint.check()?;
-                std::fs::write(stage.join("producer-evidence"), b"partial")?;
-                anyhow::bail!("fixture producer failed after staging")
+                // The producer fails after the core created its stage and wrote
+                // part of a declared file: the guard is never sealed or published.
+                let mut entries = fixture_payload_root();
+                entries.push(fixture_payload_entry(
+                    "producer-evidence",
+                    0o600,
+                    crate::worker_admission::PayloadKind::File { size: 64 },
+                ));
+                Ok(CachePayload {
+                    entries,
+                    digests: vec![format!("sha256:{}", "b".repeat(64))],
+                    write: Box::new(|builder: &mut crate::worker_admission::PayloadBuilder| {
+                        builder.write_file(
+                            Path::new("producer-evidence"),
+                            &mut FailingFixtureReader(b"partial"),
+                        )
+                    }),
+                })
             },
         )
         .await
@@ -884,19 +952,112 @@ impl CacheRequest {
         self.resolve_with(
             produce,
             || {},
-            |_, stage, checkpoint| async move {
+            |_, checkpoint| async move {
                 checkpoint.check()?;
-                seed_private_cache_fixture(
-                    &stage,
+                let payload = private_cache_fixture_payload(
                     "sh",
                     b"not executed",
                     br#"{"config":{"Env":["H1=fixture"]}}"#,
-                )?;
+                    vec![format!("sha256:{}", "b".repeat(64))],
+                );
                 checkpoint.check()?;
-                Ok(vec![format!("sha256:{}", "b".repeat(64))])
+                Ok(payload)
             },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+fn fixture_payload_entry(
+    path: &str,
+    mode: u32,
+    kind: crate::worker_admission::PayloadKind,
+) -> crate::worker_admission::PayloadEntry {
+    crate::worker_admission::PayloadEntry {
+        relative: PathBuf::from(path),
+        metadata: crate::worker_admission::PayloadMetadata {
+            mode,
+            uid: unsafe { libc::geteuid() },
+            gid: unsafe { libc::getegid() },
+            atime_sec: 1_700_000_000,
+            atime_nsec: 0,
+            mtime_sec: 1_700_000_000,
+            mtime_nsec: 0,
+            xattrs: std::collections::BTreeMap::new(),
+        },
+        kind,
+    }
+}
+
+/// The private fixture root, as the old private stage was (0700).
+#[cfg(test)]
+fn fixture_payload_root() -> Vec<crate::worker_admission::PayloadEntry> {
+    vec![fixture_payload_entry(
+        "",
+        0o700,
+        crate::worker_admission::PayloadKind::Directory,
+    )]
+}
+
+/// The same private payload `seed_private_cache_fixture` seeds, planned as a
+/// final inventory for the core producer (private 0700/0600 modes).
+#[cfg(test)]
+pub(crate) fn private_cache_fixture_payload(
+    program_name: &str,
+    program: &[u8],
+    config: &[u8],
+    digests: Vec<String>,
+) -> CachePayload {
+    use crate::worker_admission::PayloadKind;
+    let program_path = PathBuf::from("bin").join(program_name);
+    let mut entries = fixture_payload_root();
+    entries.push(fixture_payload_entry("bin", 0o700, PayloadKind::Directory));
+    let files = vec![
+        (program_path, program.to_vec()),
+        (PathBuf::from(".oci-config.json"), config.to_vec()),
+    ];
+    for (path, bytes) in &files {
+        entries.push(crate::worker_admission::PayloadEntry {
+            relative: path.clone(),
+            ..fixture_payload_entry(
+                "",
+                0o600,
+                PayloadKind::File {
+                    size: bytes.len() as u64,
+                },
+            )
+        });
+    }
+    CachePayload {
+        entries,
+        digests,
+        write: Box::new(
+            move |builder: &mut crate::worker_admission::PayloadBuilder| -> std::io::Result<()> {
+                for (path, bytes) in &files {
+                    builder.write_file(path, &mut bytes.as_slice())?;
+                }
+                Ok(())
+            },
+        ),
+    }
+}
+
+/// Supplies its bytes, then fails like an interrupted producer input.
+#[cfg(test)]
+struct FailingFixtureReader(&'static [u8]);
+#[cfg(test)]
+impl std::io::Read for FailingFixtureReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.0.is_empty() {
+            return Err(std::io::Error::other(
+                "fixture producer failed after staging",
+            ));
+        }
+        let n = self.0.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.0[..n]);
+        self.0 = &self.0[n..];
+        Ok(n)
     }
 }
 
@@ -1031,40 +1192,49 @@ mod tests {
             .resolve_with(
                 true,
                 || {},
-                move |_, stage, checkpoint| async move {
+                move |_, checkpoint| async move {
                     checkpoint.check()?;
-                    let mut bytes = 0;
-                    crate::cli::worker_manager::oci::extract_layer_with_limits(
-                        &layer,
-                        "application/vnd.oci.image.layer.v1.tar",
-                        &stage,
-                        0,
-                        1,
-                        &mut bytes,
+                    // The real OCI layer planner over owned local layer bytes
+                    // (the only replaced boundary is the network download);
+                    // the core producer, not an extractor, writes the tree.
+                    let payload = crate::cli::worker_manager::oci::OciPayload::plan(
+                        vec![crate::cli::worker_manager::oci::OciLayer {
+                            data: layer,
+                            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+                        }],
+                        br#"{"config":{"Env":["REVIEW=local"]}}"#.to_vec(),
                     )?;
-                    // Same reserved OCI config writer used by the real pull path.
-                    crate::cli::worker_manager::oci::write_rootfs_file_no_follow(
-                        &stage.join(".oci-config.json"),
-                        br#"{"config":{"Env":["REVIEW=local"]}}"#,
-                        Some(0o600),
-                    )?;
+                    let planned = |path: &str| {
+                        payload
+                            .entries()
+                            .iter()
+                            .find(|entry| entry.relative == Path::new(path))
+                            .cloned()
+                    };
                     if tmp {
-                        assert_eq!(
-                            std::fs::metadata(stage.join("tmp"))?.mode() & 0o7777,
-                            0o1777
-                        );
+                        assert_eq!(planned("tmp").unwrap().metadata.mode, 0o1777);
                     }
                     if hardlink {
-                        assert_eq!(
-                            std::fs::metadata(stage.join("bin/sh"))?.ino(),
-                            std::fs::metadata(stage.join("bin/sh-alias"))?.ino()
-                        );
+                        assert!(matches!(
+                            planned("bin/sh-alias").unwrap().kind,
+                            crate::worker_admission::PayloadKind::Hardlink { ref source }
+                                if source == Path::new("bin/sh")
+                        ));
                     }
                     if files > 0 {
-                        assert_eq!(std::fs::read_dir(stage.join("inventory"))?.count(), files);
+                        assert_eq!(
+                            payload
+                                .entries()
+                                .iter()
+                                .filter(
+                                    |entry| entry.relative.parent() == Some(Path::new("inventory"))
+                                )
+                                .count(),
+                            files
+                        );
                     }
                     checkpoint.check()?;
-                    Ok(vec![format!("sha256:{}", "d".repeat(64))])
+                    Ok(payload.into_cache_payload(vec![format!("sha256:{}", "d".repeat(64))]))
                 },
             )
             .await
@@ -1160,6 +1330,238 @@ mod tests {
     #[tokio::test]
     async fn r3_local_oci_combined_ordinary_payload_profile_is_not_a_tiny_private_tree() {
         r3_publish_layer(true, true, 4100).await;
+    }
+
+    type R3Member<'a> = (&'a str, tar::EntryType, u32, &'a str, Option<&'a str>);
+
+    /// A real local OCI layer tar (GNU headers, owned by the test user).
+    fn r3_tar(members: &[R3Member<'_>]) -> Vec<u8> {
+        let mut tar = tar::Builder::new(Vec::new());
+        for (path, kind, mode, bytes, link) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(*kind);
+            header.set_mode(*mode);
+            header.set_uid(unsafe { libc::geteuid() } as u64);
+            header.set_gid(unsafe { libc::getegid() } as u64);
+            header.set_mtime(1_700_000_000);
+            header.set_size(bytes.len() as u64);
+            if let Some(link) = link {
+                header.set_link_name(link).unwrap();
+            }
+            header.set_cksum();
+            tar.append_data(&mut header, path, bytes.as_bytes())
+                .unwrap();
+        }
+        tar.into_inner().unwrap()
+    }
+
+    fn r3_layers(layers: Vec<Vec<u8>>) -> Vec<crate::cli::worker_manager::oci::OciLayer> {
+        layers
+            .into_iter()
+            .map(|data| crate::cli::worker_manager::oci::OciLayer {
+                data,
+                media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            })
+            .collect()
+    }
+
+    async fn r3_resolve_layers(
+        context: &crate::worker_admission::AdmissionContext,
+        owner: &Path,
+        cache: &Path,
+        reference: &str,
+        layers: Vec<Vec<u8>>,
+    ) -> Result<Option<PreparedCache>> {
+        CacheRequest::new(context.local(owner).unwrap(), reference, cache)
+            .unwrap()
+            .resolve_with(
+                true,
+                || {},
+                move |_, checkpoint| async move {
+                    checkpoint.check()?;
+                    let payload = crate::cli::worker_manager::oci::OciPayload::plan(
+                        r3_layers(layers),
+                        br#"{"config":{"Env":["REVIEW=layers"]}}"#.to_vec(),
+                    )?;
+                    checkpoint.check()?;
+                    Ok(payload.into_cache_payload(vec![format!("sha256:{}", "e".repeat(64))]))
+                },
+            )
+            .await
+    }
+
+    /// R3 through the real cache producer: two local layers whose final tree
+    /// needs per-layer whiteouts, an opaque directory, an overwrite that
+    /// breaks a hardlink group, a parent resolved through an in-root symlink,
+    /// and 0777/0750/1777 directories. The published root and its EROFS lower
+    /// are exactly the final layered tree; nothing was extracted by path.
+    #[tokio::test]
+    async fn r3_local_multi_layer_whiteouts_opaque_and_overrides_publish_the_final_tree() {
+        use std::os::unix::fs::MetadataExt;
+        use tar::EntryType::{Directory, Link, Regular, Symlink};
+        let (directory, context, cache) = h_context();
+        let reference = "example.invalid/review/layered:v1";
+        let lower = r3_tar(&[
+            ("etc", Directory, 0o755, "", None),
+            ("bin", Directory, 0o755, "", None),
+            ("bin/sh", Regular, 0o755, "shell", None),
+            ("usr", Directory, 0o755, "", None),
+            ("usr/lib", Directory, 0o755, "", None),
+            ("lib", Symlink, 0o777, "", Some("usr/lib")),
+            ("opt", Directory, 0o755, "", None),
+            ("opt/old", Regular, 0o644, "old", None),
+            ("gone", Regular, 0o644, "gone", None),
+            ("data", Regular, 0o644, "v1", None),
+            ("data-link", Link, 0o644, "", Some("data")),
+            ("shared", Directory, 0o777, "", None),
+            ("keep", Directory, 0o755, "", None),
+        ]);
+        let upper = r3_tar(&[
+            // Listed after an entry of its own layer: hides lower layers only.
+            ("opt/new", Regular, 0o644, "new", None),
+            ("opt/.wh..wh..opq", Regular, 0o644, "", None),
+            (".wh.gone", Regular, 0o644, "", None),
+            ("lib/libz.so", Regular, 0o644, "libz", None),
+            ("data", Regular, 0o644, "v2", None),
+            ("keep", Directory, 0o750, "", None),
+            ("tmp", Directory, 0o1777, "", None),
+        ]);
+        let prepared = r3_resolve_layers(
+            &context,
+            &directory.path().join("consumer"),
+            &cache,
+            reference,
+            vec![lower, upper],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let root = &prepared.root;
+        assert!(!root.join("gone").exists());
+        assert!(!root.join("opt/old").exists());
+        assert_eq!(std::fs::read(root.join("opt/new")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(root.join("usr/lib/libz.so")).unwrap(),
+            b"libz"
+        );
+        assert_eq!(
+            std::fs::read_link(root.join("lib")).unwrap(),
+            PathBuf::from("usr/lib")
+        );
+        assert_eq!(std::fs::read(root.join("data")).unwrap(), b"v2");
+        assert_eq!(std::fs::read(root.join("data-link")).unwrap(), b"v1");
+        assert_eq!(std::fs::metadata(root.join("data")).unwrap().nlink(), 1);
+        assert_eq!(
+            std::fs::metadata(root.join("data-link")).unwrap().nlink(),
+            1
+        );
+        for (path, mode) in [("shared", 0o777), ("keep", 0o750), ("tmp", 0o1777)] {
+            assert_eq!(
+                std::fs::metadata(root.join(path)).unwrap().mode() & 0o7777,
+                mode,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.join("etc/hosts")).unwrap(),
+            b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n"
+        );
+        assert!(std::fs::metadata(root.join("workspace")).unwrap().is_dir());
+        assert_eq!(
+            prepared.env().unwrap(),
+            vec![("REVIEW".into(), "layers".into())]
+        );
+        let mut image = crate::cli::erofs::reader::ErofsReader::new(
+            std::fs::File::open(&prepared.lower).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(image.read_file("/usr/lib/libz.so").unwrap(), b"libz");
+        assert_eq!(image.read_file("/data-link").unwrap(), b"v1");
+        assert!(
+            !image
+                .walk()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == Path::new("gone"))
+        );
+        prepared.validate(reference).unwrap();
+    }
+
+    /// R3 negative: a layer parent that resolves outside the rootfs (absolute
+    /// or `..` symlink) and a hardlink without an internal source are refused
+    /// while planning, before any core stage, published root or digest.
+    #[tokio::test]
+    async fn r3_local_layer_escapes_and_foreign_links_are_refused_before_cache_effects() {
+        use tar::EntryType::{Directory, Link, Regular, Symlink};
+        let base: Vec<R3Member<'_>> = vec![
+            ("bin", Directory, 0o755, "", None),
+            ("bin/sh", Regular, 0o755, "shell", None),
+        ];
+        let escapes: [Vec<R3Member<'_>>; 3] = [
+            vec![
+                ("evil", Symlink, 0o777, "", Some("/etc")),
+                ("evil/passwd", Regular, 0o644, "pwned", None),
+            ],
+            vec![
+                ("up", Symlink, 0o777, "", Some("../outside")),
+                ("up/file", Regular, 0o644, "pwned", None),
+            ],
+            vec![("alias", Link, 0o644, "", Some("missing"))],
+        ];
+        for escape in escapes {
+            let members: Vec<_> = base.iter().cloned().chain(escape).collect();
+            assert!(
+                crate::cli::worker_manager::oci::OciPayload::plan(
+                    r3_layers(vec![r3_tar(&members)]),
+                    b"{}".to_vec(),
+                )
+                .is_err()
+            );
+        }
+        let (directory, context, cache) = h_context();
+        let reference = "example.invalid/review/escape:v1";
+        let layer = r3_tar(&[
+            ("bin", Directory, 0o755, "", None),
+            ("bin/sh", Regular, 0o755, "shell", None),
+            ("evil", Symlink, 0o777, "", Some("/etc")),
+            ("evil/passwd", Regular, 0o644, "pwned", None),
+        ]);
+        let result = r3_resolve_layers(
+            &context,
+            &directory.path().join("consumer"),
+            &cache,
+            reference,
+            vec![layer],
+        )
+        .await;
+        assert!(result.is_err());
+        let candidate = &cache_candidates(&cache, reference)[0];
+        assert!(!candidate.exists());
+        assert!(!digest_path(candidate).exists());
+    }
+
+    /// R3 fault: the producer input fails after the core created its stage and
+    /// wrote part of a declared file. No seal, no published root or digest.
+    #[tokio::test]
+    async fn r3_producer_input_failure_after_core_stage_never_publishes() {
+        let (directory, context, cache) = h_context();
+        let reference = "example.invalid/review/fault:v1";
+        let error = CacheRequest::new(
+            context.local(&directory.path().join("consumer")).unwrap(),
+            reference,
+            &cache,
+        )
+        .unwrap()
+        .resolve_fixture_failure()
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("fixture producer failed after staging"),
+            "{error:#}"
+        );
+        let candidate = &cache_candidates(&cache, reference)[0];
+        assert!(!candidate.exists());
+        assert!(!digest_path(candidate).exists());
     }
 
     fn h_context() -> (

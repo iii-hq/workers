@@ -157,7 +157,7 @@ fn read_oci_config_contents(rootfs: &std::path::Path) -> Option<String> {
 /// symlink gets the default file instead, and an image whose `/etc` is a
 /// symlink gets no default hosts file.
 pub(crate) fn write_default_hosts_no_follow(hosts_path: &std::path::Path) {
-    const DEFAULT_HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n";
+    const DEFAULT_HOSTS: &[u8] = DEFAULT_GUEST_HOSTS;
     // `etc` comes from the image too. O_NOFOLLOW only guards the final path
     // component, so if a layer made `etc` a symlink, unlinking or creating
     // `etc/hosts` would act outside the rootfs. Only proceed when the parent
@@ -730,19 +730,28 @@ pub(crate) async fn pull_and_extract_rootfs_checked(
     extract_pulled_rootfs(image_data, image_digests, dest, &checkpoint)
 }
 
-pub(crate) async fn pull_into_stage_checked(
+/// Pull `image` and plan its FINAL layered rootfs for the admitted cache
+/// producer. No stage pathname is created, written or returned here.
+pub(crate) async fn pull_payload_checked(
     image: &str,
-    stage: &Path,
     checkpoint: crate::cli::rootfs_cache::Checkpoint,
-) -> Result<Vec<String>> {
+) -> Result<crate::cli::rootfs_cache::CachePayload> {
     let (image_data, digests) = pull_data_checked(image, &checkpoint).await?;
     checkpoint.check()?;
-    extract_layers_into(&image_data, stage)?;
-    // These writes are inside the owned stage, not the live cached tree.
-    std::fs::create_dir_all(stage.join("workspace"))?;
-    write_default_hosts_no_follow(&stage.join("etc/hosts"));
+    let layers: Vec<OciLayer> = image_data
+        .layers
+        .into_iter()
+        .map(|layer| OciLayer {
+            data: layer.data.to_vec(),
+            media_type: layer.media_type,
+        })
+        .collect();
+    let config = image_data.config.data.to_vec();
+    let payload = tokio::task::spawn_blocking(move || OciPayload::plan(layers, config))
+        .await
+        .context("OCI layer planner task failed")??;
     checkpoint.check()?;
-    Ok(digests)
+    Ok(payload.into_cache_payload(digests))
 }
 
 async fn pull_data_checked(
@@ -1040,6 +1049,660 @@ fn extract_layers_into(
     let config_path = extract_root.join(".oci-config.json");
     write_rootfs_file_no_follow(&config_path, &image_data.config.data, None)
         .with_context(|| format!("Failed to write image config: {}", config_path.display()))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Final layered payload for the admitted cache producer
+//
+// The admitted cache path never extracts into a stage pathname. The layers
+// are planned in memory into the FINAL rootfs inventory (the same sanitize
+// policy as `extract_layer_with_limits`: setid bits masked, owner rwx kept on
+// directories, reserved `.oci-config.json`, size/depth/count limits, per-layer
+// whiteouts before entries, opaque directories, overwrites that break link
+// groups, internal hardlinks and in-root symlink resolution of parents). The
+// core producer then creates every object and writes each final file from the
+// owned layer bytes; it alone seals and publishes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The default guest `/etc/hosts` when the image ships no regular one.
+const DEFAULT_GUEST_HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n";
+/// Mode of a directory only implied by a deeper entry (unpack's default).
+const IMPLICIT_DIR_MODE: u32 = 0o755;
+/// Mode of the host-written `.oci-config.json` and default `etc/hosts`.
+const HOST_FILE_MODE: u32 = 0o644;
+/// Kernel-like bound on symlinks followed while resolving one layer path.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// One owned, already downloaded layer: its bytes and descriptor media type.
+pub(crate) struct OciLayer {
+    pub(crate) data: Vec<u8>,
+    pub(crate) media_type: String,
+}
+
+#[derive(Clone)]
+enum PlanNode {
+    Dir { mode: u32, mtime: i64 },
+    Symlink { target: Vec<u8>, mtime: i64 },
+    File { inode: usize },
+}
+
+struct PlanInode {
+    mode: u32,
+    mtime: i64,
+    size: u64,
+    source: PlanSource,
+}
+
+#[derive(Clone, Copy)]
+enum PlanSource {
+    Member { layer: usize, member: u64 },
+    Inline(usize),
+}
+
+#[derive(Clone)]
+enum PlanPart {
+    Up,
+    Name(std::ffi::OsString),
+}
+
+#[derive(Default)]
+struct LayerPlanner {
+    nodes: std::collections::BTreeMap<PathBuf, PlanNode>,
+    inodes: Vec<PlanInode>,
+    inline: Vec<Vec<u8>>,
+}
+
+/// The final planned rootfs plus the owned inputs that supply its bytes.
+pub(crate) struct OciPayload {
+    entries: Vec<crate::worker_admission::PayloadEntry>,
+    layers: Vec<OciLayer>,
+    /// (layer, member ordinal) -> the final primary path its bytes fill.
+    members: std::collections::BTreeMap<(usize, u64), PathBuf>,
+    inline: Vec<(PathBuf, Vec<u8>)>,
+}
+
+fn layer_reader<'a>(
+    data: &'a [u8],
+    media_type: &str,
+    layer_index: usize,
+    layer_count: usize,
+) -> Result<Box<dyn std::io::Read + 'a>> {
+    // Same label/magic policy as `extract_layer_with_limits`.
+    let zstd = data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+    let gzip = data.starts_with(&[0x1f, 0x8b])
+        || media_type.ends_with("tar+gzip")
+        || media_type.ends_with("tar.gzip");
+    if zstd || !(gzip || media_type.ends_with("tar")) {
+        anyhow::bail!(
+            "Layer {}/{}: unsupported {} {media_type:?} \
+             (only uncompressed and gzip tar layers can be extracted)",
+            layer_index + 1,
+            layer_count,
+            if zstd {
+                "zstd layer"
+            } else {
+                "layer media type"
+            }
+        );
+    }
+    let reader: Box<dyn std::io::Read + 'a> = if gzip {
+        Box::new(flate2::read::GzDecoder::new(data))
+    } else {
+        Box::new(data)
+    };
+    Ok(reader)
+}
+
+fn header_mode(header: &tar::Header, default: u32) -> u32 {
+    header
+        .mode()
+        .map_or(default, |mode| mode & 0o7777 & !SETID_BITS)
+}
+
+fn header_mtime(header: &tar::Header) -> i64 {
+    header
+        .mtime()
+        .ok()
+        .and_then(|mtime| i64::try_from(mtime).ok())
+        .unwrap_or(0)
+}
+
+fn plan_parts(path: &Path) -> Result<Vec<PlanPart>> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => parts.push(PlanPart::Up),
+            Component::Normal(part) => parts.push(PlanPart::Name(part.to_os_string())),
+            _ => anyhow::bail!("layer path resolves outside the rootfs: {}", path.display()),
+        }
+    }
+    Ok(parts)
+}
+
+impl LayerPlanner {
+    /// Resolve `parts` to a planned directory below the root, following
+    /// planned symlinks as the kernel does for unpack's parent path; `create`
+    /// adds missing directories as unpack's ancestor creation does. Absolute
+    /// targets and `..` above the root resolve outside it and fail closed.
+    fn resolve(&mut self, parts: Vec<PlanPart>, create: bool) -> Result<PathBuf> {
+        let mut pending: std::collections::VecDeque<PlanPart> = parts.into();
+        let mut here = PathBuf::new();
+        let mut hops = 0;
+        while let Some(part) = pending.pop_front() {
+            let name = match part {
+                PlanPart::Up => {
+                    anyhow::ensure!(here.pop(), "layer path escapes the rootfs through `..`");
+                    continue;
+                }
+                PlanPart::Name(name) => name,
+            };
+            let next = here.join(&name);
+            match self.nodes.get(&next).cloned() {
+                Some(PlanNode::Dir { .. }) => here = next,
+                Some(PlanNode::Symlink { target, .. }) => {
+                    hops += 1;
+                    anyhow::ensure!(
+                        hops <= MAX_SYMLINK_HOPS,
+                        "too many symlink levels in layer path {}",
+                        next.display()
+                    );
+                    use std::os::unix::ffi::OsStrExt;
+                    let target = Path::new(std::ffi::OsStr::from_bytes(&target));
+                    anyhow::ensure!(
+                        !target.is_absolute(),
+                        "layer symlink {} resolves outside the rootfs",
+                        next.display()
+                    );
+                    for part in plan_parts(target)?.into_iter().rev() {
+                        pending.push_front(part);
+                    }
+                }
+                Some(PlanNode::File { .. }) => {
+                    anyhow::bail!("layer path crosses a non-directory: {}", next.display())
+                }
+                None if create => {
+                    self.nodes.insert(
+                        next.clone(),
+                        PlanNode::Dir {
+                            mode: IMPLICIT_DIR_MODE,
+                            mtime: 0,
+                        },
+                    );
+                    here = next;
+                }
+                None => anyhow::bail!("layer path names a missing directory: {}", next.display()),
+            }
+        }
+        Ok(here)
+    }
+
+    fn names(parts: &[std::ffi::OsString]) -> Vec<PlanPart> {
+        parts.iter().cloned().map(PlanPart::Name).collect()
+    }
+
+    fn remove(&mut self, path: &Path, including: bool) {
+        let doomed: Vec<PathBuf> = self
+            .nodes
+            .range(path.to_path_buf()..)
+            .map(|(key, _)| key)
+            .take_while(|key| key.starts_with(path))
+            .filter(|key| including || key.as_path() != path)
+            .cloned()
+            .collect();
+        for key in doomed {
+            self.nodes.remove(&key);
+        }
+    }
+
+    /// `<dir>/.wh.<name>` deletes `<dir>/<name>` from lower layers and
+    /// `.wh..wh..opq` clears `<dir>`'s children; literal real-directory
+    /// ancestors only, as `apply_whiteout` (a symlinked ancestor is ignored).
+    fn whiteout(&mut self, parent: &[std::ffi::OsString], target: &str) {
+        let mut dir = PathBuf::new();
+        for part in parent {
+            dir.push(part);
+            if !matches!(self.nodes.get(&dir), Some(PlanNode::Dir { .. })) {
+                return;
+            }
+        }
+        if target == ".wh..opq" {
+            self.remove(&dir, false);
+        } else {
+            self.remove(&dir.join(target), true);
+        }
+    }
+
+    fn set_file(&mut self, dst: PathBuf, inode: usize) -> Result<()> {
+        // Unpack unlinks an existing file/symlink first (an old link group
+        // keeps its other names); it cannot replace a directory.
+        anyhow::ensure!(
+            !matches!(self.nodes.get(&dst), Some(PlanNode::Dir { .. })),
+            "layer replaces a directory with a non-directory: {}",
+            dst.display()
+        );
+        self.nodes.insert(dst, PlanNode::File { inode });
+        Ok(())
+    }
+
+    fn inline_file(&mut self, bytes: Vec<u8>) -> usize {
+        let index = self.inline.len();
+        let inode = self.inodes.len();
+        self.inodes.push(PlanInode {
+            mode: HOST_FILE_MODE,
+            mtime: 0,
+            size: bytes.len() as u64,
+            source: PlanSource::Inline(index),
+        });
+        self.inline.push(bytes);
+        inode
+    }
+
+    fn apply<R: std::io::Read>(
+        &mut self,
+        entry: &mut tar::Entry<'_, R>,
+        parts: &[std::ffi::OsString],
+        layer: usize,
+        member: u64,
+    ) -> Result<()> {
+        use tar::EntryType;
+        let header = entry.header().clone();
+        let kind = header.entry_type();
+        if matches!(
+            kind,
+            EntryType::XGlobalHeader
+                | EntryType::XHeader
+                | EntryType::GNULongName
+                | EntryType::GNULongLink
+        ) {
+            return Ok(());
+        }
+        // Only slashes or `.`: unpack treats it as the root itself, a no-op.
+        let Some((leaf, parent)) = parts.split_last() else {
+            return Ok(());
+        };
+        let dir = self.resolve(Self::names(parent), true)?;
+        let dst = dir.join(leaf);
+        let mtime = header_mtime(&header);
+        let bsd_dir = header.as_ustar().is_none() && entry.path_bytes().ends_with(b"/");
+        if kind.is_dir() || (bsd_dir && !kind.is_hard_link() && !kind.is_symlink()) {
+            let mut mode = header_mode(&header, IMPLICIT_DIR_MODE);
+            match self.nodes.get(&dst).cloned() {
+                None | Some(PlanNode::Dir { .. }) => {
+                    // `keep_dir_owner_writable`: owner rwx, other bits kept.
+                    if mode & 0o700 != 0o700 {
+                        mode |= 0o700;
+                    }
+                    self.nodes.insert(dst, PlanNode::Dir { mode, mtime });
+                }
+                Some(PlanNode::Symlink { .. }) => {
+                    // Unpack lets an existing directory symlink slide and its
+                    // chmod follows it; the owner fix does not cross a link.
+                    let mut path = Self::names(parent);
+                    path.push(PlanPart::Name(leaf.clone()));
+                    let target = self.resolve(path, false)?;
+                    if let Some(PlanNode::Dir { mtime, .. }) = self.nodes.get(&target).cloned() {
+                        self.nodes.insert(target, PlanNode::Dir { mode, mtime });
+                    }
+                }
+                Some(PlanNode::File { .. }) => {
+                    anyhow::bail!("layer directory replaces a file: {}", dst.display())
+                }
+            }
+            return Ok(());
+        }
+        if kind.is_symlink() {
+            let target = entry
+                .link_name_bytes()
+                .map(|bytes| bytes.into_owned())
+                .filter(|bytes| !bytes.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("symlink {} has no target", dst.display()))?;
+            anyhow::ensure!(
+                !matches!(self.nodes.get(&dst), Some(PlanNode::Dir { .. })),
+                "layer symlink replaces a directory: {}",
+                dst.display()
+            );
+            self.nodes.insert(dst, PlanNode::Symlink { target, mtime });
+            return Ok(());
+        }
+        if kind.is_hard_link() {
+            let link = entry
+                .link_name()
+                .context("Failed to read hardlink target")?
+                .ok_or_else(|| anyhow::anyhow!("hardlink {} has no target", dst.display()))?
+                .into_owned();
+            anyhow::ensure!(
+                !link.is_absolute(),
+                "hardlink {} targets outside the rootfs",
+                dst.display()
+            );
+            let mut parts = plan_parts(&link)?;
+            let Some(PlanPart::Name(name)) = parts.pop() else {
+                anyhow::bail!("hardlink {} has an invalid target", dst.display());
+            };
+            let source = self.resolve(parts, false)?.join(name);
+            match self.nodes.get(&source).cloned() {
+                Some(PlanNode::File { inode }) if source != dst => self.set_file(dst, inode)?,
+                Some(PlanNode::Symlink { .. }) => anyhow::bail!(
+                    "hardlink {} to a symlink is outside the payload profile",
+                    dst.display()
+                ),
+                _ => anyhow::bail!(
+                    "hardlink {} has no regular internal source {}",
+                    dst.display(),
+                    source.display()
+                ),
+            }
+            return Ok(());
+        }
+        // Regular, contiguous, sparse and every other type: tar writes them as
+        // regular files with the member's logical bytes.
+        let inode = self.inodes.len();
+        self.inodes.push(PlanInode {
+            mode: header_mode(&header, HOST_FILE_MODE),
+            mtime,
+            size: entry.size(),
+            source: PlanSource::Member { layer, member },
+        });
+        self.set_file(dst, inode)
+    }
+
+    fn layer(
+        &mut self,
+        layer: &OciLayer,
+        layer_index: usize,
+        layer_count: usize,
+        total_size: &mut u64,
+    ) -> Result<()> {
+        let start_total = *total_size;
+        // Whiteouts hide lower-layer files only: all of this layer's are
+        // applied before any of its own entries land (as the extractor).
+        for whiteout_pass in [true, false] {
+            *total_size = start_total;
+            let reader = layer_reader(&layer.data, &layer.media_type, layer_index, layer_count)?;
+            let mut archive = tar::Archive::new(reader);
+            let mut member: u64 = 0;
+            for entry in archive.entries().context("Failed to read layer tar")? {
+                let mut entry = entry.context("Failed to read tar entry")?;
+                member += 1;
+                if member > MAX_ENTRY_COUNT {
+                    anyhow::bail!(
+                        "Layer {}/{}: exceeded max entry count ({})",
+                        layer_index + 1,
+                        layer_count,
+                        MAX_ENTRY_COUNT
+                    );
+                }
+                let path = entry
+                    .path()
+                    .context("Failed to get entry path")?
+                    .into_owned();
+                if path.is_absolute() {
+                    anyhow::bail!(
+                        "Layer {}/{}: absolute path in tar entry: {}",
+                        layer_index + 1,
+                        layer_count,
+                        path.display()
+                    );
+                }
+                if path
+                    .components()
+                    .any(|component| matches!(component, Component::ParentDir))
+                {
+                    anyhow::bail!(
+                        "Layer {}/{}: path traversal in tar entry: {}",
+                        layer_index + 1,
+                        layer_count,
+                        path.display()
+                    );
+                }
+                let parts: Vec<std::ffi::OsString> = path
+                    .components()
+                    .filter_map(|component| match component {
+                        Component::Normal(part) => Some(part.to_os_string()),
+                        _ => None,
+                    })
+                    .collect();
+                if parts.len() > MAX_PATH_DEPTH {
+                    anyhow::bail!(
+                        "Layer {}/{}: path too deep ({} components): {}",
+                        layer_index + 1,
+                        layer_count,
+                        parts.len(),
+                        path.display()
+                    );
+                }
+                let entry_size = entry.size();
+                if entry_size > MAX_FILE_SIZE {
+                    anyhow::bail!(
+                        "Layer {}/{}: file too large: {} bytes (max {})",
+                        layer_index + 1,
+                        layer_count,
+                        entry_size,
+                        MAX_FILE_SIZE
+                    );
+                }
+                *total_size += entry_size;
+                if *total_size > MAX_TOTAL_SIZE {
+                    anyhow::bail!(
+                        "Layer {}/{}: total extraction size exceeded {} bytes",
+                        layer_index + 1,
+                        layer_count,
+                        MAX_TOTAL_SIZE
+                    );
+                }
+                let whiteout = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix(".wh."))
+                    .map(str::to_string);
+                if whiteout_pass {
+                    if let Some(target) = whiteout {
+                        if target.is_empty() || target == "." || target == ".." {
+                            tracing::warn!(
+                                layer = layer_index + 1,
+                                path = %path.display(),
+                                "ignoring whiteout with an invalid target name"
+                            );
+                        } else {
+                            self.whiteout(&parts[..parts.len() - 1], &target);
+                        }
+                    }
+                    continue;
+                }
+                if whiteout.is_some() {
+                    continue;
+                }
+                if parts
+                    .first()
+                    .is_some_and(|first| first == RESERVED_ROOTFS_NAME_OCI_CONFIG)
+                {
+                    tracing::warn!(
+                        layer = layer_index + 1,
+                        path = %path.display(),
+                        "layer entry uses the reserved name .oci-config.json; skipping"
+                    );
+                    continue;
+                }
+                self.apply(&mut entry, &parts, layer_index, member)
+                    .with_context(|| format!("Failed to plan: {}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Host-written members of the admitted stage: `workspace`, the default
+    /// `etc/hosts` and the reserved image config, all inside the inventory.
+    fn finish_host_members(&mut self, config: Vec<u8>) -> Result<()> {
+        let workspace = PathBuf::from("workspace");
+        match self.nodes.get(&workspace).cloned() {
+            None => {
+                self.nodes.insert(
+                    workspace,
+                    PlanNode::Dir {
+                        mode: IMPLICIT_DIR_MODE,
+                        mtime: 0,
+                    },
+                );
+            }
+            Some(PlanNode::Dir { .. }) => {}
+            Some(PlanNode::Symlink { .. }) => {
+                self.resolve(vec![PlanPart::Name("workspace".into())], false)?;
+            }
+            Some(PlanNode::File { .. }) => anyhow::bail!("image workspace is not a directory"),
+        }
+        if matches!(self.nodes.get(Path::new("etc")), Some(PlanNode::Dir { .. })) {
+            let hosts = PathBuf::from("etc/hosts");
+            match self.nodes.get(&hosts).cloned() {
+                Some(PlanNode::File { .. }) => {}
+                Some(PlanNode::Dir { .. }) => {
+                    tracing::warn!("image etc/hosts is a directory; skipping default hosts file")
+                }
+                _ => {
+                    let inode = self.inline_file(DEFAULT_GUEST_HOSTS.to_vec());
+                    self.nodes.insert(hosts, PlanNode::File { inode });
+                }
+            }
+        }
+        let inode = self.inline_file(config);
+        self.nodes.insert(
+            PathBuf::from(RESERVED_ROOTFS_NAME_OCI_CONFIG),
+            PlanNode::File { inode },
+        );
+        Ok(())
+    }
+}
+
+impl OciPayload {
+    /// Plan the final rootfs of `layers` (lowest first) plus the image config.
+    /// Everything is decided here, before any destination effect.
+    pub(crate) fn plan(layers: Vec<OciLayer>, config: Vec<u8>) -> Result<Self> {
+        use crate::worker_admission::{PayloadEntry, PayloadKind, PayloadMetadata};
+        let mut planner = LayerPlanner::default();
+        let mut total_size = 0;
+        for (index, layer) in layers.iter().enumerate() {
+            planner.layer(layer, index, layers.len(), &mut total_size)?;
+        }
+        planner.finish_host_members(config)?;
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        let meta = |mode: u32, mtime: i64| PayloadMetadata {
+            mode,
+            uid,
+            gid,
+            atime_sec: mtime,
+            atime_nsec: 0,
+            mtime_sec: mtime,
+            mtime_nsec: 0,
+            xattrs: std::collections::BTreeMap::new(),
+        };
+        let mut entries = vec![PayloadEntry {
+            relative: PathBuf::new(),
+            metadata: meta(IMPLICIT_DIR_MODE, 0),
+            kind: PayloadKind::Directory,
+        }];
+        let mut primaries = std::collections::BTreeMap::<usize, PathBuf>::new();
+        let mut members = std::collections::BTreeMap::new();
+        let mut inline = Vec::new();
+        for (path, node) in &planner.nodes {
+            let (metadata, kind) = match node {
+                PlanNode::Dir { mode, mtime } => (meta(*mode, *mtime), PayloadKind::Directory),
+                // A symlink's own mode is always 0777 on Linux.
+                PlanNode::Symlink { target, mtime } => (
+                    meta(0o777, *mtime),
+                    PayloadKind::Symlink {
+                        target: target.clone(),
+                    },
+                ),
+                PlanNode::File { inode } => {
+                    let planned = &planner.inodes[*inode];
+                    let kind = match primaries.get(inode) {
+                        Some(primary) => PayloadKind::Hardlink {
+                            source: primary.clone(),
+                        },
+                        None => {
+                            primaries.insert(*inode, path.clone());
+                            match planned.source {
+                                PlanSource::Member { layer, member } => {
+                                    members.insert((layer, member), path.clone());
+                                }
+                                PlanSource::Inline(index) => {
+                                    inline.push((path.clone(), planner.inline[index].clone()));
+                                }
+                            }
+                            PayloadKind::File { size: planned.size }
+                        }
+                    };
+                    (meta(planned.mode, planned.mtime), kind)
+                }
+            };
+            entries.push(PayloadEntry {
+                relative: path.clone(),
+                metadata,
+                kind,
+            });
+        }
+        Ok(Self {
+            entries,
+            layers,
+            members,
+            inline,
+        })
+    }
+
+    /// The final planned inventory (data, not authority).
+    pub(crate) fn entries(&self) -> &[crate::worker_admission::PayloadEntry] {
+        &self.entries
+    }
+
+    /// Feed every planned primary file from its owned input, exactly once,
+    /// through the core producer (which owns every destination descriptor).
+    pub(crate) fn write(
+        &self,
+        builder: &mut crate::worker_admission::PayloadBuilder,
+    ) -> std::io::Result<()> {
+        let count = self.layers.len();
+        for (index, layer) in self.layers.iter().enumerate() {
+            if self
+                .members
+                .range((index, 0)..=(index, u64::MAX))
+                .next()
+                .is_none()
+            {
+                continue;
+            }
+            let reader = layer_reader(&layer.data, &layer.media_type, index, count)
+                .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
+            let mut archive = tar::Archive::new(reader);
+            let mut member: u64 = 0;
+            for entry in archive.entries()? {
+                let mut entry = entry?;
+                member += 1;
+                if let Some(path) = self.members.get(&(index, member)) {
+                    builder.write_file(path, &mut entry)?;
+                }
+            }
+        }
+        for (path, bytes) in &self.inline {
+            builder.write_file(path, &mut bytes.as_slice())?;
+        }
+        Ok(())
+    }
+
+    /// Hand the plan to the admitted cache producer with its digests.
+    pub(crate) fn into_cache_payload(
+        mut self,
+        digests: Vec<String>,
+    ) -> crate::cli::rootfs_cache::CachePayload {
+        let entries = std::mem::take(&mut self.entries);
+        crate::cli::rootfs_cache::CachePayload {
+            entries,
+            digests,
+            write: Box::new(
+                move |builder: &mut crate::worker_admission::PayloadBuilder| self.write(builder),
+            ),
+        }
+    }
 }
 
 /// Read environment variables from the saved OCI image config.
