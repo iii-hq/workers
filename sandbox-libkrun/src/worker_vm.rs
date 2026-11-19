@@ -117,6 +117,7 @@ pub struct WorkerVms {
     /// Keep the original Arc across prepare/build/start. Restart recovery is
     /// separate; a same-process request never substitutes a fresh operation.
     operations: Mutex<HashMap<String, crate::worker_admission::Lease>>,
+    prepared_caches: Mutex<HashMap<String, crate::cli::rootfs_cache::PreparedCache>>,
     retired_builds: Mutex<HashMap<String, crate::worker_admission::WriterRetirement>>,
     /// Names each `start` call in its `Slot::Preparing` reservation.
     starts: AtomicU64,
@@ -197,6 +198,7 @@ impl WorkerVms {
             roots,
             slots: Mutex::default(),
             operations: Mutex::default(),
+            prepared_caches: Mutex::default(),
             retired_builds: Mutex::default(),
             starts: AtomicU64::new(0),
             unreserved: tokio::sync::Notify::new(),
@@ -234,6 +236,53 @@ impl WorkerVms {
             operations.insert(key.to_string(), lease.clone());
         }
         Ok(lease)
+    }
+
+    fn cache_context(&self) -> io::Result<crate::worker_admission::AdmissionContext> {
+        #[cfg(test)]
+        if let Some(context) = &self.admission_context {
+            return Ok(context.clone());
+        }
+        crate::worker_admission::AdmissionContext::system()
+    }
+
+    async fn prepare_project(
+        &self,
+        key: Option<&str>,
+        project: &mut WorkerProject,
+        lease: crate::worker_admission::Lease,
+    ) -> Result<crate::cli::rootfs_cache::PreparedCache, String> {
+        let reference = project.reference();
+        let existing = key.and_then(|key| {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(key)
+                .cloned()
+        });
+        if let Some(prepared) = existing {
+            // H1 is deliberately not guessed: a new reference requires the
+            // future retirement-issued continuation, not dropping this lease.
+            prepared
+                .validate(&reference)
+                .map_err(|e| format!("{e:#}"))?;
+            project.prepared = Some(prepared.clone());
+            return Ok(prepared);
+        }
+        let context = self.cache_context().map_err(|e| e.to_string())?;
+        crate::cli::rootfs_cache::prepare_cache_parent(
+            &context,
+            &crate::cli::rootfs_cache::cache_root(),
+        )
+        .map_err(|e| e.to_string())?;
+        let prepared = project.prepare(lease).await?;
+        if let Some(key) = key {
+            self.prepared_caches
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key.to_string(), prepared.clone());
+        }
+        Ok(prepared)
     }
 
     #[cfg(test)]
@@ -297,34 +346,19 @@ impl WorkerVms {
         let _source_use = _admission
             .use_path(&dir)
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
-        let (project, kind) = validate_source(&dir, source.package, source.run_override)
-            .map_err(SandboxError::SourceRejected)?;
+        let mut project = WorkerProject::resolve(
+            &dir,
+            source.package,
+            source.run_override,
+            source.executable,
+            None,
+            true,
+        )
+        .map_err(SandboxError::SourceRejected)?;
         drop(_source_use);
-        let _admission = crate::cli::local_worker::admit_base_image_inputs(
-            _admission,
-            &kind,
-            project.base_image.as_deref(),
-        )
-        .map_err(SandboxError::PrepareFailed)?;
-        let rootfs = crate::cli::local_worker::prepare_admitted_rootfs(
-            &_admission,
-            &kind,
-            project.base_image.as_deref(),
-        )
-        .await
-        .map_err(|e| SandboxError::PrepareFailed(format!("{e:#}")))?;
-        if crate::cli::overlay::overlay_active() {
-            let writer_admission = _admission.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::cli::local_worker::write_admitted_erofs(writer_admission, &rootfs)
-            })
+        self.prepare_project(req.state_key.as_deref(), &mut project, _admission.clone())
             .await
-            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
             .map_err(SandboxError::PrepareFailed)?;
-        }
-        _admission
-            .revalidate()
-            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         // For a client reattaching to a live boot: its `start` writes nothing, it gets S502.
         if let Some(state_key) = &req.state_key {
             let vm_dir = self.base.join(vm_id(state_key));
@@ -418,7 +452,7 @@ impl WorkerVms {
         let _source_use = admission
             .use_path(&dir)
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        let resolved = WorkerProject::resolve(
+        let mut resolved = WorkerProject::resolve(
             &dir,
             source.package,
             source.run_override,
@@ -433,6 +467,11 @@ impl WorkerVms {
         } else {
             admission
         };
+        if req.build.is_none() {
+            self.prepare_project(Some(&req.state_key), &mut resolved, admission.clone())
+                .await
+                .map_err(SandboxError::BootFailed)?;
+        }
         admission
             .revalidate()
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
@@ -664,7 +703,7 @@ impl WorkerVms {
         let _source_use = _admission
             .use_path(&dir)
             .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
-        let resolved = WorkerProject::resolve(
+        let mut resolved = WorkerProject::resolve(
             &dir,
             source.package,
             source.run_override,
@@ -712,6 +751,9 @@ impl WorkerVms {
             ],
         )
         .map_err(|e| SandboxError::BuildFailed(e.to_string()))?;
+        self.prepare_project(Some(&req.state_key), &mut resolved, _admission.clone())
+            .await
+            .map_err(SandboxError::BuildFailed)?;
         let output_admission = _admission.clone();
         // The key stays held through the writer. V2 scratch/journal evidence
         // is not deleted by an unowned Drop or a PID-based sweep.

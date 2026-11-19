@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 
-use sandbox_libkrun::sandbox_daemon::create::{BootHandle, BootParams, VmLauncher};
-use sandbox_libkrun::sandbox_daemon::errors::SandboxError;
-use sandbox_libkrun::sandbox_daemon::exec::{ExecRequest, ExecResponse, ShellRunner};
-use sandbox_libkrun::sandbox_daemon::stop::VmStopper;
+use crate::sandbox_daemon::create::{BootHandle, BootParams, VmLauncher};
+use crate::sandbox_daemon::errors::SandboxError;
+use crate::sandbox_daemon::exec::{ExecRequest, ExecResponse, ShellRunner};
+use crate::sandbox_daemon::stop::VmStopper;
 
 // ────────────────────────────────────────────────────────────────────
 // FakeShellRunner — for sandbox::exec
@@ -270,7 +270,16 @@ impl FakeVmLauncher {
 
 #[async_trait]
 impl VmLauncher for FakeVmLauncher {
-    async fn boot(&self, params: &BootParams) -> Result<BootHandle, SandboxError> {
+    async fn boot(&self, _params: &BootParams) -> Result<BootHandle, SandboxError> {
+        panic!("owned fixture requires boot_admitted")
+    }
+    async fn boot_admitted(
+        &self,
+        params: &BootParams,
+        lease: crate::worker_admission::Lease,
+        registry: &crate::sandbox_daemon::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         self.log.lock().unwrap().boots.push(LauncherBootRecord {
             rootfs: params.rootfs.clone(),
@@ -289,24 +298,21 @@ impl VmLauncher for FakeVmLauncher {
             )
         });
         match mode {
-            LaunchMode::Ok { vm_pid } => Ok(BootHandle {
-                vm_pid,
-                lifeline: None,
-            }),
+            LaunchMode::Ok { vm_pid: _ } => super::owned_boot(params, lease, registry, id).await,
             LaunchMode::Err(e) => Err(e),
-            LaunchMode::Block { release } => match release.await {
-                Ok(LaunchMode::Ok { vm_pid }) => Ok(BootHandle {
-                    vm_pid,
-                    lifeline: None,
-                }),
-                Ok(LaunchMode::Err(e)) => Err(e),
-                Ok(LaunchMode::Block { .. }) => Err(SandboxError::BootFailed(
-                    "FakeVmLauncher: nested Block is not supported".into(),
-                )),
-                Err(_) => Err(SandboxError::BootFailed(
-                    "FakeVmLauncher: release channel dropped".into(),
-                )),
-            },
+            LaunchMode::Block { release } => {
+                let boot = super::owned_boot(params, lease, registry, id).await?;
+                match release.await {
+                    Ok(LaunchMode::Ok { vm_pid: _ }) => Ok(boot),
+                    Ok(LaunchMode::Err(e)) => Err(e),
+                    Ok(LaunchMode::Block { .. }) => Err(SandboxError::BootFailed(
+                        "FakeVmLauncher: nested Block is not supported".into(),
+                    )),
+                    Err(_) => Err(SandboxError::BootFailed(
+                        "FakeVmLauncher: release channel dropped".into(),
+                    )),
+                }
+            }
         }
     }
 }

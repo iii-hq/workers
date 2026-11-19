@@ -778,6 +778,7 @@ fn admit_worker_inputs_on(
 pub(crate) struct WorkerProject {
     project: ProjectInfo,
     kind: String,
+    pub(crate) prepared: Option<super::rootfs_cache::PreparedCache>,
 }
 impl WorkerProject {
     pub(crate) fn resolve(
@@ -808,14 +809,47 @@ impl WorkerProject {
                 project.base_image.as_deref(),
             ));
         }
-        Ok(Self { project, kind })
+        Ok(Self {
+            project,
+            kind,
+            prepared: None,
+        })
     }
 
     pub(crate) fn admit_cache(
         &self,
         admission: crate::worker_admission::Lease,
     ) -> Result<crate::worker_admission::Lease, String> {
-        admit_base_image_inputs(admission, &self.kind, self.project.base_image.as_deref())
+        admission.revalidate().map_err(|e| e.to_string())?;
+        Ok(admission)
+    }
+
+    pub(crate) fn reference(&self) -> String {
+        super::worker_manager::oci::base_image_ref(&self.kind, self.project.base_image.as_deref())
+    }
+    pub(crate) async fn prepare(
+        &mut self,
+        admission: Lease,
+    ) -> Result<super::rootfs_cache::PreparedCache, String> {
+        let reference = self.reference();
+        if let Some(prepared) = &self.prepared {
+            prepared
+                .validate(&reference)
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(prepared.clone());
+        }
+        let prepared = super::rootfs_cache::CacheRequest::new(
+            admission,
+            &reference,
+            &super::rootfs_cache::cache_root(),
+        )
+        .map_err(|e| format!("{e:#}"))?
+        .resolve(true, || {})
+        .await
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or("required cache was not prepared")?;
+        self.prepared = Some(prepared.clone());
+        Ok(prepared)
     }
 
     pub(crate) async fn start(
@@ -901,56 +935,16 @@ pub(crate) fn admit_cache_paths(
     reference: &str,
     cache: &Path,
 ) -> Result<crate::worker_admission::Lease, String> {
-    let shared = cache.join(super::worker_manager::oci::rootfs_slug_for_image(
-        super::oci_ref::canonical_cache_key(reference),
-    ));
-    let pinned = cache.join(super::worker_manager::oci::rootfs_slug_for_image(reference));
-    let mut paths = vec![cache.to_path_buf()];
-    // canonical_path can switch under the pull lock. Admit both possible
-    // selections, their lower files and sidecars, not just today's cache hit.
-    for root in [shared.as_path(), pinned.as_path()] {
-        paths.push(root.to_path_buf());
-        for suffix in [".erofs", ".erofs.lock", ".erofs.spool", ".digest", ".lock"] {
-            let mut name = root
-                .file_name()
-                .ok_or("the cache root has no name")?
-                .to_os_string();
-            name.push(suffix);
-            paths.push(root.with_file_name(name));
-        }
-    }
-    let requests: Vec<_> = paths
+    // Compatibility preflight for direct refusal tests only. Production resolves
+    // and reuses PreparedCache; no broad mutable cache entries reach a lifecycle.
+    let roots = super::rootfs_cache::cache_candidates(cache, reference);
+    let entries: Vec<_> = roots
         .iter()
-        .map(|path| PathRequest {
-            path,
-            role: if path == cache {
-                PathRole::MutableTree
-            } else if path == &shared || path == &pinned {
-                PathRole::ManagedCacheRead
-            } else {
-                PathRole::MutableFile
-            },
-        })
+        .map(|root| crate::worker_admission::CacheEntry { root })
         .collect();
-    crate::worker_admission::with_paths(admission, &requests).map_err(|e| e.to_string())
-}
-
-/// A cancelled caller must not drop the fences of the cache lock's blocking
-/// writer. The owned task finishes the pull; abort/panic retains conservatively.
-/// The cache lock task is joined inside prepare_rootfs before it returns.
-pub(crate) async fn prepare_admitted_rootfs(
-    admission: &crate::worker_admission::Lease,
-    kind: &str,
-    base_image: Option<&str>,
-) -> Result<PathBuf, String> {
-    let reference = super::worker_manager::oci::base_image_ref(kind, base_image);
-    let operation = admission.clone();
-    run_cache_writer(admission.clone(), move || async move {
-        super::rootfs_cache::ensure_rootfs_admitted(&operation, &reference)
-            .await
-            .map_err(|e| format!("{e:#}"))
-    })
-    .await
+    let probe = admission.probe_cache(&entries).map_err(|e| e.to_string())?;
+    probe.cancel().map_err(|e| e.to_string())?;
+    Ok(admission)
 }
 
 // Revalidation is a cooperative boundary check, not an atomic guarantee
@@ -982,6 +976,7 @@ where
     .map_err(|e| e.to_string())?
 }
 
+#[cfg(test)]
 pub(crate) fn write_admitted_erofs(
     admission: crate::worker_admission::Lease,
     root: &Path,
@@ -1089,7 +1084,7 @@ async fn image_build_resolved(
     )?;
 
     let _source_use = admission.use_path(worker_dir).map_err(|e| e.to_string())?;
-    let resolved = match resolved {
+    let mut resolved = match resolved {
         Some(project) => project,
         None => WorkerProject::resolve(
             worker_dir,
@@ -1101,8 +1096,15 @@ async fn image_build_resolved(
         )?,
     };
     drop(_source_use);
-    let admission = resolved.admit_cache(admission)?;
-    let WorkerProject { project, kind } = resolved;
+    if resolved.prepared.is_none() {
+        let context =
+            crate::worker_admission::AdmissionContext::system().map_err(|e| e.to_string())?;
+        super::rootfs_cache::prepare_cache_parent(&context, &super::rootfs_cache::cache_root())
+            .map_err(|e| e.to_string())?;
+    }
+    let prepared = resolved.prepare(admission.clone()).await?;
+    let admission = prepared.lease.clone();
+    let WorkerProject { project, kind, .. } = resolved;
     // A binary package is copied whole, as a bundle is.
     let is_bundle = package.is_some();
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
@@ -1115,18 +1117,11 @@ async fn image_build_resolved(
             .to_string());
     }
     let reference = oci::base_image_ref(&kind, project.base_image.as_deref());
-    let base_rootfs = prepare_admitted_rootfs(&admission, &kind, project.base_image.as_deref())
-        .await
-        .map_err(|e| format!("cannot pull the base image {reference}: {e:#}"))?;
-    let lower = {
-        let base = base_rootfs.clone();
-        let writer_admission = admission.clone();
-        tokio::task::spawn_blocking(move || write_admitted_erofs(writer_admission, &base))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("failed to build base erofs: {e}"))?
-    };
-
+    let base_rootfs = prepared.root.clone();
+    let lower = prepared.lower.clone();
+    prepared
+        .validate(&reference)
+        .map_err(|e| format!("{e:#}"))?;
     admission.revalidate().map_err(|e| e.to_string())?;
     let root = scratch.join("root");
     mutable_dirs(&admission, scratch, &[&root, &root.join("workspace")])
@@ -1143,7 +1138,7 @@ async fn image_build_resolved(
 
     let mut env_all = project.env.clone();
     env_all.extend(env);
-    for (key, value) in oci::read_oci_env(&base_rootfs) {
+    for (key, value) in prepared.env().map_err(|e| format!("{e:#}"))? {
         env_all.entry(key).or_insert(value);
     }
     env_all.insert(BUILD_EXPORT_ENV.to_string(), BUILD_EXPORT_GUEST.to_string());
@@ -1672,7 +1667,7 @@ async fn start_worker_resolved(
     let _source_use = admission
         .use_path(project_path)
         .map_err(|e| e.to_string())?;
-    let resolved = match resolved {
+    let mut resolved = match resolved {
         Some(project) => project,
         None => WorkerProject::resolve(
             project_path,
@@ -1683,16 +1678,21 @@ async fn start_worker_resolved(
             over.image.is_none(),
         )?,
     };
-    let WorkerProject { project, kind } = resolved;
-    let kind = kind.as_str();
-    let is_bundle = package.is_some();
-
     drop(_source_use);
-    let admission = if over.image.is_none() {
-        admit_base_image_inputs(admission, kind, project.base_image.as_deref())?
+    let prepared = if over.image.is_none() {
+        if resolved.prepared.is_none() {
+            let context =
+                crate::worker_admission::AdmissionContext::system().map_err(|e| e.to_string())?;
+            super::rootfs_cache::prepare_cache_parent(&context, &super::rootfs_cache::cache_root())
+                .map_err(|e| e.to_string())?;
+        }
+        Some(resolved.prepare(admission.clone()).await?)
     } else {
-        admission
+        None
     };
+    let WorkerProject { project, kind, .. } = resolved;
+    let _kind = kind.as_str();
+    let is_bundle = package.is_some();
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::provision::ensure_libkrunfw().await {
@@ -1755,8 +1755,11 @@ async fn start_worker_resolved(
     if overlay {
         mutable_dirs(&admission, &managed_dir, &[&managed_dir])?;
     } else if needs_rootfs_clone(&managed_dir) {
-        let base_rootfs =
-            prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await?;
+        let base_rootfs = prepared
+            .as_ref()
+            .expect("source run has prepared cache")
+            .root
+            .clone();
         clone_rootfs_admitted(&admission, &base_rootfs, &managed_dir)?;
     }
     mutable_dirs(&admission, &managed_dir, &[&managed_dir.join("workspace")])?;
@@ -1770,15 +1773,8 @@ async fn start_worker_resolved(
 
     let mut env = build_local_env(over.engine_url, worker_name, &combined_project_env);
 
-    let base_rootfs =
-        match prepare_admitted_rootfs(&admission, kind, project.base_image.as_deref()).await {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(e.to_string());
-            }
-        };
-    admission.revalidate().map_err(|e| e.to_string())?;
-    let oci_env = super::worker_manager::oci::read_oci_env(&base_rootfs);
+    let prepared = prepared.as_ref().expect("source run has prepared cache");
+    let oci_env = prepared.env().map_err(|e| format!("{e:#}"))?;
     for (key, value) in oci_env {
         env.entry(key).or_insert(value);
     }
@@ -1862,12 +1858,10 @@ async fn start_worker_resolved(
     // fails the start cleanly (rather than inside the detached __vm-boot child),
     // and never silently falls back to a per-worker clone.
     let (rootfs_lower, rootfs_mode, rootfs_upper) = if overlay {
-        let erofs_img = match write_admitted_erofs(admission.clone(), &base_rootfs) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(format!("failed to build base erofs: {}", e));
-            }
-        };
+        prepared
+            .validate(&prepared.reference)
+            .map_err(|e| format!("{e:#}"))?;
+        let erofs_img = prepared.lower.clone();
         let upper = if crate::cli::upper::has_golden() {
             match crate::cli::upper::ensure_upper_admitted(&admission, &managed_dir) {
                 Ok(p) => Some(p),

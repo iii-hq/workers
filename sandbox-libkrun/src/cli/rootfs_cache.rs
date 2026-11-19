@@ -266,7 +266,11 @@ impl MutationWriter {
         lease: &crate::worker_admission::Lease,
         plan: crate::worker_admission::MutationPlan,
     ) -> std::io::Result<Self> {
-        let guard = std::sync::Arc::new(std::sync::Mutex::new(lease.begin(plan)?));
+        Ok(Self::from_guard(lease.begin(plan)?))
+    }
+
+    pub(crate) fn from_guard(guard: crate::worker_admission::MutationGuard) -> Self {
+        let guard = std::sync::Arc::new(std::sync::Mutex::new(guard));
         let checked = guard.clone();
         let checkpoint = Checkpoint::new(move || {
             checked
@@ -274,7 +278,7 @@ impl MutationWriter {
                 .map_err(|_| std::io::Error::other("mutation poisoned"))?
                 .checkpoint()
         });
-        Ok(Self { guard, checkpoint })
+        Self { guard, checkpoint }
     }
 
     pub(crate) fn apply<T>(
@@ -500,71 +504,320 @@ where
     Ok(dest)
 }
 
-/// Owned worker cache transaction: no live-root removal before a successful
-/// replacement, and no raw diagnostic/stage cleanup. Selection cannot drift
-/// between the admitted mutation footprint and the actual pull.
-pub(crate) async fn ensure_rootfs_admitted(
-    lease: &crate::worker_admission::Lease,
-    reference: &str,
-) -> Result<PathBuf> {
-    ensure_rootfs_admitted_at(lease, reference, &cache_root()).await
+#[derive(Clone)]
+pub(crate) struct PreparedCache {
+    pub(crate) lease: crate::worker_admission::Lease,
+    pub(crate) reference: String,
+    pub(crate) root: PathBuf,
+    pub(crate) lower: PathBuf,
+    env: Vec<(String, String)>,
 }
-
-pub(crate) async fn ensure_rootfs_admitted_at(
-    lease: &crate::worker_admission::Lease,
-    reference: &str,
-    cache: &Path,
-) -> Result<PathBuf> {
-    ensure_rootfs_admitted_at_notify(lease, reference, cache, || {}).await
-}
-
-pub(crate) async fn ensure_rootfs_admitted_at_notify(
-    lease: &crate::worker_admission::Lease,
-    reference: &str,
-    cache: &Path,
-    on_pull: impl FnOnce() + Send,
-) -> Result<PathBuf> {
-    use std::io::Write;
-    let cache = cache.to_path_buf();
-    let selected = canonical_path_at(&cache, reference);
-    let mutation = MutationWriter::begin(
-        lease,
-        crate::worker_admission::MutationPlan::Cache {
-            root: cache.clone(),
-        },
-    )?;
-    mutation.apply(|guard| guard.create_dir_all(&cache, 0o700))?;
-    let diagnostic = mutation.diagnostic(&lock_path_at(&cache, reference))?;
-    let check = mutation.checkpoint.clone();
-    let lock = tokio::task::spawn_blocking(move || MutationLock::acquire(diagnostic, check, true))
-        .await
-        .context("cache lock task failed")??;
-    mutation.checkpoint.check()?;
-    anyhow::ensure!(
-        canonical_path_at(&cache, reference) == selected,
-        "cache selection changed while waiting; retry the complete admitted operation"
-    );
-    if !is_populated(&selected) {
-        on_pull();
-        mutation.checkpoint.check()?;
-        let stage = mutation.apply(|guard| guard.stage_tree(&selected))?;
-        let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
-            reference,
-            stage.path(),
-            mutation.checkpoint.clone(),
-        )
-        .await?;
-        mutation.checkpoint.check()?;
-        let mut digest =
-            mutation.apply(|guard| guard.stage_file(&digest_path(&selected), 0o600))?;
-        digest.file_mut().write_all(digests.join("\n").as_bytes())?;
-        digest.file_mut().sync_all()?;
-        mutation.apply(|guard| guard.publish_tree(stage))?;
-        mutation.apply(|guard| guard.publish_file(digest))?;
+impl PreparedCache {
+    pub(crate) fn validate(&self, reference: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.reference == reference,
+            "prepared cache reference changed; H1 continuation is required"
+        );
+        self.lease.revalidate()?;
+        let root = self.lease.use_path(&self.root)?;
+        let lower = self.lease.use_path(&self.lower)?;
+        root.revalidate()?;
+        lower.revalidate()?;
+        Ok(())
     }
-    lock.finish()?;
-    mutation.commit()?;
-    Ok(selected)
+    pub(crate) fn env(&self) -> Result<Vec<(String, String)>> {
+        self.validate(&self.reference)?;
+        Ok(self.env.clone())
+    }
+}
+
+/// Short, separate namespace operation, before the consumer is admitted. A
+/// warm private parent is only checked; no chmod, diagnostic or LRU writes.
+pub(crate) fn prepare_cache_parent(
+    context: &crate::worker_admission::AdmissionContext,
+    cache: &Path,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    context.reject_retained_path(cache)?;
+    match std::fs::symlink_metadata(cache) {
+        Ok(meta) => {
+            if !meta.is_dir()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o022 != 0
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "cache parent must be owned/protected; refusing chmod",
+                ));
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut first = cache;
+            while let Some(parent) = first.parent() {
+                match std::fs::symlink_metadata(parent) {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => first = parent,
+                    Err(e) => return Err(e),
+                }
+            }
+            let setup = context.local(first)?;
+            let mut create = setup.begin(crate::worker_admission::MutationPlan::Create {
+                root: first.to_path_buf(),
+            })?;
+            create.create_dir_all(cache, 0o700)?;
+            create.commit()?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn cache_candidates(cache: &Path, reference: &str) -> Vec<PathBuf> {
+    let shared = cache.join(rootfs_slug_for_image(canonical_cache_key(reference)));
+    let pinned = cache.join(rootfs_slug_for_image(reference));
+    if shared == pinned {
+        vec![shared]
+    } else {
+        vec![shared, pinned]
+    }
+}
+fn lower_path(root: &Path) -> PathBuf {
+    let mut name = root
+        .file_name()
+        .expect("cache entry filename")
+        .to_os_string();
+    name.push(".erofs");
+    root.with_file_name(name)
+}
+trait CacheReads {
+    fn exists(&self, path: &Path) -> std::io::Result<bool>;
+    fn use_path(&self, path: &Path) -> std::io::Result<crate::worker_admission::UseGuard>;
+}
+impl CacheReads for crate::worker_admission::CacheProbe {
+    fn exists(&self, p: &Path) -> std::io::Result<bool> {
+        self.exists(p)
+    }
+    fn use_path(&self, p: &Path) -> std::io::Result<crate::worker_admission::UseGuard> {
+        self.use_path(p)
+    }
+}
+impl CacheReads for crate::worker_admission::CachePreparation {
+    fn exists(&self, p: &Path) -> std::io::Result<bool> {
+        self.exists(p)
+    }
+    fn use_path(&self, p: &Path) -> std::io::Result<crate::worker_admission::UseGuard> {
+        self.use_path(p)
+    }
+}
+struct CacheState {
+    root: PathBuf,
+    populated: bool,
+    ready: bool,
+    env: Vec<(String, String)>,
+}
+fn inspect_cache(
+    reads: &impl CacheReads,
+    reference: &str,
+    roots: &[PathBuf],
+) -> Result<CacheState> {
+    fn inspect(reads: &impl CacheReads, root: &Path, pin: Option<&str>) -> Result<CacheState> {
+        let mut state = CacheState {
+            root: root.to_path_buf(),
+            populated: false,
+            ready: false,
+            env: Vec::new(),
+        };
+        if !reads.exists(root)? {
+            return Ok(state);
+        }
+        let source = reads.use_path(root)?;
+        let meta = std::fs::metadata(source.path())?;
+        anyhow::ensure!(meta.is_dir(), "cached source is not a directory");
+        let bin = match std::fs::metadata(source.path().join("bin")) {
+            Ok(meta) => meta.is_dir(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        let digest = digest_path(root);
+        let (pin_matches, digest_time) = if reads.exists(&digest)? {
+            let held = reads.use_path(&digest)?;
+            let bytes = std::fs::read_to_string(held.path())?;
+            let time = std::fs::metadata(held.path())?.modified()?;
+            (
+                pin.is_none_or(|pin| bytes.lines().any(|d| d.trim().eq_ignore_ascii_case(pin))),
+                Some(time),
+            )
+        } else {
+            (pin.is_none(), None)
+        };
+        // A populated directory without config cannot be a valid warm hit.
+        let config = match crate::cli::worker_manager::oci::read_rootfs_file_no_follow(
+            source.path(),
+            Path::new(".oci-config.json"),
+        ) {
+            Ok(config) => config,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(state),
+            Err(e) => return Err(e.into()),
+        };
+        let json: serde_json::Value = serde_json::from_slice(&config)?;
+        anyhow::ensure!(json.is_object(), "OCI config is not an object");
+        state.populated = bin && pin_matches;
+        state.env =
+            crate::cli::worker_manager::oci::oci_env_from_config(std::str::from_utf8(&config)?);
+        let lower = lower_path(root);
+        if state.populated && reads.exists(&lower)? {
+            let held = reads.use_path(&lower)?;
+            let lower_time = std::fs::metadata(held.path())?.modified()?;
+            let config_time =
+                std::fs::metadata(source.path().join(".oci-config.json"))?.modified()?;
+            let fresh = lower_time >= meta.modified()?
+                && lower_time >= config_time
+                && digest_time.is_none_or(|time| lower_time >= time);
+            if fresh {
+                crate::cli::erofs::reader::ErofsReader::new(std::fs::File::open(held.path())?)?;
+                state.ready = true;
+            }
+        }
+        source.revalidate()?;
+        Ok(state)
+    }
+    let pin = pinned_digest(reference);
+    let mut selected = &roots[0];
+    if roots.len() > 1 && pin.is_some() && reads.exists(&roots[0])? {
+        let source = reads.use_path(&roots[0])?;
+        let populated = match std::fs::metadata(source.path().join("bin")) {
+            Ok(meta) => meta.is_dir(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        let digest = digest_path(&roots[0]);
+        let matches = if reads.exists(&digest)? {
+            let held = reads.use_path(&digest)?;
+            std::fs::read_to_string(held.path())?
+                .lines()
+                .any(|d| d.trim().eq_ignore_ascii_case(pin.unwrap()))
+        } else {
+            false
+        };
+        if populated && !matches {
+            selected = &roots[1];
+        }
+    }
+    inspect(reads, selected, pin)
+}
+
+pub(crate) struct CacheRequest {
+    consumer: crate::worker_admission::Lease,
+    probe: crate::worker_admission::CacheProbe,
+    reference: String,
+    roots: Vec<PathBuf>,
+}
+impl CacheRequest {
+    pub(crate) fn new(
+        consumer: crate::worker_admission::Lease,
+        reference: &str,
+        cache: &Path,
+    ) -> Result<Self> {
+        let roots = cache_candidates(cache, reference);
+        let entries: Vec<_> = roots
+            .iter()
+            .map(|root| crate::worker_admission::CacheEntry { root })
+            .collect();
+        let probe = consumer.probe_cache(&entries)?;
+        Ok(Self {
+            consumer,
+            probe,
+            reference: reference.to_string(),
+            roots,
+        })
+    }
+    pub(crate) async fn resolve(
+        self,
+        allow_pull: bool,
+        on_pull: impl FnOnce() + Send + 'static,
+    ) -> Result<Option<PreparedCache>> {
+        // The task owns both capabilities through blocking/async work even if
+        // the requesting future is dropped. No helper can issue a writer lease.
+        tokio::spawn(async move {
+            let state = inspect_cache(&self.probe, &self.reference, &self.roots)?;
+            if state.ready {
+                let lease = self.probe.handoff(&self.consumer, &state.root)?;
+                return Ok(Some(PreparedCache {
+                    lease,
+                    reference: self.reference,
+                    lower: lower_path(&state.root),
+                    root: state.root,
+                    env: state.env,
+                }));
+            }
+            if !state.populated && !allow_pull {
+                self.probe.cancel()?;
+                return Ok(None);
+            }
+            let prep = self.probe.prepare()?;
+            let mut state = inspect_cache(&prep, &self.reference, &self.roots)?;
+            if !state.populated {
+                anyhow::ensure!(allow_pull, "cache disappeared during exclusive recheck");
+                on_pull();
+                let mutation = MutationWriter::from_guard(prep.begin_entry(&state.root)?);
+                let lock_path = state.root.with_file_name(format!(
+                    "{}.lock",
+                    state.root.file_name().unwrap().to_string_lossy()
+                ));
+                let diagnostic = mutation.diagnostic(&lock_path)?;
+                let check = mutation.checkpoint.clone();
+                let lock = tokio::task::spawn_blocking(move || {
+                    MutationLock::acquire(diagnostic, check, true)
+                })
+                .await??;
+                mutation.checkpoint.check()?;
+                // Exact candidate selection was rechecked under exclusive prep;
+                // raw external edits are caught by guard checkpoints after waits.
+                let stage = mutation.apply(|g| g.stage_tree(&state.root))?;
+                let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
+                    &self.reference,
+                    stage.path(),
+                    mutation.checkpoint.clone(),
+                )
+                .await?;
+                let mut digest =
+                    mutation.apply(|g| g.stage_file(&digest_path(&state.root), 0o600))?;
+                use std::io::Write;
+                digest.file_mut().write_all(digests.join("\n").as_bytes())?;
+                digest.file_mut().sync_all()?;
+                mutation.apply(|g| g.publish_tree(stage))?;
+                mutation.apply(|g| g.publish_file(digest))?;
+                lock.finish()?;
+                mutation.commit()?;
+                state = inspect_cache(&prep, &self.reference, &self.roots)?;
+                anyhow::ensure!(
+                    state.populated,
+                    "pulled root lacks required population/digest/config"
+                );
+            }
+            if !state.ready {
+                let writer = prep.clone();
+                let root = state.root.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::cli::erofs::build_prepared_erofs(&writer, &root)
+                })
+                .await??;
+            }
+            state = inspect_cache(&prep, &self.reference, &self.roots)?;
+            anyhow::ensure!(state.ready, "prepared lower is not complete/fresh");
+            let lease = prep.handoff(&self.consumer, &state.root)?;
+            Ok(Some(PreparedCache {
+                lease,
+                reference: self.reference,
+                lower: lower_path(&state.root),
+                root: state.root,
+                env: state.env,
+            }))
+        })
+        .await
+        .context("cache producer task failed")?
+    }
 }
 
 fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Result<()> {
@@ -578,6 +831,170 @@ fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn h_context() -> (
+        tempfile::TempDir,
+        crate::worker_admission::AdmissionContext,
+        PathBuf,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let ns = temp.path().join("catalog");
+        std::fs::create_dir(&ns).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ns, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&ns).unwrap();
+        let cache = temp.path().join("cache");
+        prepare_cache_parent(&context, &cache).unwrap();
+        (temp, context, cache)
+    }
+    fn seed_h_root(
+        context: &crate::worker_admission::AdmissionContext,
+        owner: &Path,
+        root: &Path,
+        digest: &str,
+    ) {
+        use std::io::Write;
+        let lease = context.local(owner).unwrap();
+        let prep = lease
+            .prepare_cache(&[crate::worker_admission::CacheEntry { root }])
+            .unwrap();
+        let mut guard = prep.begin_entry(root).unwrap();
+        let tree = guard.stage_tree(root).unwrap();
+        std::fs::create_dir(tree.path().join("bin")).unwrap();
+        std::fs::write(tree.path().join("bin/sh"), b"fixture").unwrap();
+        std::fs::write(
+            tree.path().join(".oci-config.json"),
+            br#"{"config":{"Env":["H=1"]}}"#,
+        )
+        .unwrap();
+        let mut sidecar = guard.stage_file(&digest_path(root), 0o600).unwrap();
+        sidecar.file_mut().write_all(digest.as_bytes()).unwrap();
+        guard.publish_tree(tree).unwrap();
+        guard.publish_file(sidecar).unwrap();
+        guard.commit().unwrap();
+        crate::cli::erofs::build_prepared_erofs(&prep, root).unwrap();
+        prep.handoff(&lease, root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn h_first_and_second_warm_readers_share_without_diagnostic_or_inode_writes() {
+        use std::os::unix::fs::MetadataExt;
+        let (temp, context, cache) = h_context();
+        let reference = "docker.io/library/alpine:3.20";
+        let root = cache_candidates(&cache, reference).remove(0);
+        seed_h_root(&context, &temp.path().join("seed"), &root, "sha256:fixture");
+        let files = [
+            root.clone(),
+            lower_path(&root),
+            digest_path(&root),
+            PathBuf::from(format!("{}.lock", lower_path(&root).display())),
+        ];
+        let before: Vec<_> = files
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).unwrap();
+                (m.ino(), m.mtime(), m.mtime_nsec(), m.len())
+            })
+            .collect();
+        let a = CacheRequest::new(
+            context.local(&temp.path().join("a")).unwrap(),
+            reference,
+            &cache,
+        )
+        .unwrap()
+        .resolve(false, || panic!("warm pull"))
+        .await
+        .unwrap()
+        .unwrap();
+        let b = CacheRequest::new(
+            context.local(&temp.path().join("b")).unwrap(),
+            reference,
+            &cache,
+        )
+        .unwrap()
+        .resolve(false, || panic!("second warm pull"))
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(a.root, b.root);
+        assert_eq!(b.env().unwrap(), vec![("H".into(), "1".into())]);
+        let after: Vec<_> = files
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).unwrap();
+                (m.ino(), m.mtime(), m.mtime_nsec(), m.len())
+            })
+            .collect();
+        assert_eq!(before, after);
+        assert!(!PathBuf::from(format!("{}.lock", root.display())).exists());
+        let third = context.local(&temp.path().join("third")).unwrap();
+        assert!(
+            third
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+                .is_err()
+        );
+        let unrelated = cache.join("unrelated");
+        assert!(
+            third
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &unrelated }])
+                .is_ok()
+        );
+        drop(a);
+        b.validate(reference).unwrap();
+    }
+
+    #[tokio::test]
+    async fn h_no_auto_install_missing_root_or_missing_pinned_digest_is_not_a_hit() {
+        let (temp, context, cache) = h_context();
+        let reference = "docker.io/library/alpine:3.20";
+        let root = cache_candidates(&cache, reference).remove(0);
+        assert!(
+            CacheRequest::new(
+                context.local(&temp.path().join("missing")).unwrap(),
+                reference,
+                &cache
+            )
+            .unwrap()
+            .resolve(false, || panic!("no auto pull"))
+            .await
+            .unwrap()
+            .is_none()
+        );
+        seed_h_root(&context, &temp.path().join("seed"), &root, "sha256:other");
+        let pinned = format!("{reference}@sha256:{}", "a".repeat(64));
+        assert!(
+            CacheRequest::new(
+                context.local(&temp.path().join("pin")).unwrap(),
+                &pinned,
+                &cache
+            )
+            .unwrap()
+            .resolve(false, || panic!("pin mismatch pull"))
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(!cache_candidates(&cache, &pinned)[1].exists());
+    }
+
+    #[test]
+    fn h_surviving_stage_fd_blocks_completion_not_just_pathname_reopen() {
+        use std::io::Write;
+        let (temp, context, cache) = h_context();
+        let root = cache.join("entry");
+        let lease = context.local(&temp.path().join("consumer")).unwrap();
+        let prep = lease
+            .prepare_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+            .unwrap();
+        let mut guard = prep.begin_entry(&root).unwrap();
+        let mut stage = guard.stage_file(&digest_path(&root), 0o600).unwrap();
+        stage.file_mut().write_all(b"evidence").unwrap();
+        let clone = stage.file_mut().try_clone().unwrap();
+        assert!(guard.publish_file(stage).is_err());
+        assert!(prep.handoff(&lease, &root).is_err());
+        drop(clone);
+    }
+
     use tempfile::tempdir;
 
     #[test]

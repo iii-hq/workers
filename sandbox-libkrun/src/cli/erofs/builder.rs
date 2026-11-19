@@ -683,6 +683,42 @@ pub(crate) fn ensure_base_erofs_checked(
     Ok(out)
 }
 
+/// H producer-only path. All serializer clones are closed on return, ACLs
+/// restored, diagnostics finished and spool disposed before the atomic handoff.
+pub(crate) fn build_prepared_erofs(
+    prep: &crate::worker_admission::CachePreparation,
+    base_dir: &Path,
+) -> anyhow::Result<()> {
+    let out = base_erofs_path(base_dir);
+    let spool_path = PathBuf::from(format!("{}.spool", out.display()));
+    let mutation =
+        crate::cli::rootfs_cache::MutationWriter::from_guard(prep.begin_erofs(base_dir)?);
+    let diagnostic = mutation.diagnostic(&PathBuf::from(format!("{}.lock", out.display())))?;
+    let lock = crate::cli::rootfs_cache::MutationLock::acquire(
+        diagnostic,
+        mutation.checkpoint.clone(),
+        false,
+    )?;
+    mutation.checkpoint.check()?;
+    let mut read = prep.owner_read(base_dir)?;
+    let mut image = mutation.apply(|g| g.stage_file(&out, 0o600))?;
+    let mut spool = mutation.apply(|g| g.stage_file(&spool_path, 0o600))?;
+    build_managed_erofs_to_files(
+        &mut read,
+        base_dir,
+        image.file_mut().try_clone()?,
+        spool.file_mut().try_clone()?,
+    )
+    .map_err(anyhow::Error::msg)?;
+    read.finish()?;
+    image.file_mut().sync_all()?;
+    mutation.apply(|g| g.discard_file(spool))?;
+    mutation.apply(|g| g.publish_file(image))?;
+    lock.finish()?;
+    mutation.commit()?;
+    Ok(())
+}
+
 /// Worker route using the already-declared EROFS output, diagnostic and spool
 /// slots. Serializer owns every cloned FD and closes its tree/spool before return.
 pub(crate) fn ensure_base_erofs_admitted(

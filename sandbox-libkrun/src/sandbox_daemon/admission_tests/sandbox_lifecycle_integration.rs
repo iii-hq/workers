@@ -5,42 +5,27 @@
 //! Integration tests for the lifecycle `sandbox::*` functions
 //! (create/exec/stop/list).
 //!
-//! Sister file to `sandbox_fs_integration.rs`. Drives the four lifecycle
-//! handler functions directly, with `FakeShellRunner`, `FakeVmStopper`,
-//! and `FakeVmLauncher` from `common::sandbox_fakes` standing in for the
-//! real adapters. No libkrun, no shell socket, no III WebSocket — pure
-//! handler-glue coverage that catches:
-//!
-//! - per-handler error code stability
-//! - the registry mutex must not be held across an adapter `await`
-//!   (otherwise concurrent calls wedge each other)
-//! - `exec_in_progress` is cleared on error paths, not just success
-//! - state transitions: `stopped` rejects further exec with S004
-//! - cross-handler invariants (concurrent calls don't deadlock)
-//!
-//! Note on `handle_create`: the function calls `rootfs_cache::resolve_cached`
-//! and `OverlayLayout::ensure_dirs` BEFORE `launcher.boot`, both of which
-//! touch the host filesystem. That makes happy-path create coverage best
-//! served by the tier-C real-VM tests in `vm_integration.rs`. This file
-//! covers the validation-path errors only — early returns in `handle_create`
-//! that happen before any filesystem work.
+//! Handler scenarios migrated intact into private cfg(test) coverage. Validation
+//! and fake-exec tests use records only. Stop/lifecycle positives use a real
+//! RuntimeChild, inherited admission FDs and core-issued retirement receipts.
+//! Namespace, cache and layout paths are per fixture; no host globals.
 
-mod common;
+use super::{TestRegistry as SandboxRegistry, handle_create};
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use uuid::Uuid;
 
-use sandbox_libkrun::sandbox_daemon::config::SandboxConfig;
-use sandbox_libkrun::sandbox_daemon::create::{CreateRequest, handle_create};
-use sandbox_libkrun::sandbox_daemon::errors::SandboxError;
-use sandbox_libkrun::sandbox_daemon::exec::{EnvShape, ExecRequest, ExecResponse, handle_exec};
-use sandbox_libkrun::sandbox_daemon::list::{ListRequest, handle_list};
-use sandbox_libkrun::sandbox_daemon::registry::{SandboxRegistry, SandboxState};
-use sandbox_libkrun::sandbox_daemon::stop::{StopRequest, handle_stop};
+use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::create::CreateRequest;
+use crate::sandbox_daemon::errors::SandboxError;
+use crate::sandbox_daemon::exec::{EnvShape, ExecRequest, ExecResponse, handle_exec};
+use crate::sandbox_daemon::list::{ListRequest, handle_list};
+use crate::sandbox_daemon::registry::SandboxState;
+use crate::sandbox_daemon::stop::{StopRequest, handle_stop};
 
-use common::sandbox_fakes::{FakeShellRunner, FakeVmLauncher, FakeVmStopper, ShellMode};
+use super::sandbox_fakes::{FakeShellRunner, FakeVmLauncher, FakeVmStopper, ShellMode};
 
 // --------------------------------------------------------------------
 // Test fixtures
@@ -51,10 +36,10 @@ fn make_state(id: Uuid) -> SandboxState {
         id,
         name: None,
         image: "python".into(),
-        rootfs: std::path::PathBuf::from("/tmp/rootfs"),
-        workdir: std::path::PathBuf::from("/tmp/work"),
-        shell_sock: std::path::PathBuf::from("/tmp/shell.sock"),
-        vm_pid: Some(4321),
+        rootfs: std::path::PathBuf::new(),
+        workdir: std::path::PathBuf::new(),
+        shell_sock: std::path::PathBuf::new(),
+        vm_pid: None,
         lifeline: None,
         created_at: Instant::now(),
         last_exec_at: Instant::now(),
@@ -396,7 +381,8 @@ async fn exec_timeout_response_passes_through_unchanged() {
 #[tokio::test]
 async fn stop_happy_path_calls_stopper_and_removes_entry() {
     let reg = SandboxRegistry::new();
-    let id = live_sandbox(&reg).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
+    let session = reg.lifecycle(id).await.unwrap();
     let stopper = FakeVmStopper::ok();
 
     let resp = handle_stop(
@@ -411,7 +397,12 @@ async fn stop_happy_path_calls_stopper_and_removes_entry() {
     .unwrap();
 
     assert!(resp.stopped);
-    assert_eq!(stopper.called_with(), vec![4321u32]);
+    assert!(
+        stopper.called_with().is_empty(),
+        "numeric PID fake is never authority"
+    );
+    assert!(session.observation().os_status().is_some());
+    assert!(session.retirement().is_ok());
     assert!(
         reg.get(id).await.is_err(),
         "registry entry must be removed after successful stop"
@@ -463,7 +454,9 @@ async fn stop_unknown_sandbox_returns_s002() {
 #[tokio::test]
 async fn stop_on_already_stopped_sandbox_is_idempotent_and_skips_stopper() {
     let reg = SandboxRegistry::new();
-    let id = live_sandbox(&reg).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
+    let session = reg.lifecycle(id).await.unwrap();
+    session.test_imported_close_and_retain().await.unwrap();
     reg.mark_stopped(id).await;
     let stopper = FakeVmStopper::ok();
 
@@ -489,7 +482,14 @@ async fn stop_on_already_stopped_sandbox_is_idempotent_and_skips_stopper() {
 #[tokio::test]
 async fn stop_signal_error_preserves_state_for_retry() {
     let reg = SandboxRegistry::new();
-    let id = live_sandbox(&reg).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
+    let session = reg.lifecycle(id).await.unwrap();
+    session.test_imported_close_and_retain().await.unwrap();
+    session
+        .add_test_host_writer(tokio::spawn(async {
+            Err(std::io::Error::other("transient host completion failure"))
+        }))
+        .await;
     let stopper = FakeVmStopper::err(SandboxError::BootFailed("transient".into()));
 
     let err = handle_stop(
@@ -510,7 +510,37 @@ async fn stop_signal_error_preserves_state_for_retry() {
         .expect("registry entry must remain after a failed stop");
     assert!(
         !state.stopped,
-        "stopped flag must NOT be set when stopper returned Err"
+        "stopped flag must NOT be set when owned stop settlement returned Err"
+    );
+    assert_eq!(
+        stopper.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(reg.layout(id).base().exists());
+    reg.preserve_evidence(); // No broad TempDir cleanup on a failed lifecycle.
+}
+
+#[tokio::test]
+async fn pid_only_record_cannot_authorize_stop_or_cleanup() {
+    let reg = SandboxRegistry::new();
+    let id = live_sandbox(&reg).await;
+    let stopper = FakeVmStopper::ok();
+    assert!(
+        handle_stop(
+            StopRequest {
+                sandbox_id: id.to_string(),
+                wait: true
+            },
+            &reg,
+            &stopper
+        )
+        .await
+        .is_err()
+    );
+    assert!(reg.get(id).await.is_ok());
+    assert_eq!(
+        stopper.call_count.load(std::sync::atomic::Ordering::SeqCst),
+        0
     );
 }
 
@@ -590,7 +620,7 @@ async fn list_during_concurrent_state_churn_never_panics() {
 #[tokio::test]
 async fn stop_during_exec_does_not_deadlock_and_settles_consistently() {
     let reg = Arc::new(SandboxRegistry::new());
-    let id = live_sandbox(&reg).await;
+    let id = reg.insert_owned(make_state(Uuid::new_v4())).await;
 
     let (runner, release) = FakeShellRunner::blocking();
     let runner = Arc::new(runner);
