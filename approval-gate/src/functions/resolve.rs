@@ -259,7 +259,9 @@ async fn build_grant_allow_payload(
 
 /// An `allow` for a call held in another namespace must echo that namespace.
 fn allow_lacks_namespace_echo(record: &PendingApprovalRecord, echoed: Option<&str>) -> bool {
-    record.namespace != record.implicit_namespace && echoed != record.namespace.as_deref()
+    record.namespace.is_some()
+        && record.namespace != record.implicit_namespace
+        && echoed != record.namespace.as_deref()
 }
 
 /// A folder grant is not per namespace: session/always would widen this
@@ -439,9 +441,11 @@ mod tests {
         for own in [
             held_in(Some("default"), Some("default")),
             held_in(None, None),
+            held_in(None, Some("default")),
         ] {
             assert!(!allow_lacks_namespace_echo(&own, None));
             assert!(!allow_lacks_namespace_echo(&own, Some("laptop")));
+            assert!(!allow_lacks_namespace_echo(&own, Some("default")));
         }
     }
 
@@ -454,6 +458,7 @@ mod tests {
         for own in [
             held_in(Some("default"), Some("default")),
             held_in(None, None),
+            held_in(None, Some("default")),
         ] {
             assert_eq!(folder_grant_duration(&own, Some(Session)), Session);
             assert_eq!(folder_grant_duration(&own, Some(Always)), Always);
