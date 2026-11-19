@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6
+
+- **A provider hiccup no longer drops a design, refute or check node.** Every `workflow-planner` and `workflow-verifier` node (explore, design, refute, plan, check, batch check, baseline, critic and the review's refuters) is marked `read_only`. When its turn fails on a transient provider failure after the harness's own retries, the workflow worker waits a minute and continues it once in its own session, so the work it already did is kept and not paid again; the plan no longer runs on five of six inputs because one refuter hit a provider outage. Work, code and batch nodes change files or do the work itself, so a failure still fails them. The node keeps its `timeout_ms`, so a run's deadline timer is unchanged, and one that fails with less than 7 minutes of it left (at its deadline, say) still fails at once, since its continue would have no time to finish.
+- **Requires** `workflow` 0.3.4 (the `read_only` node key; an older worker refuses every run) and `harness` 1.9.13 (`failure.retryable` on `harness::status`).
+
 ## 0.1.5
 
 - **The batch check finds an already verified card's fallout by its landed commit.** Since 0.1.4 commits carry no ticket key, so the `In range:` line now gives each card's landed sha and the check looks it up with `git log --format=%H`.
