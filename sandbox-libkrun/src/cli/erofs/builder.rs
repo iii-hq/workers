@@ -494,7 +494,7 @@ pub(crate) fn ensure_base_erofs_checked(
     let out = base_erofs_path(base_dir);
     // Held across the staleness check and the build, so a waiter re-checks
     // and reuses the image the previous holder just built.
-    let _build_lock = lock_build(&out, checkpoint)?;
+    let build_lock = lock_build(&out, checkpoint)?;
     // lock_build checks while holding the acquired lock, BEFORE PID/cleanup
     // writes. No caller-return checkpoint can substitute for that boundary.
 
@@ -538,6 +538,9 @@ pub(crate) fn ensure_base_erofs_checked(
             .with_valid(|| fs::rename(&tmp, &out))?
             .with_context(|| format!("finalize erofs {}", out.display()))?;
     }
+    // Do not let Drop hide an admission failure behind an already prepared Ok,
+    // including the cache-hit path where no image rebuild was necessary.
+    build_lock.finish()?;
     Ok(out)
 }
 
@@ -628,6 +631,52 @@ mod tests {
             unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
             0
         );
+    }
+
+    #[test]
+    fn current_erofs_hit_propagates_cleanup_refusal_before_next_effect() {
+        use std::os::fd::AsRawFd;
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().join("root");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("sentinel"), b"source").unwrap();
+        let out = base_erofs_path(&base);
+        fs::write(&out, b"current-image").unwrap();
+        filetime::set_file_mtime(&base, filetime::FileTime::from_unix_time(1, 0)).unwrap();
+        filetime::set_file_mtime(&out, filetime::FileTime::from_unix_time(2, 0)).unwrap();
+        let lock_path = t.path().join("root.erofs.lock");
+        fs::write(&lock_path, b"retain-diagnostic").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let checkpoint = crate::cli::rootfs_cache::Checkpoint::new(move || {
+            // entry/open/pre-wait/post-wait pass; a current image needs only finish.
+            if seen.fetch_add(1, Ordering::SeqCst) == 4 {
+                Err(io::Error::other("cleanup-only refusal"))
+            } else {
+                Ok(())
+            }
+        });
+        let next_effect = t.path().join("next-upper");
+        let result = ensure_base_erofs_checked(&base, &checkpoint);
+        if result.is_ok() {
+            fs::write(&next_effect, b"forbidden").unwrap();
+        }
+        assert!(crate::cli::rootfs_cache::is_admission_refusal(
+            &result.unwrap_err()
+        ));
+        assert!(!next_effect.exists());
+        assert_eq!(fs::read(&out).unwrap(), b"current-image");
+        assert_eq!(fs::read(base.join("sentinel")).unwrap(), b"source");
+        assert_eq!(fs::read(&lock_path).unwrap(), b"retain-diagnostic");
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 3);
+        let released = File::open(&lock_path).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(released.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert!(checkpoint.check().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
     }
 
     #[test]

@@ -112,6 +112,20 @@ pub(crate) struct CheckedCacheLock {
     clear_on_drop: bool,
     checkpoint: Checkpoint,
 }
+impl CheckedCacheLock {
+    /// Successful users must finish explicitly: Drop cannot report a new
+    /// admission refusal or cleanup error to their caller. Suppress its fallback
+    /// before trying cleanup so an error cannot trigger a second cleanup attempt.
+    pub(crate) fn finish(mut self) -> Result<()> {
+        self.clear_on_drop = false;
+        self.checkpoint
+            .with_valid(|| self.file.set_len(0))?
+            .context("could not clear the held cache-lock diagnostic")?;
+        // self drops here, releasing flock through its already-held descriptor.
+        Ok(())
+    }
+}
+
 impl Drop for CheckedCacheLock {
     fn drop(&mut self) {
         // Invalidated admission must not truncate even this diagnostic file.
@@ -332,13 +346,14 @@ where
     // processes) would each `remove_dir_all` a directory the other was
     // extracting into, and the survivor would keep a rootfs with another
     // pull's files spliced through it.
-    let _lock = lock_at_path(lock_path_at(cache, oci_ref), checkpoint.clone()).await?;
+    let lock = lock_at_path(lock_path_at(cache, oci_ref), checkpoint.clone()).await?;
     checkpoint.check()?; // Also covers rescheduling after the blocking lock returned.
     // Re-check under the lock: whoever held it before us has very likely
     // just finished this exact pull, and re-pulling would throw away a
     // rootfs that is already complete.
     let selected = canonical_path_at(cache, oci_ref);
     if is_populated(&selected) {
+        lock.finish()?;
         return Ok(selected);
     }
     on_pull_start();
@@ -361,6 +376,7 @@ where
     let digests = pull(oci_ref.to_string(), dest.clone(), checkpoint.clone()).await?;
     // Without the sidecar a pinned ref only misses this dir and pulls its own.
     record_digest(&digest_file, &digests, &checkpoint)?;
+    lock.finish()?;
     Ok(dest)
 }
 
@@ -491,6 +507,149 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(std::fs::read(&path).unwrap(), prior);
         assert!(exclusive(&path));
+    }
+
+    #[test]
+    fn explicit_lock_finish_propagates_one_shot_refusal_and_preserves_diagnostic() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let path = t.path().join("image.lock");
+        std::fs::write(&path, b"keep-diagnostic").unwrap();
+        let refuse = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let trigger = refuse.clone();
+        let seen = calls.clone();
+        let checkpoint = Checkpoint::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            if trigger.swap(false, Ordering::SeqCst) {
+                Err(std::io::Error::other("one-shot cleanup refusal"))
+            } else {
+                Ok(())
+            }
+        });
+        let lock = checked_cache_lock(&path, &checkpoint, false).unwrap();
+        assert!(!exclusive(&path));
+        refuse.store(true, Ordering::SeqCst);
+        let error = lock.finish().unwrap_err();
+        assert!(is_admission_refusal(&error));
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep-diagnostic");
+        assert!(
+            exclusive(&path),
+            "finish must close the descriptor on refusal"
+        );
+        let after = calls.load(Ordering::SeqCst);
+        assert!(checkpoint.check().is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            after,
+            "Drop/check must not retry the callback"
+        );
+        let fresh = Checkpoint::new(|| Ok(()));
+        checked_cache_lock(&path, &fresh, false)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(exclusive(&path));
+    }
+
+    #[tokio::test]
+    async fn locked_cache_hit_cannot_succeed_after_finish_refuses() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let cache = t.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let image = "docker.io/library/alpine:3.20";
+        let dest = canonical_path_at(&cache, image);
+        let worker_dest = dest.clone();
+        let lock_path = lock_path_at(&cache, image);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let checkpoint = Checkpoint::new(move || {
+            match seen.fetch_add(1, Ordering::SeqCst) {
+                // Simulate a prior pull having completed before the under-lock
+                // cache-hit check, without touching global HOME or the network.
+                5 => std::fs::create_dir_all(worker_dest.join("bin")),
+                6 => Err(std::io::Error::other("cleanup-only refusal")),
+                _ => Ok(()),
+            }
+        });
+        let error = ensure_rootfs_at(
+            image,
+            || panic!("must hit under lock"),
+            &cache,
+            checkpoint.clone(),
+            |_, _, _| async { panic!("must not pull") },
+        )
+        .await
+        .unwrap_err();
+        assert!(is_admission_refusal(&error));
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).unwrap(),
+            format!("{}\n", std::process::id())
+        );
+        assert!(dest.join("bin").is_dir());
+        assert!(exclusive(&lock_path));
+        assert!(checkpoint.check().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 7);
+    }
+
+    #[tokio::test]
+    async fn completed_pull_cannot_return_success_when_lock_finish_refuses() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let cache = t.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let image = "docker.io/library/alpine:3.20";
+        let dest = canonical_path_at(&cache, image);
+        let lock_path = lock_path_at(&cache, image);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let checkpoint = Checkpoint::new(move || {
+            if seen.fetch_add(1, Ordering::SeqCst) == 8 {
+                Err(std::io::Error::other("cleanup-only refusal"))
+            } else {
+                Ok(())
+            }
+        });
+        let next_effect = t.path().join("next-effect");
+        let result = ensure_rootfs_at(
+            image,
+            || {},
+            &cache,
+            checkpoint.clone(),
+            |_, dest, _| async move {
+                std::fs::create_dir_all(dest.join("bin"))?;
+                Ok(vec!["sha256:fixture".into()])
+            },
+        )
+        .await;
+        if result.is_ok() {
+            std::fs::write(&next_effect, b"forbidden").unwrap();
+        }
+        assert!(is_admission_refusal(&result.unwrap_err()));
+        assert!(!next_effect.exists());
+        assert!(dest.join("bin").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(digest_path(&dest)).unwrap(),
+            "sha256:fixture"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).unwrap(),
+            format!("{}\n", std::process::id())
+        );
+        assert!(exclusive(&lock_path));
+        assert!(checkpoint.check().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 9);
     }
 
     fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
