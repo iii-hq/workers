@@ -659,3 +659,22 @@ async fn symlink_image_id_refuses_external_start_and_internal_claim_before_effec
     assert_eq!(std::fs::read(&target).unwrap(), b"sha256:fixture\n");
     assert_eq!(std::fs::read_link(dir.join(IMAGE_ID_FILE)).unwrap(), target);
 }
+
+// REQUIRED PUBLIC NORMAL-MODE MATRIX, BLOCKED on the reviewed C1-C6 protocol.
+// These are acceptance specifications, NOT executed tests or helper-only proof:
+// - WorkerVms::build with valid local manifest/base_image and scoped B claims an
+//   existing output under B. A's public build of that same output must be S505,
+//   with A's claim/slots/counters and B's image/id/partials unchanged. An alias
+//   spelling must refuse in input admission (S507), without changing either claim.
+// - Public build with valid source and absent generic out + out/image.erofs/id
+//   must retain the same enrollment fence through creation, build VM and writer;
+//   retry as A against B's recorded-but-absent output must remain S505 with no mkdir.
+// - Successful first build, cache hit and rebuild must preserve existing hook,
+//   image/id publication and cleanup semantics, including normal return values.
+// - Cover both source-supplied and request-overridden base images, and direct
+//   project token versus scoped token; rejected input/cache must still precede
+//   all claims/output/sweeps/firmware/channel work.
+// Do NOT make these pass with a no-op checkpoint, prepared global HOME, real
+// network/VM fixtures here, identity refresh, or an unadmitted convenience mkdir.
+// This source-only round tests the real checked lock/cache control flow with an
+// own-temp path and a deterministic pull future, not the full public build flow.

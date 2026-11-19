@@ -16,7 +16,69 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::cli::oci_ref::{canonical_cache_key, pinned_digest};
-use crate::cli::worker_manager::oci::{pull_and_extract_rootfs, rootfs_slug_for_image};
+use crate::cli::worker_manager::oci::{pull_and_extract_rootfs_checked, rootfs_slug_for_image};
+
+/// Required validation at writer boundaries; never a mutation/refresh grant.
+/// These checkpoints do not make pathname operations atomic against outsiders.
+/// The closure owns its fence so a queued blocking lock task retains it too.
+pub(crate) type Checkpoint = std::sync::Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
+/// Existing cache lock protocol (same file and flock), split so validation can
+/// run AFTER acquisition but BEFORE lock_with_pid's otherwise immediate write.
+/// fslock also truncates on Drop, so rejected acquisitions must not use its Drop.
+pub(crate) struct CheckedCacheLock {
+    file: std::fs::File,
+    clear_on_drop: bool,
+    checkpoint: Checkpoint,
+}
+impl Drop for CheckedCacheLock {
+    fn drop(&mut self) {
+        // Invalidated admission must not truncate even this diagnostic file.
+        // A successful/ordinary error path keeps the existing empty-on-drop rule.
+        if self.clear_on_drop && (self.checkpoint)().is_ok() {
+            let _ = self.file.set_len(0);
+        }
+        // Closing the owned descriptor releases flock even on early refusal.
+    }
+}
+
+pub(crate) fn checked_cache_lock(
+    path: &Path,
+    checkpoint: &Checkpoint,
+    write_pid: bool,
+) -> Result<CheckedCacheLock> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    checkpoint()?; // Before open/create, including after spawn_blocking's queue.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o644) // Match fslock's existing creation mode (subject to umask).
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    let mut held = CheckedCacheLock {
+        file,
+        clear_on_drop: false,
+        checkpoint: checkpoint.clone(),
+    };
+    checkpoint()?; // Last pre-wait boundary; opening alone cannot authorize writes.
+    // SAFETY: file owns this live descriptor through acquisition and release.
+    // This is the same per-image flock, not an enrollment/mutation protocol.
+    if unsafe { libc::flock(held.file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("could not lock {}", path.display()));
+    }
+    checkpoint()?; // INSIDE the helper, while locked, before PID or caller effects.
+    held.clear_on_drop = true;
+    if write_pid {
+        writeln!(held.file, "{}", std::process::id())
+            .with_context(|| format!("could not lock {}", path.display()))?;
+    }
+    Ok(held)
+}
 
 /// Canonical cache root. All new pulls land under here, keyed by
 /// `rootfs_slug_for_image(oci_ref)`.
@@ -39,18 +101,17 @@ fn cache_root() -> PathBuf {
 /// shares or fills `foo:latest`'s dir.
 // shortcut: per-digest dirs are never evicted, add a cache GC if pin churn grows ~/.iii/cache.
 pub fn canonical_path(oci_ref: &str) -> PathBuf {
-    let shared = shared_path(oci_ref);
+    canonical_path_at(&cache_root(), oci_ref)
+}
+
+fn canonical_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+    let shared = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     match pinned_digest(oci_ref) {
         Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
-            cache_root().join(rootfs_slug_for_image(oci_ref))
+            cache.join(rootfs_slug_for_image(oci_ref))
         }
         _ => shared,
     }
-}
-
-/// The dir every variant of `oci_ref`, pinned or not, may share.
-fn shared_path(oci_ref: &str) -> PathBuf {
-    cache_root().join(rootfs_slug_for_image(canonical_cache_key(oci_ref)))
 }
 
 /// `<rootfs>.digest`, beside the rootfs: the manifest digests it was
@@ -97,8 +158,13 @@ pub fn resolve_cached(oci_ref: &str) -> Option<PathBuf> {
 /// directories rather than inside one, because the pull begins by
 /// deleting that directory. Pinned and unpinned variants share it, so
 /// which dir `canonical_path` picks cannot change while it is held.
+#[cfg(test)]
 fn lock_path_for_image(oci_ref: &str) -> PathBuf {
-    let mut path = shared_path(oci_ref);
+    lock_path_at(&cache_root(), oci_ref)
+}
+
+fn lock_path_at(cache: &Path, oci_ref: &str) -> PathBuf {
+    let mut path = cache.join(rootfs_slug_for_image(canonical_cache_key(oci_ref)));
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -113,8 +179,8 @@ fn lock_path_for_image(oci_ref: &str) -> PathBuf {
 /// lock: `fslock` blocks on a syscall and the async runtime must not.
 /// The lock is released when the guard drops, and by the kernel if the
 /// process dies, so a crashed pull does not wedge the next one.
-async fn lock_for_image(oci_ref: &str) -> Result<fslock::LockFile> {
-    let lock_path = lock_path_for_image(oci_ref);
+async fn lock_at_path(lock_path: PathBuf, checkpoint: Checkpoint) -> Result<CheckedCacheLock> {
+    checkpoint()?; // Parent creation is an effect too.
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -123,15 +189,9 @@ async fn lock_for_image(oci_ref: &str) -> Result<fslock::LockFile> {
             )
         })?;
     }
-    tokio::task::spawn_blocking(move || -> Result<fslock::LockFile> {
-        let mut lock = fslock::LockFile::open(&lock_path)
-            .with_context(|| format!("could not open {}", lock_path.display()))?;
-        lock.lock_with_pid()
-            .with_context(|| format!("could not lock {}", lock_path.display()))?;
-        Ok(lock)
-    })
-    .await
-    .context("the rootfs pull lock task panicked")?
+    tokio::task::spawn_blocking(move || checked_cache_lock(&lock_path, &checkpoint, true))
+        .await
+        .context("the rootfs pull lock task panicked")?
 }
 
 /// Ensure a populated rootfs exists for `oci_ref`; return its on-disk
@@ -139,8 +199,35 @@ async fn lock_for_image(oci_ref: &str) -> Result<fslock::LockFile> {
 /// before the network pull begins — use it to log "Pulling..." or
 /// surface a progress event to the user.
 pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Result<PathBuf> {
-    if let Some(cached) = resolve_cached(oci_ref) {
-        return Ok(cached);
+    // Compatibility entry for independent, non-worker callers only.
+    ensure_rootfs_checked(oci_ref, on_pull_start, std::sync::Arc::new(|| Ok(()))).await
+}
+
+pub(crate) async fn ensure_rootfs_checked(
+    oci_ref: &str,
+    on_pull_start: impl FnOnce(),
+    checkpoint: Checkpoint,
+) -> Result<PathBuf> {
+    ensure_rootfs_at(oci_ref, on_pull_start, &cache_root(), checkpoint, |image, dest, check| async move {
+        pull_and_extract_rootfs_checked(&image, &dest, check).await
+    }).await
+}
+
+async fn ensure_rootfs_at<F, Fut>(
+    oci_ref: &str,
+    on_pull_start: impl FnOnce(),
+    cache: &Path,
+    checkpoint: Checkpoint,
+    pull: F,
+) -> Result<PathBuf>
+where
+    F: FnOnce(String, PathBuf, Checkpoint) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<String>>>,
+{
+    checkpoint()?;
+    let selected = canonical_path_at(cache, oci_ref);
+    if is_populated(&selected) {
+        return Ok(selected);
     }
     // Past this point we are going to delete and re-extract `dest`, so no
     // second caller may be inside the same image's miss path. Two of them
@@ -148,15 +235,18 @@ pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Resul
     // processes) would each `remove_dir_all` a directory the other was
     // extracting into, and the survivor would keep a rootfs with another
     // pull's files spliced through it.
-    let _lock = lock_for_image(oci_ref).await?;
+    let _lock = lock_at_path(lock_path_at(cache, oci_ref), checkpoint.clone()).await?;
+    checkpoint()?; // Also covers rescheduling after the blocking lock returned.
     // Re-check under the lock: whoever held it before us has very likely
     // just finished this exact pull, and re-pulling would throw away a
     // rootfs that is already complete.
-    if let Some(cached) = resolve_cached(oci_ref) {
-        return Ok(cached);
+    let selected = canonical_path_at(cache, oci_ref);
+    if is_populated(&selected) {
+        return Ok(selected);
     }
     on_pull_start();
-    let dest = canonical_path(oci_ref);
+    checkpoint()?;
+    let dest = selected;
     // Clean any partial-state stub from a prior failed attempt: a
     // dir-exists-but-empty rootfs can confound tar's overwrite logic
     // and fool `is_populated` on the next call.
@@ -171,18 +261,201 @@ pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Resul
     // A stale sidecar must never vouch for whatever this pull leaves.
     let digest_file = digest_path(&dest);
     let _ = std::fs::remove_file(&digest_file);
-    let digests = pull_and_extract_rootfs(oci_ref, &dest).await?;
+    let digests = pull(oci_ref.to_string(), dest.clone(), checkpoint.clone()).await?;
     // Without the sidecar a pinned ref only misses this dir and pulls its own.
-    if let Err(e) = std::fs::write(&digest_file, digests.join("\n")) {
-        tracing::warn!(path = %digest_file.display(), error = %e, "failed to record the rootfs digest");
-    }
+    record_digest(&digest_file, &digests, &checkpoint)?;
     Ok(dest)
+}
+
+fn record_digest(path: &Path, digests: &[String], checkpoint: &Checkpoint) -> Result<()> {
+    checkpoint()?; // Pull/extraction awaited: never publish a sidecar first.
+    if let Err(e) = std::fs::write(path, digests.join("\n")) {
+        tracing::warn!(path = %path.display(), error = %e, "failed to record the rootfs digest");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn fence(t: &Path) -> (PathBuf, crate::worker_admission::Lease) {
+        let owner = t.join("owner");
+        std::fs::create_dir(&owner).unwrap();
+        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        (owner, lease)
+    }
+
+    fn invalidate(owner: &Path) -> PathBuf {
+        let old = owner.with_file_name("old-owner");
+        std::fs::rename(owner, &old).unwrap();
+        std::fs::create_dir(owner).unwrap();
+        old
+    }
+
+    fn exclusive(path: &Path) -> bool {
+        use std::os::fd::AsRawFd;
+        let file = std::fs::File::open(path).unwrap();
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+
+    #[test]
+    fn checked_lock_preserves_pid_lifetime_and_pre_open_refusal() {
+        let t = tempdir().unwrap();
+        let path = t.path().join("image.lock");
+        let refused: Checkpoint = std::sync::Arc::new(|| Err(std::io::Error::other("refused")));
+        assert!(checked_cache_lock(&path, &refused, true).is_err());
+        assert!(!path.exists());
+        let allowed: Checkpoint = std::sync::Arc::new(|| Ok(()));
+        let lock = checked_cache_lock(&path, &allowed, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{}\n", std::process::id())
+        );
+        assert!(!exclusive(&path));
+        drop(lock);
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert!(exclusive(&path));
+    }
+
+    #[tokio::test]
+    async fn checked_cache_hit_never_opens_a_lock_or_calls_pull() {
+        let t = tempdir().unwrap();
+        let image = "docker.io/library/alpine:3.20";
+        let dest = canonical_path_at(t.path(), image);
+        std::fs::create_dir_all(dest.join("bin")).unwrap();
+        let checkpoint: Checkpoint = std::sync::Arc::new(|| Ok(()));
+        let got = ensure_rootfs_at(
+            image,
+            || panic!("cache hit"),
+            t.path(),
+            checkpoint,
+            |_, _, _| async { panic!("cache hit must not pull") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, dest);
+        assert!(!lock_path_at(t.path(), image).exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_admission_precedes_parent_and_lockfile_creation() {
+        for missing_parent in [false, true] {
+            let t = tempdir().unwrap();
+            let (owner, lease) = fence(t.path());
+            let old = invalidate(&owner);
+            let cache = t.path().join("cache");
+            if !missing_parent {
+                std::fs::create_dir(&cache).unwrap();
+            }
+            let checkpoint: Checkpoint = std::sync::Arc::new(move || lease.revalidate());
+            assert!(
+                lock_at_path(cache.join("image.lock"), checkpoint)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(cache.exists(), !missing_parent);
+            assert!(!cache.join("image.lock").exists());
+            assert!(exclusive(&old), "refusal must release the retained fence");
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_rechecks_inside_lock_before_pid_removal_or_pull() {
+        use std::os::fd::AsRawFd;
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let t = tempdir().unwrap();
+        let (owner, lease) = fence(t.path());
+        let cache = t.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let image = "docker.io/library/alpine:3.20";
+        let dest = canonical_path_at(&cache, image);
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("sentinel"), b"keep-root").unwrap();
+        let lower = dest.with_file_name(format!(
+            "{}.erofs",
+            dest.file_name().unwrap().to_str().unwrap()
+        ));
+        std::fs::write(&lower, b"keep-erofs").unwrap();
+        std::fs::write(digest_path(&dest), b"keep-digest").unwrap();
+        let lock_path = lock_path_at(&cache, image);
+        std::fs::write(&lock_path, b"keep-lock").unwrap();
+        let holder = std::fs::File::open(&lock_path).unwrap();
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (ready, waiting) = tokio::sync::oneshot::channel();
+        let ready = Mutex::new(Some(ready));
+        let checkpoint: Checkpoint = Arc::new(move || {
+            lease.revalidate()?;
+            // entry, parent, open, then the final pre-wait checkpoint.
+            if seen.fetch_add(1, Ordering::SeqCst) == 3 {
+                ready.lock().unwrap().take().unwrap().send(()).unwrap();
+            }
+            Ok(())
+        });
+        let worker_cache = cache.clone();
+        let task = tokio::spawn(async move {
+            ensure_rootfs_at(
+                image,
+                || panic!("no pull note"),
+                &worker_cache,
+                checkpoint,
+                |_, _, _| async { panic!("no network/pull") },
+            )
+            .await
+        });
+        waiting.await.unwrap();
+        assert!(!task.is_finished(), "the other holder still owns the lock");
+        let old = invalidate(&owner);
+        drop(holder);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(std::fs::read(dest.join("sentinel")).unwrap(), b"keep-root");
+        assert_eq!(std::fs::read(lower).unwrap(), b"keep-erofs");
+        assert_eq!(std::fs::read(digest_path(&dest)).unwrap(), b"keep-digest");
+        assert_eq!(std::fs::read(lock_path).unwrap(), b"keep-lock");
+        assert!(exclusive(&old));
+    }
+
+    #[tokio::test]
+    async fn completed_pull_cannot_publish_digest_after_wait_invalidates_fence() {
+        let t = tempdir().unwrap();
+        let (owner, lease) = fence(t.path());
+        let cache = t.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let image = "docker.io/library/alpine:3.20";
+        let dest = canonical_path_at(&cache, image);
+        let checkpoint: Checkpoint = std::sync::Arc::new(move || lease.revalidate());
+        let (ready, waiting) = tokio::sync::oneshot::channel();
+        let (resume, resumed) = tokio::sync::oneshot::channel();
+        let worker_cache = cache.clone();
+        let task = tokio::spawn(async move {
+            ensure_rootfs_at(
+                image,
+                || {},
+                &worker_cache,
+                checkpoint,
+                |_, _, _| async move {
+                    ready.send(()).unwrap();
+                    resumed.await.unwrap();
+                    Ok(vec!["sha256:fixture".into()])
+                },
+            )
+            .await
+        });
+        waiting.await.unwrap();
+        let old = invalidate(&owner);
+        resume.send(()).unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(!digest_path(&dest).exists());
+        assert!(!dest.exists());
+        assert!(exclusive(&old));
+    }
 
     fn populate(dir: &Path) {
         std::fs::create_dir_all(dir.join("bin")).unwrap();

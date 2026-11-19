@@ -459,13 +459,13 @@ pub fn base_erofs_path(base_dir: &Path) -> PathBuf {
 /// it in parallel, and one build's transient owner chmods could hide entries
 /// from another. A re-pull of the base itself is not
 /// covered: that is the separate image pull lock.
-fn lock_build(out: &Path) -> Result<fslock::LockFile, String> {
+fn lock_build(
+    out: &Path,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<crate::cli::rootfs_cache::CheckedCacheLock, String> {
     let path = PathBuf::from(format!("{}.lock", out.display()));
-    let mut lock = fslock::LockFile::open(&path)
-        .map_err(|e| format!("open erofs build lock {}: {e}", path.display()))?;
-    lock.lock()
-        .map_err(|e| format!("take erofs build lock {}: {e}", path.display()))?;
-    Ok(lock)
+    crate::cli::rootfs_cache::checked_cache_lock(&path, checkpoint, false)
+        .map_err(|e| format!("erofs build lock {}: {e:#}", path.display()))
 }
 
 /// Return the cached erofs path for a base rootfs dir, building it (host-side)
@@ -479,10 +479,22 @@ fn lock_build(out: &Path) -> Result<fslock::LockFile, String> {
 /// build is atomic (temp + rename) so an interrupted build never leaves a torn
 /// `.erofs` that a later boot would attach as a corrupt overlay lower.
 pub fn ensure_base_erofs(base_dir: &Path) -> Result<PathBuf, String> {
+    // Compatibility path for independent callers; workers use the checked API.
+    let checkpoint: crate::cli::rootfs_cache::Checkpoint = std::sync::Arc::new(|| Ok(()));
+    ensure_base_erofs_checked(base_dir, &checkpoint)
+}
+
+pub(crate) fn ensure_base_erofs_checked(
+    base_dir: &Path,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<PathBuf, String> {
+    checkpoint().map_err(|e| e.to_string())?;
     let out = base_erofs_path(base_dir);
     // Held across the staleness check and the build, so a waiter re-checks
     // and reuses the image the previous holder just built.
-    let _build_lock = lock_build(&out)?;
+    let _build_lock = lock_build(&out, checkpoint)?;
+    // lock_build checks while holding the acquired lock, BEFORE PID/cleanup
+    // writes. No caller-return checkpoint can substitute for that boundary.
 
     let stale = match (fs::metadata(&out), fs::metadata(base_dir)) {
         (Ok(o), Ok(b)) => match (o.modified(), b.modified()) {
@@ -516,6 +528,9 @@ pub fn ensure_base_erofs(base_dir: &Path) -> Result<PathBuf, String> {
         build_erofs(base_dir, &tmp).inspect_err(|_| {
             let _ = fs::remove_file(&tmp);
         })?;
+        // On checkpoint refusal the pathname is not safe for cleanup either;
+        // leave the private partial for the existing orphan sweep.
+        checkpoint().map_err(|e| e.to_string())?;
         fs::rename(&tmp, &out).map_err(|e| format!("finalize erofs {}: {e}", out.display()))?;
     }
     Ok(out)
@@ -556,6 +571,67 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::UNIX_EPOCH;
+
+    #[test]
+    fn erofs_refuses_before_opening_its_lock_file() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().join("root");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("sentinel"), b"keep").unwrap();
+        let checkpoint: crate::cli::rootfs_cache::Checkpoint =
+            std::sync::Arc::new(|| Err(io::Error::other("invalid admission")));
+        assert!(ensure_base_erofs_checked(&base, &checkpoint).is_err());
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 1);
+        assert_eq!(fs::read(base.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn erofs_refuses_after_contended_lock_without_build_or_lock_cleanup_writes() {
+        use std::os::fd::AsRawFd;
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let t = tempfile::tempdir().unwrap();
+        let owner = t.path().join("owner");
+        fs::create_dir(&owner).unwrap();
+        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        let base = t.path().join("root");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("sentinel"), b"keep-root").unwrap();
+        let lock_path = t.path().join("root.erofs.lock");
+        fs::write(&lock_path, b"keep-lock").unwrap();
+        let holder = File::open(&lock_path).unwrap();
+        assert_eq!(unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let checkpoint: crate::cli::rootfs_cache::Checkpoint = Arc::new(move || {
+            lease.revalidate()?;
+            // entry, pre-open, pre-wait. The next check must run under the lock.
+            if seen.fetch_add(1, Ordering::SeqCst) == 2 {
+                ready.send(()).unwrap();
+            }
+            Ok(())
+        });
+        let root = base.clone();
+        let task = std::thread::spawn(move || ensure_base_erofs_checked(&root, &checkpoint));
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!task.is_finished());
+        fs::rename(&owner, t.path().join("old-owner")).unwrap();
+        fs::create_dir(&owner).unwrap();
+        drop(holder);
+        assert!(task.join().unwrap().is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(fs::read(&lock_path).unwrap(), b"keep-lock");
+        assert_eq!(fs::read(base.join("sentinel")).unwrap(), b"keep-root");
+        assert!(!base_erofs_path(&base).exists());
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 4);
+        let old = File::open(t.path().join("old-owner")).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(old.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+    }
 
     fn make_src(dir: &Path) {
         fs::create_dir_all(dir.join("bin")).unwrap();

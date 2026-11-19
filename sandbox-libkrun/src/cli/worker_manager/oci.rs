@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Component;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Maximum total extracted size (10 GiB).
@@ -366,17 +366,39 @@ pub(crate) fn base_image_ref(kind: &str, base_image_override: Option<&str>) -> S
 /// `base_image_override` comes from `runtime.base_image` in
 /// `iii.worker.yaml`.
 pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
+    // Independent legacy/sandbox API; admitted worker paths MUST use checked.
+    prepare_rootfs_checked(kind, base_image_override, Arc::new(|| Ok(()))).await
+}
+
+pub(crate) async fn prepare_rootfs_checked(
+    kind: &str,
+    base_image_override: Option<&str>,
+    checkpoint: crate::cli::rootfs_cache::Checkpoint,
+) -> Result<PathBuf> {
+    checkpoint()?;
     let oci_image = match base_image_override.map(str::trim) {
         Some(img) if !img.is_empty() => img.to_string(),
         _ => oci_image_for_kind(kind).to_string(),
     };
 
     let image_for_log = oci_image.clone();
-    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, move || {
-        eprintln!("  Pulling rootfs {image_for_log}...");
-    })
+    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs_checked(
+        &oci_image,
+        move || {
+            eprintln!("  Pulling rootfs {image_for_log}...");
+        },
+        checkpoint.clone(),
+    )
     .await?;
 
+    finish_prepare_rootfs(rootfs_dir, &checkpoint)
+}
+
+fn finish_prepare_rootfs(
+    rootfs_dir: PathBuf,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<PathBuf> {
+    checkpoint()?; // After cache/pull wait, before workspace/hosts writes.
     // Post-populate runtime-expected dirs even on a cache hit; these are
     // idempotent and cheap.
     let workspace = rootfs_dir.join("workspace");
@@ -685,6 +707,16 @@ fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
 /// Returns the manifest digests that name the pulled image: the one `image`
 /// resolved to, then the platform manifest's when that was an image index.
 pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<Vec<String>> {
+    // Independent callers retain this API; checked cache never falls back here.
+    pull_and_extract_rootfs_checked(image, dest, Arc::new(|| Ok(()))).await
+}
+
+pub(crate) async fn pull_and_extract_rootfs_checked(
+    image: &str,
+    dest: &Path,
+    checkpoint: crate::cli::rootfs_cache::Checkpoint,
+) -> Result<Vec<String>> {
+    checkpoint()?;
     use oci_client::client::{ClientConfig, ClientProtocol};
     use oci_client::secrets::RegistryAuth;
     use oci_client::{Client, Reference};
@@ -768,6 +800,7 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         _ => String::new(),
     };
 
+    checkpoint()?;
     eprintln!("  Pulling {}{}...", image, manifest_summary);
     let _ = manifest_summary; // consumed inside pull_with_progress now
 
@@ -794,7 +827,10 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         // real progress line:
         //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
         // so the adapter's log shows genuine download progress.
-        let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
+        checkpoint()?; // Includes the retry backoff wait.
+        let pull_result =
+            pull_with_progress(&client, &reference, image, host_arch, &checkpoint).await;
+        checkpoint()?; // Refusal is not retried as a registry failure.
 
         match pull_result {
             Ok((data, digests)) => {
@@ -840,6 +876,16 @@ pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Res
         total_layer_bytes as f64 / (1024.0 * 1024.0)
     );
 
+    extract_pulled_rootfs(image_data, image_digests, dest, &checkpoint)
+}
+
+fn extract_pulled_rootfs(
+    image_data: oci_client::client::ImageData,
+    image_digests: Vec<String>,
+    dest: &Path,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
+) -> Result<Vec<String>> {
+    checkpoint()?; // Pull completed; no staging mkdir/remove before this check.
     let layer_count = image_data.layers.len();
 
     // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
@@ -1008,7 +1054,9 @@ async fn pull_with_progress(
     reference: &oci_client::Reference,
     image: &str,
     host_arch: &str,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<(oci_client::client::ImageData, Vec<String>)> {
+    checkpoint()?;
     use futures::StreamExt;
     use oci_client::client::{Config, ImageData, ImageLayer};
     use sha2::Digest;
@@ -1019,7 +1067,8 @@ async fn pull_with_progress(
     //    ImageIndex). Tracks the manifest digests so we can return them
     //    to the caller alongside the data.
     let (image_manifest, manifest_digests) =
-        pull_image_manifest_resolved(client, reference, host_arch).await?;
+        pull_image_manifest_resolved(client, reference, host_arch, checkpoint).await?;
+    checkpoint()?;
     check_declared_blob_sizes(&image_manifest)?;
 
     let total_bytes: u64 = image_manifest
@@ -1097,7 +1146,9 @@ async fn pull_with_progress(
         .pull_blob_stream(reference, &image_manifest.config)
         .await
         .context("failed to pull image config blob")?;
+    checkpoint()?;
     while let Some(chunk) = config_stream.next().await {
+        checkpoint()?;
         let chunk = chunk.context("config blob stream chunk failed")?;
         check_blob_len(
             config_bytes.len() + chunk.len(),
@@ -1107,6 +1158,7 @@ async fn pull_with_progress(
         config_hasher.update(&chunk);
         config_bytes.extend_from_slice(&chunk);
     }
+    checkpoint()?; // Includes the final stream wait returning None.
     verify_sha256_digest(&image_manifest.config.digest, config_hasher, "image config")?;
     let config = Config {
         data: bytes::Bytes::from(config_bytes),
@@ -1130,7 +1182,9 @@ async fn pull_with_progress(
             .pull_blob_stream(reference, layer_desc)
             .await
             .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
+        checkpoint()?;
         while let Some(chunk) = stream.next().await {
+            checkpoint()?;
             let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
             check_blob_len(
                 layer_bytes.len() + chunk.len(),
@@ -1141,6 +1195,7 @@ async fn pull_with_progress(
             downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             layer_bytes.extend_from_slice(&chunk);
         }
+        checkpoint()?;
         verify_sha256_digest(
             &layer_desc.digest,
             layer_hasher,
@@ -1266,7 +1321,9 @@ async fn pull_image_manifest_resolved(
     client: &oci_client::Client,
     reference: &oci_client::Reference,
     host_arch: &str,
+    checkpoint: &crate::cli::rootfs_cache::Checkpoint,
 ) -> Result<(oci_client::manifest::OciImageManifest, Vec<String>)> {
+    checkpoint()?;
     use oci_client::secrets::RegistryAuth;
 
     let target_arch = match host_arch {
@@ -1279,6 +1336,7 @@ async fn pull_image_manifest_resolved(
         .await
         .context("failed to pull image manifest")?;
 
+    checkpoint()?;
     match manifest {
         oci_client::manifest::OciManifest::Image(m) => Ok((m, vec![digest])),
         oci_client::manifest::OciManifest::ImageIndex(idx) => {
@@ -1311,6 +1369,7 @@ async fn pull_image_manifest_resolved(
                 .pull_manifest(&resolved_ref, &RegistryAuth::Anonymous)
                 .await
                 .context("failed to pull resolved platform manifest")?;
+            checkpoint()?;
             match m {
                 oci_client::manifest::OciManifest::Image(im) => Ok((im, vec![digest, d])),
                 oci_client::manifest::OciManifest::ImageIndex(_) => {
@@ -1325,6 +1384,50 @@ async fn pull_image_manifest_resolved(
 mod tests {
     use super::*;
     use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
+
+    #[test]
+    fn invalidated_post_pull_fence_prevents_extract_staging_and_publication() {
+        let t = tempfile::tempdir().unwrap();
+        let owner = t.path().join("owner");
+        std::fs::create_dir(&owner).unwrap();
+        let lease = crate::worker_admission::local(&owner.join("state")).unwrap();
+        let dest = t.path().join("root");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("sentinel"), b"keep").unwrap();
+        std::fs::rename(&owner, t.path().join("old-owner")).unwrap();
+        std::fs::create_dir(&owner).unwrap();
+        let checkpoint: crate::cli::rootfs_cache::Checkpoint = Arc::new(move || lease.revalidate());
+        let data = oci_client::client::ImageData {
+            layers: Vec::new(),
+            digest: None,
+            manifest: None,
+            config: oci_client::client::Config {
+                data: bytes::Bytes::from_static(b"{}"),
+                media_type: "application/vnd.oci.image.config.v1+json".into(),
+                annotations: None,
+            },
+        };
+        assert!(extract_pulled_rootfs(data, Vec::new(), &dest, &checkpoint).is_err());
+        assert_eq!(std::fs::read(dest.join("sentinel")).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(t.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn invalidated_post_cache_fence_prevents_workspace_and_hosts_writes() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("root");
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::write(root.join("etc/hosts"), b"keep-hosts").unwrap();
+        let checkpoint: crate::cli::rootfs_cache::Checkpoint =
+            Arc::new(|| Err(std::io::Error::other("invalid after cache await")));
+        assert!(finish_prepare_rootfs(root.clone(), &checkpoint).is_err());
+        assert!(!root.join("workspace").exists());
+        assert_eq!(
+            std::fs::read(root.join("etc/hosts")).unwrap(),
+            b"keep-hosts"
+        );
+    }
 
     /// Regression: the streaming pull's `verify_sha256_digest` must
     /// accept a hasher whose finalize matches the descriptor's hex
