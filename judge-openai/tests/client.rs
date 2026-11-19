@@ -673,7 +673,7 @@ async fn model_listing_filters_the_catalog_and_may_be_empty() {
     };
     assert_eq!(
         serde_json::to_value(cards).unwrap(),
-        json!([{"name": "gpt-6-luna", "description": "OpenAI Decisions (beta)",
+        json!([{"name": "gpt-6-luna", "description": "OpenAI Decisions",
                 "release_date": "2026-09-14", "context_window": 922000}])
     );
     assert_eq!((stats.attempts, stats.requests), (1, 1));
@@ -682,4 +682,169 @@ async fn model_listing_filters_the_catalog_and_may_be_empty() {
     assert_eq!(empty["status"], "ok");
     assert_eq!(empty["models"], json!([]));
     assert!(server.received_requests().await.unwrap()[0].body.is_empty());
+}
+
+type FetchLog = std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
+/// A Codex source answering `tokens` in order (the last repeats) and recording
+/// each request's `rejected_token`. `Err` entries are reasons, not tokens.
+fn codex_source(
+    tokens: &[Result<&'static str, &'static str>],
+) -> (std::sync::Arc<judge_openai::CodexSource>, FetchLog) {
+    use std::sync::{Arc, Mutex};
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (tokens, seen) = (tokens.to_vec(), log.clone());
+    let fetch: judge_openai::codex::Fetch = Arc::new(move |rejected: Option<String>| {
+        let mut seen = seen.lock().unwrap();
+        let answer = tokens[seen.len().min(tokens.len() - 1)];
+        seen.push(rejected);
+        Box::pin(async move {
+            answer
+                .map(|token| Some(token.to_owned()))
+                .map_err(str::to_owned)
+        })
+    });
+    (Arc::new(judge_openai::CodexSource::new(fetch)), log)
+}
+async fn mount_bearer(server: &MockServer, token: &str, status: u16) {
+    Mock::given(method("POST"))
+        .and(path("/v1/decisions"))
+        .and(header("authorization", format!("Bearer {token}").as_str()))
+        .respond_with(move |request: &Request| match status {
+            200 => answer_all(request),
+            status => ResponseTemplate::new(status)
+                .set_body_json(json!({"error": {"type": "invalid_request_error", "code": "x", "message": "tok-1 rejected"}})),
+        })
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn codex_sends_the_codex_token_and_ignores_configured_and_boot_keys() {
+    let server = MockServer::start().await;
+    mount_bearer(&server, "tok-1", 200).await;
+    let (source, log) = codex_source(&[Ok("tok-1")]);
+    source.current().await.unwrap();
+    let client = client(&server)
+        .with_api_key(Some("configured-key"))
+        .with_codex(source);
+    let (_, _, stats) = ok(client.evaluate(ticket(), DEFAULT_MODEL).await);
+    assert_eq!(stats.attempts, 1);
+    assert_eq!(*log.lock().unwrap(), vec![None]);
+    assert!(!format!("{client:?}").contains("tok-1"));
+}
+
+#[tokio::test]
+async fn codex_401_renews_once_and_concurrent_siblings_reuse_the_new_token() {
+    let server = MockServer::start().await;
+    mount_bearer(&server, "tok-1", 401).await;
+    mount_bearer(&server, "tok-2", 200).await;
+    let (source, log) = codex_source(&[Ok("tok-1"), Ok("tok-2")]);
+    source.current().await.unwrap();
+    let (_, results, stats) = ok(client(&server)
+        .with_codex(source)
+        .evaluate(tickets(2), DEFAULT_MODEL)
+        .await);
+    assert_eq!(results.as_object().unwrap().len(), 2);
+    assert_eq!(stats.attempts, 4);
+    // One forced refresh for both evaluations, naming the rejected token.
+    assert_eq!(*log.lock().unwrap(), vec![None, Some("tok-1".into())]);
+}
+
+#[tokio::test]
+async fn codex_second_401_is_http_401_and_a_later_401_forces_nothing_for_five_minutes() {
+    let server = MockServer::start().await;
+    mount_bearer(&server, "tok-1", 401).await;
+    mount_bearer(&server, "tok-2", 401).await;
+    let (source, log) = codex_source(&[Ok("tok-1"), Ok("tok-2")]);
+    let client = client(&server).with_codex(source.clone());
+    source.current().await.unwrap();
+    let (wire, stats) = error(client.evaluate(ticket(), DEFAULT_MODEL).await, "http");
+    assert_eq!(wire["http_status"], 401);
+    assert!(!wire.to_string().contains("tok-1"), "{wire}");
+    assert_eq!(stats.attempts, 2);
+    assert_eq!(*log.lock().unwrap(), vec![None, Some("tok-1".into())]);
+    source.current().await.unwrap();
+    let (wire, stats) = error(client.evaluate(ticket(), DEFAULT_MODEL).await, "http");
+    assert_eq!(wire["http_status"], 401);
+    assert_eq!(stats.attempts, 1);
+    assert_eq!(*log.lock().unwrap(), vec![None, Some("tok-1".into()), None]);
+}
+
+#[tokio::test]
+async fn codex_403_is_not_retried_and_a_failed_renewal_is_missing_key() {
+    let server = MockServer::start().await;
+    mount_bearer(&server, "tok-1", 403).await;
+    let (source, log) = codex_source(&[Ok("tok-1")]);
+    source.current().await.unwrap();
+    let (wire, stats) = error(
+        client(&server)
+            .with_codex(source)
+            .evaluate(ticket(), DEFAULT_MODEL)
+            .await,
+        "http",
+    );
+    assert_eq!(
+        (wire["http_status"].as_u64(), stats.attempts),
+        (Some(403), 1)
+    );
+    assert_eq!(log.lock().unwrap().len(), 1);
+
+    let server = MockServer::start().await;
+    mount_bearer(&server, "tok-1", 401).await;
+    let (source, _) = codex_source(&[Ok("tok-1"), Err("the Codex session expired")]);
+    source.current().await.unwrap();
+    let (wire, _) = error(
+        client(&server)
+            .with_codex(source)
+            .evaluate(ticket(), DEFAULT_MODEL)
+            .await,
+        "missing_key",
+    );
+    assert_eq!(
+        wire["provider_error"]["message"],
+        "the Codex session expired"
+    );
+}
+
+#[tokio::test]
+async fn codex_renew_reuses_a_token_a_sibling_already_renewed() {
+    let (source, log) = codex_source(&[Ok("tok-1"), Ok("tok-2")]);
+    source.current().await.unwrap();
+    assert_eq!(
+        source.renew("tok-1").await.unwrap().as_deref(),
+        Some("tok-2")
+    );
+    assert_eq!(
+        source.renew("tok-1").await.unwrap().as_deref(),
+        Some("tok-2")
+    );
+    assert_eq!(source.renew("tok-2").await.unwrap(), None);
+    assert_eq!(log.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn codex_models_list_is_the_built_in_card_without_http() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (source, _) = codex_source(&[Ok("tok-1")]);
+    source.current().await.unwrap();
+    match client(&server)
+        .with_codex(source)
+        .list_models(models(1000))
+        .await
+    {
+        ModelsResponse::Ok { models, stats } => {
+            assert_eq!(
+                serde_json::to_value(models).unwrap(),
+                json!([{"name": "gpt-6-luna", "description": "OpenAI Decisions",
+                        "release_date": "", "context_window": 922000}])
+            );
+            assert_eq!((stats.attempts, stats.requests), (0, 0));
+        }
+        other => panic!("expected models, got {other:?}"),
+    }
 }

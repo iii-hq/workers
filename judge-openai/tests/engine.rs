@@ -132,7 +132,7 @@ async fn independent_consumer_evaluates_mixed_decisions_and_lists_models() {
     assert_eq!(listed["status"], "ok", "{listed}");
     assert_eq!(
         listed["models"],
-        json!([{"name":"gpt-6-luna", "description":"OpenAI Decisions (beta)",
+        json!([{"name":"gpt-6-luna", "description":"OpenAI Decisions",
                 "release_date":"2026-09-14", "context_window":922000}])
     );
     assert_eq!(listed["stats"]["input_tokens"], 0);

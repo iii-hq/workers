@@ -86,3 +86,28 @@ async fn apply_replaces_snapshot_and_rejects_unsupported_models() {
     );
     assert_eq!(cell.read().await.max_timeout_ms, 1234);
 }
+
+#[test]
+fn auth_defaults_to_api_key_and_accepts_only_codex_besides() {
+    use judge_openai::Auth;
+    assert_eq!(OpenAiConfig::default().auth, Auth::ApiKey);
+    assert_eq!(OpenAiConfig::default().to_json()["auth"], "api_key");
+    // Entries saved before `auth` existed still load.
+    let legacy = OpenAiConfig::from_json(&json!({"api_key":"k","model":"gpt-6-luna"})).unwrap();
+    assert_eq!(legacy.auth, Auth::ApiKey);
+    // codex keeps a configured api_key: it is ignored, not rejected.
+    let codex = OpenAiConfig::from_json(&json!({"auth":"codex","api_key":"k"})).unwrap();
+    assert_eq!(codex.auth, Auth::Codex);
+    assert_eq!(codex.api_key.as_deref(), Some("k"));
+    for bad in [json!("chatgpt"), json!("Codex"), json!(null), json!(1)] {
+        assert!(OpenAiConfig::from_json(&json!({ "auth": bad })).is_err());
+    }
+    let schema = OpenAiConfig::json_schema();
+    assert_eq!(
+        schema["properties"]["auth"]["enum"],
+        json!(["api_key", "codex"])
+    );
+    assert_eq!(schema["properties"]["auth"]["default"], "api_key");
+    assert!(schema.get("definitions").is_none());
+    assert!(schema["properties"]["auth"].get("allOf").is_none());
+}

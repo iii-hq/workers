@@ -120,7 +120,7 @@ vi.mock('@iii-dev/console-ui', () => ({
 
 const catalog = {
   status: 'ok',
-  models: [{ name: 'gpt-6-luna', description: 'OpenAI Decisions (beta)', release_date: '2026-09-14' }],
+  models: [{ name: 'gpt-6-luna', description: 'OpenAI Decisions', release_date: '2026-09-14' }],
 }
 const emptyCatalog = { status: 'ok', models: [] }
 type Engine = Pick<ExtensionIii, 'call'>
@@ -314,7 +314,7 @@ describe('OpenAiConfigForm catalog', () => {
     expect(iii.call).toHaveBeenCalledWith('judge-openai::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'gpt-6-luna', 'gpt-6-luna-2026-10-01'])
-    expect(select.options[1].dataset.description).toBe('OpenAI Decisions (beta) · 2026-09-14')
+    expect(select.options[1].dataset.description).toBe('OpenAI Decisions · 2026-09-14')
     expect(select.options[2].dataset.description).toBe('Not in the current catalog')
     expect(select.value).toBe('gpt-6-luna-2026-10-01')
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 1 models')
@@ -476,5 +476,45 @@ describe('OpenAiConfigForm with the Console secret field', () => {
     }
     await mount({}, iii, { secretField: StubSecretField } as Partial<ConfigFormProps>)
     expect(seen[seen.length - 1].status).toEqual({ checking: false, connected: false, error, detail: undefined })
+  })
+})
+
+describe('OpenAiConfigForm credential source', () => {
+  it('writes auth and keeps the stored key when switching to the Codex sign-in', () => {
+    const value = Object.freeze({ api_key: 'fixture-only', future: true })
+    const { html, onChange } = render(value)
+    expect(html.match(/<select[^>]*name="auth"[^>]*>/)?.[0]).toBeDefined()
+    expect(html).toContain('ChatGPT sign-in via provider-openai-codex (experimental)')
+    changes.get('auth')?.('codex')
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...value, auth: 'codex' })
+  })
+
+  it('hides the key field in codex mode, for the masked input and the Console secret field', async () => {
+    const { html } = render({ auth: 'codex', api_key: 'fixture-only' })
+    expect(html).not.toContain('name="api_key"')
+    expect(html).not.toContain('fixture-only')
+    expect(html).toContain('The built-in catalog')
+    const seen: SecretKeyFieldProps[] = []
+    function StubSecretField(props: SecretKeyFieldProps) {
+      seen.push(props)
+      return <output data-name={props.name} />
+    }
+    const { container } = await mount({ auth: 'codex' }, engine(), {
+      secretField: StubSecretField,
+    } as Partial<ConfigFormProps>)
+    expect(seen).toHaveLength(0)
+    expect(container.querySelector('output')).toBeNull()
+  })
+
+  it('reports whether a Codex session reaches the worker', async () => {
+    const { container } = await mount({ auth: 'codex' })
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Codex session active')
+    await act(async () => root!.unmount())
+    root = undefined
+    const { container: missing } = await mount({ auth: 'codex' }, engine({ status: 'error', code: 'missing_key' }))
+    expect(missing.querySelector('[data-chip="warning"]')?.textContent).toBe('No Codex session reaches the worker')
+    const alert = missing.querySelector('[role="alert"][data-variant="warn"]')!
+    expect(alert.textContent).toContain('sign in with ChatGPT')
+    expect(alert.textContent).toContain('provider-openai-codex')
   })
 })
