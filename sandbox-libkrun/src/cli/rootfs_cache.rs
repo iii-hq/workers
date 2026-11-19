@@ -846,6 +846,9 @@ impl CacheRequest {
             }
             let prep = self.probe.prepare()?;
             let mut state = inspect_cache(&prep, &self.reference, &self.roots)?;
+            // Only a payload this task just sealed and published carries a reader
+            // bound to that exact seal. A root populated by an earlier run has none.
+            let mut sealed = None;
             if !state.populated {
                 anyhow::ensure!(allow_pull, "cache disappeared during exclusive recheck");
                 on_pull();
@@ -873,10 +876,10 @@ impl CacheRequest {
                 // One actual owned blocking task, joined here: the core creates
                 // every object, the producer only supplies declared bytes, and
                 // the seal binds the result to the SAME original guard.
-                let guard = tokio::task::spawn_blocking(move || {
+                let (guard, reader) = tokio::task::spawn_blocking(move || {
                     let mut builder = guard.produce_payload(&root, inventory)?;
                     write(&mut builder)?;
-                    builder.seal()?.publish_into_guard()
+                    builder.seal()?.publish_into_guard_with_reader()
                 })
                 .await
                 .context("cache payload producer task failed")??;
@@ -889,6 +892,7 @@ impl CacheRequest {
                 mutation.apply(|g| g.publish_file(digest))?;
                 lock.finish()?;
                 mutation.commit()?;
+                sealed = Some(reader);
                 state = inspect_cache(&prep, &self.reference, &self.roots)?;
                 anyhow::ensure!(
                     state.populated,
@@ -898,10 +902,26 @@ impl CacheRequest {
             if !state.ready {
                 let writer = prep.clone();
                 let root = state.root.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::cli::erofs::build_prepared_erofs(&writer, &root)
-                })
-                .await??;
+                match sealed.take() {
+                    // The just-published payload (0777/1777 members, internal
+                    // links, any size within the payload profile) is read only
+                    // through its seal; finish() runs before the image publishes.
+                    Some(read) => {
+                        tokio::task::spawn_blocking(move || {
+                            crate::cli::erofs::build_sealed_erofs(&writer, &root, read)
+                        })
+                        .await??
+                    }
+                    // Restart path: populated by an earlier run, no retained
+                    // capability. The generic owner-read profile applies
+                    // unchanged and refuses an out-of-profile tree; never relaxed.
+                    None => {
+                        tokio::task::spawn_blocking(move || {
+                            crate::cli::erofs::build_prepared_erofs(&writer, &root)
+                        })
+                        .await??
+                    }
+                }
             }
             state = inspect_cache(&prep, &self.reference, &self.roots)?;
             anyhow::ensure!(state.ready, "prepared lower is not complete/fresh");
@@ -1566,6 +1586,126 @@ mod tests {
         let candidate = &cache_candidates(&cache, reference)[0];
         assert!(!candidate.exists());
         assert!(!digest_path(candidate).exists());
+    }
+
+    /// Produce and publish a private cache payload holding a sticky
+    /// world-writable `tmp` (outside the generic owner-read profile) in the
+    /// SAME cache-entry guard as its digest, and return the sealed reader.
+    fn r3_publish_sealed_fixture(
+        prep: &crate::worker_admission::CachePreparation,
+        root: &Path,
+        digest: &str,
+    ) -> crate::worker_admission::SealedPayloadRead {
+        use std::io::Write;
+        let mut payload = private_cache_fixture_payload(
+            "sh",
+            b"fixture",
+            br#"{"config":{"Env":["H=1"]}}"#,
+            vec![digest.to_string()],
+        );
+        payload.entries.push(fixture_payload_entry(
+            "tmp",
+            0o1777,
+            crate::worker_admission::PayloadKind::Directory,
+        ));
+        let inventory = crate::worker_admission::PayloadInventory::new(payload.entries).unwrap();
+        let mut builder = prep
+            .begin_entry(root)
+            .unwrap()
+            .produce_payload(root, inventory)
+            .unwrap();
+        (payload.write)(&mut builder).unwrap();
+        let (mut guard, reader) = builder
+            .seal()
+            .unwrap()
+            .publish_into_guard_with_reader()
+            .unwrap();
+        let mut sidecar = guard.stage_file(&digest_path(root), 0o600).unwrap();
+        sidecar.file_mut().write_all(digest.as_bytes()).unwrap();
+        guard.publish_file(sidecar).unwrap();
+        guard.commit().unwrap();
+        reader
+    }
+
+    /// R3 consumer fault: a sealed member changed between publication and the
+    /// EROFS build (bytes appended, or a mode change) makes the sealed build
+    /// fail, and no image is published.
+    #[test]
+    fn r3_sealed_member_tampered_before_erofs_build_publishes_no_image() {
+        use std::os::unix::fs::PermissionsExt;
+        for tamper in ["bytes", "mode"] {
+            let (temp, context, cache) = h_context();
+            let root = cache.join("tampered");
+            let lease = context.local(&temp.path().join("owner")).unwrap();
+            let prep = lease
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+                .unwrap();
+            let reader = r3_publish_sealed_fixture(&prep, &root, "sha256:fixture");
+            if tamper == "bytes" {
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(root.join("bin/sh"))
+                    .unwrap()
+                    .write_all(b"-tampered")
+                    .unwrap();
+            } else {
+                std::fs::set_permissions(root.join("tmp"), std::fs::Permissions::from_mode(0o1755))
+                    .unwrap();
+            }
+            assert!(
+                crate::cli::erofs::build_sealed_erofs(&prep, &root, reader).is_err(),
+                "{tamper}"
+            );
+            assert!(!lower_path(&root).exists(), "{tamper}");
+        }
+    }
+
+    /// R3 restart path: a sealed payload published by an earlier run whose
+    /// EROFS lower was never built carries no retained capability. The generic
+    /// owner-read profile applies unchanged and refuses the 1777 member: no
+    /// image is published and the sealed tree is neither chmodded nor repaired.
+    #[tokio::test]
+    async fn r3_restart_without_retained_seal_refuses_an_out_of_profile_entry_without_repair() {
+        use std::os::unix::fs::MetadataExt;
+        let (temp, context, cache) = h_context();
+        let reference = "example.invalid/review/restart:v1";
+        let root = cache_candidates(&cache, reference).remove(0);
+        {
+            let lease = context.local(&temp.path().join("seed")).unwrap();
+            let prep = lease
+                .prepare_cache(&[crate::worker_admission::CacheEntry { root: &root }])
+                .unwrap();
+            let reader = r3_publish_sealed_fixture(&prep, &root, "sha256:fixture");
+            // The crash/restart boundary: the retained capability never survives.
+            drop(reader);
+            prep.handoff(&lease, &root).unwrap();
+        }
+        assert!(!lower_path(&root).exists());
+        let stamp = |path: &Path| {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            (meta.mode(), meta.ctime(), meta.ctime_nsec())
+        };
+        let before = (stamp(&root), stamp(&root.join("tmp")));
+        let result = CacheRequest::new(
+            context.local(&temp.path().join("restart")).unwrap(),
+            reference,
+            &cache,
+        )
+        .unwrap()
+        .resolve(false, || panic!("a populated entry must not pull"))
+        .await;
+        assert!(
+            result.is_err(),
+            "an out-of-profile tree without a retained seal must be refused"
+        );
+        assert!(!lower_path(&root).exists());
+        assert_eq!(before.1.0 & 0o7777, 0o1777);
+        assert_eq!(
+            (stamp(&root), stamp(&root.join("tmp"))),
+            before,
+            "refusal must not chmod or repair the sealed tree"
+        );
     }
 
     fn h_context() -> (
