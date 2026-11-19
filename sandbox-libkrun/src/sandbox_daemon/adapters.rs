@@ -1,7 +1,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::MutexGuard;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -73,6 +75,7 @@ pub(crate) fn require_overlay_capable(has_embedded_init: bool) -> Result<(), San
 /// Build (or reuse) the read-only erofs image of `base_rootfs`, the guest's
 /// overlay lower. Written next to the cache dir (`<dir>.erofs`) and shared
 /// with worker VMs on the same image; see `cli::erofs::ensure_base_erofs`.
+#[cfg(test)]
 pub(crate) async fn prepare_overlay_lower(base_rootfs: &Path) -> Result<PathBuf, SandboxError> {
     require_overlay_capable(iii_filesystem::init::has_init())?;
     let base = base_rootfs.to_path_buf();
@@ -156,6 +159,226 @@ pub(crate) fn env_stdin_frame(params: &BootParams) -> Result<Vec<u8>, SandboxErr
         .map_err(|e| SandboxError::BootFailed(format!("sandbox env: {e}")))
 }
 
+/// In-memory lifecycle owner. No constructor accepts PID/status as authority.
+/// The original lease and core receipt survive through logs and exact cleanup.
+pub(crate) struct RuntimeSession {
+    lease: crate::worker_admission::Lease,
+    control: crate::worker_admission::RuntimeControl,
+    completion: tokio::sync::watch::Receiver<Option<RuntimeResult>>,
+    host_writers: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<std::io::Result<()>>>>,
+    host_failure: Mutex<Option<String>>,
+}
+#[derive(Clone)]
+struct RuntimeResult {
+    status: Option<std::process::ExitStatus>,
+    retirement:
+        Result<crate::worker_admission::WriterRetirement, crate::worker_admission::RuntimeFailure>,
+}
+impl RuntimeSession {
+    pub(crate) fn supervise(
+        child: crate::worker_admission::RuntimeChild,
+        lease: crate::worker_admission::Lease,
+    ) -> std::sync::Arc<Self> {
+        let control = child.control();
+        let (done, completion) = tokio::sync::watch::channel(None);
+        let session = std::sync::Arc::new(Self {
+            lease,
+            control,
+            completion,
+            host_writers: tokio::sync::Mutex::new(Vec::new()),
+            host_failure: Mutex::new(None),
+        });
+        let held = session.clone();
+        // Install the actual child owner before the caller's first await.
+        tokio::spawn(async move {
+            let completion = child.wait().await;
+            let result = RuntimeResult {
+                status: completion.os_status(),
+                retirement: completion.retirement().cloned().map_err(Clone::clone),
+            };
+            if let Err(error) = &result.retirement {
+                tracing::error!(%error, "runtime retirement failed; preserving operation");
+            }
+            done.send_replace(Some(result));
+            drop(held);
+        });
+        session
+    }
+    fn pump_stderr(
+        self: &std::sync::Arc<Self>,
+        stderr: tokio::process::ChildStderr,
+        path: PathBuf,
+    ) {
+        let lease = self.lease.clone();
+        let task = tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let mut failure = None;
+            while let Some(line) = lines.next_line().await? {
+                if failure.is_none() {
+                    if let Err(error) = append_stderr(&lease, &path, format!("{line}\n").as_bytes())
+                    {
+                        failure = Some(error);
+                    }
+                }
+                // Drain even after publication failure: never block the guest
+                // on stderr, but cleanup must observe the failure at completion.
+            }
+            match failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        });
+        self.host_writers
+            .try_lock()
+            .expect("writers attached synchronously before publishing session")
+            .push(task);
+    }
+    pub(crate) async fn finish_host_writers(&self) -> std::io::Result<()> {
+        let mut tasks = self.host_writers.lock().await;
+        if let Some(error) = self
+            .host_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            return Err(std::io::Error::other(error));
+        }
+        // Keep handles in the slot if cancelled; remove only an observed result.
+        while let Some(task) = tasks.last_mut() {
+            let result = tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "sandbox stderr writer has not drained",
+                    )
+                })?
+                .map_err(|e| std::io::Error::other(format!("stderr task: {e}")))
+                .and_then(|r| r);
+            tasks.pop();
+            if let Err(error) = result {
+                *self
+                    .host_failure
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(error.to_string());
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn lease(&self) -> &crate::worker_admission::Lease {
+        &self.lease
+    }
+    pub(crate) fn observation(&self) -> crate::worker_admission::RuntimeObservation {
+        self.control.observation()
+    }
+    pub(crate) fn signal(
+        &self,
+        signal: crate::worker_admission::RuntimeSignal,
+    ) -> std::io::Result<()> {
+        match self.control.signal(signal) {
+            Ok(()) => Ok(()),
+            Err(_error) if self.control.observation().os_status().is_some() => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+    pub(crate) async fn wait(
+        &self,
+    ) -> (
+        Option<std::process::ExitStatus>,
+        std::io::Result<crate::worker_admission::WriterRetirement>,
+    ) {
+        let mut done = self.completion.clone();
+        loop {
+            if let Some(result) = done.borrow().clone() {
+                return (
+                    result.status,
+                    result.retirement.map_err(|e| e.to_io_error()),
+                );
+            }
+            if done.changed().await.is_err() {
+                let observed = self.control.terminal().await;
+                return (
+                    observed.os_status(),
+                    Err(observed.failure().map_or_else(
+                        || {
+                            std::io::Error::other(
+                                "owned runtime supervisor closed without completion",
+                            )
+                        },
+                        |failure| failure.to_io_error(),
+                    )),
+                );
+            }
+        }
+    }
+    pub(crate) fn retirement(&self) -> std::io::Result<crate::worker_admission::WriterRetirement> {
+        match self.completion.borrow().clone() {
+            Some(result) => result.retirement.map_err(|e| e.to_io_error()),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "runtime retirement is not complete",
+            )),
+        }
+    }
+    pub(crate) async fn stop(
+        &self,
+        grace: Duration,
+    ) -> std::io::Result<crate::worker_admission::WriterRetirement> {
+        use crate::worker_admission::RuntimeSignal;
+        if self.observation().os_status().is_none() {
+            if !grace.is_zero() {
+                self.signal(RuntimeSignal::Terminate)?;
+                let _elapsed = tokio::time::timeout(grace, self.control.terminal()).await;
+            }
+            if self.observation().os_status().is_none() {
+                self.signal(RuntimeSignal::Kill)?;
+            }
+        }
+        self.wait().await.1
+    }
+}
+impl std::fmt::Debug for RuntimeSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeSession")
+            .field("phase", &self.observation().phase())
+            .finish_non_exhaustive()
+    }
+}
+
+fn initialize_stderr(lease: &crate::worker_admission::Lease, path: &Path) -> std::io::Result<()> {
+    let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+        files: vec![path.to_path_buf()],
+    })?;
+    let file = guard.stage_file(path, 0o600)?;
+    guard.publish_file(file)?;
+    guard.commit()?;
+    Ok(())
+}
+fn append_stderr(
+    lease: &crate::worker_admission::Lease,
+    path: &Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut guard = lease.begin(crate::worker_admission::MutationPlan::ControlFiles {
+        files: vec![path.to_path_buf()],
+    })?;
+    let mut file = guard.stage_file(path, 0o600)?;
+    let mut old = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    std::io::copy(&mut old, file.file_mut())?;
+    file.file_mut().write_all(bytes)?;
+    file.file_mut().sync_all()?;
+    guard.publish_file(file)?;
+    guard.commit()?;
+    Ok(())
+}
+
 pub struct VmBootLauncher;
 
 #[async_trait::async_trait]
@@ -164,8 +387,23 @@ impl VmLauncher for VmBootLauncher {
         require_overlay_capable(iii_filesystem::init::has_init())
     }
 
-    async fn boot(&self, params: &BootParams) -> Result<BootHandle, SandboxError> {
+    async fn boot(&self, _params: &BootParams) -> Result<BootHandle, SandboxError> {
+        Err(SandboxError::BootFailed(
+            "direct sandbox boot requires an admitted registry lifecycle".into(),
+        ))
+    }
+
+    async fn boot_admitted(
+        &self,
+        params: &BootParams,
+        admission: crate::worker_admission::Lease,
+        registry: &super::registry::SandboxRegistry,
+        id: uuid::Uuid,
+    ) -> Result<BootHandle, SandboxError> {
         let t_boot_start = Instant::now();
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         // Defense in depth: `handle_create` already ran `preflight`;
         // re-check before libkrunfw provisioning for any other caller.
         require_overlay_capable(iii_filesystem::init::has_init())?;
@@ -256,13 +494,29 @@ impl VmLauncher for VmBootLauncher {
         // the worker VMs' legacy opt-out would re-open the shared
         // writable root.
         let t_erofs = Instant::now();
-        let rootfs_lower = prepare_overlay_lower(&params.base_rootfs).await?;
+        let writer = admission.clone();
+        let base = params.base_rootfs.clone();
+        let rootfs_lower = tokio::task::spawn_blocking(move || {
+            crate::cli::local_worker::write_admitted_erofs(writer, &base)
+        })
+        .await
+        .map_err(|e| SandboxError::BootFailed(e.to_string()))?
+        .map_err(SandboxError::BootFailed)?;
         tracing::info!(
             ms = t_erofs.elapsed().as_millis() as u64,
             lower = %rootfs_lower.display(),
             "boot_phase: read-only base erofs"
         );
 
+        admission
+            .revalidate()
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let _root_use = admission
+            .use_path(&params.rootfs)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let _lower_use = admission
+            .use_path(&rootfs_lower)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let env_stdin = env_stdin_frame(params)?;
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.arg("__vm-boot")
@@ -272,13 +526,15 @@ impl VmLauncher for VmBootLauncher {
         // Capture stderr to a per-sandbox log. Dropping to /dev/null
         // masked clap parse errors and libkrun panics as opaque 30s
         // timeouts. A new file only: never follow a planted symlink.
-        let log_path = params.shell_sock.with_file_name("vm-boot.stderr.log");
-        let stderr = crate::sandbox_daemon::overlay::create_private(&log_path).map_err(|e| {
-            SandboxError::BootFailed(format!(
-                "cannot create vm-boot stderr log at {}: {e}",
-                log_path.display()
-            ))
-        })?;
+        let log_path = params
+            .rootfs
+            .parent()
+            .ok_or_else(|| SandboxError::BootFailed("sandbox root has no layout parent".into()))?
+            .join("vm-boot.stderr.log");
+        // Capture stderr through a pipe; publication uses exact control-file
+        // stages after each record, never an untracked FD handed to the child.
+        initialize_stderr(&admission, &log_path)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
 
         // Lifeline: the registry entry will hold the write end; if this
         // daemon dies (any way, SIGKILL included) or the sandbox entry is
@@ -288,24 +544,54 @@ impl VmLauncher for VmBootLauncher {
             .map_err(|e| SandboxError::BootFailed(format!("lifeline pipe: {e}")))?;
 
         let t_spawn = Instant::now();
-        let mut child = cmd
-            .stdout(std::process::Stdio::null())
-            .stderr(stderr)
-            .spawn()
-            .map_err(|e| {
-                SandboxError::BootFailed(format!("spawn sandbox-libkrun __vm-boot: {e}"))
-            })?;
-        crate::cli::worker_manager::libkrun::feed_env_stdin(child.stdin.take(), &env_stdin)
+        crate::cli::worker_manager::libkrun::attach_child_admission(&mut cmd, &admission)
+            .map_err(SandboxError::BootFailed)?;
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let activity = super::registry::net_activity_path(&params.shell_sock);
+        let runtime_paths: Vec<_> = if params.network {
+            vec![crate::worker_admission::RuntimePath {
+                path: &activity,
+                kind: crate::worker_admission::RuntimePathKind::ActivityStamp,
+            }]
+        } else {
+            Vec::new()
+        };
+        drop(_root_use);
+        drop(_lower_use);
+        let launch = admission
+            .prepare_runtime(&runtime_paths)
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let mut child = match launch.spawn(cmd) {
+            Ok(child) => child,
+            Err(error) => {
+                let (cause, child) = error.into_parts();
+                if let Some(mut child) = child {
+                    drop(child.take_stdin());
+                    let stderr = child.take_stderr();
+                    let session = RuntimeSession::supervise(child, admission.clone());
+                    if let Some(stderr) = stderr {
+                        session.pump_stderr(stderr, log_path.clone());
+                    }
+                    registry.attach_runtime(id, session).await?;
+                }
+                return Err(SandboxError::BootFailed(format!("spawn sandbox: {cause}")));
+            }
+        };
+        let vm_pid = child.id();
+        let stdin = child.take_stdin();
+        let stderr = child.take_stderr();
+        let session = RuntimeSession::supervise(child, admission.clone());
+        // Ownership is installed synchronously above, before registry or stdin awaits.
+        if let Some(stderr) = stderr {
+            session.pump_stderr(stderr, log_path.clone());
+        }
+        registry.attach_runtime(id, session.clone()).await?;
+        let vm_pid =
+            vm_pid.ok_or_else(|| SandboxError::BootFailed("missing child diagnostic id".into()))?;
+        crate::cli::worker_manager::libkrun::feed_env_stdin(stdin, &env_stdin)
             .await
-            .map_err(|e| SandboxError::BootFailed(format!("send sandbox env to __vm-boot: {e}")))?;
-
-        let vm_pid = child
-            .id()
-            .ok_or_else(|| SandboxError::BootFailed("child exited immediately".to_string()))?;
-
-        // A waiter task reaps the VM when it exits; `sandbox::stop` signals
-        // `vm_pid` only until then (see `signal_vm`).
-        watch_vm(child, vm_pid);
+            .map_err(|e| SandboxError::BootFailed(format!("send sandbox env: {e}")))?;
         tracing::info!(
             ms = t_spawn.elapsed().as_millis() as u64,
             pid = vm_pid,
@@ -338,7 +624,9 @@ impl VmLauncher for VmBootLauncher {
                     // crashed. Keep looping only if the child PID is
                     // still alive; otherwise bail fast.
                     Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                        if !pid_alive(vm_pid) {
+                        if session.observation().is_terminal()
+                            || session.observation().os_status().is_some()
+                        {
                             let hint = read_stderr_tail(&log_path);
                             return Err(SandboxError::BootFailed(format!(
                                 "__vm-boot child {vm_pid} exited before the shell relay \
@@ -357,7 +645,9 @@ impl VmLauncher for VmBootLauncher {
                         )));
                     }
                 }
-            } else if !pid_alive(vm_pid) {
+            } else if session.observation().is_terminal()
+                || session.observation().os_status().is_some()
+            {
                 let hint = read_stderr_tail(&log_path);
                 return Err(SandboxError::BootFailed(format!(
                     "__vm-boot child {vm_pid} exited before binding shell socket {}. \
@@ -424,20 +714,6 @@ async fn guest_answers(sock: &Path, within: Duration) -> Result<(), String> {
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err(format!("no answer within {within:?}")),
     }
-}
-
-#[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    // SAFETY: `kill(pid, 0)` with signum 0 does not deliver a signal —
-    // it only performs error checking. No side effects on the target.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-#[cfg(not(unix))]
-fn pid_alive(_pid: u32) -> bool {
-    // Non-unix fallback: trust the timeout loop. `tokio::process` is
-    // unix-only today anyway.
-    true
 }
 
 fn read_stderr_tail(log_path: &std::path::Path) -> String {
@@ -720,8 +996,10 @@ impl ShellRunner for ShellProtoRunner {
 /// Pids of the VMs this process spawned and has not reaped yet. The stopper
 /// signals only these: once reaped, a pid may name another process. Global
 /// because every handler builds its own `SignalStopper`.
+#[cfg(test)]
 static UNREAPED_VMS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
+#[cfg(test)]
 fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
     UNREAPED_VMS.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -734,6 +1012,7 @@ fn unreaped_vms() -> MutexGuard<'static, Vec<u32>> {
 /// here would leave a reused PID signalable during finalization. It requires a
 /// core-owned reap observation synchronized with signal_vm, before catalog work;
 /// neither a caller bool nor a final wait error can supply that evidence.
+#[cfg(test)]
 fn watch_vm(mut child: tokio::process::Child, pid: u32) {
     unreaped_vms().push(pid);
     tokio::spawn(async move {
@@ -745,6 +1024,7 @@ fn watch_vm(mut child: tokio::process::Child, pid: u32) {
 /// Send `signal` to `pid` if it is a VM not reaped yet.
 /// shortcut: a VM reaped but not yet removed from the list can still be
 /// signaled in that microsecond gap; move to a pidfd if that ever matters.
+#[cfg(test)]
 fn signal_vm(pid: u32, signal: nix::sys::signal::Signal) {
     if unreaped_vms().contains(&pid) {
         let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), signal);
@@ -756,6 +1036,22 @@ pub struct SignalStopper;
 #[async_trait::async_trait]
 impl VmStopper for SignalStopper {
     async fn stop(&self, vm_pid: u32) -> Result<(), SandboxError> {
+        #[cfg(not(test))]
+        {
+            let _ = vm_pid;
+            return Err(SandboxError::BootFailed(
+                "PID-only stop has no runtime control authority".into(),
+            ));
+        }
+        #[cfg(test)]
+        {
+            self.stop_fixture(vm_pid).await
+        }
+    }
+}
+#[cfg(test)]
+impl SignalStopper {
+    async fn stop_fixture(&self, vm_pid: u32) -> Result<(), SandboxError> {
         use nix::sys::signal::Signal;
 
         let t_stop = Instant::now();
@@ -781,8 +1077,240 @@ impl VmStopper for SignalStopper {
 }
 
 #[cfg(test)]
+pub(crate) async fn runtime_test_session(
+    lease: crate::worker_admission::Lease,
+    namespace: &Path,
+    keep_running: bool,
+) -> std::sync::Arc<RuntimeSession> {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.arg("-c").arg(r#"
+        binary=$1; shift
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --admission-fd) export III_TEST_ADMISSION_FD="$2"; shift 2;;
+              --runtime-write-fd) export III_TEST_RUNTIME_FD="$2"; shift 2;;
+              *) exit 91;;
+            esac
+        done
+        exec "$binary" --exact sandbox_daemon::adapters::tests::runtime_owned_child_fixture --nocapture
+    "#).arg("owned-runtime-fixture").arg(std::env::current_exe().unwrap());
+    command.env("III_TEST_ADMISSION_NAMESPACE", namespace).env(
+        "III_TEST_RUNTIME_LIVE",
+        if keep_running { "1" } else { "0" },
+    );
+    crate::cli::worker_manager::libkrun::attach_child_admission(&mut command, &lease).unwrap();
+    command.stdout(std::process::Stdio::piped());
+    let mut child = lease
+        .prepare_runtime(&[])
+        .unwrap()
+        .spawn(command)
+        .unwrap_or_else(|e| panic!("runtime fixture spawn: {}", e.error()));
+    let stdout = child.take_stdout().unwrap();
+    let session = RuntimeSession::supervise(child, lease);
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if line.contains("RUNTIME_READY") {
+                return;
+            }
+        }
+        panic!("runtime fixture exited without activation acknowledgement");
+    })
+    .await
+    .unwrap();
+    let drain = tokio::spawn(async move {
+        while lines.next_line().await?.is_some() {}
+        Ok(())
+    });
+    session.host_writers.lock().await.push(drain);
+    session
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_owned_child_fixture() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let Some(namespace) = std::env::var_os("III_TEST_ADMISSION_NAMESPACE") else {
+            return;
+        };
+        let fd = |key| std::env::var(key).unwrap().parse::<i32>().unwrap();
+        let context =
+            crate::worker_admission::testing::open_context(Path::new(&namespace)).unwrap();
+        let lease = context
+            .import_child(unsafe { OwnedFd::from_raw_fd(fd("III_TEST_ADMISSION_FD")) })
+            .unwrap();
+        let writer = crate::worker_admission::import_runtime_writer(&lease, unsafe {
+            OwnedFd::from_raw_fd(fd("III_TEST_RUNTIME_FD"))
+        })
+        .unwrap();
+        writer.checkpoint().unwrap();
+        println!("RUNTIME_READY");
+        if std::env::var("III_TEST_RUNTIME_LIVE").unwrap() == "1" {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+        drop(writer);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn os_exit_without_runtime_activation_is_not_cleanup_authority() {
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lease = context.local(data.path()).unwrap();
+        let command = tokio::process::Command::new("/bin/true");
+        let child = lease
+            .prepare_runtime(&[])
+            .unwrap()
+            .spawn(command)
+            .unwrap_or_else(|e| panic!("{}", e.error()));
+        let control = child.control();
+        let session = RuntimeSession::supervise(child, lease);
+        let (status, retirement) = session.wait().await;
+        assert!(status.unwrap().success());
+        assert!(
+            retirement.is_err(),
+            "OS exit cannot activate/retire a writer"
+        );
+        assert_eq!(
+            control.observation().phase(),
+            crate::worker_admission::RuntimePhase::RetirementFailed
+        );
+        assert!(
+            control
+                .signal(crate::worker_admission::RuntimeSignal::Kill)
+                .is_err()
+        );
+        assert!(data.path().exists());
+    }
+
+    #[tokio::test]
+    async fn retired_process_with_unclosed_endpoint_cannot_remove_payload() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        use std::os::unix::fs::PermissionsExt;
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("payload");
+        let control = t.path().join("control");
+        std::fs::create_dir(&control).unwrap();
+        std::fs::set_permissions(&control, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = control.join("shell.sock");
+        let lease = crate::worker_admission::with_paths(
+            context.local(&root).unwrap(),
+            &[PathRequest {
+                path: &socket,
+                role: PathRole::Endpoint,
+            }],
+        )
+        .unwrap();
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        create.create_dir_all(&root, 0o700).unwrap();
+        create.commit().unwrap();
+        let endpoint = lease.endpoint(&socket).unwrap().bind().unwrap();
+        let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_host_writers().await.unwrap();
+        assert!(receipt.begin_remove(&lease, &root, &[&root]).is_err());
+        endpoint.close().unwrap();
+        let mut removal = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+        removal.remove_path(&root).unwrap();
+        removal.commit().unwrap();
+        assert!(!root.exists());
+        assert!(!socket.exists());
+        // The parent cannot call endpoint.close after guest _exit: it does not
+        // own this wrapper then. That remains a separate integration API gate.
+    }
+
+    #[tokio::test]
+    async fn dropping_owned_child_publishes_abandoned_without_successful_cleanup() {
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lease = context.local(data.path()).unwrap();
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 0.1"]);
+        let child = lease
+            .prepare_runtime(&[])
+            .unwrap()
+            .spawn(command)
+            .unwrap_or_else(|e| panic!("{}", e.error()));
+        let control = child.control();
+        drop(child);
+        let observed = tokio::time::timeout(Duration::from_secs(1), control.terminal())
+            .await
+            .unwrap();
+        assert_eq!(
+            observed.phase(),
+            crate::worker_admission::RuntimePhase::Abandoned
+        );
+        assert!(observed.retirement().is_none());
+        assert!(observed.failure().is_some());
+        assert!(data.path().exists());
+    }
+
+    #[tokio::test]
+    async fn failed_spawn_never_becomes_never_spawned_cleanup_receipt() {
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let lease = context.local(data.path()).unwrap();
+        let command = tokio::process::Command::new(data.path().join("absent-executable"));
+        let error = match lease.prepare_runtime(&[]).unwrap().spawn(command) {
+            Ok(_) => panic!("missing executable unexpectedly spawned"),
+            Err(error) => error,
+        };
+        let (cause, child) = error.into_parts();
+        assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
+        assert!(child.is_none());
+        assert!(data.path().exists());
+        assert!(
+            lease.prepare_runtime(&[]).is_err(),
+            "failed spawn retains uncertain state"
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_runtime_completion_keeps_os_exit_separate_from_removal_authority() {
+        let t = tempfile::tempdir().unwrap();
+        let ns = t.path().join("catalog");
+        std::fs::create_dir(&ns).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ns, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::worker_admission::testing::provision_context(&ns).unwrap();
+        let root = t.path().join("payload");
+        let lease = context.local(&root).unwrap();
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: root.clone() })
+            .unwrap();
+        create.create_dir_all(&root, 0o700).unwrap();
+        create.commit().unwrap();
+        let session = runtime_test_session(lease.clone(), &ns, false).await;
+        let (status, receipt) = session.wait().await;
+        assert!(status.unwrap().success());
+        let receipt = receipt.unwrap();
+        assert!(
+            session
+                .signal(crate::worker_admission::RuntimeSignal::Kill)
+                .is_ok()
+        );
+        let foreign = context.local(&t.path().join("foreign")).unwrap();
+        assert!(receipt.begin_remove(&foreign, &root, &[&root]).is_err());
+        let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+        remove.remove_path(&root).unwrap();
+        remove.commit().unwrap();
+        assert!(!root.exists());
+    }
 
     // `Some(vec![])` is the iii-shell-client trigger for "open stdin,
     // write 0 bytes, send EOF" (lib.rs:448-468). `None` skips stdin

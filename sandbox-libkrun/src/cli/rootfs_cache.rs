@@ -313,7 +313,7 @@ impl MutationWriter {
 
 /// Canonical cache root. All new pulls land under here, keyed by
 /// `rootfs_slug_for_image(oci_ref)`.
-fn cache_root() -> PathBuf {
+pub(crate) fn cache_root() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".iii")
@@ -507,8 +507,25 @@ pub(crate) async fn ensure_rootfs_admitted(
     lease: &crate::worker_admission::Lease,
     reference: &str,
 ) -> Result<PathBuf> {
+    ensure_rootfs_admitted_at(lease, reference, &cache_root()).await
+}
+
+pub(crate) async fn ensure_rootfs_admitted_at(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+    cache: &Path,
+) -> Result<PathBuf> {
+    ensure_rootfs_admitted_at_notify(lease, reference, cache, || {}).await
+}
+
+pub(crate) async fn ensure_rootfs_admitted_at_notify(
+    lease: &crate::worker_admission::Lease,
+    reference: &str,
+    cache: &Path,
+    on_pull: impl FnOnce() + Send,
+) -> Result<PathBuf> {
     use std::io::Write;
-    let cache = cache_root();
+    let cache = cache.to_path_buf();
     let selected = canonical_path_at(&cache, reference);
     let mutation = MutationWriter::begin(
         lease,
@@ -528,6 +545,8 @@ pub(crate) async fn ensure_rootfs_admitted(
         "cache selection changed while waiting; retry the complete admitted operation"
     );
     if !is_populated(&selected) {
+        on_pull();
+        mutation.checkpoint.check()?;
         let stage = mutation.apply(|guard| guard.stage_tree(&selected))?;
         let digests = crate::cli::worker_manager::oci::pull_into_stage_checked(
             reference,

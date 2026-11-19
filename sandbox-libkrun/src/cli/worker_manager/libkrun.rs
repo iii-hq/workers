@@ -305,7 +305,7 @@ fn runtime_paths(
 /// Select exactly one CLOEXEC duplicate; clear only its CHILD copy. The command
 /// closure owns ChildAdmission until spawn/command disposal; the waiter retains
 /// the same Lease through successful wait (or the existing uncertain-writer policy).
-fn attach_child_admission(
+pub(crate) fn attach_child_admission(
     cmd: &mut tokio::process::Command,
     lease: &crate::worker_admission::Lease,
 ) -> Result<(), String> {

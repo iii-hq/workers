@@ -90,11 +90,10 @@ pub async fn run_reaper_loop<S: VmStopper>(
             } else {
                 tracing::info!(sandbox_id=%state.id, "reaping idle sandbox");
             }
-            if let Some(pid) = state.vm_pid {
-                let _ = stopper.stop(pid).await;
+            let _ = &stopper; // Policy wrapper retained; never signals a numeric PID.
+            if let Err(error) = super::stop::stop_owned(&registry, state.id).await {
+                tracing::error!(sandbox_id=%state.id, %error, "reaper retained unresolved sandbox layout and registry");
             }
-            let _ = OverlayLayout::for_sandbox(state.id).cleanup();
-            registry.remove(state.id).await;
         }
     }
 }
@@ -156,7 +155,11 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         task.abort();
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "PID fixture cannot authorize stop"
+        );
     }
 
     /// The reaper must not kill a sandbox that is mid-exec. `last_exec_at` is
@@ -228,7 +231,12 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
         task.abort();
-        assert_eq!(count.load(Ordering::SeqCst), 1, "reapable once idle again");
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(
+            reg.get(id).await.is_ok(),
+            "reap claim retained without lifecycle proof"
+        );
+        assert!(reg.begin_exec(id).await.is_err());
     }
 
     /// The busy exemption must END. A leaked `exec_in_flight` — a panic that
@@ -261,10 +269,14 @@ mod tests {
 
         assert_eq!(
             count.load(Ordering::SeqCst),
-            1,
-            "a leaked exec slot must not pin the VM forever"
+            0,
+            "a leaked exec slot makes a claim, not PID signal authority"
         );
-        assert!(reg.get(id).await.is_err(), "record must be removed");
+        assert!(
+            reg.get(id).await.is_ok(),
+            "unresolved lifecycle must remain discoverable"
+        );
+        assert!(reg.begin_exec(id).await.is_err());
     }
 
     /// The gap this branch's PR originally shipped around, now closed: a
@@ -320,10 +332,14 @@ mod tests {
         task.abort();
         assert_eq!(
             count.load(Ordering::SeqCst),
-            1,
-            "a stale beacon must not pin the VM"
+            0,
+            "a stale beacon makes a claim, not cleanup authority"
         );
-        assert!(reg.get(id).await.is_err(), "record must be removed");
+        assert!(
+            reg.get(id).await.is_ok(),
+            "unresolved lifecycle must remain discoverable"
+        );
+        assert!(reg.begin_exec(id).await.is_err());
     }
 
     /// ...but a sandbox busy *within* the grace window is still protected.

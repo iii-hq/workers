@@ -709,12 +709,48 @@ async fn public_start_refuses_another_scoped_claim_before_firmware_with_real_con
     );
 }
 
-#[test]
-fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
+#[tokio::test]
+async fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree() {
     let s = setup(false);
     let backup = s._root.path().join("independent-backup");
     private(&backup);
     std::fs::write(backup.join("sentinel"), b"protected").unwrap();
+    let lease = s.vms.admission(Some("key")).unwrap();
+    let session = crate::sandbox_daemon::adapters::runtime_test_session(
+        lease.clone(),
+        &s._root.path().join("catalog"),
+        false,
+    )
+    .await;
+    let (status, receipt) = session.wait().await;
+    let receipt = receipt.unwrap();
+    let console = Console {
+        admission: Some(lease.clone()),
+        failed: false,
+        dir: s.vm.clone(),
+        file: File::open(s.vm.join(CONSOLE_LOG)).unwrap(),
+        len: 12,
+        base: 0,
+    };
+    let vm = Arc::new(Vm {
+        instance: 7,
+        pid: Pid::from_raw(0),
+        lifecycle: Some(session),
+        admission: lease,
+        retirement: Mutex::new(Some(Ok(receipt))),
+        started_at_ms: 0,
+        stopping: AtomicBool::new(false),
+        reaped: AtomicBool::new(true),
+        ended: watch::Sender::new(Some(Ended {
+            exit_code: status.and_then(|s| s.code()),
+            signal: None,
+            at_ms: now_ms(),
+        })),
+        console: Arc::new(Mutex::new(console)),
+        followers: watch::Sender::new(0),
+        leased: AtomicBool::new(false),
+    });
+    s.vms.slots().insert(vm_id("key"), Slot::Booted(vm));
     let retained = s
         .vms
         .destroy(WorkerDestroyRequest {
@@ -731,27 +767,20 @@ fn admitted_destroy_retains_guest_data_then_explicit_prune_removes_only_vm_tree(
     );
     assert!(!s.vm.join(STATE_FILE).exists());
     assert!(s.vm.join(BUILD_MODE_SEAL).exists());
-    let pruned = s
-        .vms
-        .destroy(WorkerDestroyRequest {
-            auth: "token".into(),
-            state_key: "key".into(),
-            prune: true,
-        })
-        .unwrap();
-    assert!(pruned.destroyed);
-    assert!(!s.vm.exists());
+    // A receipt is one-shot for its exact removal. A later broad prune is a
+    // new policy request, not permission to reuse/expand the consumed receipt.
+    assert!(
+        s.vms
+            .destroy(WorkerDestroyRequest {
+                auth: "token".into(),
+                state_key: "key".into(),
+                prune: true,
+            })
+            .is_err()
+    );
+    assert!(s.vm.exists());
     assert_eq!(
         std::fs::read(backup.join("sentinel")).unwrap(),
         b"protected"
     );
-    let repeated = s
-        .vms
-        .destroy(WorkerDestroyRequest {
-            auth: "token".into(),
-            state_key: "key".into(),
-            prune: true,
-        })
-        .unwrap();
-    assert!(!repeated.destroyed);
 }

@@ -35,37 +35,53 @@ pub async fn handle_stop<S: VmStopper>(
             req.sandbox_id
         ))
     })?;
-    let state = registry.get(id).await?;
-    if state.stopped {
-        return Ok(StopResponse {
-            sandbox_id: id.to_string(),
-            stopped: true,
-        });
-    }
-    if let Some(pid) = state.vm_pid {
-        stopper.stop(pid).await?;
-    }
-    registry.mark_stopped(id).await;
-    let _ = OverlayLayout::for_sandbox(id).cleanup();
-    registry.remove(id).await;
+    let _state = registry.claim_stop(id).await?;
+    stop_owned(registry, id).await?;
+    let _ = stopper; // Compatibility policy argument; PID is never authority.
     Ok(StopResponse {
         sandbox_id: id.to_string(),
         stopped: true,
     })
 }
 
+pub(crate) async fn stop_owned(registry: &SandboxRegistry, id: Uuid) -> Result<(), SandboxError> {
+    registry.claim_stop(id).await?;
+    let session = registry.lifecycle(id).await?;
+    let receipt = session
+        .stop(std::time::Duration::from_millis(200))
+        .await
+        .map_err(|e| SandboxError::BootFailed(format!("sandbox retirement: {e}")))?;
+    session
+        .finish_host_writers()
+        .await
+        .map_err(|e| SandboxError::BootFailed(format!("sandbox host writers: {e}")))?;
+    OverlayLayout::for_sandbox(id)
+        .cleanup_retired(session.lease(), &receipt)
+        .map_err(|e| SandboxError::BootFailed(format!("sandbox cleanup retained: {e}")))?;
+    registry.complete_cleanup(id).await;
+    Ok(())
+}
+
 /// Stop every live sandbox and remove its directory, for a graceful exit: the
 /// lifeline ends the VMs anyway, but only this cleans `overlay::sandbox_root`.
-pub async fn stop_all<S: VmStopper>(registry: &SandboxRegistry, stopper: &S) {
+pub async fn stop_all<S: VmStopper>(
+    registry: &SandboxRegistry,
+    stopper: &S,
+) -> Result<(), SandboxError> {
+    let _ = stopper;
     let states = registry.list().await;
-    futures::future::join_all(states.into_iter().map(|state| async move {
-        if let Some(pid) = state.vm_pid {
-            let _ = stopper.stop(pid).await;
+    let mut errors = Vec::new();
+    for state in states {
+        if let Err(error) = stop_owned(registry, state.id).await {
+            tracing::error!(id=%state.id, %error, "shutdown preserved unresolved sandbox");
+            errors.push(format!("{}: {error}", state.id));
         }
-        let _ = OverlayLayout::for_sandbox(state.id).cleanup();
-        registry.remove(state.id).await;
-    }))
-    .await;
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(SandboxError::BootFailed(errors.join("; ")))
+    }
 }
 
 #[cfg(test)]
@@ -108,17 +124,17 @@ mod tests {
             call_count: calls.clone(),
         };
 
-        stop_all(&reg, &stopper).await;
+        assert!(stop_all(&reg, &stopper).await.is_err());
 
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(reg.count().await, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(reg.count().await, 2);
         for id in ids {
-            assert!(!OverlayLayout::for_sandbox(id).base().exists());
+            assert!(OverlayLayout::for_sandbox(id).base().exists());
         }
     }
 
     #[tokio::test]
-    async fn stop_happy_path_marks_and_calls_stopper() {
+    async fn unresolved_stop_preserves_registry_and_does_not_signal_a_pid() {
         let reg = SandboxRegistry::new();
         let id = Uuid::new_v4();
         reg.insert(state(id)).await;
@@ -126,7 +142,47 @@ mod tests {
         let stopper = FakeStopper {
             called: called.clone(),
         };
-        let resp = handle_stop(
+        assert!(
+            handle_stop(
+                StopRequest {
+                    sandbox_id: id.to_string(),
+                    wait: true
+                },
+                &reg,
+                &stopper
+            )
+            .await
+            .is_err()
+        );
+        assert!(!called.load(Ordering::SeqCst));
+        assert!(reg.get(id).await.is_ok());
+        assert!(reg.begin_exec(id).await.is_err());
+        assert!(stop_all(&reg, &stopper).await.is_err());
+        assert!(reg.get(id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stop_happy_path_marks_and_calls_stopper() {
+        use std::os::unix::fs::PermissionsExt;
+        let namespace = tempfile::tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let reg = SandboxRegistry::new().with_context(context.clone());
+        let id = Uuid::new_v4();
+        let layout = OverlayLayout::for_sandbox(id);
+        layout.prepare_parents(&context).unwrap();
+        let lease = layout.admit(&context).unwrap();
+        layout.ensure_admitted(&lease).unwrap();
+        let session =
+            super::super::adapters::runtime_test_session(lease, namespace.path(), false).await;
+        session.wait().await.1.unwrap();
+        reg.insert(state(id)).await;
+        reg.attach_runtime(id, session).await.unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let stopper = FakeStopper {
+            called: called.clone(),
+        };
+        let response = handle_stop(
             StopRequest {
                 sandbox_id: id.to_string(),
                 wait: true,
@@ -136,9 +192,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(resp.stopped);
-        assert!(called.load(Ordering::SeqCst));
+        assert!(response.stopped);
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "numeric PID fixture is never authority"
+        );
         assert!(reg.get(id).await.is_err());
+        assert!(!layout.base().exists());
     }
 
     struct FlakyStopper {
@@ -187,7 +247,7 @@ mod tests {
             "stopped flag must not be set when stopper.stop returned Err"
         );
 
-        let resp = handle_stop(
+        let repeated = handle_stop(
             StopRequest {
                 sandbox_id: id.to_string(),
                 wait: true,
@@ -195,18 +255,13 @@ mod tests {
             &reg,
             &stopper,
         )
-        .await
-        .unwrap();
-        assert!(resp.stopped);
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            2,
-            "retry must invoke stopper again"
-        );
+        .await;
         assert!(
-            reg.get(id).await.is_err(),
-            "registry entry must be removed after successful retry"
+            repeated.is_err(),
+            "retry cannot turn caller PID into retirement proof"
         );
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        assert!(reg.get(id).await.is_ok());
     }
 
     #[tokio::test]

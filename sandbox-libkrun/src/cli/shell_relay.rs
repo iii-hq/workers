@@ -304,7 +304,13 @@ pub(crate) fn spawn_admitted(
             }
         };
         requested.send_replace(true);
-        let listener = listener.await.ok();
+        let listener = match listener.await {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                tracing::error!(%error, "endpoint listener task failed; lifetime remains unresolved");
+                None
+            }
+        };
         let reader_done = match reader_ended {
             Some(result) => result.is_ok(),
             None => {
@@ -361,7 +367,13 @@ async fn listener_task_admitted(
         }
     }
     sessions.abort_all();
-    while sessions.join_next().await.is_some() {}
+    while let Some(result) = sessions.join_next().await {
+        if let Err(error) = result {
+            if !error.is_cancelled() {
+                tracing::error!(%error, "endpoint client task failed during drain");
+            }
+        }
+    }
     listener
 }
 

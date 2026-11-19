@@ -896,7 +896,7 @@ pub(crate) fn admit_base_image_inputs(
     admit_cache_paths(admission, reference, &cache)
 }
 
-fn admit_cache_paths(
+pub(crate) fn admit_cache_paths(
     admission: crate::worker_admission::Lease,
     reference: &str,
     cache: &Path,

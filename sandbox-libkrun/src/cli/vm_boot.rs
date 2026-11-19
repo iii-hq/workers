@@ -1141,6 +1141,13 @@ fn boot_vm(
 
     // Strict inputs remain protected while the VMM/source export consumes them.
     let mut input_uses = Vec::new();
+    if args.rootfs_readonly {
+        input_uses.push(
+            admission
+                .use_path(std::path::Path::new(&args.rootfs))
+                .map_err(|e| e.to_string())?,
+        );
+    }
     for entry in &mount_plan.entries {
         let path = std::path::Path::new(&entry.host_path);
         if !path.starts_with(std::path::Path::new(&args.rootfs)) {
@@ -1575,7 +1582,9 @@ fn boot_vm(
     // SIGINT delivered to this __vm-boot process now triggers the
     // VMM's shutdown path (event-loop reads the exit eventfd, notifies
     // on_exit observers, `_exit`s with the current exit code), so the
-    // on_exit closure installed above unlinks the shell socket.
+    // on_exit closure only requests asynchronous endpoint closure. _exit or
+    // SIGKILL may leave its receipt Bound; parent cleanup must then refuse until
+    // a core-owned exact endpoint retirement operation proves the sentinel free.
     // Nothing reaches the guest: the worker gets no SIGTERM and
     // iii-init's sync-on-exit does not run, so guest writes still in
     // its page cache (the ext4 upper) are lost.
