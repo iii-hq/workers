@@ -4490,6 +4490,188 @@ mod tests {
         (lease, console)
     }
 
+    // Explicit regression budgets, not new production limits. A bounded log
+    // capability may use a small fixed ledger, never a journal/path per line.
+    fn r1_catalog_inventory(namespace: &Path) -> (usize, usize, u64) {
+        let bytes = std::fs::read(namespace.join("catalog.json")).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+        let operations = catalog["operations"].as_array().unwrap();
+        let entries = operations
+            .iter()
+            .map(|op| op["entries"].as_array().unwrap().len())
+            .sum();
+        let journals = operations
+            .iter()
+            .map(|op| op["journals"].as_array().unwrap().len())
+            .sum();
+        (entries, journals, bytes.len() as u64)
+    }
+    fn r1_assert_bounded(initial: (usize, usize, u64), now: (usize, usize, u64)) {
+        assert!(
+            now.0 <= initial.0 + 32,
+            "live path cardinality grew per log record: {initial:?} -> {now:?}"
+        );
+        assert!(
+            now.1 <= initial.1 + 16,
+            "live journal count grew per log record: {initial:?} -> {now:?}"
+        );
+        assert!(
+            now.2 <= initial.2 + 64 * 1024,
+            "live catalog bytes grew per log record: {initial:?} -> {now:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn r1_three_hundred_console_records_rotate_and_retire_with_bounded_history() {
+        let t = tempfile::tempdir().unwrap();
+        let (lease, console) = admitted_console_fixture(t.path(), b"");
+        let dir = console.dir.clone();
+        let upper = dir.join("root").join(crate::cli::upper::UPPER_NAME);
+        let mut create = lease
+            .begin(crate::worker_admission::MutationPlan::Create { root: dir.clone() })
+            .unwrap();
+        let mut stage = create.stage_file(&upper, 0o600).unwrap();
+        stage
+            .file_mut()
+            .write_all(b"OLD guest data must survive")
+            .unwrap();
+        create.publish_file(stage).unwrap();
+        create.commit().unwrap();
+        let evidence = t.path().join(".iii-prior-unrelated-evidence");
+        std::fs::write(&evidence, b"not log retention").unwrap();
+        let session = crate::sandbox_daemon::adapters::runtime_test_session(
+            lease.clone(),
+            &t.path().join("catalog"),
+            false,
+        )
+        .await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        let console = Mutex::new(console);
+        let initial = r1_catalog_inventory(&t.path().join("catalog"));
+        let mut seen_cursor = 0;
+        for n in 0..320 {
+            console
+                .lock()
+                .unwrap()
+                .append(&LogStream::Stdout, format!("short-{n:04}").as_bytes())
+                .unwrap_or_else(|error| panic!("normal admitted line {n} failed: {error}"));
+            if n == 31 {
+                seen_cursor = read_records(&console, 0).unwrap().1;
+            }
+        }
+        let (rest, end) = read_records(&console, seen_cursor).unwrap();
+        assert_eq!(rest.len(), 288);
+        assert_eq!(rest.first().unwrap().line, "short-0032");
+        assert_eq!(rest.last().unwrap().line, "short-0319");
+        assert!(end > seen_cursor && rest.windows(2).all(|pair| pair[0].cursor < pair[1].cursor));
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+        let payload = vec![b'x'; MAX_LINE as usize - 1024];
+        for _ in 0..200 {
+            if console.lock().unwrap().base > 0 {
+                break;
+            }
+            console
+                .lock()
+                .unwrap()
+                .append(&LogStream::Stderr, &payload)
+                .unwrap();
+        }
+        assert!(
+            console.lock().unwrap().base > 0,
+            "normal bounded rotation never occurred"
+        );
+        console
+            .lock()
+            .unwrap()
+            .append(&LogStream::Stdout, b"after-rotation")
+            .unwrap();
+        let (after_rotation, final_cursor) = read_records(&console, end).unwrap();
+        assert_eq!(after_rotation.last().unwrap().line, "after-rotation");
+        assert!(
+            after_rotation
+                .windows(2)
+                .all(|pair| pair[0].cursor < pair[1].cursor)
+        );
+        assert!(final_cursor > end);
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+        let data_bytes: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let meta = entry.metadata().unwrap();
+                if meta.is_file() { meta.len() } else { 0 }
+            })
+            .sum();
+        assert!(
+            data_bytes <= 2 * CONSOLE_LOG_CAP + 4 * MAX_LINE,
+            "ordinary log history is not bounded on disk: {data_bytes}"
+        );
+        let cache = t.path().join("unrelated-cache");
+        std::fs::create_dir(&cache).unwrap();
+        receipt
+            .probe_cache(
+                &lease,
+                &[crate::worker_admission::CacheEntry {
+                    root: &cache.join("next"),
+                }],
+            )
+            .unwrap()
+            .cancel()
+            .unwrap();
+        drop(console); // all readable log handles closed before data cleanup
+        let (removed, kept) =
+            remove_runtime_state_admitted(&lease, &receipt, &dir, "console", false).unwrap();
+        assert!(removed);
+        assert!(kept.contains(&dir.join(PRE_BUILD_DISK)));
+        assert_eq!(
+            std::fs::read(dir.join(PRE_BUILD_DISK)).unwrap(),
+            b"OLD guest data must survive"
+        );
+        assert_eq!(std::fs::read(evidence).unwrap(), b"not log retention");
+        assert!(!dir.join(CONSOLE_LOG).exists());
+        assert!(!dir.join(CONSOLE_LOG_OLD).exists());
+    }
+
+    #[test]
+    fn r1_concurrent_valid_console_writers_preserve_all_records_and_bound_catalog() {
+        let t = tempfile::tempdir().unwrap();
+        let (_lease, console) = admitted_console_fixture(t.path(), b"");
+        let console = Arc::new(Mutex::new(console));
+        let initial = r1_catalog_inventory(&t.path().join("catalog"));
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4)
+                .map(|writer| {
+                    let console = console.clone();
+                    scope.spawn(move || {
+                        for n in 0..80 {
+                            console
+                                .lock()
+                                .unwrap()
+                                .append(&LogStream::Stdout, format!("{writer}:{n}").as_bytes())
+                                .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.join().unwrap();
+            }
+        });
+        let (records, _) = read_records(&console, 0).unwrap();
+        let lines: HashSet<_> = records.iter().map(|record| record.line.clone()).collect();
+        assert_eq!(records.len(), 320);
+        assert_eq!(lines.len(), 320);
+        assert!(
+            records
+                .windows(2)
+                .all(|pair| pair[0].cursor < pair[1].cursor)
+        );
+        r1_assert_bounded(initial, r1_catalog_inventory(&t.path().join("catalog")));
+    }
+
     #[test]
     fn admitted_console_exact_files_do_not_conflict_with_prepared_guest_tree() {
         use std::os::fd::AsRawFd;

@@ -941,6 +941,227 @@ pub(crate) fn seed_private_cache_fixture(
 mod tests {
     use super::*;
 
+    /// Real OCI layer bytes; production extraction controls permission and
+    /// hardlink semantics. The only replaced boundary is the network download.
+    fn r3_local_layer(tmp: bool, hardlink: bool, files: usize) -> Vec<u8> {
+        fn append(
+            builder: &mut tar::Builder<Vec<u8>>,
+            path: &str,
+            kind: tar::EntryType,
+            mode: u32,
+            bytes: &[u8],
+            link: Option<&str>,
+        ) {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(kind);
+            header.set_mode(mode);
+            header.set_uid(unsafe { libc::geteuid() } as u64);
+            header.set_gid(unsafe { libc::getegid() } as u64);
+            header.set_mtime(1_700_000_000);
+            header.set_size(bytes.len() as u64);
+            if let Some(link) = link {
+                header.set_link_name(link).unwrap();
+            }
+            header.set_cksum();
+            builder.append_data(&mut header, path, bytes).unwrap();
+        }
+        let mut tar = tar::Builder::new(Vec::new());
+        // 0700 root deliberately isolates the descendant profile from R4's
+        // root-attribute transition, which has its own readable0755 regression.
+        append(&mut tar, "bin", tar::EntryType::Directory, 0o700, b"", None);
+        append(
+            &mut tar,
+            "bin/sh",
+            tar::EntryType::Regular,
+            0o700,
+            b"fixture-shell",
+            None,
+        );
+        if tmp {
+            append(
+                &mut tar,
+                "tmp",
+                tar::EntryType::Directory,
+                0o1777,
+                b"",
+                None,
+            );
+        }
+        if hardlink {
+            append(
+                &mut tar,
+                "bin/sh-alias",
+                tar::EntryType::Link,
+                0o700,
+                b"",
+                Some("bin/sh"),
+            );
+        }
+        if files > 0 {
+            append(
+                &mut tar,
+                "inventory",
+                tar::EntryType::Directory,
+                0o700,
+                b"",
+                None,
+            );
+            for n in 0..files {
+                append(
+                    &mut tar,
+                    &format!("inventory/item-{n:05}"),
+                    tar::EntryType::Regular,
+                    0o600,
+                    format!("payload-{n}").as_bytes(),
+                    None,
+                );
+            }
+        }
+        tar.into_inner().unwrap()
+    }
+
+    async fn r3_publish_layer(tmp: bool, hardlink: bool, files: usize) {
+        use std::os::unix::fs::MetadataExt;
+        let (directory, context, cache) = h_context();
+        let reference = "example.invalid/review/local-layer:v1";
+        let layer = r3_local_layer(tmp, hardlink, files);
+        let lease = context.local(&directory.path().join("consumer")).unwrap();
+        let prepared = CacheRequest::new(lease.clone(), reference, &cache)
+            .unwrap()
+            .resolve_with(
+                true,
+                || {},
+                move |_, stage, checkpoint| async move {
+                    checkpoint.check()?;
+                    let mut bytes = 0;
+                    crate::cli::worker_manager::oci::extract_layer_with_limits(
+                        &layer,
+                        "application/vnd.oci.image.layer.v1.tar",
+                        &stage,
+                        0,
+                        1,
+                        &mut bytes,
+                    )?;
+                    // Same reserved OCI config writer used by the real pull path.
+                    crate::cli::worker_manager::oci::write_rootfs_file_no_follow(
+                        &stage.join(".oci-config.json"),
+                        br#"{"config":{"Env":["REVIEW=local"]}}"#,
+                        Some(0o600),
+                    )?;
+                    if tmp {
+                        assert_eq!(
+                            std::fs::metadata(stage.join("tmp"))?.mode() & 0o7777,
+                            0o1777
+                        );
+                    }
+                    if hardlink {
+                        assert_eq!(
+                            std::fs::metadata(stage.join("bin/sh"))?.ino(),
+                            std::fs::metadata(stage.join("bin/sh-alias"))?.ino()
+                        );
+                    }
+                    if files > 0 {
+                        assert_eq!(std::fs::read_dir(stage.join("inventory"))?.count(), files);
+                    }
+                    checkpoint.check()?;
+                    Ok(vec![format!("sha256:{}", "d".repeat(64))])
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.env().unwrap(),
+            vec![("REVIEW".into(), "local".into())]
+        );
+        assert_eq!(
+            std::fs::read(prepared.root.join("bin/sh")).unwrap(),
+            b"fixture-shell"
+        );
+        let mut image = crate::cli::erofs::reader::ErofsReader::new(
+            std::fs::File::open(&prepared.lower).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(image.read_file("/bin/sh").unwrap(), b"fixture-shell");
+        if tmp {
+            assert_eq!(
+                std::fs::metadata(prepared.root.join("tmp")).unwrap().mode() & 0o7777,
+                0o1777
+            );
+            assert_eq!(image.owner_and_mode("/tmp").unwrap().2 & 0o7777, 0o1777);
+        }
+        if hardlink {
+            let first = std::fs::metadata(prepared.root.join("bin/sh")).unwrap();
+            let second = std::fs::metadata(prepared.root.join("bin/sh-alias")).unwrap();
+            assert_eq!((first.dev(), first.ino()), (second.dev(), second.ino()));
+            let entries = image.walk().unwrap();
+            let nid = |path: &str| {
+                entries
+                    .iter()
+                    .find(|entry| entry.path == Path::new(path))
+                    .unwrap()
+                    .nid
+            };
+            assert_eq!(nid("bin/sh"), nid("bin/sh-alias"));
+        }
+        if files > 0 {
+            assert_eq!(
+                std::fs::read_dir(prepared.root.join("inventory"))
+                    .unwrap()
+                    .count(),
+                files
+            );
+            let entries = image.walk().unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry.path.parent() == Some(Path::new("inventory")))
+                    .count(),
+                files
+            );
+            assert_eq!(
+                image
+                    .read_file(&format!("/inventory/item-{:05}", files - 1))
+                    .unwrap(),
+                format!("payload-{}", files - 1).as_bytes()
+            );
+        }
+        drop(image);
+        let second = CacheRequest::new(
+            context.local(&directory.path().join("second")).unwrap(),
+            reference,
+            &cache,
+        )
+        .unwrap()
+        .resolve(false, || panic!("warm local image must not download"))
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(second.root, prepared.root);
+        lease.revalidate().unwrap();
+        prepared.validate(reference).unwrap();
+    }
+
+    #[tokio::test]
+    async fn r3_local_oci_tmp1777_survives_publication_and_erofs() {
+        r3_publish_layer(true, false, 0).await;
+    }
+
+    #[tokio::test]
+    async fn r3_local_oci_internal_hardlinks_survive_publication_and_erofs() {
+        r3_publish_layer(false, true, 0).await;
+    }
+
+    #[tokio::test]
+    async fn r3_local_oci_more_than_4096_entries_survive_publication_and_erofs() {
+        r3_publish_layer(false, false, 4100).await;
+    }
+
+    #[tokio::test]
+    async fn r3_local_oci_combined_ordinary_payload_profile_is_not_a_tiny_private_tree() {
+        r3_publish_layer(true, true, 4100).await;
+    }
+
     fn h_context() -> (
         tempfile::TempDir,
         crate::worker_admission::AdmissionContext,

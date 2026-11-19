@@ -1337,6 +1337,101 @@ mod tests {
         drop(lease);
     }
 
+    #[tokio::test]
+    async fn r2_initialized_stderr_one_line_then_owned_retirement_allows_safe_cleanup() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let (lease, root, endpoints) = resource_fixture(data.path(), &context, 1);
+        let stderr = root.join("vm-boot.stderr.log");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[PathRequest {
+                path: &stderr,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap();
+        let protected = data.path().join(".iii-prior-independent-evidence");
+        std::fs::write(&protected, b"OLD independent evidence").unwrap();
+        initialize_stderr(&lease, &stderr).unwrap();
+        append_stderr(&lease, &stderr, b"normal sandbox startup line\n").unwrap();
+        assert_eq!(
+            std::fs::read(&stderr).unwrap(),
+            b"normal sandbox startup line\n"
+        );
+        let session = runtime_test_session_resources(
+            lease.clone(),
+            namespace.path(),
+            false,
+            RuntimeTestResources {
+                reads: vec![root.clone()],
+                endpoints: endpoints.clone(),
+                exit_without_drop: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let (status, retirement) = session.wait().await;
+        assert!(status.unwrap().success());
+        let receipt = retirement.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        for path in &endpoints {
+            assert!(!path.exists());
+        }
+        // Normal stderr replacement must not leave migration-like debris that
+        // makes every routine stop fail. Authority is the original receipt.
+        let mut remove = receipt.begin_remove(&lease, &root, &[&root]).unwrap();
+        remove.remove_path(&root).unwrap();
+        remove.commit().unwrap();
+        assert!(!root.exists());
+        assert_eq!(
+            std::fs::read(&protected).unwrap(),
+            b"OLD independent evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn r2_logged_cleanup_does_not_treat_unrelated_prior_evidence_as_disposable() {
+        use crate::worker_admission::{PathRequest, PathRole};
+        let namespace = crate::worker_admission::testing::private_tempdir().unwrap();
+        let data = crate::worker_admission::testing::private_tempdir().unwrap();
+        let context =
+            crate::worker_admission::testing::provision_context(namespace.path()).unwrap();
+        let (lease, root, _) = resource_fixture(data.path(), &context, 0);
+        let protected = root.join(".iii-prior-unrelated-evidence");
+        // The entry exists before runtime issuance; no proof says it is log retention.
+        std::fs::write(&protected, b"OLD must not disappear").unwrap();
+        let stderr = root.join("vm-boot.stderr.log");
+        let lease = crate::worker_admission::with_paths(
+            lease,
+            &[PathRequest {
+                path: &stderr,
+                role: PathRole::MutableFile,
+            }],
+        )
+        .unwrap();
+        initialize_stderr(&lease, &stderr).unwrap();
+        append_stderr(&lease, &stderr, b"ordinary line\n").unwrap();
+        let session = runtime_test_session(lease.clone(), namespace.path(), false).await;
+        let receipt = session.wait().await.1.unwrap();
+        session.finish_resources(&receipt).await.unwrap();
+        let refused = match receipt.begin_remove(&lease, &root, &[&root]) {
+            Err(_) => true,
+            Ok(mut removal) => removal.remove_path(&root).is_err(),
+        };
+        assert!(
+            refused,
+            "log cleanup must not authorize genuine prior evidence"
+        );
+        assert_eq!(
+            std::fs::read(&protected).unwrap(),
+            b"OLD must not disappear"
+        );
+    }
+
     fn resource_fixture(
         t: &Path,
         context: &crate::worker_admission::AdmissionContext,
