@@ -275,6 +275,23 @@ impl WorkerVms {
         Ok(lease)
     }
 
+    /// PRODUCTION FIX (never-admitted sweep regression): an existing worker
+    /// base makes [`Self::admission`] create nothing, so compatibility custody
+    /// and unknown writers are refused before a request's source or build
+    /// directory is canonicalized, inspected or claimed, as before the
+    /// cold-base change. Only a missing base, which admission would create,
+    /// yields `None`: its caller preflights the inputs first so a refused
+    /// request never creates the private worker hierarchy.
+    fn warm_admission(
+        &self,
+        key: Option<&str>,
+    ) -> io::Result<Option<crate::worker_admission::Lease>> {
+        if std::fs::symlink_metadata(&self.base).is_err() {
+            return Ok(None);
+        }
+        self.admission(key).map(Some)
+    }
+
     fn cache_context(&self) -> io::Result<crate::worker_admission::AdmissionContext> {
         #[cfg(test)]
         if let Some(context) = &self.admission_context {
@@ -480,24 +497,31 @@ impl WorkerVms {
                 BINARY_NEEDS_A_BUILD.to_string(),
             ));
         }
+        // PRODUCTION FIX (sweep regression): refuse custody before even
+        // canonicalizing the source; see warm_admission.
+        let warm = self
+            .warm_admission(req.state_key.as_deref())
+            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
         let dir = self.admit(source.host_path)?;
         self.cache_context()
             .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
             .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
-        if std::fs::symlink_metadata(&self.base).is_err() {
-            WorkerProject::resolve(
-                &dir,
-                source.package,
-                source.run_override,
-                source.executable,
-                None,
-                true,
-            )
-            .map_err(SandboxError::SourceRejected)?;
-        }
-        let _admission = self
-            .admission(req.state_key.as_deref())
-            .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?;
+        let _admission = match warm {
+            Some(admission) => admission,
+            None => {
+                WorkerProject::resolve(
+                    &dir,
+                    source.package,
+                    source.run_override,
+                    source.executable,
+                    None,
+                    true,
+                )
+                .map_err(SandboxError::SourceRejected)?;
+                self.admission(req.state_key.as_deref())
+                    .map_err(|e| SandboxError::PrepareFailed(e.to_string()))?
+            }
+        };
         let _cache_hold = req
             .state_key
             .as_ref()
@@ -571,6 +595,11 @@ impl WorkerVms {
                 BINARY_NEEDS_A_BUILD.to_string(),
             ));
         }
+        // PRODUCTION FIX (sweep regression): refuse custody before even
+        // canonicalizing the source or the build directory; see warm_admission.
+        let warm = self
+            .warm_admission(Some(&req.state_key))
+            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
         let dir = self.admit(source.host_path)?;
         if let Some(build) = &req.build {
             let build_dir = self.admit(&build.build_dir)?;
@@ -590,20 +619,22 @@ impl WorkerVms {
         self.cache_context()
             .and_then(|context| context.reject_retained_path(Path::new(source.host_path)))
             .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
-        if std::fs::symlink_metadata(&self.base).is_err() {
-            WorkerProject::resolve(
-                &dir,
-                source.package,
-                source.run_override,
-                source.executable,
-                None,
-                req.build.is_none(),
-            )
-            .map_err(SandboxError::SourceRejected)?;
-        }
-        let admission = self
-            .admission(Some(&req.state_key))
-            .map_err(|e| SandboxError::BootFailed(e.to_string()))?;
+        let admission = match warm {
+            Some(admission) => admission,
+            None => {
+                WorkerProject::resolve(
+                    &dir,
+                    source.package,
+                    source.run_override,
+                    source.executable,
+                    None,
+                    req.build.is_none(),
+                )
+                .map_err(SandboxError::SourceRejected)?;
+                self.admission(Some(&req.state_key))
+                    .map_err(|e| SandboxError::BootFailed(e.to_string()))?
+            }
+        };
         // Compose presents the project token and supervises its VMs itself.
         let leased = !self.is_project_token(&req.auth);
 

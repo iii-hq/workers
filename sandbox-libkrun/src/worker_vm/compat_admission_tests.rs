@@ -1122,7 +1122,55 @@ async fn build_start_refuses_before_even_reading_or_claiming_build_directory() {
             .contains("compatibility custody")
     );
     unchanged(&s);
+    assert!(s.vms.operations.lock().unwrap().is_empty());
     assert!(!s._root.path().join("uncreated-build").exists());
+}
+/// Focused regression (never-admitted sweep): with an existing worker base the
+/// custody refusal precedes even canonicalizing the request's inputs. A source
+/// and a build directory outside every host root are refused as "outside the
+/// host roots" by their first read, so the custody refusal proves that neither
+/// was admitted, inspected or claimed first, for a build start and for keyed
+/// and unkeyed prepares alike.
+#[tokio::test]
+async fn custody_refusal_precedes_any_source_or_build_directory_admission() {
+    let s = setup(true);
+    let foreign = crate::worker_admission::testing::private_tempdir().unwrap();
+    assert!(!foreign.path().starts_with(s._root.path()));
+    let build_dir = foreign.path().join("build");
+    private(&build_dir);
+    write_private_fixture(&build_dir.join(IMAGE_FILE), b"never-read");
+    write_private_fixture(&build_dir.join(IMAGE_ID_FILE), b"never-read");
+    let mut req = start(&s);
+    req.source = local_source(foreign.path());
+    req.build = Some(WorkerBuildRef {
+        build_id: "never-read".into(),
+        build_dir: build_dir.display().to_string(),
+    });
+    let error = s.vms.start(req).await.unwrap_err().to_string();
+    assert!(error.contains("compatibility custody"), "{error}");
+    assert!(!error.contains("host roots"), "{error}");
+    for key in [Some("key".to_string()), None] {
+        let error = s
+            .vms
+            .prepare(WorkerPrepareRequest {
+                auth: "token".into(),
+                source: local_source(foreign.path()),
+                state_key: key,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("compatibility custody"), "{error}");
+        assert!(!error.contains("host roots"), "{error}");
+    }
+    unchanged(&s);
+    assert!(s.vms.operations.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(foreign.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&build_dir).unwrap().count(), 2);
+    assert_eq!(
+        std::fs::read(build_dir.join(IMAGE_FILE)).unwrap(),
+        b"never-read"
+    );
 }
 #[tokio::test]
 async fn prepare_keyed_and_unkeyed_refuse_before_source_or_cache() {
